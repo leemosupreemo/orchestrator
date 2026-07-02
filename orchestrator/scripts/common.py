@@ -429,10 +429,14 @@ def prompt_multiline(prompt: str) -> str:
 def prompt_password(label: str, placeholder: str = "(enter to skip)") -> str:
     """Interactive password input that shows asterisks instead of clear text."""
     if not sys.stdin.isatty():
-        return ""
+        try:
+            import getpass
+            return getpass.getpass(f"{label}: ").strip()
+        except EOFError:
+            return ""
 
-    # Hide cursor
-    sys.stdout.write("\033[?25l")
+    # Ensure cursor is visible
+    sys.stdout.write("\033[?25h")
     sys.stdout.flush()
 
     if _ACTIVE_STATUS_BAR:
@@ -474,17 +478,60 @@ def prompt_password(label: str, placeholder: str = "(enter to skip)") -> str:
             elif len(key) == 1:
                 input_text += key
     finally:
-        # Restore cursor
-        sys.stdout.write("\033[?25h")
-        sys.stdout.flush()
+        pass
 
 def prompt_input(label: str, placeholder: str = "", default: str = "", allow_back: bool = False) -> str:
     """Interactive text input with styling, backspace handling, and back-out support."""
     if not sys.stdin.isatty():
-        return default
+        try:
+            prompt_label = f"{label} (Enter to use '{default}'): " if default else f"{label}: "
+            return input(prompt_label).strip() or default
+        except EOFError:
+            return default
 
-    # Hide cursor
-    sys.stdout.write("\033[?25l")
+    # Ensure cursor is visible
+    sys.stdout.write("\033[?25h")
+    sys.stdout.flush()
+
+    input_text = default
+    bg_style = "\033[48;5;236m"
+    fg_style = "\033[1;97m" # Bold White
+    placeholder_style = "\033[90m" # Grey
+    reset = "\033[0m"
+    prompt_label = f"\033[1;96m{label}\033[0m"
+    
+    if default:
+        print(f"\n\033[90mTip: Press Enter to accept the current value: '{default}'\033[0m")
+
+    try:
+        while True:
+            # Render current state
+            display = input_text
+            if not input_text and placeholder:
+                display = f"{placeholder_style}{placeholder}{reset}"
+            else:
+                display = f"{fg_style}{input_text}{reset}"
+            
+            # Construct the line (indented to match other prompts)
+            line = f"\r    {prompt_label}  {bg_style} {display} {reset}\033[K"
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            
+            key = get_key()
+            
+            if key == "enter":
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                return input_text.strip().strip("'\"") # Remove quotes if pasted
+            elif key == "backspace":
+                input_text = input_text[:-1]
+            elif key == "escape" or key == "esc":
+                raise BackException()
+            elif len(key) == 1:
+                input_text += key
+    finally:
+        pass
+
     sys.stdout.flush()
 
     if _ACTIVE_STATUS_BAR:

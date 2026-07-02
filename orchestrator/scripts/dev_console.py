@@ -672,7 +672,7 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
                     print(f"🧹 Automatically purged {purged} zombie processes before execution.\n")
 
         # Special case: interactive or simple local scripts should take over terminal directly
-        if script_name in ["new_job.py", "check_setup.py", "discover_machines.py"]:
+        if script_name in ["new_job.py", "check_setup.py", "discover_machines.py", "smoke_test_delivery.py"]:
             sub_env = os.environ.copy()
             if sub_menu:
                 sub_env["AI_PROGRESS_SILENT"] = "1"
@@ -4380,14 +4380,18 @@ def handle_keychain_setup(status_bar: StatusBar):
             print("\n✅ Password saved. Background builds will now unlock the keychain automatically.")
         else:
             print("\n⚠️  No password entered. Setup cancelled.")
-        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+            
+        if status_bar:
+            input("\n\033[1;96mTap Enter to return to menu...\033[0m")
         
     elif "Manual" in choice:
         print("\n--- Manual Keychain Whitelist ---")
         print("Run this command in your terminal to allow codesign to access your keys permanently:")
         print(f"\033[93msecurity set-key-partition-list -S apple-tool:,apple:,codesign: -s -k \"<your-mac-password>\" ~/Library/Keychains/login.keychain-db\033[0m")
         print("\nAfter running this once, you won't need to provide a password for background builds on this machine.")
-        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        
+        if status_bar:
+            input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_import_email_recipients(status_bar: StatusBar, settings_path: Path, settings: dict[str, Any], emails: list[str]) -> None:
     clear_screen()

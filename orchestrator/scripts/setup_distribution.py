@@ -192,27 +192,77 @@ EXPORT_OPTIONS_TEMPLATE = r"""<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 """
 
-def setup_distribution(force=False, firebase_plist=None, provisioning_profile=None, team_id=None, method=None, asc_key_id=None, asc_issuer_id=None, asc_key_path=None, root=None):
+def setup_distribution(force=False, firebase_plist=None, provisioning_profile=None, team_id=None, method=None, asc_key_id=None, asc_issuer_id=None, asc_key_path=None, root=None, interactive=False):
     if root is None:
         from orchestrator.project_config import find_project_root
         root = find_project_root()
 
     root = Path(os.fspath(root)).resolve()
     print(f"🛠️  Setting up distribution for {root.name}...")
-    provisioning_profile_specifier = provisioning_profile or detect_provisioning_profile_specifier(root)
-
-    detected_team_id, detected_method = detect_identity_info()
-
+    
+    from common import prompt_input, prompt_confirm, prompt_password, BackException
+    
     # We use a helper to get config values safely without relying on a global PROJECT_CONFIG 
     # which might be bound to a different root during tests
     def get_conf_val(key, default=None):
         project_json = root / ".orchestrator" / "project.json"
         if project_json.exists():
             try:
-                return read_json(project_json).get(key, default)
+                return json.loads(project_json.read_text(encoding="utf-8")).get(key, default)
             except: pass
         return default
 
+    detected_team_id, detected_method = detect_identity_info()
+    
+    if interactive:
+        print("\n\033[1;96m--- iOS Distribution Setup ---\033[0m")
+        print("\033[90mThis will configure your project for automated Firebase builds.\033[0m")
+        
+        try:
+            print("\n\033[1;97m1. Firebase Configuration\033[0m")
+            print("   The GoogleService-Info.plist contains your Firebase App ID and project secrets.")
+            firebase_plist = firebase_plist or prompt_input("Firebase plist path", default=get_conf_val("firebase_plist_path", f"{root.name}/GoogleService-Info.plist"))
+            
+            print("\n\033[1;97m2. Apple Development Team ID\033[0m")
+            print("   Your 10-character Team ID (e.g., 'ABC123DEFG') links the build to your Apple Developer account.")
+            print("   \033[90mFind this in: Xcode -> Target -> Signing & Capabilities -> Team (under the name).\033[0m")
+            team_id = team_id or prompt_input("Apple Development Team ID", default=get_conf_val("development_team", detected_team_id))
+            
+            print("\n\033[1;97m3. Distribution Method\033[0m")
+            print("   'ad-hoc' is standard for Firebase. 'development' is for internal testing.")
+            method = method or prompt_input("Method (ad-hoc, development)", default=get_conf_val("delivery_method", detected_method or "debugging"))
+            
+            print("\n\033[1;97m4. Signing Credentials\033[0m")
+            print("   Automated builds need a way to sign the app without manual Xcode intervention.")
+            if prompt_confirm("Use App Store Connect API keys? (Recommended for automation)", default=False):
+                print("\n   \033[1;96mApp Store Connect API Keys:\033[0m")
+                print("   Create these at: \033[4;96mhttps://appstoreconnect.apple.com/access/api\033[0m")
+                print("   These allow the CLI to download profiles and sign apps securely.")
+                asc_key_id = asc_key_id or prompt_password("ASC Key ID", placeholder="e.g. 2X9R4J3A")
+                asc_issuer_id = asc_issuer_id or prompt_password("ASC Issuer ID", placeholder="UUID from ASC")
+                asc_key_path = asc_key_path or prompt_input("Path to .p8 Key File", default="./AuthKey_ABC.p8")
+            else:
+                print("\n   \033[1;93mManual Signing Fallback:\033[0m")
+                print("   You must provide the exact name of your Provisioning Profile.")
+                print("   \033[90mFind this in: Xcode -> Target -> Build Settings -> Search 'Provisioning Profile'.\033[0m")
+                detected_profile = detect_provisioning_profile_specifier(root)
+                provisioning_profile = provisioning_profile or prompt_input("Provisioning Profile Specifier", default=get_conf_val("provisioning_profile_specifier", detected_profile))
+                
+                if not provisioning_profile:
+                    print("\033[1;91mWarning: Provisioning Profile is required for manual signing. Builds may fail.\033[0m")
+            
+            print("\n\033[1;97m5. Headless Keychain Unlocking\033[0m")
+            print("   To avoid macOS security prompts (UI popups) during builds, the CLI can")
+            print("   automatically unlock your keychain using your login password.")
+            if prompt_confirm("Enable automated keychain unlocking?", default=True):
+                # Trigger dev_console.py keychain-setup
+                from common import SCRIPTS_DIR
+                subprocess.run([sys.executable, str(SCRIPTS_DIR / "dev_console.py"), "keychain-setup"], cwd=str(root))
+        except BackException:
+            print("\nSetup cancelled.")
+            return
+
+    provisioning_profile_specifier = provisioning_profile or detect_provisioning_profile_specifier(root)
     team_id = team_id or get_conf_val("development_team") or detected_team_id
     method = method or get_conf_val("delivery_method") or detected_method or "ad-hoc"
 
@@ -396,6 +446,7 @@ if __name__ == "__main__":
     parser.add_argument("--asc-issuer-id", help="App Store Connect API Issuer ID")
     parser.add_argument("--asc-key-path", help="Path to App Store Connect API .p8 key file")
     parser.add_argument("--root", help="Project root directory")
+    parser.add_argument("--interactive", action="store_true", help="Run in interactive mode to collect missing info")
     args = parser.parse_args()
 
     try:
@@ -409,6 +460,7 @@ if __name__ == "__main__":
             asc_issuer_id=args.asc_issuer_id,
             asc_key_path=args.asc_key_path,
             root=args.root,
+            interactive=args.interactive,
         )
 
     except KeyboardInterrupt:

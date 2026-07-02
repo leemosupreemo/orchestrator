@@ -58,14 +58,13 @@ def run_smoke_delivery():
         print("     - \"provisioning_profile_specifier\": \"<Profile Name>\"")
         print("")
         
-        if prompt_confirm("Would you like to run the Setup Wizard now?", default=True):
-            print("\n\033[1;96mStarting Orchestrator Wizard...\033[0m")
-            cli_path = SCRIPTS_DIR.parent / "cli.py"
-            res = subprocess.run([sys.executable, str(cli_path), "wizard"], cwd=str(ROOT))
-            if res.returncode == 0:
-                print("\n✅ Wizard complete. Please re-run the smoke test to verify.")
-            else:
-                print(f"\n❌ Setup Wizard failed/exited with code {res.returncode}. Please check the error above.")
+        if prompt_confirm("Would you like to run the Distribution Setup now?", default=True):
+            print("\n\033[1;96mStarting Interactive Distribution Setup...\033[0m")
+            dist_script_path = SCRIPTS_DIR / "setup_distribution.py"
+            # Call setup_distribution.py directly in interactive mode
+            subprocess.run([sys.executable, str(dist_script_path), "--interactive"], cwd=str(ROOT), stdin=sys.stdin)
+            print("\n✅ Setup complete. Please re-run the smoke test to verify.")
+            sys.exit(0)
         
         sys.exit(1)
     else:

@@ -268,71 +268,53 @@ def print_wizard_bar(skip_available: bool = True, status_bar: Any | None = None)
 
 
 def prompt_text(label: str, default: str | None = None, skip_available: bool = True, status_bar: Any | None = None) -> str:
-    from orchestrator.scripts.common import get_key, clear_choice_placeholder
-    suffix = f" [{default}]" if default is not None else ""
+    from orchestrator.scripts.common import prompt_input, flush_stdin, BackException
     
-    while True:
-        if status_bar:
-            print_wizard_bar(skip_available, status_bar)
-        
-        # Ensure we are at the start of a line
-        sys.stdout.write("\r")
-        print(f"{label}{suffix}: ", end="", flush=True)
-        
-        # Use get_key for consistent hotkeys
-        val = ""
-        while True:
-            key = get_key()
-            if key == "enter":
-                print()
-                return val or (default or "")
-            if key == "q":
-                print("\033[1;91mquit\033[0m")
-                if status_bar: status_bar.reset_scroll_region()
-                sys.exit(0)
-            if key == "s" and skip_available:
-                print("\033[1;92mskip\033[0m")
-                raise SkipSectionException()
-            if key == "backspace":
-                if val:
-                    val = val[:-1]
-                    sys.stdout.write("\b \b")
-                    sys.stdout.flush()
-            elif len(key) == 1:
-                val += key
-                sys.stdout.write(key)
-                sys.stdout.flush()
+    if status_bar:
+        print_wizard_bar(skip_available, status_bar)
+    
+    flush_stdin()
+    try:
+        # prompt_input handles backspace and escape (BackException)
+        res = prompt_input(label, default=default or "")
+        if not res and default:
+            return default
+        return res
+    except BackException:
+        if skip_available:
+            raise SkipSectionException()
+        return default or ""
 
 
 def prompt_yes_no(label: str, default: bool = False, skip_available: bool = True, status_bar: Any | None = None) -> bool:
-    from orchestrator.scripts.common import get_key
-    suffix = "Y/n" if default else "y/N"
+    from orchestrator.scripts.common import flush_stdin, get_key
     
     if status_bar:
         print_wizard_bar(skip_available, status_bar)
         
+    flush_stdin()
+    
+    suffix = " [Y/n]" if default else " [y/N]"
     sys.stdout.write("\r")
-    print(f"{label} [{suffix}]: ", end="", flush=True)
+    print(f"{label}{suffix}: ", end="", flush=True)
     
-    # Non-blocking key press
-    key = get_key().strip().lower()
-    
-    if key == "q":
-        print("\033[1;91mquit\033[0m")
-        if status_bar: status_bar.reset_scroll_region()
-        sys.exit(0)
-    if key == "s" and skip_available:
-        print("\033[1;92mskip\033[0m")
-        raise SkipSectionException()
-        
-    # If it's a newline (enter), return default
-    if key in {"enter", ""}:
-        print("\033[90m(yes)\033[0m" if default else "\033[90m(no)\033[0m")
-        return default
-        
-    res = key in {"y", "yes", "true", "1"}
-    print("\033[1;92myes\033[0m" if res else "\033[1;91mno\033[0m")
-    return res
+    while True:
+        key = get_key().strip().lower()
+        if key == "q":
+            print("\033[1;91mquit\033[0m")
+            if status_bar: status_bar.reset_scroll_region()
+            sys.exit(0)
+        if key == "s" and skip_available:
+            print("\033[1;92mskip\033[0m")
+            raise SkipSectionException()
+        if key in {"enter", ""}:
+            res = default
+            print("\033[90m(yes)\033[0m" if res else "\033[90m(no)\033[0m")
+            return res
+        if key in {"y", "n"}:
+            res = (key == "y")
+            print("\033[1;92myes\033[0m" if res else "\033[1;91mno\033[0m")
+            return res
 
 
 def prompt_password(label: str, placeholder: str = "(enter to skip)") -> str:
@@ -485,8 +467,9 @@ def verify_wizard_setup(install_workers: list[str]) -> int:
 
 
 def run_wizard(args: argparse.Namespace) -> int:
-    from orchestrator.scripts.common import StatusBar
+    from orchestrator.scripts.common import StatusBar, flush_stdin
     from orchestrator.scripts.model_registry import get_all_models
+    from orchestrator.project_config import load_project_config
     
     root_arg = args.project or args.root
     root = Path(root_arg).expanduser().resolve() if root_arg else find_project_root()
@@ -496,8 +479,15 @@ def run_wizard(args: argparse.Namespace) -> int:
         print("Wizard requires at least one model. Pass --models codex or run interactively.")
         return 1
 
+    # Load current config to use as defaults and check for issues
+    cfg = load_project_config()
+    
+    # If distribution is enabled but has errors, we want to force the section to help the user fix it
+    dist_errors = cfg.validate_distribution_config()
+    force_delivery = bool(cfg.firebase_distribution and dist_errors)
+
     # Define variables early for validation and use
-    firebase_enabled = args.firebase
+    firebase_enabled = args.firebase or cfg.firebase_distribution
     team_id = args.team_id
     method = args.method
     firebase_plist_path = args.firebase_plist_path
@@ -512,6 +502,7 @@ def run_wizard(args: argparse.Namespace) -> int:
     # Start Status Bar context for the entire wizard
     with StatusBar(sub_menu=True) as status_bar:
         status_bar.set_scroll_region()
+        flush_stdin()
         
         try:
             ssh_machines = [parse_ssh_machine(value) for value in args.ssh_machine]
@@ -547,252 +538,237 @@ def run_wizard(args: argparse.Namespace) -> int:
             init_project(init_args)
             review_paths.append(project_file)
 
-        all_models = get_all_models()
-        if not models and not args.non_interactive:
-            try:
-                print(f"\n\033[1;96m{'='*20} LLM Setup {'='*20}\033[0m")
-                print("Checking available providers and models...")
+        if args.delivery_only:
+            print("\033[1;96mJumping to iOS Distribution & Signing setup...\033[0m")
+        else:
+            all_models = get_all_models()
+            if not models and not args.non_interactive:
+                try:
+                    from orchestrator.scripts.common import prompt_checkbox, flush_stdin
+                    print(f"\n\033[1;96m{'='*20} LLM Setup {'='*20}\033[0m")
+                    print("Checking available providers and models...")
 
-                # Get unique CLIs required by models
-                required_clis = set()
-                for m in all_models:
-                    required_clis.update(m.required_clis)
+                    # Get unique CLIs required by models
+                    required_clis = set()
+                    for m in all_models:
+                        required_clis.update(m.required_clis)
 
-                cli_status = {}
-                for cli in sorted(required_clis):
-                    is_ready, msg = check_cli_auth(cli)
-                    cli_status[cli] = is_ready
-                    print(f"  {cli.ljust(10)} : {msg}")
+                    cli_status = {}
+                    for cli in sorted(required_clis):
+                        is_ready, msg = check_cli_auth(cli)
+                        cli_status[cli] = is_ready
+                        print(f"  {cli.ljust(10)} : {msg}")
 
-                # Automatically select all models where the required CLIs are satisfied
-                for m in all_models:
-                    if not m.required_clis:
-                        continue
-                    if all(cli_status.get(c, False) for c in m.required_clis):
-                        models.append(m.id)
+                    # 1. Model Selection
+                    model_options = []
+                    defaults = []
+                    for m in all_models:
+                        is_ready = all(cli_status.get(c, False) for c in m.required_clis)
+                        status_label = "\033[92mREADY\033[0m" if is_ready else "\033[91mNOT LOGGED IN\033[0m"
+                        label = f"{m.id} ({status_label})"
+                        model_options.append(label)
+                        if is_ready:
+                            defaults.append(label)
 
-                print("\n\033[90m(You can change active models later in the Dev Console)\033[0m")
+                    print_wizard_bar(skip_available=False, status_bar=status_bar)
+                    selected_labels = prompt_checkbox(
+                        "Select AI Models to enable:",
+                        model_options,
+                        defaults=defaults,
+                        status_bar=status_bar,
+                        clear_screen=False
+                    )
 
-                # Interactive Login Loop
-                while True:
-                    not_logged_in = [cli for cli, ready in cli_status.items() if not ready and shutil.which(cli)]
-                    if not not_logged_in:
-                        break
+                    selected_ids = [label.split(" (")[0] for label in selected_labels]
 
-                    if not models:
-                        print(f"\n\033[1;91mNo AI models are ready.\033[0m")
-
-                    prompt = "\033[1;97m[L] Log in to a provider\033[0m"
-                    if models:
-                        prompt += " | \033[1;97m[Enter] Continue\033[0m"
-                    else:
-                        prompt += " | \033[1;91m[C] Cancel\033[0m"
-
-                    print_wizard_bar(skip_available=bool(models), status_bar=status_bar)
-                    print(f"\n{prompt}")
-                    from orchestrator.scripts.common import get_key
-                    sys.stdout.write("Choice: ")
-                    sys.stdout.flush()
-                    choice = get_key().strip().lower()
-
-                    if choice == 'q':
-                        print("\033[1;91mquit\033[0m")
-                        status_bar.reset_scroll_region()
-                        sys.exit(0)
-                    if choice == 's' and models:
-                        print("\033[1;92mskip\033[0m")
-                        break
-
-                    if choice == 'l':
-                        print("\033[97mlogin\033[0m")
-                        print("\nInstalled but unauthenticated providers:")
-                        for i, cli in enumerate(not_logged_in, 1):
-                            print(f"  {i}. {cli}")
-
-                        sub_choice = input(f"\nSelect number to log in (or \033[1;91mEnter to go back\033[0m): ").strip()
-                        if not sub_choice: continue
-                        try:
-                            idx = int(sub_choice) - 1
-                            if 0 <= idx < len(not_logged_in):
-                                target_cli = not_logged_in[idx]
-                                auth_cmd = get_auth_command(target_cli)
-                                if auth_cmd:
-                                    print(f"\nRunning: \033[97m{auth_cmd}\033[0m")
-                                    subprocess.run(auth_cmd.split(), check=False)
-
-                                    # Re-check status
-                                    is_ready, msg = check_cli_auth(target_cli)
-                                    cli_status[target_cli] = is_ready
-                                    print(f"  {target_cli.ljust(10)} : {msg}")
-
-                                    if is_ready:
-                                        # Update models list
-                                        for m in all_models:
-                                            if m.id in models: continue
-                                            if not m.required_clis: continue
-                                            if all(cli_status.get(c, False) for c in m.required_clis):
-                                                models.append(m.id)
-                                else:
-                                    print(f"No auth command known for {target_cli}.")
-                        except ValueError:
-                            print("Invalid choice.")
-                    elif choice == 'c' and not models:
-                        print("\033[1;91mcancel\033[0m")
-                        status_bar.reset_scroll_region()
-                        return 1
-                    elif choice in {'enter', ''} and models:
-                        print("\033[1;92mcontinue\033[0m")
-                        break
-                    else:
-                        if models: 
-                            print("\033[1;92mcontinue\033[0m")
-                            break
-            except SkipSectionException:
-                pass
-
-        if not models:
-            status_bar.reset_scroll_region()
-            print("Wizard requires at least one model. Pass --models codex or run interactively.")
-            return 1
-
-        prompts_dir = runtime_dir / "prompts"
-        has_custom_prompts = prompts_dir.exists() and any(prompts_dir.iterdir())
-
-        copy_prompts = args.copy_prompt_overrides
-        if not copy_prompts and not args.non_interactive:
-            try:
-                print(f"\n\033[1;96m{'='*20} Role Prompts {'='*20}\033[0m")
-                if has_custom_prompts:
-                    print(f"✅ Custom prompts already exist in \033[97m{prompts_dir.relative_to(root)}\033[0m.")
-                else:
-                    print("You can customize the AI's coding style by editing local copies of its instruction prompts.")
-                    copy_prompts = prompt_yes_no("Copy default role prompt templates into your project now?", True, status_bar=status_bar)
-            except SkipSectionException:
-                copy_prompts = False
-
-        if copy_prompts:
-            review_paths.extend(copy_prompt_overrides(root, args.force))
-
-        if not args.non_interactive:
-            try:
-                print(f"\n\033[1;96m{'='*20} Workers {'='*20}\033[0m")
-
-                import socket
-                from orchestrator.scripts.discover_machines import get_local_ssh_hosts, check_machine_suitability
-
-                print_wizard_bar(skip_available=True, status_bar=status_bar)
-                hosts = get_local_ssh_hosts()
-                candidates = []
-                if hosts:
-                    local_hostname = socket.gethostname().lower()
-                    for host in hosts:
-                        if host.lower() == local_hostname or host.lower() == local_hostname + ".local":
-                            continue
-                        info = check_machine_suitability(host)
-                        if info:
-                            candidates.append(info)
-
-                if candidates:
-                    print(f"\n✨ Discovered {len(candidates)} potential machine(s):")
-                    for i, c in enumerate(candidates, 1):
-                        status = c.get("status")
-                        if status == "suitable":
-                            print(f"  {i}. \033[97m{c['hostname']}\033[0m ({c['host']})")
-                        elif status == "needs_ssh_keys":
-                            print(f"  {i}. \033[90m{c['host']} (🔑 SSH key/authorization required)\033[0m")
-                        else:
-                            print(f"  {i}. \033[90m{c['host']} (⚠️ Connection error/unsuitable: {c.get('error', 'unknown')})\033[0m")
-
-                    print(f"\n\033[90m(Enter numbers to add, e.g. '1,2'. Leave empty to skip.)\033[0m")
-                    print_wizard_bar(skip_available=True, status_bar=status_bar)
-                    sys.stdout.write("Select machines to add: ")
-                    sys.stdout.flush()
-
-                    from orchestrator.scripts.common import get_key
-                    choices = ""
+                    # 2. Provider Login (if needed)
                     while True:
-                        key = get_key()
-                        if key == "enter":
-                            print()
+                        needed_clis = set()
+                        for m_id in selected_ids:
+                            m = next(mod for mod in all_models if mod.id == m_id)
+                            for cli in m.required_clis:
+                                if not cli_status.get(cli, False) and shutil.which(cli):
+                                    needed_clis.add(cli)
+
+                        if not needed_clis:
                             break
-                        if key == "q":
-                            print("\033[1;91mquit\033[0m")
-                            status_bar.reset_scroll_region()
-                            sys.exit(0)
-                        if key == "s":
-                            print("\033[1;92mskip\033[0m")
-                            raise SkipSectionException()
-                        if key == "backspace":
-                            if choices:
-                                choices = choices[:-1]
-                                sys.stdout.write("\b \b")
+
+                        print(f"\n\033[1;93mSome selected models require login.\033[0m")
+                        login_options = sorted(list(needed_clis))
+                        to_login = prompt_checkbox(
+                            "Select providers to log in now:",
+                            login_options,
+                            status_bar=status_bar,
+                            clear_screen=False,
+                            footer="\033[90m(Unselected providers will result in those models being disabled)\033[0m"
+                        )
+
+                        if not to_login:
+                            break
+
+                        for cli in to_login:
+                            auth_cmd = get_auth_command(cli)
+                            if auth_cmd:
+                                print(f"\nRunning: \033[97m{auth_cmd}\033[0m")
+                                subprocess.run(auth_cmd.split(), check=False)
+                                is_ready, msg = check_cli_auth(cli)
+                                cli_status[cli] = is_ready
+                                print(f"  {cli.ljust(10)} : {msg}")
+                            else:
+                                print(f"No auth command known for {cli}.")
+
+                    # Final assignment
+                    for m_id in selected_ids:
+                        m = next(mod for mod in all_models if mod.id == m_id)
+                        if all(cli_status.get(c, False) for c in m.required_clis):
+                            models.append(m_id)
+
+                    print("\n\033[90m(You can change active models later in the Dev Console)\033[0m")
+
+                except SkipSectionException:
+                    pass
+
+            if not models:
+                status_bar.reset_scroll_region()
+                print("Wizard requires at least one model. Pass --models codex or run interactively.")
+                return 1
+
+            prompts_dir = runtime_dir / "prompts"
+            has_custom_prompts = prompts_dir.exists() and any(prompts_dir.iterdir())
+
+            copy_prompts = args.copy_prompt_overrides
+            if not copy_prompts and not args.non_interactive:
+                try:
+                    print(f"\n\033[1;96m{'='*20} Role Prompts {'='*20}\033[0m")
+                    if has_custom_prompts:
+                        print(f"✅ Custom prompts already exist in \033[97m{prompts_dir.relative_to(root)}\033[0m.")
+                    else:
+                        print("You can customize the AI's coding style by editing local copies of its instruction prompts.")
+                        copy_prompts = prompt_yes_no("Copy default role prompt templates into your project now?", True, status_bar=status_bar)
+                except SkipSectionException:
+                    copy_prompts = False
+
+            if copy_prompts:
+                review_paths.extend(copy_prompt_overrides(root, args.force))
+
+            if not args.non_interactive:
+                try:
+                    print(f"\n\033[1;96m{'='*20} Workers {'='*20}\033[0m")
+
+                    import socket
+                    from orchestrator.scripts.discover_machines import get_local_ssh_hosts, check_machine_suitability
+
+                    print_wizard_bar(skip_available=True, status_bar=status_bar)
+                    hosts = get_local_ssh_hosts()
+                    candidates = []
+                    if hosts:
+                        local_hostname = socket.gethostname().lower()
+                        for host in hosts:
+                            if host.lower() == local_hostname or host.lower() == local_hostname + ".local":
+                                continue
+                            info = check_machine_suitability(host)
+                            if info:
+                                candidates.append(info)
+
+                    if candidates:
+                        print(f"\n✨ Discovered {len(candidates)} potential machine(s):")
+                        for i, c in enumerate(candidates, 1):
+                            print(f"  {i}. \033[97m{c['hostname']}\033[0m ({c['host']})")
+
+                        print(f"\n\033[90m(Enter numbers to add, e.g. '1,2'. Leave empty to skip.)\033[0m")
+                        print_wizard_bar(skip_available=True, status_bar=status_bar)
+                        sys.stdout.write("Select machines to add: ")
+                        sys.stdout.flush()
+
+                        from orchestrator.scripts.common import get_key
+                        choices = ""
+                        while True:
+                            key = get_key()
+                            if key == "enter":
+                                print()
+                                break
+                            if key == "q":
+                                print("\033[1;91mquit\033[0m")
+                                status_bar.reset_scroll_region()
+                                sys.exit(0)
+                            if key == "s":
+                                print("\033[1;92mskip\033[0m")
+                                raise SkipSectionException()
+                            if key == "backspace":
+                                if choices:
+                                    choices = choices[:-1]
+                                    sys.stdout.write("\b \b")
+                                    sys.stdout.flush()
+                            elif len(key) == 1:
+                                choices += key
+                                sys.stdout.write(key)
                                 sys.stdout.flush()
-                        elif len(key) == 1:
-                            choices += key
-                            sys.stdout.write(key)
-                            sys.stdout.flush()
 
-                    if choices:
-                        for choice in choices.split(','):
-                            try:
-                                idx = int(choice.strip()) - 1
-                                if 0 <= idx < len(candidates):
-                                    c = candidates[idx]
-                                    status = c.get("status")
-                                    host = c['host']
+                        if choices:
+                            for choice in choices.split(','):
+                                try:
+                                    idx = int(choice.strip()) - 1
+                                    if 0 <= idx < len(candidates):
+                                        c = candidates[idx]
+                                        status = c.get("status")
+                                        host = c['host']
 
-                                    remote_user = None
-                                    if status != "suitable":
-                                        import getpass
-                                        default_user = getpass.getuser()
-                                        print(f"\n🔑 Machine '{host}' requires SSH configuration.")
-                                        remote_user = prompt_text(f"Remote SSH username for {host} (default: {default_user})", default_user, status_bar=status_bar)
+                                        remote_user = None
+                                        if status != "suitable":
+                                            import getpass
+                                            default_user = getpass.getuser()
+                                            print(f"\n🔑 Machine '{host}' requires SSH configuration.")
+                                            remote_user = prompt_text(f"Remote SSH username for {host} (default: {default_user})", default_user, status_bar=status_bar)
 
-                                    ssh_target = f"{remote_user}@{host}" if remote_user else host
-                                    hostname = c.get("hostname") or host
+                                        ssh_target = f"{remote_user}@{host}" if remote_user else host
+                                        hostname = c.get("hostname") or host
 
-                                    repo_path = prompt_text(f"Remote repo path for {hostname}", status_bar=status_bar)
-                                    try:
-                                        machine = create_ssh_machine(
-                                            name=hostname.split('.')[0],
-                                            ssh_target=ssh_target,
-                                            repo_path=repo_path
-                                        )
-                                        if test_ssh_connection(machine["ssh_target"]):
-                                            ssh_machines.append(machine)
-                                        else:
-                                            print(f"\n❌ Connection test to {machine['ssh_target']} failed.")
-                                            if status == "needs_ssh_keys":
-                                                print("  How to fix: Run the following command in a new terminal to copy your SSH key:")
-                                                print(f"\033[1;96m    ssh-copy-id {machine['ssh_target']}\033[0m")
-                                            if prompt_yes_no("Add this machine anyway?", False, status_bar=status_bar):
+                                        repo_path = prompt_text(f"Remote repo path for {hostname}", status_bar=status_bar)
+                                        try:
+                                            machine = create_ssh_machine(
+                                                name=hostname.split('.')[0],
+                                                ssh_target=ssh_target,
+                                                repo_path=repo_path
+                                            )
+                                            if test_ssh_connection(machine["ssh_target"]):
                                                 ssh_machines.append(machine)
-                                    except ValueError as exc:
-                                        print(f"  ❌ {exc}")
-                            except ValueError:
-                                pass
+                                            else:
+                                                print(f"\n❌ Connection test to {machine['ssh_target']} failed.")
+                                                if status == "needs_ssh_keys":
+                                                    print("  How to fix: Run the following command in a new terminal to copy your SSH key:")
+                                                    print(f"\033[1;96m    ssh-copy-id {machine['ssh_target']}\033[0m")
+                                                if prompt_yes_no("Add this machine anyway?", False, status_bar=status_bar):
+                                                    ssh_machines.append(machine)
+                                        except ValueError as exc:
+                                            print(f"  ❌ {exc}")
+                                except ValueError:
+                                    pass
 
-                if prompt_yes_no("Add another SSH worker machine manually?", False, status_bar=status_bar):
-                    name = prompt_text("Machine name", "mac2", status_bar=status_bar)
-                    target = prompt_text("SSH target", name, status_bar=status_bar)
-                    repo_path = prompt_text("Remote repo path", status_bar=status_bar)
-                    try:
-                        machine = create_ssh_machine(name, target, repo_path)
-                        if test_ssh_connection(machine["ssh_target"]) or prompt_yes_no("Connection failed. Add this machine anyway?", False, status_bar=status_bar):
-                            ssh_machines.append(machine)
-                    except ValueError as exc:
-                        status_bar.reset_scroll_region()
-                        print(str(exc))
-                        return 1
+                    if prompt_yes_no("Add another SSH worker machine manually?", False, status_bar=status_bar):
+                        name = prompt_text("Machine name", "mac2", status_bar=status_bar)
+                        target = prompt_text("SSH target", name, status_bar=status_bar)
+                        repo_path = prompt_text("Remote repo path", status_bar=status_bar)
+                        try:
+                            machine = create_ssh_machine(name, target, repo_path)
+                            if test_ssh_connection(machine["ssh_target"]) or prompt_yes_no("Connection failed. Add this machine anyway?", False, status_bar=status_bar):
+                                ssh_machines.append(machine)
+                        except ValueError as exc:
+                            status_bar.reset_scroll_region()
+                            print(str(exc))
+                            return 1
 
-            except SkipSectionException:
-                pass
+                except SkipSectionException:
+                    pass
 
-        update_machine_models(runtime_dir / "config", models, ssh_machines)
+            update_machine_models(runtime_dir / "config", models, ssh_machines)
 
-        if not firebase_enabled and not args.non_interactive:
+        if force_delivery or args.delivery_only:
+            firebase_enabled = True
+        elif not firebase_enabled and not args.non_interactive:
             try:
                 print(f"\n\033[1;96m{'='*20} Delivery {'='*20}\033[0m")
+                if dist_errors:
+                    print("\033[1;93m⚠️  iOS Distribution configuration is currently incomplete.\033[0m")
                 firebase_enabled = prompt_yes_no("Configure Firebase distribution now?", False, status_bar=status_bar)
             except SkipSectionException:
                 firebase_enabled = False
@@ -808,46 +784,46 @@ def run_wizard(args: argparse.Namespace) -> int:
                     team_id = team_id or prompt_text("Apple Development Team ID", getattr(load_project_config(), "development_team", detected_team), status_bar=status_bar)
                     method = method or prompt_text("Distribution method (ad-hoc, debugging)", detected_method or "debugging", status_bar=status_bar)
 
-                    # Interactive Provisioning Profile Selection
-                    current_profile = getattr(load_project_config(), "provisioning_profile_specifier", None)
-                    if not provisioning_profile:
-                        provisioning_profile = current_profile
-
-                    if not provisioning_profile:
+                    from orchestrator.scripts.common import prompt_password
+                    if prompt_yes_no("Configure App Store Connect API keys for automated signing? (Recommended)", False, status_bar=status_bar):
+                        asc_key_id = asc_key_id or prompt_password("ASC Key ID", placeholder="(invisible)")
+                        asc_issuer_id = asc_issuer_id or prompt_password("ASC Issuer ID", placeholder="(invisible)")
+                        asc_key_path = asc_key_path or prompt_text("ASC Key Path (.p8)", status_bar=status_bar)
+                    else:
+                        print("\n\033[1;93mManual Signing:\033[0m You must provide a Provisioning Profile name (specifier).")
+                        print("\033[90mThis is required for 'xcodebuild' to find your signing certificates.\033[0m")
+                        print("\n\033[1;97mHow to find this in Xcode:\033[0m")
+                        print("  1. Select your Project in the Navigator.")
+                        print("  2. Select your App Target.")
+                        print("  3. Go to \033[1;96mBuild Settings\033[0m.")
+                        print("  4. Search for \033[1;96m'Provisioning Profile'\033[0m.")
+                        print(f"  5. Use the exact name shown there (e.g. '{root.name} Development').")
+                        
+                        detected_profile = sd.detect_provisioning_profile_specifier(root)
                         installed_profiles = sorted(list(sd.installed_provisioning_profile_names()))
                         if installed_profiles:
-                            options = installed_profiles + ["[Enter profile name manually]", "[Skip]"]
-                            print("\n🔍 Detected installed provisioning profiles:")
-                            choice = prompt_radio("Select Provisioning Profile:", options, default=options[0], clear_screen=False, status_bar=status_bar)
-                            if choice == "[Enter profile name manually]":
-                                provisioning_profile = prompt_text("Enter Provisioning Profile Specifier/Name", status_bar=status_bar)
-                            elif choice == "[Skip]":
-                                provisioning_profile = None
-                            else:
-                                provisioning_profile = choice
-                        else:
-                            if prompt_yes_no("No installed provisioning profiles detected. Enter one manually?", False, status_bar=status_bar):
-                                provisioning_profile = prompt_text("Enter Provisioning Profile Specifier/Name", status_bar=status_bar)
-                    else:
-                        if prompt_yes_no(f"Use currently configured Provisioning Profile ({provisioning_profile})?", True, status_bar=status_bar):
-                            pass
-                        else:
-                            installed_profiles = sorted(list(sd.installed_provisioning_profile_names()))
-                            default_option = provisioning_profile if provisioning_profile in installed_profiles else None
-                            options = installed_profiles + ["[Enter profile name manually]", "[Skip]"]
-                            print("\n🔍 Detected installed provisioning profiles:")
-                            choice = prompt_radio("Select Provisioning Profile:", options, default=default_option or options[0], clear_screen=False, status_bar=status_bar)
-                            if choice == "[Enter profile name manually]":
-                                provisioning_profile = prompt_text("Enter Provisioning Profile Specifier/Name", status_bar=status_bar)
-                            elif choice == "[Skip]":
-                                provisioning_profile = None
-                            else:
-                                provisioning_profile = choice
+                            print("\n\033[1;97mInstalled profiles on this machine:\033[0m")
+                            for p in installed_profiles[:5]:
+                                print(f"  - {p}")
+                            if len(installed_profiles) > 5:
+                                print(f"  - ...and {len(installed_profiles) - 5} more")
 
-                    if prompt_yes_no("Configure App Store Connect API keys for automated signing?", False, status_bar=status_bar):
-                        asc_key_id = asc_key_id or prompt_password("ASC Key ID", placeholder="(enter to skip)")
-                        asc_issuer_id = asc_issuer_id or prompt_password("ASC Issuer ID", placeholder="(enter to skip)")
-                        asc_key_path = asc_key_path or prompt_text("ASC Key Path (.p8)", status_bar=status_bar)
+                        # We force the prompt if it's missing, but with a safety limit to avoid infinite loops
+                        attempts = 0
+                        while not provisioning_profile and attempts < 10:
+                             attempts += 1
+                             provisioning_profile = prompt_text("Provisioning Profile Specifier", detected_profile, status_bar=status_bar)
+                             if not provisioning_profile:
+                                 print(f"\n\033[1;91mError: Provisioning Profile is required for manual signing (Attempt {attempts}/10).\033[0m")
+                                 print("\033[90mTip: If you don't have a profile yet, create one in Xcode (Signing & Capabilities).\033[0m")
+                        
+                        if not provisioning_profile:
+                            print("\033[1;91mToo many failed attempts or input unavailable. Skipping signing setup.\033[0m")
+                            raise SkipSectionException()
+
+                    print("\n\033[1;96m--- Headless Signing (Keychain) ---\033[0m")
+                    print("\033[90mTo build without UI popups, the CLI can unlock your login keychain automatically.")
+                    print("This requires storing your macOS login password securely in .secrets/project-secrets.zsh.\033[0m")
                     if prompt_yes_no("Configure automated keychain unlocking?", True, status_bar=status_bar):
                         run_script("dev_console.py", ["keychain-setup"])
 
@@ -903,6 +879,17 @@ def run_wizard(args: argparse.Namespace) -> int:
                 install_workers = [machine["name"] for machine in ssh_machines]
         
         remember_project(root, project_display_name(root), active=True)
+        
+        status_bar.reset_scroll_region()
+        from orchestrator.scripts.common import print_header
+        print_header("WIZARD FINISHED")
+        print("\033[1;92m✅ Project is now ready for autonomous builds.\033[0m")
+        print("\nNext steps:")
+        print("  1. Review \033[97m.orchestrator/project.json\033[0m to verify signing settings.")
+        print("  2. Re-run your smoke test to confirm distribution works.")
+        print("  3. Create your first job via the Dev Console.")
+        print("-" * 60)
+        
         if args.verify or install_workers:
             return verify_wizard_setup(install_workers)
         return 0
@@ -1209,6 +1196,7 @@ def _main(argv: list[str] | None = None) -> int:
     wizard_parser.add_argument("--verify", action="store_true", help="Run setup and config checks before exiting")
     wizard_parser.add_argument("--install-workers", action="store_true", help="Run worker install/check for SSH machines added by this wizard")
     wizard_parser.add_argument("--non-interactive", action="store_true")
+    wizard_parser.add_argument("--delivery-only", action="store_true", help="Only run the iOS distribution/signing setup section")
 
     console_parser = subparsers.add_parser("console")
     console_parser.add_argument("--project", help="Recent project name or project root path")
