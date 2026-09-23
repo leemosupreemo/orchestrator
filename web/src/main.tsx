@@ -150,7 +150,6 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
   function run() {
     const input:Data={};
     if(op==='tool.models'){if(action==='refresh')input.refresh=true;if(action==='live_discovery')input.live_discovery=true;}
-    if(op==='tool.keys')input.action=action;
     if(op==='tool.fleet'){input.action=action;if(action==='select')input.machine_ids=value.split(',').map(x=>x.trim()).filter(Boolean);if(['rename','remove','enable','disable'].includes(action))input.name=name;if(action==='rename')input.new_name=value;if(action==='add'){input.name=name;input.ssh_target=value;input.repo_path=content;}}
     if(op==='tool.base_branch'&&action==='set')input.branch=value;
     if(op==='tool.archive'){input.action=action;if(action==='restore')input.job_id=name;}
@@ -160,7 +159,7 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
     if(op==='tool.distribution')input.action=action;
     if(op==='tool.self_tests')input.suite=action;
     if(op==='tool.update')input.action=action;
-    if(['tool.keys:clear','tool.fleet:remove','tool.fleet:purge','tool.instructions:reset_role_prompts','tool.email:test','tool.distribution:smoke_test','tool.self_tests:delivery'].includes(`${op}:${action}`) && !window.confirm(`Run ${opts.find(x=>x[0]===action)?.[1]}?`))return;
+    if(['tool.fleet:remove','tool.fleet:purge','tool.instructions:reset_role_prompts','tool.email:test','tool.distribution:smoke_test','tool.self_tests:delivery'].includes(`${op}:${action}`) && !window.confirm(`Run ${opts.find(x=>x[0]===action)?.[1]}?`))return;
     onSubmit(op,input);
   }
   const needsName=(op==='tool.fleet'&&['add','rename','remove','enable','disable'].includes(action))||(op==='tool.archive'&&action==='restore')||(op==='tool.instructions'&&['read','write'].includes(action))||(op==='tool.email'&&['add','remove'].includes(action))||(op==='tool.docs'&&action==='read');
@@ -170,7 +169,7 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
     {op==='tool.keys'&&<p>Provider sign-in and fallback API keys are managed in the local CLI on the Mac. This reports readiness without sending credentials to Firestore.</p>}
     {op==='tool.email'&&<p>Sender passwords and API keys are entered through the local CLI on the Mac. Recipient and nonsecret sender settings are available here.</p>}
     {op==='tool.distribution'&&<p>Firebase login and signing credentials are set up locally on the Mac. Check readiness here, then run a real delivery smoke test.</p>}
-    <label className="field"><span>Action</span><select value={action} onChange={e=>{setAction(e.target.value);setName('');setValue('');setContent('');setExtra('')}}>{opts.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
+    {op==='tool.keys'?<div className="tool-action-buttons"><button className="primary" disabled={busy} onClick={()=>onSubmit(op,{action:'status'})}>Check provider readiness →</button><button className="secondary" disabled={busy} onClick={()=>{if(window.confirm('Clear saved fallback API keys from this project on the Mac?'))onSubmit(op,{action:'clear'})}}>Clear saved fallback API keys</button></div>:<label className="field"><span>Action</span><select value={action} onChange={e=>{setAction(e.target.value);setName('');setValue('');setContent('');setExtra('')}}>{opts.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>}
     {op==='tool.project'&&<label className="field"><span>Active project</span><select value={project} onChange={e=>onProject(e.target.value)}>{projects.map(id=><option key={id}>{id}</option>)}</select></label>}
     {needsName&&<label className="field"><span>{op==='tool.archive'?'Job ID':op==='tool.email'?'Recipient email':op==='tool.docs'?'Document':'Name'}</span>{suggestions.length&&action!=='add'&&action!=='write'?<select value={name} onChange={e=>setName(e.target.value)}><option value="">Select…</option>{suggestions.map(x=><option key={x}>{x}</option>)}</select>:<input value={name} onChange={e=>setName(e.target.value)}/>}</label>}
     {op==='tool.email'&&action==='provider'&&<><label className="field"><span>Provider</span><select value={value} onChange={e=>setValue(e.target.value)}><option value="">Select…</option><option value="gmail">Gmail</option><option value="resend">Resend</option></select></label><Field label="Sender email" value={name} onChange={setName}/>{value==='resend'&&<Field label="Display name" value={extra} onChange={setExtra}/>}</>}
@@ -178,7 +177,7 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
     {((op==='tool.fleet'&&action==='add')||(op==='tool.instructions'&&action==='write')||(op==='tool.email'&&action==='import'))&&<Field label={op==='tool.fleet'?'Absolute remote repository path':op==='tool.instructions'?'Instruction content':'Paste CSV or email addresses'} value={content} onChange={setContent} textarea={op!=='tool.fleet'}/>}
     {op==='tool.models'&&models.length>0&&<><h3>Enabled models · {selectedModels.length}</h3><p>Switch models on or off for new jobs. At least one model must stay enabled.</p><ModelList models={models} selected={selectedModels} disabled={busy||modelSaving} onToggle={id=>setModelSelection(current=>{const chosen=current??savedModels;return chosen.includes(id)?chosen.filter(model=>model!==id):[...chosen,id]})}/><button className="secondary" disabled={busy||modelSaving||!modelChanges||!selectedModels.length} onClick={()=>onSubmit('tool.models',{allowed_models:selectedModels})}>{modelSaving?'Saving models…':'Save enabled models'}</button></>}
     {op==='tool.models'&&!models.length&&<p>{modelLoading?'Loading the model catalog from the Mac worker…':'Run Model catalog to load the available models.'}</p>}
-    <button className="primary" disabled={busy||(op==='tool.models'&&modelLoading)||(needsName&&!name)||(op==='tool.email'&&action==='provider'&&!value)||(op==='tool.fleet'&&['select','add','rename'].includes(action)&&!value)||(op==='tool.base_branch'&&action==='set'&&!value)} onClick={run}>Run {opts.find(x=>x[0]===action)?.[1]} →</button>
+    {op!=='tool.keys'&&<button className="primary" disabled={busy||(op==='tool.models'&&modelLoading)||(needsName&&!name)||(op==='tool.email'&&action==='provider'&&!value)||(op==='tool.fleet'&&['select','add','rename'].includes(action)&&!value)||(op==='tool.base_branch'&&action==='set'&&!value)} onClick={run}>Run {opts.find(x=>x[0]===action)?.[1]} →</button>}
     {latest&&(op==='tool.audit'?<AuditResult command={latest}/>:<ToolOutput command={latest} showModels={op!=='tool.models'||!models.length}/>)}
   </div>;
 }

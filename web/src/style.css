@@ -12,3 +12,4 @@
 .result-check.optional>span{background:#294155;color:#b6c9d9}
 .model-selected.disabled{color:#8da4b3}.model-card.selectable:has(input:disabled){cursor:default}.model-card.selectable:has(input:disabled) input{cursor:not-allowed}
 .model-group{border-top:1px solid #294457;padding-top:15px;margin-top:19px}.model-group-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.model-group-heading h4,.organized-result .model-group-heading h4{margin:0;color:#e5f2f6;font:600 14px 'Space Grotesk',sans-serif}.model-group-heading span{color:#90aabd;font-size:11px}.model-group .model-list{margin:11px 0 0}
+.tool-action-buttons{display:flex;flex-wrap:wrap;gap:9px;margin-top:17px}.tool-action-buttons .primary,.tool-action-buttons .secondary{margin-top:0}
