@@ -30,3 +30,6 @@ test_onboarding_proj/
 
 firestore-debug.log
 web/.env.local
+
+.firebase/
+*.tsbuildinfo

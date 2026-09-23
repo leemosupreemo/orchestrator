@@ -57,7 +57,10 @@ def available_actions(job: dict[str, Any]) -> list[MenuItem]:
     job_type = job.get("type")
     phase = job.get("debug_phase", "propose")
     actions: list[MenuItem] = []
-    if status == "planned":
+    if status == "designing":
+        actions.append(MenuItem("Approve Design & Plan Implementation", Operation.JOB_APPROVE_SUBTASKS))
+        actions.append(MenuItem("Tweak / Revise Design", Operation.JOB_REVISE))
+    elif status == "planned":
         actions.append(MenuItem("Approve / Create Sub-tasks" if job_type == "feature-plan" else "Schedule & Dispatch",
                                 Operation.JOB_APPROVE_SUBTASKS if job_type == "feature-plan" else Operation.JOB_SCHEDULE))
         actions.append(MenuItem("Tweak / Revise Plan", Operation.JOB_REVISE))

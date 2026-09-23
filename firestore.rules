@@ -32,10 +32,19 @@ service cloud.firestore {
     match /commands/{commandId} {
       allow get, list: if isOwner();
       allow create: if isOwner() && validCommand();
-      allow update, delete: if false;
+      allow update: if isOwner()
+        && resource.data.status == 'queued'
+        && request.resource.data.status == 'cancelled'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+      allow delete: if false;
     }
 
     match /projects/{projectId}/jobs/{jobId} {
+      allow get, list: if isOwner();
+      allow write: if false;
+    }
+
+    match /projects/{projectId}/archives/{jobId} {
       allow get, list: if isOwner();
       allow write: if false;
     }
@@ -53,7 +62,7 @@ service cloud.firestore {
         && request.resource.data.size <= 10485760
         && request.resource.data.chunk_count is int
         && request.resource.data.chunk_count > 0
-        && request.resource.data.chunk_count <= 80;
+        && request.resource.data.chunk_count <= 90;
       allow update, delete: if false;
 
       match /chunks/{chunkId} {

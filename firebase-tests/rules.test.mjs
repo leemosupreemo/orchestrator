@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 let env;
@@ -27,6 +27,8 @@ test('unsigned and unprovisioned users cannot read jobs', async () => {
   await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), 'projects/test/jobs/job-1')));
   await assertFails(getDoc(doc(outsider().firestore(), 'projects/test/jobs/job-1')));
   await assertSucceeds(getDoc(doc(owner().firestore(), 'projects/test/jobs/job-1')));
+  await assertSucceeds(getDoc(doc(owner().firestore(), 'projects/test/archives/job-1')));
+  await assertFails(getDoc(doc(outsider().firestore(), 'projects/test/archives/job-1')));
 });
 
 test('only the owner can enqueue typed commands', async () => {
@@ -38,6 +40,15 @@ test('only the owner can enqueue typed commands', async () => {
 test('browser cannot write job state or command results', async () => {
   await assertFails(setDoc(doc(owner().firestore(), 'projects/test/jobs/job-1'), { status: 'completed' }));
   await assertFails(setDoc(doc(owner().firestore(), 'commands/result'), { ...command(), status: 'succeeded' }));
+});
+
+test('owner may cancel only a queued command without changing its payload', async () => {
+  const ownerDb=owner().firestore();
+  await assertSucceeds(setDoc(doc(ownerDb,'commands/cancel-me'),command()));
+  await assertSucceeds(updateDoc(doc(ownerDb,'commands/cancel-me'),{status:'cancelled'}));
+  await assertFails(updateDoc(doc(ownerDb,'commands/cancel-me'),{status:'queued'}));
+  await assertSucceeds(setDoc(doc(ownerDb,'commands/immutable'),command()));
+  await assertFails(updateDoc(doc(ownerDb,'commands/immutable'),{inputs:{command:'unsafe'}}));
 });
 
 test('artifact chunks are owner-only and bounded', async () => {

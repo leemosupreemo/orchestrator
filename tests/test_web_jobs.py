@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from orchestrator.web.contract import Operation
-from orchestrator.web.jobs import create_job, get_job, list_jobs, run_job_action
+from orchestrator.web.jobs import create_job, get_job, list_jobs, run_job_action, _validate_public_https_url
 
 
 class WebJobsTests(unittest.TestCase):
@@ -58,6 +59,27 @@ class WebJobsTests(unittest.TestCase):
         self.assertEqual(Path(called[0][0][1]).name, "schedule_job.py")
         self.assertEqual(called[0][1], self.root)
 
+    def test_revise_passes_feedback_to_real_planner(self):
+        called = []
+        def runner(argv, *, cwd, env):
+            called.append(argv)
+            return 0
+        run_job_action(self.root, "job-1", Operation.JOB_REVISE,
+                       {"feedback": "Make the retry visible"}, get_job(self.root, "job-1")["revision"], runner=runner)
+        self.assertEqual(Path(called[0][1]).name, "new_job.py")
+        self.assertIn("Make the retry visible", called[0])
+
+    def test_model_override_writes_canonical_job(self):
+        result = run_job_action(self.root, "job-1", Operation.JOB_MODELS,
+                                {"allowed_models": ["codex"]}, get_job(self.root, "job-1")["revision"])
+        self.assertEqual(result["allowed_models"], ["codex"])
+
+    def test_url_reference_is_persisted(self):
+        result = run_job_action(self.root, "job-1", Operation.JOB_ATTACH_REFERENCE,
+                                {"source_url": "https://example.com/mockup", "description": "Lobby"},
+                                get_job(self.root, "job-1")["revision"])
+        self.assertEqual(result["reference_artifacts"][0]["url"], "https://example.com/mockup")
+
     def test_create_job_supplies_noninteractive_input_to_existing_planner(self):
         payloads = []
         def runner(argv, *, cwd, env):
@@ -74,6 +96,32 @@ class WebJobsTests(unittest.TestCase):
     def test_create_job_rejects_missing_prompt_without_launching(self):
         with self.assertRaises(ValueError):
             create_job(self.root, {"job_type": "feature", "prompt": ""}, runner=lambda *args, **kwargs: self.fail("launched"))
+
+    def test_create_job_rejects_spec_outside_project(self):
+        base = {"job_type": "feature", "prompt": "Add a lobby", "allowed_models": ["codex"],
+                "allowed_machines": ["local"]}
+        for source in ("/etc/hosts", "../outside.md", "http://127.0.0.1/private"):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                create_job(self.root, {**base, "spec_url": source}, runner=lambda *args, **kwargs: self.fail("launched"))
+
+    def test_public_spec_is_fetched_to_private_file_before_planning(self):
+        captured = []
+        def runner(argv, *, cwd, env):
+            path = Path(argv[argv.index("--spec-file") + 1])
+            captured.append(path.read_text())
+            (self.jobs / "job-2.json").write_text(json.dumps({"job_id": "job-2", "status": "planned"}))
+            return 0
+        options = {"job_type": "feature", "prompt": "Add a lobby", "allowed_models": ["codex"],
+                   "allowed_machines": ["local"], "spec_url": "https://example.com/spec"}
+        with patch.dict(create_job.__globals__, {"_validate_public_https_url": lambda _: None,
+                                                 "_fetch_public_spec": lambda _: "Approved spec"}):
+            create_job(self.root, options, runner=runner)
+        self.assertEqual(captured, ["Approved spec"])
+
+    def test_private_dns_spec_host_is_rejected(self):
+        with patch("orchestrator.web.jobs.socket.getaddrinfo", return_value=[(2, 1, 6, '', ('127.0.0.1', 443))]):
+            with self.assertRaises(ValueError):
+                _validate_public_https_url("https://internal.example/spec")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from .menu import available_actions
 
 
 _SECRETS = [
@@ -39,6 +40,8 @@ def project_job(job: dict[str, Any]) -> dict[str, Any]:
         "last_manual_log_paths", "reference_artifacts", "llm_sessions",
     )
     projection = {key: job[key] for key in keys if key in job}
+    projection["actions"] = [{"label": item.label, "operation": item.operation.value}
+                             for item in available_actions(job) if item.operation]
     plan = job.get("plan")
     if isinstance(plan, dict):
         projection["plan"] = {key: plan[key] for key in ("title", "summary", "tasks", "acceptance_criteria") if key in plan}

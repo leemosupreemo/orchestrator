@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
+from subprocess import CompletedProcess
 from pathlib import Path
 
 from orchestrator.web.contract import Operation
-from orchestrator.web.tools import run_tool
+from orchestrator.web.tools import run_tool, run_app_tests, run_refresh
 
 
 class WebToolsTests(unittest.TestCase):
@@ -49,6 +51,23 @@ class WebToolsTests(unittest.TestCase):
         run_tool(self.root, Operation.TOOL_FLEET, {"action": "disable", "name": "local"})
         machines = json.loads((self.root / ".orchestrator" / "config" / "machines.json").read_text())
         self.assertFalse(machines["machines"][0]["enabled"])
+
+    def test_app_tests_lists_xcode_plans_instead_of_python_tests(self):
+        (self.root / ".orchestrator" / "project.json").write_text(json.dumps({"test_target": "AppTests"}))
+        plans = self.root / "AppTests" / "TestPlans"
+        plans.mkdir(parents=True)
+        (plans / "Unit.xctestplan").write_text('{"testTargets": []}')
+        self.assertEqual(run_app_tests(self.root, {"action": "list"})["plans"], ["Unit.xctestplan"])
+
+    def test_refresh_archives_closed_github_issue_and_reports_fleet(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        jobs.mkdir(parents=True)
+        (jobs / "job-1.json").write_text(json.dumps({"job_id": "job-1", "issue_number": 12, "status": "planned"}))
+        with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, '[{"number":12}]', '')):
+            result = run_refresh(self.root)
+        self.assertEqual(result["archived_jobs"], ["job-1"])
+        self.assertTrue(result["machine_availability"]["local"])
+        self.assertTrue((jobs / "archive" / "job-1.json").exists())
 
 
 if __name__ == "__main__":

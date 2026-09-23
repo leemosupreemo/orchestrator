@@ -1,0 +1,113 @@
+{
+  "main": [
+    {
+      "label": "New Job",
+      "operation": "job.create"
+    },
+    {
+      "label": "Run Unit Tests",
+      "operation": "tests.run"
+    },
+    {
+      "label": "Configuration & Tools",
+      "operation": null
+    },
+    {
+      "label": "Refresh & Sync",
+      "operation": "project.refresh"
+    }
+  ],
+  "tools": [
+    {
+      "label": "LLM Models",
+      "operation": "tool.models"
+    },
+    {
+      "label": "Manage LLM API Keys",
+      "operation": "tool.keys"
+    },
+    {
+      "label": "Manage Machine Fleet",
+      "operation": "tool.fleet"
+    },
+    {
+      "label": "Run Prerequisite Audit",
+      "operation": "tool.audit"
+    },
+    {
+      "label": "Select Base Branch",
+      "operation": "tool.base_branch"
+    },
+    {
+      "label": "Change Target Project",
+      "operation": "tool.project"
+    },
+    {
+      "label": "Manage Archived Jobs",
+      "operation": "tool.archive"
+    },
+    {
+      "label": "AI Instruction Settings",
+      "operation": "tool.instructions"
+    },
+    {
+      "label": "Email Notification Settings",
+      "operation": "tool.email"
+    },
+    {
+      "label": "Documentation & Architecture Guides",
+      "operation": "tool.docs"
+    },
+    {
+      "label": "Firebase App Distro",
+      "operation": "tool.distribution"
+    },
+    {
+      "label": "Orchestrator Self-Tests",
+      "operation": "tool.self_tests"
+    },
+    {
+      "label": "Update Orchestrator",
+      "operation": "tool.update"
+    }
+  ],
+  "operations": [
+    "job.create",
+    "job.approve_subtasks",
+    "job.schedule",
+    "job.execute",
+    "job.revise",
+    "job.debug",
+    "job.resume",
+    "job.merge",
+    "job.deliver",
+    "job.iterate",
+    "job.reopen_bug",
+    "job.rerun",
+    "job.link_logs",
+    "job.attach_reference",
+    "job.ask_ai",
+    "job.models",
+    "job.export",
+    "job.brief",
+    "job.github",
+    "job.close_issue",
+    "job.discard",
+    "job.files",
+    "tests.run",
+    "project.refresh",
+    "tool.models",
+    "tool.keys",
+    "tool.fleet",
+    "tool.audit",
+    "tool.base_branch",
+    "tool.project",
+    "tool.archive",
+    "tool.instructions",
+    "tool.email",
+    "tool.docs",
+    "tool.distribution",
+    "tool.self_tests",
+    "tool.update"
+  ]
+}

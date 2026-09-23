@@ -55,14 +55,17 @@ JOB_MUTATIONS = frozenset({
 })
 
 INPUT_FIELDS: dict[Operation, frozenset[str]] = {
+    Operation.TESTS_RUN: frozenset({"action", "plan"}),
     Operation.JOB_CREATE: frozenset({"job_type", "prompt", "repro", "expected", "subsystems", "vibe", "quick", "spec_url", "yolo", "branch_mode", "preset", "planner", "builder", "reviewer", "allowed_models", "allowed_machines", "stitch"}),
     Operation.JOB_REVISE: frozenset({"feedback"}),
     Operation.JOB_ITERATE: frozenset({"feedback"}),
     Operation.JOB_REOPEN_BUG: frozenset({"feedback", "log_paths"}),
     Operation.JOB_LINK_LOGS: frozenset({"log_paths"}),
-    Operation.JOB_ATTACH_REFERENCE: frozenset({"artifact_id", "description"}),
+    Operation.JOB_ATTACH_REFERENCE: frozenset({"artifact_id", "source_url", "description"}),
     Operation.JOB_ASK_AI: frozenset({"question", "model"}),
     Operation.JOB_MODELS: frozenset({"allowed_models"}),
+    Operation.JOB_DEBUG: frozenset({"feedback", "max_iterations", "notes", "bug_reproduced"}),
+    Operation.JOB_RERUN: frozenset({"branch_mode", "log_paths"}),
     Operation.TOOL_MODELS: frozenset({"allowed_models", "refresh", "live_discovery"}),
     Operation.TOOL_FLEET: frozenset({"action", "machine_ids", "name", "ssh_target", "repo_path"}),
     Operation.TOOL_BASE_BRANCH: frozenset({"branch"}),
