@@ -4,16 +4,16 @@
 
 **Goal:** Publish an authenticated Firebase preview URL for a custom web UI that mirrors every CLI menu and runs real Orchestrator jobs on a Mac.
 
-**Architecture:** A TypeScript web client sends typed commands through Firestore. A local Python worker validates and executes them against shared Orchestrator operations and publishes safe projections. Firebase Authentication and rules restrict access; Firebase Storage carries uploaded references and redacted artifacts.
+**Architecture:** A TypeScript web client sends typed commands through Firestore. A local Python worker validates and executes them against shared Orchestrator operations and publishes safe projections. Firebase Authentication and rules restrict access; Bounded Firestore artifact chunks carry uploaded references and redacted artifacts.
 
-**Tech Stack:** Python 3.11+, TypeScript, React, Vite, Firebase Authentication, Cloud Firestore, Cloud Storage, Firebase Hosting.
+**Tech Stack:** Python 3.11+, TypeScript, React, Vite, Firebase Authentication, Cloud Firestore, Firebase Hosting.
 
 **Spec:** `docs/superpowers/specs/2026-09-23-orchestrator-web-ui-design.md`
 
 ## Global Constraints
 
 - Keep `.orchestrator/jobs/*.json` as canonical job records and preserve CLI behavior.
-- Keep API keys, service credentials, and raw secrets off Firestore, Storage, and Git.
+- Keep API keys, service credentials, and raw secrets off Firestore and Git.
 - Run commands serially per project; only typed allowlisted operations are executable.
 - The first operator is one explicitly provisioned account; unsigned users cannot access jobs or commands.
 - Use a dedicated Firebase project and a Hosting preview channel.
@@ -75,13 +75,13 @@
 
 ### Task 5: Firebase access and deployment configuration
 
-**Files:** Create `firebase.json`, `firestore.rules`, `storage.rules`, `web/.env.example`, `docs/web-ui-firebase.md`, and rules tests.
+**Files:** Create `firebase.json`, `firestore.rules`, `web/.env.example`, `docs/web-ui-firebase.md`, and rules tests.
 
 **Interfaces:** Browser can create only valid queued command documents and upload scoped references; it cannot write job projections or worker results. Only the provisioned operator can read/write allowed resources.
 
-- [ ] Write emulator rules tests for signed-out denial, unprovisioned denial, operator command creation, forbidden result writes, and Storage size/type limits.
+- [ ] Write emulator rules tests for signed-out denial, unprovisioned denial, operator command creation, forbidden result writes, and artifact size/type limits.
 - [ ] Run rules tests; expect denial and test failures before rules are implemented.
-- [ ] Create the dedicated Firebase project, configure Authentication, Firestore, Storage, and Hosting, and deploy rules. Record setup steps without secrets.
+- [ ] Create the dedicated Firebase project, configure Authentication, Firestore and Hosting, and deploy rules. Record setup steps without secrets.
 - [ ] Re-run rules tests; expect zero failures. Commit config and documentation.
 
 ### Task 6: Web shell and job pages

@@ -23,10 +23,10 @@ class Transport(Protocol):
 
 
 class Worker:
-    def __init__(self, projects: dict[str, Path], transport: Transport, owner_uid: str):
+    def __init__(self, projects: dict[str, Path], transport: Transport, owner_email: str):
         self.projects = {key: Path(root).resolve() for key, root in projects.items()}
         self.transport = transport
-        self.owner_uid = owner_uid
+        self.owner_email = owner_email
         self._locks = {key: threading.Lock() for key in projects}
 
     def process(self, command_id: str) -> None:
@@ -34,7 +34,7 @@ class Worker:
         if raw is None:
             return
         try:
-            if raw.get("requested_by") != self.owner_uid:
+            if raw.get("requested_by") != self.owner_email:
                 raise ValueError("Operator is not authorized")
             command = validate_command({key: raw[key] for key in
                                         ("project_id", "operation", "job_id", "inputs", "expected_revision") if key in raw})
@@ -127,15 +127,15 @@ class FirebaseTransport:
 
 def main() -> None:
     firebase_project = os.environ.get("ORCHESTRATOR_FIREBASE_PROJECT")
-    owner_uid = os.environ.get("ORCHESTRATOR_WEB_OWNER_UID")
+    owner_email = os.environ.get("ORCHESTRATOR_WEB_OWNER_EMAIL")
     project_json = os.environ.get("ORCHESTRATOR_WEB_PROJECTS")
-    if not firebase_project or not owner_uid or not project_json:
-        raise SystemExit("Set ORCHESTRATOR_FIREBASE_PROJECT, ORCHESTRATOR_WEB_OWNER_UID, and ORCHESTRATOR_WEB_PROJECTS")
+    if not firebase_project or not owner_email or not project_json:
+        raise SystemExit("Set ORCHESTRATOR_FIREBASE_PROJECT, ORCHESTRATOR_WEB_OWNER_EMAIL, and ORCHESTRATOR_WEB_PROJECTS")
     projects = json.loads(project_json)
     if not isinstance(projects, dict) or not projects:
         raise SystemExit("ORCHESTRATOR_WEB_PROJECTS must map project IDs to local paths")
     Worker({key: Path(value) for key, value in projects.items()},
-           FirebaseTransport(firebase_project), owner_uid).run_forever()
+           FirebaseTransport(firebase_project), owner_email).run_forever()
 
 
 if __name__ == "__main__":

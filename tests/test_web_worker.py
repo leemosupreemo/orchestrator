@@ -57,7 +57,7 @@ class WebWorkerTests(unittest.TestCase):
 
     def test_worker_executes_once_and_publishes_canonical_job(self):
         transport = FakeTransport({"cmd-1": self.command()})
-        worker = Worker({"test": self.root}, transport, owner_uid="owner")
+        worker = Worker({"test": self.root}, transport, owner_email="owner")
         worker.process("cmd-1")
         worker.process("cmd-1")
         self.assertEqual(json.loads(self.path.read_text())["last_manual_log_paths"], ["logs/a.log"])
@@ -68,7 +68,7 @@ class WebWorkerTests(unittest.TestCase):
         command = self.command()
         command["requested_by"] = "stranger"
         transport = FakeTransport({"cmd-1": command})
-        Worker({"test": self.root}, transport, owner_uid="owner").process("cmd-1")
+        Worker({"test": self.root}, transport, owner_email="owner").process("cmd-1")
         self.assertEqual(transport.results["cmd-1"]["status"], "failed")
         self.assertNotIn("last_manual_log_paths", json.loads(self.path.read_text()))
 
@@ -76,13 +76,13 @@ class WebWorkerTests(unittest.TestCase):
         command = self.command()
         command["expected_revision"] = 0
         transport = FakeTransport({"cmd-1": command})
-        Worker({"test": self.root}, transport, owner_uid="owner").process("cmd-1")
+        Worker({"test": self.root}, transport, owner_email="owner").process("cmd-1")
         self.assertEqual(transport.results["cmd-1"]["status"], "failed")
         self.assertNotIn("last_manual_log_paths", json.loads(self.path.read_text()))
 
     def test_reconcile_publishes_cli_changes_and_heartbeat(self):
         transport = FakeTransport()
-        worker = Worker({"test": self.root}, transport, owner_uid="owner")
+        worker = Worker({"test": self.root}, transport, owner_email="owner")
         worker.reconcile()
         self.assertIn(("test", "job-1"), transport.jobs)
         self.assertEqual(transport.heartbeats[-1], ["test"])
@@ -95,7 +95,7 @@ class WebWorkerTests(unittest.TestCase):
         command = self.command()
         command["status"] = "running"
         transport = FakeTransport({"cmd-1": command})
-        Worker({"test": self.root}, transport, owner_uid="owner").recover()
+        Worker({"test": self.root}, transport, owner_email="owner").recover()
         self.assertEqual(transport.results["cmd-1"]["status"], "failed")
         self.assertIn("review", transport.results["cmd-1"]["result"]["error"].lower())
         self.assertNotIn("last_manual_log_paths", json.loads(self.path.read_text()))

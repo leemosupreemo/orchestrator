@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'enmeskin@gmail.com';
+    }
+
+    function validCommand() {
+      return request.resource.data.keys().hasAll(['status', 'requested_by', 'project_id', 'operation', 'inputs'])
+        && request.resource.data.keys().hasOnly(['status', 'requested_by', 'project_id', 'operation', 'inputs', 'job_id', 'expected_revision', 'created_at'])
+        && request.resource.data.status == 'queued'
+        && request.resource.data.requested_by == request.auth.token.email
+        && request.resource.data.project_id is string
+        && request.resource.data.project_id.matches('^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+        && request.resource.data.inputs is map
+        && request.resource.data.inputs.size() <= 16
+        && request.resource.data.operation in [
+          'job.create', 'job.approve_subtasks', 'job.schedule', 'job.execute',
+          'job.revise', 'job.debug', 'job.resume', 'job.merge', 'job.deliver',
+          'job.iterate', 'job.reopen_bug', 'job.rerun', 'job.link_logs',
+          'job.attach_reference', 'job.ask_ai', 'job.models', 'job.export',
+          'job.brief', 'job.github', 'job.close_issue', 'job.discard', 'job.files',
+          'tests.run', 'project.refresh', 'tool.models', 'tool.keys',
+          'tool.fleet', 'tool.audit', 'tool.base_branch', 'tool.project',
+          'tool.archive', 'tool.instructions', 'tool.email', 'tool.docs',
+          'tool.distribution', 'tool.self_tests', 'tool.update'
+        ];
+    }
+
+    match /commands/{commandId} {
+      allow get, list: if isOwner();
+      allow create: if isOwner() && validCommand();
+      allow update, delete: if false;
+    }
+
+    match /projects/{projectId}/jobs/{jobId} {
+      allow get, list: if isOwner();
+      allow write: if false;
+    }
+
+    match /projects/{projectId}/artifacts/{artifactId} {
+      allow get, list: if isOwner();
+      allow create: if isOwner()
+        && request.resource.data.keys().hasOnly(['name', 'content_type', 'size', 'chunk_count', 'created_at'])
+        && request.resource.data.keys().hasAll(['name', 'content_type', 'size', 'chunk_count'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 128
+        && request.resource.data.content_type in ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/plain']
+        && request.resource.data.size is int
+        && request.resource.data.size > 0
+        && request.resource.data.size <= 10485760
+        && request.resource.data.chunk_count is int
+        && request.resource.data.chunk_count > 0
+        && request.resource.data.chunk_count <= 80;
+      allow update, delete: if false;
+
+      match /chunks/{chunkId} {
+        allow get, list: if isOwner();
+        allow create: if isOwner()
+          && exists(/databases/$(database)/documents/projects/$(projectId)/artifacts/$(artifactId))
+          && request.resource.data.keys().hasOnly(['data'])
+          && request.resource.data.data is string
+          && request.resource.data.data.size() > 0
+          && request.resource.data.data.size() <= 180000;
+        allow update, delete: if false;
+      }
+    }
+
+    match /workers/{workerId} {
+      allow get, list: if isOwner();
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
