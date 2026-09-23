@@ -95,7 +95,8 @@ class ConsoleSmokeTests(unittest.TestCase):
     @patch("dev_console.clear_screen")
     @patch("dev_console.StatusBar")
     @patch("dev_console.input")
-    def test_config_menu_smoke(self, mock_input, _mock_status, _mock_clear, mock_get_key):
+    @patch("dev_console.prompt_input", return_value="b")
+    def test_config_menu_smoke(self, _mock_prompt, mock_input, _mock_status, _mock_clear, mock_get_key):
         """Superficially run through Configuration menu options."""
         # Traversal:
         # 'i' (Instructions) -> 'b' (Back)
