@@ -2273,6 +2273,13 @@ def _main(argv: list[str] | None = None) -> int:
     fix_parser.add_argument("--project", help="Recent project name or project root path")
     fix_parser.add_argument("--free", action="store_true", help="Restrict execution to free models only (cost_factor == 0.0)")
 
+    ui_parser = subparsers.add_parser("ui", help="Open the local web interface")
+    ui_parser.add_argument("--project", help="Recent project name or project root path")
+    ui_parser.add_argument("--host", default="127.0.0.1",
+                           help="Interface to bind (default 127.0.0.1; a Tailscale IP to reach it from a phone)")
+    ui_parser.add_argument("--port", type=int, default=8765)
+    ui_parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
+
     logs_parser = subparsers.add_parser(
         "logs",
         help="App runtime logs from the central log store (setup | sessions | pull | tail)",
@@ -2338,6 +2345,12 @@ def _main(argv: list[str] | None = None) -> int:
         if args.fleet and args.project and apply_project_env(args.project):
             return 1
         return update_command(args)
+    if args.command == "ui":
+        if args.project and apply_project_env(args.project):
+            return 1
+        from orchestrator.web.server import main as ui_main
+        ui_args = ["--host", args.host, "--port", str(args.port)] + (["--no-open"] if args.no_open else [])
+        return ui_main(ui_args)
     if args.command == "logs":
         if args.project and apply_project_env(args.project):
             return 1
