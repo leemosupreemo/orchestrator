@@ -5,18 +5,19 @@ const title = (value:string) => value.replaceAll('_',' ').replace(/\b\w/g,letter
 const plain = (value:string) => value.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,'\n').trim();
 const statusText:Record<string,string> = {queued:'Waiting for Mac worker',running:'Running on Mac',succeeded:'Completed',failed:'Failed',cancelled:'Cancelled'};
 const hidden = new Set(['output','exit_code','checklist','fleet','models']);
-const providerName:Record<string,string> = {openai:'OpenAI',claude:'Claude',gemini:'Gemini'};
+const providerName:Record<string,string> = {openai:'OpenAI',claude:'Anthropic (Claude)',gemini:'Google (Gemini)',opencode:'OpenCode',qwen:'Qwen',deepseek:'DeepSeek',copilot:'GitHub Copilot'};
 
 export function ModelList({models,selected=[],onToggle,disabled=false}:{models:Data[];selected?:string[];onToggle?:(id:string)=>void;disabled?:boolean}) {
   if(!models.length)return <p>No models are available in the catalog.</p>;
-  return <div className="model-list" aria-label="Available LLM models">{models.map(model=>{
+  const groups=Object.entries(models.reduce((grouped:Record<string,Data[]>,model)=>{const family=String(model.family||'other');(grouped[family]??=[]).push(model);return grouped},{}));
+  return <div className="model-groups" aria-label="Available LLM models">{groups.map(([family,items])=><section className="model-group" key={family}><div className="model-group-heading"><h4>{providerName[family]||title(family)}</h4><span>{items.length} model{items.length===1?'':'s'}</span></div><div className="model-list">{items.map(model=>{
     const checked=selected.includes(model.id);
     const content=<><span className="model-card-heading"><strong>{model.id}</strong><span className={`model-selected ${checked?'enabled':'disabled'}`}>{checked?'Enabled':'Disabled'}</span></span>
       <span className="model-card-meta">{providerName[model.family]||title(String(model.family||'Unknown provider'))} · {title(String(model.tier||'Unrated').toLowerCase())} tier</span>
       {Array.isArray(model.capabilities)&&model.capabilities.length>0&&<span className="model-card-tags">{model.capabilities.map((capability:string)=><span key={capability}>{title(capability)}</span>)}</span>}
       {Array.isArray(model.required_clis)&&model.required_clis.length>0&&<small>Requires {model.required_clis.join(', ')} CLI</small>}</>;
     return onToggle?<label className={`model-card selectable${checked?' selected':''}`} key={model.id}><input type="checkbox" aria-label={`Enable ${model.id}`} checked={checked} disabled={disabled||(checked&&selected.length===1)} onChange={()=>onToggle(model.id)}/><span>{content}</span></label>:<div className="model-card" key={model.id}>{content}</div>;
-  })}</div>;
+  })}</div></section>)}</div>;
 }
 
 export function RunLog({command}:{command:Data}) {

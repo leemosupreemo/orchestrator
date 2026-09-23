@@ -41,6 +41,9 @@ test('model catalog displays enabled and disabled cards', () => {
   const html = render({ operation: 'tool.models', inputs: {}, status: 'succeeded', result: { models, selected: ['gpt-5.5'] } });
   assert.match(html, /gpt-5\.5/);
   assert.match(html, /OpenAI · High tier/);
+  assert.match(html, /<h4>OpenAI<\/h4><span>1 model<\/span>/);
+  assert.match(html, /<h4>Anthropic \(Claude\)<\/h4><span>1 model<\/span>/);
+  assert.ok(html.indexOf('<h4>OpenAI</h4>') < html.indexOf('<h4>Anthropic (Claude)</h4>'));
   assert.match(html, /Reasoning/);
   assert.match(html, /Requires codex CLI/);
   assert.match(html, /Enabled/);
