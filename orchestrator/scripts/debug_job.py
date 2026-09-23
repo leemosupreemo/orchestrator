@@ -14,6 +14,7 @@ from common import ROOT, OUTPUT_DIR, PROMPTS_DIR, now_iso, read_json, write_json
 from llm import run_llm, extract_json_block
 from model_router import ModelRole
 from reference_artifacts import reference_context
+from cloud_logs import CloudLogsError, is_log_ref, resolve_log_ref
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -262,7 +263,15 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
             section_header = f"\n=== LOG SOURCE: {source_description} [{label}] ===\n"
 
-            if not looks_like_path(lp):
+            if is_log_ref(lp):
+                # `cloud:latest` / `cloud:<session>`: pull fresh device logs each iteration.
+                try:
+                    lp = resolve_log_ref(lp)
+                    print(f"        [cloud] pulled -> {lp}")
+                except CloudLogsError as exc:
+                    print(f"        [skip] cloud logs unavailable: {exc}")
+                    continue
+            elif not looks_like_path(lp):
                 runtime_logs = append_runtime_log(runtime_logs, section_header, lp)
                 continue
 

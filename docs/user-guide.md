@@ -427,6 +427,44 @@ In the console, use **Quick Build & Distribution** to deliver the current branch
 
 For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://secureshellfish.app/) to connect over SSH to the machine running Orchestrator. You can manage the coding workflow remotely, run builds and tests, and trigger Firebase delivery from the same terminal session.
 
+## Device Logs
+
+Builds running on a phone (Firebase App Distribution, TestFlight) can't be read over a cable from an SSH session, so the app ships its logs to a central store and Orchestrator pulls them back. Sentry Logs is the supported store: the app sends each log entry with a per-launch `app_session` attribute, plus one `remote_log.session_start` entry per launch carrying its build channel, version and build.
+
+One-time setup, from the project root:
+
+```bash
+orchestrator logs setup
+```
+
+This finds the Sentry DSN in the repo, writes a `remote_logs` block to `.orchestrator/project.json`, asks for a read token and saves it to `.orchestrator/.env` (chmod 600), then makes a live query to confirm access. Create the token under Sentry **User Settings → Personal Tokens** with scopes `org:read`, `project:read` and `event:read`. It is stored as `SENTRY_LOGS_TOKEN` because `SENTRY_AUTH_TOKEN` is usually an upload-only token for dSYMs.
+
+```json
+{
+  "remote_logs": {
+    "provider": "sentry",
+    "api_base": "https://us.sentry.io",
+    "org": "4510342215434240",
+    "project": "4510342216941568",
+    "token_env": "SENTRY_LOGS_TOKEN",
+    "session_attribute": "app_session"
+  }
+}
+```
+
+Day to day:
+
+```bash
+orchestrator logs sessions                        # recent app launches: id, time, channel, version, device
+orchestrator logs pull --latest                   # newest launch -> .orchestrator/output/cloud_logs/<ts>-<session>/cloud.log
+orchestrator logs pull --session 1a2b3c4d --level warn --query 'category:LobbyViewModel'
+orchestrator logs tail                            # follow the newest launch live (polls every 5s)
+```
+
+In the console, **Link Logs → Pull Device Logs (cloud)...** lists recent launches and links the pulled logs to the job. Choosing **Always newest launch** links `cloud:latest` instead, which re-pulls the newest launch on every debug iteration — reproduce on the phone, then rerun the debug loop without relinking. `cloud:latest` and `cloud:<session>` also work anywhere `debug_job.py --logs` takes a path.
+
+Logs reach Sentry within about 5 seconds, and immediately when the app is backgrounded. Sentry keeps them for 30 days.
+
 ## Troubleshooting
 
 Run both checks first:
@@ -446,6 +484,8 @@ Common issues:
 - SSH worker is `NOT READY`: run `orchestrator worker-install --machine NAME`, then rerun `worker-check`.
 - Remote worker imports fail after package changes: rerun `worker-install` to refresh the source copy.
 - GitHub actions fail: install `gh` and run `gh auth login`.
+- `orchestrator logs` reports `Sentry refused the token (403)`: the token lacks `org:read`, `project:read` or `event:read`. Create a new one and rerun `orchestrator logs setup`.
+- `No app sessions found`: the build predates remote logging, the app was never opened, or it is an App Store build (errors only). Open the app, wait a few seconds, and retry.
 
 ## Generated Ignore Rules
 

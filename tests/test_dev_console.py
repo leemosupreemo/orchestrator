@@ -1251,8 +1251,9 @@ class AppFeatureTests_{i}: XCTestCase {{
 
             def fake_prompt_checkbox(label, options, defaults, **kwargs):
                 self.assertEqual(options[0], "\033[1;96mPaste New Logs...\033[0m")
-                self.assertEqual(options[1], "\033[1;96mCustom Path...\033[0m")
-                self.assertEqual(options[2], "--- Recent Logs ---")
+                self.assertEqual(options[1], "\033[1;96mPull Device Logs (cloud)...\033[0m")
+                self.assertEqual(options[2], "\033[1;96mCustom Path...\033[0m")
+                self.assertEqual(options[3], "--- Recent Logs ---")
                 self.assertTrue(len(defaults) > 0)
                 self.assertTrue(any("2026-09-04" in d for d in defaults))
                 self.assertIsNotNone(kwargs.get("status_bar"))
@@ -1265,6 +1266,19 @@ class AppFeatureTests_{i}: XCTestCase {{
             self.assertEqual(result, [str(manual_dir.relative_to(self.temp_root))])
         finally:
             dev_console.OUTPUT_DIR = old_out
+
+    @patch("dev_console.prompt_cloud_log_pull", return_value="cloud:latest")
+    @patch("dev_console.prompt_checkbox")
+    def test_prompt_for_logs_links_pulled_device_logs(self, mock_prompt_checkbox, mock_cloud_pull):
+        old_out = dev_console.OUTPUT_DIR
+        dev_console.OUTPUT_DIR = self.temp_root / ".orchestrator" / "output"
+        try:
+            mock_prompt_checkbox.side_effect = lambda label, options, defaults, **kwargs: [options[1]]
+            result = dev_console.prompt_for_logs({"job_id": "20260922-000000-bug-1"})
+        finally:
+            dev_console.OUTPUT_DIR = old_out
+        self.assertEqual(result, ["cloud:latest"])
+        mock_cloud_pull.assert_called_once()
 
     def test_format_job_row_removes_numbers_from_title_and_shows_modified_date(self):
         job = {

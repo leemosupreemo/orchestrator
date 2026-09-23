@@ -3681,6 +3681,14 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
         for d in log_dirs:
             add_log_option(d)
 
+    # 2b. Recent device log pulls (orchestrator logs pull / Pull Device Logs)
+    cloud_base = OUTPUT_DIR / "cloud_logs"
+    if cloud_base.exists():
+        cloud_dirs = sorted([d for d in cloud_base.iterdir() if d.is_dir() and not d.is_symlink()],
+                            key=lambda x: x.name, reverse=True)[:3]
+        for d in cloud_dirs:
+            add_log_option(d)
+
     # 3. Existing attached logs
     curr_logs = job.get("last_manual_log_paths", [])
     if not curr_logs and job.get("last_manual_log_path"):
@@ -3715,9 +3723,10 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
     ]
 
     paste_opt = "\033[1;96mPaste New Logs...\033[0m"
+    cloud_opt = "\033[1;96mPull Device Logs (cloud)...\033[0m"
     custom_opt = "\033[1;96mCustom Path...\033[0m"
 
-    all_options = [paste_opt, custom_opt]
+    all_options = [paste_opt, cloud_opt, custom_opt]
     if display_options:
         all_options.append("--- Recent Logs ---")
         all_options.extend(display_options)
@@ -3745,6 +3754,10 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
             log_file = capture_logs(manual_out)
             if log_file:
                 log_paths.append(str(manual_out.relative_to(ROOT)))
+        elif "Pull Device Logs (cloud)..." in s:
+            cloud_path = prompt_cloud_log_pull(status_bar)
+            if cloud_path:
+                log_paths.append(cloud_path)
         elif "Custom Path..." in s:
             print("\n    (Enter path to a log file or directory, or Enter to cancel; e.g. logs/build.log or /var/log)")
             path = prompt_input("Custom log path:", placeholder="logs/build.log or /path/to/logs", field_below=True)
@@ -3755,6 +3768,48 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
             log_paths.append(option_to_path.get(s, s))
 
     return log_paths
+
+def prompt_cloud_log_pull(status_bar: StatusBar | None = None) -> str | None:
+    """Picks a recent app launch from the central log store and pulls its logs.
+
+    Returns a log directory to link, `cloud:latest` to re-pull the newest launch
+    on every debug run, or None.
+    """
+    import cloud_logs
+
+    print_header("Pull Device Logs")
+    try:
+        client = cloud_logs.default_client()
+        print("\033[90mFetching app launches from the last 24h...\033[0m")
+        sessions = cloud_logs.list_sessions(client, since="24h", limit=10)
+    except cloud_logs.CloudLogsError as exc:
+        print(f"\n\033[1;91m{exc}\033[0m")
+        input("\n\033[1;96mTap Enter to continue...\033[0m")
+        return None
+    if not sessions:
+        print("\n\033[93mNo app launches in the last 24h. Open the app, wait ~5s, and retry.\033[0m")
+        input("\n\033[1;96mTap Enter to continue...\033[0m")
+        return None
+
+    newest_opt = "Always newest launch (re-pulled on every debug run)"
+    options = [s.describe() for s in sessions] + [newest_opt]
+    choice = prompt_radio("Which app launch?", options, default=options[0], status_bar=status_bar)
+    if choice == newest_opt:
+        return "cloud:latest"
+    session = sessions[options.index(choice)].session
+    try:
+        out_dir = cloud_logs.pull(session, client=client)
+    except cloud_logs.CloudLogsError as exc:
+        print(f"\n\033[1;91m{exc}\033[0m")
+        input("\n\033[1;96mTap Enter to continue...\033[0m")
+        return None
+    try:
+        rel = str(out_dir.relative_to(ROOT))
+    except ValueError:
+        rel = str(out_dir)
+    print(f"\033[92m✅ Pulled session {session} -> {rel}\033[0m")
+    return rel
+
 
 def prompt_for_reference_artifact(job: dict[str, Any]) -> bool:
     from reference_artifacts import attach_reference_artifact
