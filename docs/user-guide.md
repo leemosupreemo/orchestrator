@@ -427,6 +427,30 @@ In the console, use **Quick Build & Distribution** to deliver the current branch
 
 For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://secureshellfish.app/) to connect over SSH to the machine running Orchestrator. You can manage the coding workflow remotely, run builds and tests, and trigger Firebase delivery from the same terminal session.
 
+## Web UI
+
+`orchestrator ui` starts a local web interface for the current project and opens it in your browser:
+
+```bash
+orchestrator ui                  # http://127.0.0.1:8765/?token=...
+orchestrator ui --project Thirteen --port 9000 --no-open
+```
+
+- **Home**: branch, uncommitted files, open jobs and running commands, plus one-tap actions: new job, quick fix, pull device logs, build, test, distribute, setup check.
+- **Jobs**: every job with its status, tasks, linked logs and output files. The buttons change with the job's status (schedule, execute, debug, resume, fix, deliver).
+- **New job**: a form for type, summary, spec and branch mode. The spec is saved to `.orchestrator/ui/specs/` and handed to the planner.
+- **Device logs**: recent app launches from the log store, with Pull and Follow buttons (see [Device Logs](#device-logs)).
+- **Runs**: every command started from the UI, each in a live terminal.
+
+Every action runs the same CLI command you would type, inside a real terminal that is shown in the page. Prompts that need you (y/n, menus, pasted logs, passwords) appear there, and you answer them by typing into the terminal. On a phone, use the key bar under it (Enter, Esc, arrows, y/n/q, Ctrl-C, Ctrl-D). **Open full console** runs the regular `orchestrator console` in the browser, so every console feature stays available. Each run's output is also saved to `.orchestrator/logs/ui/`.
+
+Access and security:
+
+- The server listens on `127.0.0.1` only. The printed URL carries a random per-start token. Opening it once stores the token in a cookie, and every API call needs it.
+- The browser can only start a fixed set of actions. It never sends a command line, and file reads are limited to `.orchestrator/`.
+- From a phone, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
+- Stopping the server (Ctrl-C) also stops the commands it started.
+
 ## Device Logs
 
 Builds running on a phone (Firebase App Distribution, TestFlight) can't be read over a cable from an SSH session, so the app ships its logs to a central store and Orchestrator pulls them back. Sentry Logs is the supported store: the app sends each log entry with a per-launch `app_session` attribute, plus one `remote_log.session_start` entry per launch carrying its build channel, version and build.

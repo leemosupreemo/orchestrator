@@ -10,6 +10,7 @@ Orchestrator began with deep support for Swift and Xcode. It is now expanding ac
 
 ## 🚀 Key Features
 
+*   **Web UI**: `orchestrator ui` opens a local, phone-friendly web interface covering jobs, new jobs, device logs, builds and distribution. Each action runs in a live in-browser terminal, and the full console is one click away. See [Web UI](docs/user-guide.md#web-ui).
 *   **Interactive Dev Console**: A terminal-based UI designed for speed. Single-key shortcuts (`y/n`, `A`/`F`/`Q`) and real-time status bars make orchestration feel like a native tool.
 *   **Structured Multi-Agent Workflow**: Jobs pass through specialized agents, with feature work guided by a test-driven development (TDD) philosophy:
     *   **Planner**: Analyzes requirements and drafts a multi-step plan that defines tests before production code.
