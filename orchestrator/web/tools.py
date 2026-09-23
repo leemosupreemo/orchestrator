@@ -223,7 +223,7 @@ def _email_settings(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     return {"notification_emails": emails, "notification_provider": settings.get("notification_provider", "gmail"),
             "sender_email": settings.get("resend_from_email" if settings.get("notification_provider") == "resend" else "smtp_email", ""),
             "display_name": settings.get("resend_display_name", ""),
-            "sender_credential_configured": bool(settings.get("resend_api_key" if settings.get("notification_provider") == "resend" else "smtp_password"))}
+            "sender_ready": bool(settings.get("resend_api_key" if settings.get("notification_provider") == "resend" else "smtp_password"))}
 
 
 def _docs(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
@@ -476,14 +476,25 @@ def run_tool(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict[s
         app_dir = root / (config.get("project_name") or config.get("scheme") or root.name)
         plist = app_dir / "GoogleService-Info.plist"
         app_id = None
+        plist_data = {}
         if plist.is_file():
             try:
-                app_id = plistlib.loads(plist.read_bytes()).get("GOOGLE_APP_ID")
+                plist_data = plistlib.loads(plist.read_bytes())
+                app_id = plist_data.get("GOOGLE_APP_ID")
             except (ValueError, TypeError):
                 pass
         firebase_rc = _read(root / ".firebaserc", {})
+        firebase_cli = bool(shutil.which("firebase"))
+        logged_in = False
+        if firebase_cli:
+            try:
+                login = subprocess.run(["firebase", "login:list"], cwd=root, capture_output=True, text=True, timeout=10, check=False)
+                logged_in = login.returncode == 0 and "Logged in as" in login.stdout
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         return {"configured": bool(config.get("firebase_distribution")), "delivery_provider": config.get("delivery_provider"),
-                "firebase_cli": bool(shutil.which("firebase")), "project_id": firebase_rc.get("projects", {}).get("default"),
+                "firebase_cli": firebase_cli, "firebase_logged_in": logged_in,
+                "project_id": firebase_rc.get("projects", {}).get("default") or plist_data.get("PROJECT_ID"),
                 "google_service_info": plist.is_file(), "app_id": app_id, "export_options": (root / "ExportOptions.plist").is_file(),
                 "headless_signing": bool(os.environ.get("KEYCHAIN_PASSWORD")), "ci_token": bool(os.environ.get("FIREBASE_TOKEN")),
                 "setup": "On the Mac worker run firebase login and orchestrator keychain-setup, then refresh status."}

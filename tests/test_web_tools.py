@@ -96,6 +96,7 @@ class WebToolsTests(unittest.TestCase):
         self.assertEqual(result["notification_emails"], ["a@example.com", "b@example.com"])
         result = run_tool(self.root, Operation.TOOL_EMAIL, {"action": "provider", "provider": "resend", "sender_email": "sender@example.com"})
         self.assertEqual(result["sender_email"], "sender@example.com")
+        self.assertIn("sender_ready", result)
         self.assertNotIn("password", json.dumps(result))
 
     def test_docs_include_cli_help_and_project_root(self):
@@ -132,6 +133,16 @@ class WebToolsTests(unittest.TestCase):
         with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, "ok", "")) as run:
             run_tool(self.root, Operation.TOOL_DISTRIBUTION, {"action": "smoke_test"})
         self.assertIn("--non-interactive", run.call_args.args[0])
+
+    def test_distribution_status_reports_login_and_project_without_account(self):
+        (self.root / ".firebaserc").write_text('{"projects":{"default":"example-project"}}')
+        with patch("orchestrator.web.tools.shutil.which", return_value="/usr/bin/firebase"), patch(
+            "orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, "Logged in as someone@example.com", "")
+        ):
+            result = run_tool(self.root, Operation.TOOL_DISTRIBUTION, {"action": "status"})
+        self.assertTrue(result["firebase_logged_in"])
+        self.assertEqual(result["project_id"], "example-project")
+        self.assertNotIn("someone@example.com", json.dumps(result))
 
     def test_noninteractive_delivery_preflight_never_opens_wizard(self):
         from orchestrator.scripts import smoke_test_delivery
