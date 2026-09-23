@@ -186,11 +186,38 @@ class ActionTests(unittest.TestCase):
         with self.assertRaises(ui.UIError):
             ui.build_logs_pull({"session": "x; rm -rf /"}, self.root)
 
-    def test_every_action_uses_the_cli_entry_point(self):
+    def test_every_action_uses_the_cli_entry_point_or_plain_git(self):
+        import subprocess as sp
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
+        params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
+                  "name": "Suite", "branch": "main"}
         for key, action in ui.ACTIONS.items():
-            params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a"}
-            argv = action.build(params, self.root)
-            self.assertEqual(argv[:3], [sys.executable, "-m", "orchestrator"], key)
+            argv = action.build(dict(params, name="feature/x") if key == "git_new_branch" else params, self.root)
+            if key.startswith("git_"):
+                self.assertEqual(argv[0], "git", key)
+            else:
+                self.assertEqual(argv[:3], [sys.executable, "-m", "orchestrator"], key)
+
+    def test_git_actions_validate_branches(self):
+        import subprocess as sp
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
+        self.assertEqual(ui.build_git_checkout({"branch": "main"}, self.root), ["git", "checkout", "main"])
+        with self.assertRaises(ui.UIError):
+            ui.build_git_checkout({"branch": "origin/evil"}, self.root)
+        with self.assertRaises(ui.UIError):
+            ui.build_git_new_branch({"name": "bad..name"}, self.root)
+        with self.assertRaises(ui.UIError):
+            ui.build_git_new_branch({"name": "-rf"}, self.root)
+        self.assertEqual(ui.build_git_push({}, self.root), ["git", "push", "-u", "origin", "main"])
+
+    def test_revise_and_test_names_are_validated(self):
+        argv = ui.build_revise({"job": "20260922-bug-1", "change": "Split helper", "where": "Lobby"}, self.root)
+        self.assertEqual(argv[5:7], ["revise", str((self.root / ".orchestrator/jobs/20260922-bug-1.json"))])
+        self.assertEqual(argv[-6:], ["--change", "Split helper", "--where", "Lobby", "--done-when", ""])
+        with self.assertRaises(ui.UIError):
+            ui.ACTIONS["test_suite"].build({"name": "x; rm -rf /"}, self.root)
 
 
 class JobStateTests(unittest.TestCase):
@@ -217,6 +244,14 @@ class JobStateTests(unittest.TestCase):
         self.assertEqual((failing["tone"], failing["label"], failing["next"]["action"]), ("failed", "Tests failing", "debug"))
         self.assertEqual(self.state(status="debugging")["tone"], "attention")
 
+    def test_approvals(self):
+        self.assertEqual(self.state(status="designing")["next"]["action"], "approve")
+        self.assertEqual(self.state(status="planned", type="feature-plan")["next"]["label"], "Approve plan")
+        self.assertEqual(self.state(status="planned", type="feature-plan", approved=True)["next"]["action"], "schedule")
+        review = self.state(status="human-needed", verification={"status": "concerns", "comments": "Missing tests"})
+        self.assertEqual((review["next"]["action"], review["label"]), ("approve", "Review suggestions"))
+        self.assertIn("Missing tests", review["reason"])
+
     def test_question_needs_an_answer(self):
         st = self.state(status="human-needed", human_clarification_question="Which lobby size?")
         self.assertEqual((st["group"], st["next"]["action"]), ("needs_you", "answer"))
@@ -242,6 +277,56 @@ class LinkedLogTests(unittest.TestCase):
             self.assertEqual(ui.resolve_linked_log(root, "cloud:latest")["files"], [])
             self.assertIn("Newest device launch", ui.resolve_linked_log(root, "cloud:latest")["label"])
             self.assertEqual(ui.resolve_linked_log(root, "/etc")["files"], [])
+
+
+class JobDetailExtrasTests(unittest.TestCase):
+    def test_docs_changes_and_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_project(root)
+            (root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "Demo", "git_remote": "git@github.com:acme/app.git"}))
+            job_file = root / ".orchestrator" / "jobs" / "20260922-bug-1.json"
+            job = json.loads(job_file.read_text())
+            job.update({"pr_number": 141, "issue_number": 12, "ai_modified_files": ["App/Lobby.swift"], "builder_hypothesis": "Stale presence"})
+            job_file.write_text(json.dumps(job))
+            (root / ".orchestrator" / "output" / "20260922-bug-1" / "builder_summary.md").write_text("Did the thing")
+            detail = ui.job_detail(root, "20260922-bug-1")
+        self.assertEqual([d["title"] for d in detail["docs"]], ["Brief", "Builder summary"])
+        self.assertEqual(detail["changes"]["files"], ["App/Lobby.swift"])
+        self.assertEqual(detail["changes"]["hypothesis"], "Stale presence")
+        self.assertEqual(detail["links"], [
+            {"label": "Issue #12", "url": "https://github.com/acme/app/issues/12"},
+            {"label": "Pull request #141", "url": "https://github.com/acme/app/pull/141"},
+        ])
+
+    def test_repo_web_url_forms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_project(root)
+            for remote, expected in [("git@github.com:acme/app.git", "https://github.com/acme/app"),
+                                     ("https://github.com/acme/app", "https://github.com/acme/app"),
+                                     ("https://token@github.com/acme/app.git", "https://github.com/acme/app"),
+                                     ("not a url", None)]:
+                (root / ".orchestrator" / "project.json").write_text(json.dumps({"git_remote": remote}))
+                self.assertEqual(ui.repo_web_url(root), expected, remote)
+
+    def test_git_state(self):
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_project(root)
+            sp.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+            sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("a")
+            sp.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "add"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("b")  # " M tracked.txt": leading space on the first line
+            (root / "new.txt").write_text("x")
+            g = ui.git_state(root)
+        self.assertIn({"status": "M", "path": "tracked.txt"}, g["changes"])
+        self.assertEqual((g["branch"], g["upstream"], g["branches"]), ("main", None, ["main"]))
+        self.assertIn("add", g["last_commit"])
+        self.assertIn({"status": "??", "path": "new.txt"}, g["changes"])
 
 
 class PtySessionTests(unittest.TestCase):

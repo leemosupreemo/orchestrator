@@ -132,6 +132,21 @@ const dialogs = {
         <small>The job is re-planned with your answer; you'll approve the new plan before anything is built.</small></label>`, "Send answer");
     if (values?.answer.trim()) runAction("answer", { job: params.job, answer: values.answer });
   },
+  async revise(params) {
+    const values = await formDialog("Revise plan", `
+      <label class="field"><span>What should change?</span>
+        <textarea name="change" required placeholder="e.g. Keep the layout, but show retry details in the failed state"></textarea></label>
+      <label class="field"><span>Where does it apply? <span class="muted">(optional)</span></span><input type="text" name="where" placeholder="screen, file or flow"></label>
+      <label class="field"><span>Done when <span class="muted">(optional)</span></span><input type="text" name="done_when" placeholder="acceptance criteria"></label>
+      <small class="hint-text">The job is re-planned with this; you approve the new plan before anything is built.</small>`, "Re-plan");
+    if (values?.change.trim()) runAction("revise", { job: params.job, change: values.change, where: values.where, done_when: values.done_when });
+  },
+  async git_new_branch() {
+    const values = await formDialog("New branch", `
+      <label class="field"><span>Branch name</span><input type="text" name="name" required autocapitalize="off" spellcheck="false" placeholder="e.g. feature/rematch-flow"></label>
+      <small class="hint-text">Created from ${esc(state.project?.branch || "the current branch")} and checked out.</small>`, "Create");
+    if (values?.name.trim()) runAction("git_new_branch", { name: values.name.trim() });
+  },
   async distribute() {
     const values = await formDialog("Distribute current branch", `
       <p>Builds <strong class="mono">${esc(state.project?.branch || "the checked-out branch")}</strong> and sends a real Firebase release to your testers.</p>
@@ -242,7 +257,7 @@ function runItem(r) {
 
 function statusLine(p) {
   const running = state.runs.filter((r) => r.running).length;
-  return `<span class="status-line"><span class="mono">${esc(p.branch || "no branch")}</span><span class="sep">·</span>
+  return `<span class="status-line"><a class="mono" href="#/git">${esc(p.branch || "no branch")}</a><span class="sep">·</span>
     <span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span></span>`;
 }
 
@@ -252,8 +267,13 @@ function moreActionsMenu(p, opts) {
     ["Build", act("build")],
     ["Run tests", act("test")],
     ["Distribute current branch", act("distribute"), "Firebase release of what's checked out"],
+    ["Tests & coverage", `data-href="#/tests"`],
+    ["Git: pull, push, branches", `data-href="#/git"`],
     "---",
-    ["Setup check", act("check")],
+    ["Setup check", act("check"), "CLIs, logins, config"],
+    ["Config check", act("check_config")],
+    ["Worker check", act("worker_check"), "Remote build machines"],
+    ["Setup wizard", act("wizard"), "Project, tools and delivery setup"],
     ["Open full console", act("console"), "Everything else"],
   ], opts);
 }
@@ -263,7 +283,7 @@ function moreActionsMenu(p, opts) {
 // re-rendered by the poll when their output changes.
 
 const pages = {};
-const LIVE = new Set(["home", "jobs", "job", "activity"]);
+const LIVE = new Set(["home", "jobs", "job", "activity", "git"]);
 
 pages.home = async () => {
   const { jobs } = await api("jobs");
@@ -321,7 +341,7 @@ pages.jobs = async (_, query) => {
   };
 };
 
-function jobHeaderActions(s) {
+function jobHeaderActions(s, links = []) {
   if (s.active_run) return "";
   const j = { job: s.id };
   const primary = s.state.next ? `<button class="btn primary" ${act(s.state.next.action, j)}>${esc(s.state.next.label)}</button>` : "";
@@ -331,19 +351,27 @@ function jobHeaderActions(s) {
   if (s.tasks_total && s.tasks_done < s.tasks_total && s.state.next?.action !== "resume") items.push(["Resume next task", act("resume", j)]);
   if (s.branch && ["review-needed", "debugging"].includes(s.status)) items.push(["Deliver to testers", act("deliver", j), `Builds ${s.branch}`]);
   if (s.status === "scheduled" && s.state.next?.action !== "execute") items.push(["Run now", act("execute", j)]);
+  if (["planned", "designing", "human-needed", "review-needed", "debugging"].includes(s.status)) items.push(["Revise plan", act("revise", j), "Re-plan with what should change"]);
+  for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, "On GitHub"]);
   if (items.length) items.push("---");
-  items.push(["Open in console", act("console"), "Revise plan, approve design, and more"]);
+  items.push(["Open in console", act("console"), "Ask AI, export, discard, and more"]);
   return primary + moreMenu(items);
 }
 
+document.addEventListener("click", (e) => {
+  const open = e.target.closest("[data-open]");
+  if (open) window.open(open.dataset.open, "_blank", "noopener");
+});
+
 pages.job = async ([id]) => {
-  const { summary: s, job, outputs, logs, runs } = await api(`jobs/${encodeURIComponent(id)}`);
+  const { summary: s, job, outputs, logs, runs, docs, changes, links } = await api(`jobs/${encodeURIComponent(id)}`);
   const models = [["Planner", job.planner], ["Builder", job.builder], ["Reviewer", job.reviewer]].filter(([, m]) => m);
   const fields = [
     ["Kind", esc(s.kind)],
     ["Branch", s.branch ? `<span class="mono">${esc(s.branch)}</span>` : "—"],
-    s.issue_number ? ["Issue", `#${esc(s.issue_number)}`] : null,
-    s.pr_number ? ["Pull request", `#${esc(s.pr_number)}`] : null,
+    ...links.map((l) => [l.label.split(" #")[0], `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)} ↗</a>`]),
+    s.issue_number && !links.some((l) => l.label.startsWith("Issue")) ? ["Issue", `#${esc(s.issue_number)}`] : null,
+    s.pr_number && !links.some((l) => l.label.startsWith("Pull")) ? ["Pull request", `#${esc(s.pr_number)}`] : null,
     models.length ? ["Models", esc(models.map(([r, m]) => `${r} ${m}`).join(" · "))] : null,
     ["Updated", esc(ago(s.updated))],
   ].filter(Boolean);
@@ -358,7 +386,7 @@ pages.job = async ([id]) => {
   return {
     title: s.title,
     sub: `<span class="status-line">${jobPill(summary)}<span>${esc(activeRun ? "Running now." : s.state.reason)}</span></span>`,
-    actions: jobHeaderActions(summary),
+    actions: jobHeaderActions(summary, links),
     html: `
       ${activeRun ? `<a class="banner attention" href="#/runs/${encodeURIComponent(activeRun.id)}"><p><strong>${esc(activeRun.title)}</strong> is ${activeRun.waiting ? "waiting for you" : "running"}.</p><span class="btn small">Open</span></a>` : ""}
       ${s.question ? `<section class="card"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
@@ -372,6 +400,12 @@ pages.job = async ([id]) => {
           return `<div class="item"><span aria-label="${isDone ? "done" : "to do"}">${isDone ? "✅" : "○"}</span><div class="main-col"><div class="title">${esc(title)}</div></div></div>`;
         }).join("")}</div></section>` : ""}
       <section class="card"><div class="card-b"><dl class="kv">${fields.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl></div></section>
+      ${changes.files.length || changes.diffstat ? `<section class="card"><div class="card-h"><h2>Changes</h2><span class="count">vs ${esc(changes.base)}</span></div>
+        ${changes.hypothesis ? `<div class="card-b"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
+        ${changes.diffstat ? `<pre class="file">${esc(changes.diffstat)}</pre>` :
+          `<div class="list">${changes.files.map((f) => `<div class="item"><span class="mono">${esc(f)}</span></div>`).join("")}</div>`}
+      </section>` : ""}
+      ${docs.map((d, i) => `<section class="card"><details class="raw" ${i === 0 && !tasks.length ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
       ${runs.length ? `<section class="card"><div class="card-h"><h2>Activity</h2></div><div class="list">${runs.map(runItem).join("")}</div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Logs</h2></div>
         <div class="list">${logFiles.map((f) => f.path
@@ -394,14 +428,14 @@ const JOB_TYPE_INFO = [
   ["coverage", "Tests", "Add missing tests"],
 ];
 
-pages.new = async () => ({
+pages.new = async (_, query) => ({
   title: "New job",
   sub: "Describe the work. It gets planned, then built on a worker. Anything that needs your input shows up as it runs.",
   html: `
     <form class="card card-b stack" id="new-job">
       <div class="field"><span>Kind</span>
         <div class="segmented">${JOB_TYPE_INFO.map(([v, t, d], i) =>
-          `<label><input type="radio" name="type" value="${v}" ${i === 0 ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
+          `<label><input type="radio" name="type" value="${v}" ${(query.get("type") || "bug") === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
         </div></div>
       <label class="field"><span>What should happen?</span>
         <input type="text" name="summary" required maxlength="500" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">
@@ -473,6 +507,67 @@ pages.devlogs = async () => {
           <div class="main-col"><div class="title">${esc(p.rows ?? "?")} lines</div>
           <div class="meta">launch ${esc(p.session || p.dir)} · ${esc(ago(p.mtime))}</div></div></a>`).join("") || `<div class="empty">Nothing pulled yet.</div>`}
         </div></section>`,
+  };
+};
+
+pages.tests = async (_, query) => {
+  view.innerHTML = `<div class="empty">Finding tests…</div>`;
+  const data = await api(`tests${query.get("refresh") ? "?refresh=1" : ""}`);
+  const cov = data.coverage;
+  const filter = (query.get("q") || "").toLowerCase();
+  // Discovery also matches source files with no tests in them; those aren't runnable suites.
+  const withTests = data.suites.filter((s) => s.tests > 0);
+  const suites = withTests.filter((s) => !filter || s.name.toLowerCase().includes(filter));
+  const total = withTests.reduce((n, s) => n + s.tests, 0);
+  return {
+    title: "Tests",
+    sub: `${withTests.length} suites · ${total} tests`,
+    actions: `<button class="btn primary" ${act("test")}>Run all tests</button>${moreMenu([["Measure coverage", act("coverage"), "Full test run with coverage; takes a while"], ["Refresh list", `data-href="#/tests?refresh=1"`], ["Expand coverage (AI job)", `data-href="#/new?type=coverage"`]])}`,
+    html: `
+      ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
+      <section class="card"><div class="card-h"><h2>Coverage</h2>${cov ? `<span class="count">${esc(ago(Date.parse(cov.timestamp) / 1000))}</span>` : ""}</div>
+        <div class="card-b">${cov ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
+          ${cov.estimated ? pill("attention", "Estimate — measuring failed") : ""}<span class="muted">${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
+          : `<p class="muted">Not measured yet. <button class="btn small" ${act("coverage")}>Measure coverage</button></p>`}</div></section>
+      ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
+        <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
+      <section class="card"><div class="card-h"><h2>Suites</h2>
+        <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
+        <div class="list">${suites.slice(0, 300).map((s) => `
+          <div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${esc(s.tests)} tests · ${esc(s.path || "")}</div></div>
+          <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`).join("") || `<div class="empty">No suites${filter ? " match" : ""}.</div>`}</div></section>`,
+    after: () => $("#suite-filter").addEventListener("submit", (e) => {
+      e.preventDefault();
+      location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
+    }),
+  };
+};
+
+pages.git = async () => {
+  const g = await api("git");
+  const sync = g.upstream == null ? "No upstream yet — Push sets it."
+    : `${g.ahead} to push · ${g.behind} to pull (vs ${g.upstream})`;
+  return {
+    title: "Git",
+    sub: `<span class="status-line"><span class="mono">${esc(g.branch || "detached")}</span><span class="sep">·</span><span>${esc(sync)}</span></span>`,
+    actions: `<button class="btn" ${act("git_pull")}>Pull</button><button class="btn primary" ${act("git_push")}>Push</button>
+      ${moreMenu([["New branch…", act("git_new_branch")], ...(g.web_url ? [["Open repo on GitHub", `data-open="${esc(g.web_url)}"`]] : [])])}`,
+    html: `
+      <section class="card"><div class="card-b stack">
+        <div><div class="muted">Last commit</div><div>${esc(g.last_commit || "—")}</div></div>
+        <form id="switch-branch" class="row">
+          <select name="branch" aria-label="Branch">${g.branches.map((b) => `<option ${b === g.branch ? "selected" : ""}>${esc(b)}</option>`).join("")}</select>
+          <button class="btn">Switch branch</button>
+        </form>
+      </div></section>
+      <section class="card"><div class="card-h"><h2>Uncommitted changes</h2><span class="count">${g.changes_total}</span></div>
+        <div class="list">${g.changes.map((c) => `<div class="item"><span class="pill">${esc(c.status)}</span><span class="mono">${esc(c.path)}</span></div>`).join("") || `<div class="empty">Working tree clean.</div>`}</div>
+        ${g.changes_total > g.changes.length ? `<div class="empty">…and ${g.changes_total - g.changes.length} more.</div>` : ""}</section>`,
+    after: () => $("#switch-branch").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const branch = new FormData(e.target).get("branch");
+      if (branch !== g.branch) runAction("git_checkout", { branch });
+    }),
   };
 };
 
@@ -663,7 +758,7 @@ async function route() {
 
   const r = resolveRoute();
   current = { page: r.page, args: r.args, query: r.query, rendered: "" };
-  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === r.nav));
+  document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === r.nav));
   try {
     if (!state.project) await refreshState();
     const result = await pages[r.page](r.args, r.query);

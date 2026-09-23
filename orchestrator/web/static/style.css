@@ -84,6 +84,11 @@ code, pre, .mono { font-family: var(--mono); font-size: 13px; }
 }
 .badge.working { background: var(--accent); color: var(--accent-ink); }
 .console-btn { margin-top: auto; }
+.nav-secondary { gap: 0; }
+.nav-secondary .label { padding: 4px 10px 6px; }
+.nav-secondary a { padding: 6px 10px; font-size: 14px; color: var(--muted); }
+.big-number { font-size: 28px; font-weight: 680; }
+pre.doc { margin: 0; padding: 0 16px 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 14px; }
 
 /* main */
 .main { min-width: 0; padding: 24px 28px 40px; }
@@ -158,6 +163,7 @@ a.item:hover { background: var(--panel-2); }
 .item .title { font-weight: 560; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .meta { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .side { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.item > .mono, .item > span:not(.pill) { min-width: 0; overflow-wrap: anywhere; }
 
 .status-line { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; flex-wrap: wrap; margin-top: 4px; }
 .status-line .sep { opacity: .5; }
@@ -257,7 +263,7 @@ dialog h2 { font-size: 17px; }
     position: fixed; inset: auto 0 0 0; height: auto; z-index: 20; flex-direction: row; gap: 0;
     padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--border);
   }
-  .brand, .project-switch, .console-btn, .new-job-btn { display: none; }
+  .brand, .project-switch, .console-btn, .new-job-btn, .nav-secondary { display: none !important; }
   .nav { flex-direction: row; width: 100%; justify-content: space-around; align-items: center; }
   .nav a { flex-direction: column; gap: 2px; font-size: 11px; padding: 6px 2px; flex: 1; text-align: center; position: relative; }
   .nav .icon { width: 22px; height: 22px; }

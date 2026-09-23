@@ -2685,6 +2685,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.reset_scroll_region()
 
     # Fallback simulation/estimation if xcresult couldn't be parsed or was empty (e.g. test environment)
+    estimated = overall_pct is None
     if overall_pct is None:
         if total_tests > 0:
             overall_pct = min(95.0, round(float(total_tests * 8.5), 1))
@@ -2699,7 +2700,9 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             "overall_coverage_pct": overall_pct,
             "targets": targets_cov,
             "total_tests": total_tests,
-            "total_suites": total_suites
+            "total_suites": total_suites,
+            # True when the number is a rough estimate from the test count, not measured.
+            "estimated": estimated,
         }
         save_coverage_data(cov_record)
 
@@ -4947,24 +4950,11 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                     continue
 
                 # 2. Accept Architect Suggestions
-                verification = job.get("verification")
-                if status == "human-needed" and verification and verification.get("status") in ["rejected", "concerns"]:
+                from job_actions import apply_design_approval, architect_feedback, replan_type
+                feedback = architect_feedback(job)
+                if feedback:
                     print_header("Integrating Architect Suggestions")
-                    feedback = f"Please re-plan and incorporate the Senior Architect's suggestions:\n"
-                    feedback += f"Comments: {verification.get('comments')}\n"
-                    if verification.get("suggested_additions"):
-                        feedback += "Suggested Additions:\n- " + "\n- ".join(verification["suggested_additions"])
-                    
-                    job_type_map = {
-                        "bug-fix": "bug",
-                        "bug-investigate": "bug",
-                        "feature-plan": "feature",
-                        "test-audit": "coverage",
-                        "feature-design": "design"
-                    }
-                    requested_type = job_type_map.get(job.get("type"), "feature")
-                    
-                    run_script("new_job.py", [requested_type, "--no-dispatch", "--update", str(job["_path"]), "--feedback", feedback], sub_menu=True)
+                    run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(job["_path"]), "--feedback", feedback], sub_menu=True)
                     job = refresh_job(job)
                     continue
 
@@ -4972,20 +4962,8 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                     print("\n🎨 \033[1;92mDESIGN APPROVED!\033[0m")
                     print("Transitioning to Implementation Planning phase...")
                     
-                    # Store design as context for the next planner
-                    design_spec = job.get("plan", {})
-                    job["design_spec"] = design_spec
-                    job["status"] = "planned"
-                    job["type"] = "feature-plan"
-                    
-                    # Update raw_input so the Feature Planner sees the design
-                    design_context = f"\n\n### APPROVED DESIGN SPEC (Stitch AI) ###\n"
-                    design_context += f"Summary: {design_spec.get('summary')}\n"
-                    design_context += f"Vibe: {design_spec.get('vibe')}\n"
-                    design_context += "Visual Components:\n- " + "\n- ".join(design_spec.get("visual_components", [])) + "\n"
-                    design_context += "Interaction Flows:\n- " + "\n- ".join(design_spec.get("interaction_flows", [])) + "\n"
-                    
-                    job["raw_input"] = job.get("raw_input", "") + design_context
+                    # Store the design as context for the feature planner.
+                    apply_design_approval(job)
                     save_job(job)
                     
                     # Now trigger the planning script to generate the task list

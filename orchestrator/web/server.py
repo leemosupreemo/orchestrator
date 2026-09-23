@@ -329,14 +329,21 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         return {"group": group, "tone": tone, "label": label, "reason": reason,
                 "next": {"action": action, "label": action_label} if action else None}
 
+    verification = job.get("verification") or {}
+    if status == "human-needed" and verification.get("status") in ("rejected", "concerns"):
+        return state("needs_you", "attention", "Review suggestions",
+                     f"The architect has {verification['status']}: {verification.get('comments') or 'see details'}".strip(),
+                     "approve", "Accept suggestions")
     if status == "human-needed":
         if job.get("human_clarification_question"):
             return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
         return state("needs_you", "attention", "Needs you", "Waiting on a decision in the console.", "console", "Open in console")
     if status == "designing":
-        return state("needs_you", "attention", "Design ready", "Review and approve the design in the console.", "console", "Review design")
+        return state("needs_you", "attention", "Design ready", "Approve the design to plan its implementation, or ask for changes.", "approve", "Approve design")
     if status == "planned":
-        return state("needs_you", "attention", "Plan ready", "Approve the plan to start building.", "schedule", "Start")
+        if job.get("type") == "feature-plan" and not job.get("approved"):
+            return state("needs_you", "attention", "Plan ready", "Approve the plan to start building its tasks.", "approve", "Approve plan")
+        return state("needs_you", "attention", "Plan ready", "Start building when you're happy with the plan.", "schedule", "Start")
     if status == "review-needed":
         if pr:
             return state("needs_you", "attention", "Ready to merge", f"PR #{pr} is ready for your review.", "merge", "Merge & complete")
@@ -412,7 +419,90 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
                 outputs.append({"path": str(f.relative_to(runtime_dir(root))), "size": f.stat().st_size,
                                 "mtime": f.stat().st_mtime})
     return {"summary": job_summary(path, job), "job": job, "outputs": outputs,
-            "logs": [resolve_linked_log(root, ref) for ref in linked_logs(job)]}
+            "logs": [resolve_linked_log(root, ref) for ref in linked_logs(job)],
+            "docs": job_documents(out_dir), "changes": job_changes(root, job),
+            "links": github_links(root, job)}
+
+
+def read_limited(path: Path, limit: int = 200_000) -> str | None:
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return text if len(text) <= limit else text[:limit] + "\n…[truncated]"
+
+
+def job_documents(out_dir: Path) -> list[dict[str, str]]:
+    """The console's "View Brief / Summary": brief, builder summary, investigations."""
+    docs = []
+    for name, title in (("brief.md", "Brief"), ("builder_summary.md", "Builder summary"), ("investigations.md", "Investigations")):
+        text = read_limited(out_dir / name)
+        if text and text.strip():
+            docs.append({"title": title, "text": text})
+    return docs
+
+
+def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
+    """The console's "View AI Changes": files the AI touched plus a diffstat of its branch."""
+    files = [*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or [])]
+    branch = job.get("branch")
+    base = job.get("base_branch") or read_json_file(runtime_dir(root) / "project.json").get("base_branch") or "main"
+    diffstat = ""
+    if branch and re.fullmatch(r"[A-Za-z0-9._/-]+", branch) and re.fullmatch(r"[A-Za-z0-9._/-]+", base):
+        diffstat = git(root, "diff", "--stat", "--stat-width=100", f"{base}...{branch}", "--")
+    return {"files": [str(f) for f in files][:200], "diffstat": diffstat[-20_000:], "base": base,
+            "hypothesis": job.get("builder_hypothesis") or ""}
+
+
+def repo_web_url(root: Path) -> str | None:
+    remote = read_json_file(runtime_dir(root) / "project.json").get("git_remote") or git(root, "remote", "get-url", "origin")
+    match = re.match(r"^(?:git@([^:]+):|https?://(?:[^@/]+@)?([^/]+)/)([^/]+/[^/]+?)(?:\.git)?/?$", remote or "")
+    if not match:
+        return None
+    host = match.group(1) or match.group(2)
+    return f"https://{host}/{match.group(3)}"
+
+
+def github_links(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
+    base = repo_web_url(root)
+    links = []
+    for kind, key, path in (("Issue", "issue_number", "issues"), ("Pull request", "pr_number", "pull")):
+        number = job.get(key)
+        url = job.get("issue_url" if key == "issue_number" else "pr_url") or (f"{base}/{path}/{number}" if base and number else None)
+        if number and url and str(url).startswith("https://"):
+            links.append({"label": f"{kind} #{number}", "url": url})
+    return links
+
+
+def git_state(root: Path) -> dict[str, Any]:
+    branch = git(root, "branch", "--show-current")
+    counts = git(root, "rev-list", "--left-right", "--count", "@{upstream}...HEAD").split()
+    behind, ahead = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (None, None)
+    # Raw, NUL-separated: `git()` strips output, which would eat the leading
+    # space of the first porcelain line and misalign its path.
+    try:
+        raw = subprocess.run(["git", "status", "--porcelain=v1", "-z"], cwd=root, capture_output=True,
+                             text=True, timeout=5).stdout
+    except Exception:
+        raw = ""
+    entries = raw.split("\0")
+    status, i = [], 0
+    while i < len(entries):
+        entry = entries[i]
+        if len(entry) > 3:
+            status.append(entry)
+            if entry[0] in "RC":  # renames/copies carry the source path as the next entry
+                i += 1
+        i += 1
+    return {
+        "branch": branch,
+        "upstream": git(root, "rev-parse", "--abbrev-ref", "@{upstream}") or None,
+        "ahead": ahead, "behind": behind,
+        "last_commit": git(root, "log", "-1", "--format=%h %s (%an, %cr)"),
+        "changes": [{"status": l[:2].strip() or "?", "path": l[3:]} for l in status[:100]],
+        "changes_total": len(status),
+        "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
+        "web_url": repo_web_url(root),
+    }
 
 
 def linked_logs(job: dict[str, Any]) -> list[str]:
@@ -593,6 +683,42 @@ def build_answer(params: dict[str, Any], root: Path) -> list[str]:
                              "--answer", _text(params, "answer", required=True, limit=10_000))
 
 
+def build_revise(params: dict[str, Any], root: Path) -> list[str]:
+    return orchestrator_argv("script", "job_actions.py", "revise", _job_path(params, root),
+                             "--change", _text(params, "change", required=True, limit=4000),
+                             "--where", _text(params, "where", limit=1000),
+                             "--done-when", _text(params, "done_when", limit=1000))
+
+
+def _name(params: dict[str, Any], key: str) -> str:
+    value = _text(params, key, required=True, limit=200)
+    if not re.fullmatch(r"[A-Za-z0-9_. -]+", value):
+        raise UIError(f"Invalid {key}")
+    return value
+
+
+def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
+    branch = _text(params, "branch", required=True, limit=250)
+    if branch not in git(root, "branch", "--format=%(refname:short)").splitlines():
+        raise UIError("Not a local branch")
+    return ["git", "checkout", branch]
+
+
+def build_git_new_branch(params: dict[str, Any], root: Path) -> list[str]:
+    name = _text(params, "name", required=True, limit=250)
+    check = subprocess.run(["git", "check-ref-format", "--branch", name], cwd=root, capture_output=True, text=True)
+    if check.returncode != 0 or name.startswith("-"):
+        raise UIError("That isn't a valid branch name")
+    return ["git", "checkout", "-b", name]
+
+
+def build_git_push(params: dict[str, Any], root: Path) -> list[str]:
+    branch = git(root, "branch", "--show-current")
+    if not branch:
+        raise UIError("Not on a branch (detached HEAD)")
+    return ["git", "push", "-u", "origin", branch]
+
+
 def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
     return lambda params, root: orchestrator_argv("script", "manual_run.py", mode)
 
@@ -610,12 +736,21 @@ ACTIONS: dict[str, Action] = {
     "resume": Action("Resume", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r), "--resume"), fields=["job"]),
     "debug": Action("Run fix", build_debug, fields=["job", "logs", "feedback"]),
     "answer": Action("Answer", build_answer, fields=["job", "answer"]),
+    "approve": Action("Approve", lambda p, r: orchestrator_argv("script", "job_actions.py", "approve", _job_path(p, r)), fields=["job"]),
+    "revise": Action("Revise plan", build_revise, fields=["job", "change", "where", "done_when"]),
+    "test_suite": Action("Run test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-suite", _name(p, "name")), fields=["name"]),
+    "test_plan": Action("Run test plan", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-plan", _name(p, "name")), fields=["name"]),
+    "coverage": Action("Measure coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "coverage")),
+    "git_pull": Action("Pull", lambda p, r: ["git", "pull"]),
+    "git_push": Action("Push", build_git_push, confirm="Pushes the current branch to origin on GitHub."),
+    "git_checkout": Action("Switch branch", build_git_checkout, fields=["branch"]),
+    "git_new_branch": Action("New branch", build_git_new_branch, fields=["name"]),
     "merge": Action("Merge & complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "merge", _job_path(p, r)),
                     confirm="Merges the job's PR on GitHub, deletes its AI branch and archives the job.", fields=["job"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
-    "test": Action("Test", build_manual("test")),
+    "test": Action("Run all tests", build_manual("test")),
     "distribute": Action("Distribute current branch", build_distribute,
                          confirm="Builds whatever branch is checked out now and sends a real Firebase release to your testers.",
                          fields=["notes"]),
@@ -809,6 +944,10 @@ class UIHandler(BaseHTTPRequestHandler):
             else:
                 text = target.read_text(encoding="utf-8", errors="replace")
             self._json({"path": str(target.relative_to(safe_resolve(runtime_dir(root)))), "text": text})
+        elif method == "GET" and parts == ["git"]:
+            self._json(git_state(root))
+        elif method == "GET" and parts == ["tests"]:
+            self._json(self._tests(root, refresh=bool(query.get("refresh"))))
         elif method == "GET" and parts == ["devlogs"]:
             self._json({"pulls": device_log_pulls(root), "sessions": self._device_sessions(root)})
         elif method == "POST" and parts == ["project"]:
@@ -821,6 +960,23 @@ class UIHandler(BaseHTTPRequestHandler):
             self._run_op(method, parts[1], parts[2], query)
         else:
             self._error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def _tests(self, root: Path, refresh: bool = False) -> dict[str, Any]:
+        """Suites/plans/coverage via the console's own discovery, cached briefly
+        (it walks the repo)."""
+        cache = getattr(self.server, "tests_cache", None)
+        if cache and cache[0] == root and not refresh and time.time() - cache[1] < 120:
+            return cache[2]
+        try:
+            result = subprocess.run(orchestrator_argv("script", "job_actions.py", "tests", "--json"),
+                                    cwd=root, env=self.server.child_env(), capture_output=True, text=True, timeout=90)
+            data = json.loads(result.stdout.strip().splitlines()[-1]) if result.returncode == 0 else None
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, IndexError):
+            data = None
+        if data is None:
+            return {"suites": [], "plans": [], "coverage": None, "error": "Couldn't list tests; try the console's Test menu."}
+        self.server.tests_cache = (root, time.time(), data)
+        return data
 
     def _device_sessions(self, root: Path) -> dict[str, Any]:
         if not read_json_file(runtime_dir(root) / "project.json").get("remote_logs"):
