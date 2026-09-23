@@ -123,6 +123,27 @@ class WebToolsTests(unittest.TestCase):
             result = run_tool(self.root, Operation.TOOL_AUDIT, {})
         self.assertEqual(result["fleet"], [{"machine": "local", "reachable": True}])
 
+    def test_audit_interprets_missing_and_optional_checks(self):
+        report = ("  \033[92m✅\033[0m Homebrew                       INSTALLED\n"
+                  "  \033[91m❌\033[0m Node.js                        MISSING\n"
+                  "  ❌ Manual API Keys                NONE\n"
+                  "  ❌ Signing Credentials            ASC API KEYS (INSECURE LOCATION)\n"
+                  "  ❌ claude CLI                     MISSING\n"
+                  "  ✅ codex Auth                    LOGGED IN\n"
+                  "  ✅ READY: At least one AI provider is configured.\n"
+                  "  ○ Playwright MCP                 recommended, not required\n")
+        probe = types.SimpleNamespace(probe_machine=lambda machine: {"machine": machine["name"], "reachable": True, "repo_path_ok": True, "binaries": {"codex": True, "node": False}})
+        with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, report, "")), patch.dict(sys.modules, {"probe_machine": probe}):
+            result = run_tool(self.root, Operation.TOOL_AUDIT, {})
+        by_name = {item["name"]: item for item in result["checklist"]}
+        self.assertEqual(by_name["Homebrew"]["status"], "ready")
+        self.assertEqual(by_name["Node.js"]["status"], "needs_attention")
+        self.assertIn("Install", by_name["Node.js"]["next_step"])
+        self.assertEqual(by_name["Manual API Keys"]["status"], "optional")
+        self.assertIn(".private_keys", by_name["Signing Credentials"]["next_step"])
+        self.assertEqual(by_name["claude CLI"]["status"], "optional")
+        self.assertEqual(by_name["Playwright MCP"]["status"], "optional")
+
     def test_update_status_does_not_run_pull(self):
         with patch("orchestrator.web.tools.subprocess.run") as run:
             result = run_tool(self.root, Operation.TOOL_UPDATE, {"action": "status"})

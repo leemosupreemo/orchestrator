@@ -17,6 +17,7 @@ from .contract import INPUT_FIELDS, Operation
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,127}$")
 _EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _PACKAGE = Path(__file__).resolve().parents[1]
 _INSTRUCTION_FILES = {
     "Antigravity CLI": "GEMINI.md", "Claude Code": "CLAUDE.md", "Codex": "AGENTS.md",
@@ -24,6 +25,62 @@ _INSTRUCTION_FILES = {
     "DeepSeek": "DEEPSEEK.md", "OpenCode": "OPENCODE.md", "Qwen": "QWEN.md",
 }
 _REQUIRED_DOCS = ("docs/architecture.md", "docs/coding-standards.md", "docs/build-test-commands.md", "docs/ai-workflow.md")
+
+
+def _audit_next_step(name: str, detail: str = "") -> str:
+    steps = {
+        "Homebrew": "Install Homebrew on the Mac running Orchestrator.",
+        "Node.js": "Install Node.js on the Mac running Orchestrator.",
+        "Xcode CLI Tools": "Install Xcode Command Line Tools and finish Xcode setup.",
+        "Git Repository": "Initialize Git in this project folder.",
+        "GoogleService-Info.plist": "Add the Firebase configuration file to the iOS app folder.",
+        "machines.json": "Create the machine fleet configuration for this project.",
+        "Development Team ID": "Add your Apple Development Team ID to the project configuration.",
+        "Signing Credentials": "Configure Apple signing for build distribution.",
+        "ASC Key File": "Update asc_key_path in the project configuration to point to a .p8 key file on this Mac.",
+        "ASC Key Permissions": "Restrict the signing key file so only your account can read it.",
+        "GitHub CLI (gh)": "Install GitHub CLI to manage issues and pull requests.",
+        "GitHub Auth session": "Sign in to GitHub CLI on the Mac with gh auth login.",
+        "SSH Config File": "Add SSH configuration if you use remote machines.",
+        "AI provider access": "Sign in to at least one AI provider CLI or configure a fallback API key on the Mac.",
+    }
+    docs = {"Architecture": "docs/architecture.md", "Standards": "docs/coding-standards.md",
+            "Build Commands": "docs/build-test-commands.md", "AI Rules": "AGENTS.md"}
+    if name.startswith("Doc: "):
+        return f"Create {docs.get(name[5:], name[5:])} in the project."
+    if name == "Signing Credentials" and "INSECURE LOCATION" in detail:
+        return "Move the App Store Connect .p8 key into ~/.private_keys and update asc_key_path in the project configuration."
+    if name.startswith("Scheme: "):
+        return "Select an Xcode scheme that exists in this project."
+    if name.startswith("Provisioning Profile"):
+        return "Install the configured Apple provisioning profile on the Mac."
+    return steps.get(name, f"Review {name} in the local Orchestrator setup.")
+
+
+def _audit_checklist(output: str) -> list[dict[str, str]]:
+    plain = _ANSI.sub("", output).replace("\r", "\n")
+    checklist = []
+    provider_options = {"Manual API Keys", "claude CLI", "claude Auth", "codex CLI", "codex Auth",
+                        "Antigravity CLI", "Ollama (Local AI)", "SSH Config File"}
+    for line in plain.splitlines():
+        match = re.match(r"^\s*([✅❌○])\s+(.+)$", line)
+        if not match:
+            continue
+        parts = re.split(r"\s{2,}", match.group(2).strip(), maxsplit=1)
+        if len(parts) != 2:
+            continue
+        name, detail = parts
+        status = ("skipped" if detail.startswith("SKIPPED") else
+                  "optional" if match.group(1) == "○" or (match.group(1) == "❌" and name in provider_options) else
+                  "ready" if match.group(1) == "✅" else "needs_attention")
+        checklist.append({"name": name, "detail": detail, "status": status,
+                          "next_step": _audit_next_step(name, detail) if status == "needs_attention" else ""})
+    if "CRITICAL ERROR: No AI providers found" in plain or "READY: At least one AI provider" in plain:
+        ready = "READY: At least one AI provider" in plain
+        checklist.append({"name": "AI provider access", "detail": "Available" if ready else "None available",
+                          "status": "ready" if ready else "needs_attention",
+                          "next_step": "" if ready else _audit_next_step("AI provider access")})
+    return checklist
 
 
 def _read(path: Path, default: Any) -> Any:
@@ -357,6 +414,7 @@ def _run_local(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict
                             capture_output=True, text=True, timeout=1800, check=False)
     response = {"exit_code": result.returncode, "output": (result.stdout + result.stderr)[-20000:]}
     if operation == Operation.TOOL_AUDIT:
+        response["checklist"] = _audit_checklist(result.stdout + result.stderr)
         machines = _read(root / ".orchestrator" / "config" / "machines.json", {"machines": []})["machines"]
         response["fleet"] = _fleet(root, {"action": "probe"})["probes"] if machines else []
     return response

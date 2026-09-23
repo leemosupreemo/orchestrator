@@ -168,7 +168,31 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
     {((op==='tool.fleet'&&action==='add')||(op==='tool.instructions'&&action==='write')||(op==='tool.email'&&action==='import'))&&<Field label={op==='tool.fleet'?'Absolute remote repository path':op==='tool.instructions'?'Instruction content':'Paste CSV or email addresses'} value={content} onChange={setContent} textarea={op!=='tool.fleet'}/>}
     {op==='tool.models'&&models.length>0&&<p>Available: {models.map(m=>m.id).join(', ')}</p>}
     <button className="primary" disabled={busy||(needsName&&!name)||(op==='tool.email'&&action==='provider'&&!value)||(op==='tool.fleet'&&['select','add','rename'].includes(action)&&!value)||(op==='tool.models'&&action==='select'&&!value)||(op==='tool.base_branch'&&action==='set'&&!value)} onClick={run}>Run {opts.find(x=>x[0]===action)?.[1]} →</button>
-    {latest&&<div className="tool-result"><div className="eyebrow">LATEST RESULT · {latest.status}</div>{latest.error&&<p className="error">{latest.error}</p>}{latest.output&&<pre>{latest.output}</pre>}{latest.result&&<pre>{JSON.stringify(latest.result,null,2)}</pre>}</div>}
+    {latest&&(op==='tool.audit'?<AuditResult command={latest}/>:<div className="tool-result"><div className="eyebrow">LATEST RESULT · {latest.status}</div>{latest.error&&<p className="error">{latest.error}</p>}{latest.output&&<pre>{latest.output}</pre>}{latest.result&&<pre>{JSON.stringify(latest.result,null,2)}</pre>}</div>)}
+  </div>;
+}
+function AuditResult({command}:{command:Data}) {
+  const result=command.result||{};
+  const checks:Data[]=result.checklist||[];
+  const machines:Data[]=result.fleet||[];
+  const attention=checks.filter(check=>check.status==='needs_attention');
+  const machineIssues=machines.flatMap(machine=>[
+    ...(!machine.reachable?[{name:`${machine.machine||'A machine'} is offline`,next_step:'Check that the machine is on and its SSH connection works.'}]:[]),
+    ...(machine.repo_path_ok===false?[{name:`Project folder missing on ${machine.machine||'a machine'}`,next_step:`The configured folder ${machine.repo_path||'in the fleet settings'} does not exist on this machine. Update its repo path in Manage Machine Fleet.`}]:[])
+  ]);
+  const issueCount=attention.length+machineIssues.length;
+  return <div className="tool-result audit-result"><div className="eyebrow">PREREQUISITE AUDIT · {command.status}</div>
+    {command.error&&<p className="error">{command.error}</p>}
+    {['queued','running'].includes(command.status)?<p>The Mac worker is checking this project and its machines. Results will appear here.</p>:<>
+      <h3>{!checks.length?'Audit details unavailable':issueCount?`${issueCount} item${issueCount===1?'':'s'} need attention`:'Core setup looks ready'}</h3>
+      <p>{!checks.length?'The audit did not return a readable checklist. Review the technical output below.':issueCount?'Work through the items below, then run the audit again. Some optional tools may be absent without blocking your work.':'The audit found no required setup problems. Optional tools may still be unconfigured.'}</p>
+      <h3>Setup checklist</h3>
+      {checks.length?<div className="audit-checklist">{checks.map((check,i)=><div key={`${check.name}-${i}`} className={`audit-check ${check.status}`}><span className="audit-icon" aria-hidden="true">{check.status==='ready'?'✓':check.status==='needs_attention'?'!':'○'}</span><div><strong>{check.name}</strong><small>{check.status==='ready'?'Ready':check.status==='needs_attention'?'Needs attention':check.status==='skipped'?'Not needed for this project':'Optional'} · {check.detail}</small></div></div>)}</div>:<p>No checklist was returned. Open the technical output below for details.</p>}
+      <h3>What needs attention</h3>
+      {issueCount?<ul className="audit-missing">{[...attention,...machineIssues].map((check,i)=><li key={`${check.name}-${i}`}><strong>{check.name}</strong><span>{check.next_step}</span></li>)}</ul>:<p>Nothing required is missing.</p>}
+      {machines.length>0&&<><h3>Machines</h3><div className="audit-machines">{machines.map((machine,i)=>{const available=Object.entries(machine.binaries||{}).filter(([,present])=>present).map(([name])=>name);const missing=Object.entries(machine.binaries||{}).filter(([,present])=>!present).map(([name])=>name);return <div key={`${machine.machine}-${i}`} className="audit-machine"><strong>{machine.machine||`Machine ${i+1}`} · {machine.reachable?'Online':'Offline'}</strong><small>Project folder: {machine.repo_path_ok===false?'Missing':machine.repo_path_ok===true?'Found':'Unknown'}</small><small>Available tools: {available.join(', ')||'None reported'}</small><small>Tools not found: {missing.join(', ')||'None reported'} (some are optional)</small></div>})}</div></>}
+      <details className="audit-technical"><summary>Technical output</summary><pre>{result.output||JSON.stringify(result,null,2)}</pre></details>
+    </>}
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
