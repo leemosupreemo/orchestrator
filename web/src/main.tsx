@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth, db, signIn, logOut, collection, doc, onSnapshot, query, orderBy, limit, setDoc, updateDoc, serverTimestamp } from './firebase';
 import menu from './menu.json';
-import { RunLog, ToolOutput } from './tool-output';
+import { ModelList, RunLog, ToolOutput } from './tool-output';
 import './style.css';
 
 type Data = Record<string, any>;
@@ -127,11 +127,12 @@ const TOOL_ACTIONS:Record<string,[string,string][]> = {
 };
 function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{item:Action;project:string;onSubmit:(operation:string,inputs?:Data)=>void;busy:boolean;commands:Data[];projects:string[];onProject:(id:string)=>void}) {
   const op=item.operation;
-  const [action,setAction]=useState('list');const [name,setName]=useState('');const [value,setValue]=useState('');const [content,setContent]=useState('');const [extra,setExtra]=useState('');
-  useEffect(()=>{setAction(TOOL_ACTIONS[item.operation]?.[0]?.[0]||'list');setName('');setValue('');setContent('');setExtra('')},[item.operation]);
+  const [action,setAction]=useState('list');const [name,setName]=useState('');const [value,setValue]=useState('');const [content,setContent]=useState('');const [extra,setExtra]=useState('');const [modelSelection,setModelSelection]=useState<string[]|null>(null);
+  useEffect(()=>{setAction(TOOL_ACTIONS[item.operation]?.[0]?.[0]||'list');setName('');setValue('');setContent('');setExtra('');setModelSelection(null)},[item.operation,project]);
   const latest=commands.find(x=>x.operation===op&&x.project_id===project);
   const listing=commands.find(x=>x.operation===op&&x.project_id===project&&x.status==='succeeded'&&['list','status','show'].includes(x.inputs?.action||'list'))?.result;
-  const models:Data[]=listing?.models||latest?.result?.models||[];
+  const models:Data[]=latest?.result?.models||listing?.models||[];
+  const selectedModels:string[]=modelSelection??latest?.result?.selected??listing?.selected??[];
   const machineNames:string[]=(listing?.machines||latest?.result?.machines||[]).map((m:Data)=>m.name);
   const files:string[]=[...new Set([...Object.keys(listing?.files||{}),...(listing?.role_prompts||[]),...(latest?.result?.role_prompts||[])])];
   const docs:string[]=listing?.documents||latest?.result?.documents||[];
@@ -140,7 +141,7 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
   const opts=TOOL_ACTIONS[op]||[['list','Show status']];
   function run() {
     const input:Data={};
-    if(op==='tool.models'){if(action==='select')input.allowed_models=value.split(',').map(x=>x.trim()).filter(Boolean);if(action==='refresh')input.refresh=true;if(action==='live_discovery')input.live_discovery=true;}
+    if(op==='tool.models'){if(action==='select')input.allowed_models=selectedModels;if(action==='refresh')input.refresh=true;if(action==='live_discovery')input.live_discovery=true;}
     if(op==='tool.keys')input.action=action;
     if(op==='tool.fleet'){input.action=action;if(action==='select')input.machine_ids=value.split(',').map(x=>x.trim()).filter(Boolean);if(['rename','remove','enable','disable'].includes(action))input.name=name;if(action==='rename')input.new_name=value;if(action==='add'){input.name=name;input.ssh_target=value;input.repo_path=content;}}
     if(op==='tool.base_branch'&&action==='set')input.branch=value;
@@ -165,11 +166,12 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
     {op==='tool.project'&&<label className="field"><span>Active project</span><select value={project} onChange={e=>onProject(e.target.value)}>{projects.map(id=><option key={id}>{id}</option>)}</select></label>}
     {needsName&&<label className="field"><span>{op==='tool.archive'?'Job ID':op==='tool.email'?'Recipient email':op==='tool.docs'?'Document':'Name'}</span>{suggestions.length&&action!=='add'&&action!=='write'?<select value={name} onChange={e=>setName(e.target.value)}><option value="">Select…</option>{suggestions.map(x=><option key={x}>{x}</option>)}</select>:<input value={name} onChange={e=>setName(e.target.value)}/>}</label>}
     {op==='tool.email'&&action==='provider'&&<><label className="field"><span>Provider</span><select value={value} onChange={e=>setValue(e.target.value)}><option value="">Select…</option><option value="gmail">Gmail</option><option value="resend">Resend</option></select></label><Field label="Sender email" value={name} onChange={setName}/>{value==='resend'&&<Field label="Display name" value={extra} onChange={setExtra}/>}</>}
-    {((op==='tool.fleet'&&['select','add','rename'].includes(action))||(op==='tool.models'&&action==='select')||(op==='tool.base_branch'&&action==='set'))&&<Field label={op==='tool.models'?'Model IDs, comma separated':op==='tool.fleet'&&action==='select'?'Machine names, comma separated':op==='tool.fleet'&&action==='add'?'SSH target':op==='tool.fleet'?'New machine name':'Base branch'} value={value} onChange={setValue} placeholder={op==='tool.models'?models.slice(0,3).map(m=>m.id).join(', '):op==='tool.fleet'&&action==='select'?machineNames.join(', '):undefined}/>}
+    {((op==='tool.fleet'&&['select','add','rename'].includes(action))||(op==='tool.base_branch'&&action==='set'))&&<Field label={op==='tool.fleet'&&action==='select'?'Machine names, comma separated':op==='tool.fleet'&&action==='add'?'SSH target':op==='tool.fleet'?'New machine name':'Base branch'} value={value} onChange={setValue} placeholder={op==='tool.fleet'&&action==='select'?machineNames.join(', '):undefined}/>}
     {((op==='tool.fleet'&&action==='add')||(op==='tool.instructions'&&action==='write')||(op==='tool.email'&&action==='import'))&&<Field label={op==='tool.fleet'?'Absolute remote repository path':op==='tool.instructions'?'Instruction content':'Paste CSV or email addresses'} value={content} onChange={setContent} textarea={op!=='tool.fleet'}/>}
-    {op==='tool.models'&&models.length>0&&<p>Available: {models.map(m=>m.id).join(', ')}</p>}
-    <button className="primary" disabled={busy||(needsName&&!name)||(op==='tool.email'&&action==='provider'&&!value)||(op==='tool.fleet'&&['select','add','rename'].includes(action)&&!value)||(op==='tool.models'&&action==='select'&&!value)||(op==='tool.base_branch'&&action==='set'&&!value)} onClick={run}>Run {opts.find(x=>x[0]===action)?.[1]} →</button>
-    {latest&&(op==='tool.audit'?<AuditResult command={latest}/>:<ToolOutput command={latest}/>)}
+    {op==='tool.models'&&models.length>0&&<><h3>{action==='select'?'Choose default models':'Available models'}</h3><ModelList models={models} selected={selectedModels} onToggle={action==='select'?id=>setModelSelection(current=>{const chosen=current??selectedModels;return chosen.includes(id)?chosen.filter(model=>model!==id):[...chosen,id]}):undefined}/></>}
+    {op==='tool.models'&&action==='select'&&!models.length&&<p>Run Model catalog first to load the available models.</p>}
+    <button className="primary" disabled={busy||(needsName&&!name)||(op==='tool.email'&&action==='provider'&&!value)||(op==='tool.fleet'&&['select','add','rename'].includes(action)&&!value)||(op==='tool.models'&&action==='select'&&!selectedModels.length)||(op==='tool.base_branch'&&action==='set'&&!value)} onClick={run}>Run {opts.find(x=>x[0]===action)?.[1]} →</button>
+    {latest&&(op==='tool.audit'?<AuditResult command={latest}/>:<ToolOutput command={latest} showModels={op!=='tool.models'||!models.length}/>)}
   </div>;
 }
 function AuditResult({command}:{command:Data}) {

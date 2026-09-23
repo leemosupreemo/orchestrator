@@ -38,6 +38,8 @@ Prerequisite Audit presents the Mac setup checks as a checklist, separates optio
 
 Configuration & Tools results show the action, status, a short explanation, and readable result details. Commands that run local scripts publish a live log while the Mac worker runs them. The audit keeps its setup checklist visible above the technical log. Completed logs and full result data are expandable in the tool panel and Activity history. Worker progress and results are redacted before publication; the visible log retains only its latest 20 KB.
 
+The LLM Models catalog appears as cards with provider, tier, capabilities, required CLI, and a selected marker. Select default models with checkboxes; the worker still validates the chosen IDs against the catalog.
+
 After the final deployment, the worker on the main checkout also completed `tests.run` with `action: list` for Themis. It found no `.xctestplan` files under `ThemisPlaygroundTests/TestPlans`; the UI therefore offers the simulator visual check and explains that no Xcode plans are configured. The browser's signed-in flow has not been exercised in this session.
 
 The Configuration & Tools update was deployed to the same preview channel on 2026-09-23. The page returned HTTP 200, the Mac worker was restarted, and read-only commands for Models, Keys, Fleet, Base Branch, Project, Archive, Instructions, Email, Docs, Distribution, and Update all completed successfully through Firestore. The final local run passed 183 Python tests, the web menu test, and the production web build. Interactive Google sign-in and actions with external side effects still require an operator test in the preview.
