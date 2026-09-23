@@ -9,8 +9,12 @@ description = "Reusable AI orchestration console for Swift and Xcode projects."
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+web-worker = ["firebase-admin>=6"]
+
 [project.scripts]
 orchestrator = "orchestrator.cli:main"
+orchestrator-web-worker = "orchestrator.web.worker:main"
 
 [tool.setuptools]
 include-package-data = true
