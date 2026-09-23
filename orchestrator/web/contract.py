@@ -67,16 +67,17 @@ INPUT_FIELDS: dict[Operation, frozenset[str]] = {
     Operation.JOB_DEBUG: frozenset({"feedback", "max_iterations", "notes", "bug_reproduced"}),
     Operation.JOB_RERUN: frozenset({"branch_mode", "log_paths"}),
     Operation.TOOL_MODELS: frozenset({"allowed_models", "refresh", "live_discovery"}),
-    Operation.TOOL_FLEET: frozenset({"action", "machine_ids", "name", "ssh_target", "repo_path"}),
+    Operation.TOOL_KEYS: frozenset({"action"}),
+    Operation.TOOL_FLEET: frozenset({"action", "machine_ids", "name", "new_name", "ssh_target", "repo_path"}),
     Operation.TOOL_BASE_BRANCH: frozenset({"branch"}),
     Operation.TOOL_PROJECT: frozenset({"project_id"}),
     Operation.TOOL_ARCHIVE: frozenset({"action", "job_id"}),
     Operation.TOOL_INSTRUCTIONS: frozenset({"action", "name", "content"}),
-    Operation.TOOL_EMAIL: frozenset({"action", "email", "provider"}),
+    Operation.TOOL_EMAIL: frozenset({"action", "email", "provider", "content", "sender_email", "display_name"}),
     Operation.TOOL_DOCS: frozenset({"name"}),
     Operation.TOOL_DISTRIBUTION: frozenset({"action", "job_id"}),
     Operation.TOOL_SELF_TESTS: frozenset({"suite"}),
-    Operation.TOOL_UPDATE: frozenset({"fleet"}),
+    Operation.TOOL_UPDATE: frozenset({"action", "fleet"}),
 }
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")

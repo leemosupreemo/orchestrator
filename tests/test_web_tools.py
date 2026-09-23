@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import types
+import sys
 from unittest.mock import patch
 from subprocess import CompletedProcess
 from pathlib import Path
@@ -46,11 +48,98 @@ class WebToolsTests(unittest.TestCase):
         self.assertNotIn("TOP_SECRET", json.dumps(result))
         with self.assertRaises(ValueError):
             run_tool(self.root, Operation.TOOL_KEYS, {"openai_api_key": "TOP_SECRET"})
+        cleared = run_tool(self.root, Operation.TOOL_KEYS, {"action": "clear"})
+        self.assertFalse(cleared["configured"]["openai"])
 
     def test_fleet_enablement_updates_local_machine_config(self):
         run_tool(self.root, Operation.TOOL_FLEET, {"action": "disable", "name": "local"})
         machines = json.loads((self.root / ".orchestrator" / "config" / "machines.json").read_text())
         self.assertFalse(machines["machines"][0]["enabled"])
+
+    def test_fleet_can_select_rename_and_remove_remote_machine(self):
+        path = self.root / ".orchestrator" / "config" / "machines.json"
+        data = json.loads(path.read_text())
+        data["machines"].append({"name": "remote", "execution_mode": "ssh", "ssh_target": "host", "repo_path": "/repo"})
+        path.write_text(json.dumps(data))
+        run_tool(self.root, Operation.TOOL_FLEET, {"action": "select", "machine_ids": ["remote"]})
+        self.assertEqual(run_tool(self.root, Operation.TOOL_FLEET, {})["selected"], ["remote"])
+        run_tool(self.root, Operation.TOOL_FLEET, {"action": "rename", "name": "remote", "new_name": "build"})
+        self.assertEqual(run_tool(self.root, Operation.TOOL_FLEET, {})["selected"], ["build"])
+        run_tool(self.root, Operation.TOOL_FLEET, {"action": "remove", "name": "build"})
+        self.assertEqual([m["name"] for m in run_tool(self.root, Operation.TOOL_FLEET, {})["machines"]], ["local"])
+
+    def test_fleet_purge_runs_in_selected_project_context(self):
+        with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, '{"purged": 1}', "")) as run:
+            result = run_tool(self.root, Operation.TOOL_FLEET, {"action": "purge", "machine_ids": ["local"]})
+        self.assertEqual(result["purged"], 1)
+        self.assertEqual(run.call_args.kwargs["env"]["ORCHESTRATOR_PROJECT_ROOT"], str(self.root))
+
+    def test_instructions_manage_cli_files_and_required_links(self):
+        status = run_tool(self.root, Operation.TOOL_INSTRUCTIONS, {})
+        self.assertIn("AGENTS.md", status["files"])
+        run_tool(self.root, Operation.TOOL_INSTRUCTIONS, {"action": "create_missing"})
+        path = self.root / "AGENTS.md"
+        self.assertIn("docs/architecture.md", path.read_text())
+        path.write_text("# Custom\n")
+        run_tool(self.root, Operation.TOOL_INSTRUCTIONS, {"action": "repair"})
+        self.assertIn("docs/ai-workflow.md", path.read_text())
+
+    def test_copy_role_prompts_preserves_project_settings(self):
+        settings = self.root / ".orchestrator" / "config" / "settings.json"
+        settings.write_text('{"gemini_api_key":"keep"}')
+        result = run_tool(self.root, Operation.TOOL_INSTRUCTIONS, {"action": "copy_role_prompts"})
+        self.assertIn("agent_lead.md", result["role_prompts"])
+        self.assertEqual(json.loads(settings.read_text())["gemini_api_key"], "keep")
+
+    def test_email_import_and_provider_use_cli_settings(self):
+        result = run_tool(self.root, Operation.TOOL_EMAIL, {"action": "import", "content": 'name,email\nA,a@example.com\nB,"b@example.com"'})
+        self.assertEqual(result["notification_emails"], ["a@example.com", "b@example.com"])
+        result = run_tool(self.root, Operation.TOOL_EMAIL, {"action": "provider", "provider": "resend", "sender_email": "sender@example.com"})
+        self.assertEqual(result["sender_email"], "sender@example.com")
+        self.assertNotIn("password", json.dumps(result))
+
+    def test_docs_include_cli_help_and_project_root(self):
+        (self.root / "README.md").write_text("# Root\n")
+        listing = run_tool(self.root, Operation.TOOL_DOCS, {})["documents"]
+        self.assertIn("README.md", listing)
+        self.assertEqual(run_tool(self.root, Operation.TOOL_DOCS, {"name": "README.md"})["content"], "# Root\n")
+
+    def test_key_status_reports_cli_readiness_without_credentials(self):
+        result = run_tool(self.root, Operation.TOOL_KEYS, {})
+        self.assertIn("codex", result["cli_available"])
+        self.assertIn("gemini", result["sign_in_commands"])
+
+    def test_email_test_uses_notification_script(self):
+        run_tool(self.root, Operation.TOOL_EMAIL, {"action": "add", "email": "me@example.com"})
+        with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, "sent", "")) as run:
+            result = run_tool(self.root, Operation.TOOL_EMAIL, {"action": "test"})
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("notify.py", str(run.call_args))
+
+    def test_audit_includes_fleet_probes(self):
+        probe = types.SimpleNamespace(probe_machine=lambda machine: {"machine": machine["name"], "reachable": True})
+        with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, "ready", "")), patch.dict(sys.modules, {"probe_machine": probe}):
+            result = run_tool(self.root, Operation.TOOL_AUDIT, {})
+        self.assertEqual(result["fleet"], [{"machine": "local", "reachable": True}])
+
+    def test_update_status_does_not_run_pull(self):
+        with patch("orchestrator.web.tools.subprocess.run") as run:
+            result = run_tool(self.root, Operation.TOOL_UPDATE, {"action": "status"})
+        self.assertIn("package_location", result)
+        self.assertFalse(any("pull" in str(call) for call in run.call_args_list))
+
+    def test_distribution_smoke_test_is_noninteractive(self):
+        with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, "ok", "")) as run:
+            run_tool(self.root, Operation.TOOL_DISTRIBUTION, {"action": "smoke_test"})
+        self.assertIn("--non-interactive", run.call_args.args[0])
+
+    def test_noninteractive_delivery_preflight_never_opens_wizard(self):
+        from orchestrator.scripts import smoke_test_delivery
+        config = types.SimpleNamespace(validate_distribution_config=lambda: ["signing missing"], runtime_dir=self.root / ".orchestrator")
+        with patch.object(smoke_test_delivery, "PROJECT_CONFIG", config), patch.object(smoke_test_delivery, "prompt_confirm", side_effect=AssertionError("interactive prompt")):
+            with self.assertRaises(SystemExit) as ended:
+                smoke_test_delivery.run_smoke_delivery(non_interactive=True)
+        self.assertEqual(ended.exception.code, 1)
 
     def test_app_tests_lists_xcode_plans_instead_of_python_tests(self):
         (self.root / ".orchestrator" / "project.json").write_text(json.dumps({"test_target": "AppTests"}))

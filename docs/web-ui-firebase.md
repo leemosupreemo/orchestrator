@@ -28,4 +28,10 @@ Preview URL: https://swift-orch-web-20260923--orchestrator-ui-k9t3gz5v.web.app (
 
 The current Mac worker targets the CLI-configured Themis project at `/Users/neemaameskin/Documents/Themis`. Use the project picker when more local projects are registered.
 
+## Configuration & Tools behavior
+
+The web menu now uses typed worker commands for all 13 CLI Configuration & Tools sections. Model selection and active fleet selection become New Job defaults; fleet discovery, probes, edits and stale-process cleanup run on the Mac. Instruction actions manage the CLI's root instruction files and optional role prompts. Email actions cover recipients, pasted CSV import, sender metadata and a real test send. Docs include Orchestrator help and project docs. Audit, distribution, self-tests and updates run their local scripts and return exit status in the selected tool panel.
+
+The browser does not accept API keys, sender passwords, Firebase login credentials, or signing secrets. Their status is shown without values, and setup stays in the Mac CLI. Project switching is limited to worker-configured projects; register additional paths on the Mac and restart the worker to expose them. Destructive cleanup and live delivery actions ask for confirmation in the browser.
+
 After the final deployment, the worker on the main checkout also completed `tests.run` with `action: list` for Themis. It found no `.xctestplan` files under `ThemisPlaygroundTests/TestPlans`; the UI therefore offers the simulator visual check and explains that no Xcode plans are configured. The browser's signed-in flow has not been exercised in this session.

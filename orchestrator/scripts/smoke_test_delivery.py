@@ -16,13 +16,13 @@ if str(SCRIPTS_DIR) not in sys.path:
 from common import ROOT, JOBS_DIR, write_json, timestamp, prompt_confirm
 from orchestrator.project_config import PROJECT_CONFIG
 
-def run_smoke_delivery():
+def run_smoke_delivery(non_interactive: bool = False):
     global PROJECT_CONFIG
     print("🚀 Starting Smoke Test: Build & Delivery Pipeline...")
     
     # 0. Pre-flight check: Ensure signing configuration is present
     dist_errors = PROJECT_CONFIG.validate_distribution_config()
-    if dist_errors:
+    if dist_errors and not non_interactive:
         print("\n⚠️  Distribution configuration is incomplete. Attempting automatic detection and setup...")
         try:
             from setup_distribution import setup_distribution
@@ -59,7 +59,7 @@ def run_smoke_delivery():
         print("")
         
         wizard_desc = "Runs the interactive project configuration wizard to set up Apple Team ID, Firebase credentials, and provisioning profiles."
-        if prompt_confirm("Would you like to run the Setup Wizard now?", default=True, description=wizard_desc, clear_screen=False):
+        if not non_interactive and prompt_confirm("Would you like to run the Setup Wizard now?", default=True, description=wizard_desc, clear_screen=False):
             print("\n\033[1;96mStarting Orchestrator Wizard...\033[0m")
             cli_path = SCRIPTS_DIR.parent / "cli.py"
             res = subprocess.run([sys.executable, str(cli_path), "wizard"], cwd=str(ROOT))
@@ -124,7 +124,7 @@ def run_smoke_delivery():
         # We'll just do the cleanup and exit.
         
         desc = f"Deletes the temporary mock job configuration file: {job_file.relative_to(ROOT)}"
-        if prompt_confirm("Cleanup: Delete temporary mock job?", default=True, description=desc, clear_screen=False):
+        if non_interactive or prompt_confirm("Cleanup: Delete temporary mock job?", default=True, description=desc, clear_screen=False):
             if job_file.exists():
                 os.remove(job_file)
             print("      - Temporary job deleted.")
@@ -138,13 +138,14 @@ def run_smoke_delivery():
         print(f"\n!!! Error during smoke test: {e}")
         if job_file.exists():
             desc = f"Deletes the temporary mock job configuration file: {job_file.relative_to(ROOT)}"
-            if prompt_confirm("Emergency Cleanup: Delete temporary mock job?", default=True, description=desc, clear_screen=False):
+            if non_interactive or prompt_confirm("Emergency Cleanup: Delete temporary mock job?", default=True, description=desc, clear_screen=False):
                 os.remove(job_file)
                 print("      - Deleted temporary job file.")
+        raise
 
 if __name__ == "__main__":
     try:
-        run_smoke_delivery()
+        run_smoke_delivery(non_interactive="--non-interactive" in sys.argv[1:])
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(1)
