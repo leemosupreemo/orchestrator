@@ -10,6 +10,14 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="i-jobs" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 18h4"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 16h7"/></symbol>
+  </svg>
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
@@ -20,18 +28,19 @@
         <span class="label">Project</span>
         <select id="project-select" aria-label="Project"></select>
       </label>
-      <nav class="nav" id="nav">
-        <a href="#/" data-route="home"><span class="ico">◧</span>Home</a>
-        <a href="#/jobs" data-route="jobs"><span class="ico">☰</span>Jobs</a>
-        <a href="#/new" data-route="new"><span class="ico">＋</span>New job</a>
-        <a href="#/devlogs" data-route="devlogs"><span class="ico">⌁</span>Device logs</a>
-        <a href="#/runs" data-route="runs"><span class="ico">▶</span>Runs<span class="badge" id="running-badge" hidden></span></a>
+      <a class="btn primary new-job-btn" href="#/new"><svg class="icon"><use href="#i-plus"/></svg>New job</a>
+      <nav class="nav" id="nav" aria-label="Main">
+        <a href="#/" data-route="home"><svg class="icon"><use href="#i-home"/></svg><span>Home</span></a>
+        <a href="#/jobs" data-route="jobs"><svg class="icon"><use href="#i-jobs"/></svg><span>Jobs</span></a>
+        <a href="#/new" data-route="new" class="nav-new" aria-label="New job"><span class="fab"><svg class="icon"><use href="#i-plus"/></svg></span><span>New</span></a>
+        <a href="#/devlogs" data-route="devlogs"><svg class="icon"><use href="#i-phone"/></svg><span>Device logs</span></a>
+        <a href="#/activity" data-route="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span><span class="badge" id="running-badge" hidden></span></a>
       </nav>
-      <button class="btn ghost console-btn" data-action="console">Open full console</button>
+      <button class="btn ghost console-btn" data-action="console"><svg class="icon"><use href="#i-terminal"/></svg>Open full console</button>
     </aside>
     <main class="main">
       <header class="topbar">
-        <div>
+        <div class="topbar-text">
           <h1 id="page-title">Home</h1>
           <p class="sub" id="page-sub"></p>
         </div>
@@ -44,7 +53,7 @@
   <dialog id="dialog">
     <form method="dialog" id="dialog-form">
       <h2 id="dialog-title"></h2>
-      <div id="dialog-body"></div>
+      <div id="dialog-body" class="stack"></div>
       <div class="dialog-actions">
         <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
         <button value="ok" class="btn primary" id="dialog-ok">Run</button>

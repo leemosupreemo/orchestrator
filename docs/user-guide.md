@@ -436,11 +436,12 @@ orchestrator ui                  # http://127.0.0.1:8765/?token=...
 orchestrator ui --project Thirteen --port 9000 --no-open
 ```
 
-- **Home**: branch, uncommitted files, open jobs and running commands, plus one-tap actions: new job, quick fix, pull device logs, build, test, distribute, setup check.
-- **Jobs**: every job with its status, tasks, linked logs and output files. The buttons change with the job's status (schedule, execute, debug, resume, fix, deliver).
-- **New job**: a form for type, summary, spec and branch mode. The spec is saved to `.orchestrator/ui/specs/` and handed to the planner.
-- **Device logs**: recent app launches from the log store, with Pull and Follow buttons (see [Device Logs](#device-logs)).
-- **Runs**: every command started from the UI, each in a live terminal.
+- **Home** shows what **needs you**: a question from the planner, a plan to approve, failing tests to fix, or a PR ready to merge. Each item has the one button that moves it forward. Below that are jobs in progress and recently finished ones. **New job** and **Fix something** are always one tap away, and less frequent actions (pull device logs, build, test, distribute the current branch, setup check, full console) sit under **More**.
+- **Jobs** filters by Needs you / In progress / Done. A job page states what it's waiting on, shows one primary action for its status (Start, Run now, Answer, Run fix, Merge & complete), and puts everything else under More. **Deliver to testers** builds *that job's* branch. **Merge & complete** merges the PR, deletes the AI branch and archives the job, the same as in the console.
+- **Device logs** lists recent app launches from the log store, with Pull and Follow buttons (see [Device Logs](#device-logs)).
+- **Activity** lists every command started from the UI. Runs started from a job are named after it and appear on that job's page. When a run finishes, it offers the next step, such as **Open job** after creating one.
+
+Pages refresh themselves every few seconds, but never while you're typing, have a menu open, or have a dialog up. Leaving a page closes any dialog that was open on it.
 
 Every action runs the same CLI command you would type, inside a real terminal that is shown in the page. Prompts that need you (y/n, menus, pasted logs, passwords) appear there, and you answer them by typing into the terminal. On a phone, use the key bar under it (Enter, Esc, arrows, y/n/q, Ctrl-C, Ctrl-D). **Open full console** runs the regular `orchestrator console` in the browser, so every console feature stays available. Each run's output is also saved to `.orchestrator/logs/ui/`.
 

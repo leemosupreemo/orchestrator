@@ -59,6 +59,7 @@ COOKIE_NAME = "orchestrator_ui"
 MAX_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSIONS_KEPT = 50
+IDLE_PROMPT_SECONDS = 20
 JOB_TYPES = ["bug", "feature", "design", "coverage", "quick"]
 BRANCH_MODES = ["new", "current", "manual"]
 # Runs a child as the leader of a new session with the pty as its controlling
@@ -89,7 +90,10 @@ class PtySession:
         self.action = action
         self.title = title
         self.argv = argv
+        self.job_id: str | None = None
+        self.result_job: str | None = None
         self.started = time.time()
+        self.last_output = self.started
         self.ended: float | None = None
         self.exit_code: int | None = None
         self._buffer = bytearray()
@@ -145,6 +149,7 @@ class PtySession:
 
     def _append(self, chunk: bytes) -> None:
         with self._cond:
+            self.last_output = time.time()
             self._buffer.extend(chunk)
             overflow = len(self._buffer) - MAX_BUFFER_BYTES
             if overflow > 0:
@@ -206,11 +211,22 @@ class PtySession:
         threading.Thread(target=escalate, daemon=True).start()
 
     def summary(self) -> dict[str, Any]:
+        idle = time.time() - self.last_output if self.running else 0
         return {
             "id": self.id, "action": self.action, "title": self.title,
             "command": " ".join(_display_argv(self.argv)), "started": self.started,
             "ended": self.ended, "running": self.running, "exit_code": self.exit_code,
+            "job": self.job_id, "result_job": self.result_job,
+            # Quiet for a while with a prompt-shaped last line: probably waiting on you.
+            "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
         }
+
+    def _looks_like_prompt(self) -> bool:
+        with self._cond:
+            tail = bytes(self._buffer[-400:])
+        text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").rstrip(" \t")
+        last = text.splitlines()[-1].strip() if text.strip() else ""
+        return bool(last) and (last.endswith((":", "?", ">", ")", "]")) or "Enter" in last or "(y/n" in last.lower())
 
 
 def _display_argv(argv: list[str]) -> list[str]:
@@ -247,10 +263,16 @@ class SessionManager:
             raise UIError("Unknown run", HTTPStatus.NOT_FOUND)
         return session
 
-    def list(self) -> list[dict[str, Any]]:
+    def list(self, job_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             sessions = list(self._sessions.values())
+        if job_id:
+            sessions = [s for s in sessions if job_id in (s.job_id, s.result_job)]
         return [s.summary() for s in sorted(sessions, key=lambda s: s.started, reverse=True)]
+
+    def running_job_ids(self) -> set[str]:
+        with self._lock:
+            return {s.job_id for s in self._sessions.values() if s.running and s.job_id}
 
     def stop_all(self) -> None:
         with self._lock:
@@ -285,18 +307,73 @@ def git(root: Path, *args: str) -> str:
         return ""
 
 
+KIND_LABELS = {
+    "bug": "Bug fix", "bug-fix": "Bug fix", "bug-investigate": "Bug fix", "quick": "Quick change",
+    "quick-fix": "Quick change", "feature": "Feature", "feature-plan": "Feature", "feature-task": "Feature task",
+    "feature-design": "Design", "design": "Design", "coverage": "Tests", "test-audit": "Tests",
+}
+FAILING_TEST_STATUSES = {"tests-failed", "build-failed", "failed"}
+
+
+def job_state(job: dict[str, Any]) -> dict[str, Any]:
+    """What the job is waiting on, in plain words, and the one action that moves
+    it forward. `group` is needs_you | working | done; `tone` drives colour:
+    attention (amber) = your move, working (blue), done (green), failed (red)."""
+    status = job.get("status") or "unknown"
+    tests = job.get("test_status")
+    pr = job.get("pr_number")
+    tasks = job.get("tasks") if isinstance(job.get("tasks"), list) else []
+    remaining = len(tasks) - len(job.get("completed_tasks") or []) if tasks else 0
+
+    def state(group, tone, label, reason, action=None, action_label=None):
+        return {"group": group, "tone": tone, "label": label, "reason": reason,
+                "next": {"action": action, "label": action_label} if action else None}
+
+    if status == "human-needed":
+        if job.get("human_clarification_question"):
+            return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
+        return state("needs_you", "attention", "Needs you", "Waiting on a decision in the console.", "console", "Open in console")
+    if status == "designing":
+        return state("needs_you", "attention", "Design ready", "Review and approve the design in the console.", "console", "Review design")
+    if status == "planned":
+        return state("needs_you", "attention", "Plan ready", "Approve the plan to start building.", "schedule", "Start")
+    if status == "review-needed":
+        if pr:
+            return state("needs_you", "attention", "Ready to merge", f"PR #{pr} is ready for your review.", "merge", "Merge & complete")
+        return state("needs_you", "attention", "Ready to review", "Changes are ready; finish up in the console.", "console", "Open in console")
+    if status == "debugging":
+        if tests in FAILING_TEST_STATUSES:
+            label = "Build failing" if tests == "build-failed" else "Tests failing"
+            return state("needs_you", "failed", label, "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
+        return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
+    if status == "scheduled":
+        return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
+    if status in {"executing", "running", "in-progress", "decomposed"}:
+        return state("working", "working", "Building", "A worker is implementing this.")
+    if status == "completed":
+        return state("done", "done", "Done", "Merged and archived." if pr else "Finished.")
+    if status == "failed":
+        return state("needs_you", "failed", "Failed", "Last run failed; try a fix.", "debug", "Run fix")
+    if remaining:
+        return state("working", "working", status.replace("-", " ").capitalize(), f"{remaining} task(s) left.", "resume", "Resume")
+    return state("working", "working", status.replace("-", " ").capitalize(), "")
+
+
 def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
     tasks = job.get("tasks") or []
     completed = job.get("completed_tasks") or []
+    kind = job.get("type") or job.get("job_type")
     return {
         "id": path.stem,
         "title": job.get("title") or job.get("summary") or path.stem,
-        "type": job.get("type") or job.get("job_type"),
+        "type": kind,
+        "kind": KIND_LABELS.get(str(kind), str(kind or "Job").replace("-", " ").capitalize()),
         "status": job.get("status") or "unknown",
-        "phase": job.get("phase") or job.get("debug_phase"),
+        "state": job_state(job),
         "branch": job.get("branch"),
         "issue_number": job.get("issue_number"),
         "pr_number": job.get("pr_number"),
+        "question": job.get("human_clarification_question") if job.get("status") == "human-needed" else None,
         "tasks_total": len(tasks) if isinstance(tasks, list) else 0,
         "tasks_done": len(completed) if isinstance(completed, list) else 0,
         "updated": path.stat().st_mtime,
@@ -334,7 +411,36 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
             if f.is_file():
                 outputs.append({"path": str(f.relative_to(runtime_dir(root))), "size": f.stat().st_size,
                                 "mtime": f.stat().st_mtime})
-    return {"summary": job_summary(path, job), "job": job, "outputs": outputs}
+    return {"summary": job_summary(path, job), "job": job, "outputs": outputs,
+            "logs": [resolve_linked_log(root, ref) for ref in linked_logs(job)]}
+
+
+def linked_logs(job: dict[str, Any]) -> list[str]:
+    logs = job.get("last_manual_log_paths") or []
+    if not logs and job.get("last_manual_log_path"):
+        logs = [job["last_manual_log_path"]]
+    return [str(l) for l in logs if l]
+
+
+def resolve_linked_log(root: Path, ref: str) -> dict[str, Any]:
+    """A linked log is a file, a directory of *.log files, or a `cloud:` ref.
+    Returns the viewable files (runtime-dir relative) behind it."""
+    entry: dict[str, Any] = {"ref": ref, "files": []}
+    if ref.startswith("cloud:"):
+        entry["label"] = "Newest device launch (pulled on each fix run)" if ref == "cloud:latest" else f"Device launch {ref[6:]}"
+        return entry
+    base = safe_resolve(runtime_dir(root))
+    candidate = safe_resolve(Path(ref) if Path(ref).is_absolute() else root / ref)
+    entry["label"] = candidate.name
+    if candidate.parent.name == "cloud_logs":
+        meta = read_json_file(candidate / "meta.json")
+        session = meta.get("session") or candidate.name.rsplit("-", 1)[-1]
+        entry["label"] = f"Device logs · launch {session}"
+    if base not in candidate.parents and candidate != base:
+        return entry
+    files = sorted(candidate.glob("*.log")) if candidate.is_dir() else ([candidate] if candidate.is_file() else [])
+    entry["files"] = [str(f.relative_to(base)) for f in files[:10]]
+    return entry
 
 
 def resolve_runtime_file(root: Path, rel: str) -> Path:
@@ -482,6 +588,11 @@ def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("distribute", *(["--notes", notes] if notes else []))
 
 
+def build_answer(params: dict[str, Any], root: Path) -> list[str]:
+    return orchestrator_argv("script", "job_actions.py", "answer", _job_path(params, root),
+                             "--answer", _text(params, "answer", required=True, limit=10_000))
+
+
 def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
     return lambda params, root: orchestrator_argv("script", "manual_run.py", mode)
 
@@ -493,15 +604,20 @@ ACTIONS: dict[str, Action] = {
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
     "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free"]),
-    "fix": Action("Quick fix", build_fix, fields=["feedback", "job"]),
-    "schedule": Action("Schedule job", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
-    "execute": Action("Execute job", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
-    "resume": Action("Resume job", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r), "--resume"), fields=["job"]),
-    "debug": Action("Debug job", build_debug, fields=["job", "logs", "feedback"]),
+    "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
+    "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
+    "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
+    "resume": Action("Resume", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r), "--resume"), fields=["job"]),
+    "debug": Action("Run fix", build_debug, fields=["job", "logs", "feedback"]),
+    "answer": Action("Answer", build_answer, fields=["job", "answer"]),
+    "merge": Action("Merge & complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "merge", _job_path(p, r)),
+                    confirm="Merges the job's PR on GitHub, deletes its AI branch and archives the job.", fields=["job"]),
+    "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
+                      confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
     "test": Action("Test", build_manual("test")),
-    "distribute": Action("Build & distribute to Firebase", build_distribute,
-                         confirm="This archives the current branch and sends a real Firebase release to your testers.",
+    "distribute": Action("Distribute current branch", build_distribute,
+                         confirm="Builds whatever branch is checked out now and sends a real Firebase release to your testers.",
                          fields=["notes"]),
     "logs_setup": Action("Device logs setup", lambda p, r: orchestrator_argv("logs", "setup")),
     "logs_pull": Action("Pull device logs", build_logs_pull, fields=["session", "level", "query"]),
@@ -675,9 +791,15 @@ class UIHandler(BaseHTTPRequestHandler):
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
                                     for k, a in ACTIONS.items()}})
         elif method == "GET" and parts == ["jobs"]:
-            self._json({"jobs": list_jobs(root)})
+            running = self.server.sessions.running_job_ids()
+            jobs = list_jobs(root)
+            for job in jobs:
+                job["active_run"] = job["id"] in running
+            self._json({"jobs": jobs})
         elif method == "GET" and len(parts) == 2 and parts[0] == "jobs":
-            self._json(job_detail(root, parts[1]))
+            detail = job_detail(root, parts[1])
+            detail["runs"] = self.server.sessions.list(job_id=parts[1])
+            self._json(detail)
         elif method == "GET" and parts == ["file"]:
             target = resolve_runtime_file(root, (query.get("path") or [""])[0])
             if target.stat().st_size > MAX_FILE_BYTES:
@@ -737,13 +859,38 @@ class UIHandler(BaseHTTPRequestHandler):
         if not isinstance(params, dict):
             raise UIError("params must be an object")
         argv = action.build(params, root)
+        title = action.title
+        job_id = str(params.get("job") or "") or None
+        if job_id:
+            job_title = job_summary(resolve_job_path(root, job_id), read_json_file(resolve_job_path(root, job_id)))["title"]
+            title = f"{action.title} · {job_title}"
         try:
             cols, rows = int(body.get("cols") or 110), int(body.get("rows") or 32)
         except (TypeError, ValueError):
             raise UIError("cols/rows must be numbers")
-        session = self.server.sessions.start(key, action.title, argv, root, self.server.child_env(),
+        session = self.server.sessions.start(key, title, argv, root, self.server.child_env(),
                                              runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
+        session.job_id = job_id
+        if key in ("new_job", "fix"):
+            self._watch_for_created_job(session, root)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
+
+    def _watch_for_created_job(self, session: PtySession, root: Path) -> None:
+        """Links the job a new-job/fix run creates, so its run can offer "Open job"."""
+        before = {p.name for p in jobs_dir(root).glob("*.json")} if jobs_dir(root).exists() else set()
+
+        def watch() -> None:
+            while True:
+                if jobs_dir(root).exists():
+                    created = [p for p in jobs_dir(root).glob("*.json") if p.name not in before]
+                    if created:
+                        session.result_job = max(created, key=lambda p: p.stat().st_mtime).stem
+                        return
+                if not session.running:
+                    return
+                time.sleep(1)
+
+        threading.Thread(target=watch, daemon=True).start()
 
     def _run_op(self, method: str, sid: str, op: str, query: dict[str, list[str]]) -> None:
         session = self.server.sessions.get(sid)

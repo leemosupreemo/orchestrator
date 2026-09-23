@@ -188,9 +188,60 @@ class ActionTests(unittest.TestCase):
 
     def test_every_action_uses_the_cli_entry_point(self):
         for key, action in ui.ACTIONS.items():
-            params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f"}
+            params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a"}
             argv = action.build(params, self.root)
             self.assertEqual(argv[:3], [sys.executable, "-m", "orchestrator"], key)
+
+
+class JobStateTests(unittest.TestCase):
+    def state(self, **job):
+        return ui.job_state(job)
+
+    def test_each_status_has_one_next_action(self):
+        cases = {
+            "planned": ("needs_you", "attention", "schedule"),
+            "scheduled": ("working", "working", "execute"),
+            "executing": ("working", "working", None),
+            "completed": ("done", "done", None),
+        }
+        for status, (group, tone, action) in cases.items():
+            st = self.state(status=status)
+            self.assertEqual((st["group"], st["tone"], st["next"] and st["next"]["action"]), (group, tone, action), status)
+
+    def test_review_needed_offers_merge_only_with_a_pr(self):
+        self.assertEqual(self.state(status="review-needed", pr_number=141)["next"]["action"], "merge")
+        self.assertEqual(self.state(status="review-needed")["next"]["action"], "console")
+
+    def test_debugging_is_red_only_when_tests_fail(self):
+        failing = self.state(status="debugging", test_status="tests-failed")
+        self.assertEqual((failing["tone"], failing["label"], failing["next"]["action"]), ("failed", "Tests failing", "debug"))
+        self.assertEqual(self.state(status="debugging")["tone"], "attention")
+
+    def test_question_needs_an_answer(self):
+        st = self.state(status="human-needed", human_clarification_question="Which lobby size?")
+        self.assertEqual((st["group"], st["next"]["action"]), ("needs_you", "answer"))
+
+    def test_kind_labels_are_plain_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "j.json"
+            path.write_text("{}")
+            self.assertEqual(ui.job_summary(path, {"type": "bug-fix"})["kind"], "Bug fix")
+            self.assertEqual(ui.job_summary(path, {"type": "test-audit"})["kind"], "Tests")
+
+
+class LinkedLogTests(unittest.TestCase):
+    def test_directories_expand_to_log_files_and_cloud_refs_are_described(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_project(root)
+            pull = root / ".orchestrator" / "output" / "cloud_logs" / "20260921-1a2b"
+            pull.mkdir(parents=True)
+            (pull / "cloud.log").write_text("x")
+            entry = ui.resolve_linked_log(root, ".orchestrator/output/cloud_logs/20260921-1a2b")
+            self.assertEqual(entry["files"], ["output/cloud_logs/20260921-1a2b/cloud.log"])
+            self.assertEqual(ui.resolve_linked_log(root, "cloud:latest")["files"], [])
+            self.assertIn("Newest device launch", ui.resolve_linked_log(root, "cloud:latest")["label"])
+            self.assertEqual(ui.resolve_linked_log(root, "/etc")["files"], [])
 
 
 class PtySessionTests(unittest.TestCase):
@@ -279,6 +330,40 @@ class RunApiTests(ServerTestCase):
         while b"size" not in out and time.time() < deadline:
             out = session.read(0, 0.2)[1]
         self.assertIn(b"size 48 20", out)
+
+    def wait_finished(self, sid, timeout=10):
+        session = self.server.sessions.get(sid)
+        deadline = time.time() + timeout
+        while session.running and time.time() < deadline:
+            time.sleep(0.05)
+        return session
+
+    def test_job_runs_are_titled_and_linked_to_their_job(self):
+        noop = ui.Action("Run fix", lambda p, r: [sys.executable, "-c", "pass"], fields=["job"])
+        with patch.dict(ui.ACTIONS, {"noop": noop}):
+            _, data = self.request("POST", "/api/runs", body={"action": "noop", "params": {"job": "20260922-bug-1"}}, headers=UI_HEADERS)
+        self.assertEqual(data["run"]["title"], "Run fix · Lobby seat stays empty")
+        self.assertEqual(data["run"]["job"], "20260922-bug-1")
+        _, detail = self.request("GET", "/api/jobs/20260922-bug-1")
+        self.assertEqual([r["id"] for r in detail["runs"]], [data["run"]["id"]])
+
+    def test_new_job_run_reports_the_job_it_created(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        script = f"import json,time; time.sleep(0.3); open({str(jobs / 'new-1.json')!r},'w').write(json.dumps({{'title':'x'}}))"
+        fake = ui.Action("New job", lambda p, r: [sys.executable, "-c", script])
+        with patch.dict(ui.ACTIONS, {"new_job": fake}):
+            _, data = self.request("POST", "/api/runs", body={"action": "new_job"}, headers=UI_HEADERS)
+        self.wait_finished(data["run"]["id"])
+        time.sleep(1.2)
+        _, runs = self.request("GET", "/api/runs")
+        self.assertEqual(runs["runs"][0]["result_job"], "new-1")
+
+    def test_jobs_list_marks_jobs_with_a_running_run(self):
+        sleeper = ui.Action("Run fix", lambda p, r: [sys.executable, "-c", "import time; time.sleep(30)"], fields=["job"])
+        with patch.dict(ui.ACTIONS, {"sleep": sleeper}):
+            self.request("POST", "/api/runs", body={"action": "sleep", "params": {"job": "20260922-bug-1"}}, headers=UI_HEADERS)
+        _, data = self.request("GET", "/api/jobs")
+        self.assertTrue(data["jobs"][0]["active_run"])
 
     def test_unknown_action_rejected(self):
         res, data = self.request("POST", "/api/runs", body={"action": "shell", "params": {"cmd": "ls"}}, headers=UI_HEADERS)
