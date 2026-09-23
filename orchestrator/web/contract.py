@@ -55,7 +55,7 @@ JOB_MUTATIONS = frozenset({
 })
 
 INPUT_FIELDS: dict[Operation, frozenset[str]] = {
-    Operation.JOB_CREATE: frozenset({"job_type", "prompt", "quick", "spec_url", "yolo", "branch_mode", "preset", "planner", "builder", "reviewer", "allowed_models", "allowed_machines", "stitch"}),
+    Operation.JOB_CREATE: frozenset({"job_type", "prompt", "repro", "expected", "subsystems", "vibe", "quick", "spec_url", "yolo", "branch_mode", "preset", "planner", "builder", "reviewer", "allowed_models", "allowed_machines", "stitch"}),
     Operation.JOB_REVISE: frozenset({"feedback"}),
     Operation.JOB_ITERATE: frozenset({"feedback"}),
     Operation.JOB_REOPEN_BUG: frozenset({"feedback", "log_paths"}),

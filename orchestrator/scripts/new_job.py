@@ -50,6 +50,23 @@ BRANCH_MODE_CHOICES = ["new", "current", "manual"]
 VERIFICATION_STATUSES = {"approved", "rejected", "concerns"}
 
 
+def web_raw_input(job_type: str, payload: dict) -> str:
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("A job prompt is required")
+    if job_type == "quick":
+        return prompt
+    if job_type == "bug":
+        return f"SUMMARY: {prompt}\n\nREPRO STEPS:\n{payload.get('repro', '')}\n\nEXPECTED BEHAVIOR:\n{payload.get('expected', '')}"
+    if job_type == "coverage":
+        return f"COVERAGE FOCUS: {prompt}\n\nSUBSYSTEMS: {payload.get('subsystems', '')}"
+    if job_type == "design" or payload.get("stitch"):
+        return f"DESIGN VISION: {prompt}\nPREFERRED VIBE: {payload.get('vibe', 'minimalist')}"
+    if job_type == "feature":
+        return f"VISION: {prompt}"
+    raise ValueError("Unsupported job type")
+
+
 def normalize_branch_mode(branch_mode: str | None) -> str:
     if not branch_mode:
         return "new"
@@ -343,7 +360,13 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--stitch", action="store_true", help="Enable Google Stitch AI design phase")
     parser.add_argument("--feedback", help="User feedback for design or plan revision")
     parser.add_argument("--update", help="Path to an existing job JSON to update/re-plan")
+    parser.add_argument("--web-input-file", help="Private JSON file with noninteractive job input")
     args = parser.parse_args(args_override)
+    web_input = None
+    if args.web_input_file:
+        web_input = json.loads(Path(args.web_input_file).read_text(encoding="utf-8"))
+        if not isinstance(web_input, dict):
+            raise ValueError("Web input must be an object")
 
     existing_job = None
     if args.update:
@@ -498,8 +521,11 @@ def main(args_override: list[str] | None = None) -> None:
         print(f"   CREATING QUICK PROMPT JOB")
         print("="*40)
         
-        flush_stdin()
-        instructions = prompt_multiline("What would you like to change or improve?")
+        if web_input is None:
+            flush_stdin()
+            instructions = prompt_multiline("What would you like to change or improve?")
+        else:
+            instructions = web_raw_input("quick", web_input)
         if not instructions.strip():
             raise ValueError("No input provided.")
             
@@ -529,7 +555,11 @@ def main(args_override: list[str] | None = None) -> None:
         clarification = None
 
     else:
-        if file_spec_content:
+        if web_input is not None:
+            raw_input_text = web_raw_input(args.job_type, web_input)
+            if file_spec_content:
+                raw_input_text = f"{file_spec_content}\n\n### ADDITIONAL CONTEXT / OVERRIDES ###\n{raw_input_text}"
+        elif file_spec_content:
             print("\nSpec loaded successfully.")
             flush_stdin()
             additional = prompt_multiline("Additional Context / Overrides (optional):")
