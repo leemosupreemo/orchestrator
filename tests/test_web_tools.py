@@ -167,6 +167,16 @@ class WebToolsTests(unittest.TestCase):
         self.assertTrue(any("first" in update and "second" not in update for update in updates))
         self.assertIn("second", updates[-1])
 
+    def test_package_self_tests_do_not_inherit_selected_project_root(self):
+        captured = {}
+        def fake_run(command, *, cwd, env, timeout, progress):
+            captured.update(cwd=cwd, env=env)
+            return CompletedProcess(command, 0, "OK", "")
+        with patch.dict(tools._run_local.__globals__, {"_run_command": fake_run}):
+            tools._run_local(self.root, Operation.TOOL_SELF_TESTS, {"suite": "all"})
+        self.assertEqual(captured["env"]["ORCHESTRATOR_PROJECT_ROOT"], str(captured["cwd"]))
+        self.assertNotEqual(captured["cwd"], self.root)
+
     def test_streamed_command_times_out_and_keeps_partial_log(self):
         updates = []
         command = [sys.executable, "-u", "-c", "import time; print('started'); time.sleep(5)"]

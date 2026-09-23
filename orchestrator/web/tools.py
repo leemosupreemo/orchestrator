@@ -468,7 +468,7 @@ def _run_local(root: Path, operation: Operation, inputs: dict[str, Any],
         Operation.TOOL_UPDATE: command,
     }
     cwd = _PACKAGE.parent if operation == Operation.TOOL_SELF_TESTS and suite in {"all", "console", "models", "setup"} else root
-    result = _run_command(commands[operation], cwd=cwd, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
+    result = _run_command(commands[operation], cwd=cwd, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(cwd)},
                           timeout=1800, progress=progress)
     response = {"exit_code": result.returncode, "output": (result.stdout + result.stderr)[-20000:]}
     if operation == Operation.TOOL_AUDIT:
