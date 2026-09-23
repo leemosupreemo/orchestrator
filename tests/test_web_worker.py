@@ -18,6 +18,7 @@ class FakeTransport:
         self.jobs = {}
         self.archives = {}
         self.heartbeats = []
+        self.progress_updates = []
 
     def claim(self, command_id):
         command = self.commands.get(command_id)
@@ -28,6 +29,9 @@ class FakeTransport:
 
     def finish(self, command_id, status, result):
         self.results[command_id] = {"status": status, "result": result}
+
+    def progress(self, command_id, output):
+        self.progress_updates.append((command_id, output))
 
     def publish_job(self, project_id, job):
         self.jobs[(project_id, job["job_id"])] = job
@@ -127,6 +131,28 @@ class WebWorkerTests(unittest.TestCase):
                    "operation": "tests.run", "inputs": {"action": "visual"}}
         transport = FakeTransport({"cmd-1": command})
         with patch("orchestrator.web.worker.run_app_tests", return_value={"exit_code": 1, "output": "Xcode test failed"}):
+            Worker({"test": self.root}, transport, owner_email="owner").process("cmd-1")
+        self.assertEqual(transport.results["cmd-1"]["status"], "failed")
+
+    def test_tool_progress_is_redacted_before_publication(self):
+        command = {"status": "queued", "requested_by": "owner", "project_id": "test",
+                   "operation": "tool.self_tests", "inputs": {"suite": "console"}}
+        transport = FakeTransport({"cmd-1": command})
+        def fake_tool(root, operation, inputs, *, progress):
+            progress("API_KEY=verysecret\nRunning console tests")
+            return {"exit_code": 0, "output": "done"}
+        with patch.dict(Worker.process.__globals__, {"run_tool": fake_tool}):
+            Worker({"test": self.root}, transport, owner_email="owner").process("cmd-1")
+        self.assertEqual(transport.results["cmd-1"]["status"], "succeeded")
+        self.assertIn("[REDACTED]", transport.progress_updates[-1][1])
+        self.assertNotIn("verysecret", transport.progress_updates[-1][1])
+
+    def test_failed_model_discovery_is_marked_failed(self):
+        command = {"status": "queued", "requested_by": "owner", "project_id": "test",
+                   "operation": "tool.models", "inputs": {"refresh": True}}
+        transport = FakeTransport({"cmd-1": command})
+        with patch.dict(Worker.process.__globals__, {"run_tool": lambda *args, **kwargs: {
+                "sync": {"success": False, "message": "Discovery failed"}}}):
             Worker({"test": self.root}, transport, owner_email="owner").process("cmd-1")
         self.assertEqual(transport.results["cmd-1"]["status"], "failed")
 

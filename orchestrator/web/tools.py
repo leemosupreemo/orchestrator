@@ -7,9 +7,11 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .contract import INPUT_FIELDS, Operation
 
@@ -25,6 +27,50 @@ _INSTRUCTION_FILES = {
     "DeepSeek": "DEEPSEEK.md", "OpenCode": "OPENCODE.md", "Qwen": "QWEN.md",
 }
 _REQUIRED_DOCS = ("docs/architecture.md", "docs/coding-standards.md", "docs/build-test-commands.md", "docs/ai-workflow.md")
+
+
+def _run_command(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int,
+                 progress: Callable[[str], None] | None = None) -> subprocess.CompletedProcess[str]:
+    if progress is None:
+        return subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=False)
+    process = subprocess.Popen(command, cwd=cwd, env={**env, "PYTHONUNBUFFERED": "1"},
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               encoding="utf-8", errors="replace", bufsize=1)
+    expired = threading.Event()
+    def stop() -> None:
+        expired.set()
+        process.kill()
+    timer = threading.Timer(timeout, stop)
+    timer.daemon = True
+    timer.start()
+    output = ""
+    last_publish = 0.0
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            output = (output + line)[-200000:]
+            if time.monotonic() - last_publish >= 0.5:
+                try:
+                    progress(output[-20000:])
+                except Exception:
+                    pass
+                last_publish = time.monotonic()
+        code = process.wait()
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        timer.cancel()
+        if process.stdout is not None:
+            process.stdout.close()
+    try:
+        progress(output[-20000:])
+    except Exception:
+        pass
+    if expired.is_set():
+        raise subprocess.TimeoutExpired(command, timeout, output=output[-20000:])
+    return subprocess.CompletedProcess(command, code, output, "")
 
 
 def _audit_next_step(name: str, detail: str = "") -> str:
@@ -98,15 +144,19 @@ def _settings_path(root: Path) -> Path:
     return root / ".orchestrator" / "config" / "settings.json"
 
 
-def _models(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
+def _models(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     settings_path = _settings_path(root)
     settings = _read(settings_path, {})
     sync_result = None
     if inputs.get("refresh") or inputs.get("live_discovery"):
+        if progress:
+            progress("Checking available model sources…")
         sys.path.insert(0, str(_PACKAGE / "scripts"))
         from model_registry import sync_models
         success, message = sync_models(live_discovery=bool(inputs.get("live_discovery")))
         sync_result = {"success": success, "message": message}
+        if progress:
+            progress(f"Model discovery {'finished' if success else 'failed'}: {message}")
     catalog = _read(_PACKAGE / "config" / "models.json", {"models": []})["models"]
     if "allowed_models" in inputs:
         selected = inputs["allowed_models"]
@@ -149,13 +199,15 @@ def _keys(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
             "setup": "Run provider sign-in or enter fallback API keys in the local Orchestrator CLI on the Mac worker. Credentials never travel through Firestore."}
 
 
-def _fleet(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
+def _fleet(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     path = root / ".orchestrator" / "config" / "machines.json"
     data = _read(path, {"machines": []})
     action = inputs.get("action", "list")
     settings_path = _settings_path(root)
     settings = _read(settings_path, {})
     if action == "discover":
+        if progress:
+            progress("Looking for remote machines…")
         sys.path.insert(0, str(_PACKAGE / "scripts"))
         from discover_machines import discover_machine_candidates
         return {"candidates": discover_machine_candidates(), "machines": data["machines"]}
@@ -166,7 +218,12 @@ def _fleet(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
         machines = [m for m in data["machines"] if not selected or m.get("name") == selected]
         if not machines:
             raise ValueError("Unknown machine")
-        return {"probes": [probe_machine({**m, "repo_path": m.get("repo_path", str(root))}) for m in machines]}
+        probes = []
+        for machine in machines:
+            if progress:
+                progress(f"Checking {machine['name']}…")
+            probes.append(probe_machine({**machine, "repo_path": machine.get("repo_path", str(root))}))
+        return {"probes": probes}
     if action == "purge":
         selected = inputs.get("machine_ids") or settings.get("web_allowed_machines") or [m["name"] for m in data["machines"]]
         if not isinstance(selected, list) or any(name not in {m["name"] for m in data["machines"]} for name in selected):
@@ -174,9 +231,9 @@ def _fleet(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
         script = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
                   "from common import purge_zombie_processes; "
                   "print(json.dumps({'purged': purge_zombie_processes(json.loads(sys.argv[2]), silent=True)}))")
-        result = subprocess.run([sys.executable, "-c", script, str(_PACKAGE / "scripts"), json.dumps(selected)],
-                                cwd=root, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
-                                capture_output=True, text=True, timeout=300, check=False)
+        result = _run_command([sys.executable, "-c", script, str(_PACKAGE / "scripts"), json.dumps(selected)],
+                              cwd=root, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
+                              timeout=300, progress=progress)
         if result.returncode:
             return {"exit_code": result.returncode, "output": (result.stdout + result.stderr)[-20000:]}
         return json.loads(result.stdout.splitlines()[-1])
@@ -228,7 +285,7 @@ def _fleet(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     return {"machines": data["machines"], "selected": settings.get("web_allowed_machines", [])}
 
 
-def _email_settings(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
+def _email_settings(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     path = _settings_path(root)
     settings = _read(path, {})
     emails = settings.get("notification_emails", [])
@@ -270,10 +327,10 @@ def _email_settings(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
         if not emails:
             raise ValueError("Add a recipient before sending a test")
         provider = settings.get("notification_provider", "gmail")
-        result = subprocess.run([sys.executable, str(_PACKAGE / "scripts" / "notify.py"), f"Test Notification ({provider})",
-                                 f"This is a test message from AI Orchestrator using {provider}.", "test-job-id"],
-                                cwd=root, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
-                                capture_output=True, text=True, timeout=120, check=False)
+        result = _run_command([sys.executable, str(_PACKAGE / "scripts" / "notify.py"), f"Test Notification ({provider})",
+                               f"This is a test message from AI Orchestrator using {provider}.", "test-job-id"],
+                              cwd=root, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
+                              timeout=120, progress=progress)
         return {"exit_code": result.returncode, "output": (result.stdout + result.stderr)[-20000:]}
     elif action != "list":
         raise ValueError("Unknown email action")
@@ -370,7 +427,8 @@ def _archive(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     return {"restored": job_id}
 
 
-def _run_local(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict[str, Any]:
+def _run_local(root: Path, operation: Operation, inputs: dict[str, Any],
+               progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     suite = inputs.get("suite", "all")
     config = _read(root / ".orchestrator" / "project.json", {})
     target = config.get("test_target")
@@ -410,8 +468,8 @@ def _run_local(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict
         Operation.TOOL_UPDATE: command,
     }
     cwd = _PACKAGE.parent if operation == Operation.TOOL_SELF_TESTS and suite in {"all", "console", "models", "setup"} else root
-    result = subprocess.run(commands[operation], cwd=cwd, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
-                            capture_output=True, text=True, timeout=1800, check=False)
+    result = _run_command(commands[operation], cwd=cwd, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
+                          timeout=1800, progress=progress)
     response = {"exit_code": result.returncode, "output": (result.stdout + result.stderr)[-20000:]}
     if operation == Operation.TOOL_AUDIT:
         response["checklist"] = _audit_checklist(result.stdout + result.stderr)
@@ -496,15 +554,16 @@ def run_refresh(root: Path) -> dict[str, Any]:
     return {"archived_jobs": archived, "machine_availability": availability}
 
 
-def run_tool(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict[str, Any]:
+def run_tool(root: Path, operation: Operation, inputs: dict[str, Any], *,
+             progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     if not isinstance(inputs, dict) or set(inputs) - INPUT_FIELDS.get(operation, frozenset()):
         raise ValueError("Unexpected tool input")
     if operation == Operation.TOOL_MODELS:
-        return _models(root, inputs)
+        return _models(root, inputs, progress)
     if operation == Operation.TOOL_KEYS:
         return _keys(root, inputs)
     if operation == Operation.TOOL_FLEET:
-        return _fleet(root, inputs)
+        return _fleet(root, inputs, progress)
     if operation == Operation.TOOL_BASE_BRANCH:
         path = _settings_path(root)
         settings = _read(path, {})
@@ -516,7 +575,7 @@ def run_tool(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict[s
             _write(path, settings)
         return {"branch": settings.get("global_base_branch", "main")}
     if operation == Operation.TOOL_EMAIL:
-        return _email_settings(root, inputs)
+        return _email_settings(root, inputs, progress)
     if operation == Operation.TOOL_DOCS:
         return _docs(root, inputs)
     if operation == Operation.TOOL_INSTRUCTIONS:
@@ -526,8 +585,9 @@ def run_tool(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict[s
     if operation == Operation.TOOL_DISTRIBUTION:
         config = _read(root / ".orchestrator" / "project.json", {})
         if inputs.get("action") == "smoke_test":
-            result = subprocess.run([sys.executable, str(_PACKAGE / "scripts" / "smoke_test_delivery.py"), "--non-interactive"],
-                                    cwd=root, capture_output=True, text=True, timeout=1800, check=False)
+            result = _run_command([sys.executable, str(_PACKAGE / "scripts" / "smoke_test_delivery.py"), "--non-interactive"],
+                                  cwd=root, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
+                                  timeout=1800, progress=progress)
             return {"exit_code": result.returncode, "output": (result.stdout + result.stderr)[-20000:]}
         if inputs.get("action", "status") != "status":
             raise ValueError("Unknown distribution action")
@@ -559,5 +619,5 @@ def run_tool(root: Path, operation: Operation, inputs: dict[str, Any]) -> dict[s
     if operation == Operation.TOOL_PROJECT:
         return {"current": str(root), "change": "Select another configured project in the web project picker."}
     if operation in {Operation.TOOL_AUDIT, Operation.TOOL_SELF_TESTS, Operation.TOOL_UPDATE}:
-        return _run_local(root, operation, inputs)
+        return _run_local(root, operation, inputs, progress)
     raise ValueError("Unknown tool operation")

@@ -6,10 +6,11 @@ import unittest
 import types
 import sys
 from unittest.mock import patch
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 from pathlib import Path
 
 from orchestrator.web.contract import Operation
+from orchestrator.web import tools
 from orchestrator.web.tools import run_tool, run_app_tests, run_refresh
 
 
@@ -154,6 +155,25 @@ class WebToolsTests(unittest.TestCase):
         with patch("orchestrator.web.tools.subprocess.run", return_value=CompletedProcess([], 0, "ok", "")) as run:
             run_tool(self.root, Operation.TOOL_DISTRIBUTION, {"action": "smoke_test"})
         self.assertIn("--non-interactive", run.call_args.args[0])
+
+    def test_long_running_command_reports_output_before_completion(self):
+        updates = []
+        command = [sys.executable, "-u", "-c", "import time; print('first'); time.sleep(.3); print('second')"]
+        self.assertTrue(hasattr(tools, "_run_command"))
+        result = tools._run_command(command, cwd=self.root, env={}, timeout=5, progress=updates.append)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("first", result.stdout)
+        self.assertIn("second", result.stdout)
+        self.assertTrue(any("first" in update and "second" not in update for update in updates))
+        self.assertIn("second", updates[-1])
+
+    def test_streamed_command_times_out_and_keeps_partial_log(self):
+        updates = []
+        command = [sys.executable, "-u", "-c", "import time; print('started'); time.sleep(5)"]
+        with self.assertRaises(TimeoutExpired) as ended:
+            tools._run_command(command, cwd=self.root, env={}, timeout=1, progress=updates.append)
+        self.assertIn("started", ended.exception.output)
+        self.assertIn("started", updates[-1])
 
     def test_distribution_status_reports_login_and_project_without_account(self):
         (self.root / ".firebaserc").write_text('{"projects":{"default":"example-project"}}')

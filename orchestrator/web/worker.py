@@ -98,8 +98,10 @@ class Worker:
                     result = run_refresh(root)
                     self.reconcile()
                 else:
-                    result = run_tool(root, command.operation, command.inputs)
-            status = "failed" if isinstance(result, dict) and result.get("exit_code", 0) != 0 else "succeeded"
+                    result = run_tool(root, command.operation, command.inputs,
+                                      progress=lambda output: self.transport.progress(command_id, redact_text(output)))
+            status = "failed" if isinstance(result, dict) and (result.get("exit_code", 0) != 0 or
+                      isinstance(result.get("sync"), dict) and result["sync"].get("success") is False) else "succeeded"
             self.transport.finish(command_id, status, redact_data(result))
         except Exception as exc:
             self.transport.finish(command_id, "failed", {"error": redact_text(str(exc))})

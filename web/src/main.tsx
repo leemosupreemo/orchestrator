@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth, db, signIn, logOut, collection, doc, onSnapshot, query, orderBy, limit, setDoc, updateDoc, serverTimestamp } from './firebase';
 import menu from './menu.json';
+import { RunLog, ToolOutput } from './tool-output';
 import './style.css';
 
 type Data = Record<string, any>;
@@ -70,7 +71,7 @@ function App() {
   {view==='tests' && <AppTests project={project} commands={commands} onSubmit={(op,inputs,stay)=>submit(op,inputs,undefined,stay)} busy={busy}/>}
   {view==='new' && <NewJob onSubmit={inputs=>submit('job.create',inputs)} busy={busy} defaultModels={commands.find(x=>x.operation==='tool.models'&&x.project_id===project&&x.status==='succeeded'&&x.result?.selected)?.result?.selected||['codex']} defaultMachines={commands.find(x=>x.operation==='tool.fleet'&&x.project_id===project&&x.status==='succeeded'&&x.result?.selected?.length)?.result?.selected||['local']}/>}
   {view==='tools' && <div className="page"><div className="page-heading"><div><div className="eyebrow">CLI CONFIGURATION</div><h1>Configuration & Tools</h1><p>Manage the same tools available in the terminal.</p></div></div><div className="tools-grid"><label className="field tool-picker"><span>Tool</span><select value={tool.operation} onChange={e=>setTool(menu.tools.find(item=>item.operation===e.target.value)||menu.tools[0])}>{menu.tools.map(item=><option key={item.operation} value={item.operation}>{item.label}</option>)}</select></label><ToolPanel item={tool} project={project} onSubmit={(op,inputs)=>submit(op,inputs,undefined,true)} busy={busy} commands={commands} projects={worker.project_ids||[project]} onProject={setProject}/></div></div>}
-  {view==='activity' && <div className="page"><div className="page-heading"><div><div className="eyebrow">COMMAND HISTORY</div><h1>Activity</h1><p>Queued commands wait for the Mac worker. Results appear here when they finish.</p></div></div><div className="panel activity">{commands.length?commands.map(cmd=><div className="activity-row" key={cmd.id}><div><strong>{cmd.operation}</strong><small>{cmd.project_id}{cmd.job_id?' · '+cmd.job_id:''} · {cmd.id}</small></div><span className={'badge '+cmd.status}>{cmd.status}</span>{cmd.status==='queued'&&<button className="secondary" onClick={()=>updateDoc(doc(db,'commands',cmd.id),{status:'cancelled'}).catch(e=>setError(safeMessage(e)))}>Cancel</button>}{cmd.output && <pre>{cmd.output}</pre>}{cmd.result && <pre>{JSON.stringify(cmd.result,null,2)}</pre>}</div>):<div className="empty"><h3>No commands yet</h3><p>Actions you run from this interface appear here.</p></div>}</div></div>}
+  {view==='activity' && <div className="page"><div className="page-heading"><div><div className="eyebrow">COMMAND HISTORY</div><h1>Activity</h1><p>Queued commands wait for the Mac worker. Results appear here when they finish.</p></div></div><div className="panel activity">{commands.length?commands.map(cmd=><div className="activity-row" key={cmd.id}><div><strong>{cmd.operation}</strong><small>{cmd.project_id}{cmd.job_id?' · '+cmd.job_id:''} · {cmd.id}</small></div><span className={'badge '+cmd.status}>{cmd.status}</span>{cmd.status==='queued'&&<button className="secondary" onClick={()=>updateDoc(doc(db,'commands',cmd.id),{status:'cancelled'}).catch(e=>setError(safeMessage(e)))}>Cancel</button>}{cmd.operation?.startsWith('tool.')?(cmd.operation==='tool.audit'?<AuditResult command={cmd}/>:<ToolOutput command={cmd}/>):<>{cmd.output && <pre>{cmd.output}</pre>}{cmd.result && <pre>{JSON.stringify(cmd.result,null,2)}</pre>}</>}</div>):<div className="empty"><h3>No commands yet</h3><p>Actions you run from this interface appear here.</p></div>}</div></div>}
   </main></div>;
 }
 function AppTests({project,commands,onSubmit,busy}:{project:string;commands:Data[];onSubmit:(operation:string,inputs?:Data,stay?:boolean)=>void;busy:boolean}) {
@@ -168,7 +169,7 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject}:{ite
     {((op==='tool.fleet'&&action==='add')||(op==='tool.instructions'&&action==='write')||(op==='tool.email'&&action==='import'))&&<Field label={op==='tool.fleet'?'Absolute remote repository path':op==='tool.instructions'?'Instruction content':'Paste CSV or email addresses'} value={content} onChange={setContent} textarea={op!=='tool.fleet'}/>}
     {op==='tool.models'&&models.length>0&&<p>Available: {models.map(m=>m.id).join(', ')}</p>}
     <button className="primary" disabled={busy||(needsName&&!name)||(op==='tool.email'&&action==='provider'&&!value)||(op==='tool.fleet'&&['select','add','rename'].includes(action)&&!value)||(op==='tool.models'&&action==='select'&&!value)||(op==='tool.base_branch'&&action==='set'&&!value)} onClick={run}>Run {opts.find(x=>x[0]===action)?.[1]} →</button>
-    {latest&&(op==='tool.audit'?<AuditResult command={latest}/>:<div className="tool-result"><div className="eyebrow">LATEST RESULT · {latest.status}</div>{latest.error&&<p className="error">{latest.error}</p>}{latest.output&&<pre>{latest.output}</pre>}{latest.result&&<pre>{JSON.stringify(latest.result,null,2)}</pre>}</div>)}
+    {latest&&(op==='tool.audit'?<AuditResult command={latest}/>:<ToolOutput command={latest}/>)}
   </div>;
 }
 function AuditResult({command}:{command:Data}) {
@@ -183,7 +184,7 @@ function AuditResult({command}:{command:Data}) {
   const issueCount=attention.length+machineIssues.length;
   return <div className="tool-result audit-result"><div className="eyebrow">PREREQUISITE AUDIT · {command.status}</div>
     {command.error&&<p className="error">{command.error}</p>}
-    {['queued','running'].includes(command.status)?<p>The Mac worker is checking this project and its machines. Results will appear here.</p>:<>
+    {['queued','running'].includes(command.status)?<><p>The Mac worker is checking this project and its machines. Results will appear here.</p><RunLog command={command}/></>:<>
       <h3>{!checks.length?'Audit details unavailable':issueCount?`${issueCount} item${issueCount===1?'':'s'} need attention`:'Core setup looks ready'}</h3>
       <p>{!checks.length?'The audit did not return a readable checklist. Review the technical output below.':issueCount?'Work through the items below, then run the audit again. Some optional tools may be absent without blocking your work.':'The audit found no required setup problems. Optional tools may still be unconfigured.'}</p>
       <h3>Setup checklist</h3>
@@ -191,7 +192,7 @@ function AuditResult({command}:{command:Data}) {
       <h3>What needs attention</h3>
       {issueCount?<ul className="audit-missing">{[...attention,...machineIssues].map((check,i)=><li key={`${check.name}-${i}`}><strong>{check.name}</strong><span>{check.next_step}</span></li>)}</ul>:<p>Nothing required is missing.</p>}
       {machines.length>0&&<><h3>Machines</h3><div className="audit-machines">{machines.map((machine,i)=>{const available=Object.entries(machine.binaries||{}).filter(([,present])=>present).map(([name])=>name);const missing=Object.entries(machine.binaries||{}).filter(([,present])=>!present).map(([name])=>name);return <div key={`${machine.machine}-${i}`} className="audit-machine"><strong>{machine.machine||`Machine ${i+1}`} · {machine.reachable?'Online':'Offline'}</strong><small>Project folder: {machine.repo_path_ok===false?'Missing':machine.repo_path_ok===true?'Found':'Unknown'}</small><small>Available tools: {available.join(', ')||'None reported'}</small><small>Tools not found: {missing.join(', ')||'None reported'} (some are optional)</small></div>})}</div></>}
-      <details className="audit-technical"><summary>Technical output</summary><pre>{result.output||JSON.stringify(result,null,2)}</pre></details>
+      <RunLog command={command}/>
     </>}
   </div>;
 }
