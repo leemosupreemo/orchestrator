@@ -165,7 +165,12 @@ def _models(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] 
             raise ValueError("Choose valid models")
         settings["web_allowed_models"] = selected
         _write(settings_path, settings)
-    return {"models": catalog, "selected": settings.get("web_allowed_models", []), "sync": sync_result}
+    default = next((model["id"] for model in catalog if "codex" in model.get("aliases", [])), None)
+    valid_ids = {model["id"] for model in catalog}
+    selected = [model for model in (settings.get("web_allowed_models") or []) if model in valid_ids]
+    if not selected:
+        selected = [default] if default else []
+    return {"models": catalog, "selected": selected, "sync": sync_result}
 
 
 def _keys(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:

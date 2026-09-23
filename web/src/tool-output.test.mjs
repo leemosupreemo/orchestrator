@@ -36,17 +36,19 @@ test('failed model discovery shows its reason', () => {
   assert.match(html, /Failed/);
 });
 
-test('model catalog displays readable cards and selected defaults', () => {
-  const models = [{ id: 'gpt-5.5', family: 'openai', tier: 'HIGH', capabilities: ['reasoning', 'coding'], required_clis: ['codex'] }];
+test('model catalog displays enabled and disabled cards', () => {
+  const models = [{ id: 'gpt-5.5', family: 'openai', tier: 'HIGH', capabilities: ['reasoning', 'coding'], required_clis: ['codex'] }, { id: 'claude-opus', family: 'claude', tier: 'HIGH', capabilities: ['coding'], required_clis: ['claude'] }];
   const html = render({ operation: 'tool.models', inputs: {}, status: 'succeeded', result: { models, selected: ['gpt-5.5'] } });
   assert.match(html, /gpt-5\.5/);
   assert.match(html, /OpenAI · High tier/);
   assert.match(html, /Reasoning/);
   assert.match(html, /Requires codex CLI/);
-  assert.match(html, /Selected/);
+  assert.match(html, /Enabled/);
+  assert.match(html, /Disabled/);
   assert.doesNotMatch(html, /Available: gpt-5\.5/);
   const selection = renderToStaticMarkup(createElement(ModelList, { models, selected: ['gpt-5.5'], onToggle: () => {} }));
-  assert.match(selection, /type="checkbox" checked=""/);
+  assert.match(selection, /aria-label="Enable gpt-5\.5" disabled="" checked=""/);
+  assert.match(selection, /aria-label="Enable claude-opus"/);
 });
 
 test('other tool lists display one item per line', () => {

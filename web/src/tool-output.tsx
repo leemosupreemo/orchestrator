@@ -7,15 +7,15 @@ const statusText:Record<string,string> = {queued:'Waiting for Mac worker',runnin
 const hidden = new Set(['output','exit_code','checklist','fleet','models']);
 const providerName:Record<string,string> = {openai:'OpenAI',claude:'Claude',gemini:'Gemini'};
 
-export function ModelList({models,selected=[],onToggle}:{models:Data[];selected?:string[];onToggle?:(id:string)=>void}) {
+export function ModelList({models,selected=[],onToggle,disabled=false}:{models:Data[];selected?:string[];onToggle?:(id:string)=>void;disabled?:boolean}) {
   if(!models.length)return <p>No models are available in the catalog.</p>;
   return <div className="model-list" aria-label="Available LLM models">{models.map(model=>{
     const checked=selected.includes(model.id);
-    const content=<><span className="model-card-heading"><strong>{model.id}</strong>{checked&&<span className="model-selected">Selected</span>}</span>
+    const content=<><span className="model-card-heading"><strong>{model.id}</strong><span className={`model-selected ${checked?'enabled':'disabled'}`}>{checked?'Enabled':'Disabled'}</span></span>
       <span className="model-card-meta">{providerName[model.family]||title(String(model.family||'Unknown provider'))} · {title(String(model.tier||'Unrated').toLowerCase())} tier</span>
       {Array.isArray(model.capabilities)&&model.capabilities.length>0&&<span className="model-card-tags">{model.capabilities.map((capability:string)=><span key={capability}>{title(capability)}</span>)}</span>}
       {Array.isArray(model.required_clis)&&model.required_clis.length>0&&<small>Requires {model.required_clis.join(', ')} CLI</small>}</>;
-    return onToggle?<label className={`model-card selectable${checked?' selected':''}`} key={model.id}><input type="checkbox" checked={checked} onChange={()=>onToggle(model.id)}/><span>{content}</span></label>:<div className="model-card" key={model.id}>{content}</div>;
+    return onToggle?<label className={`model-card selectable${checked?' selected':''}`} key={model.id}><input type="checkbox" aria-label={`Enable ${model.id}`} checked={checked} disabled={disabled||(checked&&selected.length===1)} onChange={()=>onToggle(model.id)}/><span>{content}</span></label>:<div className="model-card" key={model.id}>{content}</div>;
   })}</div>;
 }
 
@@ -48,6 +48,7 @@ function summary(command:Data):string {
   if(command.operation==='tool.fleet'&&command.inputs?.action==='probe')return `${result.probes?.length||0} machine${result.probes?.length===1?'':'s'} checked.`;
   if(command.operation==='tool.fleet'&&command.inputs?.action==='discover')return `${result.candidates?.suitable?.length||0} suitable remote machine${result.candidates?.suitable?.length===1?'':'s'} found.`;
   if(command.operation==='tool.models'&&result.sync)return result.sync.message|| (result.sync.success?'Model catalog refreshed.':'Model discovery did not complete.');
+  if(command.operation==='tool.models'&&Array.isArray(result.selected))return `${result.selected.length} model${result.selected.length===1?'':'s'} enabled for new jobs.`;
   if(command.operation==='tool.keys')return 'Provider sign-in and fallback key status checked on the Mac.';
   if(command.operation==='tool.fleet'&&Array.isArray(result.machines))return `${result.machines.length} machine${result.machines.length===1?'':'s'} configured.`;
   if(command.operation==='tool.email'&&Array.isArray(result.notification_emails))return `${result.notification_emails.length} notification recipient${result.notification_emails.length===1?'':'s'} configured.`;

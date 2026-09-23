@@ -32,6 +32,18 @@ class WebToolsTests(unittest.TestCase):
         settings = json.loads((self.root / ".orchestrator" / "config" / "settings.json").read_text())
         self.assertEqual(settings["global_base_branch"], "develop")
 
+    def test_model_catalog_shows_effective_default_and_saved_selection(self):
+        catalog = run_tool(self.root, Operation.TOOL_MODELS, {})
+        default = next(model["id"] for model in catalog["models"] if "codex" in model.get("aliases", []))
+        self.assertEqual(catalog["selected"], [default])
+        other = next(model["id"] for model in catalog["models"] if model["id"] != default)
+        selected = run_tool(self.root, Operation.TOOL_MODELS, {"allowed_models": [other]})
+        self.assertEqual(selected["selected"], [other])
+        self.assertEqual(run_tool(self.root, Operation.TOOL_MODELS, {})["selected"], [other])
+        (self.root / ".orchestrator" / "config" / "settings.json").write_text(
+            json.dumps({"web_allowed_models": ["retired-model"]}))
+        self.assertEqual(run_tool(self.root, Operation.TOOL_MODELS, {})["selected"], [default])
+
     def test_email_settings_can_add_recipient(self):
         result = run_tool(self.root, Operation.TOOL_EMAIL, {"action": "add", "email": "me@example.com"})
         self.assertEqual(result["notification_emails"], ["me@example.com"])
