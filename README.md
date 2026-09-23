@@ -117,6 +117,8 @@ For iOS projects, Orchestrator can archive and sign an app, upload the IPA to Fi
 
 For a phone-operated workflow, use [Secure ShellFish](https://secureshellfish.app/) on iPhone or iPad to connect over SSH to the machine running Orchestrator. From there, you can coordinate the job, run builds and tests, and distribute the resulting beta build through Firebase.
 
+Runtime logs from those device builds come back the same way: the app ships them to Sentry Logs, and `orchestrator logs pull --latest` (or **Link Logs → Pull Device Logs** in the console) downloads the newest launch and links it to the job. Run `orchestrator logs setup` once per project. See [Device Logs](docs/user-guide.md#device-logs).
+
 ---
 
 ## ⚙️ Project Configuration

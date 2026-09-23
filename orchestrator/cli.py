@@ -2273,6 +2273,15 @@ def _main(argv: list[str] | None = None) -> int:
     fix_parser.add_argument("--project", help="Recent project name or project root path")
     fix_parser.add_argument("--free", action="store_true", help="Restrict execution to free models only (cost_factor == 0.0)")
 
+    logs_parser = subparsers.add_parser(
+        "logs",
+        help="App runtime logs from the central log store (setup | sessions | pull | tail)",
+        description="Run 'orchestrator logs <action> --help' for options.",
+    )
+    logs_parser.add_argument("--project", help="Recent project name or project root path")
+    logs_parser.add_argument("logs_args", nargs=argparse.REMAINDER,
+                             help="setup | sessions | pull [--latest|--session ID] | tail")
+
     passthrough = subparsers.add_parser("script")
     passthrough.add_argument("--project", help="Recent project name or project root path")
     passthrough.add_argument("script_name")
@@ -2329,6 +2338,10 @@ def _main(argv: list[str] | None = None) -> int:
         if args.fleet and args.project and apply_project_env(args.project):
             return 1
         return update_command(args)
+    if args.command == "logs":
+        if args.project and apply_project_env(args.project):
+            return 1
+        return run_script("cloud_logs.py", args.logs_args or ["--help"])
     if args.command == "script":
         if args.project and apply_project_env(args.project):
             return 1

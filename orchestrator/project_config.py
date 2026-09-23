@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -256,6 +256,8 @@ class ProjectConfig:
     signing_style: str | None = None
     firebase_testers: str | None = None
     firebase_groups: str | None = None
+    # Central runtime-log store the app ships to; see scripts/cloud_logs.py.
+    remote_logs: dict[str, Any] = field(default_factory=dict)
 
     @property
     def stack(self) -> Any:
@@ -428,6 +430,7 @@ def load_project_config() -> ProjectConfig:
         signing_style=data.get("signing_style", "automatic"),
         firebase_testers=data.get("firebase_testers"),
         firebase_groups=data.get("firebase_groups"),
+        remote_logs=data.get("remote_logs") or {},
     )
 
 
