@@ -48,6 +48,16 @@ function summary(command:Data):string {
   if(command.operation==='tool.fleet'&&command.inputs?.action==='probe')return `${result.probes?.length||0} machine${result.probes?.length===1?'':'s'} checked.`;
   if(command.operation==='tool.fleet'&&command.inputs?.action==='discover')return `${result.candidates?.suitable?.length||0} suitable remote machine${result.candidates?.suitable?.length===1?'':'s'} found.`;
   if(command.operation==='tool.models'&&result.sync)return result.sync.message|| (result.sync.success?'Model catalog refreshed.':'Model discovery did not complete.');
+  if(command.operation==='tool.keys')return 'Provider sign-in and fallback key status checked on the Mac.';
+  if(command.operation==='tool.fleet'&&Array.isArray(result.machines))return `${result.machines.length} machine${result.machines.length===1?'':'s'} configured.`;
+  if(command.operation==='tool.email'&&Array.isArray(result.notification_emails))return `${result.notification_emails.length} notification recipient${result.notification_emails.length===1?'':'s'} configured.`;
+  if(command.operation==='tool.instructions'&&result.files)return 'Instruction files checked. Items needing attention are marked below.';
+  if(command.operation==='tool.distribution'&&command.inputs?.action!=='smoke_test')return 'Delivery setup checked. Review the readiness items below.';
+  if(command.operation==='tool.base_branch')return `Default branch: ${result.branch||'not set'}.`;
+  if(command.operation==='tool.project')return `Current project: ${result.current||'not set'}.`;
+  if(command.operation==='tool.archive')return result.restored?`Restored ${result.restored}.`:`${result.jobs?.length||0} archived job${result.jobs?.length===1?'':'s'} found.`;
+  if(command.operation==='tool.docs')return result.name?`Opened ${result.name}.`:`${result.documents?.length||0} document${result.documents?.length===1?'':'s'} available.`;
+  if(command.operation==='tool.update'&&command.inputs?.action==='status')return `Mac package version ${result.version||'unknown'}.`;
   return 'The action completed. Details are below.';
 }
 
@@ -72,17 +82,58 @@ function Detail({label,value}:{label:string;value:any}) {
   return <div className="run-detail"><span>{title(label)}</span><strong>{valueText(value)}</strong></div>;
 }
 
+function CheckList({items}:{items:{label:string;ok:boolean;detail?:string;optional?:boolean}[]}) {
+  return <div className="result-checks">{items.map(item=><div className={`result-check ${item.ok?'ready':item.optional?'optional':'missing'}`} key={item.label}><span aria-hidden="true">{item.ok?'✓':item.optional?'·':'!'}</span><div><strong>{item.label}</strong>{item.detail&&<small>{item.detail}</small>}</div></div>)}</div>;
+}
+
+function ResultSections({command,result}:{command:Data;result:Data}) {
+  if(command.operation==='tool.keys') {
+    const cli=result.cli_status||{};
+    const keys=result.configured||{};
+    return <><h4>CLI sign-in</h4><CheckList items={Object.entries(cli).map(([name,state])=>{const signIn=result.sign_in_commands?.[name==='gh'?'github':name];return {label:providerName[name]||title(name),ok:state==='Ready',detail:String(state)+(state==='Ready'||!signIn?'':` · On the Mac: ${signIn}`)};})}/><h4>Fallback API keys</h4><CheckList items={Object.entries(keys).map(([name,configured])=>({label:providerName[name]||title(name),ok:Boolean(configured),optional:true,detail:configured?'Configured on Mac':'Not configured (optional if CLI sign-in works)'}))}/>{result.setup&&<p>{result.setup}</p>}</>;
+  }
+  if(command.operation==='tool.fleet') {
+    const machines:Data[]=result.machines||[];
+    const probes:Data[]=result.probes||[];
+    const candidates:Data=result.candidates||{};
+    return <>{machines.length>0&&<><h4>Configured machines</h4><div className="result-cards">{machines.map(machine=><div className="result-card" key={machine.name}><strong>{machine.name}</strong><span>{machine.execution_mode==='ssh'?'Remote':'Local'} · {machine.enabled===false?'Disabled':'Enabled'}{result.selected?.includes(machine.name)?' · Selected':''}</span>{machine.ssh_target&&<small>SSH: {valueText(machine.ssh_target)}</small>}{machine.repo_path&&<small>Project path: {machine.repo_path}</small>}</div>)}</div></>}{probes.length>0&&<><h4>Machine checks</h4><div className="result-cards">{probes.map((probe,i)=>{const missing=Object.entries(probe.binaries||{}).filter(([,ready])=>!ready).map(([name])=>name);const path=probe.repo_path_ok===true?'found':probe.repo_path_ok===false?'missing':'unknown';return <div className="result-card" key={probe.machine||i}><strong>{probe.machine||`Machine ${i+1}`}</strong><span>{probe.reachable?'Online':'Offline'} · Project path {path}</span><small>Tools not found: {missing.join(', ')||'None'}</small>{probe.error&&<small>{probe.error}</small>}</div>})}</div></>}{Object.keys(candidates).length>0&&<><h4>Discovery</h4>{Object.entries(candidates).map(([group,items])=><div key={group}><p>{title(group)} · {Array.isArray(items)?items.length:0}</p>{Array.isArray(items)&&items.length>0&&<div className="result-cards">{items.map((item:Data,i:number)=><div className="result-card" key={item.host||i}><strong>{item.hostname||item.host||`Machine ${i+1}`}</strong><span>{item.status||title(group)}</span>{item.error&&<small>{item.error}</small>}</div>)}</div>}</div>)}</>}</>;
+  }
+  if(command.operation==='tool.instructions') {
+    const files=result.files||{};
+    return <>{Object.keys(files).length>0&&<><h4>Instruction files</h4><CheckList items={Object.entries(files).map(([name,entry])=>{const state=typeof entry==='object'?(entry as Data).status:entry;return {label:typeof entry==='object'?(entry as Data).path||name:name,ok:state==='valid',detail:state==='missing'?'File is missing. Use Create missing files.':state==='misconfigured'?'Required links are missing. Use Repair missing links.':'Ready'};})}/></>}{Array.isArray(result.role_prompts)&&<><h4>Role prompts · {result.role_prompts.length}</h4>{result.role_prompts.length?<ul className="run-value-list">{result.role_prompts.map((name:string)=><li key={name}>{name}</li>)}</ul>:<p>No role prompts copied.</p>}</>}{typeof result.content==='string'&&<><h4>{result.name||'Instruction content'}</h4><pre className="result-content">{result.content}</pre></>}</>;
+  }
+  if(command.operation==='tool.email'&&result.notification_emails) {
+    return <><h4>Sender</h4><CheckList items={[{label:result.notification_provider==='resend'?'Resend':'Gmail',ok:Boolean(result.sender_ready),detail:result.sender_ready?'Sender credentials ready':'Sender credentials need setup on the Mac'}]}/><p>{result.sender_email||'No sender address set'}{result.display_name?` · ${result.display_name}`:''}</p><h4>Recipients · {result.notification_emails.length}</h4>{result.notification_emails.length?<ul className="run-value-list">{result.notification_emails.map((email:string)=><li key={email}>{email}</li>)}</ul>:<p>No recipients added.</p>}</>;
+  }
+  if(command.operation==='tool.docs')return <>{typeof result.content==='string'&&<><h4>{result.name}</h4><pre className="result-content">{result.content}</pre></>}</>;
+  if(command.operation==='tool.distribution'&&command.inputs?.action!=='smoke_test') {
+    return <><h4>Delivery readiness</h4><CheckList items={[{label:'Distribution configured',ok:Boolean(result.configured)},{label:'Firebase CLI installed',ok:Boolean(result.firebase_cli)},{label:'Firebase signed in',ok:Boolean(result.firebase_logged_in)},{label:'Google service file',ok:Boolean(result.google_service_info)},{label:'Export options',ok:Boolean(result.export_options)},{label:'Headless signing',ok:Boolean(result.headless_signing),optional:true,detail:'Needed for unattended signing; manual signing can use another setup.'}]}/>{result.setup&&<p>{result.setup}</p>}</>;
+  }
+  return null;
+}
+
+const specializedKeys:Record<string,string[]>={
+  'tool.keys':['cli_status','configured','cli_available','sign_in_commands','setup'],
+  'tool.fleet':['machines','selected','probes','candidates'],
+  'tool.instructions':['files','role_prompts','content'],
+  'tool.email':['notification_emails','notification_provider','sender_email','display_name','sender_ready'],
+  'tool.docs':['content'],
+  'tool.distribution':['configured','firebase_cli','firebase_logged_in','google_service_info','export_options','headless_signing','setup'],
+};
+
 export function ToolOutput({command,showModels=true}:{command:Data;showModels?:boolean}) {
   const result=command.result||{};
   const label=menu.tools.find(item=>item.operation===command.operation)?.label||title(command.operation||'Tool');
   const action=command.inputs?.action||command.inputs?.suite||(command.inputs?.live_discovery?'live discovery':command.inputs?.refresh?'refresh':undefined);
-  const details=Object.entries(result).filter(([key])=>!hidden.has(key)&&!(command.operation==='tool.models'&&key==='selected'));
+  const customKeys=specializedKeys[command.operation]||[];
+  const details=Object.entries(result).filter(([key])=>!hidden.has(key)&&!customKeys.includes(key)&&!(command.operation==='tool.models'&&key==='selected'));
   const hasLog=Boolean(command.output||result.output||['queued','running'].includes(command.status));
   return <div className="tool-result organized-result">
     <div className="run-heading"><div><div className="eyebrow">{label}{action?` · ${title(String(action))}`:''}</div><h3>{statusText[command.status]||title(command.status||'Status')}</h3></div><span className={`badge ${command.status}`}>{command.status}</span></div>
     <p>{summary(command)}</p>
     {command.operation==='tool.models'&&Array.isArray(result.models)&&<><p>{result.models.length} model{result.models.length===1?'':'s'} in the catalog.</p>{showModels&&<ModelList models={result.models} selected={result.selected||[]}/>}</>}
     {command.operation==='tool.fleet'&&Array.isArray(result.fleet)&&<p>{result.fleet.length} machines in the fleet.</p>}
+    <ResultSections command={command} result={result}/>
     {details.length>0&&<div className="run-facts">{details.map(([key,value])=><Detail key={key} label={key} value={value}/>)}</div>}
     {hasLog&&<RunLog command={command}/>}
     {Object.keys(result).length>0&&<details className="run-log"><summary>Full result data</summary><pre>{JSON.stringify(result,null,2)}</pre></details>}

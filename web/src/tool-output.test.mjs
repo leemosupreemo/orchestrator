@@ -54,3 +54,51 @@ test('other tool lists display one item per line', () => {
   assert.match(html, /<li>guide\.md<\/li><li>architecture\.md<\/li>/);
   assert.doesNotMatch(html, /guide\.md, architecture\.md/);
 });
+
+test('provider readiness separates sign-in from fallback keys', () => {
+  const html = render({ operation: 'tool.keys', inputs: { action: 'status' }, status: 'succeeded', result: { cli_status: { codex: 'Ready', claude: 'Not installed' }, configured: { openai: false }, sign_in_commands: { claude: 'claude auth login' } } });
+  assert.match(html, /CLI sign-in/);
+  assert.match(html, /Fallback API keys/);
+  assert.match(html, /On the Mac: claude auth login/);
+  assert.match(html, /Not configured \(optional if CLI sign-in works\)/);
+});
+
+test('fleet output identifies selected machines and failed probes', () => {
+  const html = render({ operation: 'tool.fleet', inputs: { action: 'probe' }, status: 'succeeded', result: { machines: [{ name: 'builder', execution_mode: 'ssh', enabled: true, ssh_target: 'builder.local' }], selected: ['builder'], probes: [{ machine: 'builder', reachable: false, repo_path_ok: false, binaries: { codex: false } }] } });
+  assert.match(html, /Remote · Enabled · Selected/);
+  assert.match(html, /Offline · Project path missing/);
+  assert.match(html, /Tools not found: codex/);
+});
+
+test('instruction and document contents have readable sections', () => {
+  const instructions = render({ operation: 'tool.instructions', inputs: { action: 'list' }, status: 'succeeded', result: { files: { 'AGENTS.md': 'missing', 'CLAUDE.md': 'valid' }, role_prompts: ['reviewer.md'] } });
+  assert.match(instructions, /Instruction files/);
+  assert.match(instructions, /AGENTS\.md/);
+  assert.match(instructions, /reviewer\.md/);
+  const document = render({ operation: 'tool.docs', inputs: { action: 'read' }, status: 'succeeded', result: { name: 'guide.md', content: '# Setup\nFirst step' } });
+  assert.match(document, /class="result-content"/);
+  assert.match(document, /First step/);
+});
+
+test('email and distribution output show readiness checks', () => {
+  const email = render({ operation: 'tool.email', inputs: { action: 'list' }, status: 'succeeded', result: { notification_provider: 'gmail', sender_ready: false, notification_emails: ['a@example.com'] } });
+  assert.match(email, /Sender credentials need setup on the Mac/);
+  assert.match(email, /<li>a@example\.com<\/li>/);
+  const distribution = render({ operation: 'tool.distribution', inputs: { action: 'status' }, status: 'succeeded', result: { configured: true, firebase_cli: true, firebase_logged_in: false, google_service_info: true, export_options: true, headless_signing: false } });
+  assert.match(distribution, /Delivery readiness/);
+  assert.match(distribution, /Firebase signed in/);
+  assert.match(distribution, /Headless signing/);
+});
+
+test('simple menus lead with their useful result', () => {
+  const examples = [
+    ['tool.base_branch', { branch: 'develop' }, /Default branch: develop/],
+    ['tool.project', { current: '/project' }, /Current project: \/project/],
+    ['tool.archive', { jobs: ['job-1'] }, /1 archived job found/],
+    ['tool.docs', { documents: ['guide.md'] }, /1 document available/],
+    ['tool.update', { version: '0.1.0' }, /Mac package version 0\.1\.0/],
+  ];
+  for (const [operation, result, expected] of examples) {
+    assert.match(render({ operation, inputs: { action: 'status' }, status: 'succeeded', result }), expected);
+  }
+});
