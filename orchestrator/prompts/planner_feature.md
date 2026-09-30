@@ -31,8 +31,12 @@ Required JSON schema:
   "clarification_needed": "string (OPTIONAL: if you cannot form a solid plan without more info)",
   "tasks": [
     {
+      "id": "string (stable kebab-case identifier unique within this plan)",
       "title": "string",
       "description": "string",
+      "role": "string (one active engineering role ID; default implementation_engineer)",
+      "depends_on": ["string (task IDs that must be accepted first)"],
+      "execution_mode": "agentic|guided|advisory (prefer agentic for bounded implementation work)",
       "acceptance_criteria": ["string"],
       "likely_files": ["string (VERIFIED PATHS ONLY)"],
       "tests": ["string (Names of existing or new tests to run)"],

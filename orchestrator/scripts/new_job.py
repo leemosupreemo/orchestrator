@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import re
 import sys
@@ -16,6 +17,7 @@ from common import (
     prompt_multiline,
     prompt_radio,
     print_phase,
+    read_json,
     timestamp,
     write_json,
     write_text,
@@ -24,12 +26,15 @@ from common import (
     prompt_confirm,
     flush_stdin,
     StatusBar,
+    BackException,
 )
 from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
 from model_router import ModelRole, get_prioritized_models
 from model_registry import get_model, ModelTier
 from probe_machine import load_machines
 from manual_run import capture_logs
+from team_roles import assemble_team, build_intent_brief, format_team_context, refine_team
+from work_packages import build_work_packages
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -50,6 +55,18 @@ PRESETS = {
 
 BRANCH_MODE_CHOICES = ["new", "current", "manual"]
 VERIFICATION_STATUSES = {"approved", "rejected", "concerns"}
+
+
+def build_planner_input(
+    prompt_template: str,
+    raw_input: str,
+    *,
+    team: dict | None = None,
+    extra_input: str = "",
+    revision_context: str = "",
+) -> str:
+    team_context = format_team_context(team) if team else ""
+    return f"{prompt_template}\n\n{team_context}\n\nRaw input:\n{raw_input}{extra_input}{revision_context}\n"
 
 
 def normalize_branch_mode(branch_mode: str | None) -> str:
@@ -347,6 +364,8 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--update", help="Path to an existing job JSON to update/re-plan")
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
     parser.add_argument("--summary", help="Summary or area of focus for the job (skips interactive input prompt if provided)")
+    parser.add_argument("--development-approach", choices=["standard", "role-based"])
+    parser.add_argument("--team-roles", help="Comma-separated engineering role IDs to pin for a role-based job")
     args = parser.parse_args(args_override)
 
     existing_job = None
@@ -355,6 +374,10 @@ def main(args_override: list[str] | None = None) -> None:
         if job_path.exists():
             existing_job = read_json(job_path)
             print(f"      - Updating existing job: {existing_job.get('job_id')}")
+
+    development_approach = args.development_approach
+    if development_approach is None:
+        development_approach = existing_job.get("development_approach", "standard") if existing_job else "standard"
 
     # Define defaults for 'quick' job
     job_type_for_defaults = args.job_type
@@ -521,7 +544,8 @@ def main(args_override: list[str] | None = None) -> None:
             flush_stdin()
             instructions = prompt_multiline("What would you like to change or improve?")
         if not instructions.strip():
-            raise ValueError("No input provided.")
+            print("\n\033[90mNo input provided. Job creation cancelled.\033[0m")
+            raise BackException()
             
         summary = instructions.split("\n")[0][:60]
         if len(instructions.split("\n")[0]) > 60: summary += "..."
@@ -573,15 +597,24 @@ def main(args_override: list[str] | None = None) -> None:
             flush_stdin()
             if args.job_type == "bug":
                 summary = prompt_multiline("Summary / Area Of Focus:")
+                if not summary.strip():
+                    print("\n\033[90mNo summary provided. Job creation cancelled.\033[0m")
+                    raise BackException()
                 repro = prompt_multiline("Repro Steps (one per line, optional):")
                 expected = prompt_multiline("Expected Behavior (optional):")
                 raw_input_text = f"SUMMARY: {summary}\n\nREPRO STEPS:\n{repro}\n\nEXPECTED BEHAVIOR:\n{expected}"
             elif args.job_type == "coverage":
                 summary = prompt_multiline("Summary / Area Of Focus:")
+                if not summary.strip():
+                    print("\n\033[90mNo focus provided. Job creation cancelled.\033[0m")
+                    raise BackException()
                 subsystems = prompt_multiline("Specific Subsystems To Audit (optional):")
                 raw_input_text = f"COVERAGE FOCUS: {summary}\n\nSUBSYSTEMS: {subsystems}"
             elif args.stitch or args.job_type == "design":
                 vision = prompt_multiline("Design Vision & Requirements (describe the feature, UX goals, and any specific constraints):")
+                if not vision.strip():
+                    print("\n\033[90mNo vision provided. Job creation cancelled.\033[0m")
+                    raise BackException()
                 
                 vibe_options = [
                     "minimalist (clean, focused, white space)",
@@ -603,6 +636,9 @@ def main(args_override: list[str] | None = None) -> None:
                 raw_input_text = f"DESIGN VISION: {vision}\nPREFERRED VIBE: {vibe}"
             else:
                 vision = prompt_multiline("Feature Vision & Requirements (describe the feature and acceptance criteria):")
+                if not vision.strip():
+                    print("\n\033[90mNo vision provided. Job creation cancelled.\033[0m")
+                    raise BackException()
                 raw_input_text = f"VISION: {vision}"
 
         if title_input.strip():
@@ -615,6 +651,21 @@ def main(args_override: list[str] | None = None) -> None:
 
         if not raw_input_text.strip():
             raise ValueError("No input provided.")
+
+    requested_team_roles = None
+    if args.team_roles is not None:
+        requested_team_roles = [role.strip() for role in args.team_roles.split(",") if role.strip()]
+    team = None
+    if development_approach == "role-based":
+        if existing_job and requested_team_roles is None and existing_job.get("team"):
+            team = deepcopy(existing_job["team"])
+        else:
+            team = assemble_team(raw_input_text, args.job_type, requested_roles=requested_team_roles)
+        team["intent_brief"] = build_intent_brief(
+            raw_input_text,
+            {},
+            existing_brief=team.get("intent_brief"),
+        )
 
     planning_context = {
         "job_id": f"new-{args.job_type}",
@@ -643,7 +694,13 @@ def main(args_override: list[str] | None = None) -> None:
             prev_plan = existing_job.get("plan", {})
             revision_context = f"\n\n### PREVIOUS DESIGN/PLAN ###\n{json.dumps(prev_plan, indent=2)}\n\n### USER FEEDBACK ###\n{args.feedback}\n"
         
-        llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
+        llm_input = build_planner_input(
+            prompt_template,
+            raw_input_text,
+            team=team,
+            extra_input=extra_input,
+            revision_context=revision_context,
+        )
         
         llm_sessions = []
         
@@ -696,7 +753,17 @@ def main(args_override: list[str] | None = None) -> None:
                     })
                     print(f"\n      - Re-planning with your answer...", flush=True)
                     clarification_feedback = f"### USER CLARIFICATION ###\nQuestion: {clarification}\nAnswer: {user_ans}\n"
-                    recursive_input = f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### PREVIOUS PLAN WITH QUESTION ###\n{llm_output}\n\n{clarification_feedback}\nPlease update the plan JSON to address the user's clarification and proceed."
+                    recursive_context = (
+                        f"\n\n### PREVIOUS PLAN WITH QUESTION ###\n{llm_output}\n\n"
+                        f"{clarification_feedback}\n"
+                        "Please update the plan JSON to address the user's clarification and proceed."
+                    )
+                    recursive_input = build_planner_input(
+                        prompt_template,
+                        raw_input_text,
+                        team=team,
+                        revision_context=recursive_context,
+                    )
                     try:
                         new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
                         llm_sessions.append({"id": sid, "model": actual_planner})
@@ -752,8 +819,16 @@ def main(args_override: list[str] | None = None) -> None:
                             if verification.get("suggested_additions"):
                                 yolo_feedback += "Suggested Additions:\n- " + "\n- ".join(verification["suggested_additions"])
                             
-                            recursive_input = f"{prompt_template}\n\n### PREVIOUS PLAN ###\n{llm_output}\n\n{yolo_feedback}\n\n"
-                            recursive_input += "Please update the plan JSON to address the architect's feedback while fulfilling the original request."
+                            recursive_context = (
+                                f"\n\n### PREVIOUS PLAN ###\n{llm_output}\n\n{yolo_feedback}\n\n"
+                                "Please update the plan JSON to address the architect's feedback while fulfilling the original request."
+                            )
+                            recursive_input = build_planner_input(
+                                prompt_template,
+                                raw_input_text,
+                                team=team,
+                                revision_context=recursive_context,
+                            )
                             
                             print(f"      - Re-planning with {actual_planner}...", flush=True)
                             new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
@@ -786,6 +861,14 @@ def main(args_override: list[str] | None = None) -> None:
             yolo=args.yolo,
         )
 
+        if team:
+            team = refine_team(team, plan)
+            team["intent_brief"] = build_intent_brief(
+                raw_input_text,
+                plan,
+                existing_brief=team.get("intent_brief"),
+            )
+
         if existing_job:
             job_id = existing_job["job_id"]
             issue_number = existing_job["issue_number"]
@@ -805,6 +888,13 @@ def main(args_override: list[str] | None = None) -> None:
             status = "human-needed"
 
         job = existing_job or {}
+        work_packages = build_work_packages({
+            **job,
+            "job_id": job_id,
+            "title": title,
+            "plan": plan,
+            "team": team or {},
+        })
         job.update({
             "job_id": job_id,
             "type": job_type if not existing_job else job.get("type", job_type),
@@ -817,6 +907,9 @@ def main(args_override: list[str] | None = None) -> None:
             "verification": verification,
             "builder": builder,
             "reviewer": reviewer,
+            "development_approach": development_approach,
+            "team": team,
+            "work_packages": work_packages,
             "yolo": args.yolo,
             "branch_mode": branch_mode,
             "branch": selected_branch,
@@ -917,4 +1010,8 @@ def main(args_override: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (KeyboardInterrupt, BackException):
+        print("\n\033[90mJob creation cancelled.\033[0m")
+        sys.exit(0)

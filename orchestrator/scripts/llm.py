@@ -8,11 +8,13 @@ import shlex
 import subprocess
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
 from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error
 from model_router import get_prioritized_models, ModelRole
+from execution_capabilities import mode_for_role, profile_for_model
 
 class LLMTimeoutError(RuntimeError):
     """Raised when an LLM call exceeds its timeout."""
@@ -96,7 +98,7 @@ def is_quota_error(error_msg: str) -> bool:
     return any(x in error_msg.lower() for x in keywords)
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, attempt_log: list[dict] | None = None, required_execution_mode: str | None = None) -> tuple[str, str, str]:
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model
@@ -110,7 +112,8 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     attempts = get_prioritized_models(
         role=role, 
         allowed_models=allowed_models, 
-        preferred_family=preferred_family
+        preferred_family=preferred_family,
+        required_execution_mode=required_execution_mode,
     )
     
     # Ensure the requested primary model is tried first
@@ -124,6 +127,28 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     actual_session_id = session_id or str(uuid.uuid4())
 
     for current_model in attempts:
+        profile = profile_for_model(current_model)
+        actual_mode = mode_for_role(profile, role).value
+        downgrade_reason = None
+        if required_execution_mode and actual_mode != required_execution_mode:
+            downgrade_reason = f"{required_execution_mode} unavailable; downgraded to {actual_mode}"
+        started_at = datetime.now(timezone.utc).isoformat()
+
+        def record_attempt(outcome: str, error: str | None = None) -> None:
+            if attempt_log is None:
+                return
+            attempt_log.append({
+                "model": current_model,
+                "adapter": profile.adapter,
+                "requested_mode": required_execution_mode,
+                "actual_mode": actual_mode,
+                "outcome": outcome,
+                "error": error,
+                "downgrade_reason": downgrade_reason,
+                "session_id": actual_session_id,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            })
         try:
             raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id)
             
@@ -135,24 +160,29 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 except json.JSONDecodeError as exc:
                     print(f"⚠️  {current_model} produced invalid JSON. Attempting fallback...")
                     last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc}")
+                    record_attempt("failed", str(last_error))
                     continue
             
             # Return the full raw output so callers can see research/thoughts
+            record_attempt("succeeded")
             return raw_output, current_model, actual_session_id
         except LLMTimeoutError as exc:
             # ... (timeout logging)
             print(f"⚠️  {current_model} timed out. Attempting fallback...")
             last_error = exc
+            record_attempt("failed", str(exc))
             continue
         except RuntimeError as exc:
             err_str = str(exc)
             summary = summarize_cli_error(err_str)
             print(f"⚠️  {current_model} failed ({summary}). Attempting fallback...")
             last_error = exc
+            record_attempt("failed", err_str)
             continue
         except Exception as exc:
             print(f"⚠️  {current_model} failed ({exc}). Attempting fallback...")
             last_error = exc
+            record_attempt("failed", str(exc))
             continue
 
     raise RuntimeError(f"All models failed (quota limits reached). Last error: {last_error}")

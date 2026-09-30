@@ -1100,6 +1100,42 @@ def _split_option_description(option: str) -> tuple[str, str | None]:
 
     return title, "; ".join(descriptions)
 
+def list_git_branches() -> tuple[str, list[str]]:
+    """Returns (current_branch, selectable branches): local first, then remote-only."""
+    def _git(*args: str) -> list[str]:
+        try:
+            out = subprocess.check_output(["git", *args], cwd=str(ROOT), stderr=subprocess.DEVNULL).decode("utf-8")
+            return [line.strip() for line in out.splitlines() if line.strip()]
+        except Exception:
+            return []
+    current = (_git("rev-parse", "--abbrev-ref", "HEAD") or ["unknown"])[0]
+    local = _git("for-each-ref", "--format=%(refname:short)", "refs/heads")
+    remote = [
+        r.split("/", 1)[1] for r in _git("for-each-ref", "--format=%(refname:short)", "refs/remotes")
+        if "/" in r and not r.endswith("/HEAD")
+    ]
+    return current, local + sorted(b for b in set(remote) if b not in local)
+
+def select_git_branch() -> str | None:
+    """Dropdown-style branch picker; checks out the choice. Returns the new branch or None."""
+    current, branches = list_git_branches()
+    if not branches:
+        return None
+    options = [f"{b} (current)" if b == current else b for b in branches]
+    try:
+        choice = prompt_radio("Switch branch:", options, options[branches.index(current)] if current in branches else None)
+    except BackException:
+        return None
+    target = branches[options.index(choice)]
+    if target == current:
+        return None
+    res = subprocess.run(["git", "checkout", target], cwd=str(ROOT), capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"\033[91mCould not switch to {target}:\033[0m {(res.stderr or res.stdout).strip()}")
+        time.sleep(2)
+        return None
+    return target
+
 def prompt_radio(label: str, options: list[str], default: str | None = None, clear_screen: bool = True, status_bar: StatusBar | None = None, description: str | list[str] | None = None) -> str:
     """Displays interactive radio buttons navigated by arrow keys."""
     if not sys.stdin.isatty():
@@ -1153,7 +1189,7 @@ def prompt_radio(label: str, options: list[str], default: str | None = None, cle
                 else:
                     for line in description:
                         output.append(f"\033[90m{line}\033[0m")
-            output.append("\033[1;90m(Arrows: navigate, Enter: select, B: back)\033[0m")
+            output.append("\033[1;90m(Arrows: navigate, Enter: select, B: back" + (", Ctrl-G: switch branch" if status_bar else "") + ")\033[0m")
             output.append("")
 
             for i, opt in enumerate(options):
@@ -1174,7 +1210,10 @@ def prompt_radio(label: str, options: list[str], default: str | None = None, cle
 
             final_output = "\n".join(output)
             lines = final_output.split("\n")
-            num_rendered_lines = len(lines)
+            num_rendered_lines = 0
+            for l in lines:
+                clean_l = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", l)
+                num_rendered_lines += max(1, (len(clean_l) + cols - 1) // cols) if cols > 0 else 1
 
             if not clear_screen:
                 # To prevent smearing if options change size, we must clear each line
@@ -1200,7 +1239,7 @@ def prompt_radio(label: str, options: list[str], default: str | None = None, cle
                     # Print ONLY the final choice concisely
                     print(f"Choice: \033[1;96m{options[idx]}\033[0m")
                 else:
-                    sys.stdout.write(f"\r\033[{num_rendered_lines}A\033[J")
+                    sys.stdout.write("\033[H\033[J")
                     sys.stdout.flush()
                     print(f"Choice: \033[1;96m{options[idx]}\033[0m")
                 break
@@ -1210,12 +1249,17 @@ def prompt_radio(label: str, options: list[str], default: str | None = None, cle
                     sys.stdout.write(f"\r\033[{num_rendered_lines-1}A\033[J")
                     sys.stdout.flush()
                 else:
-                    sys.stdout.write(f"\r\033[{num_rendered_lines}A\033[J")
+                    sys.stdout.write("\033[H\033[J")
+                    sys.stdout.flush()
                 raise BackException()
             elif key == "up" or key == "k":
                 idx = (idx - 1) % len(options)
             elif key == "down" or key == "j":
                 idx = (idx + 1) % len(options)
+            elif key == "\x07" and status_bar: # Ctrl-G: branch dropdown
+                switched = select_git_branch()
+                if switched:
+                    status_bar.branch = switched
             elif key == "\x03": # Ctrl-C
                 raise KeyboardInterrupt
 
@@ -1244,14 +1288,17 @@ def prompt_multiline(prompt: str) -> str:
     if desc:
         formatted_desc = desc[0].upper() + desc[1:] if len(desc) > 0 else desc
         print(f"\033[93m💡 {formatted_desc}\033[0m", flush=True)
-    print_subtitle("(Type your input. To finish, press Enter then \033[1;97mCtrl-D\033[0m\033[90m on a new line)", hint=True)
+    print_subtitle("(Type your input. To finish, press Enter then \033[1;97mCtrl-D\033[0m\033[90m on a new line; or \033[1;97mCtrl-C\033[0m\033[90m to cancel)", hint=True)
     if _ACTIVE_STATUS_BAR:
-        _ACTIVE_STATUS_BAR.render(at_bottom=True, force=True, q_msg="Ctrl-D to finish")
+        _ACTIVE_STATUS_BAR.render(at_bottom=True, force=True, q_msg="Ctrl-D: finish | Ctrl-C: cancel")
     try:
         content = sys.stdin.read()
-        return content.strip()
-    except EOFError:
-        return ""
+        cleaned = content.strip()
+        if cleaned.lower() in ("b", ":q", "q", "exit", "quit", "cancel"):
+            raise BackException()
+        return cleaned
+    except (EOFError, KeyboardInterrupt):
+        raise BackException()
 
 def print_wrapped_option(option_str: str, indent_size: int = 4, subsequent_indent_size: int = 8) -> None:
     """Prints a menu option line, preserving ANSI colors and wrapping lines with a deeper subsequent indent."""

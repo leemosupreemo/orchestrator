@@ -10,6 +10,8 @@ from typing import Any
 
 from common import CONFIG_DIR, ROOT, now_iso, read_json, run, write_json, print_phase
 from model_registry import get_model
+from execution_capabilities import mode_for_role, profile_for_model
+from model_router import ModelRole, get_prioritized_models
 from probe_machine import load_machines, probe_machine
 from worker_tools import remote_env_prefix, remote_import_check_command
 
@@ -49,6 +51,8 @@ def synthetic_group_for_job(job: dict[str, Any]) -> dict[str, Any]:
         resource_profile = "implementation"
 
     title = job.get("title", "Untitled Job")
+    packages = job.get("work_packages") or []
+    package = next((item for item in packages if item.get("status", "pending") in {"pending", "scheduled"}), None)
     return {
         "group_id": "MAIN",
         "title": title,
@@ -64,6 +68,9 @@ def synthetic_group_for_job(job: dict[str, Any]) -> dict[str, Any]:
         "branch": job.get("branch"),
         "worktree_path": None,
         "artifacts": {},
+        "work_package_id": package.get("id") if package else None,
+        "required_execution_mode": package.get("requested_mode") if package else None,
+        "likely_files": list(package.get("scopes", [])) if package else [],
         "synthetic": True,
     }
 
@@ -143,6 +150,22 @@ def compatible_model(candidate: str, machine: dict[str, Any], allowed_models: li
 
 def choose_model(group: dict[str, Any], machine: dict[str, Any], job: dict[str, Any]) -> str:
     allowed = job.get("allowed_models")
+
+    required_mode = group.get("required_execution_mode")
+    if required_mode:
+        pool = list(dict.fromkeys([
+            *group.get("preferred_models", []),
+            *([job.get("builder")] if job.get("builder") else []),
+            *(allowed or machine.get("models", [])),
+        ]))
+        prioritized = get_prioritized_models(
+            role=ModelRole.BUILDER,
+            allowed_models=pool,
+            required_execution_mode=required_mode,
+        )
+        for candidate in prioritized:
+            if compatible_model(candidate, machine, allowed):
+                return candidate
 
     for candidate in group.get("preferred_models", []):
         if compatible_model(candidate, machine, allowed):
@@ -368,6 +391,8 @@ def assign_group(job: dict[str, Any], group_id: str, machine: dict[str, Any], pr
         group["assigned_machine"] = machine["name"]
         group["assigned_model"] = model
         group["status"] = "scheduled"
+        execution_profile = profile_for_model(model, machine=machine, probe=probe)
+        group["execution_profile"] = execution_profile.as_dict()
         assignment = {
             "group_id": group_id,
             "machine": machine["name"],
@@ -375,6 +400,9 @@ def assign_group(job: dict[str, Any], group_id: str, machine: dict[str, Any], pr
             "resource_profile": group["resource_profile"],
             "scheduled_at": now_iso(),
             "probe": probe,
+            "requested_execution_mode": group.get("required_execution_mode"),
+            "actual_execution_mode": mode_for_role(execution_profile, ModelRole.BUILDER).value,
+            "execution_profile": execution_profile.as_dict(),
         }
         job["assigned_machine"] = machine["name"]
         job["assigned_model"] = model

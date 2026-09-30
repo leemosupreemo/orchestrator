@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_text, print_phase, StatusBar, format_clarification_history, format_investigation_history
+from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_json, write_text, print_phase, StatusBar, format_clarification_history, format_investigation_history
 from llm import run_llm, extract_json_block
 from model_router import ModelRole
 from run_build_and_tests import run_build_and_tests
 from reference_artifacts import reference_context
 from orchestrator.project_config import PROJECT_CONFIG
+from team_roles import format_team_context
 
 
 class BuilderClarificationNeeded(RuntimeError):
@@ -17,10 +18,74 @@ class BuilderClarificationNeeded(RuntimeError):
         super().__init__(f"Builder clarification needed: {question}")
 
 
+def format_work_package_context(package: dict | None) -> str:
+    if not package:
+        return ""
+    budgets = package.get("budgets", {})
+    lines = [
+        "### BOUNDED WORK PACKAGE",
+        f"Package: {package.get('id', 'main')}",
+        f"Assigned role: {package.get('role', 'implementation_engineer')}",
+        f"Objective: {package.get('objective', 'Complete the assigned work')}",
+        f"Requested execution mode: {package.get('requested_mode', 'guided')}",
+        f"Allowed scope: {', '.join(package.get('scopes', [])) or 'No safe parallel scope declared'}",
+        f"Required tools: {', '.join(package.get('required_tools', [])) or 'None'}",
+        "Acceptance criteria:",
+        *[f"- {item}" for item in package.get("acceptance_criteria", [])],
+        "Required tests:",
+        *[f"- {item}" for item in package.get("tests", [])],
+        f"Budget: {budgets.get('iterations', 4)} iterations, {budgets.get('minutes', 20)} minutes.",
+        "You may not broaden scope, weaken acceptance criteria, change permissions, or delegate further.",
+        "Return a structured handoff with work, evidence, files, tests, remaining risks, and next action.",
+    ]
+    return "\n".join(lines)
+
+
+def validate_execution_handoff(
+    payload: dict,
+    package: dict,
+    *,
+    files_changed: list[str],
+    tests_ok: bool,
+) -> dict:
+    claimed_status = str(payload.get("acceptance_criteria_status", "")).casefold()
+    if not tests_ok and claimed_status in {"passed", "complete", "accepted"}:
+        raise ValueError("Execution handoff cannot claim completion when validation failed")
+    test_command = str(payload.get("test_command") or "").strip()
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, list):
+        evidence = [test_command] if test_command else []
+    risks = payload.get("remaining_risks")
+    if not isinstance(risks, list):
+        risks = []
+    return {
+        "package_id": package.get("id", "main"),
+        "role": package.get("role", "implementation_engineer"),
+        "work_performed": str(payload.get("summary") or payload.get("action") or "Work package executed."),
+        "evidence": [str(item) for item in evidence],
+        "files_changed": list(files_changed),
+        "tests": [test_command] if test_command else list(package.get("tests", [])),
+        "acceptance_criteria_status": "passed" if tests_ok else "failed",
+        "remaining_risks": [str(item) for item in risks],
+        "next_action": str(payload.get("next_action") or ("Validate downstream integration." if tests_ok else "Retry or reroute the package.")),
+    }
+
+
+def active_work_package(job: dict) -> dict | None:
+    packages = job.get("work_packages") or []
+    active_id = job.get("active_work_package_id")
+    if active_id:
+        return next((item for item in packages if item.get("id") == active_id), None)
+    return next((item for item in packages if item.get("status", "pending") in {"pending", "scheduled", "running"}), None)
+
+
 def make_brief(job: dict) -> str:
     plan = job["plan"]
     verification = job.get("verification")
     references = reference_context(job)
+    team_context = format_team_context(job.get("team", {}))
+    if team_context:
+        team_context = f"\n---\n{team_context}\n"
     
     clarification_text = ""
     history = job.get("clarification_history", [])
@@ -73,7 +138,7 @@ Likely files:
 ''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + (f'''
 
 Test recommendations (TDD):
-''' + "\n".join(f'- {x}' for x in plan.get("test_recommendations", [])) if plan.get("test_recommendations") else "") + f"\n{references}\n"
+''' + "\n".join(f'- {x}' for x in plan.get("test_recommendations", [])) if plan.get("test_recommendations") else "") + f"\n{references}\n{team_context}"
     elif job["type"] == "feature-plan":
         return f'''# Feature task brief
 
@@ -89,7 +154,7 @@ Acceptance criteria:
 ''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
 
 Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
+''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n{team_context}"
     elif job["type"] == "quick-fix":
         return f'''# Quick task brief
 
@@ -107,7 +172,7 @@ Summary:
 Acceptance criteria:
 ''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
 Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
+''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n{team_context}"
     else:
         return f'''# Feature task brief
 
@@ -120,6 +185,7 @@ Summary:
 {investigation_text}
 {verification_text}
 {references}
+{team_context}
 '''
 
 
@@ -254,18 +320,26 @@ Available Tests (use for selecting test_command):
 
 Brief:
 {brief}
+{format_work_package_context(active_work_package(job))}
 """
 
         print_phase("agent_thinking")
         status_bar.render()
-        output, actual_builder, session_id = run_llm(
-            job["builder"], 
-            full_prompt, 
-            cwd=ROOT, 
-            timeout=1200, 
-            allowed_models=job.get("allowed_models"),
-            role=ModelRole.BUILDER
-        )
+        package = active_work_package(job)
+        execution_attempts = job.setdefault("execution_attempts", [])
+        try:
+            output, actual_builder, session_id = run_llm(
+                job["builder"],
+                full_prompt,
+                cwd=ROOT,
+                timeout=1200,
+                allowed_models=job.get("allowed_models"),
+                role=ModelRole.BUILDER,
+                attempt_log=execution_attempts,
+                required_execution_mode=package.get("requested_mode") if package else None,
+            )
+        finally:
+            write_json(job_path, job)
 
         # Track session IDs in the job
         if "llm_sessions" not in job:

@@ -390,6 +390,21 @@ orchestrator script new_job.py feature
 orchestrator script schedule_job.py .orchestrator/jobs/JOB.json
 ```
 
+During interactive creation, choose a development approach:
+
+- **Role-based team — Recommended** automatically assembles the smallest useful set of engineering roles around a shared Intent Brief. It can improve cross-layer decisions and gap detection, but may take longer and use more AI capacity.
+- **Standard workflow** uses the existing planning, implementation, and review sequence for focused work.
+
+Role-based jobs begin with Technical Lead, Implementation Engineer, and QA Engineer responsibilities. Orchestrator adds specialists only when the request or plan provides relevant evidence. Enable advanced options during creation to pin specialist roles. While viewing a role-based job, press **N** to change the roster; the update applies to the next workflow handoff.
+
+For direct script access, select the approach explicitly:
+
+```bash
+orchestrator script new_job.py feature --development-approach role-based
+orchestrator script new_job.py feature --development-approach role-based --team-roles ux_designer,frontend_engineer
+orchestrator script new_job.py feature --development-approach standard
+```
+
 Generated job files are written under `.orchestrator/jobs/`. Logs and review output are written under `.orchestrator/logs/` and `.orchestrator/output/`.
 
 ## Visual Simulator Checks

@@ -182,7 +182,8 @@ xcodebuild test CLANG_MODULE_CACHE_PATH=$(pwd)/.clang-module-cache
         self.assertIn("SELECT MODELS", header)
         self.assertNotIn("select models", header)
 
-    def test_header_string_keeps_parenthetical_helper_text_lowercase(self) -> None:
+    @patch("os.get_terminal_size", return_value=(120, 24))
+    def test_header_string_keeps_parenthetical_helper_text_lowercase(self, _mock_term_size) -> None:
         header = common.get_header_string(
             "Load spec from a local file or web address? (useful for large multi-page docs)"
         )
@@ -1354,6 +1355,26 @@ class ConvergenceAnalysisTests(unittest.TestCase):
         self.assertTrue(result["is_stuck"])
         self.assertTrue(result["oscillation_detected"])
         self.assertIn("repeated hypothesis", result["description"])
+
+    @patch("common.sys.stdin.read", side_effect=KeyboardInterrupt)
+    def test_prompt_multiline_keyboard_interrupt_raises_back_exception(self, _mock_read) -> None:
+        with self.assertRaises(common.BackException):
+            common.prompt_multiline("Summary:")
+
+    @patch("common.sys.stdin.read", return_value="b\n")
+    def test_prompt_multiline_back_token_raises_back_exception(self, _mock_read) -> None:
+        with self.assertRaises(common.BackException):
+            common.prompt_multiline("Summary:")
+
+    @patch("common.sys.stdin.read", return_value=":q\n")
+    def test_prompt_multiline_quit_token_raises_back_exception(self, _mock_read) -> None:
+        with self.assertRaises(common.BackException):
+            common.prompt_multiline("Summary:")
+
+    @patch("common.sys.stdin.read", return_value="Valid multi-line\ninput\n")
+    def test_prompt_multiline_returns_valid_input(self, _mock_read) -> None:
+        result = common.prompt_multiline("Summary:")
+        self.assertEqual(result, "Valid multi-line\ninput")
 
 
 if __name__ == "__main__":

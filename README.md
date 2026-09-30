@@ -11,6 +11,7 @@ Orchestrator began with deep support for Swift and Xcode. It is now expanding ac
 ## 🚀 Key Features
 
 *   **Interactive Dev Console**: A terminal-based UI designed for speed. Single-key shortcuts (`y/n`, `A`/`F`/`Q`) and real-time status bars make orchestration feel like a native tool.
+*   **Role-Based Team Approach**: For each job, optionally assemble a right-sized engineering team around one shared user goal. Orchestrator recommends this approach, selects relevant specialists, and keeps the roster editable while work progresses.
 *   **Structured Multi-Agent Workflow**: Jobs pass through specialized agents, with feature work guided by a test-driven development (TDD) philosophy:
     *   **Planner**: Analyzes requirements and drafts a multi-step plan that defines tests before production code.
     *   **Verifier**: Checks the plan against the codebase for feasibility, architectural fit, regression risks, and appropriate test coverage.
@@ -74,6 +75,8 @@ See the [User Guide](docs/user-guide.md#first-run-wizard) for every option, non-
 ---
 
 ## 🧩 Agent Hierarchy
+
+The job-creation menu offers two development approaches. **Role-based team** is the recommended default and adds only engineering specialties justified by the request; **Standard workflow** keeps the existing linear pipeline for focused, lower-cost work. Role-based jobs always include Technical Lead, Implementation Engineer, and QA Engineer responsibilities, with specialists such as UX, Frontend, Backend, Database, Security, Accessibility, Performance, DevOps, or Platform added from job evidence.
 
 | Agent | Role | Output |
 | :--- | :--- | :--- |

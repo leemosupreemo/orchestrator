@@ -178,3 +178,6 @@ else
 fi
 
 echo "✅ Distribution Complete!"
+echo "IPA: $IPA_PATH"
+echo "Build: $BUILD_NUMBER"
+echo "Recipients: testers=${TESTERS:-<none>} groups=${DIST_GROUPS:-<none>}"

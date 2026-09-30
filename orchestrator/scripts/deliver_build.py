@@ -35,13 +35,37 @@ def distribution_script_options(script_path: Path) -> set[str]:
 def build_delivery_receipt(log_content: str, testers: str | None, groups: str | None) -> dict[str, Any]:
     """Read the exported IPA named by the delivery script and return verified metadata."""
     matches = re.findall(r"^IPA:\s*(.+?\.ipa)\s*$", log_content, flags=re.MULTILINE)
-    if not matches:
-        return {}
+    ipa_path = None
+    if matches:
+        candidate = Path(matches[-1]).expanduser()
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        if candidate.is_file():
+            ipa_path = candidate
 
-    ipa_path = Path(matches[-1]).expanduser()
-    if not ipa_path.is_absolute():
-        ipa_path = ROOT / ipa_path
-    if not ipa_path.is_file():
+    if not ipa_path:
+        # Fallback 1: Extract IPA path from firebase command invocation in logs
+        firebase_matches = re.findall(r"firebase\s+appdistribution:distribute\s+[\"']?([^\"'\s\r\n]+\.ipa)[\"']?", log_content)
+        if firebase_matches:
+            candidate = Path(firebase_matches[-1]).expanduser()
+            if not candidate.is_absolute():
+                candidate = ROOT / candidate
+            if candidate.is_file():
+                ipa_path = candidate
+
+    if not ipa_path:
+        # Fallback 2: Look for Xcode export directory in logs
+        export_matches = re.findall(r"Exported\s+.+?\s+to:\s*(.+)", log_content)
+        if export_matches:
+            export_dir = Path(export_matches[-1].strip()).expanduser()
+            if not export_dir.is_absolute():
+                export_dir = ROOT / export_dir
+            if export_dir.is_dir():
+                ipas = sorted(export_dir.glob("*.ipa"))
+                if ipas:
+                    ipa_path = ipas[0]
+
+    if not ipa_path or not ipa_path.is_file():
         return {}
 
     version = None

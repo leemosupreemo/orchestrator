@@ -10,8 +10,25 @@ from pathlib import Path
 from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, gh_text, write_text
 from llm import run_llm
 from model_router import ModelRole
+from team_roles import format_team_context
 
 MAX_DIFF_CHARS = 100_000
+
+
+def make_review_prompt(reviewer_prompt: str, brief: str, pr_json: str, diff_text: str, job: dict) -> str:
+    team_context = format_team_context(job.get("team", {}))
+    team_section = f"\n{team_context}\n" if team_context else ""
+    return f"""{reviewer_prompt}{team_section}
+
+Brief:
+{brief}
+
+PR metadata:
+{pr_json}
+
+Diff:
+{diff_text}
+"""
 
 
 def summarize_pr_files(pr_json: str) -> str:
@@ -72,25 +89,16 @@ def main() -> None:
     diff_text = load_pr_diff(args.pr_number, pr_json)
     reviewer_prompt = (PROMPTS_DIR / "reviewer.md").read_text(encoding="utf-8")
 
-    prompt = f"""{reviewer_prompt}
-
-Brief:
-{brief}
-
-PR metadata:
-{pr_json}
-
-Diff:
-{diff_text}
-"""
-
     allowed_models = None
+    job: dict = {}
     if args.job_file:
         from common import now_iso, read_json, write_json
         job_path = Path(args.job_file)
         if job_path.exists():
             job = read_json(job_path)
             allowed_models = job.get("allowed_models")
+
+    prompt = make_review_prompt(reviewer_prompt, brief, pr_json, diff_text, job)
             
     try:
         review, actual_reviewer, session_id = run_llm(args.reviewer, prompt, cwd=ROOT, timeout=300, role=ModelRole.REVIEWER, allowed_models=allowed_models)

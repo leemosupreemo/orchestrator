@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any
 from model_registry import get_all_models, ModelMetadata, ModelTier, ModelCapability, get_model
+from execution_capabilities import ExecutionMode, profile_for_model, supports_mode
 
 class ModelRole:
     PLANNER = "planner"
@@ -38,7 +39,7 @@ ROLE_REQUIREMENTS = {
     }
 }
 
-def score_model(model: ModelMetadata, role: str) -> float:
+def score_model(model: ModelMetadata, role: str, required_execution_mode: str | None = None) -> float:
     reqs = ROLE_REQUIREMENTS.get(role)
     if not reqs:
         return 0.0
@@ -57,10 +58,17 @@ def score_model(model: ModelMetadata, role: str) -> float:
     # 3. Penalty for being below min_tier
     if int(model.tier) > int(reqs["min_tier"]):
         score -= 50
+
+    if required_execution_mode:
+        requested_mode = ExecutionMode(required_execution_mode)
+        if supports_mode(profile_for_model(model.id), requested_mode):
+            score += 60
+        else:
+            score -= 60
         
     return score
 
-def get_prioritized_models(role: str | None = None, allowed_models: list[str] | None = None, preferred_family: str | None = None) -> list[str]:
+def get_prioritized_models(role: str | None = None, allowed_models: list[str] | None = None, preferred_family: str | None = None, required_execution_mode: str | None = None) -> list[str]:
     """
     Returns a list of model IDs prioritized by suitability for the role.
     - role: The role to prioritize for (planner, builder, etc.)
@@ -88,7 +96,7 @@ def get_prioritized_models(role: str | None = None, allowed_models: list[str] | 
     # Score and sort
     scored_models = []
     for m in models_to_score:
-        score = score_model(m, role)
+        score = score_model(m, role, required_execution_mode=required_execution_mode)
         
         # Boost preferred family
         if preferred_family and m.family == preferred_family:

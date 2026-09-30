@@ -455,10 +455,11 @@ class DevConsoleTests(unittest.TestCase):
         mock_run_script.assert_called_once()
         self.assertEqual(mock_run_script.call_args.args[0], "debug_job.py")
 
-    @patch("dev_console.prompt_input", return_value="Focus on the latest build failure.")
+    @patch("dev_console.prompt_input", side_effect=["Focus on the latest build failure."])
+    @patch("dev_console.clear_screen")
     @patch("dev_console.print_header")
     @patch("dev_console.print")
-    def test_prompt_autofix_iteration_settings_collects_guidance(self, mock_print, mock_header, _mock_prompt_input):
+    def test_prompt_autofix_iteration_settings_collects_guidance(self, mock_print, mock_header, _mock_clear, _mock_prompt_input):
         job = {"max_iterations": 8}
 
         feedback = dev_console.prompt_autofix_iteration_settings(job)
@@ -472,6 +473,17 @@ class DevConsoleTests(unittest.TestCase):
         first_prompt = _mock_prompt_input.call_args_list[0]
         self.assertEqual(first_prompt.args[0], "Guidance (Optional)")
         self.assertTrue(first_prompt.kwargs["field_below"])
+
+    @patch("dev_console.prompt_input", return_value="")
+    @patch("dev_console.clear_screen")
+    @patch("dev_console.print_header")
+    @patch("dev_console.print")
+    def test_prompt_autofix_iteration_settings_renders_footer(self, _mock_print, _mock_header, _mock_clear, _mock_prompt_input):
+        mock_status_bar = MagicMock()
+        job = {"job_id": "test-autofix"}
+        dev_console.prompt_autofix_iteration_settings(job, status_bar=mock_status_bar)
+        mock_status_bar.set_scroll_region.assert_called_once()
+        mock_status_bar.render.assert_called_with(at_bottom=True, force=True)
 
     @patch("dev_console.get_key", side_effect=["d", "b"])
     @patch("dev_console.input", return_value="")
@@ -503,10 +515,8 @@ class DevConsoleTests(unittest.TestCase):
 
         dev_console.handle_job_selection(job, ["local"], ["gemini"])
 
-        mock_settings.assert_called_once_with(job)
-        status_bar.clear_footer.assert_called()
-        status_bar.reset_scroll_region.assert_called_with(force=True)
-        mock_clear.assert_called()
+        mock_settings.assert_called_once_with(job, status_bar=status_bar)
+        status_bar.clear_footer.assert_not_called()
         args = mock_run_script.call_args.args[1]
         self.assertIn("--feedback", args)
         self.assertIn("Focus on retries.", args)
@@ -620,6 +630,41 @@ class DevConsoleTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         mock_subprocess_run.assert_called_once()
         mock_run_streaming.assert_not_called()
+
+    @patch("dev_console.print")
+    @patch("dev_console.clear_screen")
+    @patch("dev_console.subprocess.run")
+    def test_run_script_cleans_and_summarizes_for_interactive_new_job(self, mock_subprocess_run, mock_clear_screen, mock_print):
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+        many_models = ["m1", "m2", "m3", "m4", "m5", "m6"]
+        args = ["bug", "--allowed-models", ",".join(many_models)]
+
+        rc = dev_console.run_script("new_job.py", args, prompt="")
+
+        self.assertEqual(rc, 0)
+        mock_clear_screen.assert_called_once()
+        mock_subprocess_run.assert_called_once()
+        # Verify printed command line summarized allowed models rather than dumping all of them
+        printed = " ".join([str(call.args[0]) for call in mock_print.call_args_list if call.args])
+        self.assertIn("<6 models>", printed)
+        self.assertNotIn(",".join(many_models), printed)
+
+    @patch("dev_console.print")
+    @patch("dev_console.input")
+    @patch("dev_console.subprocess.run")
+    def test_run_script_cancellation_exits_without_failure_message_or_pause(self, mock_subprocess_run, mock_input, mock_print):
+        mock_subprocess_run.return_value = MagicMock(returncode=130)
+
+        rc = dev_console.run_script("new_job.py", ["bug"])
+
+        self.assertEqual(rc, 130)
+        # Should not wait for Enter on cancellation
+        mock_input.assert_not_called()
+        printed = " ".join([str(call.args[0]) for call in mock_print.call_args_list if call.args])
+        self.assertIn("Operation cancelled", printed)
+        self.assertNotIn("Script failed", printed)
+
+
 
     @patch("dev_console.subprocess.check_output")
     @patch("dev_console.subprocess.run")
@@ -954,13 +999,17 @@ class AppFeatureTests_{i}: XCTestCase {{
     ):
         """Verify that creating a job from the new job menu prompts for branch selection."""
         # 1. Job type prompt returns "Bug Fix", then branch selection returns "new"
-        mock_prompt_radio.side_effect = ["🐞 Bug Fix (Identify + Fix)", "new (creates a new branch to work in)"]
+        mock_prompt_radio.side_effect = [
+            "🐞 Bug Fix (Identify + Fix)",
+            "Role-based team — Recommended",
+            "new (creates a new branch to work in)",
+        ]
         # 2. Confirm prompts for spec file, yolo, advanced options
         mock_prompt_confirm.side_effect = [False, False, False]
 
         dev_console.handle_new_job(["local"], ["gemini"])
 
-        self.assertEqual(mock_prompt_radio.call_count, 2)
+        self.assertEqual(mock_prompt_radio.call_count, 3)
         self.assertEqual(mock_prompt_radio.call_args_list[0][0][0], "Select Job Type")
         job_options = mock_prompt_radio.call_args_list[0][0][1]
         self.assertNotIn("🧪 Test Coverage Audit (Maintenance)", job_options)
@@ -971,6 +1020,70 @@ class AppFeatureTests_{i}: XCTestCase {{
         self.assertEqual(script_args[0], "bug")
         self.assertIn("--branch-mode", script_args)
         self.assertEqual(script_args[script_args.index("--branch-mode") + 1], "new")
+        self.assertEqual(script_args[script_args.index("--development-approach") + 1], "role-based")
+
+    def test_team_summary_explains_automatic_roster(self):
+        summary = dev_console.format_team_summary({
+            "development_approach": "role-based",
+            "team": {
+                "mode": "auto",
+                "roles": [
+                    {"id": "technical_lead", "label": "Technical Lead"},
+                    {"id": "database_specialist", "label": "Database Specialist"},
+                ],
+            },
+        })
+
+        self.assertEqual(summary, "Role-based team (auto): Technical Lead · Database Specialist")
+
+    def test_team_summary_compacts_large_roster(self):
+        summary = dev_console.format_team_summary({
+            "development_approach": "role-based",
+            "team": {
+                "mode": "auto",
+                "roles": [
+                    {"label": "Technical Lead"},
+                    {"label": "Implementation Engineer"},
+                    {"label": "QA Engineer"},
+                    {"label": "Frontend Engineer"},
+                    {"label": "Database Specialist"},
+                ],
+            },
+        })
+
+        self.assertEqual(summary, "Role-based team (auto): Technical Lead · Implementation Engineer · QA Engineer (+2)")
+
+    def test_team_role_details_explain_why_each_role_was_selected(self):
+        details = dev_console.format_team_role_details({
+            "roles": [{"label": "Database Specialist", "reason": "Selected from job evidence: migration."}],
+        })
+
+        self.assertEqual(details, ["Database Specialist — Selected from job evidence: migration."])
+
+    @patch("dev_console.save_job")
+    @patch("dev_console.prompt_checkbox")
+    def test_change_team_persists_selected_roles_for_next_handoff(self, mock_checkbox, mock_save):
+        mock_checkbox.return_value = ["Database Specialist", "Accessibility Specialist"]
+        job = {
+            "development_approach": "role-based",
+            "team": {
+                "mode": "auto",
+                "roles": [],
+                "handoffs": [],
+                "intent_brief": {"user_outcome": "Accessible stored profiles"},
+            },
+        }
+
+        changed = dev_console.handle_change_team(job)
+
+        selected = [role["id"] for role in changed["team"]["roles"]]
+        self.assertEqual(
+            selected,
+            ["technical_lead", "implementation_engineer", "qa_engineer", "database_specialist", "accessibility_specialist"],
+        )
+        self.assertEqual(changed["team"]["intent_brief"]["user_outcome"], "Accessible stored profiles")
+        self.assertEqual(changed["team"]["handoffs"][-1]["type"], "team_changed")
+        mock_save.assert_called_once_with(changed)
 
 
     @patch("shutil.which")
@@ -1912,9 +2025,6 @@ class AppFeatureTests_{i}: XCTestCase {{
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
 
 
 

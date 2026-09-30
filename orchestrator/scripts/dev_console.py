@@ -34,6 +34,7 @@ from model_router import ModelRole
 from model_registry import get_all_models, ModelTier
 from probe_machine import load_machines, probe_machine
 from orchestrator.project_config import PACKAGE_ROOT, PROJECT_CONFIG
+from team_roles import FOUNDATION_ROLE_IDS, ROLE_CATALOG, replace_team_roles
 
 from orchestrator import __version__
 
@@ -583,6 +584,51 @@ def save_job(job: dict[str, Any]):
     data.pop("_path", None)
     write_json(Path(path), data)
 
+
+def format_team_summary(job: dict[str, Any]) -> str:
+    if job.get("development_approach") != "role-based":
+        return "Standard workflow"
+    team = job.get("team") or {}
+    mode = team.get("mode", "auto")
+    labels = [role.get("label", role.get("id", "Unknown role")) for role in team.get("roles", [])]
+    if len(labels) > 3:
+        roster = f"{' · '.join(labels[:3])} (+{len(labels) - 3})"
+    else:
+        roster = " · ".join(labels) if labels else "Foundation team pending"
+    return f"Role-based team ({mode}): {roster}"
+
+
+def format_team_role_details(team: dict[str, Any]) -> list[str]:
+    return [
+        f"{role.get('label', role.get('id', 'Unknown role'))} — {role.get('reason', 'No selection reason recorded.')}"
+        for role in team.get("roles", [])
+    ]
+
+
+def handle_change_team(job: dict[str, Any]) -> dict[str, Any]:
+    job = refresh_job(job)
+    team = job.get("team") or {"mode": "auto", "roles": [], "handoffs": []}
+    details = format_team_role_details(team)
+    if details:
+        print("Current team and selection reasons:")
+        for detail in details:
+            print(f"  • {detail}")
+        print()
+    situational = [role_id for role_id in ROLE_CATALOG if role_id not in FOUNDATION_ROLE_IDS]
+    label_to_id = {ROLE_CATALOG[role_id]["label"]: role_id for role_id in situational}
+    current_ids = {role.get("id") for role in team.get("roles", [])}
+    defaults = [label for label, role_id in label_to_id.items() if role_id in current_ids]
+    selected_labels = prompt_checkbox(
+        "Select optional engineering roles (Technical Lead, Implementation, and QA are always included):",
+        list(label_to_id),
+        defaults,
+    )
+    job["team"] = replace_team_roles(team, [label_to_id[label] for label in selected_labels if label in label_to_id])
+    job["development_approach"] = "role-based"
+    job["updated_at"] = now_iso()
+    save_job(job)
+    return job
+
 def format_job_date(job: dict[str, Any]) -> str:
     if job.get("_path"):
         try:
@@ -909,7 +955,40 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
         script_path = SCRIPTS_DIR / script_name
         cmd = [sys.executable, "-u", str(script_path)] + args
 
-    print(f"\n\033[1;90m▶ Running:\033[0m \033[96m{shlex.join(cmd)}\033[0m\n", flush=True)
+    # Reset terminal state (restore scroll region) and show cursor before printing or running subprocess
+    from orchestrator.scripts.common import _ACTIVE_STATUS_BAR
+    if _ACTIVE_STATUS_BAR:
+        try:
+            _ACTIVE_STATUS_BAR.clear_footer()
+            _ACTIVE_STATUS_BAR.reset_scroll_region(force=True)
+        except Exception:
+            pass
+    else:
+        sys.stdout.write("\033[r\033[?25h")
+        sys.stdout.flush()
+
+    def _format_cmd_display(cmd_list: list[str]) -> str:
+        out = []
+        i = 0
+        while i < len(cmd_list):
+            item = cmd_list[i]
+            if item == "--allowed-models" and i + 1 < len(cmd_list):
+                models = [m for m in cmd_list[i + 1].split(",") if m]
+                if len(models) > 3:
+                    out.extend([item, f"<{len(models)} models>"])
+                    i += 2
+                    continue
+            elif item == "--allowed-machines" and i + 1 < len(cmd_list):
+                machines = [m for m in cmd_list[i + 1].split(",") if m]
+                if len(machines) > 4:
+                    out.extend([item, f"<{len(machines)} machines>"])
+                    i += 2
+                    continue
+            out.append(item)
+            i += 1
+        return shlex.join(out)
+
+    print(f"\n\033[1;90m▶ Running:\033[0m \033[96m{_format_cmd_display(cmd)}\033[0m\n", flush=True)
 
     # Extract and emphasize chosen tests
     test_targets = []
@@ -958,13 +1037,18 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
             sub_env = os.environ.copy()
             if sub_menu and script_name != "check_setup.py":
                 sub_env["AI_PROGRESS_SILENT"] = "1"
+            if script_name in ["new_job.py", "check_setup.py"]:
+                clear_screen()
             returncode = subprocess.run(cmd, cwd=str(ROOT), stdin=sys.stdin, stdout=None, stderr=None, env=sub_env).returncode
             output_log = ""
         else:
             returncode, output_log = run_streaming_process(cmd, job=job, sub_menu=sub_menu, session_machines=session_machines, session_models=session_models, label=prompt)
             
         if returncode != 0:
-            print(f"\n\033[1;91mScript failed (exit {returncode}).\033[0m")
+            if returncode in (130, -2):
+                print("\n\033[90mOperation cancelled.\033[0m")
+            else:
+                print(f"\n\033[1;91mScript failed (exit {returncode}).\033[0m")
 
             # Try to provide a succinct summary
             summary = None
@@ -984,7 +1068,7 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
                             summary = "Blocker: " + match.group(1).strip()
 
             # 2. Extract diagnostics or error lines from the output log if no summary found
-            if not summary and output_log:
+            if not summary and output_log and returncode not in (130, -2):
                 summary = script_failure_summary(output_log)
                 if not summary:
                     lines = [line.strip() for line in output_log.splitlines() if line.strip()]
@@ -1003,7 +1087,7 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
             if summary:
                 print("\n\033[1;93mFailure summary\033[0m")
                 print(summary)
-            else:
+            elif returncode not in (130, -2):
                 print("\n\033[90m(No detailed summary available from artifacts)\033[0m")
         else:
             print("\n\033[92m", end="")
@@ -1013,7 +1097,8 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
             print("\033[0m", end="")
 
     except KeyboardInterrupt:
-        print("\nProcess interrupted by user.")
+        returncode = 130
+        print("\n\033[90mProcess cancelled by user.\033[0m")
     finally:
         # Guarantee that terminal line-wrapping and newline translation are restored
         # in case a crashed subprocess left the tty in raw or cbreak mode.
@@ -1025,7 +1110,7 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
     # Use provided prompt or a descriptive default
     default_prompt = "\n\033[1;96mTap Enter to return to menu...\033[0m" if sub_menu else "\n\033[1;96mTap Enter to return to main menu...\033[0m"
     final_prompt = prompt if prompt is not None else default_prompt
-    if final_prompt:
+    if final_prompt and returncode not in (130, -2):
         try:
             input(final_prompt)
         except (KeyboardInterrupt, EOFError):
@@ -1033,7 +1118,21 @@ def run_script(script_name: str, args: list[str], job: dict[str, Any] | None = N
             
     return returncode
 
-def handle_new_job(session_allowed_models: list[str] | None = None, session_allowed_machines: list[str] | None = None):
+def handle_new_job(session_allowed_models: list[str] | None = None, session_allowed_machines: list[str] | None = None, status_bar: StatusBar | None = None):
+    if status_bar:
+        try:
+            status_bar.clear_footer()
+            status_bar.reset_scroll_region(force=True)
+        except Exception:
+            pass
+    from orchestrator.scripts.common import _ACTIVE_STATUS_BAR
+    if _ACTIVE_STATUS_BAR:
+        try:
+            _ACTIVE_STATUS_BAR.clear_footer()
+            _ACTIVE_STATUS_BAR.reset_scroll_region(force=True)
+        except Exception:
+            pass
+    clear_screen()
     try:
         # 1. Critical Pre-requisite Checks
         if not session_allowed_machines:
@@ -1093,6 +1192,24 @@ def handle_new_job(session_allowed_models: list[str] | None = None, session_allo
             job_type = "design"
             stitch_mode = True
 
+        approach_choice = "Standard workflow"
+        if job_type != "quick":
+            approach_options = [
+                "Role-based team — Recommended",
+                "Standard workflow",
+            ]
+            approach_description = [
+                "  \033[90mRole-based team automatically assembles the smallest useful set of engineering roles",
+                "  around one shared user goal. It may take longer and use more AI capacity.\033[0m",
+            ]
+            approach_choice = prompt_radio(
+                "Select Development Approach",
+                approach_options,
+                approach_options[0],
+                description=approach_description,
+            )
+        development_approach = "role-based" if "Role-based" in approach_choice else "standard"
+
         spec_file = None
         if job_type != "quick":
             desc_text = "Would you like to load the feature specification from a local file or web address? This is useful for importing large multi-page documents."
@@ -1129,7 +1246,11 @@ def handle_new_job(session_allowed_models: list[str] | None = None, session_allo
             advanced = prompt_confirm("Show advanced options? (Configure LLM presets, model overrides, and machine filtering)", default=False)
         
         # Map friendly UI names back to what new_job.py expects
-        args = [job_type, "--branch-mode", clean_branch_choice]
+        args = [
+            job_type,
+            "--branch-mode", clean_branch_choice,
+            "--development-approach", development_approach,
+        ]
         
         if stitch_mode:
             args.append("--stitch")
@@ -1165,13 +1286,24 @@ def handle_new_job(session_allowed_models: list[str] | None = None, session_allo
                 args.extend(["--planner", planner, "--builder", builder, "--reviewer", reviewer])
             else:
                 args.extend(["--preset", preset])
+
+            if development_approach == "role-based" and prompt_confirm(
+                "Customize the automatically assembled engineering team?",
+                default=False,
+                description="The foundation roles remain; selected specialists are pinned for this job.",
+            ):
+                situational = [role_id for role_id in ROLE_CATALOG if role_id not in FOUNDATION_ROLE_IDS]
+                label_to_id = {ROLE_CATALOG[role_id]["label"]: role_id for role_id in situational}
+                selected_labels = prompt_checkbox("Pin specialist roles:", list(label_to_id), [])
+                selected_ids = [label_to_id[label] for label in selected_labels if label in label_to_id]
+                args.extend(["--team-roles", ",".join(selected_ids)])
                 
         if not yolo:
             args.append("--no-dispatch")
         else:
             args.append("--yolo")
         
-        run_script("new_job.py", args)
+        run_script("new_job.py", args, prompt="")
     except BackException:
         return
 
@@ -4099,6 +4231,7 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                 iter_num = job.get("iteration", 1)
                 badge += f" \033[90m(Attempt #{iter_num})\033[0m"
             print(f"\033[1;96mStatus:\033[0m       {badge}")
+            print(f"\033[1;96mApproach:\033[0m     \033[97m{format_team_summary(job)}\033[0m")
 
             # 3. Branch & Base
             branch = job.get("branch")
@@ -4596,6 +4729,8 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
             context_options.append(("k", "[\033[93mK\033[0m] Attach UI Mockup / Reference"))
 
             inspect_options.append(("o", "[\033[93mO\033[0m] Select LLM Models (Override)"))
+            if job.get("development_approach") == "role-based":
+                inspect_options.append(("n", "[\033[93mN\033[0m] Change Role-based Team"))
             inspect_options.append(("y", "[\033[93mY\033[0m] Export Context (Logs, Progress, Plan)"))
             inspect_options.append(("v", "[\033[93mV\033[0m] View Brief / Summary"))
             inspect_options.append(("g", "[\033[1;96mG\033[0m] View in GitHub"))
@@ -4712,6 +4847,12 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                         raise
                     except BackException:
                         break
+
+            elif choice == "n" and job.get("development_approach") == "role-based":
+                open_action_screen("Change Role-based Team")
+                job = handle_change_team(job)
+                print("\nTeam updated. Changes apply to the next workflow handoff.")
+                input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
             elif choice == "x":
                 open_action_screen("Discard & Revert Changes")
@@ -5141,10 +5282,7 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                         if repro:
                             args.append("--bug-reproduced")
                     else:
-                        status_bar.clear_footer()
-                        status_bar.reset_scroll_region(force=True)
-                        clear_screen()
-                        feedback = prompt_autofix_iteration_settings(job)
+                        feedback = prompt_autofix_iteration_settings(job, status_bar=status_bar)
                         if feedback:
                             args.extend(["--feedback", feedback])
 
@@ -5612,7 +5750,18 @@ def render_ai_changes_synopsis(job: dict[str, Any]) -> None:
                 for f in sorted(ai_untracked):
                     print(f"    • \033[92m{f}\033[0m")
 
-def prompt_autofix_iteration_settings(job: dict[str, Any]) -> str | None:
+def prompt_autofix_iteration_settings(job: dict[str, Any], status_bar: StatusBar | None = None) -> str | None:
+    if status_bar is None:
+        from common import _ACTIVE_STATUS_BAR
+        status_bar = _ACTIVE_STATUS_BAR
+
+    if status_bar is None:
+        with StatusBar(job, sub_menu=True) as new_status_bar:
+            return prompt_autofix_iteration_settings(job, status_bar=new_status_bar)
+
+    clear_screen()
+    if status_bar:
+        status_bar.set_scroll_region()
     print_header("Auto-Fix / Iterate")
     print("\033[90mThe AI will inspect the current job, linked logs, and failing test output, apply a targeted fix, and rerun the job's TDD test suite to verify the fix.\033[0m\n")
 
@@ -5627,6 +5776,9 @@ def prompt_autofix_iteration_settings(job: dict[str, Any]) -> str | None:
 
     print("  \033[90mℹ️  Tip: Leave the guidance field blank to run Auto-Fix with existing job context.\033[0m")
     print("  \033[90m" + ("─" * 60) + "\033[0m\n")
+
+    if status_bar:
+        status_bar.render(at_bottom=True, force=True)
 
     feedback = prompt_input(
         "Guidance (Optional)",
@@ -8192,7 +8344,9 @@ def main_loop():
                         session_allowed_machines, session_allowed_models = handle_configuration_menu(session_allowed_machines, session_allowed_models)
                         continue
                     elif choice == "n":
-                        handle_new_job(session_allowed_models=session_allowed_models, session_allowed_machines=session_allowed_machines)
+                        status_bar.clear_footer()
+                        status_bar.reset_scroll_region(force=True)
+                        handle_new_job(session_allowed_models=session_allowed_models, session_allowed_machines=session_allowed_machines, status_bar=status_bar)
                     elif choice in ("t", "v"):
                         handle_manage_tests(session_allowed_machines, session_allowed_models)
                     elif choice == "d":

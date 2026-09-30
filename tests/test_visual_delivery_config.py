@@ -186,6 +186,28 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             self.assertEqual(exit_context.exception.code, 1)
             mock_notify.assert_called_once_with(unittest.mock.ANY, "Ship build", "main", False)
 
+    def test_build_delivery_receipt_fallback_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            export_dir = root / "export"
+            export_dir.mkdir()
+            ipa_path = export_dir / "SampleApp.ipa"
+            with zipfile.ZipFile(ipa_path, "w") as ipa:
+                ipa.writestr("Payload/SampleApp.app/Info.plist", plistlib.dumps({
+                    "CFBundleShortVersionString": "1.0.1",
+                    "CFBundleVersion": "2026091801",
+                }))
+
+            log_firebase = f"i uploading...\nfirebase appdistribution:distribute {ipa_path} --app 123\n"
+            receipt = deliver_build.build_delivery_receipt(log_firebase, "testers", "groups")
+            self.assertEqual(receipt.get("ipa_path"), str(ipa_path))
+            self.assertEqual(receipt.get("version"), "1.0.1")
+
+            log_xcode = f"Exported SampleApp to: {export_dir}\n** EXPORT SUCCEEDED **\n"
+            receipt2 = deliver_build.build_delivery_receipt(log_xcode, "testers", "groups")
+            self.assertEqual(receipt2.get("ipa_path"), str(ipa_path))
+            self.assertEqual(receipt2.get("version"), "1.0.1")
+
     @patch("deliver_build.ensure_keychain_unlocked")
     def test_deliver_build_missing_branch_exits_nonzero_without_unlocking_keychain(self, mock_unlock) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

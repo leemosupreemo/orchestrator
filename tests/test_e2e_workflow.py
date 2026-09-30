@@ -110,6 +110,106 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIsNone(job_data["branch"])
         mock_create_issue.assert_called_once()
 
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_role_based_job_persists_team_and_gives_planner_shared_context(self, mock_create_issue, mock_llm):
+        mock_create_issue.return_value = 131
+        mock_llm.return_value = (json.dumps({
+            "title": "Persist Profiles",
+            "summary": "Persist user profiles",
+            "assumptions": ["Profiles already exist in memory"],
+            "constraints": ["No data loss"],
+            "risks": ["Migration compatibility"],
+            "likely_files": ["database/profiles.sql"],
+            "tasks": [{"title": "Add migration", "description": "Persist profiles", "acceptance_criteria": ["Existing profiles survive upgrade"], "likely_files": ["database/profiles.sql"], "tests": [], "complexity": "medium"}],
+        }), "mock-model", "mock-session-id")
+
+        from orchestrator.scripts import new_job
+        args = [
+            "feature", "--summary", "Persist user profiles in a database migration",
+            "--development-approach", "role-based", "--team-roles", "database_specialist",
+            "--branch-mode", "manual", "--no-dispatch", "--yolo",
+        ]
+        with patch("orchestrator.scripts.new_job.ROOT", self.root):
+            with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                new_job.main(args)
+
+        job_file = next((self.root / ".orchestrator" / "jobs").glob("*.json"))
+        job = json.loads(job_file.read_text())
+        self.assertEqual(job["development_approach"], "role-based")
+        self.assertEqual(job["team"]["mode"], "custom")
+        self.assertIn("database_specialist", [role["id"] for role in job["team"]["roles"]])
+        self.assertEqual(job["team"]["intent_brief"]["user_outcome"], "Persist user profiles")
+        self.assertEqual(job["team"]["intent_brief"]["acceptance_criteria"], ["Existing profiles survive upgrade"])
+        self.assertEqual(len(job["work_packages"]), 1)
+        self.assertEqual(job["work_packages"][0]["role"], "implementation_engineer")
+        self.assertEqual(job["work_packages"][0]["requested_mode"], "agentic")
+        planner_prompt = mock_llm.call_args.args[1]
+        self.assertIn("ROLE-BASED TEAM CONTEXT", planner_prompt)
+        self.assertIn("Database Specialist", planner_prompt)
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.gh_text")
+    def test_replanning_role_based_job_preserves_user_customized_team(self, mock_gh_text, mock_llm):
+        from orchestrator.scripts import new_job
+        from orchestrator.scripts.team_roles import assemble_team
+
+        mock_llm.return_value = (json.dumps({
+            "title": "Account Settings",
+            "summary": "Adjust account settings",
+            "assumptions": [],
+            "constraints": [],
+            "risks": [],
+            "acceptance_criteria": ["Settings save"],
+            "likely_files": [],
+            "tasks": [{"title": "Adjust settings", "description": "Update behavior", "acceptance_criteria": ["Settings save"], "likely_files": [], "tests": [], "complexity": "low"}],
+        }), "mock-model", "mock-session-id")
+        job_id = "existing-role-job"
+        paths = self.make_job_paths(job_id)
+        custom_team = assemble_team("", "feature", requested_roles=["accessibility_specialist"])
+        custom_team["intent_brief"] = {
+            "user_request": "Let users manage an account accessibly",
+            "user_outcome": "Accessible account management",
+            "acceptance_criteria": ["VoiceOver announces every control"],
+            "constraints": ["Preserve VoiceOver behavior"],
+            "assumptions": ["Account settings already exist"],
+            "risks": ["Focus order regression"],
+            "non_goals": ["Redesign authentication"],
+        }
+        paths.job_file.write_text(json.dumps({
+            "job_id": job_id,
+            "type": "feature-plan",
+            "issue_number": 44,
+            "title": "Account Settings",
+            "development_approach": "role-based",
+            "team": custom_team,
+            "plan": {},
+        }))
+
+        args = [
+            "feature", "--update", str(paths.job_file), "--summary", "Adjust account settings",
+            "--branch-mode", "manual", "--no-dispatch", "--yolo",
+        ]
+        with patch("orchestrator.scripts.new_job.ROOT", self.root):
+            with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                new_job.main(args)
+
+        updated = json.loads(paths.job_file.read_text())
+        self.assertEqual(updated["team"]["mode"], "custom")
+        self.assertIn("accessibility_specialist", [role["id"] for role in updated["team"]["roles"]])
+        self.assertEqual(updated["team"]["intent_brief"]["user_request"], "Let users manage an account accessibly")
+        self.assertIn("Preserve VoiceOver behavior", updated["team"]["intent_brief"]["constraints"])
+        planner_prompt = mock_llm.call_args.args[1]
+        for value in (
+            "Accessible account management",
+            "VoiceOver announces every control",
+            "Preserve VoiceOver behavior",
+            "Account settings already exist",
+            "Focus order regression",
+            "Redesign authentication",
+        ):
+            self.assertIn(value, planner_prompt)
+
     @patch("orchestrator.scripts.new_job.flush_stdin")
     @patch("orchestrator.scripts.new_job.run_llm")
     @patch("orchestrator.scripts.new_job.create_issue")
@@ -191,6 +291,7 @@ class E2EWorkflowTests(unittest.TestCase):
         # Mock UI interactions
         mock_radio.side_effect = [
             "feature", # Job type
+            "Role-based team — Recommended",
             "manual (no git actions)" # Branch choice
         ]
         mock_confirm.return_value = False # No Stitch, No Spec, No Advanced, No YOLO
@@ -201,6 +302,10 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIn("--branch-mode", args_passed)
         idx = args_passed.index("--branch-mode")
         self.assertEqual(args_passed[idx+1], "manual")
+        self.assertEqual(
+            args_passed[args_passed.index("--development-approach") + 1],
+            "role-based",
+        )
 
     @patch("orchestrator.scripts.new_job.gh_text")
     def test_create_issue_retry_on_missing_labels(self, mock_gh_text):
@@ -258,5 +363,3 @@ class E2EWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
