@@ -1318,12 +1318,13 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
         optional_tools: list[str] = []
         if not args.non_interactive:
             wizard_stage(3, "Optional tools")
-            options = [("github", "GitHub account and PR integration"),
+            print("GitHub is required: every job opens an issue and a pull request. It is set up next.")
+            options = [("github", "Switch or add GitHub accounts"),
                        ("workers", "Remote SSH workers"),
                        ("prompts", "Custom role prompts")]
             if stack.uses_xcode or firebase_enabled or existing_p_cfg.get("firebase_distribution") or existing_p_cfg.get("development_team") or existing_p_cfg.get("firebase_plist_path"):
                 options.append(("delivery", "Firebase delivery and Apple signing"))
-            optional_tools = wizard_choose_items("Choose tools to configure now (all optional)", options, [], status_bar, enter_hint="skip optional tools")
+            optional_tools = wizard_choose_items("Choose extra tools to configure now (all optional)", options, [], status_bar, enter_hint="skip optional tools")
             print("Unselected tools keep their existing settings. You can configure them later.")
         configure_keychain = False
         install_workers: list[str] = []
@@ -1331,7 +1332,7 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
         # ----------------------------------------------------
         # 3. GitHub Integration
         # ----------------------------------------------------
-        if not args.non_interactive and "github" in optional_tools:
+        if not args.non_interactive:
             try:
                 print(f"\n\033[1;96m{'='*20} GitHub Integration {'='*20}\033[0m")
                 print("Login and account switching update your GitHub CLI session immediately.")
@@ -1350,6 +1351,8 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
                 else:
                     acc_info = f"{gh_active_user} (Active · {len(gh_accounts)} account(s))" if len(gh_accounts) > 1 else f"{gh_active_user} (Active)"
                     print(f"Current status: \033[1;92m✅ Authenticated as {acc_info}\033[0m")
+                    if "github" not in optional_tools:
+                        raise SkipSectionException()  # signed in; account switching wasn't requested
                     print("\033[90m(Press [Enter] to keep active account, or choose an action below)\033[0m\n")
                     print("  [Enter] Keep active account")
                     print("  [A] Add another GitHub account")
@@ -1372,6 +1375,28 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
                                 subprocess.run(["gh", "auth", "login"], check=False)
             except SkipSectionException:
                 pass
+
+            # GitHub is required, so don't move on until the CLI is signed in.
+            from orchestrator.scripts.dev_console import get_github_auth_info
+            while True:
+                has_gh, gh_accounts, gh_active_user = get_github_auth_info()
+                if has_gh and gh_accounts:
+                    break
+                print("  \033[1;91mGitHub is required:\033[0m jobs can't be created without the GitHub CLI signed in.")
+                if not has_gh:
+                    print("     Install it with \033[97mbrew install gh\033[0m, then continue.")
+                try:
+                    if has_gh and prompt_yes_no("Log in to GitHub now (gh auth login)?", default=True, status_bar=status_bar):
+                        subprocess.run(["gh", "auth", "login"], check=False)
+                        continue
+                    if not prompt_yes_no("Check again?", default=True, status_bar=status_bar):
+                        print("Setup stopped: sign in to GitHub and run orchestrator wizard again.")
+                        return 1
+                except SkipSectionException:
+                    print("GitHub can't be skipped. Sign in, or quit the wizard.")
+            if not git_remote(root):
+                print("  \033[1;93m⚠️  This repository has no GitHub 'origin' remote yet.\033[0m")
+                print("     Create one with \033[97mgh repo create --source . --push\033[0m before creating jobs.")
 
         # ----------------------------------------------------
         # 4. Role Prompts

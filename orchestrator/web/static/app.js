@@ -1,5 +1,22 @@
 "use strict";
 
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBg8h8yiC8OCoezFLEq6mQLhlc260b8CcI",
+  authDomain: "swift-orch-web-20260923.firebaseapp.com",
+  projectId: "swift-orch-web-20260923",
+  storageBucket: "swift-orch-web-20260923.firebasestorage.app",
+  messagingSenderId: "1093947686212",
+  appId: "1:1093947686212:web:95cd975ed0d626ec196b11",
+};
+
+if (typeof window !== "undefined" && window.firebase && !window.firebase.apps?.length) {
+  try {
+    window.firebase.initializeApp(FIREBASE_CONFIG);
+  } catch (e) {
+    console.warn("Firebase initialization warning:", e);
+  }
+}
+
 // ---------------------------------------------------------------- helpers
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -11,12 +28,49 @@ let state = { project: null, runs: [], actions: {} };
 let cleanup = [];
 let current = { page: null, args: [], query: null, rendered: "" };
 
+const DEFAULT_REMOTE_BACKEND = "https://calculations-absorption-pct-moreover.trycloudflare.com";
+
+function getBackendUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const qb = params.get("backend");
+  if (qb) {
+    const clean = qb.replace(/\/+$/, "");
+    localStorage.setItem("orchestrator_backend", clean);
+    return clean;
+  }
+  const stored = localStorage.getItem("orchestrator_backend");
+  if (stored && stored.startsWith("http")) return stored;
+  if (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost") {
+    return "";
+  }
+  return DEFAULT_REMOTE_BACKEND;
+}
+
+function getToken() {
+  const params = new URLSearchParams(window.location.search);
+  const qt = params.get("token");
+  if (qt) {
+    localStorage.setItem("orchestrator_token", qt);
+    return qt;
+  }
+  return localStorage.getItem("orchestrator_token") || "";
+}
+
 async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch(`/api/${path}`, {
+  const backend = getBackendUrl();
+  const token = getToken();
+  const url = `${backend ?? ""}/api/${path}`;
+  const hasBody = body !== undefined;
+  const isMutation = ["POST", "PUT", "DELETE", "PATCH"].includes(method.toUpperCase());
+  const headers = {
+    ...(hasBody || isMutation ? { "Content-Type": "application/json", "X-Orchestrator-UI": "1" } : {}),
+    ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+  };
+  const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json", "X-Orchestrator-UI": "1" } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    credentials: "same-origin",
+    headers,
+    body: hasBody ? JSON.stringify(body) : (isMutation ? "{}" : undefined),
+    credentials: backend ? "omit" : "same-origin",
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -53,13 +107,81 @@ function runPill(r) {
   return r.exit_code === 0 ? pill("done", "Finished") : pill("failed", `Failed (exit ${r.exit_code})`);
 }
 
-// A <details> dropdown: `items` are [label, attrs, hint?] or "---".
+// A <details> dropdown: `items` are [label, attrs, hint?] or "---" or ["header", title].
 function moreMenu(items, { label = "More", left = false } = {}) {
-  const body = items.map((it) => it === "---" ? "<hr>" :
-    `<button class="btn" ${it[1]}>${esc(it[0])}</button>${it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`).join("");
+  const body = items.map((it) => {
+    if (it === "---") return "<hr>";
+    if (Array.isArray(it) && it[0] === "header") {
+      return `<div class="more-menu-header">${esc(it[1])}</div>`;
+    }
+    return `<button class="btn" ${it[1]}>${esc(it[0])}</button>${it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
+  }).join("");
   return `<details class="more${left ? " left" : ""}"><summary class="btn">${esc(label)} ▾</summary><div class="more-menu">${body}</div></details>`;
 }
 const act = (action, params) => `data-action="${action}"${params ? ` data-params='${attrJSON(params)}'` : ""}`;
+const openMenu = (menu) => act("config_menu", { menu });
+
+function configSubmenusList() {
+  return [
+    ["header", "Models & Instructions"],
+    ["LLM Models", openMenu("models"), "Refresh & discover local CLI and provider models"],
+    ["Manage LLM API Keys", openMenu("keys"), "Configure provider API keys (Gemini, Claude, OpenAI...)"],
+    ["AI Instruction Settings", openMenu("instructions"), "Instruction files (.md) for each AI CLI"],
+    "---",
+    ["header", "Machine Fleet & Project Config"],
+    ["Manage Machine Fleet", openMenu("fleet"), "Remote SSH build workers and environments"],
+    ["Select Base Branch", `data-scroll-to="#cfg-branch"`, "The source of truth for delta calculations"],
+    ["Change Target Project", `data-href="#/projects"`, "Switch active project directory"],
+    ["Manage Archived Jobs", openMenu("archived"), "View and restore archived jobs"],
+    "---",
+    ["header", "Delivery & Notifications"],
+    ["Firebase App Distro", openMenu("firebase"), "Signing, provisioning, and tester releases"],
+    ["Xcode Cloud & CI Workflows", openMenu("xcode"), "ci_scripts hooks and cloud CI checks"],
+    ["Email Notification Settings", openMenu("email"), "Recipients and sender configuration"],
+    "---",
+    ["header", "Setup, Health & Documentation"],
+    ["Setup Wizard (Full Setup)", act("wizard"), "5-step project, AI, and delivery setup wizard"],
+    ["Run Prerequisite Audit", openMenu("audit"), "Environment and fleet dependency health check"],
+    ["Documentation & Architecture Guides", `data-scroll-to="#cfg-docs"`, "Project guides, workflows, and standards"],
+    ["Orchestrator Self-Tests", openMenu("selftests"), "Tooling, smoke, and workflow test menu"],
+    ["Update Orchestrator (Local & Fleet)", openMenu("update"), "Pull latest changes across all machines"],
+    "---",
+    ["Open Full CLI Menu", openMenu("all"), "Launch complete interactive console in terminal"],
+  ];
+}
+
+function openContextMenu(x, y, items) {
+  let menu = $("#context-menu-popover");
+  if (!menu) {
+    menu = document.createElement("div");
+    menu.id = "context-menu-popover";
+    menu.className = "context-menu-popover";
+    document.body.appendChild(menu);
+  }
+  const body = items.map((it) => {
+    if (it === "---") return "<hr>";
+    if (Array.isArray(it) && it[0] === "header") {
+      return `<div class="more-menu-header">${esc(it[1])}</div>`;
+    }
+    return `<button class="btn" ${it[1]}>${esc(it[0])}</button>${it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
+  }).join("");
+  menu.innerHTML = body;
+  menu.hidden = false;
+
+  const rect = menu.getBoundingClientRect();
+  const posX = Math.min(x, window.innerWidth - (rect.width || 280) - 12);
+  const posY = Math.min(y, window.innerHeight - (rect.height || 400) - 12);
+  menu.style.left = `${Math.max(12, posX)}px`;
+  menu.style.top = `${Math.max(12, posY)}px`;
+
+  const close = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.hidden = true;
+      document.removeEventListener("pointerdown", close);
+    }
+  };
+  setTimeout(() => document.addEventListener("pointerdown", close), 20);
+}
 
 // ---------------------------------------------------------------- running actions
 
@@ -80,8 +202,8 @@ async function runAction(action, params = {}, { skipConfirm = false } = {}) {
   if (meta.confirm && !skipConfirm && !(await formDialog(meta.title, `<p>${esc(meta.confirm)}</p>`, "Continue"))) return;
   try {
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
+    await refreshState(); // so the run page finds the new run straight away
     location.hash = `#/runs/${run.id}`;
-    refreshState();
   } catch (e) {
     toast(e.message, true);
   }
@@ -89,6 +211,7 @@ async function runAction(action, params = {}, { skipConfirm = false } = {}) {
 
 function formDialog(title, bodyHtml, okLabel = "Run") {
   const dlg = $("#dialog");
+  $("#dialog-cancel").hidden = false;
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = bodyHtml;
   $("#dialog-ok").textContent = okLabel;
@@ -100,6 +223,155 @@ function formDialog(title, bodyHtml, okLabel = "Run") {
     dlg.addEventListener("close", () => {
       if (dlg.returnValue !== "ok") return resolve(null);
       resolve(Object.fromEntries(new FormData($("#dialog-form")).entries()));
+    }, { once: true });
+  });
+}
+
+function addProjectsDialog(trackedProjects) {
+  const dlg = $("#dialog");
+  const body = $("#dialog-body");
+  const cancel = $("#dialog-cancel");
+  const done = $("#dialog-ok");
+  let changed = false;
+  let switched = false;
+  let pendingAdds = 0;
+
+  $("#dialog-title").textContent = "Add Projects";
+  done.textContent = "Done";
+  done.disabled = false;
+  cancel.hidden = true;
+  body.innerHTML = `
+    <section class="project-discovery">
+      <div>
+        <h3>Projects on this computer</h3>
+        <small class="muted">Add any discovered codebases to your tracked projects.</small>
+      </div>
+      <div id="project-discovery-list" class="project-discovery-list" aria-live="polite">
+        <div class="project-discovery-status"><span class="pill working"><span class="dot"></span>Scanning for projects...</span></div>
+      </div>
+    </section>
+    <div class="dialog-divider"><span>Or add a directory</span></div>
+    <label class="field"><span>Project Directory Path</span>
+      <input type="text" name="root" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" autocomplete="off" spellcheck="false">
+      <small>Path to the folder containing your Xcode project, Package.swift, or Git repository.</small>
+    </label>
+    <label class="field"><span>Display Name <span class="muted">(optional)</span></span>
+      <input type="text" name="name" placeholder="Leave blank to use folder name">
+    </label>
+    <label class="check">
+      <input type="checkbox" name="active">
+      <span>Switch to this project immediately</span>
+    </label>
+    <div class="row end"><button type="button" class="btn" id="manual-add-project">Add directory</button></div>
+  `;
+
+  const list = $("#project-discovery-list");
+  const form = $("#dialog-form");
+  const manualButton = $("#manual-add-project");
+  const sendAdd = ProjectPicker.createAddQueue((request) => api(request.path, request.options));
+  const enqueueAdd = (request) => {
+    pendingAdds += 1;
+    done.disabled = true;
+    return sendAdd(request).finally(() => {
+      pendingAdds -= 1;
+      done.disabled = pendingAdds > 0;
+    });
+  };
+  const showScanResults = async () => {
+    try {
+      const { discovered } = await api("projects/scan", { method: "POST", body: {} });
+      const available = ProjectPicker.availableProjects(discovered, trackedProjects);
+      list.innerHTML = available.length
+        ? ProjectPicker.renderRows(available)
+        : `<div class="project-discovery-status muted">No additional projects found.</div>`;
+    } catch (err) {
+      list.innerHTML = `<div class="notice bad">Scan failed: ${esc(err.message)}</div>`;
+    }
+  };
+
+  const onClick = async (event) => {
+    const discoveredButton = event.target.closest("[data-add-project-path]");
+    if (discoveredButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      discoveredButton.disabled = true;
+      try {
+        const project = {
+          root: discoveredButton.dataset.addProjectPath,
+          name: discoveredButton.dataset.projectName || "",
+        };
+        const request = ProjectPicker.addRequest(project);
+        await enqueueAdd(request);
+        changed = true;
+        discoveredButton.textContent = "Added";
+        discoveredButton.classList.remove("primary");
+        toast(`${project.name || project.root} added`);
+      } catch (err) {
+        discoveredButton.disabled = false;
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (!event.target.closest("#manual-add-project")) return;
+    const values = Object.fromEntries(new FormData(form).entries());
+    const root = String(values.root || "").trim();
+    if (!root) {
+      toast("Enter a project directory path", true);
+      return;
+    }
+    const active = Boolean(values.active);
+    manualButton.disabled = true;
+    try {
+      await enqueueAdd({
+        path: "projects/add",
+        options: {
+          method: "POST",
+          body: { root, name: String(values.name || "").trim(), active },
+        },
+      });
+      changed = true;
+      switched = active;
+      toast("Project added");
+      if (active) {
+        dlg.close("ok");
+      } else {
+        form.elements.root.value = "";
+        form.elements.name.value = "";
+      }
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      manualButton.disabled = false;
+    }
+  };
+
+  const onCancel = (event) => {
+    if (!pendingAdds) return;
+    event.preventDefault();
+    toast("Wait for the project to finish adding");
+  };
+  const onKeydown = (event) => {
+    if (event.key !== "Enter" || !event.target.matches('input[name="root"], input[name="name"]')) return;
+    event.preventDefault();
+    manualButton.click();
+  };
+
+  body.addEventListener("click", onClick);
+  body.addEventListener("keydown", onKeydown);
+  dlg.addEventListener("cancel", onCancel);
+  dlg.returnValue = "";
+  dlg.showModal();
+  showScanResults();
+
+  return new Promise((resolve) => {
+    dlg.addEventListener("close", () => {
+      body.removeEventListener("click", onClick);
+      body.removeEventListener("keydown", onKeydown);
+      dlg.removeEventListener("cancel", onCancel);
+      cancel.hidden = false;
+      done.disabled = false;
+      resolve({ changed, switched });
     }, { once: true });
   });
 }
@@ -153,6 +425,129 @@ const dialogs = {
       <label class="field"><span>Release notes <span class="muted">(optional)</span></span><textarea name="notes"></textarea></label>`, "Distribute");
     if (values) runAction("distribute", { notes: values.notes }, { skipConfirm: true });
   },
+  async ask_ai(params) {
+    const values = await formDialog("Ask AI (Questions about changes)", `
+      <p class="muted" style="margin-bottom: 8px;">Ask a question regarding the current plan, implementation diff, or test failures for this job.</p>
+      <label class="field"><span>Your question</span>
+        <textarea name="question" required placeholder="e.g. Why did you change the networking layer instead of the view controller?"></textarea>
+      </label>`, "Ask AI");
+    if (values?.question.trim()) {
+      runAction("fix", { job: params.job, feedback: `Question about job: ${values.question.trim()}` });
+    }
+  },
+  async link_logs(params) {
+    const hasRemote = state.project?.remote_logs;
+    const values = await formDialog("Link Logs (Update Context)", `
+      <p class="muted" style="margin-bottom: 8px;">Attach crash or runtime logs to guide the next repair cycle.</p>
+      ${hasRemote ? `<label class="check"><input type="checkbox" name="pull_device" checked><span>Pull newest device launch from Sentry</span></label>` : ''}
+      <label class="field"><span>Local log path or log snippet <span class="muted">(optional)</span></span>
+        <textarea name="log_text" placeholder="Paste log lines, stack traces, or file path..."></textarea>
+      </label>`, "Link Logs");
+    if (values) {
+      const logs = values.pull_device ? "cloud:latest" : (values.log_text || "");
+      if (logs) runAction("debug", { job: params.job, logs });
+      else toast("No logs specified");
+    }
+  },
+  async attach_mockup(params) {
+    const values = await formDialog("Attach UI Mockup / Reference", `
+      <label class="field"><span>Mockup URL or File Path</span>
+        <input type="text" name="ref_url" required placeholder="https://figma.com/... or /path/to/mockup.png">
+      </label>
+      <label class="field"><span>Notes / Description <span class="muted">(optional)</span></span>
+        <textarea name="note" placeholder="Design requirements, expected UI behavior, color tokens..."></textarea>
+      </label>`, "Attach Reference");
+    if (values?.ref_url.trim()) {
+      api(`jobs/${encodeURIComponent(params.job)}/reference`, {
+        method: "POST",
+        body: { url: values.ref_url.trim(), note: values.note || "" }
+      }).then(async () => {
+        toast("Reference attached");
+        await refreshState();
+        route();
+      }).catch(err => toast(err.message, true));
+    }
+  },
+  async select_models(params) {
+    const jobData = await api(`jobs/${encodeURIComponent(params.job)}`);
+    const p = jobData.pipeline || {};
+    const values = await formDialog("Select LLM Models (Override)", `
+      <p class="muted" style="margin-bottom: 8px;">Override the model pipeline used for planning, building, and reviewing this job.</p>
+      <label class="field"><span>Planner Model</span>
+        <input type="text" name="planner" value="${esc(p.planner || '')}" placeholder="gemini-3.1-pro-preview">
+      </label>
+      <label class="field"><span>Builder Model</span>
+        <input type="text" name="builder" value="${esc(p.builder || '')}" placeholder="gpt-5.4">
+      </label>
+      <label class="field"><span>Reviewer Model</span>
+        <input type="text" name="reviewer" value="${esc(p.reviewer || '')}" placeholder="gemini-3.1-pro-preview">
+      </label>`, "Save Models");
+    if (values) {
+      api(`jobs/${encodeURIComponent(params.job)}/models`, {
+        method: "POST",
+        body: values
+      }).then(async () => {
+        toast("Models updated for this job");
+        await refreshState();
+        route();
+      }).catch(err => toast(err.message, true));
+    }
+  },
+  async export_context(params) {
+    const data = await api(`jobs/${encodeURIComponent(params.job)}`);
+    const s = data.summary;
+    const j = data.job;
+    const tasks = data.tasks || [];
+    const done = data.completed_tasks || [];
+    const md = [
+      `# Job Context: ${s.title} (${s.display_id || s.id})`,
+      `\n- **Status**: ${s.status}`,
+      `- **Approach**: ${s.approach || 'Standard workflow'}`,
+      `- **Branch**: ${s.branch || 'none'}`,
+      `- **Kind**: ${s.kind}`,
+      `- **Updated**: ${new Date(s.updated * 1000).toISOString()}`,
+      `\n## Models Pipeline`,
+      `- Planner: ${data.pipeline?.planner || 'default'}`,
+      `- Builder: ${data.pipeline?.builder || 'default'}`,
+      `- Reviewer: ${data.pipeline?.reviewer || 'default'}`,
+      `\n## Tasks (${done.length}/${tasks.length})`,
+      ...tasks.map((t, idx) => {
+        const title = typeof t === 'string' ? t : (t.name || t.title || t.description || `Task ${idx + 1}`);
+        const isDone = done.includes(idx) || done.includes(String(idx));
+        return `- [${isDone ? 'x' : ' '}] ${title}`;
+      }),
+      data.changes?.diffstat ? `\n## Git Diffstat\n\`\`\`\n${data.changes.diffstat}\n\`\`\`` : '',
+      ...(data.docs || []).map(d => `\n## ${d.title}\n\n${d.text}`),
+    ].filter(Boolean).join('\n');
+
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = u;
+    a.download = `job-${params.job}-context.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(u);
+    toast(`Exported context to job-${params.job}-context.md`);
+  },
+  async close_issue(params) {
+    if (confirm(`Close issue #${params.issue} on GitHub and mark this job completed?`)) {
+      api(`jobs/${encodeURIComponent(params.job)}/close_issue`, {
+        method: "POST",
+        body: {}
+      }).then(async () => {
+        toast(`Closed issue #${params.issue}`);
+        await refreshState();
+        route();
+      }).catch(err => toast(err.message, true));
+    }
+  },
+  async discard_job(params) {
+    if (confirm("⚠️ WARNING: THIS WILL PERMANENTLY DELETE ALL LOCAL PROGRESS & CODE CHANGES.\n\nAre you sure you want to DISCARD this job and REVERT its changes?")) {
+      runAction("console");
+    }
+  },
 };
 
 document.addEventListener("click", (e) => {
@@ -160,6 +555,40 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll("details.more[open]").forEach((d) => {
     if (!d.contains(e.target) || e.target.closest(".more-menu .btn")) d.open = false;
   });
+  const popoverBtn = e.target.closest("#context-menu-popover .btn");
+  if (popoverBtn) {
+    const pop = $("#context-menu-popover");
+    if (pop) pop.hidden = true;
+  }
+  const configSubBtn = e.target.closest("#config-submenus-btn");
+  if (configSubBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = configSubBtn.getBoundingClientRect();
+    openContextMenu(rect.right + 6, rect.top, configSubmenusList());
+    return;
+  }
+  const scrollTo = e.target.closest("[data-scroll-to]");
+  if (scrollTo) {
+    const targetSelector = scrollTo.dataset.scrollTo;
+    const el = document.querySelector(targetSelector);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth" });
+      el.classList.add("highlight-flash");
+      setTimeout(() => el.classList.remove("highlight-flash"), 1800);
+    } else {
+      location.hash = "#/config";
+      setTimeout(() => {
+        const el2 = document.querySelector(targetSelector);
+        if (el2) {
+          el2.scrollIntoView({ behavior: "smooth" });
+          el2.classList.add("highlight-flash");
+          setTimeout(() => el2.classList.remove("highlight-flash"), 1800);
+        }
+      }, 350);
+    }
+    return;
+  }
   const link = e.target.closest("[data-href]");
   if (link) {
     location.hash = link.dataset.href;
@@ -168,6 +597,32 @@ document.addEventListener("click", (e) => {
   const stop = e.target.closest("[data-stop]");
   if (stop) {
     api(`runs/${encodeURIComponent(stop.dataset.stop)}/stop`, { method: "POST", body: {} }).catch((err) => toast(err.message, true));
+    return;
+  }
+  const switchBtn = e.target.closest("[data-switch-project]");
+  if (switchBtn) {
+    const root = switchBtn.dataset.switchProject;
+    api("project", { method: "POST", body: { root } })
+      .then(async () => {
+        await refreshState();
+        toast(`Switched to ${state.project?.name || "project"}`);
+        route();
+      })
+      .catch((err) => toast(err.message, true));
+    return;
+  }
+  const forgetBtn = e.target.closest("[data-forget-project]");
+  if (forgetBtn) {
+    const root = forgetBtn.dataset.forgetProject;
+    if (confirm("Remove this project from your list of tracked projects?")) {
+      api("projects", { method: "DELETE", body: { root } })
+        .then(async () => {
+          toast("Project removed");
+          await refreshState();
+          route();
+        })
+        .catch((err) => toast(err.message, true));
+    }
     return;
   }
   if (e.target.closest("[data-back]")) return history.back();
@@ -180,22 +635,40 @@ document.addEventListener("click", (e) => {
   runAction(action, params);
 });
 
+document.addEventListener("contextmenu", (e) => {
+  const configLink = e.target.closest('[data-route="config"], #config-submenus-btn');
+  if (configLink) {
+    e.preventDefault();
+    openContextMenu(e.clientX, e.clientY, configSubmenusList());
+  }
+});
+
 // ---------------------------------------------------------------- state & project
 
 async function refreshState() {
+  const backend = getBackendUrl();
+  const token = getToken();
+  if (backend === null && !token) {
+    showSignInGate("Sign in with your access token to continue.");
+    return;
+  }
   try {
     state = await api("state");
+    document.querySelector(".app")?.classList.remove("session-locked");
   } catch (e) {
-    if (e.status === 401) showLocked(e.message);
+    if (e.status === 401) showSignInGate();
+    else showSignInGate(`Unable to reach Orchestrator on your Mac: ${e.message}`);
     return;
   }
   const running = state.runs.filter((r) => r.running);
   const waiting = running.filter((r) => r.waiting).length;
   const badge = $("#running-badge");
-  badge.hidden = running.length === 0;
-  badge.textContent = waiting || running.length;
-  badge.classList.toggle("working", waiting === 0);
-  badge.title = waiting ? `${waiting} waiting for you` : `${running.length} running`;
+  if (badge) {
+    badge.hidden = running.length === 0;
+    badge.textContent = waiting || running.length;
+    badge.classList.toggle("working", waiting === 0);
+    badge.title = waiting ? `${waiting} waiting for you` : `${running.length} running`;
+  }
   renderProjectSelect($("#project-select"));
 }
 
@@ -203,8 +676,35 @@ function renderProjectSelect(select) {
   if (!select || !state.project) return;
   const p = state.project;
   const options = [...(p.recent || [])];
-  if (!options.some((o) => o.root === p.root)) options.unshift({ name: p.name, root: p.root });
-  const html = options.map((o) => `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}</option>`).join("");
+  if (!options.some((o) => o.root === p.root)) {
+    options.unshift({
+      name: p.name,
+      root: p.root,
+      source_type: p.source_type,
+      source_label: p.source_label,
+      github_repo: p.github_repo,
+    });
+  }
+
+  const githubProjects = options.filter((o) => o.source_type === "github");
+  const localProjects = options.filter((o) => o.source_type !== "github");
+
+  let html = "";
+  if (githubProjects.length > 0 && localProjects.length > 0) {
+    html += `<optgroup label="── GitHub Tracked ──">`;
+    html += githubProjects.map((o) => `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}</option>`).join("");
+    html += `</optgroup>`;
+
+    html += `<optgroup label="── Local ──">`;
+    html += localProjects.map((o) => `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}</option>`).join("");
+    html += `</optgroup>`;
+  } else {
+    html = options.map((o) => {
+      const tag = o.source_type === "github" ? " 🐙" : "";
+      return `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${tag}</option>`;
+    }).join("");
+  }
+  html += `<option value="__manage__" class="manage-projects-option" style="background-color: var(--manage-option-bg, #323947); color: var(--text);">📁 Manage all projects...</option>`;
   if (select.dataset.html !== html) {
     select.innerHTML = html;
     select.dataset.html = html;
@@ -213,8 +713,14 @@ function renderProjectSelect(select) {
 
 document.addEventListener("change", async (e) => {
   if (!e.target.matches("#project-select, .project-select-inline")) return;
+  const val = e.target.value;
+  if (val === "__manage__") {
+    location.hash = "#/projects";
+    if (state.project) e.target.value = state.project.root;
+    return;
+  }
   try {
-    await api("project", { method: "POST", body: { root: e.target.value } });
+    await api("project", { method: "POST", body: { root: val } });
     await refreshState();
     toast(`Switched to ${state.project.name}`);
     route();
@@ -223,9 +729,179 @@ document.addEventListener("change", async (e) => {
   }
 });
 
+function showSignInGate(message) {
+  setHeader({ title: "Sign In", sub: "", actions: "" });
+  document.querySelector(".app")?.classList.add("session-locked");
+  const backend = getBackendUrl() || "";
+  const token = getToken() || "";
+  view.innerHTML = `
+    <div class="signin-wrap">
+      <div class="signin-card">
+        <div class="signin-brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Orchestrator</span>
+        </div>
+        <div>
+          <h2 style="margin: 0; font-size: 1.3rem; font-weight: 700;">Sign In</h2>
+          <p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;">
+            ${message ? `<span style="color: var(--err);">${esc(message)}</span>` : "Sign in to access and manage projects on your computer."}
+          </p>
+        </div>
+        <div class="sso-buttons">
+          <button type="button" class="sso-btn google-btn" id="google-signin-btn">
+            <svg class="icon"><use href="#i-google"/></svg>
+            <span>Continue with Google</span>
+          </button>
+          <button type="button" class="sso-btn apple-btn" id="apple-signin-btn">
+            <svg class="icon"><use href="#i-apple"/></svg>
+            <span>Continue with Apple</span>
+          </button>
+        </div>
+        <details class="manual-token-details" style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center;">Advanced: Sign in with CLI access token</summary>
+          <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
+            <label class="field">
+              <span>CLI Access Token</span>
+              <input type="password" id="signin-token" name="token" value="${esc(token)}" placeholder="Paste access token from terminal" autocomplete="current-password" style="font-family: var(--mono); font-size: 0.9rem;">
+            </label>
+            <label class="field">
+              <span>Backend URL</span>
+              <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(localStorage.getItem("orchestrator_backend") || "")}" style="font-size: 0.85rem;">
+            </label>
+            <button type="submit" id="signin-submit-btn" class="btn" style="width: 100%; justify-content: center; padding: 0.55rem;">Use Access Token</button>
+          </form>
+        </details>
+      </div>
+    </div>
+  `;
+
+  const syncBackend = () => {
+    const b = ($("#signin-backend")?.value || "").trim().replace(/\/+$/, "");
+    if (b) localStorage.setItem("orchestrator_backend", b);
+    else localStorage.removeItem("orchestrator_backend");
+  };
+
+  const googleBtn = $("#google-signin-btn");
+  if (googleBtn) {
+    googleBtn.addEventListener("click", async () => {
+      if (!window.firebase?.auth) {
+        toast("Firebase Auth is loading or unavailable", true);
+        return;
+      }
+      syncBackend();
+      googleBtn.disabled = true;
+      const originalHtml = googleBtn.innerHTML;
+      googleBtn.innerHTML = `<span>Signing in with Google...</span>`;
+      try {
+        const provider = new firebase.auth.GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: "select_account" });
+        const cred = await firebase.auth().signInWithPopup(provider);
+        const idToken = await cred.user.getIdToken();
+        const res = await api("auth", { method: "POST", body: { id_token: idToken } });
+        if (res.token) localStorage.setItem("orchestrator_token", res.token);
+        toast(`Signed in as ${cred.user.email}`);
+        document.querySelector(".app")?.classList.remove("session-locked");
+        await refreshState();
+        route();
+      } catch (err) {
+        googleBtn.disabled = false;
+        googleBtn.innerHTML = originalHtml;
+        toast(err.message, true);
+        showSignInGate(err.message);
+      }
+    });
+  }
+
+  const appleBtn = $("#apple-signin-btn");
+  if (appleBtn) {
+    appleBtn.addEventListener("click", async () => {
+      if (!window.firebase?.auth) {
+        toast("Firebase Auth is loading or unavailable", true);
+        return;
+      }
+      syncBackend();
+      appleBtn.disabled = true;
+      const originalHtml = appleBtn.innerHTML;
+      appleBtn.innerHTML = `<span>Signing in with Apple...</span>`;
+      try {
+        const provider = new firebase.auth.OAuthProvider("apple.com");
+        provider.addScope("email");
+        provider.addScope("name");
+        const cred = await firebase.auth().signInWithPopup(provider);
+        const idToken = await cred.user.getIdToken();
+        const res = await api("auth", { method: "POST", body: { id_token: idToken } });
+        if (res.token) localStorage.setItem("orchestrator_token", res.token);
+        toast(`Signed in as ${cred.user.email || "Apple user"}`);
+        document.querySelector(".app")?.classList.remove("session-locked");
+        await refreshState();
+        route();
+      } catch (err) {
+        appleBtn.disabled = false;
+        appleBtn.innerHTML = originalHtml;
+        let msg = err.message;
+        if (err.code === "auth/operation-not-allowed") {
+          msg = "Apple Sign-In is not yet configured in your Firebase Console. Please add your Apple Developer keys in Firebase.";
+        }
+        toast(msg, true);
+        showSignInGate(msg);
+      }
+    });
+  }
+
+  const form = $("#signin-form");
+  if (form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const submitBtn = $("#signin-submit-btn");
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Unlocking...";
+      }
+      syncBackend();
+      const t = (form.token?.value || "").trim();
+      localStorage.setItem("orchestrator_token", t);
+      try {
+        await api("auth", { method: "POST", body: { token: t } });
+        toast("Session unlocked");
+        document.querySelector(".app")?.classList.remove("session-locked");
+        await refreshState();
+        route();
+      } catch (err) {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Use Access Token";
+        }
+        toast(err.message, true);
+        showSignInGate(err.message || "Invalid access token");
+      }
+    });
+  }
+}
+
 function showLocked(message) {
-  setHeader({ title: "Locked" });
-  view.innerHTML = `<div class="notice bad">${esc(message)}</div>`;
+  showSignInGate(message);
+}
+
+async function lockSession() {
+  try {
+    await api("auth/logout", { method: "POST", body: {} });
+  } catch {}
+  if (window.firebase?.auth) {
+    try {
+      await firebase.auth().signOut();
+    } catch {}
+  }
+  localStorage.removeItem("orchestrator_token");
+  const url = new URL(window.location.href);
+  if (url.searchParams.has("token")) {
+    url.searchParams.delete("token");
+    window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+  }
+  state = { project: null, runs: [], actions: {} };
+  const badge = $("#running-badge");
+  if (badge) badge.hidden = true;
+  toast("Session locked");
+  showSignInGate("Session locked. Please sign in again.");
 }
 
 function setHeader({ title, sub = "", actions = "" }) {
@@ -249,6 +925,117 @@ function jobItem(j, { withAction = false } = {}) {
     <div class="side">${jobPill(j)}${next}</div></div>`;
 }
 
+function statusPill(status) {
+  const s = String(status || "unknown");
+  const cls = ({ completed: "ok", "review-needed": "warn", debugging: "bad", failed: "bad", "build-failed": "bad",
+                 planned: "run", scheduled: "run", running: "run", "in-progress": "run" })[s] || "";
+  return `<span class="pill ${cls}">${esc(s.replace(/-/g, " "))}</span>`;
+}
+
+function originalJobItem(j) {
+  const progress = j.tasks_total ? ` · ${j.tasks_done}/${j.tasks_total} tasks` : "";
+  const meta = [j.type || j.kind, j.branch, ago(j.updated)].filter(Boolean).map(esc).join(" · ");
+  return `<a class="item" href="#/jobs/${encodeURIComponent(j.id)}">
+    <div class="main-col"><div class="title">${esc(j.title)}</div><div class="meta">${meta}${esc(progress)}</div></div>
+    ${statusPill(j.status)}</a>`;
+}
+
+function formatJobDate(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const isSameYear = d.getFullYear() === now.getFullYear();
+  const dateStr = d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(isSameYear ? {} : { year: "numeric" }),
+  });
+  const timeStr = d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${dateStr}, ${timeStr}`;
+}
+
+// Job list sorting (tap Status / Last modified; tap again to reverse).
+const GROUP_ORDER = { needs_you: 0, working: 1, done: 2 };
+let jobSort = { key: "updated", dir: "desc" };
+try { jobSort = JSON.parse(localStorage.getItem("orchestrator_job_sort")) || jobSort; } catch {}
+
+function sortJobs(jobs) {
+  const { key, dir } = jobSort;
+  const val = (j) => key === "status"
+    ? [j.active_run ? 1 : (GROUP_ORDER[j.state?.group] ?? 3), j.state?.label || ""]
+    : [j.updated || 0];
+  const sign = dir === "asc" ? 1 : -1;
+  return [...jobs].sort((a, b) => {
+    const [x, y] = [val(a), val(b)];
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return (x[i] < y[i] ? -1 : 1) * sign;
+    return (b.updated || 0) - (a.updated || 0); // ties: newest first
+  });
+}
+const sortArrow = (key) => jobSort.key === key ? `<span class="sort-arrow" aria-hidden="true">${jobSort.dir === "asc" ? "▲" : "▼"}</span>` : "";
+
+document.addEventListener("click", (e) => {
+  const head = e.target.closest(".sort-head");
+  if (!head) return;
+  const key = head.dataset.sort;
+  jobSort = { key, dir: jobSort.key === key ? (jobSort.dir === "asc" ? "desc" : "asc") : (key === "updated" ? "desc" : "asc") };
+  try { localStorage.setItem("orchestrator_job_sort", JSON.stringify(jobSort)); } catch {}
+  route();
+});
+
+function jobTableRow(j) {
+  const parts = [
+    j.kind,
+    j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
+    j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
+  ].filter(Boolean);
+
+  const reason = (j.state?.reason && j.state.group === "needs_you")
+    ? `<span class="job-reason">${esc(j.state.reason)}</span>`
+    : "";
+  const metaHtml = [reason, parts.join(" · ")].filter(Boolean).join(" · ");
+
+  return `
+    <a class="job-table-row" href="#/jobs/${encodeURIComponent(j.id)}">
+      <div class="col-job">
+        <div class="job-title">${esc(j.title)}</div>
+        <div class="job-meta">${metaHtml}</div>
+      </div>
+      <div class="col-status">
+        ${jobPill(j)}
+      </div>
+      <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">
+        <span class="date-relative">${esc(ago(j.updated))}</span>
+        <span class="date-exact muted">${esc(formatJobDate(j.updated))}</span>
+      </div>
+      <div class="row-hover-hint">
+        <span>Click for details</span>
+        <svg class="icon" style="width: 14px; height: 14px;"><use href="#i-chevron"/></svg>
+      </div>
+    </a>`;
+}
+
+function elapsed(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+// A running task: status, how long, its newest output line, and open/stop.
+function liveRunCard(r) {
+  const target = r.job || r.result_job;
+  return `<div class="live-run ${r.waiting ? "waiting" : ""}">
+    <a class="main-col" href="#/runs/${encodeURIComponent(r.id)}">
+      <div class="title">${esc(r.title)}</div>
+      <div class="meta">${esc(`Running ${elapsed(r.started)}`)}${r.waiting ? " · waiting for you" : r.idle > 30 ? ` · quiet for ${elapsed(Date.now() / 1000 - r.idle)}` : ""}</div>
+      ${r.last_line ? `<div class="last-line mono">${esc(r.last_line)}</div>` : ""}
+    </a>
+    <div class="row">${runPill(r)}<a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Open log</a>
+      ${target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Job</a>` : ""}
+      <button class="btn small danger" data-stop="${esc(r.id)}">Stop</button></div></div>`;
+}
+
 function runItem(r) {
   return `<a class="item" href="#/runs/${encodeURIComponent(r.id)}">
     <div class="main-col"><div class="title">${esc(r.title)}</div><div class="meta">${esc(ago(r.started))}</div></div>
@@ -257,9 +1044,30 @@ function runItem(r) {
 
 function statusLine(p) {
   const running = state.runs.filter((r) => r.running).length;
-  return `<span class="status-line"><a class="mono" href="#/git">${esc(p.branch || "no branch")}</a><span class="sep">·</span>
-    <span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span></span>`;
+  const branches = p.branches || [];
+  const branchPicker = branches.length
+    ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => `<option ${b === p.branch ? "selected" : ""}>${esc(b)}</option>`).join("")}</select>`
+    : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
+  return `<span class="status-line">${branchPicker}<span class="sep">·</span>
+    <span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}</span>`;
 }
+
+// git refuses to switch when uncommitted changes would be overwritten, so offer to set them aside.
+async function switchBranch(branch) {
+  const dirty = state.project?.dirty_files || 0;
+  if (!dirty) return runAction("git_checkout", { branch });
+  const ok = await formDialog(`Switch to ${branch}?`, `<p>You have ${dirty} uncommitted file${dirty > 1 ? "s" : ""}, which git may refuse to carry over.</p>
+    <p>Orchestrator can stash them (set them aside safely), then switch. Get them back any time with <code>git stash pop</code>.</p>`, "Stash & switch");
+  if (ok) runAction("stash_checkout", { branch });
+}
+
+document.addEventListener("change", (e) => {
+  const sel = e.target.closest?.(".branch-select");
+  if (!sel) return;
+  if (sel.value !== state.project?.branch) switchBranch(sel.value);
+  else return;
+  sel.value = state.project?.branch; // snap back; the page refreshes once checkout finishes
+});
 
 function moreActionsMenu(p, opts) {
   return moreMenu([
@@ -285,59 +1093,290 @@ function moreActionsMenu(p, opts) {
 const pages = {};
 const LIVE = new Set(["home", "jobs", "job", "activity", "git"]);
 
-pages.home = async () => {
+// ---------------------------------------------------------------- setup checklist
+// What a job needs (GitHub, an AI provider, a machine, project config) vs. nice-to-haves.
+// First launch: a full page on Home. Afterwards: a bottom-right panel you can reopen.
+
+let setupState = null;
+let setupFetched = 0;
+async function loadSetup(force = false) {
+  if (!force && Date.now() - setupFetched < 15000) return setupState;
+  setupFetched = Date.now();
+  try { setupState = await api("setup"); } catch { setupState = null; } // older servers have no /api/setup
+  renderSetupFab();
+  if (setupState?.complete && !setupState.seen) {
+    setupState.seen = true;
+    api("config/setup-seen", { method: "POST", body: {} }).catch(() => {});
+  }
+  return setupState;
+}
+
+function setupItem(i) {
+  const icon = i.done ? `<span class="setup-icon done" aria-label="done">✓</span>` : `<span class="setup-icon ${i.required ? "todo" : ""}" aria-label="to do"></span>`;
+  const go = i.action ? (i.done ? "Open" : i.action.type === "run" ? "Set up" : "Go") : "";
+  return `<div class="setup-item ${i.done ? "is-done" : ""}">
+    ${icon}
+    <div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div>
+      ${!i.done && i.hint ? `<div class="setup-hint"><code>${esc(i.hint)}</code><button class="btn small ghost" data-setup-copy="${esc(i.hint)}">Copy</button></div>` : ""}</div>
+    ${go ? `<button class="btn small ${i.done ? "ghost" : "primary"}" data-setup-go="${esc(i.id)}">${go}</button>` : ""}</div>`;
+}
+
+function setupListHtml(s) {
+  const req = s.items.filter((i) => i.required);
+  const opt = s.items.filter((i) => !i.required);
+  const group = (title, items, count) => `<div class="setup-group"><div class="setup-group-h"><h3>${esc(title)}</h3>${count ? `<span class="count">${count}</span>` : ""}</div>${items.map(setupItem).join("")}</div>`;
+  return group("Required", req, `${s.required_done}/${s.required_total}`) +
+    group("Optional", opt, `${opt.filter((i) => i.done).length}/${opt.length}`);
+}
+
+function setupPage(s) {
+  const left = s.required_total - s.required_done;
+  return {
+    title: "Let's get set up",
+    sub: left ? `${left} required step${left > 1 ? "s" : ""} left before you can run a job` : "All required steps are done",
+    actions: `<button class="btn ghost" id="setup-skip">Skip for now</button>`,
+    html: `<div class="setup-full">
+      <div class="setup-progress"><div style="width:${Math.round(100 * s.required_done / s.required_total)}%"></div></div>
+      <p class="muted">Jobs open a GitHub issue and pull request, call an AI provider, and run on a machine. Finish the required steps; the optional ones can wait.</p>
+      <section class="card">${setupListHtml(s)}</section>
+      ${s.complete ? `<div class="row" style="margin-top:16px"><button class="btn primary big" id="setup-done">Continue to Home</button></div>` : ""}</div>`,
+    after: () => {
+      const seen = async () => { try { await api("config/setup-seen", { method: "POST", body: {} }); } catch {} if (setupState) setupState.seen = true; route(); };
+      $("#setup-skip")?.addEventListener("click", seen);
+      $("#setup-done")?.addEventListener("click", seen);
+    },
+  };
+}
+
+function renderSetupFab() {
+  const fab = $("#setup-fab");
+  if (!fab) return;
+  const s = setupState;
+  const show = s && !s.complete && !(current.page === "home" && !s.seen);
+  fab.hidden = !show;
+  if (s) fab.querySelector("span").textContent = `Setup ${s.required_done}/${s.required_total}`;
+  if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
+}
+
+function renderSetupPanel() {
+  const s = setupState, panel = $("#setup-panel");
+  if (!s) return;
+  panel.innerHTML = `<div class="setup-panel-h"><strong>Setup</strong><span class="muted">${s.required_done}/${s.required_total} required</span>
+    <button class="btn small ghost" data-setup-close aria-label="Close">✕</button></div><div class="setup-panel-b">${setupListHtml(s)}</div>`;
+}
+
+async function openSetupPanel() {
+  const panel = $("#setup-panel");
+  await loadSetup(true);
+  if (!setupState) return toast("The setup checklist isn't available yet. It will appear after your next Orchestrator update.", true);
+  renderSetupPanel();
+  panel.hidden = false;
+}
+const closeSetupPanel = () => { const p = $("#setup-panel"); if (p) p.hidden = true; };
+
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#setup-fab, [data-setup-open]")) { $("#setup-panel").hidden ? openSetupPanel() : closeSetupPanel(); return; }
+  if (e.target.closest("[data-setup-close]")) { closeSetupPanel(); return; }
+  const copy = e.target.closest("[data-setup-copy]");
+  if (copy) { navigator.clipboard?.writeText(copy.dataset.setupCopy).then(() => toast("Copied")).catch(() => {}); return; }
+  const go = e.target.closest("[data-setup-go]");
+  if (go) {
+    const item = setupState?.items.find((i) => i.id === go.dataset.setupGo);
+    if (!item?.action) return;
+    closeSetupPanel();
+    if (item.action.type === "route") location.hash = item.action.to;
+    else if (item.action.type === "run") runAction(item.action.action, item.action.params || {});
+  }
+});
+
+pages.home = async (_, query) => {
+  await loadSetup();
+  if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
   const { jobs } = await api("jobs");
   const p = state.project;
-  const needs = jobs.filter((j) => j.state.group === "needs_you" && !j.active_run);
-  const working = jobs.filter((j) => j.state.group === "working" || j.active_run);
-  const done = jobs.filter((j) => j.state.group === "done").slice(0, 3);
-  const waitingRuns = state.runs.filter((r) => r.running && r.waiting);
-  const otherRuns = state.runs.filter((r) => r.running && !r.waiting && !r.job);
+  if (!p.branches) { // server predates the project-state branch list: use the Git endpoint
+    try { p.branches = (await api("git")).branches || []; } catch { p.branches = []; }
+  }
+  const isOriginal = localStorage.getItem("orchestrator_home_version") === "original";
 
-  const needsHtml = [...waitingRuns.map(runItem), ...needs.map((j) => jobItem(j, { withAction: true }))].join("");
-  const workingHtml = [...otherRuns.map(runItem), ...working.map((j) => jobItem(j, { withAction: true }))].join("");
+  if (isOriginal) {
+    const active = jobs.filter((j) => !["completed", "archived"].includes(j.status));
+    const recentRuns = state.runs.slice(0, 5);
+    return {
+      title: p.name,
+      sub: statusLine(p),
+      actions: `<button class="btn small" id="toggle-home-version-btn" style="border: 1px dashed var(--accent);" title="Switch back to modern home layout">⏭ Modern Home</button>
+                <a class="btn primary" href="#/new">New job</a>`,
+      html: `
+        <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
+        <div class="stats" style="margin-bottom: 16px;">
+          <div class="card stat"><div class="k">Branch</div><div class="v mono">${esc(p.branch || "—")}</div></div>
+          <div class="card stat"><div class="k">Uncommitted files</div><div class="v">${p.dirty_files}</div></div>
+          <div class="card stat"><div class="k">Open jobs</div><div class="v">${active.length}</div></div>
+          <div class="card stat"><div class="k">Running now</div><div class="v">${state.runs.filter((r) => r.running).length}</div></div>
+        </div>
+        <section class="card" style="margin-bottom: 16px;">
+          <div class="card-h"><h2>Quick actions</h2></div>
+          <div class="card-b grid">
+            <a class="btn tile" href="#/new"><strong>New job</strong><span>Bug, feature, design…</span></a>
+            <button class="btn tile" data-action="fix"><strong>Quick fix</strong><span>Describe it, it runs</span></button>
+            <button class="btn tile" data-action="logs_pull" ${p.remote_logs ? "" : "disabled"}><strong>Pull device logs</strong><span>${p.remote_logs ? "Newest app launch" : "Set up under Device logs"}</span></button>
+            <button class="btn tile" data-action="build"><strong>Build</strong><span>Manual build, saved log</span></button>
+            <button class="btn tile" data-action="test"><strong>Test</strong><span>Manual test run</span></button>
+            <button class="btn tile" data-action="distribute" ${p.firebase_distribution ? "" : "disabled"}><strong>Distribute</strong><span>${p.firebase_distribution ? "Firebase to testers" : "Firebase not configured"}</span></button>
+            <button class="btn tile" data-action="check"><strong>Setup check</strong><span>CLIs, auth, config</span></button>
+            <button class="btn tile" data-action="console"><strong>Full console</strong><span>Everything else</span></button>
+          </div>
+        </section>
+        <section class="card" style="margin-bottom: 16px;">
+          <div class="card-h"><h2>Recent jobs</h2><a href="#/jobs">All jobs</a></div>
+          <div class="list">${jobs.slice(0, 6).map(originalJobItem).join("") || `<div class="empty">No jobs yet. Start one with New job.</div>`}</div>
+        </section>
+        <section class="card">
+          <div class="card-h"><h2>Recent runs</h2><a href="#/runs">All runs</a></div>
+          <div class="list">${recentRuns.map(runItem).join("") || `<div class="empty">Nothing has run from the UI yet.</div>`}</div>
+        </section>`,
+      after: () => {
+        renderProjectSelect($(".project-select-inline"));
+        $("#toggle-home-version-btn")?.addEventListener("click", () => {
+          localStorage.setItem("orchestrator_home_version", "modern");
+          toast("Switched to Modern Home layout");
+          route();
+        });
+      },
+    };
+  }
+
+  // 1) Default ordered by most recent
+  const sortedJobs = sortJobs(jobs);
+
+  const HOME_FILTERS = {
+    all: ["All", () => true],
+    needs_you: ["Action required", (j) => j.state.group === "needs_you" && !j.active_run],
+    working: ["In progress", (j) => j.state.group === "working" || j.active_run],
+    done: ["Completed", (j) => j.state.group === "done"],
+  };
+
+  let filter = (query && query.get("filter")) || "all";
+  if (!HOME_FILTERS[filter]) filter = "all";
+  const filteredJobs = sortedJobs.filter(HOME_FILTERS[filter][1]);
+
+  const runningRuns = state.runs.filter((r) => r.running);
+  const runningBanner = runningRuns.length
+    ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Running now</h2><span class="count">${runningRuns.length}</span></div>
+        <div class="list">${runningRuns.map(liveRunCard).join("")}</div></section>`
+    : "";
+
   return {
     title: p.name,
     sub: statusLine(p),
+    actions: `<button class="btn small ghost" id="toggle-home-version-btn" style="border: 1px dashed var(--border);" title="Compare with original 8-tile home screen">⏮ Original Home (debug)</button>`,
     html: `
       <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
-      <div class="hero-actions">
+      <div class="hero-actions" style="margin-bottom: 16px;">
         <a class="btn primary big desktop-only" href="#/new">New job</a>
         <button class="btn big" ${act("fix")}>Fix something</button>
         ${moreActionsMenu(p, { left: true })}
       </div>
+
+      ${runningBanner}
+
       <section class="card">
-        <div class="card-h"><h2>Needs you <span class="count">${needs.length + waitingRuns.length}</span></h2></div>
-        <div class="list">${needsHtml || `<div class="empty">Nothing waiting on you.</div>`}</div>
-      </section>
-      ${workingHtml ? `<section class="card"><div class="card-h"><h2>In progress</h2></div><div class="list">${workingHtml}</div></section>` : ""}
-      ${done.length ? `<section class="card"><div class="card-h"><h2>Recently done</h2><a href="#/jobs?filter=done">All</a></div>
-        <div class="list">${done.map((j) => jobItem(j)).join("")}</div></section>` : ""}
-      ${!jobs.length ? `<div class="notice">No jobs yet. <strong>New job</strong> plans work from a description; <strong>Fix something</strong> goes straight to a quick fix.</div>` : ""}`,
-    after: () => renderProjectSelect($(".project-select-inline")),
+        <div class="card-h" style="flex-wrap: wrap; gap: 10px;">
+          <h2>Jobs <span class="count">${filteredJobs.length}</span></h2>
+          <div class="filters">
+            ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
+              const count = sortedJobs.filter(fn).length;
+              return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
+            }).join("")}
+          </div>
+        </div>
+        ${filteredJobs.length ? `
+          <div class="job-table">
+            <div class="job-table-header">
+              <div class="col-job">Job</div>
+              <button type="button" class="col-status sort-head" data-sort="status" aria-label="Sort by status">Status${sortArrow("status")}</button>
+              <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified">Last modified${sortArrow("updated")}</button>
+            </div>
+            <div class="job-table-body">
+              ${filteredJobs.map(jobTableRow).join("")}
+            </div>
+          </div>
+        ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description; <strong>Fix something</strong> goes straight to a quick fix.' : 'No jobs match this filter.'}</div>`}
+      </section>`,
+    after: () => {
+      renderProjectSelect($(".project-select-inline"));
+      $("#toggle-home-version-btn")?.addEventListener("click", () => {
+        localStorage.setItem("orchestrator_home_version", "original");
+        toast("Switched to Original Home layout");
+        route();
+      });
+    },
   };
 };
 
+const ORIGINAL_JOB_FILTERS = {
+  open: ["Open", (j) => !["completed", "archived"].includes(j.status)],
+  review: ["Review", (j) => j.status === "review-needed"],
+  debugging: ["Debugging", (j) => j.status === "debugging"],
+  completed: ["Completed", (j) => j.status === "completed"],
+  all: ["All", () => true],
+};
+
 const JOB_FILTERS = {
-  needs_you: ["Needs you", (j) => j.state.group === "needs_you" && !j.active_run],
+  needs_you: ["Action required", (j) => j.state.group === "needs_you" && !j.active_run],
   working: ["In progress", (j) => j.state.group === "working" || j.active_run],
-  done: ["Done", (j) => j.state.group === "done"],
+  done: ["Completed", (j) => j.state.group === "done"],
   all: ["All", () => true],
 };
 
 pages.jobs = async (_, query) => {
   const { jobs } = await api("jobs");
+  const isOriginal = localStorage.getItem("orchestrator_jobs_version") === "original";
+
+  if (isOriginal) {
+    let filter = query.get("filter");
+    if (!ORIGINAL_JOB_FILTERS[filter]) filter = "open";
+    const shown = jobs.filter(ORIGINAL_JOB_FILTERS[filter][1]);
+    return {
+      title: "Jobs",
+      sub: `${jobs.length} total`,
+      actions: `<button class="btn small" id="toggle-jobs-version-btn" style="border: 1px dashed var(--accent);" title="Switch back to modern jobs layout">⏭ Modern Jobs</button>
+                <a class="btn primary" href="#/new">New job</a>`,
+      html: `
+        <div class="filters">${Object.entries(ORIGINAL_JOB_FILTERS).map(([key, [label, fn]]) =>
+          `<a class="btn small ${key === filter ? "on" : ""}" href="#/jobs?filter=${key}">${label} (${jobs.filter(fn).length})</a>`).join("")}
+        </div>
+        <section class="card"><div class="list">${shown.map(originalJobItem).join("") || `<div class="empty">No jobs here.</div>`}</div></section>`,
+      after: () => {
+        $("#toggle-jobs-version-btn")?.addEventListener("click", () => {
+          localStorage.setItem("orchestrator_jobs_version", "modern");
+          toast("Switched to Modern Jobs layout");
+          route();
+        });
+      },
+    };
+  }
+
   let filter = query.get("filter");
   if (!JOB_FILTERS[filter]) filter = jobs.some(JOB_FILTERS.needs_you[1]) ? "needs_you" : "all";
   const shown = jobs.filter(JOB_FILTERS[filter][1]);
   return {
     title: "Jobs",
-    actions: `<a class="btn primary" href="#/new">New job</a>`,
+    actions: `<button class="btn small ghost" id="toggle-jobs-version-btn" style="border: 1px dashed var(--border);" title="Compare with original status-filtered jobs screen">⏮ Original Jobs (debug)</button>
+              <a class="btn primary" href="#/new">New job</a>`,
     html: `
       <div class="filters">${Object.entries(JOB_FILTERS).map(([key, [label, fn]]) =>
         `<a class="btn small ${key === filter ? "on" : ""}" href="#/jobs?filter=${key}">${label} (${jobs.filter(fn).length})</a>`).join("")}
       </div>
-      <section class="card"><div class="list">${shown.map((j) => jobItem(j, { withAction: filter === "needs_you" })).join("") || `<div class="empty">No jobs here.</div>`}</div></section>`,
+      <section class="card"><div class="list">${shown.map((j) => jobItem(j, { withAction: filter === "needs_you" })).join("") || `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description; <strong>Fix something</strong> goes straight to a quick fix.' : 'No jobs match this filter.'}</div>`}</div></section>`,
+    after: () => {
+      $("#toggle-jobs-version-btn")?.addEventListener("click", () => {
+        localStorage.setItem("orchestrator_jobs_version", "original");
+        toast("Switched to Original Jobs layout");
+        route();
+      });
+    },
   };
 };
 
@@ -363,60 +1402,424 @@ document.addEventListener("click", (e) => {
   if (open) window.open(open.dataset.open, "_blank", "noopener");
 });
 
+function formatJobTests(t) {
+  if (!t) return "⚙️ Pending execution";
+  const st = (t.status || "").toLowerCase();
+  const passed = t.passed_count || 0;
+  const failed = t.failed_count || 0;
+  if (failed > 0) return `❌ ${failed} failed${passed ? ` (${passed} passed)` : ""}`;
+  if (passed > 0) return `✅ ${passed} passed`;
+  if (st === "running" || st === "in_progress") return "⚙️ Running tests...";
+  if (st === "passed") return "✅ Passed";
+  if (st === "failed") return "❌ Failed";
+  return "⚙️ Pending execution";
+}
+
+function formatJobStatus(st) {
+  const map = {
+    "planned": "📝 Planned",
+    "scheduled": "⏳ Scheduled",
+    "executing": "⚡ In progress",
+    "running": "⚡ In progress",
+    "review-needed": "👀 Review needed",
+    "debugging": "🔧 Debugging",
+    "completed": "✅ Completed",
+    "failed": "❌ Failed",
+    "human-needed": "❓ Input needed",
+    "archived": "📦 Archived",
+  };
+  return map[st] || `📝 ${st ? st.charAt(0).toUpperCase() + st.slice(1) : "Unknown"}`;
+}
+
+function getJobBannerInfo(s, activeRun, pipeline) {
+  if (activeRun) {
+    return {
+      bannerClass: "active",
+      bannerIcon: "⚡",
+      bannerTitle: "ACTIVE: Worker Task Executing",
+      bannerHint: "-> Live output streaming below. Press 'S' to stop current task.",
+      bannerBtn: `<button class="btn small danger" data-stop="${esc(activeRun.id)}" data-key="S">Stop Task [S]</button>`,
+    };
+  }
+  if (s.status === "planned") {
+    return {
+      bannerClass: "ready",
+      bannerIcon: "📝",
+      bannerTitle: "READY: Planning Complete",
+      bannerHint: "-> Press 'S' to Schedule & Dispatch this job to a worker.",
+      bannerBtn: `<button class="btn primary" ${act("execute", { job: s.id })} data-key="S">Schedule & Dispatch [S]</button>`,
+    };
+  }
+  if (s.status === "scheduled") {
+    return {
+      bannerClass: "active",
+      bannerIcon: "⏳",
+      bannerTitle: "SCHEDULED: Queued for Execution",
+      bannerHint: "-> Press 'S' to Run Now or wait for worker pick-up.",
+      bannerBtn: `<button class="btn primary" ${act("execute", { job: s.id })} data-key="S">Run Now [S]</button>`,
+    };
+  }
+  if (s.status === "review-needed") {
+    return {
+      bannerClass: "ready",
+      bannerIcon: "👀",
+      bannerTitle: "REVIEW: Worker Completed Implementation",
+      bannerHint: "-> Press 'S' to Approve Changes or request revisions below.",
+      bannerBtn: `<button class="btn primary" ${act("approve", { job: s.id })} data-key="S">Approve Changes [S]</button>`,
+    };
+  }
+  if (s.status === "debugging") {
+    return {
+      bannerClass: "blocked",
+      bannerIcon: "🔧",
+      bannerTitle: "DEBUGGING: Automated Repair in Progress",
+      bannerHint: "-> Worker is diagnosing test failures. Press 'S' to re-run fix.",
+      bannerBtn: `<button class="btn primary" ${act("debug", { job: s.id })} data-key="S">Run Fix [S]</button>`,
+    };
+  }
+  if (s.status === "completed") {
+    return {
+      bannerClass: "active",
+      bannerIcon: "✅",
+      bannerTitle: "COMPLETED: All Tasks Verified",
+      bannerHint: "-> All tasks and tests completed successfully.",
+      bannerBtn: `<a class="btn primary" href="#/git" data-key="S">View in Git [S]</a>`,
+    };
+  }
+  if (s.status === "failed") {
+    return {
+      bannerClass: "failed",
+      bannerIcon: "❌",
+      bannerTitle: "FAILED: Execution Halted",
+      bannerHint: "-> Press 'S' to run an automated fix attempt.",
+      bannerBtn: `<button class="btn primary" ${act("debug", { job: s.id })} data-key="S">Run Fix [S]</button>`,
+    };
+  }
+  if (s.status === "human-needed") {
+    return {
+      bannerClass: "blocked",
+      bannerIcon: "❓",
+      bannerTitle: "INPUT NEEDED: Planner Clarification",
+      bannerHint: "-> Press 'S' to answer the planner's question.",
+      bannerBtn: `<button class="btn primary" ${act("answer", { job: s.id })} data-key="S">Answer Question [S]</button>`,
+    };
+  }
+  return {
+    bannerClass: "",
+    bannerIcon: "📝",
+    bannerTitle: (s.state?.label || s.status).toUpperCase(),
+    bannerHint: s.state?.reason || "",
+    bannerBtn: s.state?.next ? `<button class="btn primary" ${act(s.state.next.action, { job: s.id })} data-key="S">${esc(s.state.next.label)} [S]</button>` : "",
+  };
+}
+
 pages.job = async ([id]) => {
-  const { summary: s, job, outputs, logs, runs, docs, changes, links } = await api(`jobs/${encodeURIComponent(id)}`);
-  const models = [["Planner", job.planner], ["Builder", job.builder], ["Reviewer", job.reviewer]].filter(([, m]) => m);
-  const fields = [
-    ["Kind", esc(s.kind)],
-    ["Branch", s.branch ? `<span class="mono">${esc(s.branch)}</span>` : "—"],
-    ...links.map((l) => [l.label.split(" #")[0], `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)} ↗</a>`]),
-    s.issue_number && !links.some((l) => l.label.startsWith("Issue")) ? ["Issue", `#${esc(s.issue_number)}`] : null,
-    s.pr_number && !links.some((l) => l.label.startsWith("Pull")) ? ["Pull request", `#${esc(s.pr_number)}`] : null,
-    models.length ? ["Models", esc(models.map(([r, m]) => `${r} ${m}`).join(" · "))] : null,
-    ["Updated", esc(ago(s.updated))],
-  ].filter(Boolean);
-  const tasks = Array.isArray(job.tasks) ? job.tasks : [];
-  const done = new Set((job.completed_tasks || []).map(String));
+  const data = await api(`jobs/${encodeURIComponent(id)}`);
+  const { summary: s, job, outputs, logs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask, approach: jobApproach } = data;
+
   const activeRun = runs.find((r) => r.running);
   const summary = { ...s, active_run: !!activeRun };
+
+  const pipeline = {
+    planner: pipe?.planner || job.planner || "gemini-3.1-pro-preview",
+    builder: pipe?.builder || job.builder || "gpt-5.4",
+    reviewer: pipe?.reviewer || job.reviewer || "gemini-3.1-pro-preview",
+  };
+
+  const tasks = Array.isArray(jobTasks) && jobTasks.length ? jobTasks : (Array.isArray(job.tasks) ? job.tasks : (job.plan?.tasks || []));
+  const completed = jobCompleted || job.completed_tasks || job.completed_task_indices || [];
+  const done = new Set(completed.map(String));
+  const tasksDone = done.size;
+  const tasksTotal = tasks.length;
+  const tasksPct = tasksTotal > 0 ? Math.round((tasksDone / tasksTotal) * 100) : 0;
+  const nextTask = jobNextTask || (tasksTotal > tasksDone && tasks[tasksDone] ? (typeof tasks[tasksDone] === "object" ? (tasks[tasksDone].name || tasks[tasksDone].title || tasks[tasksDone].description || `Task ${tasksDone + 1}`) : String(tasks[tasksDone])) : null);
+
+  const approach = jobApproach || job.approach || job.execution_strategy || s.approach || "Standard workflow";
+  const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
+  const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
+  const statusDisplay = formatJobStatus(s.status);
+  const testsDisplay = formatJobTests(testSummary);
+
+  const banner = getJobBannerInfo(s, activeRun, pipeline);
+
+  // Delta calculations
+  const localCount = changes?.local_files?.length || 0;
+  let deltaUnsaved = "";
+  if (localCount > 0) {
+    const stat = (changes.local_summary || "").replace(/^\s*\d+\s+files?\s+changed,?\s*/, "").trim();
+    deltaUnsaved = `${localCount} file${localCount > 1 ? "s" : ""} unsaved (local)${stat ? ` ${stat}` : ""}`;
+  } else if (changes?.files?.length > 0) {
+    const stat = (changes.summary_line || "").replace(/^\s*\d+\s+files?\s+changed,?\s*/, "").trim();
+    deltaUnsaved = `${changes.files.length} file${changes.files.length > 1 ? "s" : ""} modified${stat ? ` ${stat}` : ""}`;
+  } else {
+    deltaUnsaved = "0 files unsaved (working tree clean)";
+  }
+
+  const allFiles = (changes?.files && changes.files.length) ? changes.files : (changes?.local_files || []);
+  const previewFiles = allFiles.slice(0, 5);
+  const remainingFiles = Math.max(0, allFiles.length - previewFiles.length);
+  const filesHtml = previewFiles.length
+    ? `${previewFiles.map((f) => `<span class="delta-file-chip mono">${esc(f.split("/").pop() || f)}</span>`).join(", ")}${remainingFiles > 0 ? ` <span class="muted">(+${remainingFiles} more)</span>` : ""}`
+    : `<span class="muted">No modified files</span>`;
+
+  // Workflow approve action
+  let workflowApproveAction = act("execute", { job: s.id });
+  let workflowApproveDesc = "Approve plan and dispatch tasks to worker";
+  if (s.status === "review-needed") {
+    workflowApproveAction = act("approve", { job: s.id });
+    workflowApproveDesc = "Approve changes and prepare for merge";
+  } else if (tasksTotal > 0 && tasksDone < tasksTotal && s.status !== "planned") {
+    workflowApproveAction = act("resume", { job: s.id });
+    workflowApproveDesc = `Resume execution of task ${tasksDone + 1}`;
+  }
+
+  // GitHub Link
+  const ghLink = links.find((l) => l.url) || (s.issue_number ? { url: `https://github.com/issues/${s.issue_number}`, label: `Issue #${s.issue_number}` } : null);
+  const ghTileAttr = ghLink ? `data-open="${esc(ghLink.url)}"` : "disabled";
+  const ghTileDesc = ghLink ? `Open ${esc(ghLink.label || "Issue")} on GitHub ↗` : "No GitHub issue/PR linked";
+
+  // Close Issue
+  const closeIssueAttr = s.issue_number ? `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"` : "disabled";
+  const closeIssueDesc = s.issue_number ? `Close issue #${esc(s.issue_number)} on GitHub` : "No linked issue for this job";
+
   const logFiles = logs.flatMap((l) => l.files.length
     ? l.files.map((f) => ({ label: l.files.length > 1 ? `${l.label} / ${f.split("/").pop()}` : l.label, path: f }))
     : [{ label: l.label }]);
 
   return {
-    title: s.title,
-    sub: `<span class="status-line">${jobPill(summary)}<span>${esc(activeRun ? "Running now." : s.state.reason)}</span></span>`,
+    title: `[${kindUpper}] ${s.title}`,
+    sub: `<span class="status-line"><span>Job ID: <strong class="mono">${esc(displayId)}</strong></span>${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links),
     html: `
-      ${activeRun ? `<a class="banner attention" href="#/runs/${encodeURIComponent(activeRun.id)}"><p><strong>${esc(activeRun.title)}</strong> is ${activeRun.waiting ? "waiting for you" : "running"}.</p><span class="btn small">Open</span></a>` : ""}
-      ${s.question ? `<section class="card"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
+      ${runs.filter((r) => r.running).map((r) => `<section class="card" style="margin-bottom: 16px;"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
+      ${s.question ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
         <p class="question">${esc(s.question)}</p><div><button class="btn primary" ${act("answer", { job: s.id })}>Answer</button></div></div></section>` : ""}
-      ${job.summary || job.description ? `<section class="card"><div class="card-h"><h2>Summary</h2></div><div class="card-b">${esc(job.summary || job.description)}</div></section>` : ""}
-      ${tasks.length ? `<section class="card"><div class="card-h"><h2>Tasks</h2><span class="count">${done.size}/${tasks.length}</span></div>
+
+      <!-- Overview Attributes Card -->
+      <section class="card" style="margin-bottom: 16px;">
+        <div class="card-h">
+          <h2><span class="job-kind-badge">[${esc(kindUpper)}]</span> ${esc(s.title)}</h2>
+          ${s.branch ? `<span class="count mono">${esc(s.branch)}</span>` : ""}
+        </div>
+        <div class="card-b grid-details">
+          <div class="detail-item">
+            <span class="label">Job ID</span>
+            <span class="value mono">${esc(displayId)}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Status</span>
+            <span class="value">${esc(statusDisplay)}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Approach</span>
+            <span class="value">${esc(approach)}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Tests</span>
+            <span class="value">${esc(testsDisplay)}</span>
+          </div>
+          <div class="detail-item full-width">
+            <span class="label">Tasks</span>
+            <div class="tasks-progress-wrap">
+              <div class="progress-bar-container">
+                <div class="progress-bar-fill" style="width: ${tasksPct}%"></div>
+              </div>
+              <span class="progress-text">${tasksDone}/${tasksTotal} (${tasksPct}%)</span>
+            </div>
+            ${nextTask ? `<div class="next-task-line">└─ Next: <strong>${esc(nextTask)}</strong></div>` : ""}
+          </div>
+        </div>
+      </section>
+
+      <!-- Banner Callout & Model Pipeline -->
+      <section class="job-banner ${banner.bannerClass}">
+        <div class="job-banner-header">
+          <div class="banner-title">${banner.bannerIcon} ${banner.bannerTitle}</div>
+          ${banner.bannerBtn}
+        </div>
+        <div class="pipeline-row">
+          <span class="pipeline-label">Pipeline:</span>
+          <div class="pipeline-nodes">
+            <div class="node"><small>Planner</small><strong>${esc(pipeline.planner)}</strong></div>
+            <span class="arrow">→</span>
+            <div class="node"><small>Builder</small><strong>${esc(pipeline.builder)}</strong></div>
+            <span class="arrow">→</span>
+            <div class="node"><small>Reviewer</small><strong>${esc(pipeline.reviewer)}</strong></div>
+          </div>
+          <button class="btn small ghost" data-action="select_models" data-params="${esc(JSON.stringify({ job: s.id }))}" style="margin-left: auto;">Override Models [O]</button>
+        </div>
+        <div class="banner-hint">${banner.bannerHint}</div>
+      </section>
+
+      <!-- DELTA (Total Progress) -->
+      <section class="card" style="margin-bottom: 16px;">
+        <div class="card-h">
+          <h2>DELTA (Total Progress)</h2>
+          ${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
+        </div>
+        <div class="card-b delta-summary-line">
+          <div class="delta-line unsaved">
+            └─ ${esc(deltaUnsaved)}
+          </div>
+          <div class="delta-files-list">
+            <span class="file-prefix">└─</span>
+            ${filesHtml}
+          </div>
+        </div>
+        ${changes?.hypothesis ? `<div class="card-b" style="border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px;"><strong>Hypothesis / Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
+        ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
+      </section>
+
+      <!-- 4 Action Categories Grid -->
+      <div class="action-categories-grid">
+        <!-- ⚡ WORKFLOW ACTIONS -->
+        <div class="card action-group-card">
+          <div class="card-h">
+            <h3>⚡ WORKFLOW ACTIONS</h3>
+          </div>
+          <div class="card-b action-btn-list">
+            <button class="action-tile" ${workflowApproveAction} data-key="A">
+              <strong>[A] Approve / Create Sub-tasks</strong>
+              <span>${workflowApproveDesc}</span>
+            </button>
+            <button class="action-tile" data-action="revise" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="F">
+              <strong>[F] Revise Plan (Update Scope & Tasks)</strong>
+              <span>Modify requirements, scope, or task breakdown</span>
+            </button>
+            <button class="action-tile" data-action="ask_ai" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="Q">
+              <strong>[Q] Ask AI (Questions about changes)</strong>
+              <span>Inquire about plan reasoning, diffs, or architecture</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 📥 CONTEXT & INPUTS -->
+        <div class="card action-group-card">
+          <div class="card-h">
+            <h3>📥 CONTEXT & INPUTS</h3>
+          </div>
+          <div class="card-b action-btn-list">
+            <button class="action-tile" data-action="link_logs" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="L">
+              <strong>[L] Link Logs (Update Context)</strong>
+              <span>Attach device crash logs or recent test traces</span>
+            </button>
+            <button class="action-tile" data-action="attach_mockup" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="K">
+              <strong>[K] Attach UI Mockup / Reference</strong>
+              <span>Add Figma, mockup URLs, or spec attachments</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 🔍 INSPECT & CONFIGURE -->
+        <div class="card action-group-card">
+          <div class="card-h">
+            <h3>🔍 INSPECT & CONFIGURE</h3>
+          </div>
+          <div class="card-b action-btn-list">
+            <button class="action-tile" data-action="select_models" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="O">
+              <strong>[O] Select LLM Models (Override)</strong>
+              <span>Configure Planner, Builder, and Reviewer models</span>
+            </button>
+            <button class="action-tile" data-action="export_context" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="Y">
+              <strong>[Y] Export Context (Logs, Progress, Plan)</strong>
+              <span>Download complete markdown bundle of context & diffs</span>
+            </button>
+            <button class="action-tile" data-scroll-to="#docs-section" data-key="V">
+              <strong>[V] View Brief / Summary</strong>
+              <span>Jump to planning briefs, investigations & summaries</span>
+            </button>
+            <button class="action-tile" ${ghTileAttr} data-key="G">
+              <strong>[G] View in GitHub</strong>
+              <span>${ghTileDesc}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 🛡️ SAFETY & NAVIGATION -->
+        <div class="card action-group-card">
+          <div class="card-h">
+            <h3>🛡️ SAFETY & NAVIGATION</h3>
+          </div>
+          <div class="card-b action-btn-list">
+            <button class="action-tile" ${closeIssueAttr} data-key="C">
+              <strong>[C] Close Issue in GitHub</strong>
+              <span>${closeIssueDesc}</span>
+            </button>
+            <button class="action-tile danger-tile" data-action="discard_job" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="X">
+              <strong>[X] Discard & Revert Changes</strong>
+              <span>Abandon job and discard all uncommitted file changes</span>
+            </button>
+            <a class="action-tile" href="#/" data-key="B">
+              <strong>[B] Back to Main Menu</strong>
+              <span>Return to home dashboard</span>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Docs Section (Brief / Summary / Investigations) -->
+      <div id="docs-section">
+        ${docs.map((d, i) => `<section class="card" style="margin-bottom: 16px;"><details class="raw" ${i === 0 ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
+      </div>
+
+      <!-- Attached UI Mockups / References -->
+      ${job.reference_artifacts?.length ? `
+        <section class="card" style="margin-bottom: 16px;">
+          <div class="card-h"><h2>Attached References & Mockups</h2><span class="count">${job.reference_artifacts.length}</span></div>
+          <div class="list">
+            ${job.reference_artifacts.map((ref) => `
+              <div class="item">
+                <div class="main-col">
+                  <div class="title"><a href="${esc(ref.url)}" target="_blank" rel="noopener">${esc(ref.url)} ↗</a></div>
+                  ${ref.note ? `<div class="meta">${esc(ref.note)}</div>` : ""}
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </section>
+      ` : ""}
+
+      <!-- Tasks Checklist -->
+      ${tasks.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Tasks Checklist</h2><span class="count">${tasksDone}/${tasks.length}</span></div>
         <div class="list">${tasks.map((t, i) => {
           const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
           const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
           const isDone = done.has(key) || done.has(String(i));
           return `<div class="item"><span aria-label="${isDone ? "done" : "to do"}">${isDone ? "✅" : "○"}</span><div class="main-col"><div class="title">${esc(title)}</div></div></div>`;
         }).join("")}</div></section>` : ""}
-      <section class="card"><div class="card-b"><dl class="kv">${fields.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl></div></section>
-      ${changes.files.length || changes.diffstat ? `<section class="card"><div class="card-h"><h2>Changes</h2><span class="count">vs ${esc(changes.base)}</span></div>
-        ${changes.hypothesis ? `<div class="card-b"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
-        ${changes.diffstat ? `<pre class="file">${esc(changes.diffstat)}</pre>` :
-          `<div class="list">${changes.files.map((f) => `<div class="item"><span class="mono">${esc(f)}</span></div>`).join("")}</div>`}
-      </section>` : ""}
-      ${docs.map((d, i) => `<section class="card"><details class="raw" ${i === 0 && !tasks.length ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
-      ${runs.length ? `<section class="card"><div class="card-h"><h2>Activity</h2></div><div class="list">${runs.map(runItem).join("")}</div></section>` : ""}
-      <section class="card"><div class="card-h"><h2>Logs</h2></div>
+
+      <!-- Activity & Runs -->
+      ${runs.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Activity & Runs</h2><span class="count">${runs.length}</span></div><div class="list">${runs.map(runItem).join("")}</div></section>` : ""}
+
+      <!-- Logs -->
+      <section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Logs</h2></div>
         <div class="list">${logFiles.map((f) => f.path
           ? `<a class="item" href="#/file?path=${encodeURIComponent(f.path)}"><div class="main-col"><div class="title mono">${esc(f.label)}</div></div></a>`
           : `<div class="item"><div class="main-col"><div class="title">${esc(f.label)}</div></div></div>`).join("")
-          || `<div class="empty">No logs linked. “Run fix” can include the newest device logs.</div>`}</div></section>
-      ${outputs.length ? `<section class="card"><div class="card-h"><h2>Output files</h2></div>
+          || `<div class="empty">No logs linked. Click “Link Logs” above to attach.</div>`}</div></section>
+
+      <!-- Output Files -->
+      ${outputs.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Output files</h2><span class="count">${outputs.length}</span></div>
         <div class="list">${outputs.map((o) => `<a class="item" href="#/file?path=${encodeURIComponent(o.path)}">
           <div class="main-col"><div class="title mono">${esc(o.path.split("/").slice(2).join("/") || o.path)}</div>
           <div class="meta">${(o.size / 1024).toFixed(1)} KB · ${esc(ago(o.mtime))}</div></div></a>`).join("")}</div></section>` : ""}
-      <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>`,
+
+      <!-- Technical Details -->
+      <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
+    `,
+    after: () => {
+      const keyHandler = (e) => {
+        if (e.target.matches("input, textarea, select") || e.metaKey || e.ctrlKey || e.altKey) return;
+        const key = e.key.toUpperCase();
+        const btn = document.querySelector(`[data-key="${key}"]`);
+        if (btn && !btn.disabled) {
+          e.preventDefault();
+          btn.click();
+        }
+      };
+      window.addEventListener("keydown", keyHandler);
+      cleanup.push(() => window.removeEventListener("keydown", keyHandler));
+    },
   };
 };
 
@@ -555,19 +1958,160 @@ pages.git = async () => {
     html: `
       <section class="card"><div class="card-b stack">
         <div><div class="muted">Last commit</div><div>${esc(g.last_commit || "—")}</div></div>
-        <form id="switch-branch" class="row">
-          <select name="branch" aria-label="Branch">${g.branches.map((b) => `<option ${b === g.branch ? "selected" : ""}>${esc(b)}</option>`).join("")}</select>
-          <button class="btn">Switch branch</button>
-        </form>
+        <div>
+          <div class="muted">Switch branch</div>
+          <select id="git-branch-select" name="branch" class="mono" aria-label="Switch branch" style="margin-top: 4px; max-width: 320px;">
+            ${g.branches.map((b) => `<option value="${esc(b)}" ${b === g.branch ? "selected" : ""}>${esc(b)}</option>`).join("")}
+          </select>
+        </div>
       </div></section>
       <section class="card"><div class="card-h"><h2>Uncommitted changes</h2><span class="count">${g.changes_total}</span></div>
         <div class="list">${g.changes.map((c) => `<div class="item"><span class="pill">${esc(c.status)}</span><span class="mono">${esc(c.path)}</span></div>`).join("") || `<div class="empty">Working tree clean.</div>`}</div>
         ${g.changes_total > g.changes.length ? `<div class="empty">…and ${g.changes_total - g.changes.length} more.</div>` : ""}</section>`,
-    after: () => $("#switch-branch").addEventListener("submit", (e) => {
-      e.preventDefault();
-      const branch = new FormData(e.target).get("branch");
-      if (branch !== g.branch) runAction("git_checkout", { branch });
-    }),
+    after: () => {
+      $("#git-branch-select")?.addEventListener("change", (e) => {
+        const branch = e.target.value;
+        if (branch && branch !== g.branch) {
+          switchBranch(branch);
+        } else {
+          e.target.value = g.branch || "";
+        }
+      });
+    },
+  };
+};
+
+// ---------------------------------------------------------------- configuration
+// Mirrors the console's "Configuration & Advanced Tools" menu. Simple settings
+// are edited here; menus that are interactive by nature open the console's own
+// screen in a terminal (action "config_menu").
+
+function cfgItem(title, desc, controls, body = "", id = "") {
+  return `<div class="cfg-item"${id ? ` id="${esc(id)}"` : ""}><div class="cfg-head"><div class="main-col"><div class="title">${esc(title)}</div><div class="meta">${esc(desc)}</div></div>
+    <div class="row">${controls}</div></div>${body ? `<div class="cfg-body">${body}</div>` : ""}</div>`;
+}
+const cfgSection = (title, items) => `<section class="card cfg-section"><div class="card-h"><h2>${esc(title)}</h2></div><div class="list">${items.join("")}</div></section>`;
+const termBtn = (label, menu) => `<button class="btn small" ${openMenu(menu)}>${esc(label)}</button>`;
+
+pages.config = async () => {
+  let c;
+  try { c = await api("config"); } catch (err) {
+    if (err.status !== 404) throw err;
+    return { title: "Configuration", html: `<div class="notice">Configuration isn't available yet. It's part of an update that hasn't reached your Orchestrator. Everything else works as usual. Check back soon.</div>` };
+  }
+  const e = c.email;
+  const keyRows = c.keys.map((k) => `<div class="cfg-row"><span>${esc(k.label)}</span>
+      <span class="row">${k.saved ? pill("done", "Saved") : k.env ? pill("working", "From environment") : pill("", "Not set")}
+      <button class="btn small" data-cfg="key-set" data-id="${esc(k.id)}" data-label="${esc(k.label)}">${k.saved ? "Replace" : "Set"}</button>
+      ${k.saved ? `<button class="btn small danger" data-cfg="key-clear" data-id="${esc(k.id)}" data-label="${esc(k.label)}">Clear</button>` : ""}</span></div>`).join("");
+  const instrRows = c.instructions.map((i) => `<div class="cfg-row"><span>${esc(i.cli)} <span class="mono muted">${esc(i.file)}</span></span>${i.exists ? pill("done", "Present") : pill("attention", "Missing")}</div>`).join("");
+  const fleetRows = c.machines.map((m) => `<div class="cfg-row"><span><strong>${esc(m.name)}</strong> <span class="muted">${esc([m.mode, (m.roles || []).join(", "), `${m.models} models`].filter(Boolean).join(" · "))}</span></span>
+      <span class="row">${m.xcode ? pill("", "Xcode") : ""}${m.simulator ? pill("", "Simulator") : ""}</span></div>`).join("") || `<div class="empty">No machines configured.</div>`;
+  const archivedRows = c.archived.map((j) => `<div class="cfg-row"><span><span class="mono">${esc(j.job_id)}</span> ${esc(j.title)} <span class="muted">${esc(j.status)}</span></span>
+      ${j.corrupt ? pill("failed", "Corrupt") : `<button class="btn small" data-cfg="restore" data-id="${esc(j.id)}">Restore</button>`}</div>`).join("") || `<div class="empty">No archived jobs.</div>`;
+  const recipients = e.recipients.map((r) => `<div class="cfg-row"><span class="mono">${esc(r)}</span><button class="btn small danger" data-cfg="email-remove" data-email="${esc(r)}">Remove</button></div>`).join("") || `<div class="empty">No recipients yet.</div>`;
+  const sender = e.provider === "resend" ? `${e.resend_from_email || "NOT SET"} (via Resend)` : `${e.smtp_email || "NOT CONFIGURED"} (via Gmail)`;
+  const docRows = ["Orchestrator docs", "Project docs"].map((sec) => {
+    const docs = c.docs.filter((d) => d.section === sec);
+    return docs.length ? `<div class="muted cfg-sub">${esc(sec)}</div>${docs.map((d) => `<div class="cfg-row"><span>${esc(d.name)}</span><button class="btn small" data-cfg="doc" data-id="${esc(d.id)}">Read</button></div>`).join("")}` : "";
+  }).join("");
+
+  return {
+    title: "Configuration",
+    sub: "Models, keys, fleet, delivery, setup and health",
+    actions: `<button class="btn" data-setup-open>Setup checklist</button>${moreMenu(configSubmenusList(), { label: "Configuration Menu" })}`,
+    html: [
+      `<div class="cfg-submenus-bar">
+        <span class="submenus-bar-label">Submenus:</span>
+        <button class="submenus-chip" data-scroll-to="#cfg-models">Models</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-keys">API Keys</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-instructions">Instructions</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-fleet">Fleet</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-branch">Base Branch</button>
+        <button class="submenus-chip" data-href="#/projects">Projects</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-archived">Archived</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-firebase">Firebase</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-xcode">Xcode Cloud</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-email">Email</button>
+        <button class="submenus-chip" ${act("wizard")}>Wizard</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-audit">Audit</button>
+        <button class="submenus-chip" data-scroll-to="#cfg-docs">Docs</button>
+        <button class="submenus-chip" ${openMenu("selftests")}>Self-Tests</button>
+        <button class="submenus-chip" ${openMenu("update")}>Update</button>
+      </div>`,
+      cfgSection("Models & Instructions", [
+        cfgItem("LLM models", "Refresh the models available from local CLIs and provider keys", termBtn("Refresh models", "models"), "", "cfg-models"),
+        cfgItem("LLM API keys", "Keys are stored in this project's settings and never shown again", termBtn("CLI logins", "keys"), keyRows, "cfg-keys"),
+        cfgItem("AI instruction files", "Each AI CLI's .md file should point back to the shared project docs", termBtn("Create / fix", "instructions"), instrRows, "cfg-instructions"),
+      ]),
+      cfgSection("Machine Fleet & Project Config", [
+        cfgItem("Machine fleet", "Machines jobs can run on", termBtn("Manage fleet", "fleet"), fleetRows, "cfg-fleet"),
+        cfgItem("Base branch", "The source of truth for delta calculations",
+          `<form class="row" id="base-branch-form"><select name="branch" aria-label="Base branch">${c.branches.map((b) => `<option ${b === c.base_branch ? "selected" : ""}>${esc(b)}</option>`).join("")}</select><button class="btn small">Save</button></form>`, "", "cfg-branch"),
+        cfgItem("Target project", "Switch which project the orchestrator works on", `<a class="btn small" href="#/projects">Open Projects</a>`, "", "cfg-projects"),
+        cfgItem("Archived jobs", `${c.archived.length} archived`, "", archivedRows, "cfg-archived"),
+      ]),
+      cfgSection("Delivery & Notifications", [
+        cfgItem("Firebase App Distribution", "CLI, login, project and app checks for delivering builds", termBtn("Open", "firebase"), "", "cfg-firebase"),
+        cfgItem("Xcode Cloud & CI workflows", "Generate and review ci_scripts hooks", termBtn("Open", "xcode"), "", "cfg-xcode"),
+        cfgItem("Email notifications", `Sender: ${sender}`,
+          `<button class="btn small" data-cfg="email-add">Add recipient</button><button class="btn small" data-cfg="email-sender">Configure sender</button>${e.recipients.length ? `<button class="btn small" ${act("test_email")}>Send test email</button>` : ""}`, recipients, "cfg-email"),
+      ]),
+      cfgSection("Setup, Health & Documentation", [
+        cfgItem("Setup wizard", "Full project and tools setup", `<button class="btn small" ${act("wizard")}>Run wizard</button>`, "", "cfg-wizard"),
+        cfgItem("Prerequisite audit", "Local environment check plus the fleet dependency matrix", termBtn("Run audit", "audit"), "", "cfg-audit"),
+        cfgItem("Documentation & architecture guides", "New here? Start with Getting Started", "", docRows, "cfg-docs"),
+        cfgItem("Orchestrator self-tests", "Tooling, smoke and unit test menu", termBtn("Open", "selftests"), "", "cfg-selftests"),
+        cfgItem("Update orchestrator", "Pull updates locally and across the fleet", termBtn("Check for updates", "update"), "", "cfg-update"),
+      ]),
+    ].join(""),
+    after: () => {
+      const reload = () => route();
+      const post = async (part, body, ok) => {
+        try { await api(`config/${part}`, { method: "POST", body }); if (ok) toast(ok); reload(); } catch (err) { toast(err.message, true); }
+      };
+      $("#base-branch-form").addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        post("base-branch", { branch: new FormData(ev.target).get("branch") }, "Base branch saved");
+      });
+      const onClick = async (ev) => {
+        const b = ev.target.closest("[data-cfg]");
+        if (!b) return;
+        const { cfg, id, label, email } = b.dataset;
+        if (cfg === "key-set") {
+          const isOllama = id === "ollama_api_key";
+          const v = await formDialog(`${label} key`, `<label class="field"><span>API key</span><input type="password" name="value" required autocomplete="off"></label>
+            ${isOllama ? `<label class="field"><span>Host URL (optional)</span><input type="text" name="host" placeholder="https://my-ollama:11434"></label>` : ""}`, "Save");
+          if (v) post("keys", { id, ...v }, "Key saved");
+        } else if (cfg === "key-clear") {
+          if (await formDialog(`Clear ${label} key?`, `<p>This removes the saved key from this project's settings.</p>`, "Clear")) post("keys", { id, clear: true }, "Key cleared");
+        } else if (cfg === "restore") {
+          post("archived-restore", { id }, "Job restored");
+        } else if (cfg === "email-add") {
+          const v = await formDialog("Add recipient", `<label class="field"><span>Email address</span><input type="email" name="email" required autocapitalize="off"></label>`, "Add");
+          if (v) post("email", { op: "add", email: v.email }, "Recipient added");
+        } else if (cfg === "email-remove") {
+          post("email", { op: "remove", email }, "Recipient removed");
+        } else if (cfg === "email-sender") {
+          const v = await formDialog("Configure email sender", `
+            <label class="field"><span>Provider</span><select name="provider">${e.providers.map((p) => `<option ${p === e.provider ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>
+            <small class="hint-text">Blank fields keep what's saved.</small>
+            <label class="field"><span>Gmail address</span><input type="text" name="smtp_email" placeholder="${esc(e.smtp_email)}"></label>
+            <label class="field"><span>Gmail app password</span><input type="password" name="smtp_password" autocomplete="off" placeholder="${e.smtp_password_set ? "saved" : ""}"></label>
+            <label class="field"><span>Resend API key</span><input type="password" name="resend_api_key" autocomplete="off" placeholder="${e.resend_api_key_set ? "saved" : ""}"></label>
+            <label class="field"><span>Resend from email</span><input type="text" name="resend_from_email" placeholder="${esc(e.resend_from_email)}"></label>
+            <label class="field"><span>Display name</span><input type="text" name="resend_display_name" placeholder="${esc(e.resend_display_name)}"></label>`, "Save");
+          if (v) post("email", { op: "provider", ...v }, "Email sender saved");
+        } else if (cfg === "doc") {
+          try {
+            const d = await api(`config/doc?id=${encodeURIComponent(id)}`);
+            await formDialog(d.name, `<pre class="doc-text">${esc(d.text)}</pre>`, "Close");
+          } catch (err) { toast(err.message, true); }
+        }
+      };
+      view.addEventListener("click", onClick);
+      cleanup.push(() => view.removeEventListener("click", onClick));
+    },
   };
 };
 
@@ -578,7 +2122,7 @@ pages.activity = async () => {
     title: "Activity",
     sub: "Everything started from this page since the UI was opened",
     html: `
-      ${running.length ? `<section class="card"><div class="card-h"><h2>Running</h2></div><div class="list">${running.map(runItem).join("")}</div></section>` : ""}
+      ${running.length ? `<section class="card"><div class="card-h"><h2>Running</h2><span class="count">${running.length}</span></div><div class="list">${running.map(liveRunCard).join("")}</div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Finished</h2></div><div class="list">${finished.map(runItem).join("") || `<div class="empty">Nothing yet.</div>`}</div></section>`,
   };
 };
@@ -591,6 +2135,103 @@ pages.file = async (_, query) => {
     sub: esc(path),
     actions: `<button class="btn" data-back>Back</button>`,
     html: `<section class="card"><pre class="file">${esc(text)}</pre></section>`,
+  };
+};
+
+pages.projects = async () => {
+  const { projects } = await api("projects");
+  const pList = projects || [];
+
+  const githubCount = pList.filter((p) => p.source_type === "github").length;
+  const localCount = pList.filter((p) => p.source_type !== "github").length;
+
+  const renderSourceBadge = (item) => {
+    if (item.source_type === "github") {
+      const label = item.github_repo || "GitHub Tracked";
+      return `<span class="pill-badge github-badge" title="GitHub Remote: ${esc(item.github_repo || "Connected")}"><svg class="icon badge-icon"><use href="#i-github"/></svg>${esc(label)}</span>`;
+    }
+    return `<span class="pill-badge local-badge" title="Local workspace only (no GitHub remote)"><svg class="icon badge-icon"><use href="#i-folder"/></svg>Local</span>`;
+  };
+
+  const cardsHtml = pList.map((p) => `
+    <div class="project-card ${p.active ? "active-project" : ""}" data-source="${esc(p.source_type || "local")}">
+      <div class="project-card-header">
+        <h4 class="project-card-title">${esc(p.name)}</h4>
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+          ${p.active ? '<span class="pill-badge active-badge">Active</span>' : ""}
+          ${renderSourceBadge(p)}
+          ${p.configured ? '<span class="pill-badge configured-badge">Orchestrated</span>' : ""}
+          ${p.needs_you_count ? `<span class="pill-badge needs-badge">${p.needs_you_count} waiting</span>` : ""}
+        </div>
+      </div>
+      <div class="project-card-path" title="${esc(p.root)}">${esc(p.root)}</div>
+      <div class="project-card-meta">
+        ${p.branch ? `<span class="mono">${esc(p.branch)}</span>` : '<span class="muted">no branch</span>'}
+        <span class="sep">·</span>
+        <span class="muted">${p.dirty_files ? `${p.dirty_files} uncommitted` : "clean"}</span>
+        <span class="sep">·</span>
+        <span class="muted">${p.jobs_count} job(s)</span>
+      </div>
+      <div class="project-card-actions">
+        ${p.active ? `
+          <a class="btn small primary" href="#/">Open Dashboard</a>
+        ` : `
+          <button class="btn small primary" data-switch-project="${esc(p.root)}">Switch to project</button>
+          <button class="btn small ghost" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>
+        `}
+      </div>
+    </div>
+  `).join("");
+
+  return {
+    title: "Projects",
+    sub: "Manage and switch between codebases on this machine.",
+    actions: `<button class="btn primary" id="add-project-btn"><svg class="icon"><use href="#i-plus"/></svg>Add Project</button>`,
+    html: `
+      <div class="projects-container">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 10px;">
+          <h2 style="font-size: 1.15rem; margin: 0;">Tracked Projects (${pList.length})</h2>
+          <div class="filters projects-filter">
+            <button type="button" class="btn small on" data-project-filter="all">All (${pList.length})</button>
+            <button type="button" class="btn small" data-project-filter="github"><svg class="icon badge-icon" style="width:12px;height:12px;margin-right:3px;vertical-align:-1px;"><use href="#i-github"/></svg>GitHub (${githubCount})</button>
+            <button type="button" class="btn small" data-project-filter="local"><svg class="icon badge-icon" style="width:12px;height:12px;margin-right:3px;vertical-align:-1px;"><use href="#i-folder"/></svg>Local (${localCount})</button>
+          </div>
+        </div>
+        <div class="projects-grid" id="tracked-projects-grid">
+          ${cardsHtml || '<div class="empty">No projects tracked yet. Add a project to get started.</div>'}
+        </div>
+      </div>
+    `,
+    after: () => {
+      const filterBtns = document.querySelectorAll(".projects-filter [data-project-filter]");
+      filterBtns.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          filterBtns.forEach((b) => b.classList.remove("on"));
+          btn.classList.add("on");
+          const mode = btn.dataset.projectFilter;
+          const cards = document.querySelectorAll("#tracked-projects-grid .project-card");
+          cards.forEach((card) => {
+            const src = card.dataset.source;
+            if (mode === "all" || src === mode) {
+              card.style.display = "";
+            } else {
+              card.style.display = "none";
+            }
+          });
+        });
+      });
+
+      const addBtn = $("#add-project-btn");
+      if (addBtn) {
+        addBtn.addEventListener("click", async () => {
+          const result = await addProjectsDialog(pList);
+          if (!result.changed) return;
+          await refreshState();
+          if (result.switched) location.hash = "#/";
+          else route();
+        });
+      }
+    },
   };
 };
 
@@ -623,7 +2264,8 @@ function nextStep(r) {
 }
 
 pages.run = async ([id]) => {
-  const run = state.runs.find((r) => r.id === id);
+  let run = state.runs.find((r) => r.id === id);
+  if (!run) { await refreshState(); run = state.runs.find((r) => r.id === id); } // opened before the list caught up
   if (!run) {
     return { title: "Run not found", html: `<div class="notice">This run isn't in memory (the UI server may have restarted). Transcripts are kept in <code>.orchestrator/logs/ui/</code>.</div>` };
   }
@@ -694,7 +2336,10 @@ function attachTerminal(id) {
     input.value = "";
   });
 
-  const es = new EventSource(`/api/runs/${id}/stream?offset=0`);
+  const backend = getBackendUrl();
+  const token = getToken();
+  const streamUrl = `${backend ?? ""}/api/runs/${id}/stream?offset=0${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  const es = new EventSource(streamUrl);
   es.addEventListener("data", (e) => {
     const bin = atob(JSON.parse(e.data).data);
     const bytes = new Uint8Array(bin.length);
@@ -731,10 +2376,11 @@ function parseHash() {
 
 function resolveRoute() {
   const { parts, query } = parseHash();
-  if (parts[0] === "jobs" && parts[1]) return { page: "job", args: [parts[1]], nav: "jobs", query };
+  if (parts[0] === "jobs" && parts[1]) return { page: "job", args: [parts[1]], nav: "home", query };
   if (parts[0] === "runs" && parts[1]) return { page: "run", args: [parts[1]], nav: "activity", query };
   if (parts[0] === "runs") return { page: "activity", args: [], nav: "activity", query };
   if (parts[0] === "file") return { page: "file", args: [], nav: null, query };
+  if (parts[0] === "jobs") return { page: "home", args: [], nav: "home", query }; // Jobs list lives on Home
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
 }
@@ -759,8 +2405,14 @@ async function route() {
   const r = resolveRoute();
   current = { page: r.page, args: r.args, query: r.query, rendered: "" };
   document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === r.nav));
+  renderSetupFab();
+  const floatingBtn = $("#floating-new-btn");
+  if (floatingBtn) floatingBtn.hidden = (r.page === "new");
   try {
-    if (!state.project) await refreshState();
+    if (!state.project) {
+      await refreshState();
+      if (!state.project) return;
+    }
     const result = await pages[r.page](r.args, r.query);
     if (current.page === r.page && current.args.join() === r.args.join()) apply(result);
   } catch (e) {
@@ -774,6 +2426,12 @@ async function route() {
 async function tick() {
   if (document.hidden) return;
   await refreshState();
+  loadSetup();
+  if (current.page === "run") {
+    const run = state.runs.find((r) => r.id === current.args[0]);
+    if (run) setHeader(runHeader(run)); // keeps Stop / waiting status current while you watch
+    return;
+  }
   if (!LIVE.has(current.page) || $("#dialog").open || document.querySelector("details.more[open]")) return;
   if (view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   const page = current.page, args = current.args.join();
@@ -785,5 +2443,13 @@ async function tick() {
 }
 
 window.addEventListener("hashchange", route);
+const connBtn = $("#backend-settings-btn");
+if (connBtn) {
+  connBtn.addEventListener("click", () => showSignInGate());
+}
+const lockBtn = $("#lock-btn");
+if (lockBtn) {
+  lockBtn.addEventListener("click", lockSession);
+}
 refreshState().then(route);
 setInterval(tick, 5000);

@@ -361,6 +361,22 @@ class CliTests(unittest.TestCase):
 
     @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(False, [], None))
     @patch("orchestrator.scripts.discover_machines.get_local_ssh_hosts", return_value=[])
+    @patch("orchestrator.cli.prompt_text", side_effect=["", ""])
+    @patch("orchestrator.cli.prompt_yes_no", return_value=False)
+    @patch("orchestrator.cli.run_script", return_value=0)
+    def test_wizard_requires_github_before_applying(self, _run, _yes_no, _text, _hosts, _gh) -> None:
+        with tempfile.TemporaryDirectory(prefix="orchestrator-wizard-") as temp_dir:
+            root = Path(temp_dir)
+            (root / "SampleApp.xcodeproj").mkdir()
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = cli.main(["wizard", "--root", str(root), "--project-name", "SampleApp", "--models", "codex"])
+            self.assertEqual(result, 1)
+            self.assertIn("GitHub is required", output.getvalue())
+            self.assertFalse((root / ".orchestrator" / "project.json").exists())
+
+    @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(True, [{"user": "devuser", "host": "github.com", "active": True}], "devuser"))
+    @patch("orchestrator.scripts.discover_machines.get_local_ssh_hosts", return_value=[])
     @patch("orchestrator.cli.prompt_text")
     @patch("orchestrator.cli.prompt_yes_no")
     @patch("orchestrator.cli.prompt_radio")
@@ -447,7 +463,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(final_p_data["development_team"], "TEAM12345")
             self.assertEqual(final_p_data["firebase_distribution"], True)
 
-    @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(False, [], None))
+    @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(True, [{"user": "devuser", "host": "github.com", "active": True}], "devuser"))
     @patch("orchestrator.cli.run_script", return_value=0)
     @patch("orchestrator.cli.prompt_text")
     @patch("orchestrator.cli.prompt_yes_no")

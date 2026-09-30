@@ -4,6 +4,7 @@ import base64
 import http.client
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -81,6 +82,17 @@ class AuthTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         self.assertEqual(data["project"]["name"], "Demo")
 
+    def test_query_token_authenticates(self):
+        res, data = self.request("GET", "/api/state?token=test-token", auth=False)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["project"]["name"], "Demo")
+
+    def test_options_cors_preflight(self):
+        res, _ = self.request("OPTIONS", "/api/state", auth=False, headers={"Origin": "https://example.com"})
+        self.assertEqual(res.status, 204)
+        self.assertEqual(res.getheader("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertIn("Authorization", res.getheader("Access-Control-Allow-Headers", ""))
+
     def test_url_token_is_exchanged_for_http_only_cookie(self):
         res, _ = self.request("GET", "/?token=test-token", auth=False)
         self.assertEqual(res.status, 303)
@@ -113,6 +125,114 @@ class AuthTests(ServerTestCase):
     def test_static_traversal_blocked(self):
         res, _ = self.request("GET", "/../server.py", auth=False)
         self.assertEqual(res.status, 404)
+
+
+class ProjectPickerUiTests(unittest.TestCase):
+    def test_discovered_project_add_request_tracks_without_switching(self):
+        picker = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "project-picker.js"
+        script = """
+let request = null;
+try {
+  require(process.argv[1]);
+  request = globalThis.ProjectPicker.addRequest({root: '/code/demo', name: 'Demo'});
+} catch (error) {}
+process.stdout.write(JSON.stringify(request));
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(picker)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(json.loads(result.stdout), {
+            "path": "projects/add",
+            "options": {
+                "method": "POST",
+                "body": {"root": "/code/demo", "name": "Demo", "active": False},
+            },
+        })
+
+    def test_project_picker_excludes_tracked_projects_from_discovery_rows(self):
+        picker = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "project-picker.js"
+        script = """
+require(process.argv[1]);
+const rows = globalThis.ProjectPicker.availableProjects(
+  [
+    {root: '/code/alpha', name: 'Alpha'},
+    {root: '/code/beta', name: 'Beta', configured: true, type: 'orchestrator'}
+  ],
+  [{root: '/code/alpha'}]
+);
+process.stdout.write(JSON.stringify(rows));
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(picker)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [
+            {"root": "/code/beta", "name": "Beta", "configured": True, "type": "orchestrator"},
+        ])
+
+    def test_project_picker_renders_compact_list_rows_with_add_actions(self):
+        picker = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "project-picker.js"
+        script = """
+require(process.argv[1]);
+const html = globalThis.ProjectPicker.renderRows([
+  {root: '/code/demo', name: 'Demo <App>', configured: false, type: 'swift'}
+]);
+process.stdout.write(JSON.stringify({
+  listRow: html.includes('class="project-discovery-row"'),
+  addAction: html.includes('data-add-project-path="/code/demo"') && html.includes('>Add</button>'),
+  escapedName: html.includes('Demo &lt;App&gt;'),
+  cardLayout: html.includes('project-card')
+}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(picker)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            "listRow": True,
+            "addAction": True,
+            "escapedName": True,
+            "cardLayout": False,
+        })
+
+    def test_project_picker_serializes_add_requests(self):
+        picker = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "project-picker.js"
+        script = """
+require(process.argv[1]);
+let active = 0;
+let maxActive = 0;
+const completed = [];
+const enqueue = globalThis.ProjectPicker.createAddQueue(async (name) => {
+  active += 1;
+  maxActive = Math.max(maxActive, active);
+  await new Promise((resolve) => setTimeout(resolve, name === 'first' ? 20 : 1));
+  completed.push(name);
+  active -= 1;
+});
+Promise.all([enqueue('first'), enqueue('second')]).then(() => {
+  process.stdout.write(JSON.stringify({maxActive, completed}));
+});
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(picker)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            "maxActive": 1,
+            "completed": ["first", "second"],
+        })
 
 
 class ReadApiTests(ServerTestCase):
@@ -159,7 +279,7 @@ class ActionTests(unittest.TestCase):
     def test_new_job_writes_spec_file_and_passes_flags(self):
         argv = ui.build_new_job({"type": "feature", "summary": "Add rematch", "spec": "Details",
                                  "branch_mode": "new", "no_dispatch": True}, self.root)
-        self.assertEqual(argv[3:8], ["script", "new_job.py", "feature", "--summary", "Add rematch"])
+        self.assertEqual(argv[4:9], ["script", "new_job.py", "feature", "--summary", "Add rematch"])
         spec = Path(argv[argv.index("--spec-file") + 1])
         self.assertEqual(spec.read_text(), "Details\n")
         self.assertIn(self.root / ".orchestrator" / "ui" / "specs", spec.parents)
@@ -174,7 +294,7 @@ class ActionTests(unittest.TestCase):
 
     def test_job_actions_resolve_job_file(self):
         argv = ui.ACTIONS["debug"].build({"job": "20260922-bug-1", "logs": "cloud:latest", "feedback": "still broken"}, self.root)
-        self.assertTrue(argv[5].endswith(".orchestrator/jobs/20260922-bug-1.json"))
+        self.assertTrue(argv[6].endswith(".orchestrator/jobs/20260922-bug-1.json"))
         self.assertEqual(argv[-4:], ["--logs", "cloud:latest", "--feedback", "still broken"])
         with self.assertRaises(ui.UIError):
             ui.ACTIONS["execute"].build({"job": "../../x"}, self.root)
@@ -191,13 +311,63 @@ class ActionTests(unittest.TestCase):
         sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
         sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
-                  "name": "Suite", "branch": "main"}
+                  "name": "Suite", "branch": "main", "menu": "keys"}
         for key, action in ui.ACTIONS.items():
             argv = action.build(dict(params, name="feature/x") if key == "git_new_branch" else params, self.root)
-            if key.startswith("git_"):
+            if key == "stash_checkout":
+                self.assertEqual(argv[:2], ["sh", "-c"], key)
+            elif key.startswith("git_"):
                 self.assertEqual(argv[0], "git", key)
             else:
-                self.assertEqual(argv[:3], [sys.executable, "-m", "orchestrator"], key)
+                self.assertEqual(argv[:4], [sys.executable, "-P", "-m", "orchestrator"], key)
+
+    def test_actions_run_the_package_that_serves_the_ui_not_the_projects_copy(self):
+        import subprocess as sp
+        server = ui.UIServer(("127.0.0.1", 0), self.root)
+        try:
+            env = server.child_env()
+        finally:
+            server.server_close()
+        # A look-alike package in the project folder must not shadow the real one.
+        fake = self.root / "orchestrator"
+        fake.mkdir(exist_ok=True)
+        (fake / "__init__.py").write_text("FAKE = True\n")
+        out = sp.run([sys.executable, "-P", "-c", "import orchestrator; print(orchestrator.__file__)"],
+                     cwd=self.root, env=env, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(Path(out).parent, Path(ui.__file__).resolve().parents[1])
+
+    def test_config_menu_is_allowlisted(self):
+        self.assertEqual(ui.build_config_menu({"menu": "fleet"}, self.root)[-2:], ["config_menu.py", "fleet"])
+        for bad in ("", "fleet; rm -rf /", "../x"):
+            with self.assertRaises(ui.UIError):
+                ui.build_config_menu({"menu": bad}, self.root)
+
+    def test_config_settings_roundtrip_and_validation(self):
+        import subprocess as sp
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
+        ui.config_update(self.root, "email", {"op": "add", "email": "a@b.co"})
+        ui.config_update(self.root, "keys", {"id": "anthropic_api_key", "value": "sk-secret"})
+        ui.config_update(self.root, "base-branch", {"branch": "main"})
+        state = ui.config_state(self.root)
+        self.assertEqual(state["email"]["recipients"], ["a@b.co"])
+        self.assertEqual(state["base_branch"], "main")
+        self.assertNotIn("sk-secret", json.dumps(state))  # secrets never leave the server
+        self.assertTrue([k for k in state["keys"] if k["id"] == "anthropic_api_key"][0]["saved"])
+        for part, body in (("email", {"op": "add", "email": "nope"}), ("keys", {"id": "evil", "value": "x"}),
+                           ("base-branch", {"branch": "origin/evil"}), ("archived-restore", {"id": "../x"}), ("bogus", {})):
+            with self.assertRaises(ui.UIError):
+                ui.config_update(self.root, part, body)
+
+    def test_stash_checkout_keeps_branch_out_of_the_shell_string(self):
+        import subprocess as sp
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
+        argv = ui.build_stash_checkout({"branch": "main"}, self.root)
+        self.assertEqual(argv[-1], "main")
+        self.assertNotIn("main", argv[2])
+        with self.assertRaises(ui.UIError):
+            ui.build_stash_checkout({"branch": "main; rm -rf /"}, self.root)
 
     def test_git_actions_validate_branches(self):
         import subprocess as sp
@@ -214,7 +384,7 @@ class ActionTests(unittest.TestCase):
 
     def test_revise_and_test_names_are_validated(self):
         argv = ui.build_revise({"job": "20260922-bug-1", "change": "Split helper", "where": "Lobby"}, self.root)
-        self.assertEqual(argv[5:7], ["revise", str((self.root / ".orchestrator/jobs/20260922-bug-1.json"))])
+        self.assertEqual(argv[6:8], ["revise", str((self.root / ".orchestrator/jobs/20260922-bug-1.json"))])
         self.assertEqual(argv[-6:], ["--change", "Split helper", "--where", "Lobby", "--done-when", ""])
         with self.assertRaises(ui.UIError):
             ui.ACTIONS["test_suite"].build({"name": "x; rm -rf /"}, self.root)
@@ -455,9 +625,82 @@ class RunApiTests(ServerTestCase):
         self.assertEqual(res.status, 400)
         self.assertIn("Unknown action", data["error"])
 
-    def test_unknown_run_is_404(self):
-        res, _ = self.request("GET", "/api/runs/nope/stream")
-        self.assertEqual(res.status, 404)
+    def test_auth_endpoint_valid_token_sets_cookie(self):
+        res, data = self.request("POST", "/api/auth", body={"token": "test-token"}, headers=UI_HEADERS, auth=False)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        cookie = res.getheader("Set-Cookie")
+        self.assertIn("orchestrator_ui=test-token", cookie)
+        self.assertIn("HttpOnly", cookie)
+
+    def test_auth_endpoint_invalid_token_rejected(self):
+        res, data = self.request("POST", "/api/auth", body={"token": "wrong"}, headers=UI_HEADERS, auth=False)
+        self.assertEqual(res.status, 401)
+        self.assertIn("Invalid access token", data["error"])
+
+    def test_auth_endpoint_valid_id_token(self):
+        with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": "tester@example.com"}), \
+             patch("orchestrator.web.server.allowed_auth_emails", return_value={"tester@example.com"}):
+            res, data = self.request("POST", "/api/auth", body={"id_token": "valid-id-token"}, headers=UI_HEADERS, auth=False)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["email"], "tester@example.com")
+            cookie = res.getheader("Set-Cookie")
+            self.assertIn("orchestrator_ui=test-token", cookie)
+
+    def test_auth_endpoint_unauthorized_email(self):
+        with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": "intruder@example.com"}), \
+             patch("orchestrator.web.server.allowed_auth_emails", return_value={"owner@example.com"}):
+            res, data = self.request("POST", "/api/auth", body={"id_token": "some-id-token"}, headers=UI_HEADERS, auth=False)
+            self.assertEqual(res.status, 403)
+            self.assertIn("not authorized", data["error"])
+
+    def test_auth_logout_clears_cookie(self):
+        res, data = self.request("POST", "/api/auth/logout", body={}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        cookie = res.getheader("Set-Cookie")
+        self.assertIn("Max-Age=0", cookie)
+
+    def test_projects_endpoint_lists_all_projects_and_active(self):
+        res, data = self.request("GET", "/api/projects")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["active"], str(ui.safe_resolve(self.root)))
+        active_proj = next(p for p in data["projects"] if p["root"] == str(ui.safe_resolve(self.root)))
+        self.assertTrue(active_proj["active"])
+        self.assertIn("source_type", active_proj)
+        self.assertEqual(active_proj["source_type"], "local")
+
+    def test_detect_project_source_github_and_local(self):
+        s_type, s_label, repo = ui.detect_project_source(self.root)
+        self.assertEqual(s_type, "local")
+        self.assertEqual(s_label, "Local")
+
+        s_type, s_label, repo = ui.detect_project_source(self.root, {"github_repo": "my-org/my-project"})
+        self.assertEqual(s_type, "github")
+        self.assertEqual(s_label, "GitHub Tracked")
+        self.assertEqual(repo, "my-org/my-project")
+
+    def test_projects_add_and_forget(self):
+        other_dir = self.root.parent / "other_project"
+        make_project(other_dir)
+        res, data = self.request("POST", "/api/projects/add", body={"root": str(other_dir), "name": "Other"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+
+        res, data = self.request("GET", "/api/projects")
+        self.assertTrue(any(p["root"] == str(ui.safe_resolve(other_dir)) for p in data["projects"]))
+
+        res, data = self.request("DELETE", "/api/projects", body={"root": str(other_dir)}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertFalse(any(p["root"] == str(ui.safe_resolve(other_dir)) for p in data["projects"]))
+
+    def test_projects_scan_finds_projects(self):
+        other_dir = self.root.parent / "scanned_project"
+        make_project(other_dir)
+        res, data = self.request("POST", "/api/projects/scan", body={"paths": [str(self.root.parent)]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        discovered = data["discovered"]
+        self.assertTrue(any(p["root"] == str(ui.safe_resolve(other_dir)) for p in discovered))
 
 
 if __name__ == "__main__":

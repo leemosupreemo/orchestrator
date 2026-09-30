@@ -424,6 +424,11 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_job['plan']['summary'] = task['description'] # Use task description as summary
                 task_job['plan']['acceptance_criteria'] = task['acceptance_criteria']
                 task_job['plan']['likely_files'] = task['likely_files']
+                # Only this task's test cases (plus untasked ones); `task` is 1-based.
+                task_job['plan']['test_cases'] = [
+                    c for c in job.get('plan', {}).get('test_cases') or []
+                    if isinstance(c, dict) and c.get('task') in (i + 1, None)
+                ]
                 
                 # Write this temp view to a temporary path to pass to run_builder
                 temp_job_path = job_path.parent / f"{job_path.stem}_task_{i+1}.json"

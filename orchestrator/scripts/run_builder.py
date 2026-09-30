@@ -239,6 +239,9 @@ STRICT REQUIREMENT: Do NOT use the `clarification_needed` field unless it is phy
 If you are unsure between two valid approaches, pick the safest, most conventional one, document your assumption in the summary, and proceed. DO NOT PAUSE for human confirmation.
 """
 
+        from test_cases import prompt_block
+        test_case_block = prompt_block(job.get("plan", {}).get("test_cases") or [])
+
         full_prompt = f"""{prompt_template}
 
 Grounding docs to inspect first:
@@ -249,7 +252,7 @@ Grounding docs to inspect first:
 {stack_context}
 Available Tests (use for selecting test_command):
 {test_index}
-{debug_context}
+{test_case_block}{debug_context}
 {yolo_context}
 
 Brief:
