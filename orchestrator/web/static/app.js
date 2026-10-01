@@ -431,16 +431,6 @@ const dialogs = {
       <label class="field"><span>Release notes <span class="muted">(optional)</span></span><textarea name="notes"></textarea></label>`, "Distribute");
     if (values) runAction("distribute", { notes: values.notes }, { skipConfirm: true });
   },
-  async ask_ai(params) {
-    const values = await formDialog("Ask AI (Questions about changes)", `
-      <p class="muted" style="margin-bottom: 8px;">Ask a question regarding the current plan, implementation diff, or test failures for this job.</p>
-      <label class="field"><span>Your question</span>
-        <textarea name="question" required placeholder="e.g. Why did you change the networking layer instead of the view controller?"></textarea>
-      </label>`, "Ask AI");
-    if (values?.question.trim()) {
-      runAction("fix", { job: params.job, feedback: `Question about job: ${values.question.trim()}` });
-    }
-  },
   async link_logs(params) {
     const hasRemote = state.project?.remote_logs;
     const values = await formDialog("Link Logs (Update Context)", `
@@ -1384,7 +1374,6 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     if (ctx.canSplinter) items.push(["Split into sub-jobs", act("splinter_job", j), "Parallel child jobs and GitHub sub-issues"]);
   }
   items.push("---");
-  items.push(["Ask AI about this job", act("ask_ai", j)]);
   items.push(["Attach logs", act("link_logs", j), "Device crash logs or test traces"]);
   items.push(["Attach mockup or reference", act("attach_mockup", j)]);
   items.push(["Override models", act("select_models", j), "Planner, builder and reviewer"]);
@@ -1441,6 +1430,7 @@ pages.job = async ([id]) => {
   const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
+  const conversation = Array.isArray(job.conversation) ? job.conversation.filter((m) => m && m.text) : [];
 
   let visualChecks = [];
   try { visualChecks = (await api("visual-checks")).checks || []; } catch {}
@@ -1546,6 +1536,17 @@ pages.job = async ([id]) => {
         </section>
       ` : ""}
 
+      <section class="card" style="margin-bottom: 16px;" id="chat-section">
+        <div class="card-h"><h2>Ask about this job</h2>${conversation.length ? `<span class="count">${conversation.length}</span>` : ""}</div>
+        <div class="card-b stack">
+          ${conversation.length ? `<div class="chat-thread" role="log" aria-live="polite">${conversation.map((m) => `<div class="chat-msg ${m.role === "user" ? "user" : "assistant"}"><span class="chat-who">${m.role === "user" ? "You" : "AI"}</span><div class="chat-text">${esc(m.text)}</div></div>`).join("")}</div>` : `<div class="muted">Ask why something was done, what a failure means, or what to change. Answers use this job's plan, progress and diff. It can't edit code; use Revise plan or Run fix to act on the answer.</div>`}
+          <form id="chat-form" class="stack">
+            <textarea name="message" required maxlength="4000" rows="2" placeholder="e.g. Why did you change the networking layer?"></textarea>
+            <div class="row"><span class="spacer"></span><button class="btn primary" type="submit">Send</button></div>
+          </form>
+        </div>
+      </section>
+
       <!-- Docs Section (Brief / Summary / Investigations) -->
       <div id="docs-section">
         ${docs.map((d, i) => `<section class="card" style="margin-bottom: 16px;"><details class="raw" ${i === 0 ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
@@ -1609,6 +1610,23 @@ pages.job = async ([id]) => {
       <!-- Technical Details -->
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
     `,
+    after: () => {
+      const form = $("#chat-form");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const button = form.querySelector("button");
+        const message = new FormData(form).get("message");
+        button.disabled = true; button.textContent = "Thinking…";
+        try {
+          await api(`jobs/${encodeURIComponent(id)}/chat`, { method: "POST", body: { message } });
+          await route();
+          $("#chat-section")?.scrollIntoView({ block: "end" });
+        } catch (err) {
+          toast(err.message, true);
+          button.disabled = false; button.textContent = "Send";
+        }
+      });
+    },
   };
 };
 

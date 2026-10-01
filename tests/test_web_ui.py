@@ -1207,6 +1207,36 @@ class RunApiTests(ServerTestCase):
 
 
 
+class JobChatEndpointTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def completed(self, stdout, returncode=0, stderr=""):
+        return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+
+    def test_chat_stores_the_exchange_on_the_job(self):
+        with patch.object(ui.subprocess, "run", return_value=self.completed("noise\n<<<ORCHESTRATOR-REPLY>>>\nIt was needed.\n")):
+            res, data = self.request("POST", f"/api/jobs/{self.JOB}/chat", body={"message": "Why?"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertEqual([m["text"] for m in data["conversation"]], ["Why?", "It was needed."])
+        res, detail = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertEqual(len(detail["job"]["conversation"]), 2)
+
+    def test_model_failure_is_reported_and_nothing_is_saved(self):
+        with patch.object(ui.subprocess, "run", return_value=self.completed("", 1, "No model is available.\n")):
+            res, data = self.request("POST", f"/api/jobs/{self.JOB}/chat", body={"message": "Why?"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 502)
+        res, detail = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertNotIn("conversation", detail["job"])
+
+    def test_empty_message_is_rejected(self):
+        res, _ = self.request("POST", f"/api/jobs/{self.JOB}/chat", body={"message": " "}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+
+    def test_chat_requires_the_ui_header(self):
+        res, _ = self.request("POST", f"/api/jobs/{self.JOB}/chat", body={"message": "hi"}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+
+
 class JobDetailPrinciplesTests(unittest.TestCase):
     """Job detail keeps one primary action and no terminal-style leftovers."""
 

@@ -51,6 +51,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator import integrations
+from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
@@ -2174,6 +2175,26 @@ class UIHandler(BaseHTTPRequestHandler):
             if reviewer: job["reviewer"] = reviewer
             write_json_file(job_path, job)
             self._json({"ok": True, "planner": job.get("planner"), "builder": job.get("builder"), "reviewer": job.get("reviewer")})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "chat":
+            job_path = resolve_job_path(root, parts[1])
+            env = self.server.child_env()
+
+            def llm(prompt: str, model: str) -> str:
+                argv = orchestrator_argv("script", "job_chat_run.py", *(["--model", model] if model else []))
+                try:
+                    res = subprocess.run(argv, input=prompt, cwd=root, env=env, capture_output=True, text=True, timeout=150)
+                except subprocess.TimeoutExpired:
+                    raise UIError("The model took too long. Try a shorter question.", HTTPStatus.GATEWAY_TIMEOUT)
+                marker = "<<<ORCHESTRATOR-REPLY>>>"
+                if res.returncode != 0 or marker not in res.stdout:
+                    raise UIError((res.stderr.strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
+                return res.stdout.split(marker, 1)[1]
+
+            try:
+                thread = job_chat.ask(job_path, str(self._body().get("message") or ""), llm, root, read_json_file, write_json_file)
+            except job_chat.ChatError as exc:
+                raise UIError(str(exc))
+            self._json({"ok": True, "conversation": thread})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "close_issue":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)

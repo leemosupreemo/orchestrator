@@ -1241,3 +1241,10 @@ dialog h2 { font-size: 17px; }
 
 .project-card[role="button"] { cursor: pointer; }
 .project-card[role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Job conversation */
+.chat-thread { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; }
+.chat-msg { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 8px; background: var(--panel-2); max-width: 90%; }
+.chat-msg.user { align-self: flex-end; background: var(--accent-soft); }
+.chat-who { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.chat-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
