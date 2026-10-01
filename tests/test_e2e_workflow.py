@@ -151,7 +151,8 @@ class E2EWorkflowTests(unittest.TestCase):
                 "assumptions": [],
                 "constraints": [],
                 "risks": [],
-                "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]
+                "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}],
+                "test_cases": [{"title": "AC holds", "type": "unit", "expected": "AC is satisfied", "covers": ["AC"], "tests": ["test_ac"]}]
             }), "gemini-3.1-pro-preview", "sid-1"),
             (json.dumps({"comments": "Missing status"}), "gemini-3.1-pro-preview", "sid-2"),
         ]
