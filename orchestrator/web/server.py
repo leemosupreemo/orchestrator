@@ -733,22 +733,156 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None) ->
     return "local", "Local", None
 
 
+GITHUB_LANG_COLORS: dict[str, str] = {
+    "Swift": "#F05138",
+    "Python": "#3572A5",
+    "JavaScript": "#F1E05A",
+    "TypeScript": "#3178C6",
+    "Shell": "#89E051",
+    "Bash": "#89E051",
+    "HTML": "#E34C26",
+    "CSS": "#563D7C",
+    "C": "#555555",
+    "C++": "#F34B7D",
+    "Objective-C": "#438EFF",
+    "Objective-C++": "#6866FB",
+    "Rust": "#DEA584",
+    "Go": "#00ADD8",
+    "Ruby": "#701516",
+    "Kotlin": "#A97BFF",
+    "Java": "#B07219",
+    "Dart": "#00B4AB",
+    "PHP": "#4F5D95",
+    "Perl": "#0298C3",
+    "Lua": "#000080",
+}
+
+_LANG_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def scan_local_languages(root: Path) -> list[dict[str, Any]]:
+    """Scan local directory files by extension to estimate language percentages."""
+    if not root.is_dir():
+        return []
+    ext_to_lang = {
+        ".swift": "Swift",
+        ".py": "Python",
+        ".js": "JavaScript",
+        ".jsx": "JavaScript",
+        ".ts": "TypeScript",
+        ".tsx": "TypeScript",
+        ".sh": "Shell",
+        ".bash": "Shell",
+        ".zsh": "Shell",
+        ".html": "HTML",
+        ".css": "CSS",
+        ".c": "C",
+        ".h": "C",
+        ".cpp": "C++",
+        ".m": "Objective-C",
+        ".rs": "Rust",
+        ".go": "Go",
+        ".rb": "Ruby",
+        ".kt": "Kotlin",
+        ".java": "Java",
+    }
+    ignored_dirs = {".git", ".build", "node_modules", "Pods", "DerivedData", ".venv", "venv", "__pycache__", ".orchestrator", "dist", "build"}
+    byte_counts: dict[str, int] = {}
+    try:
+        for r, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in ext_to_lang:
+                    lang_name = ext_to_lang[ext]
+                    try:
+                        f_size = os.path.getsize(os.path.join(r, f))
+                        byte_counts[lang_name] = byte_counts.get(lang_name, 0) + f_size
+                    except OSError:
+                        pass
+        total = sum(byte_counts.values())
+        langs = []
+        if total > 0:
+            for lang_name, byte_count in sorted(byte_counts.items(), key=lambda x: -x[1]):
+                pct = round((byte_count / total) * 100, 1)
+                if pct >= 0.1:
+                    color = GITHUB_LANG_COLORS.get(lang_name, "#8B949E")
+                    langs.append({
+                        "name": lang_name,
+                        "bytes": byte_count,
+                        "percent": pct,
+                        "color": color,
+                    })
+        return langs
+    except Exception:
+        return []
+
+
+def get_project_languages(root: Path, github_repo: str | None = None) -> list[dict[str, Any]]:
+    """Fetch or calculate language percentages for a project, with in-memory caching."""
+    cache_key = github_repo or str(safe_resolve(root))
+    now = time.time()
+    if cache_key in _LANG_CACHE:
+        cached_time, cached_langs = _LANG_CACHE[cache_key]
+        if now - cached_time < 3600:
+            return cached_langs
+
+    langs: list[dict[str, Any]] = []
+
+    # 1. If github_repo, try `gh api repos/{github_repo}/languages`
+    if github_repo and "/" in github_repo:
+        try:
+            res = subprocess.run(
+                ["gh", "api", f"repos/{github_repo}/languages"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                if isinstance(data, dict):
+                    total = sum(data.values())
+                    if total > 0:
+                        for name, byte_count in data.items():
+                            pct = round((byte_count / total) * 100, 1)
+                            if pct >= 0.1:
+                                color = GITHUB_LANG_COLORS.get(name, "#8B949E")
+                                langs.append({
+                                    "name": name,
+                                    "bytes": byte_count,
+                                    "percent": pct,
+                                    "color": color,
+                                })
+        except Exception:
+            pass
+
+    # 2. If no GitHub data, fallback to local file extension scanning
+    if not langs and root.is_dir():
+        langs = scan_local_languages(root)
+
+    _LANG_CACHE[cache_key] = (now, langs)
+    return langs
+
+
 def project_state(root: Path) -> dict[str, Any]:
     config = read_json_file(runtime_dir(root) / "project.json")
     status = git(root, "status", "--porcelain")
     recent = load_recent_projects().get("projects", [])
     machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
     root_source_type, root_source_label, root_github_repo = detect_project_source(root, config)
+    root_languages = get_project_languages(root, root_github_repo if root_source_type == "github" else None)
 
     recent_entries = []
     for p in recent:
         r_str = p.get("root")
         s_type, s_label, s_repo = "local", "Local", None
+        langs_p = []
         if r_str:
             try:
                 p_r = safe_resolve(Path(r_str).expanduser())
                 p_cfg = read_json_file(runtime_dir(p_r) / "project.json") if (runtime_dir(p_r) / "project.json").is_file() else None
                 s_type, s_label, s_repo = detect_project_source(p_r, p_cfg)
+                langs_p = get_project_languages(p_r, s_repo if s_type == "github" else None)
             except Exception:
                 pass
         recent_entries.append({
@@ -757,6 +891,7 @@ def project_state(root: Path) -> dict[str, Any]:
             "source_type": s_type,
             "source_label": s_label,
             "github_repo": s_repo,
+            "languages": langs_p,
         })
 
     return {
@@ -774,6 +909,7 @@ def project_state(root: Path) -> dict[str, Any]:
         "source_type": root_source_type,
         "source_label": root_source_label,
         "github_repo": root_github_repo,
+        "languages": root_languages,
         "recent": recent_entries,
     }
 
@@ -815,6 +951,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
                 pass
 
         source_type, source_label, github_repo = detect_project_source(p_resolved, p_config)
+        p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None)
         results.append({
             "name": p.get("name") or project_display_name(p_resolved),
             "root": str(p_resolved),
@@ -827,6 +964,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             "source_type": source_type,
             "source_label": source_label,
             "github_repo": github_repo,
+            "languages": p_languages,
         })
 
     if str(active_resolved) not in seen and active_resolved.is_dir():
@@ -845,6 +983,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             except Exception:
                 pass
         active_source_type, active_source_label, active_github_repo = detect_project_source(active_resolved, p_config)
+        active_languages = get_project_languages(active_resolved, active_github_repo if active_source_type == "github" else None)
         results.insert(0, {
             "name": project_display_name(active_resolved),
             "root": str(active_resolved),
@@ -857,6 +996,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             "source_type": active_source_type,
             "source_label": active_source_label,
             "github_repo": active_github_repo,
+            "languages": active_languages,
         })
     return results
 
@@ -916,6 +1056,7 @@ def scan_for_projects(search_paths: list[Path] | None = None) -> list[dict[str, 
                     name = project_display_name(curr_resolved) if is_orchestrator else curr_resolved.name
                     p_cfg = read_json_file(runtime_dir(curr_resolved) / "project.json") if is_orchestrator else None
                     s_type, s_label, s_repo = detect_project_source(curr_resolved, p_cfg)
+                    s_languages = get_project_languages(curr_resolved, s_repo if s_type == "github" else None)
                     discovered.append({
                         "name": name,
                         "root": curr_str,
@@ -925,6 +1066,7 @@ def scan_for_projects(search_paths: list[Path] | None = None) -> list[dict[str, 
                         "source_type": s_type,
                         "source_label": s_label,
                         "github_repo": s_repo,
+                        "languages": s_languages,
                     })
                     dirs.clear()
         except (PermissionError, OSError):
@@ -1461,6 +1603,11 @@ class UIHandler(BaseHTTPRequestHandler):
                 if id_token:
                     user_info = verify_firebase_id_token(id_token)
                     user_email = (user_info.get("email") or "").strip().lower()
+                    if not user_email:
+                        raise UIError("This account didn't share an email address. With GitHub, add a verified "
+                                      "primary email to your profile (it can stay private).", HTTPStatus.FORBIDDEN)
+                    if user_info.get("emailVerified") is False:
+                        raise UIError(f"The email {user_email} isn't verified with that provider.", HTTPStatus.FORBIDDEN)
                     allowed = allowed_auth_emails(self.server.root)
                     if allowed and user_email not in allowed:
                         raise UIError(
@@ -1803,6 +1950,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="Interface to bind (default 127.0.0.1). Use a Tailscale IP to reach it from your phone.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
+    parser.add_argument("--token", default=None, help="Fixed access token for this session")
     args = parser.parse_args(argv)
 
     root = find_project_root()
@@ -1813,7 +1961,7 @@ def main(argv: list[str] | None = None) -> int:
     remember_project(root)
 
     try:
-        server = UIServer((args.host, args.port), root)
+        server = UIServer((args.host, args.port), root, token=args.token)
     except OSError as exc:
         print(f"Could not listen on {args.host}:{args.port}: {exc.strerror}. Try --port.")
         return 1

@@ -702,6 +702,49 @@ class RunApiTests(ServerTestCase):
         discovered = data["discovered"]
         self.assertTrue(any(p["root"] == str(ui.safe_resolve(other_dir)) for p in discovered))
 
+    def test_scan_local_languages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "App.swift").write_text("A" * 3000)
+            (tmp_path / "script.py").write_text("B" * 1000)
+            langs = ui.scan_local_languages(tmp_path)
+            self.assertEqual(len(langs), 2)
+            self.assertEqual(langs[0]["name"], "Swift")
+            self.assertEqual(langs[0]["percent"], 75.0)
+            self.assertEqual(langs[0]["color"], "#F05138")
+            self.assertEqual(langs[1]["name"], "Python")
+            self.assertEqual(langs[1]["percent"], 25.0)
+            self.assertEqual(langs[1]["color"], "#3572A5")
+
+    def test_get_project_languages_github_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_output = json.dumps({"Swift": 8000, "Python": 2000})
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=["gh"], returncode=0, stdout=fake_output, stderr=""
+                )
+                langs = ui.get_project_languages(tmp_path, github_repo="test-owner/test-repo")
+                self.assertEqual(len(langs), 2)
+                self.assertEqual(langs[0]["name"], "Swift")
+                self.assertEqual(langs[0]["percent"], 80.0)
+                self.assertEqual(langs[1]["name"], "Python")
+                self.assertEqual(langs[1]["percent"], 20.0)
+
+    def test_state_and_projects_include_languages(self):
+        res, data = self.request("GET", "/api/state")
+        self.assertEqual(res.status, 200)
+        self.assertIn("languages", data["project"])
+        self.assertIsInstance(data["project"]["languages"], list)
+
+        res, data = self.request("GET", "/api/projects")
+        self.assertEqual(res.status, 200)
+        self.assertTrue(len(data["projects"]) > 0)
+        for p in data["projects"]:
+            self.assertIn("languages", p)
+            self.assertIsInstance(p["languages"], list)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -2304,6 +2304,7 @@ def _main(argv: list[str] | None = None) -> int:
                            help="Interface to bind (default 127.0.0.1; a Tailscale IP to reach it from a phone)")
     ui_parser.add_argument("--port", type=int, default=8765)
     ui_parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
+    ui_parser.add_argument("--token", help="Fixed access token for the web interface")
 
     logs_parser = subparsers.add_parser(
         "logs",
@@ -2374,7 +2375,7 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         from orchestrator.web.server import main as ui_main
-        ui_args = ["--host", args.host, "--port", str(args.port)] + (["--no-open"] if args.no_open else [])
+        ui_args = ["--host", args.host, "--port", str(args.port)] + (["--no-open"] if args.no_open else []) + (["--token", args.token] if getattr(args, "token", None) else [])
         return ui_main(ui_args)
     if args.command == "logs":
         if args.project and apply_project_env(args.project):

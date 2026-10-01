@@ -107,6 +107,38 @@ function runPill(r) {
   return r.exit_code === 0 ? pill("done", "Finished") : pill("failed", `Failed (exit ${r.exit_code})`);
 }
 
+function renderLanguagesBar(languages, { className = "", maxLabels = 3 } = {}) {
+  if (!languages || !languages.length) return "";
+  const segments = languages.map((l) => {
+    const color = l.color || "#888";
+    return `<span class="lang-bar-segment" style="width: ${l.percent}%; background-color: ${color};" title="${esc(l.name)}: ${l.percent}%"></span>`;
+  }).join("");
+
+  const displayLangs = languages.slice(0, maxLabels);
+  const hasMore = languages.length > maxLabels;
+  const labels = displayLangs.map((l) => {
+    const color = l.color || "#888";
+    return `<span class="lang-item" title="${esc(l.name)}: ${l.percent}%">
+      <span class="lang-dot" style="background-color: ${color};"></span>
+      <span class="lang-name">${esc(l.name)}</span>
+      <span class="lang-percent muted">${l.percent}%</span>
+    </span>`;
+  }).join("");
+
+  const moreLabel = hasMore ? `<span class="muted" style="font-size: 10.5px;">+${languages.length - maxLabels}</span>` : "";
+  const tooltip = languages.map((l) => `${l.name}: ${l.percent}%`).join(" · ");
+
+  const inner = `
+    <div class="lang-bar">${segments}</div>
+    <div class="lang-labels">${labels}${moreLabel}</div>
+  `;
+
+  if (className) {
+    return `<div class="${className}" title="${esc(tooltip)}">${inner}</div>`;
+  }
+  return inner;
+}
+
 // A <details> dropdown: `items` are [label, attrs, hint?] or "---" or ["header", title].
 function moreMenu(items, { label = "More", left = false } = {}) {
   const body = items.map((it) => {
@@ -669,6 +701,17 @@ async function refreshState() {
     badge.classList.toggle("working", waiting === 0);
     badge.title = waiting ? `${waiting} waiting for you` : `${running.length} running`;
   }
+  const topLangsEl = $("#topbar-languages");
+  if (topLangsEl && (current?.page === "home" || $("#page-title")?.textContent === state.project?.name)) {
+    if (state.project?.languages?.length) {
+      topLangsEl.innerHTML = renderLanguagesBar(state.project.languages, { maxLabels: 3 });
+      topLangsEl.title = state.project.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · ");
+      topLangsEl.hidden = false;
+    } else {
+      topLangsEl.hidden = true;
+      topLangsEl.innerHTML = "";
+    }
+  }
   renderProjectSelect($("#project-select"));
 }
 
@@ -756,6 +799,10 @@ function showSignInGate(message) {
             <svg class="icon"><use href="#i-apple"/></svg>
             <span>Continue with Apple</span>
           </button>
+          <button type="button" class="sso-btn github-btn" id="github-signin-btn">
+            <svg class="icon"><use href="#i-github"/></svg>
+            <span>Continue with GitHub</span>
+          </button>
         </div>
         <details class="manual-token-details" style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
           <summary class="muted" style="cursor: pointer; user-select: none; text-align: center;">Advanced: Sign in with CLI access token</summary>
@@ -781,72 +828,58 @@ function showSignInGate(message) {
     else localStorage.removeItem("orchestrator_backend");
   };
 
-  const googleBtn = $("#google-signin-btn");
-  if (googleBtn) {
-    googleBtn.addEventListener("click", async () => {
+  // One handler for every Firebase provider: pop up, trade the ID token for a session.
+  const wireSso = (id, name, makeProvider, explain = {}) => {
+    const btn = $(id);
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
       if (!window.firebase?.auth) {
         toast("Firebase Auth is loading or unavailable", true);
         return;
       }
       syncBackend();
-      googleBtn.disabled = true;
-      const originalHtml = googleBtn.innerHTML;
-      googleBtn.innerHTML = `<span>Signing in with Google...</span>`;
+      btn.disabled = true;
+      const originalHtml = btn.innerHTML;
+      btn.innerHTML = `<span>Signing in with ${name}...</span>`;
       try {
-        const provider = new firebase.auth.GoogleAuthProvider();
-        provider.setCustomParameters({ prompt: "select_account" });
-        const cred = await firebase.auth().signInWithPopup(provider);
+        const cred = await firebase.auth().signInWithPopup(makeProvider());
         const idToken = await cred.user.getIdToken();
         const res = await api("auth", { method: "POST", body: { id_token: idToken } });
         if (res.token) localStorage.setItem("orchestrator_token", res.token);
-        toast(`Signed in as ${cred.user.email}`);
+        toast(`Signed in as ${cred.user.email || `${name} user`}`);
         document.querySelector(".app")?.classList.remove("session-locked");
         await refreshState();
         route();
       } catch (err) {
-        googleBtn.disabled = false;
-        googleBtn.innerHTML = originalHtml;
-        toast(err.message, true);
-        showSignInGate(err.message);
-      }
-    });
-  }
-
-  const appleBtn = $("#apple-signin-btn");
-  if (appleBtn) {
-    appleBtn.addEventListener("click", async () => {
-      if (!window.firebase?.auth) {
-        toast("Firebase Auth is loading or unavailable", true);
-        return;
-      }
-      syncBackend();
-      appleBtn.disabled = true;
-      const originalHtml = appleBtn.innerHTML;
-      appleBtn.innerHTML = `<span>Signing in with Apple...</span>`;
-      try {
-        const provider = new firebase.auth.OAuthProvider("apple.com");
-        provider.addScope("email");
-        provider.addScope("name");
-        const cred = await firebase.auth().signInWithPopup(provider);
-        const idToken = await cred.user.getIdToken();
-        const res = await api("auth", { method: "POST", body: { id_token: idToken } });
-        if (res.token) localStorage.setItem("orchestrator_token", res.token);
-        toast(`Signed in as ${cred.user.email || "Apple user"}`);
-        document.querySelector(".app")?.classList.remove("session-locked");
-        await refreshState();
-        route();
-      } catch (err) {
-        appleBtn.disabled = false;
-        appleBtn.innerHTML = originalHtml;
-        let msg = err.message;
-        if (err.code === "auth/operation-not-allowed") {
-          msg = "Apple Sign-In is not yet configured in your Firebase Console. Please add your Apple Developer keys in Firebase.";
-        }
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+        if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") return;
+        const msg = explain[err.code] || err.message;
         toast(msg, true);
         showSignInGate(msg);
       }
     });
-  }
+  };
+
+  wireSso("#google-signin-btn", "Google", () => {
+    const p = new firebase.auth.GoogleAuthProvider();
+    p.setCustomParameters({ prompt: "select_account" });
+    return p;
+  });
+  wireSso("#apple-signin-btn", "Apple", () => {
+    const p = new firebase.auth.OAuthProvider("apple.com");
+    p.addScope("email");
+    p.addScope("name");
+    return p;
+  }, { "auth/operation-not-allowed": "Apple Sign-In is not yet configured in your Firebase Console. Please add your Apple Developer keys in Firebase." });
+  wireSso("#github-signin-btn", "GitHub", () => {
+    const p = new firebase.auth.GithubAuthProvider();
+    p.addScope("user:email"); // lets Firebase read your verified primary email, even if it's private on your profile
+    return p;
+  }, {
+    "auth/operation-not-allowed": "GitHub sign-in isn't turned on yet. Enable the GitHub provider in the Firebase console (Authentication → Sign-in method).",
+    "auth/account-exists-with-different-credential": "This email already signs in with another provider (Google or Apple). Use that one instead.",
+  });
 
   const form = $("#signin-form");
   if (form) {
@@ -911,6 +944,19 @@ function setHeader({ title, sub = "", actions = "" }) {
   subEl.hidden = !sub;
   $("#topbar-actions").innerHTML = actions;
   document.title = `${title} · Orchestrator`;
+
+  const topLangsEl = $("#topbar-languages");
+  if (topLangsEl) {
+    const isProjectTitle = (title === state.project?.name || current?.page === "home");
+    if (isProjectTitle && state.project?.languages?.length) {
+      topLangsEl.innerHTML = renderLanguagesBar(state.project.languages, { maxLabels: 3 });
+      topLangsEl.title = state.project.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · ");
+      topLangsEl.hidden = false;
+    } else {
+      topLangsEl.hidden = true;
+      topLangsEl.innerHTML = "";
+    }
+  }
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -2165,6 +2211,7 @@ pages.projects = async () => {
         </div>
       </div>
       <div class="project-card-path" title="${esc(p.root)}">${esc(p.root)}</div>
+      ${renderLanguagesBar(p.languages, { className: "project-card-languages", maxLabels: 4 })}
       <div class="project-card-meta">
         ${p.branch ? `<span class="mono">${esc(p.branch)}</span>` : '<span class="muted">no branch</span>'}
         <span class="sep">·</span>
