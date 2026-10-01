@@ -51,6 +51,12 @@ function getToken() {
   const qt = params.get("token");
   if (qt) {
     localStorage.setItem("orchestrator_token", qt);
+    try {
+      params.delete("token");
+      const newSearch = params.toString() ? `?${params.toString()}` : "";
+      const cleanUrl = `${window.location.pathname}${newSearch}${window.location.hash}`;
+      window.history.replaceState({}, "", cleanUrl);
+    } catch {}
     return qt;
   }
   return localStorage.getItem("orchestrator_token") || "";
@@ -151,69 +157,6 @@ function moreMenu(items, { label = "More", left = false } = {}) {
   return `<details class="more${left ? " left" : ""}"><summary class="btn">${esc(label)} ▾</summary><div class="more-menu">${body}</div></details>`;
 }
 const act = (action, params) => `data-action="${action}"${params ? ` data-params='${attrJSON(params)}'` : ""}`;
-const openMenu = (menu) => act("config_menu", { menu });
-
-function configSubmenusList() {
-  return [
-    ["header", "Models & Instructions"],
-    ["LLM Models", openMenu("models"), "Refresh & discover local CLI and provider models"],
-    ["Manage LLM API Keys", openMenu("keys"), "Configure provider API keys (Gemini, Claude, OpenAI...)"],
-    ["AI Instruction Settings", openMenu("instructions"), "Instruction files (.md) for each AI CLI"],
-    "---",
-    ["header", "Machine Fleet & Project Config"],
-    ["Manage Machine Fleet", openMenu("fleet"), "Remote SSH build workers and environments"],
-    ["Select Base Branch", `data-scroll-to="#cfg-branch"`, "The source of truth for delta calculations"],
-    ["Change Target Project", `data-href="#/projects"`, "Switch active project directory"],
-    ["Manage Archived Jobs", openMenu("archived"), "View and restore archived jobs"],
-    "---",
-    ["header", "Delivery & Notifications"],
-    ["Firebase App Distro", openMenu("firebase"), "Signing, provisioning, and tester releases"],
-    ["Xcode Cloud & CI Workflows", openMenu("xcode"), "ci_scripts hooks and cloud CI checks"],
-    ["Email Notification Settings", openMenu("email"), "Recipients and sender configuration"],
-    "---",
-    ["header", "Setup, Health & Documentation"],
-    ["Setup Wizard (Full Setup)", act("wizard"), "5-step project, AI, and delivery setup wizard"],
-    ["Run Prerequisite Audit", openMenu("audit"), "Environment and fleet dependency health check"],
-    ["Documentation & Architecture Guides", `data-scroll-to="#cfg-docs"`, "Project guides, workflows, and standards"],
-    ["Orchestrator Self-Tests", openMenu("selftests"), "Tooling, smoke, and workflow test menu"],
-    ["Update Orchestrator (Local & Fleet)", openMenu("update"), "Pull latest changes across all machines"],
-    "---",
-    ["Open Full CLI Menu", openMenu("all"), "Launch complete interactive console in terminal"],
-  ];
-}
-
-function openContextMenu(x, y, items) {
-  let menu = $("#context-menu-popover");
-  if (!menu) {
-    menu = document.createElement("div");
-    menu.id = "context-menu-popover";
-    menu.className = "context-menu-popover";
-    document.body.appendChild(menu);
-  }
-  const body = items.map((it) => {
-    if (it === "---") return "<hr>";
-    if (Array.isArray(it) && it[0] === "header") {
-      return `<div class="more-menu-header">${esc(it[1])}</div>`;
-    }
-    return `<button class="btn" ${it[1]}>${esc(it[0])}</button>${it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
-  }).join("");
-  menu.innerHTML = body;
-  menu.hidden = false;
-
-  const rect = menu.getBoundingClientRect();
-  const posX = Math.min(x, window.innerWidth - (rect.width || 280) - 12);
-  const posY = Math.min(y, window.innerHeight - (rect.height || 400) - 12);
-  menu.style.left = `${Math.max(12, posX)}px`;
-  menu.style.top = `${Math.max(12, posY)}px`;
-
-  const close = (e) => {
-    if (!menu.contains(e.target)) {
-      menu.hidden = true;
-      document.removeEventListener("pointerdown", close);
-    }
-  };
-  setTimeout(() => document.addEventListener("pointerdown", close), 20);
-}
 
 // ---------------------------------------------------------------- running actions
 
@@ -587,19 +530,6 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll("details.more[open]").forEach((d) => {
     if (!d.contains(e.target) || e.target.closest(".more-menu .btn")) d.open = false;
   });
-  const popoverBtn = e.target.closest("#context-menu-popover .btn");
-  if (popoverBtn) {
-    const pop = $("#context-menu-popover");
-    if (pop) pop.hidden = true;
-  }
-  const configSubBtn = e.target.closest("#config-submenus-btn");
-  if (configSubBtn) {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = configSubBtn.getBoundingClientRect();
-    openContextMenu(rect.right + 6, rect.top, configSubmenusList());
-    return;
-  }
   const scrollTo = e.target.closest("[data-scroll-to]");
   if (scrollTo) {
     const targetSelector = scrollTo.dataset.scrollTo;
@@ -667,15 +597,21 @@ document.addEventListener("click", (e) => {
   runAction(action, params);
 });
 
-document.addEventListener("contextmenu", (e) => {
-  const configLink = e.target.closest('[data-route="config"], #config-submenus-btn');
-  if (configLink) {
-    e.preventDefault();
-    openContextMenu(e.clientX, e.clientY, configSubmenusList());
-  }
-});
+const configurationTrigger = $("#configuration-menu-trigger");
+const configurationMenu = $("#configuration-context-menu");
+if (configurationTrigger && configurationMenu) {
+  configurationMenu.innerHTML = ConfigurationPages.renderMenu();
+  ConfigurationPages.createMenuController({
+    trigger: configurationTrigger,
+    menu: configurationMenu,
+    document,
+    navigate: (target) => { location.hash = target; },
+  });
+}
 
 // ---------------------------------------------------------------- state & project
+
+let consecutiveAuthFailures = 0;
 
 async function refreshState() {
   const backend = getBackendUrl();
@@ -685,11 +621,28 @@ async function refreshState() {
     return;
   }
   try {
-    state = await api("state");
+    const newState = await api("state");
+    state = newState;
+    consecutiveAuthFailures = 0;
+    if (newState.token) {
+      localStorage.setItem("orchestrator_token", newState.token);
+    }
     document.querySelector(".app")?.classList.remove("session-locked");
   } catch (e) {
-    if (e.status === 401) showSignInGate();
-    else showSignInGate(`Unable to reach Orchestrator on your Mac: ${e.message}`);
+    if (e.status === 401) {
+      consecutiveAuthFailures += 1;
+      // Only lock the session if we don't have an active project loaded,
+      // or if we have experienced multiple consecutive 401 failures to rule out transient blips
+      if (!state.project || consecutiveAuthFailures >= 2) {
+        showSignInGate("Session expired. Please sign in again.");
+      }
+      return;
+    }
+    // Transient network errors, tunnel drops, or 502/504 errors should NEVER lock the user out!
+    console.warn("Background state refresh notice (will retry):", e.message);
+    if (!state.project) {
+      showSignInGate(`Unable to reach Orchestrator on your Mac: ${e.message}`);
+    }
     return;
   }
   const running = state.runs.filter((r) => r.running);
@@ -944,19 +897,6 @@ function setHeader({ title, sub = "", actions = "" }) {
   subEl.hidden = !sub;
   $("#topbar-actions").innerHTML = actions;
   document.title = `${title} · Orchestrator`;
-
-  const topLangsEl = $("#topbar-languages");
-  if (topLangsEl) {
-    const isProjectTitle = (title === state.project?.name || current?.page === "home");
-    if (isProjectTitle && state.project?.languages?.length) {
-      topLangsEl.innerHTML = renderLanguagesBar(state.project.languages, { maxLabels: 3 });
-      topLangsEl.title = state.project.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · ");
-      topLangsEl.hidden = false;
-    } else {
-      topLangsEl.hidden = true;
-      topLangsEl.innerHTML = "";
-    }
-  }
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -1094,8 +1034,12 @@ function statusLine(p) {
   const branchPicker = branches.length
     ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => `<option ${b === p.branch ? "selected" : ""}>${esc(b)}</option>`).join("")}</select>`
     : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
-  return `<span class="status-line">${branchPicker}<span class="sep">·</span>
-    <span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}</span>`;
+  const langs = p.languages?.length
+    ? `<span class="sep">·</span><span class="topbar-languages" title="${esc(p.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · "))}">${renderLanguagesBar(p.languages, { maxLabels: 3 })}</span>`
+    : "";
+  // Row 1: the branch. Row 2: the stats, then the language mix.
+  return `<span class="status-line status-stack"><span class="status-branch">${branchPicker}</span>
+    <span class="status-stats"><span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}${langs}</span></span>`;
 }
 
 // git refuses to switch when uncommitted changes would be overwritten, so offer to set them aside.
@@ -1808,6 +1752,19 @@ pages.job = async ([id]) => {
         ${docs.map((d, i) => `<section class="card" style="margin-bottom: 16px;"><details class="raw" ${i === 0 ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
       </div>
 
+      <!-- Linked from connected apps -->
+      <section class="card" style="margin-bottom: 16px;">
+        <div class="card-h"><h2>Linked tickets, errors &amp; designs</h2><button class="btn small" data-attach-context="${esc(s.id)}">Attach…</button></div>
+        <div class="list">${(job.external_links || []).map((l) => `<div class="item"><div class="main-col"><div class="title">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.ref)} ↗</a>` : esc(l.title || l.ref)}</div>
+          <div class="meta">${esc([PROVIDER_LABEL[l.provider] || l.provider, l.ref, l.detail].filter(Boolean).join(" · "))}</div></div></div>`).join("") || `<div class="empty">Nothing linked. Attach a Jira ticket, Trello card, Sentry issue or Figma design.</div>`}</div>
+      </section>
+
+      ${(job.integration_log || []).length ? `<section class="card" style="margin-bottom: 16px;">
+        <div class="card-h"><h2>Updates sent to linked apps</h2></div>
+        <div class="list">${job.integration_log.slice().reverse().map((e) => `<div class="item"><span aria-label="${e.ok ? "sent" : "failed"}">${e.ok ? "✅" : "⚠️"}</span><div class="main-col">
+          <div class="title">${esc(e.message)}</div><div class="meta">${esc([PROVIDER_LABEL[e.provider] || e.provider, e.ref, String(e.event || "").replace(":", " · ").replace("_", " "), e.t].filter(Boolean).join(" · "))}</div></div></div>`).join("")}</div>
+      </section>` : ""}
+
       <!-- Attached UI Mockups / References -->
       ${job.reference_artifacts?.length ? `
         <section class="card" style="margin-bottom: 16px;">
@@ -1816,7 +1773,7 @@ pages.job = async ([id]) => {
             ${job.reference_artifacts.map((ref) => `
               <div class="item">
                 <div class="main-col">
-                  <div class="title"><a href="${esc(ref.url)}" target="_blank" rel="noopener">${esc(ref.url)} ↗</a></div>
+                  <div class="title">${ref.url ? `<a href="${esc(ref.url)}" target="_blank" rel="noopener">${esc(ref.url)} ↗</a>` : `<span class="mono">${esc(ref.path || ref.type || "reference")}</span>`}</div>
                   ${ref.note ? `<div class="meta">${esc(ref.note)}</div>` : ""}
                 </div>
               </div>
@@ -1877,7 +1834,9 @@ const JOB_TYPE_INFO = [
   ["coverage", "Tests", "Add missing tests"],
 ];
 
-pages.new = async (_, query) => ({
+pages.new = async (_, query) => {
+  const picker = await linkPickerHtml();
+  return {
   title: "New job",
   sub: "Describe the work. It gets planned, then built on a worker. Anything that needs your input shows up as it runs.",
   html: `
@@ -1892,6 +1851,7 @@ pages.new = async (_, query) => ({
       <label class="field"><span>Details <span class="muted">(optional)</span></span>
         <textarea name="spec" placeholder="Steps to reproduce, expected vs actual, acceptance criteria, links…"></textarea>
       </label>
+      ${picker.html}
       <details class="advanced"><summary>Options</summary>
         <div class="stack">
           <label class="field"><span>Where to work</span>
@@ -1908,15 +1868,21 @@ pages.new = async (_, query) => ({
       </details>
       <div class="row"><span class="spacer"></span><button class="btn primary big" type="submit">Create job</button></div>
     </form>`,
-  after: () => $("#new-job").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    runAction("new_job", {
-      type: f.get("type"), summary: f.get("summary"), spec: f.get("spec"), branch_mode: f.get("branch_mode") || "new",
-      no_dispatch: f.has("no_dispatch"), yolo: f.has("yolo"), free: f.has("free"),
+  after: () => {
+    picker.wire();
+    $("#new-job").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      let links = [];
+      try { links = JSON.parse(f.get("links") || "[]"); } catch { /* none */ }
+      runAction("new_job", {
+        type: f.get("type"), summary: f.get("summary"), spec: f.get("spec"), branch_mode: f.get("branch_mode") || "new",
+        no_dispatch: f.has("no_dispatch"), yolo: f.has("yolo"), free: f.has("free"), links,
+      });
     });
-  }),
-});
+  },
+  };
+};
 
 pages.devlogs = async () => {
   setHeader({ title: "Device logs" });
@@ -2028,131 +1994,194 @@ pages.git = async () => {
 };
 
 // ---------------------------------------------------------------- configuration
-// Mirrors the console's "Configuration & Advanced Tools" menu. Simple settings
-// are edited here; menus that are interactive by nature open the console's own
-// screen in a terminal (action "config_menu").
 
-function cfgItem(title, desc, controls, body = "", id = "") {
-  return `<div class="cfg-item"${id ? ` id="${esc(id)}"` : ""}><div class="cfg-head"><div class="main-col"><div class="title">${esc(title)}</div><div class="meta">${esc(desc)}</div></div>
-    <div class="row">${controls}</div></div>${body ? `<div class="cfg-body">${body}</div>` : ""}</div>`;
-}
-const cfgSection = (title, items) => `<section class="card cfg-section"><div class="card-h"><h2>${esc(title)}</h2></div><div class="list">${items.join("")}</div></section>`;
-const termBtn = (label, menu) => `<button class="btn small" ${openMenu(menu)}>${esc(label)}</button>`;
-
-pages.config = async () => {
-  let c;
-  try { c = await api("config"); } catch (err) {
-    if (err.status !== 404) throw err;
-    return { title: "Configuration", html: `<div class="notice">Configuration isn't available yet. It's part of an update that hasn't reached your Orchestrator. Everything else works as usual. Check back soon.</div>` };
+async function runConfigMutation(button, request, successMessage) {
+  if (!button || button.disabled) return false;
+  const section = current?.args?.[0];
+  button.disabled = true;
+  try {
+    await api(`config/${request.part}`, {method: "POST", body: request.body});
+    if (successMessage) toast(successMessage);
+    if (ConfigurationPages.routeMatches(current, section)) await route();
+    return true;
+  } catch (error) {
+    toast(error.message, true);
+    return false;
+  } finally {
+    if (button.isConnected) button.disabled = false;
   }
-  const e = c.email;
-  const keyRows = c.keys.map((k) => `<div class="cfg-row"><span>${esc(k.label)}</span>
-      <span class="row">${k.saved ? pill("done", "Saved") : k.env ? pill("working", "From environment") : pill("", "Not set")}
-      <button class="btn small" data-cfg="key-set" data-id="${esc(k.id)}" data-label="${esc(k.label)}">${k.saved ? "Replace" : "Set"}</button>
-      ${k.saved ? `<button class="btn small danger" data-cfg="key-clear" data-id="${esc(k.id)}" data-label="${esc(k.label)}">Clear</button>` : ""}</span></div>`).join("");
-  const instrRows = c.instructions.map((i) => `<div class="cfg-row"><span>${esc(i.cli)} <span class="mono muted">${esc(i.file)}</span></span>${i.exists ? pill("done", "Present") : pill("attention", "Missing")}</div>`).join("");
-  const fleetRows = c.machines.map((m) => `<div class="cfg-row"><span><strong>${esc(m.name)}</strong> <span class="muted">${esc([m.mode, (m.roles || []).join(", "), `${m.models} models`].filter(Boolean).join(" · "))}</span></span>
-      <span class="row">${m.xcode ? pill("", "Xcode") : ""}${m.simulator ? pill("", "Simulator") : ""}</span></div>`).join("") || `<div class="empty">No machines configured.</div>`;
-  const archivedRows = c.archived.map((j) => `<div class="cfg-row"><span><span class="mono">${esc(j.job_id)}</span> ${esc(j.title)} <span class="muted">${esc(j.status)}</span></span>
-      ${j.corrupt ? pill("failed", "Corrupt") : `<button class="btn small" data-cfg="restore" data-id="${esc(j.id)}">Restore</button>`}</div>`).join("") || `<div class="empty">No archived jobs.</div>`;
-  const recipients = e.recipients.map((r) => `<div class="cfg-row"><span class="mono">${esc(r)}</span><button class="btn small danger" data-cfg="email-remove" data-email="${esc(r)}">Remove</button></div>`).join("") || `<div class="empty">No recipients yet.</div>`;
-  const sender = e.provider === "resend" ? `${e.resend_from_email || "NOT SET"} (via Resend)` : `${e.smtp_email || "NOT CONFIGURED"} (via Gmail)`;
-  const docRows = ["Orchestrator docs", "Project docs"].map((sec) => {
-    const docs = c.docs.filter((d) => d.section === sec);
-    return docs.length ? `<div class="muted cfg-sub">${esc(sec)}</div>${docs.map((d) => `<div class="cfg-row"><span>${esc(d.name)}</span><button class="btn small" data-cfg="doc" data-id="${esc(d.id)}">Read</button></div>`).join("")}` : "";
-  }).join("");
+}
+
+function showConfigMutationDialog(title, bodyHtml, okLabel, buildRequest, successMessage) {
+  const dlg = $("#dialog");
+  const form = $("#dialog-form");
+  const ok = $("#dialog-ok");
+  $("#dialog-cancel").hidden = false;
+  $("#dialog-title").textContent = title;
+  $("#dialog-body").innerHTML = bodyHtml;
+  ok.textContent = okLabel;
+  dlg.returnValue = "";
+  dlg.showModal();
+  $("#dialog-body input, #dialog-body select")?.focus();
+
+  const onSubmit = async (event) => {
+    if (event.submitter !== ok) return;
+    event.preventDefault();
+    const request = buildRequest(Object.fromEntries(new FormData(form).entries()));
+    const saved = await runConfigMutation(ok, request, successMessage);
+    if (saved && dlg.open) dlg.close("ok");
+  };
+  form.addEventListener("submit", onSubmit);
+  dlg.addEventListener("close", () => form.removeEventListener("submit", onSubmit), {once: true});
+}
+
+pages.config = async (args = []) => {
+  const section = args[0];
+  let config;
+  try {
+    config = await api("config");
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    return {
+      title: "Configuration",
+      sub: "",
+      html: `<div class="notice">Configuration isn't available yet. Update Orchestrator to use these settings.</div>`,
+    };
+  }
+  if (!ConfigurationPages.routeMatches(current, section)) {
+    return {title: "Configuration", sub: "", html: ""};
+  }
+  const result = ConfigurationPages.render(section, config);
+  if (section === "base-branch") {
+    return {
+      ...result,
+      after: () => {
+        const form = $("#config-base-branch-form");
+        const onSubmit = async (event) => {
+          event.preventDefault();
+          const button = event.submitter || form.querySelector('button[type="submit"]');
+          const branch = new FormData(form).get("branch");
+          await runConfigMutation(button, {part: "base-branch", body: {branch}}, "Base branch saved");
+        };
+        form?.addEventListener("submit", onSubmit);
+        cleanup.push(() => form?.removeEventListener("submit", onSubmit));
+      },
+    };
+  }
+  if (section === "archived-jobs") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest('[data-config-action="archive-restore"]');
+          if (!button || button.disabled) return;
+          await runConfigMutation(
+            button,
+            {part: "archived-restore", body: {id: button.dataset.id}},
+            "Job restored",
+          );
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "email") {
+    const email = config.email || {};
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button || button.disabled) return;
+          const action = button.dataset.configAction;
+          if (action === "email-add") {
+            showConfigMutationDialog(
+              "Add recipient",
+              `<label class="field"><span>Email address</span><input type="email" name="email" required autocapitalize="off"></label>`,
+              "Add",
+              (values) => ({part: "email", body: {op: "add", email: values.email}}),
+              "Recipient added",
+            );
+          } else if (action === "email-remove") {
+            await runConfigMutation(
+              button,
+              {part: "email", body: {op: "remove", email: button.dataset.email}},
+              "Recipient removed",
+            );
+          } else if (action === "email-sender") {
+            showConfigMutationDialog(
+              "Configure email sender",
+              `<label class="field"><span>Provider</span><select name="provider">${(email.providers || []).map((provider) => `<option value="${esc(provider)}"${provider === email.provider ? " selected" : ""}>${esc(provider === "gmail" ? "Gmail" : "Resend")}</option>`).join("")}</select></label>
+               <small class="hint-text">Leave a secret field blank to keep its saved value.</small>
+               <label class="field"><span>Gmail address</span><input type="email" name="smtp_email" value="${esc(email.smtp_email || "")}"></label>
+               <label class="field"><span>Gmail app password</span><input type="password" name="smtp_password" autocomplete="off" placeholder="${email.smtp_password_set ? "Saved — leave blank to keep" : "Not set"}"></label>
+               <label class="field"><span>Resend API key</span><input type="password" name="resend_api_key" autocomplete="off" placeholder="${email.resend_api_key_set ? "Saved — leave blank to keep" : "Not set"}"></label>
+               <label class="field"><span>Resend from email</span><input type="email" name="resend_from_email" value="${esc(email.resend_from_email || "")}"></label>
+               <label class="field"><span>Display name</span><input type="text" name="resend_display_name" value="${esc(email.resend_display_name || "")}"></label>`,
+              "Save",
+              (values) => ({part: "email", body: {op: "provider", ...values}}),
+              "Email sender saved",
+            );
+          } else if (action === "email-test") {
+            await runAction("test_email");
+          }
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "documentation") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest('[data-config-action="document-read"]');
+          if (!button || button.disabled) return;
+          button.disabled = true;
+          try {
+            const documentData = await api(`config/doc?id=${encodeURIComponent(button.dataset.id)}`);
+            const closed = formDialog(documentData.name, `<pre class="doc-text">${esc(documentData.text)}</pre>`, "Close");
+            $("#dialog-cancel").hidden = true;
+            await closed;
+          } catch (error) {
+            toast(error.message, true);
+          } finally {
+            if (button.isConnected) button.disabled = false;
+          }
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section !== "api-keys") return result;
 
   return {
-    title: "Configuration",
-    sub: "Models, keys, fleet, delivery, setup and health",
-    actions: `<button class="btn" data-setup-open>Setup checklist</button>${moreMenu(configSubmenusList(), { label: "Configuration Menu" })}`,
-    html: [
-      `<div class="cfg-submenus-bar">
-        <span class="submenus-bar-label">Submenus:</span>
-        <button class="submenus-chip" data-scroll-to="#cfg-models">Models</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-keys">API Keys</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-instructions">Instructions</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-fleet">Fleet</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-branch">Base Branch</button>
-        <button class="submenus-chip" data-href="#/projects">Projects</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-archived">Archived</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-firebase">Firebase</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-xcode">Xcode Cloud</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-email">Email</button>
-        <button class="submenus-chip" ${act("wizard")}>Wizard</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-audit">Audit</button>
-        <button class="submenus-chip" data-scroll-to="#cfg-docs">Docs</button>
-        <button class="submenus-chip" ${openMenu("selftests")}>Self-Tests</button>
-        <button class="submenus-chip" ${openMenu("update")}>Update</button>
-      </div>`,
-      cfgSection("Models & Instructions", [
-        cfgItem("LLM models", "Refresh the models available from local CLIs and provider keys", termBtn("Refresh models", "models"), "", "cfg-models"),
-        cfgItem("LLM API keys", "Keys are stored in this project's settings and never shown again", termBtn("CLI logins", "keys"), keyRows, "cfg-keys"),
-        cfgItem("AI instruction files", "Each AI CLI's .md file should point back to the shared project docs", termBtn("Create / fix", "instructions"), instrRows, "cfg-instructions"),
-      ]),
-      cfgSection("Machine Fleet & Project Config", [
-        cfgItem("Machine fleet", "Machines jobs can run on", termBtn("Manage fleet", "fleet"), fleetRows, "cfg-fleet"),
-        cfgItem("Base branch", "The source of truth for delta calculations",
-          `<form class="row" id="base-branch-form"><select name="branch" aria-label="Base branch">${c.branches.map((b) => `<option ${b === c.base_branch ? "selected" : ""}>${esc(b)}</option>`).join("")}</select><button class="btn small">Save</button></form>`, "", "cfg-branch"),
-        cfgItem("Target project", "Switch which project the orchestrator works on", `<a class="btn small" href="#/projects">Open Projects</a>`, "", "cfg-projects"),
-        cfgItem("Archived jobs", `${c.archived.length} archived`, "", archivedRows, "cfg-archived"),
-      ]),
-      cfgSection("Delivery & Notifications", [
-        cfgItem("Firebase App Distribution", "CLI, login, project and app checks for delivering builds", termBtn("Open", "firebase"), "", "cfg-firebase"),
-        cfgItem("Xcode Cloud & CI workflows", "Generate and review ci_scripts hooks", termBtn("Open", "xcode"), "", "cfg-xcode"),
-        cfgItem("Email notifications", `Sender: ${sender}`,
-          `<button class="btn small" data-cfg="email-add">Add recipient</button><button class="btn small" data-cfg="email-sender">Configure sender</button>${e.recipients.length ? `<button class="btn small" ${act("test_email")}>Send test email</button>` : ""}`, recipients, "cfg-email"),
-      ]),
-      cfgSection("Setup, Health & Documentation", [
-        cfgItem("Setup wizard", "Full project and tools setup", `<button class="btn small" ${act("wizard")}>Run wizard</button>`, "", "cfg-wizard"),
-        cfgItem("Prerequisite audit", "Local environment check plus the fleet dependency matrix", termBtn("Run audit", "audit"), "", "cfg-audit"),
-        cfgItem("Documentation & architecture guides", "New here? Start with Getting Started", "", docRows, "cfg-docs"),
-        cfgItem("Orchestrator self-tests", "Tooling, smoke and unit test menu", termBtn("Open", "selftests"), "", "cfg-selftests"),
-        cfgItem("Update orchestrator", "Pull updates locally and across the fleet", termBtn("Check for updates", "update"), "", "cfg-update"),
-      ]),
-    ].join(""),
+    ...result,
     after: () => {
-      const reload = () => route();
-      const post = async (part, body, ok) => {
-        try { await api(`config/${part}`, { method: "POST", body }); if (ok) toast(ok); reload(); } catch (err) { toast(err.message, true); }
-      };
-      $("#base-branch-form").addEventListener("submit", (ev) => {
-        ev.preventDefault();
-        post("base-branch", { branch: new FormData(ev.target).get("branch") }, "Base branch saved");
-      });
-      const onClick = async (ev) => {
-        const b = ev.target.closest("[data-cfg]");
-        if (!b) return;
-        const { cfg, id, label, email } = b.dataset;
-        if (cfg === "key-set") {
+      const onClick = async (event) => {
+        const button = event.target.closest("[data-config-action]");
+        if (!button || button.disabled) return;
+        const {configAction, id, label} = button.dataset;
+        if (configAction === "key-set") {
           const isOllama = id === "ollama_api_key";
-          const v = await formDialog(`${label} key`, `<label class="field"><span>API key</span><input type="password" name="value" required autocomplete="off"></label>
-            ${isOllama ? `<label class="field"><span>Host URL (optional)</span><input type="text" name="host" placeholder="https://my-ollama:11434"></label>` : ""}`, "Save");
-          if (v) post("keys", { id, ...v }, "Key saved");
-        } else if (cfg === "key-clear") {
-          if (await formDialog(`Clear ${label} key?`, `<p>This removes the saved key from this project's settings.</p>`, "Clear")) post("keys", { id, clear: true }, "Key cleared");
-        } else if (cfg === "restore") {
-          post("archived-restore", { id }, "Job restored");
-        } else if (cfg === "email-add") {
-          const v = await formDialog("Add recipient", `<label class="field"><span>Email address</span><input type="email" name="email" required autocapitalize="off"></label>`, "Add");
-          if (v) post("email", { op: "add", email: v.email }, "Recipient added");
-        } else if (cfg === "email-remove") {
-          post("email", { op: "remove", email }, "Recipient removed");
-        } else if (cfg === "email-sender") {
-          const v = await formDialog("Configure email sender", `
-            <label class="field"><span>Provider</span><select name="provider">${e.providers.map((p) => `<option ${p === e.provider ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>
-            <small class="hint-text">Blank fields keep what's saved.</small>
-            <label class="field"><span>Gmail address</span><input type="text" name="smtp_email" placeholder="${esc(e.smtp_email)}"></label>
-            <label class="field"><span>Gmail app password</span><input type="password" name="smtp_password" autocomplete="off" placeholder="${e.smtp_password_set ? "saved" : ""}"></label>
-            <label class="field"><span>Resend API key</span><input type="password" name="resend_api_key" autocomplete="off" placeholder="${e.resend_api_key_set ? "saved" : ""}"></label>
-            <label class="field"><span>Resend from email</span><input type="text" name="resend_from_email" placeholder="${esc(e.resend_from_email)}"></label>
-            <label class="field"><span>Display name</span><input type="text" name="resend_display_name" placeholder="${esc(e.resend_display_name)}"></label>`, "Save");
-          if (v) post("email", { op: "provider", ...v }, "Email sender saved");
-        } else if (cfg === "doc") {
-          try {
-            const d = await api(`config/doc?id=${encodeURIComponent(id)}`);
-            await formDialog(d.name, `<pre class="doc-text">${esc(d.text)}</pre>`, "Close");
-          } catch (err) { toast(err.message, true); }
+          showConfigMutationDialog(
+            `${label} key`,
+            `<label class="field"><span>API key</span><input type="password" name="value" required autocomplete="off"></label>
+             ${isOllama ? `<label class="field"><span>Host URL (optional)</span><input type="url" name="host" value="${esc(config.ollama_host || "")}" placeholder="https://my-ollama:11434"></label>` : ""}`,
+            "Save",
+            (values) => ({part: "keys", body: {id, ...values}}),
+            "Key saved",
+          );
+        } else if (configAction === "key-clear") {
+          const confirmed = await formDialog(
+            `Clear ${label} key?`,
+            `<p>This removes the saved key from this project's settings.</p>`,
+            "Clear",
+          );
+          if (confirmed) await runConfigMutation(button, {part: "keys", body: {id, clear: true}}, "Key cleared");
         }
       };
       view.addEventListener("click", onClick);
@@ -2160,6 +2189,141 @@ pages.config = async () => {
     },
   };
 };
+
+// ---------------------------------------------------------------- connections (Jira, Trello, Sentry, Figma)
+
+const PROVIDER_LABEL = { jira: "Jira", trello: "Trello", sentry: "Sentry", figma: "Figma" };
+const PROVIDER_HINT = {
+  jira: "Search tickets, or paste a key like ABC-123 or a link",
+  trello: "Search cards, or paste a card link",
+  sentry: "Search issues, or paste an issue link",
+  figma: "Paste a link to a file or frame (right-click a frame → Copy link)",
+};
+
+pages.connections = async () => {
+  let list;
+  try { list = (await api("integrations")).integrations; } catch (err) {
+    if (err.status !== 404) throw err;
+    return { title: "Connections", html: `<div class="notice">Connections aren't available yet. They're part of an update that hasn't reached your Orchestrator. Everything else works as usual. Check back soon.</div>` };
+  }
+  return {
+    title: "Connections",
+    sub: "Link jobs to tickets, errors and designs",
+    html: `<div class="conn-grid">${list.map((p) => `
+      <section class="card conn-card" data-conn="${esc(p.id)}">
+        <div class="card-b stack">
+          <div class="row"><strong class="conn-name">${esc(p.name)}</strong>${p.connected ? pill("done", "Connected") : pill("", "Not connected")}</div>
+          <div class="muted">${esc(p.blurb)}</div>
+          ${p.connected && p.summary ? `<div class="mono conn-summary">${esc(p.summary)}</div>` : ""}
+          ${p.connected && p.can_write ? `<div class="conn-options stack" data-conn-options="${esc(p.id)}">
+            <div class="muted conn-options-h">Keep it updated</div>
+            <label class="check"><input type="checkbox" data-opt="comment_pr" ${p.options.comment_pr ? "checked" : ""}><span>Comment when a pull request opens</span></label>
+            <label class="check"><input type="checkbox" data-opt="comment_merge" ${p.options.comment_merge ? "checked" : ""}><span>Comment when it's merged</span></label>
+            <label class="check"><input type="checkbox" data-opt="move_on_merge" ${p.options.move_on_merge ? "checked" : ""}><span>${esc(p.move_label)}</span></label>
+            ${p.move_default ? `<input type="text" data-opt="target" value="${esc(p.options.target)}" placeholder="${esc(p.move_default)}" aria-label="Target" ${p.options.move_on_merge ? "" : "disabled"}>` : ""}
+          </div>` : ""}
+          <div class="row">
+            <button class="btn small ${p.connected ? "" : "primary"}" data-conn-connect="${esc(p.id)}">${p.connected ? "Update" : "Connect"}</button>
+            ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
+          </div>
+        </div></section>`).join("")}</div>
+      <p class="muted" style="margin-top:12px">Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>`,
+    after: () => {
+      const onClick = async (ev) => {
+        const connect = ev.target.closest("[data-conn-connect]"), disc = ev.target.closest("[data-conn-disconnect]");
+        if (disc) {
+          const p = list.find((x) => x.id === disc.dataset.connDisconnect);
+          if (!(await formDialog(`Disconnect ${p.name}?`, `<p>Saved credentials are removed. Jobs already linked keep their links.</p>`, "Disconnect"))) return;
+          try { await api(`integrations/${p.id}/disconnect`, { method: "POST", body: {} }); toast(`${p.name} disconnected`); route(); } catch (e) { toast(e.message, true); }
+        } else if (connect) {
+          const p = list.find((x) => x.id === connect.dataset.connConnect);
+          const v = await formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, p.fields.map((f) => `
+            <label class="field"><span>${esc(f.label)}</span>
+              <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"
+                placeholder="${esc(p.connected && f.secret ? "saved: leave blank to keep" : f.placeholder)}">
+              <small class="hint-text">${esc(f.help)}</small></label>`).join(""), p.connected ? "Save" : "Connect");
+          if (!v) return;
+          const btn = connect; btn.disabled = true; btn.textContent = "Checking…";
+          try { const r = await api(`integrations/${p.id}/connect`, { method: "POST", body: { values: v } }); toast(`${p.name} connected${r.who ? ` as ${r.who}` : ""}`); route(); }
+          catch (e) { btn.disabled = false; btn.textContent = p.connected ? "Update" : "Connect"; toast(e.message, true); }
+        }
+      };
+      const onChange = async (ev) => {
+        const box = ev.target.closest("[data-conn-options]");
+        if (!box || !ev.target.dataset.opt) return;
+        const options = {};
+        box.querySelectorAll("[data-opt]").forEach((el) => { options[el.dataset.opt] = el.type === "checkbox" ? el.checked : el.value; });
+        const target = box.querySelector('[data-opt="target"]');
+        if (target) target.disabled = !options.move_on_merge;
+        try { await api(`integrations/${box.dataset.connOptions}/options`, { method: "POST", body: { options } }); toast("Saved"); }
+        catch (e) { toast(e.message, true); }
+      };
+      view.addEventListener("click", onClick);
+      view.addEventListener("change", onChange);
+      cleanup.push(() => { view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); });
+    },
+  };
+};
+
+// A small picker for linking items from connected apps. Keeps its picks in a hidden input
+// named "links" (JSON), so it works inside forms and dialogs alike.
+async function linkPickerHtml() {
+  let providers = [];
+  try { providers = (await api("integrations")).integrations.filter((p) => p.connected); } catch { /* older server */ }
+  if (!providers.length) {
+    return { html: `<div class="muted link-picker-empty">Link a Jira ticket, Trello card, Sentry issue or Figma design: <a href="#/connections">connect an app</a>.</div>`, wire: () => {} };
+  }
+  const html = `<div class="link-picker field"><span>Link from your apps <span class="muted">(optional)</span></span>
+    <div class="row"><select class="lp-provider" aria-label="App">${providers.map((p) => `<option value="${esc(p.id)}" data-search="${p.searchable}">${esc(p.name)}</option>`).join("")}</select>
+      <input type="text" class="lp-input" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;min-width:160px"><button type="button" class="btn small lp-add">Add</button></div>
+    <small class="hint-text lp-hint"></small>
+    <div class="lp-results list"></div><div class="lp-chips row"></div><input type="hidden" name="links" value="[]"></div>`;
+  const wire = (root) => {
+    const sel = root.querySelector(".lp-provider"), input = root.querySelector(".lp-input"), results = root.querySelector(".lp-results");
+    const chips = root.querySelector(".lp-chips"), hidden = root.querySelector('input[name="links"]'), hint = root.querySelector(".lp-hint");
+    let picked = [], timer;
+    const sync = () => {
+      hidden.value = JSON.stringify(picked.map(({ provider, ref }) => ({ provider, ref })));
+      chips.innerHTML = picked.map((p, i) => `<span class="chip">${esc(PROVIDER_LABEL[p.provider])} · ${esc(p.title || p.ref)}<button type="button" data-lp-remove="${i}" aria-label="Remove">✕</button></span>`).join("");
+    };
+    const add = (item) => { if (!picked.some((p) => p.provider === item.provider && p.ref === item.ref)) picked.push(item); sync(); input.value = ""; results.innerHTML = ""; };
+    const search = async () => {
+      const p = sel.value, canSearch = sel.selectedOptions[0].dataset.search === "true", q = input.value.trim();
+      if (!canSearch || (q && /^https?:\/\//.test(q))) { results.innerHTML = ""; return; }
+      results.innerHTML = `<div class="empty">Searching…</div>`;
+      try {
+        const { items } = await api(`integrations/${p}/search?q=${encodeURIComponent(q)}`);
+        if (sel.value !== p) return;
+        results.innerHTML = items.length ? items.map((it, i) => `<button type="button" class="item lp-result" data-i="${i}"><div class="main-col"><div class="title">${esc(it.title)}</div><div class="meta">${esc([it.ref, it.detail].filter(Boolean).join(" · "))}</div></div></button>`).join("") : `<div class="empty">No matches.</div>`;
+        results.onclick = (e) => { const b = e.target.closest(".lp-result"); if (b) add(items[Number(b.dataset.i)]); };
+      } catch (e) { results.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+    };
+    const refreshHint = () => { hint.textContent = PROVIDER_HINT[sel.value] || ""; input.placeholder = sel.selectedOptions[0].dataset.search === "true" ? "Search or paste" : "Paste a link"; results.innerHTML = ""; if (sel.selectedOptions[0].dataset.search === "true") search(); };
+    sel.addEventListener("change", refreshHint);
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); root.querySelector(".lp-add").click(); } });
+    root.querySelector(".lp-add").addEventListener("click", () => { const ref = input.value.trim(); if (ref) add({ provider: sel.value, ref, title: ref }); });
+    chips.addEventListener("click", (e) => { const b = e.target.closest("[data-lp-remove]"); if (b) { picked.splice(Number(b.dataset.lpRemove), 1); sync(); } });
+    refreshHint();
+  };
+  return { html, wire: () => document.querySelectorAll(".link-picker").forEach((r) => { if (!r.dataset.wired) { r.dataset.wired = "1"; wire(r); } }) };
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-attach-context]");
+  if (b) attachToJob(b.dataset.attachContext);
+});
+
+async function attachToJob(jobId) {
+  const picker = await linkPickerHtml();
+  const dlgPromise = formDialog("Attach context", picker.html + `<small class="hint-text">The ticket, error or design is added to this job's references so the AI sees it on its next step.</small>`, "Attach");
+  picker.wire();
+  const v = await dlgPromise;
+  const links = v ? JSON.parse(v.links || "[]") : [];
+  if (!links.length) return;
+  try { await api(`jobs/${encodeURIComponent(jobId)}/links`, { method: "POST", body: { links } }); toast("Context attached"); route(); }
+  catch (e) { toast(e.message, true); }
+}
 
 pages.activity = async () => {
   const running = state.runs.filter((r) => r.running);
@@ -2428,6 +2592,10 @@ function resolveRoute() {
   if (parts[0] === "runs") return { page: "activity", args: [], nav: "activity", query };
   if (parts[0] === "file") return { page: "file", args: [], nav: null, query };
   if (parts[0] === "jobs") return { page: "home", args: [], nav: "home", query }; // Jobs list lives on Home
+  if (parts[0] === "config") {
+    const section = ConfigurationPages.resolve(parts[1]);
+    return { page: "config", args: section ? [section.id] : [], nav: "config", query };
+  }
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
 }
@@ -2451,7 +2619,7 @@ async function route() {
 
   const r = resolveRoute();
   current = { page: r.page, args: r.args, query: r.query, rendered: "" };
-  document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === r.nav));
+  document.querySelectorAll(".nav [data-route]").forEach((item) => item.classList.toggle("active", item.dataset.route === r.nav));
   renderSetupFab();
   const floatingBtn = $("#floating-new-btn");
   if (floatingBtn) floatingBtn.hidden = (r.page === "new");

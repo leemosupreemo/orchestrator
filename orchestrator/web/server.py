@@ -48,6 +48,7 @@ from urllib.parse import parse_qs, urlparse
 import urllib.error
 import urllib.request
 
+from orchestrator import integrations
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
@@ -364,30 +365,34 @@ def verify_firebase_id_token(id_token: str) -> dict[str, Any]:
         raise UIError(f"Authentication failed: {exc}", HTTPStatus.UNAUTHORIZED)
 
 
-def allowed_auth_emails(root: Path) -> set[str]:
-    emails = set()
-    git_email = git(root, "config", "user.email").strip().lower()
-    if git_email:
-        emails.add(git_email)
+def allowed_auth_sources(root: Path) -> dict[str, str]:
+    """Emails allowed to sign in, each with where it came from."""
+    found: dict[str, str] = {}
+
+    def add(email: Any, source: str) -> None:
+        email = str(email or "").strip().lower()
+        if email:
+            found.setdefault(email, source)
+
+    git_email = git(root, "config", "user.email")
     if not git_email:
         try:
-            global_email = subprocess.run(
-                ["git", "config", "--global", "user.email"],
-                capture_output=True, text=True, timeout=3
-            ).stdout.strip().lower()
-            if global_email:
-                emails.add(global_email)
+            git_email = subprocess.run(["git", "config", "--global", "user.email"],
+                                       capture_output=True, text=True, timeout=3).stdout
         except Exception:
-            pass
-    env_emails = os.environ.get("ORCHESTRATOR_ALLOWED_EMAILS", "")
-    for e in env_emails.split(","):
-        if e.strip():
-            emails.add(e.strip().lower())
-    config = read_json_file(runtime_dir(root) / "project.json")
-    for e in config.get("allowed_emails", []):
-        if str(e).strip():
-            emails.add(str(e).strip().lower())
-    return emails
+            git_email = ""
+    add(git_email, "git")
+    for e in os.environ.get("ORCHESTRATOR_ALLOWED_EMAILS", "").split(","):
+        add(e, "environment")
+    for e in read_json_file(runtime_dir(root) / "project.json").get("allowed_emails", []):
+        add(e, "project")
+    for e in read_settings(root).get("allowed_emails", []):
+        add(e, "settings")
+    return found
+
+
+def allowed_auth_emails(root: Path) -> set[str]:
+    return set(allowed_auth_sources(root))
 
 
 KIND_LABELS = {
@@ -1124,6 +1129,10 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     summary = _text(params, "summary", required=True, limit=500)
     argv = orchestrator_argv("script", "new_job.py", job_type, "--summary", summary)
     spec = _text(params, "spec", limit=200_000)
+    block, linked = context_for_new_job(root, _clean_links(params.get("links")))
+    params["_linked"] = linked  # picked up by _start_run to record the links on the created job
+    if block:
+        spec = (spec or summary) + block
     if spec:
         spec_dir = runtime_dir(root) / "ui" / "specs"
         spec_dir.mkdir(parents=True, exist_ok=True)
@@ -1326,6 +1335,7 @@ def config_state(root: Path) -> dict[str, Any]:
                       "models": len(m.get("models", [])), "priority": m.get("priority"),
                       "xcode": bool(m.get("supports_xcode")), "simulator": bool(m.get("supports_simulator"))}
                      for m in machines_raw if isinstance(m, dict)],
+        "allowed_emails": [{"email": e, "source": src} for e, src in allowed_auth_sources(root).items()],
         "menus": CONFIG_MENUS,
     }
 
@@ -1374,6 +1384,17 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
                     settings[key] = value
         else:
             raise UIError("Unknown email operation")
+    elif part == "allowed-email":
+        op = _choice(body, "op", ["add", "remove"])
+        address = _text(body, "email", required=True, limit=254).lower()
+        if not EMAIL_RE.match(address):
+            raise UIError(f"Invalid email format '{address}'")
+        emails = [e for e in settings.get("allowed_emails", []) if str(e).lower() != address]
+        if op == "add":
+            emails.append(address)
+        elif address not in {str(e).lower() for e in settings.get("allowed_emails", [])}:
+            raise UIError("Only emails added here can be removed here. Others come from git, the environment or project.json.")
+        settings["allowed_emails"] = emails
     elif part == "setup-seen":
         settings["setup_seen"] = True
     elif part == "archived-restore":
@@ -1405,6 +1426,128 @@ def build_test_email(params: dict[str, Any], root: Path) -> list[str]:
                              f"This is a test message from the Orchestrator web UI using {provider}.", "test-job-id")
 
 
+# --------------------------------------------------------------------------- connections (Jira, Trello, Sentry, Figma)
+
+
+def saved_integrations(root: Path) -> dict[str, dict[str, str]]:
+    data = read_settings(root).get("integrations")
+    return data if isinstance(data, dict) else {}
+
+
+def integration_error(exc: "integrations.IntegrationError") -> UIError:
+    return UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+
+
+def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    saved = saved_integrations(root)
+    try:
+        creds, who = integrations.connect(provider_id, {k: str(v) for k, v in values.items()}, saved.get(provider_id))
+    except integrations.IntegrationError as exc:
+        raise integration_error(exc)
+    settings = read_settings(root)
+    settings.setdefault("integrations", {})[provider_id] = creds
+    write_settings(root, settings)
+    return {"ok": True, "who": who}
+
+
+def save_integration_options(root: Path, provider_id: str, raw: Any) -> dict[str, Any]:
+    cls = integrations.PROVIDERS.get(provider_id)
+    if not cls or not cls.can_write:
+        raise UIError("That app has no write-back options")
+    if not isinstance(raw, dict):
+        raise UIError("Invalid options")
+    options = integrations.writeback_options(raw)
+    settings = read_settings(root)
+    settings.setdefault("integration_options", {})[provider_id] = options
+    write_settings(root, settings)
+    return options
+
+
+def disconnect_integration(root: Path, provider_id: str) -> None:
+    if provider_id not in integrations.PROVIDERS:
+        raise UIError("Unknown connection")
+    settings = read_settings(root)
+    (settings.get("integrations") or {}).pop(provider_id, None)
+    write_settings(root, settings)
+
+
+def search_integration(root: Path, provider_id: str, query: str) -> list[dict[str, str]]:
+    saved = saved_integrations(root)
+    if provider_id not in integrations.PROVIDERS or provider_id not in saved:
+        raise UIError("That app isn't connected", HTTPStatus.NOT_FOUND)
+    try:
+        return [i.as_dict() for i in integrations.provider_for(provider_id, saved[provider_id]).search(query[:200])]
+    except integrations.IntegrationError as exc:
+        raise integration_error(exc)
+
+
+def _clean_links(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    links = [{"provider": str(l.get("provider", "")), "ref": str(l.get("ref", "")).strip()[:500]}
+             for l in raw if isinstance(l, dict) and str(l.get("ref", "")).strip()]
+    if len(links) > 8:
+        raise UIError("Link at most 8 items to one job.")
+    return links
+
+
+def _save_image(root: Path, subdir: Path, ctx: "integrations.Context") -> str | None:
+    if not ctx.image or not ctx.image_name:
+        return None
+    subdir.mkdir(parents=True, exist_ok=True)
+    target = subdir / ctx.image_name
+    target.write_bytes(ctx.image)
+    return str(target.relative_to(root))
+
+
+def context_for_new_job(root: Path, links: list[dict[str, str]]) -> tuple[str, list[dict[str, str]]]:
+    """Markdown to append to a new job's spec, plus the items to record on the job afterwards."""
+    if not links:
+        return "", []
+    try:
+        contexts = integrations.build_context(links, saved_integrations(root))
+    except integrations.IntegrationError as exc:
+        raise integration_error(exc)
+    stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    extra = []
+    for ctx in contexts:
+        rel = _save_image(root, runtime_dir(root) / "ui" / "context" / stamp, ctx)
+        if rel:
+            extra.append(f"Reference image for {ctx.item.title}: `{rel}`")
+    return integrations.spec_block(contexts) + ("\n" + "\n".join(extra) + "\n" if extra else ""), [c.item.as_dict() for c in contexts]
+
+
+def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Add connected-app context to an existing job: written under its references, and recorded on it."""
+    path = resolve_job_path(root, job_id)
+    try:
+        contexts = integrations.build_context(links, saved_integrations(root))
+    except integrations.IntegrationError as exc:
+        raise integration_error(exc)
+    job = read_json_file(path)
+    refs_dir = runtime_dir(root) / "output" / job_id / "references"
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = list(job.get("reference_artifacts") or [])
+    existing = list(job.get("external_links") or [])
+    for ctx in contexts:
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{ctx.item.provider}-{ctx.item.ref}").strip("-")[:80]
+        md = refs_dir / f"{slug}.md"
+        md.write_text(ctx.markdown + "\n", encoding="utf-8")
+        artifacts.append({"type": "text_reference", "note": f"{ctx.item.provider}: {ctx.item.title}",
+                          "url": ctx.item.url, "path": str(md.relative_to(root))})
+        img = _save_image(root, refs_dir, ctx)
+        if img:
+            artifacts.append({"type": "image_reference", "note": f"Figma render: {ctx.item.title}", "path": img})
+        existing = [e for e in existing if not (e.get("provider") == ctx.item.provider and e.get("ref") == ctx.item.ref)]
+        existing.append(ctx.item.as_dict())
+    job["reference_artifacts"] = artifacts
+    job["external_links"] = existing
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return existing
+
+
 def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
     return lambda params, root: orchestrator_argv("script", "manual_run.py", mode)
 
@@ -1415,7 +1558,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free", "links"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
@@ -1452,6 +1595,29 @@ ACTIONS: dict[str, Action] = {
 # --------------------------------------------------------------------------- HTTP
 
 
+def get_or_create_ui_token(supplied: str | None = None) -> str:
+    """Return the supplied token or read/persist a stable token in ~/.orchestrator/ui_token."""
+    token_file = Path.home() / ".orchestrator" / "ui_token"
+    if supplied and supplied.strip():
+        token = supplied.strip()
+    else:
+        if token_file.is_file():
+            try:
+                existing = token_file.read_text().strip()
+                if existing:
+                    return existing
+            except Exception:
+                pass
+        token = secrets.token_urlsafe(24)
+    try:
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token)
+        token_file.chmod(0o600)
+    except Exception:
+        pass
+    return token
+
+
 class UIServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -1459,7 +1625,7 @@ class UIServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], root: Path, token: str | None = None):
         super().__init__(address, UIHandler)
         self.root = root
-        self.token = token or secrets.token_urlsafe(24)
+        self.token = get_or_create_ui_token(token)
         self.sessions = SessionManager()
         self.allowed_hosts = self._allowed_hosts()
 
@@ -1609,7 +1775,13 @@ class UIHandler(BaseHTTPRequestHandler):
                     if user_info.get("emailVerified") is False:
                         raise UIError(f"The email {user_email} isn't verified with that provider.", HTTPStatus.FORBIDDEN)
                     allowed = allowed_auth_emails(self.server.root)
-                    if allowed and user_email not in allowed:
+                    if not allowed:
+                        raise UIError(
+                            "No sign-in emails are allowed yet, so sign-in is closed. On the computer running Orchestrator, "
+                            "set ORCHESTRATOR_ALLOWED_EMAILS, set git config user.email, or add your email under "
+                            "Configuration (the access-token sign-in still works).",
+                            HTTPStatus.FORBIDDEN)
+                    if user_email not in allowed:
                         raise UIError(
                             f"Email {user_email} is not authorized for this computer. "
                             f"Authorized: {', '.join(sorted(allowed))}",
@@ -1677,7 +1849,8 @@ class UIHandler(BaseHTTPRequestHandler):
         if method == "GET" and parts == ["state"]:
             self._json({"project": project_state(root), "runs": self.server.sessions.list(),
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
-                                    for k, a in ACTIONS.items()}})
+                                    for k, a in ACTIONS.items()},
+                        "token": self.server.token})
         elif method == "POST" and parts == ["auth", "logout"]:
             self._json({"ok": True}, extra={
                 "Set-Cookie": f"{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
@@ -1769,6 +1942,22 @@ class UIHandler(BaseHTTPRequestHandler):
             else:
                 text = target.read_text(encoding="utf-8", errors="replace")
             self._json({"path": str(target.relative_to(safe_resolve(runtime_dir(root)))), "text": text})
+        elif method == "GET" and parts == ["integrations"]:
+            self._json({"integrations": integrations.public_catalog(saved_integrations(root), read_settings(root).get("integration_options"))})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "options":
+            self._json({"options": save_integration_options(root, parts[1], self._body().get("options"))})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "connect":
+            self._json(connect_integration(root, parts[1], self._body().get("values") or {}))
+        elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "disconnect":
+            self._body()
+            disconnect_integration(root, parts[1])
+            self._json({"ok": True})
+        elif method == "GET" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "search":
+            self._json({"items": search_integration(root, parts[1], (query.get("q") or [""])[0])})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "links":
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("This job is running right now. Attach context once it stops.", HTTPStatus.CONFLICT)
+            self._json({"links": attach_links_to_job(root, parts[1], _clean_links(self._body().get("links")))})
         elif method == "GET" and parts == ["setup"]:
             self._json(setup_checklist(root, runtime_dir(root)))
         elif method == "GET" and parts == ["config"]:
@@ -1870,10 +2059,10 @@ class UIHandler(BaseHTTPRequestHandler):
                                              runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
         session.job_id = job_id
         if key in ("new_job", "fix"):
-            self._watch_for_created_job(session, root)
+            self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
 
-    def _watch_for_created_job(self, session: PtySession, root: Path) -> None:
+    def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None) -> None:
         """Links the job a new-job/fix run creates, so its run can offer "Open job"."""
         before = {p.name for p in jobs_dir(root).glob("*.json")} if jobs_dir(root).exists() else set()
 
@@ -1882,13 +2071,29 @@ class UIHandler(BaseHTTPRequestHandler):
                 if jobs_dir(root).exists():
                     created = [p for p in jobs_dir(root).glob("*.json") if p.name not in before]
                     if created:
-                        session.result_job = max(created, key=lambda p: p.stat().st_mtime).stem
+                        newest = max(created, key=lambda p: p.stat().st_mtime)
+                        session.result_job = newest.stem
+                        if linked:
+                            self._record_links(newest, linked)
                         return
                 if not session.running:
                     return
                 time.sleep(1)
 
         threading.Thread(target=watch, daemon=True).start()
+
+    @staticmethod
+    def _record_links(job_path: Path, linked: list[dict[str, str]]) -> None:
+        """Note which tickets/issues/designs a new job was created from (shown on its page)."""
+        for _ in range(10):  # the job file may still be mid-write
+            job = read_json_file(job_path)
+            if job:
+                job["external_links"] = linked
+                tmp = job_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
+                os.replace(tmp, job_path)
+                return
+            time.sleep(0.5)
 
     def _run_op(self, method: str, sid: str, op: str, query: dict[str, list[str]]) -> None:
         session = self.server.sessions.get(sid)
