@@ -57,6 +57,7 @@
         </div>
       </nav>
       <button class="btn ghost console-btn" data-action="console"><svg class="icon"><use href="#i-terminal"/></svg>Open full console</button>
+      <button class="btn ghost" id="notify-btn" hidden></button>
       <button class="btn ghost lock-btn" id="lock-btn" style="margin-top: 0.25rem;"><svg class="icon"><use href="#i-lock"/></svg>Lock session</button>
     </aside>
     <main class="main">
@@ -88,6 +89,7 @@
 
   <script src="project-picker.js"></script>
   <script src="configuration.js"></script>
+  <script src="notifications.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"
           integrity="sha384-J4qzUjBl1FxyLsl/kQPQIOeINsmp17OHYXDOMpMxlKX53ZfYsL+aWHpgArvOuof9" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"

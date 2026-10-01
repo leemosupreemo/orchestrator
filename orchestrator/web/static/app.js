@@ -673,6 +673,8 @@ if (configurationTrigger && configurationMenu) {
 
 let consecutiveAuthFailures = 0;
 
+let lastRuns = null; // previous poll, to spot runs that finished or started waiting
+
 async function refreshState() {
   const backend = getBackendUrl();
   const token = getToken();
@@ -682,6 +684,8 @@ async function refreshState() {
   }
   try {
     const newState = await api("state");
+    for (const event of Notifications.events(lastRuns, newState.runs)) Notifications.show(event);
+    lastRuns = newState.runs;
     state = newState;
     consecutiveAuthFailures = 0;
     if (newState.token) {
@@ -714,6 +718,7 @@ async function refreshState() {
     badge.classList.toggle("working", waiting === 0);
     badge.title = waiting ? `${waiting} waiting for you` : `${running.length} running`;
   }
+  document.title = Notifications.tabTitle("Orchestrator", Notifications.attentionCount(state.runs));
   const topLangsEl = $("#topbar-languages");
   if (topLangsEl && (current?.page === "home" || $("#page-title")?.textContent === state.project?.name)) {
     if (state.project?.languages?.length) {
@@ -2786,8 +2791,8 @@ async function route() {
 
 // Live pages refresh in place — but never under the user's hands.
 async function tick() {
+  await refreshState(); // also while the tab is hidden, so notifications can fire
   if (document.hidden) return;
-  await refreshState();
   loadSetup();
   if (current.page === "run") {
     const run = state.runs.find((r) => r.id === current.args[0]);
@@ -2809,6 +2814,21 @@ const connBtn = $("#backend-settings-btn");
 if (connBtn) {
   connBtn.addEventListener("click", () => showSignInGate());
 }
+const notifyBtn = $("#notify-btn");
+function renderNotifyBtn() {
+  if (!notifyBtn || !Notifications.supported()) return;
+  notifyBtn.hidden = false;
+  const on = Notifications.enabled();
+  notifyBtn.textContent = on ? "Notifications on" : "Notify me when done";
+  notifyBtn.title = on ? "Click to turn off" : "Browser alerts when a run finishes, fails or needs you";
+}
+notifyBtn?.addEventListener("click", async () => {
+  if (Notifications.enabled()) { Notifications.disable(); renderNotifyBtn(); return; }
+  const result = await Notifications.enable();
+  if (result !== "granted") toast("Allow notifications in your browser to turn this on.", true);
+  renderNotifyBtn();
+});
+renderNotifyBtn();
 const lockBtn = $("#lock-btn");
 if (lockBtn) {
   lockBtn.addEventListener("click", lockSession);

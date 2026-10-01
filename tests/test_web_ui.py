@@ -1237,6 +1237,40 @@ class JobChatEndpointTests(ServerTestCase):
         self.assertIn(res.status, (400, 403))
 
 
+class NotificationLogicTests(unittest.TestCase):
+    def events(self, prev, nxt):
+        module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "notifications.js"
+        script = "const n = require(process.argv[1]); const [p, x] = JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify(n.events(p, x)));"
+        result = subprocess.run(["node", "-e", script, str(module), json.dumps([prev, nxt])], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_first_poll_is_silent(self):
+        self.assertEqual(self.events(None, [{"id": "r1", "running": False, "exit_code": 0}]), [])
+
+    def test_finished_run_notifies_done_and_links_to_the_job(self):
+        out = self.events([{"id": "r1", "running": True, "title": "Build", "job": "j1"}],
+                          [{"id": "r1", "running": False, "exit_code": 0, "title": "Build", "job": "j1"}])
+        self.assertEqual([(e["kind"], e["hash"]) for e in out], [("done", "#/jobs/j1")])
+
+    def test_failed_run_notifies_a_problem(self):
+        out = self.events([{"id": "r1", "running": True, "title": "Test"}],
+                          [{"id": "r1", "running": False, "exit_code": 2, "title": "Test"}])
+        self.assertEqual(out[0]["kind"], "problem")
+        self.assertIn("exit 2", out[0]["body"])
+        self.assertEqual(out[0]["hash"], "#/runs/r1")
+
+    def test_run_that_starts_waiting_asks_for_you_once(self):
+        running = {"id": "r1", "running": True, "waiting": False, "title": "Plan"}
+        waiting = {**running, "waiting": True}
+        self.assertEqual(self.events([running], [waiting])[0]["kind"], "needs-you")
+        self.assertEqual(self.events([waiting], [waiting]), [])
+
+    def test_unchanged_and_unknown_runs_are_silent(self):
+        run = {"id": "r1", "running": True, "waiting": False}
+        self.assertEqual(self.events([run], [run, {"id": "new", "running": False, "exit_code": 0}]), [])
+
+
 class JobDetailPrinciplesTests(unittest.TestCase):
     """Job detail keeps one primary action and no terminal-style leftovers."""
 
