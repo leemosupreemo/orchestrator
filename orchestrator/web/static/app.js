@@ -152,7 +152,7 @@ function moreMenu(items, { label = "More", left = false } = {}) {
     if (Array.isArray(it) && it[0] === "header") {
       return `<div class="more-menu-header">${esc(it[1])}</div>`;
     }
-    return `<button class="btn" ${it[1]}>${esc(it[0])}</button>${it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
+    return `<button class="btn${it[3] === "danger" ? " danger" : ""}" ${it[1]}>${esc(it[0])}</button>${it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
   }).join("");
   return `<details class="more${left ? " left" : ""}"><summary class="btn">${esc(label)} ▾</summary><div class="more-menu">${body}</div></details>`;
 }
@@ -1370,21 +1370,31 @@ pages.jobs = async (_, query) => {
   };
 };
 
-function jobHeaderActions(s, links = []) {
-  if (s.active_run) return "";
+function jobHeaderActions(s, links = [], ctx = {}) {
   const j = { job: s.id };
-  const primary = s.state.next ? `<button class="btn primary" ${act(s.state.next.action, j)}>${esc(s.state.next.label)}</button>` : "";
+  const next = s.state.next?.action;
   const items = [];
-  if (s.state.next?.action !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)) items.push(["Run fix", act("debug", j), "Another automated fix attempt"]);
-  if (["review-needed", "completed"].includes(s.status)) items.push(["Still broken?", act("fix", j), "Reopen with what you saw"]);
-  if (s.tasks_total && s.tasks_done < s.tasks_total && s.state.next?.action !== "resume") items.push(["Resume next task", act("resume", j)]);
-  if (s.branch && ["review-needed", "debugging"].includes(s.status)) items.push(["Deliver to testers", act("deliver", j), `Builds ${s.branch}`]);
-  if (s.status === "scheduled" && s.state.next?.action !== "execute") items.push(["Run now", act("execute", j)]);
-  if (["planned", "designing", "human-needed", "review-needed", "debugging"].includes(s.status)) items.push(["Revise plan", act("revise", j), "Re-plan with what should change"]);
+  if (!s.active_run) {
+    if (next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)) items.push(["Run fix", act("debug", j), "Another automated fix attempt"]);
+    if (["review-needed", "completed"].includes(s.status)) items.push(["Still broken?", act("fix", j), "Reopen with what you saw"]);
+    if (s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume") items.push(["Resume next task", act("resume", j)]);
+    if (s.branch && ["review-needed", "debugging"].includes(s.status)) items.push(["Deliver to testers", act("deliver", j), `Builds ${s.branch}`]);
+    if (s.status === "scheduled" && next !== "execute") items.push(["Run now", act("execute", j)]);
+    if (["planned", "designing", "human-needed", "review-needed", "debugging"].includes(s.status)) items.push(["Revise plan", act("revise", j), "Re-plan with what should change"]);
+  }
+  items.push("---");
+  items.push(["Ask AI about this job", act("ask_ai", j)]);
+  items.push(["Attach logs", act("link_logs", j), "Device crash logs or test traces"]);
+  items.push(["Attach mockup or reference", act("attach_mockup", j)]);
+  items.push(["Override models", act("select_models", j), "Planner, builder and reviewer"]);
+  items.push(["Export context", act("export_context", j)]);
+  items.push("---");
   for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, "On GitHub"]);
-  if (items.length) items.push("---");
-  items.push(["Open in console", act("console"), "Ask AI, export, discard, and more"]);
-  return primary + moreMenu(items);
+  if (s.issue_number) items.push(["Close GitHub issue", `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`]);
+  items.push(["Open in console", act("console")]);
+  items.push("---");
+  items.push(["Discard job and revert changes", act("discard_job", j), "Deletes uncommitted work", "danger"]);
+  return moreMenu(items);
 }
 
 document.addEventListener("click", (e) => {
@@ -1405,115 +1415,17 @@ function formatJobTests(t) {
   return "⚙️ Pending execution";
 }
 
-function formatJobStatus(st) {
-  const map = {
-    "planned": "📝 Planned",
-    "scheduled": "⏳ Scheduled",
-    "executing": "⚡ In progress",
-    "running": "⚡ In progress",
-    "review-needed": "👀 Review needed",
-    "debugging": "🔧 Debugging",
-    "completed": "✅ Completed",
-    "failed": "❌ Failed",
-    "human-needed": "❓ Input needed",
-    "archived": "📦 Archived",
-  };
-  return map[st] || `📝 ${st ? st.charAt(0).toUpperCase() + st.slice(1) : "Unknown"}`;
-}
-
-function getJobBannerInfo(s, activeRun, pipeline) {
-  if (activeRun) {
-    return {
-      bannerClass: "active",
-      bannerIcon: "⚡",
-      bannerTitle: "ACTIVE: Worker Task Executing",
-      bannerHint: "-> Live output streaming below. Press 'S' to stop current task.",
-      bannerBtn: `<button class="btn small danger" data-stop="${esc(activeRun.id)}" data-key="S">Stop Task [S]</button>`,
-    };
-  }
-  if (s.status === "planned") {
-    return {
-      bannerClass: "ready",
-      bannerIcon: "📝",
-      bannerTitle: "READY: Planning Complete",
-      bannerHint: "-> Press 'S' to Schedule & Dispatch this job to a worker.",
-      bannerBtn: `<button class="btn primary" ${act("execute", { job: s.id })} data-key="S">Schedule & Dispatch [S]</button>`,
-    };
-  }
-  if (s.status === "scheduled") {
-    return {
-      bannerClass: "active",
-      bannerIcon: "⏳",
-      bannerTitle: "SCHEDULED: Queued for Execution",
-      bannerHint: "-> Press 'S' to Run Now or wait for worker pick-up.",
-      bannerBtn: `<button class="btn primary" ${act("execute", { job: s.id })} data-key="S">Run Now [S]</button>`,
-    };
-  }
-  if (s.status === "review-needed") {
-    return {
-      bannerClass: "ready",
-      bannerIcon: "👀",
-      bannerTitle: "REVIEW: Worker Completed Implementation",
-      bannerHint: "-> Press 'S' to Approve Changes or request revisions below.",
-      bannerBtn: `<button class="btn primary" ${act("approve", { job: s.id })} data-key="S">Approve Changes [S]</button>`,
-    };
-  }
-  if (s.status === "debugging") {
-    return {
-      bannerClass: "blocked",
-      bannerIcon: "🔧",
-      bannerTitle: "DEBUGGING: Automated Repair in Progress",
-      bannerHint: "-> Worker is diagnosing test failures. Press 'S' to re-run fix.",
-      bannerBtn: `<button class="btn primary" ${act("debug", { job: s.id })} data-key="S">Run Fix [S]</button>`,
-    };
-  }
-  if (s.status === "completed") {
-    return {
-      bannerClass: "active",
-      bannerIcon: "✅",
-      bannerTitle: "COMPLETED: All Tasks Verified",
-      bannerHint: "-> All tasks and tests completed successfully.",
-      bannerBtn: `<a class="btn primary" href="#/git" data-key="S">View in Git [S]</a>`,
-    };
-  }
-  if (s.status === "failed") {
-    return {
-      bannerClass: "failed",
-      bannerIcon: "❌",
-      bannerTitle: "FAILED: Execution Halted",
-      bannerHint: "-> Press 'S' to run an automated fix attempt.",
-      bannerBtn: `<button class="btn primary" ${act("debug", { job: s.id })} data-key="S">Run Fix [S]</button>`,
-    };
-  }
-  if (s.status === "human-needed") {
-    return {
-      bannerClass: "blocked",
-      bannerIcon: "❓",
-      bannerTitle: "INPUT NEEDED: Planner Clarification",
-      bannerHint: "-> Press 'S' to answer the planner's question.",
-      bannerBtn: `<button class="btn primary" ${act("answer", { job: s.id })} data-key="S">Answer Question [S]</button>`,
-    };
-  }
-  return {
-    bannerClass: "",
-    bannerIcon: "📝",
-    bannerTitle: (s.state?.label || s.status).toUpperCase(),
-    bannerHint: s.state?.reason || "",
-    bannerBtn: s.state?.next ? `<button class="btn primary" ${act(s.state.next.action, { job: s.id })} data-key="S">${esc(s.state.next.label)} [S]</button>` : "",
-  };
-}
-
 pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);
-  const { summary: s, job, outputs, logs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask, approach: jobApproach } = data;
+  const { summary: s, job, outputs, logs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
 
   const activeRun = runs.find((r) => r.running);
   const summary = { ...s, active_run: !!activeRun };
 
   const pipeline = {
-    planner: pipe?.planner || job.planner || "gemini-3.1-pro-preview",
-    builder: pipe?.builder || job.builder || "gpt-5.4",
-    reviewer: pipe?.reviewer || job.reviewer || "gemini-3.1-pro-preview",
+    planner: pipe?.planner || job.planner || "default",
+    builder: pipe?.builder || job.builder || "default",
+    reviewer: pipe?.reviewer || job.reviewer || "default",
   };
 
   const tasks = Array.isArray(jobTasks) && jobTasks.length ? jobTasks : (Array.isArray(job.tasks) ? job.tasks : (job.plan?.tasks || []));
@@ -1524,13 +1436,10 @@ pages.job = async ([id]) => {
   const tasksPct = tasksTotal > 0 ? Math.round((tasksDone / tasksTotal) * 100) : 0;
   const nextTask = jobNextTask || (tasksTotal > tasksDone && tasks[tasksDone] ? (typeof tasks[tasksDone] === "object" ? (tasks[tasksDone].name || tasks[tasksDone].title || tasks[tasksDone].description || `Task ${tasksDone + 1}`) : String(tasks[tasksDone])) : null);
 
-  const approach = jobApproach || job.approach || job.execution_strategy || s.approach || "Standard workflow";
   const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
-  const statusDisplay = formatJobStatus(s.status);
   const testsDisplay = formatJobTests(testSummary);
 
-  const banner = getJobBannerInfo(s, activeRun, pipeline);
 
   // Delta calculations
   const localCount = changes?.local_files?.length || 0;
@@ -1552,200 +1461,53 @@ pages.job = async ([id]) => {
     ? `${previewFiles.map((f) => `<span class="delta-file-chip mono">${esc(f.split("/").pop() || f)}</span>`).join(", ")}${remainingFiles > 0 ? ` <span class="muted">(+${remainingFiles} more)</span>` : ""}`
     : `<span class="muted">No modified files</span>`;
 
-  // Workflow approve action
-  let workflowApproveAction = act("execute", { job: s.id });
-  let workflowApproveDesc = "Approve plan and dispatch tasks to worker";
-  if (s.status === "review-needed") {
-    workflowApproveAction = act("approve", { job: s.id });
-    workflowApproveDesc = "Approve changes and prepare for merge";
-  } else if (tasksTotal > 0 && tasksDone < tasksTotal && s.status !== "planned") {
-    workflowApproveAction = act("resume", { job: s.id });
-    workflowApproveDesc = `Resume execution of task ${tasksDone + 1}`;
-  }
-
-  // GitHub Link
-  const ghLink = links.find((l) => l.url) || (s.issue_number ? { url: `https://github.com/issues/${s.issue_number}`, label: `Issue #${s.issue_number}` } : null);
-  const ghTileAttr = ghLink ? `data-open="${esc(ghLink.url)}"` : "disabled";
-  const ghTileDesc = ghLink ? `Open ${esc(ghLink.label || "Issue")} on GitHub ↗` : "No GitHub issue/PR linked";
-
-  // Close Issue
-  const closeIssueAttr = s.issue_number ? `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"` : "disabled";
-  const closeIssueDesc = s.issue_number ? `Close issue #${esc(s.issue_number)} on GitHub` : "No linked issue for this job";
+  const next = s.state.next;
+  const heroAction = activeRun
+    ? `<button class="btn danger" data-stop="${esc(activeRun.id)}">Stop</button>`
+    : next ? `<button class="btn primary big" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : "";
 
   const logFiles = logs.flatMap((l) => l.files.length
     ? l.files.map((f) => ({ label: l.files.length > 1 ? `${l.label} / ${f.split("/").pop()}` : l.label, path: f }))
     : [{ label: l.label }]);
 
   return {
-    title: `[${kindUpper}] ${s.title}`,
-    sub: `<span class="status-line"><span>Job ID: <strong class="mono">${esc(displayId)}</strong></span>${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
+    title: s.title,
+    sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links),
     html: `
       ${runs.filter((r) => r.running).map((r) => `<section class="card" style="margin-bottom: 16px;"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
       ${s.question ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
         <p class="question">${esc(s.question)}</p><div><button class="btn primary" ${act("answer", { job: s.id })}>Answer</button></div></div></section>` : ""}
 
-      <!-- Overview Attributes Card -->
-      <section class="card" style="margin-bottom: 16px;">
-        <div class="card-h">
-          <h2><span class="job-kind-badge">[${esc(kindUpper)}]</span> ${esc(s.title)}</h2>
-          ${s.branch ? `<span class="count mono">${esc(s.branch)}</span>` : ""}
+      <section class="job-hero tone-${esc(s.state.tone || "")}">
+        <div class="job-hero-main">
+          <span class="pill ${esc(s.state.tone || "")}">${esc(s.state.label || s.status)}</span>
+          <p class="job-hero-reason">${esc(s.state.reason || "")}</p>
         </div>
-        <div class="card-b grid-details">
-          <div class="detail-item">
-            <span class="label">Job ID</span>
-            <span class="value mono">${esc(displayId)}</span>
+        <div class="job-hero-action">${heroAction}</div>
+      </section>
+
+      <section class="card" style="margin-bottom: 16px;">
+        <div class="card-h"><h2>Progress</h2><span class="count">${tasksDone}/${tasksTotal}</span></div>
+        <div class="card-b stack">
+          <div class="tasks-progress-wrap">
+            <div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div>
+            <span class="progress-text">${tasksPct}%</span>
           </div>
-          <div class="detail-item">
-            <span class="label">Status</span>
-            <span class="value">${esc(statusDisplay)}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">Approach</span>
-            <span class="value">${esc(approach)}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">Tests</span>
-            <span class="value">${esc(testsDisplay)}</span>
-          </div>
-          <div class="detail-item full-width">
-            <span class="label">Tasks</span>
-            <div class="tasks-progress-wrap">
-              <div class="progress-bar-container">
-                <div class="progress-bar-fill" style="width: ${tasksPct}%"></div>
-              </div>
-              <span class="progress-text">${tasksDone}/${tasksTotal} (${tasksPct}%)</span>
-            </div>
-            ${nextTask ? `<div class="next-task-line">└─ Next: <strong>${esc(nextTask)}</strong></div>` : ""}
-          </div>
+          ${nextTask ? `<div>Next: <strong>${esc(nextTask)}</strong></div>` : ""}
+          <div class="muted">${esc(testsDisplay)} · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}</div>
         </div>
       </section>
 
-      <!-- Banner Callout & Model Pipeline -->
-      <section class="job-banner ${banner.bannerClass}">
-        <div class="job-banner-header">
-          <div class="banner-title">${banner.bannerIcon} ${banner.bannerTitle}</div>
-          ${banner.bannerBtn}
-        </div>
-        <div class="pipeline-row">
-          <span class="pipeline-label">Pipeline:</span>
-          <div class="pipeline-nodes">
-            <div class="node"><small>Planner</small><strong>${esc(pipeline.planner)}</strong></div>
-            <span class="arrow">→</span>
-            <div class="node"><small>Builder</small><strong>${esc(pipeline.builder)}</strong></div>
-            <span class="arrow">→</span>
-            <div class="node"><small>Reviewer</small><strong>${esc(pipeline.reviewer)}</strong></div>
-          </div>
-          <button class="btn small ghost" data-action="select_models" data-params="${esc(JSON.stringify({ job: s.id }))}" style="margin-left: auto;">Override Models [O]</button>
-        </div>
-        <div class="banner-hint">${banner.bannerHint}</div>
-      </section>
-
-      <!-- DELTA (Total Progress) -->
       <section class="card" style="margin-bottom: 16px;">
-        <div class="card-h">
-          <h2>DELTA (Total Progress)</h2>
-          ${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
-        </div>
+        <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
         <div class="card-b delta-summary-line">
-          <div class="delta-line unsaved">
-            └─ ${esc(deltaUnsaved)}
-          </div>
-          <div class="delta-files-list">
-            <span class="file-prefix">└─</span>
-            ${filesHtml}
-          </div>
+          <div class="delta-line unsaved">${esc(deltaUnsaved)}</div>
+          <div class="delta-files-list">${filesHtml}</div>
         </div>
-        ${changes?.hypothesis ? `<div class="card-b" style="border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px;"><strong>Hypothesis / Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
+        ${changes?.hypothesis ? `<div class="card-b" style="border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px;"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
-
-      <!-- 4 Action Categories Grid -->
-      <div class="action-categories-grid">
-        <!-- ⚡ WORKFLOW ACTIONS -->
-        <div class="card action-group-card">
-          <div class="card-h">
-            <h3>⚡ WORKFLOW ACTIONS</h3>
-          </div>
-          <div class="card-b action-btn-list">
-            <button class="action-tile" ${workflowApproveAction} data-key="A">
-              <strong>[A] Approve / Create Sub-tasks</strong>
-              <span>${workflowApproveDesc}</span>
-            </button>
-            <button class="action-tile" data-action="revise" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="F">
-              <strong>[F] Revise Plan (Update Scope & Tasks)</strong>
-              <span>Modify requirements, scope, or task breakdown</span>
-            </button>
-            <button class="action-tile" data-action="ask_ai" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="Q">
-              <strong>[Q] Ask AI (Questions about changes)</strong>
-              <span>Inquire about plan reasoning, diffs, or architecture</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 📥 CONTEXT & INPUTS -->
-        <div class="card action-group-card">
-          <div class="card-h">
-            <h3>📥 CONTEXT & INPUTS</h3>
-          </div>
-          <div class="card-b action-btn-list">
-            <button class="action-tile" data-action="link_logs" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="L">
-              <strong>[L] Link Logs (Update Context)</strong>
-              <span>Attach device crash logs or recent test traces</span>
-            </button>
-            <button class="action-tile" data-action="attach_mockup" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="K">
-              <strong>[K] Attach UI Mockup / Reference</strong>
-              <span>Add Figma, mockup URLs, or spec attachments</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 🔍 INSPECT & CONFIGURE -->
-        <div class="card action-group-card">
-          <div class="card-h">
-            <h3>🔍 INSPECT & CONFIGURE</h3>
-          </div>
-          <div class="card-b action-btn-list">
-            <button class="action-tile" data-action="select_models" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="O">
-              <strong>[O] Select LLM Models (Override)</strong>
-              <span>Configure Planner, Builder, and Reviewer models</span>
-            </button>
-            <button class="action-tile" data-action="export_context" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="Y">
-              <strong>[Y] Export Context (Logs, Progress, Plan)</strong>
-              <span>Download complete markdown bundle of context & diffs</span>
-            </button>
-            <button class="action-tile" data-scroll-to="#docs-section" data-key="V">
-              <strong>[V] View Brief / Summary</strong>
-              <span>Jump to planning briefs, investigations & summaries</span>
-            </button>
-            <button class="action-tile" ${ghTileAttr} data-key="G">
-              <strong>[G] View in GitHub</strong>
-              <span>${ghTileDesc}</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 🛡️ SAFETY & NAVIGATION -->
-        <div class="card action-group-card">
-          <div class="card-h">
-            <h3>🛡️ SAFETY & NAVIGATION</h3>
-          </div>
-          <div class="card-b action-btn-list">
-            <button class="action-tile" ${closeIssueAttr} data-key="C">
-              <strong>[C] Close Issue in GitHub</strong>
-              <span>${closeIssueDesc}</span>
-            </button>
-            <button class="action-tile danger-tile" data-action="discard_job" data-params="${esc(JSON.stringify({ job: s.id }))}" data-key="X">
-              <strong>[X] Discard & Revert Changes</strong>
-              <span>Abandon job and discard all uncommitted file changes</span>
-            </button>
-            <a class="action-tile" href="#/" data-key="B">
-              <strong>[B] Back to Main Menu</strong>
-              <span>Return to home dashboard</span>
-            </a>
-          </div>
-        </div>
-      </div>
 
       <!-- Docs Section (Brief / Summary / Investigations) -->
       <div id="docs-section">
@@ -1810,19 +1572,6 @@ pages.job = async ([id]) => {
       <!-- Technical Details -->
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
     `,
-    after: () => {
-      const keyHandler = (e) => {
-        if (e.target.matches("input, textarea, select") || e.metaKey || e.ctrlKey || e.altKey) return;
-        const key = e.key.toUpperCase();
-        const btn = document.querySelector(`[data-key="${key}"]`);
-        if (btn && !btn.disabled) {
-          e.preventDefault();
-          btn.click();
-        }
-      };
-      window.addEventListener("keydown", keyHandler);
-      cleanup.push(() => window.removeEventListener("keydown", keyHandler));
-    },
   };
 };
 

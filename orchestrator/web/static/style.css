@@ -884,99 +884,25 @@ dialog h2 { font-size: 17px; }
   vertical-align: middle;
 }
 
-.job-banner {
-  padding: 16px 20px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--panel);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow);
-}
-.job-banner.ready {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.job-banner.blocked {
-  border-color: var(--warn);
-  background: var(--warn-soft);
-}
-.job-banner.active {
-  border-color: var(--ok);
-  background: var(--ok-soft);
-}
-.job-banner.failed {
-  border-color: var(--bad);
-  background: var(--bad-soft);
-}
-
-.job-banner-header {
+.job-hero {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 12px 20px;
   flex-wrap: wrap;
-}
-.banner-title {
-  font-size: 16px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.pipeline-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 13px;
-  padding: 10px 14px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: var(--panel);
-  border-radius: 8px;
-  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
 }
-.pipeline-label {
-  font-weight: 600;
-  color: var(--muted);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.pipeline-nodes {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.pipeline-nodes .node {
-  display: inline-flex;
-  flex-direction: column;
-  background: var(--panel-2);
-  padding: 3px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-}
-.pipeline-nodes .node small {
-  font-size: 10px;
-  color: var(--muted);
-  text-transform: uppercase;
-  font-weight: 600;
-}
-.pipeline-nodes .node strong {
-  font-size: 12.5px;
-  font-family: var(--mono);
-}
-.pipeline-nodes .arrow {
-  color: var(--accent);
-  font-weight: 700;
-  opacity: 0.8;
-}
-.banner-hint {
-  font-size: 13.5px;
-  color: var(--text);
-}
+.job-hero.tone-attention { border-color: var(--warn); background: var(--warn-soft); }
+.job-hero.tone-working { border-color: var(--accent); background: var(--accent-soft); }
+.job-hero.tone-done { border-color: var(--ok); background: var(--ok-soft); }
+.job-hero.tone-failed { border-color: var(--bad); background: var(--bad-soft); }
+.job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; flex: 1 1 260px; }
+.job-hero-reason { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
 
 /* Detail Attributes Grid */
 .grid-details {
@@ -1085,72 +1011,6 @@ dialog h2 { font-size: 17px; }
   font-size: 12px;
 }
 
-/* Action Categories Grid */
-.action-categories-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
-}
-@media (max-width: 860px) {
-  .action-categories-grid {
-    grid-template-columns: 1fr;
-  }
-}
-.action-group-card {
-  display: flex;
-  flex-direction: column;
-}
-.action-group-card .card-h h3 {
-  font-size: 13.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-.action-btn-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.action-tile {
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  padding: 10px 14px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  width: 100%;
-}
-.action-tile:hover:not(:disabled) {
-  background: var(--panel-2);
-  border-color: var(--accent);
-  box-shadow: 0 0 10px rgba(79, 107, 237, 0.15);
-}
-.action-tile:active:not(:disabled) {
-  transform: scale(0.99);
-  background: var(--accent-soft);
-}
-.action-tile strong {
-  font-size: 13px;
-  font-weight: 650;
-  color: var(--text);
-}
-.action-tile span {
-  font-size: 11.5px;
-  color: var(--muted);
-  font-weight: 400;
-}
-.action-tile.danger-tile:hover:not(:disabled) {
-  border-color: var(--bad);
-  background: var(--bad-soft);
-}
-.action-tile.danger-tile strong {
-  color: var(--bad);
-}
 
 .sort-head { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .sort-head:hover { color: var(--text); }

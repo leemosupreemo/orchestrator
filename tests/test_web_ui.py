@@ -748,3 +748,25 @@ class RunApiTests(ServerTestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class JobDetailPrinciplesTests(unittest.TestCase):
+    """Job detail keeps one primary action and no terminal-style leftovers."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        start = cls.source.index("pages.job = async")
+        cls.job_page = cls.source[start:cls.source.index("const JOB_TYPE_INFO", start)]
+
+    def test_no_hotkey_labels_or_terminal_hints(self):
+        self.assertNotIn("data-key=", self.job_page)
+        self.assertNotIn("Press '", self.job_page)
+        self.assertNotIn("└─", self.job_page)
+
+    def test_no_action_tile_grid(self):
+        self.assertNotIn("action-tile", self.job_page)
+
+    def test_each_secondary_action_appears_once(self):
+        for action in ("revise", "select_models", "ask_ai", "link_logs", "attach_mockup", "discard_job"):
+            self.assertLessEqual(self.source.count(f'act("{action}", j)') + self.job_page.count(f'data-action="{action}"'), 1, action)
