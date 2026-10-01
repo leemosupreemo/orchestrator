@@ -17,6 +17,37 @@ if (typeof window !== "undefined" && window.firebase && !window.firebase.apps?.l
   }
 }
 
+if (typeof window !== "undefined" && window.firebase?.auth) {
+  try {
+    window.firebase.auth().getRedirectResult().then(async (cred) => {
+      if (cred && cred.user) {
+        try {
+          const idToken = await cred.user.getIdToken();
+          const currentBackend = getBackendUrl();
+          if (!currentBackend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
+            showSignInGate("Signed in as " + (cred.user.email || "user") + ", but Backend URL is required. Enter your Mac's backend URL below.");
+            return;
+          }
+          const res = await api("auth", { method: "POST", body: { id_token: idToken } });
+          if (res.token) localStorage.setItem("orchestrator_token", res.token);
+          toast(`Signed in as ${cred.user.email || "user"}`);
+          document.querySelector(".app")?.classList.remove("session-locked");
+          await refreshState();
+          route();
+        } catch (apiErr) {
+          showSignInGate(`Signed in as ${cred.user.email || "user"}, but could not reach backend: ${apiErr.message}`);
+        }
+      }
+    }).catch((err) => {
+      if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
+        console.warn("Redirect sign-in notice:", err);
+      }
+    });
+  } catch (e) {
+    console.warn("getRedirectResult error:", e);
+  }
+}
+
 // ---------------------------------------------------------------- helpers
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -28,7 +59,7 @@ let state = { project: null, runs: [], actions: {} };
 let cleanup = [];
 let current = { page: null, args: [], query: null, rendered: "" };
 
-const DEFAULT_REMOTE_BACKEND = "https://calculations-absorption-pct-moreover.trycloudflare.com";
+const DEFAULT_REMOTE_BACKEND = "";
 
 function getBackendUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -523,6 +554,35 @@ const dialogs = {
       runAction("console");
     }
   },
+  async splinter_job(params) {
+    if (confirm("Decompose this feature plan into separate parallel child tasks and GitHub sub-issues?")) {
+      await runAction("splinter", { job: params.job });
+    }
+  },
+  async export_job_bundle(params) {
+    const values = await formDialog("Export Job Bundle", `
+      <p class="muted" style="margin-bottom:10px;">Select how you want to export all context, brief, git diffs, and execution logs for this job.</p>
+      <label class="field"><span>Export Destination</span>
+        <select name="destination">
+          <option value="direct">Direct Download (.ZIP archive in browser)</option>
+          <option value="icloud">iCloud Drive (Sync across Apple devices)</option>
+          <option value="gdrive">Google Drive (Sync to Drive)</option>
+          <option value="downloads">macOS Downloads folder (~/Downloads)</option>
+          <option value="local">Project Workspace (./exports/)</option>
+        </select>
+      </label>`, "Export");
+    if (values) {
+      if (values.destination === "direct") {
+        window.open(`/api/jobs/${encodeURIComponent(params.job)}/export-zip`, "_blank");
+        toast("Download started");
+      } else {
+        await runAction("export_job", { job: params.job, destination: values.destination });
+      }
+    }
+  },
+  async run_visual_check() {
+    await runAction("visual_check", {});
+  },
 };
 
 document.addEventListener("click", (e) => {
@@ -561,20 +621,9 @@ document.addEventListener("click", (e) => {
     api(`runs/${encodeURIComponent(stop.dataset.stop)}/stop`, { method: "POST", body: {} }).catch((err) => toast(err.message, true));
     return;
   }
-  const switchBtn = e.target.closest("[data-switch-project]");
-  if (switchBtn) {
-    const root = switchBtn.dataset.switchProject;
-    api("project", { method: "POST", body: { root } })
-      .then(async () => {
-        await refreshState();
-        toast(`Switched to ${state.project?.name || "project"}`);
-        route();
-      })
-      .catch((err) => toast(err.message, true));
-    return;
-  }
   const forgetBtn = e.target.closest("[data-forget-project]");
   if (forgetBtn) {
+    e.stopPropagation();
     const root = forgetBtn.dataset.forgetProject;
     if (confirm("Remove this project from your list of tracked projects?")) {
       api("projects", { method: "DELETE", body: { root } })
@@ -587,6 +636,24 @@ document.addEventListener("click", (e) => {
     }
     return;
   }
+  const switchBtn = e.target.closest("[data-switch-project]");
+  if (switchBtn) {
+    const root = switchBtn.dataset.switchProject;
+    // Respond instantly: move the highlight now; the page rebuilds (slowly) once the switch lands.
+    if (switchBtn.classList.contains("project-card")) {
+      document.querySelectorAll(".project-card.active-project").forEach((c) => c.classList.remove("active-project"));
+      switchBtn.classList.add("active-project");
+      switchBtn.setAttribute("aria-busy", "true");
+    }
+    api("project", { method: "POST", body: { root } })
+      .then(async () => {
+        await refreshState();
+        toast(`Switched to ${state.project?.name || "project"}`);
+        route();
+      })
+      .catch((err) => { toast(err.message, true); route(); }); // put the highlight back
+    return;
+  }
   if (e.target.closest("[data-back]")) return history.back();
   const el = e.target.closest("[data-action]");
   if (!el || el.disabled) return;
@@ -595,6 +662,13 @@ document.addEventListener("click", (e) => {
   const params = el.dataset.params ? JSON.parse(el.dataset.params) : {};
   if (dialogs[action]) return dialogs[action](params);
   runAction(action, params);
+});
+
+document.addEventListener("keydown", (e) => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.(".project-card[tabindex]")) {
+    e.preventDefault();
+    e.target.click();
+  }
 });
 
 const configurationTrigger = $("#configuration-menu-trigger");
@@ -730,6 +804,7 @@ function showSignInGate(message) {
   document.querySelector(".app")?.classList.add("session-locked");
   const backend = getBackendUrl() || "";
   const token = getToken() || "";
+  const isRemote = window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost";
   view.innerHTML = `
     <div class="signin-wrap">
       <div class="signin-card">
@@ -757,6 +832,16 @@ function showSignInGate(message) {
             <span>Continue with GitHub</span>
           </button>
         </div>
+        ${isRemote ? `
+        <div class="backend-config-card" style="margin-top: 0.75rem; padding: 0.65rem 0.85rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.82rem; text-align: left;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+            <span style="font-weight: 600; color: var(--text);">Mac Backend URL:</span>
+            <span style="font-size: 0.75rem; color: ${backend ? "var(--good, #2e9d5b)" : "var(--warn, #d99a00)"};">${backend ? "Configured" : "Required for phone"}</span>
+          </div>
+          <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com or Tailscale" value="${esc(backend)}" style="width: 100%; box-sizing: border-box; font-size: 0.85rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text);">
+          <small class="muted" style="display: block; margin-top: 0.35rem; line-height: 1.3;">Run <code>orchestrator ui --tunnel</code> on your Mac to generate an HTTPS URL for your phone.</small>
+        </div>
+        ` : ""}
         <details class="manual-token-details" style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
           <summary class="muted" style="cursor: pointer; user-select: none; text-align: center;">Advanced: Sign in with CLI access token</summary>
           <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
@@ -764,10 +849,12 @@ function showSignInGate(message) {
               <span>CLI Access Token</span>
               <input type="password" id="signin-token" name="token" value="${esc(token)}" placeholder="Paste access token from terminal" autocomplete="current-password" style="font-family: var(--mono); font-size: 0.9rem;">
             </label>
+            ${!isRemote ? `
             <label class="field">
               <span>Backend URL</span>
-              <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(localStorage.getItem("orchestrator_backend") || "")}" style="font-size: 0.85rem;">
+              <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(backend)}" style="font-size: 0.85rem;">
             </label>
+            ` : ""}
             <button type="submit" id="signin-submit-btn" class="btn" style="width: 100%; justify-content: center; padding: 0.55rem;">Use Access Token</button>
           </form>
         </details>
@@ -776,10 +863,18 @@ function showSignInGate(message) {
   `;
 
   const syncBackend = () => {
-    const b = ($("#signin-backend")?.value || "").trim().replace(/\/+$/, "");
+    const el = $("#signin-backend");
+    if (!el) return;
+    const b = el.value.trim().replace(/\/+$/, "");
     if (b) localStorage.setItem("orchestrator_backend", b);
     else localStorage.removeItem("orchestrator_backend");
   };
+
+  const beInput = $("#signin-backend");
+  if (beInput) {
+    beInput.addEventListener("input", syncBackend);
+    beInput.addEventListener("change", syncBackend);
+  }
 
   // One handler for every Firebase provider: pop up, trade the ID token for a session.
   const wireSso = (id, name, makeProvider, explain = {}) => {
@@ -795,9 +890,28 @@ function showSignInGate(message) {
       const originalHtml = btn.innerHTML;
       btn.innerHTML = `<span>Signing in with ${name}...</span>`;
       try {
-        const cred = await firebase.auth().signInWithPopup(makeProvider());
+        let cred;
+        try {
+          cred = await firebase.auth().signInWithPopup(makeProvider());
+        } catch (popupErr) {
+          if (popupErr.code === "auth/popup-blocked") {
+            await firebase.auth().signInWithRedirect(makeProvider());
+            return;
+          }
+          throw popupErr;
+        }
         const idToken = await cred.user.getIdToken();
-        const res = await api("auth", { method: "POST", body: { id_token: idToken } });
+        const currentBackend = getBackendUrl();
+        if (!currentBackend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
+          throw new Error("Signed in with " + name + ", but your Mac Backend URL is not set. Enter your Backend URL below to connect.");
+        }
+        let res;
+        try {
+          res = await api("auth", { method: "POST", body: { id_token: idToken } });
+        } catch (apiErr) {
+          const target = currentBackend || "local backend";
+          throw new Error(`Signed in as ${cred.user.email || name + " user"}, but could not reach ${target} (${apiErr.message}). Make sure Orchestrator is running on your Mac.`);
+        }
         if (res.token) localStorage.setItem("orchestrator_token", res.token);
         toast(`Signed in as ${cred.user.email || `${name} user`}`);
         document.querySelector(".app")?.classList.remove("session-locked");
@@ -1381,13 +1495,15 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     if (s.branch && ["review-needed", "debugging"].includes(s.status)) items.push(["Deliver to testers", act("deliver", j), `Builds ${s.branch}`]);
     if (s.status === "scheduled" && next !== "execute") items.push(["Run now", act("execute", j)]);
     if (["planned", "designing", "human-needed", "review-needed", "debugging"].includes(s.status)) items.push(["Revise plan", act("revise", j), "Re-plan with what should change"]);
+    if (ctx.canSplinter) items.push(["Split into sub-jobs", act("splinter_job", j), "Parallel child jobs and GitHub sub-issues"]);
   }
   items.push("---");
   items.push(["Ask AI about this job", act("ask_ai", j)]);
   items.push(["Attach logs", act("link_logs", j), "Device crash logs or test traces"]);
   items.push(["Attach mockup or reference", act("attach_mockup", j)]);
   items.push(["Override models", act("select_models", j), "Planner, builder and reviewer"]);
-  items.push(["Export context", act("export_context", j)]);
+  items.push(["Simulator visual check", act("run_visual_check", j), "Boot the simulator and capture screenshots"]);
+  items.push(["Export bundle", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"]);
   items.push("---");
   for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, "On GitHub"]);
   if (s.issue_number) items.push(["Close GitHub issue", `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`]);
@@ -1440,6 +1556,9 @@ pages.job = async ([id]) => {
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
 
+  let visualChecks = [];
+  try { visualChecks = (await api("visual-checks")).checks || []; } catch {}
+  const canSplinter = (kindUpper === "FEATURE" || kindUpper === "PLAN" || s.type === "feature-plan" || job.type === "feature-plan") && tasksTotal > 0 && s.status !== "decomposed";
 
   // Delta calculations
   const localCount = changes?.local_files?.length || 0;
@@ -1473,7 +1592,7 @@ pages.job = async ([id]) => {
   return {
     title: s.title,
     sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
-    actions: jobHeaderActions(summary, links),
+    actions: jobHeaderActions(summary, links, { canSplinter }),
     html: `
       ${runs.filter((r) => r.running).map((r) => `<section class="card" style="margin-bottom: 16px;"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
       ${s.question ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
@@ -1508,6 +1627,38 @@ pages.job = async ([id]) => {
         ${changes?.hypothesis ? `<div class="card-b" style="border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px;"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
+
+      <!-- Decomposed Subtasks (if any) -->
+      ${(job.subtask_job_ids && job.subtask_job_ids.length) ? `
+        <section class="card" style="margin-bottom: 16px;">
+          <div class="card-h"><h2>Decomposed Sub-Task Jobs</h2><span class="count">${job.subtask_job_ids.length}</span></div>
+          <div class="list">
+            ${job.subtask_job_ids.map((subId) => `
+              <a class="item" href="#/job/${encodeURIComponent(subId)}">
+                <div class="main-col"><div class="title mono">${esc(subId)}</div><div class="meta">Parallel subtask job</div></div>
+                <span class="arrow">→</span>
+              </a>
+            `).join("")}
+          </div>
+        </section>
+      ` : ""}
+
+      <!-- Simulator Visual QA Screenshots (if any) -->
+      ${(visualChecks.length && visualChecks[0].screenshots.length) ? `
+        <section class="card" style="margin-bottom: 16px;">
+          <div class="card-h"><h2>Simulator Visual QA Screenshots</h2><span class="count">${visualChecks[0].screenshots.length} captured</span></div>
+          <div class="card-b" style="display:flex; gap:14px; overflow-x:auto; padding:12px 16px;">
+            ${visualChecks[0].screenshots.map((img) => `
+              <div style="flex:0 0 auto; text-align:center;">
+                <a href="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" target="_blank" rel="noopener">
+                  <img src="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" style="max-height:220px; border-radius:10px; border:1px solid var(--border); box-shadow:0 2px 8px rgba(0,0,0,0.15);" alt="Screenshot">
+                </a>
+                <div style="font-size:11px; margin-top:4px;" class="muted mono">${esc(img)}</div>
+              </div>
+            `).join("")}
+          </div>
+        </section>
+      ` : ""}
 
       <!-- Docs Section (Brief / Summary / Investigations) -->
       <div id="docs-section">
@@ -1689,6 +1840,24 @@ pages.tests = async (_, query) => {
     actions: `<button class="btn primary" ${act("test")}>Run all tests</button>${moreMenu([["Measure coverage", act("coverage"), "Full test run with coverage; takes a while"], ["Refresh list", `data-href="#/tests?refresh=1"`], ["Expand coverage (AI job)", `data-href="#/new?type=coverage"`]])}`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
+      ${data.frameworks ? `
+      <section class="card"><div class="card-h"><h2>Test Frameworks &amp; Canary Scaffolding</h2>
+        <div class="row">
+          ${!data.frameworks.canary_suite?.installed ? `<button class="btn small primary" ${act("scaffold_canary")}>Scaffold Canary Suite</button>` : ""}
+          <button class="btn small" ${act("visual_check")}>Simulator Visual Check</button>
+        </div>
+      </div>
+      <div class="card-b" style="display:flex; flex-wrap:wrap; gap:12px;">
+        ${Object.values(data.frameworks).map((f) => `
+          <div style="border:1px solid var(--border); border-radius:8px; padding:12px 14px; flex:1 1 200px; background:var(--bg-subtle, rgba(255,255,255,0.02));">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+              <strong>${esc(f.name)}</strong>
+              <span class="badge ${f.installed ? "good" : ""}">${f.installed ? "Installed" : "Available"}</span>
+            </div>
+            <div style="font-size:12px; color:var(--muted);">${esc(f.desc)}</div>
+          </div>
+        `).join("")}
+      </div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Coverage</h2>${cov ? `<span class="count">${esc(ago(Date.parse(cov.timestamp) / 1000))}</span>` : ""}</div>
         <div class="card-b">${cov ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
           ${cov.estimated ? pill("attention", "Estimate — measuring failed") : ""}<span class="muted">${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
@@ -1905,6 +2074,178 @@ pages.config = async (args = []) => {
       },
     };
   }
+  if (section === "models") {
+    return {
+      ...result,
+      after: () => {
+        const form = $("#config-models-form");
+        const onSubmit = async (event) => {
+          event.preventDefault();
+          const button = event.submitter || form.querySelector('button[type="submit"]');
+          const fd = new FormData(form);
+          const modelsObj = {
+            architect: fd.get("architect"),
+            planner: fd.get("planner"),
+            builder: fd.get("builder"),
+            reviewer: fd.get("reviewer"),
+          };
+          await runConfigMutation(button, {part: "models", body: {models: modelsObj}}, "Model team saved");
+        };
+        form?.addEventListener("submit", onSubmit);
+        cleanup.push(() => form?.removeEventListener("submit", onSubmit));
+      },
+    };
+  }
+  if (section === "ai-instructions") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button || button.disabled) return;
+          const {configAction, id, name, content} = button.dataset;
+          if (configAction === "prompt-edit") {
+            showConfigMutationDialog(
+              `Customize ${name} Instructions`,
+              `<label class="field"><span>Prompt Instructions (.md)</span>
+               <textarea name="content" style="min-height:220px; font-family:var(--font-mono); font-size:12px;" required>${esc(content || "")}</textarea></label>`,
+              "Save Instructions",
+              (values) => ({part: "role-prompts", body: {id, content: values.content}}),
+              "Instructions saved"
+            );
+          } else if (configAction === "prompt-revert") {
+            if (confirm(`Revert ${name} instructions to system default?`)) {
+              await runConfigMutation(button, {part: "role-prompts", body: {id, revert: true}}, "Reverted to default");
+            }
+          }
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "fleet") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button || button.disabled) return;
+          const {configAction, name} = button.dataset;
+          if (configAction === "fleet-add") {
+            showConfigMutationDialog(
+              "Add Worker Machine",
+              `<label class="field"><span>Machine Name</span><input type="text" name="name" required placeholder="m3-max-studio"></label>
+               <label class="field"><span>Execution Mode</span><select name="mode"><option value="remote">Remote SSH Machine</option><option value="local">Local Machine</option></select></label>
+               <label class="field"><span>SSH Target</span><input type="text" name="ssh_target" placeholder="user@192.168.1.100"></label>
+               <label class="field"><span>Remote Repository Path</span><input type="text" name="repo_path" placeholder="/Users/user/Developer/project"></label>`,
+              "Add Machine",
+              (values) => ({part: "fleet", body: {op: "add", ...values}}),
+              "Machine added"
+            );
+          } else if (configAction === "fleet-check") {
+            await runAction("worker_check");
+          } else if (configAction === "fleet-sync") {
+            await runAction("sync_fleet");
+          } else if (configAction === "fleet-llm") {
+            await runAction("fleet_llm_check");
+          } else if (configAction === "machine-install") {
+            await runAction("worker_install", {machine: name});
+          } else if (configAction === "machine-toggle") {
+            await runConfigMutation(button, {part: "fleet", body: {op: "toggle", name}}, "Status updated");
+          } else if (configAction === "machine-remove") {
+            if (confirm(`Remove machine '${name}' from fleet?`)) {
+              await runConfigMutation(button, {part: "fleet", body: {op: "remove", name}}, "Machine removed");
+            }
+          }
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "firebase") {
+    return {
+      ...result,
+      after: () => {
+        const form = $("#config-firebase-form");
+        const onSubmit = async (event) => {
+          event.preventDefault();
+          const button = event.submitter || form.querySelector('button[type="submit"]');
+          const fd = new FormData(form);
+          const body = {
+            firebase_app_id: fd.get("firebase_app_id"),
+            firebase_tester_groups: fd.get("firebase_tester_groups"),
+            firebase_service_account_path: fd.get("firebase_service_account_path"),
+          };
+          await runConfigMutation(button, {part: "firebase", body}, "Firebase settings saved");
+        };
+        form?.addEventListener("submit", onSubmit);
+        cleanup.push(() => form?.removeEventListener("submit", onSubmit));
+
+        const onClick = async (event) => {
+          const button = event.target.closest('[data-config-action="distribute-now"]');
+          if (button) await runAction("distribute");
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "updates") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button) return;
+          if (button.dataset.configAction === "update-local") await runAction("update_local");
+          else if (button.dataset.configAction === "update-fleet") await runAction("update_fleet");
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "audit") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest('[data-config-action="run-audit"]');
+          if (button) await runAction("check");
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "self-tests") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest('[data-config-action="run-self-tests"]');
+          if (button) await runAction("test");
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "setup-wizard") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest('[data-config-action="launch-wizard"]');
+          if (button) await runAction("wizard");
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
   if (section !== "api-keys") return result;
 
   return {
@@ -2074,6 +2415,148 @@ async function attachToJob(jobId) {
   catch (e) { toast(e.message, true); }
 }
 
+// ---------------------------------------------------------------- start a new project
+// Describe it (a few lean questions) -> where it lives (GitHub preferred) -> create.
+// Progress is saved server-side, so stopping to sign in to GitHub resumes where you were.
+
+const NP_STEPS = [["describe", "Describe it"], ["where", "Where it lives"], ["create", "Create"]];
+
+function npStepper(active) {
+  const idx = NP_STEPS.findIndex(([k]) => k === active);
+  return `<span class="np-stepper">${NP_STEPS.map(([k, label], i) =>
+    `<span class="np-step ${i === idx ? "on" : i < idx ? "done" : ""}"><span class="np-dot">${i < idx ? "✓" : i + 1}</span>${esc(label)}</span>`).join('<span class="np-line"></span>')}</span>`;
+}
+
+function npQuestion(q, value) {
+  const label = `<span>${esc(q.label)}${q.required ? "" : ` <span class="muted">(optional)</span>`}</span>`;
+  const help = q.help ? `<small class="hint-text">${esc(q.help)}</small>` : "";
+  if (q.kind === "area") return `<label class="field">${label}<textarea name="${q.key}" rows="3" ${q.required ? "required" : ""}>${esc(value)}</textarea>${help}</label>`;
+  if (q.kind === "choice") return `<label class="field">${label}<select name="${q.key}" required><option value="" disabled ${value ? "" : "selected"}>Choose…</option>${q.options.map((o) => `<option ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>${help}</label>`;
+  return `<label class="field">${label}<input type="text" name="${q.key}" value="${esc(value)}" maxlength="200" ${q.required ? "required" : ""}>${help}</label>`;
+}
+
+const npSave = (draft) => api("new-project/draft", { method: "POST", body: draft });
+
+pages["new-project"] = async (_, query) => {
+  let data;
+  try { data = await api("new-project"); } catch (err) {
+    if (err.status !== 404) throw err;
+    return { title: "Start a new project", html: `<div class="notice">Starting a new project isn't available yet. It's part of an update that hasn't reached your Orchestrator. You can still add a project you already have.</div>` };
+  }
+  const draft = data.draft || { answers: {}, step: "describe", host: null, visibility: "private", parent: data.default_parent, waiting_on_github: false, created_root: "" };
+  draft.parent = draft.parent || data.default_parent;
+  const gh = data.github;
+  const step = draft.created_root ? "create" : (query.get("step") || draft.step || "describe");
+  const answersFrom = (form) => Object.fromEntries(data.questions.map((q) => [q.key, (new FormData(form).get(q.key) || "").toString().trim()]));
+  const resume = data.draft && !query.get("step") && draft.step !== "describe"
+    ? `<div class="banner attention np-resume"><p><strong>Picking up where you left off</strong>${draft.answers.name ? ` on “${esc(draft.answers.name)}”` : ""}.${draft.waiting_on_github ? " You were finishing GitHub." : ""}</p></div>` : "";
+  const discard = data.draft ? `<button type="button" class="btn ghost" id="np-discard">Start over</button>` : "";
+
+  const ghPanel = () => {
+    if (gh.user) return `<div class="np-gh ok">✓ Signed in to GitHub as <strong>${esc(gh.user)}</strong></div>`;
+    if (!gh.installed) return `<div class="np-gh warn"><strong>GitHub needs a one-time setup.</strong> Install the GitHub CLI, then check again.
+      <div class="setup-hint"><code>brew install gh</code><button type="button" class="btn small ghost" data-setup-copy="brew install gh">Copy</button></div>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn small" id="np-recheck">Check again</button></div></div>`;
+    return `<div class="np-gh warn"><strong>Sign in to GitHub first.</strong> Your answers are saved, so you can come back right here.
+      <div class="row" style="margin-top:8px"><button type="button" class="btn small primary" id="np-signin">Sign in to GitHub</button><button type="button" class="btn small" id="np-recheck">I've signed in: check again</button></div></div>`;
+  };
+
+  if (step === "describe") {
+    return {
+      title: "Start a new project", sub: npStepper("describe"),
+      html: `${resume}<form class="card card-b stack np-form" id="np-describe">
+        <p class="muted">A few quick questions. They become a product brief that you and the AI can both read. Keep the answers short; you can edit the brief any time.</p>
+        ${data.questions.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}
+        <div class="row"><span class="spacer"></span>${discard}<button class="btn primary big" type="submit">Next: where it lives</button></div></form>`,
+      after: () => {
+        $("#np-describe").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          try { await npSave({ ...draft, answers: answersFrom(e.target), step: "where" }); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
+        });
+        $("#np-discard")?.addEventListener("click", async () => { await api("new-project/discard", { method: "POST", body: {} }); route(); });
+      },
+    };
+  }
+
+  if (step === "where") {
+    const host = draft.host || "github";
+    const ready = host === "local" || !!gh.user;
+    return {
+      title: "Start a new project", sub: npStepper("where"),
+      html: `${resume}<form class="card card-b stack np-form" id="np-where">
+        <div class="np-hosts">
+          <label class="np-host ${host === "github" ? "on" : ""}"><input type="radio" name="host" value="github" ${host === "github" ? "checked" : ""}>
+            <strong>GitHub <span class="pill done">Recommended</span></strong>
+            <small>Backs your work up, tracks every job as an issue and pull request, and is what the orchestrator is built around.</small></label>
+          <label class="np-host ${host === "local" ? "on" : ""}"><input type="radio" name="host" value="local" ${host === "local" ? "checked" : ""}>
+            <strong>Local only</strong>
+            <small>Just a folder on this computer. You can publish it to GitHub later, but jobs need GitHub to run.</small></label>
+        </div>
+        ${host === "github" ? `${ghPanel()}
+          <label class="field"><span>Who can see the repository?</span><select name="visibility"><option value="private" ${draft.visibility !== "public" ? "selected" : ""}>Only me (private)</option><option value="public" ${draft.visibility === "public" ? "selected" : ""}>Anyone (public)</option></select></label>` : ""}
+        <label class="field"><span>Where on this computer?</span><input type="text" name="parent" value="${esc(draft.parent)}" spellcheck="false" autocapitalize="off">
+          <small class="hint-text">A folder named “${esc(answersSlug(draft))}” is created inside this one.</small></label>
+        <div class="row"><button type="button" class="btn ghost" id="np-back">Back</button><span class="spacer"></span>
+          ${host === "github" && !ready ? `<button type="button" class="btn" id="np-local">Use local only for now</button>` : ""}
+          <button class="btn primary big" type="submit" ${ready ? "" : "disabled"}>Create project</button></div>
+        ${host === "github" && !ready ? `<small class="hint-text">Create is available once GitHub is signed in.</small>` : ""}</form>`,
+      after: () => {
+        const form = $("#np-where");
+        const collect = (extra = {}) => ({ ...draft, host: form.host.value, visibility: form.visibility?.value || draft.visibility, parent: form.parent.value.trim(), ...extra });
+        form.querySelectorAll('input[name="host"]').forEach((r) => r.addEventListener("change", async () => { await npSave(collect({ step: "where" })); route(); }));
+        $("#np-back").addEventListener("click", async () => { await npSave(collect({ step: "describe" })); location.hash = "#/new-project?step=describe"; route(); });
+        $("#np-recheck")?.addEventListener("click", () => route());
+        $("#np-local")?.addEventListener("click", async () => { await npSave(collect({ host: "local", waiting_on_github: false })); route(); });
+        $("#np-signin")?.addEventListener("click", async () => { await npSave(collect({ waiting_on_github: true, step: "where" })); runAction("config_menu", { menu: "github" }); });
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const btn = form.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = "Creating…";
+          try {
+            await npSave(collect({ step: "create", waiting_on_github: false }));
+            const result = await api("new-project/create", { method: "POST", body: {} });
+            window.__npResult = result;
+            await refreshState();
+            location.hash = "#/new-project?step=create"; route();
+          } catch (err) { btn.disabled = false; btn.textContent = "Create project"; toast(err.message, true); }
+        });
+      },
+    };
+  }
+
+  // step === "create": show what happened, and what's left
+  const result = window.__npResult;
+  const created = result?.root || draft.created_root;
+  const steps = result?.steps || [{ name: "Created the folder and product brief", ok: true, detail: draft.created_root }, { name: "Create the GitHub repository", ok: false, detail: "Waiting on GitHub." }];
+  const githubPending = !!draft.created_root || (result && !result.github_ok);
+  return {
+    title: result?.name ? `${result.name} is ready` : "Finish GitHub", sub: npStepper("create"),
+    html: `${resume}<section class="card"><div class="list">${steps.map((s) => `<div class="item"><span>${s.ok ? "✅" : "⚠️"}</span><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${esc(s.detail || "")}</div></div></div>`).join("")}</div></section>
+      ${githubPending ? `<div class="card card-b stack"><strong>Your project is saved on this computer.</strong>
+        <span class="muted">GitHub isn't done yet. Jobs need it, so finish it now or later from here.</span>${ghPanel()}
+        <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
+      <div class="row" style="margin-top:16px"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
+      <p class="muted">“Set up this project” runs the setup wizard, which asks how it's built and tested so jobs can run.</p>`,
+    after: () => {
+      $("#np-recheck")?.addEventListener("click", () => route());
+      $("#np-signin")?.addEventListener("click", () => runAction("config_menu", { menu: "github" }));
+      $("#np-wizard").addEventListener("click", () => runAction("wizard"));
+      $("#np-publish")?.addEventListener("click", async (e) => {
+        e.target.disabled = true; e.target.textContent = "Creating…";
+        try {
+          const { step } = await api("new-project/publish", { method: "POST", body: { root: created, visibility: draft.visibility } });
+          if (!step.ok) { toast(step.detail, true); e.target.disabled = false; e.target.textContent = "Create the GitHub repository"; return; }
+          window.__npResult = { ...(result || {}), name: result?.name || draft.answers.name, root: created, github_ok: true, steps: [...steps.filter((s) => s.ok), step] };
+          toast("Repository created"); route();
+        } catch (err) { toast(err.message, true); e.target.disabled = false; e.target.textContent = "Create the GitHub repository"; }
+      });
+    },
+  };
+};
+
+function answersSlug(draft) {
+  return (draft.answers?.name || "your-project").trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "your-project";
+}
+
 pages.activity = async () => {
   const running = state.runs.filter((r) => r.running);
   const finished = state.runs.filter((r) => !r.running);
@@ -2097,9 +2580,18 @@ pages.file = async (_, query) => {
   };
 };
 
+let projectCardOrder = null; // roots in the order first shown this page load
+
 pages.projects = async () => {
   const { projects } = await api("projects");
-  const pList = projects || [];
+  // Keep cards where they were first shown. Switching projects makes the server list the new
+  // active one first, but moving the card under your finger is disorienting: reorder on refresh only.
+  const fresh = projects || [];
+  if (!projectCardOrder) projectCardOrder = fresh.map((p) => p.root);
+  else for (const p of fresh) if (!projectCardOrder.includes(p.root)) projectCardOrder.push(p.root);
+  const pList = [...fresh].sort((x, y) => projectCardOrder.indexOf(x.root) - projectCardOrder.indexOf(y.root));
+  let unfinished = null;
+  try { unfinished = (await api("new-project")).draft; } catch { /* older server */ }
 
   const githubCount = pList.filter((p) => p.source_type === "github").length;
   const localCount = pList.filter((p) => p.source_type !== "github").length;
@@ -2113,7 +2605,8 @@ pages.projects = async () => {
   };
 
   const cardsHtml = pList.map((p) => `
-    <div class="project-card ${p.active ? "active-project" : ""}" data-source="${esc(p.source_type || "local")}">
+    <div class="project-card ${p.active ? "active-project" : ""}" data-source="${esc(p.source_type || "local")}" role="button" tabindex="0"
+      ${p.active ? 'data-href="#/"' : `data-switch-project="${esc(p.root)}"`} aria-label="${p.active ? "Open" : "Switch to"} ${esc(p.name)}">
       <div class="project-card-header">
         <h4 class="project-card-title">${esc(p.name)}</h4>
         <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
@@ -2136,7 +2629,6 @@ pages.projects = async () => {
         ${p.active ? `
           <a class="btn small primary" href="#/">Open Dashboard</a>
         ` : `
-          <button class="btn small primary" data-switch-project="${esc(p.root)}">Switch to project</button>
           <button class="btn small ghost" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>
         `}
       </div>
@@ -2146,9 +2638,10 @@ pages.projects = async () => {
   return {
     title: "Projects",
     sub: "Manage and switch between codebases on this machine.",
-    actions: `<button class="btn primary" id="add-project-btn"><svg class="icon"><use href="#i-plus"/></svg>Add Project</button>`,
+    actions: `<a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg>Start a new project</a><button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg>Add an existing project</button>`,
     html: `
       <div class="projects-container">
+        ${unfinished ? `<div class="banner attention" style="margin-bottom: 16px;"><p><strong>Unfinished new project${unfinished.answers?.name ? `: ${esc(unfinished.answers.name)}` : ""}.</strong>${unfinished.waiting_on_github ? " Waiting on GitHub." : ""}</p><a class="btn small primary" href="#/new-project">Continue</a></div>` : ""}
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 10px;">
           <h2 style="font-size: 1.15rem; margin: 0;">Tracked Projects (${pList.length})</h2>
           <div class="filters projects-filter">
@@ -2158,7 +2651,7 @@ pages.projects = async () => {
           </div>
         </div>
         <div class="projects-grid" id="tracked-projects-grid">
-          ${cardsHtml || '<div class="empty">No projects tracked yet. Add a project to get started.</div>'}
+          ${cardsHtml || '<div class="empty">No projects yet. Start a new one, or add one you already have.</div>'}
         </div>
       </div>
     `,
@@ -2345,6 +2838,7 @@ function resolveRoute() {
     const section = ConfigurationPages.resolve(parts[1]);
     return { page: "config", args: section ? [section.id] : [], nav: "config", query };
   }
+  if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "projects", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
 }

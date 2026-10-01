@@ -142,6 +142,79 @@ def revise(path: Path, change: str, where: str, done_when: str) -> int:
 # --------------------------------------------------------------------------- tests
 
 
+def frameworks_inventory() -> dict[str, Any]:
+    from dev_console import ROOT, PROJECT_CONFIG, discover_test_suites
+    import shutil
+    has_xcbeautify = shutil.which("xcbeautify") is not None
+    suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
+    all_test_content = ""
+    for s in suites:
+        try:
+            p = s.get("path")
+            if p and Path(p).is_file():
+                all_test_content += Path(p).read_text(encoding="utf-8") + "\n"
+        except Exception:
+            pass
+
+    has_swift_testing = "import Testing" in all_test_content or "@Test" in all_test_content
+    has_snapshot_testing = "import SnapshotTesting" in all_test_content or "assertSnapshot" in all_test_content
+    has_quick_nimble = "import Quick" in all_test_content or "import Nimble" in all_test_content
+
+    tt = PROJECT_CONFIG.test_target or "AppTests"
+    sample_canary_exists = (ROOT / tt / "SampleSwiftTestingTests.swift").exists() if PROJECT_CONFIG.test_target else False
+
+    return {
+        "swift_testing": {"installed": bool(has_swift_testing), "name": "Swift Testing (Native)", "desc": "Core logic, ViewModels & async unit tests"},
+        "snapshot_testing": {"installed": bool(has_snapshot_testing), "name": "SnapshotTesting", "desc": "Visual regressions (SwiftUI pixels, Dark Mode)"},
+        "quick_nimble": {"installed": bool(has_quick_nimble), "name": "Quick & Nimble (BDD)", "desc": "Multi-step async state machines & polling specs"},
+        "canary_suite": {"installed": bool(sample_canary_exists), "name": "Sample Canary Suite", "desc": f"1-click test suite generation in {tt}"},
+        "xcbeautify": {"installed": bool(has_xcbeautify), "name": "xcbeautify Formatter", "desc": "Strip noisy xcodebuild output into 1-line logs"},
+    }
+
+
+def scaffold_canary() -> int:
+    from dev_console import ROOT, PROJECT_CONFIG
+    tt = PROJECT_CONFIG.test_target or "AppTests"
+    tt_dir = ROOT / tt
+    tt_dir.mkdir(parents=True, exist_ok=True)
+    sample_file = tt_dir / "SampleSwiftTestingTests.swift"
+    scheme = PROJECT_CONFIG.scheme or PROJECT_CONFIG.project_name or "App"
+    sample_code = f"""import Testing
+@testable import {scheme}
+
+@Suite("Sample Orchestrator Suite")
+struct SampleSwiftTestingTests {{
+
+    @Test("Basic arithmetic validation with expect")
+    func basicAssertion() {{
+        #expect(2 + 2 == 4)
+    }}
+
+    @Test("Parameterized calculation validation", arguments: [
+        (2, 3, 5),
+        (10, 20, 30),
+        (-5, 5, 0)
+    ])
+    func parameterizedTest(a: Int, b: Int, expected: Int) {{
+        #expect(a + b == expected)
+    }}
+
+    @Test("Async requirement verification")
+    func asyncRequirement() async throws {{
+        let value: Int? = 42
+        let unwrapped = try #require(value, "Value must be present")
+        #expect(unwrapped > 0)
+    }}
+}}
+"""
+    if sample_file.exists():
+        print(f"File already exists: {sample_file}")
+        return 0
+    sample_file.write_text(sample_code, encoding="utf-8")
+    print(f"✅ Created canary test suite: {sample_file}")
+    return 0
+
+
 def test_inventory() -> dict[str, Any]:
     from dev_console import ROOT, PROJECT_CONFIG, discover_test_suites, get_coverage_data
 
@@ -153,6 +226,7 @@ def test_inventory() -> dict[str, Any]:
                     "language": s.get("language", "swift")} for s in suites],
         "plans": [p.stem for p in plans],
         "coverage": get_coverage_data(),
+        "frameworks": frameworks_inventory(),
     }
 
 
@@ -209,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run-suite", help="Run one test suite").add_argument("name")
     sub.add_parser("run-plan", help="Run one test plan").add_argument("name")
     sub.add_parser("coverage", help="Measure code coverage")
+    sub.add_parser("scaffold-canary", help="Generate sample Swift Testing canary suite")
     args = parser.parse_args(argv)
 
     if args.action == "tests":
@@ -227,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_plan(args.name)
     if args.action == "coverage":
         return coverage()
+    if args.action == "scaffold-canary":
+        return scaffold_canary()
 
     path = Path(args.job_file).resolve()
     if not path.is_file():

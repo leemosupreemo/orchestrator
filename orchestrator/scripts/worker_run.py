@@ -24,6 +24,7 @@ except:
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
 from common import (
+    CONFIG_DIR,
     LOGS_DIR,
     OUTPUT_DIR,
     ROOT,
@@ -685,6 +686,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         status_bar.render()
         print(f"[4/4] Implementation successful. Opening/updating Pull Request...")
         pr_number, pr_url = open_or_update_pr(job_path)
+        if pr_url:
+            try:
+                from orchestrator.integrations_sync import notify_job_event
+                notify_job_event(job, "pr_opened", CONFIG_DIR / "settings.json", job_path, pr_url=pr_url, pr_number=pr_number)
+            except Exception as exc:  # linked-app updates are best effort
+                print(f"      - Note: couldn't update linked apps: {exc}")
 
         if is_debug:
             # Update history with success

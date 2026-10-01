@@ -3966,7 +3966,15 @@ def handle_merge_cleanup(job: dict[str, Any]):
         else:
             print(f"      - Note: Branch '{branch}' is not AI-managed. Preserving local branch.")
 
-    # 4. Archive Job
+    # 4. Tell linked tickets/cards/issues (best effort), then archive the job with that log
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None,
+                         pr_number=pr_number)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+
+    # 5. Archive Job
     archive_path = archive_job(job)
 
     print(f"\n✅ Successfully merged and archived to {archive_path.name}")

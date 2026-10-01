@@ -1031,6 +1031,32 @@ def verify_wizard_setup(install_workers: list[str]) -> int:
     return 1 if check_result != 0 or config_result != 0 or worker_failures else 0
 
 
+def run_new_project(args: argparse.Namespace) -> int:
+    from orchestrator import new_project_cli
+    from orchestrator.setup_checklist import github_cli_state
+
+    def ask(label: str, default: str | None = None, optional: bool = False) -> str:
+        return prompt_text(label, default, skip_available=False, optional=optional)
+
+    def choose(label: str, options: list[str]) -> str:
+        return prompt_radio(label, options, options[0], clear_screen=False)
+
+    def confirm(label: str, default: bool) -> bool:
+        return prompt_yes_no(label, default, skip_available=False)
+
+    def github_login() -> None:
+        subprocess.run(["gh", "auth", "login"], check=False)
+
+    print("\n\033[1;96m" + "=" * 20 + " Start a new project " + "=" * 20 + "\033[0m")
+    code, root = new_project_cli.run(ask=ask, choose=choose, confirm=confirm, out=print,
+                                     github_state=lambda: github_cli_state(fresh=True), github_login=github_login)
+    if code == 0 and root and not args.no_wizard and prompt_yes_no("Run the setup wizard for it now?", True, skip_available=False):
+        return main(["wizard", "--root", str(root)])
+    if code == 0 and root:
+        print(f"Next: orchestrator wizard --project {root}")
+    return code
+
+
 def run_wizard(args: argparse.Namespace) -> int:
     root_arg = args.project or args.root
     root = safe_resolve(Path(root_arg).expanduser()) if root_arg else find_project_root()
@@ -1067,6 +1093,8 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
 
     from orchestrator import __version__
     print(f"\n\033[1;96m{'='*20} Orchestrator Wizard v{__version__} {'='*20}\033[0m")
+    if not args.non_interactive and root.is_dir() and not any(p.name != ".git" for p in root.iterdir()):
+        print("This folder is empty. Starting from an idea instead? Run \033[97morchestrator new\033[0m to describe it and create the project.\n")
 
     # Start Status Bar context for the entire wizard
     with StatusBar(sub_menu=True) as status_bar:
@@ -2238,6 +2266,9 @@ def _main(argv: list[str] | None = None) -> int:
     init_parser.add_argument("--with-starter-docs", action="store_true")
     init_parser.add_argument("--with-helper-script", action="store_true")
 
+    new_parser = subparsers.add_parser("new", help="Start a brand-new project (describe it, then create it)")
+    new_parser.add_argument("--no-wizard", action="store_true", help="Don't offer to run the setup wizard afterwards")
+
     wizard_parser = subparsers.add_parser("wizard")
     wizard_parser.add_argument("--root")
     wizard_parser.add_argument("--project", help="Project root path. Alias for --root.")
@@ -2305,6 +2336,7 @@ def _main(argv: list[str] | None = None) -> int:
     ui_parser.add_argument("--port", type=int, default=8765)
     ui_parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
     ui_parser.add_argument("--token", help="Fixed access token for the web interface")
+    ui_parser.add_argument("--tunnel", action="store_true", help="Start a Cloudflare tunnel for remote access from phone")
 
     logs_parser = subparsers.add_parser(
         "logs",
@@ -2323,6 +2355,8 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "init":
         return init_project(args)
+    if args.command == "new":
+        return run_new_project(args)
     if args.command == "wizard":
         return run_wizard(args)
     if args.command == "console":
@@ -2375,7 +2409,7 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         from orchestrator.web.server import main as ui_main
-        ui_args = ["--host", args.host, "--port", str(args.port)] + (["--no-open"] if args.no_open else []) + (["--token", args.token] if getattr(args, "token", None) else [])
+        ui_args = ["--host", args.host, "--port", str(args.port)] + (["--no-open"] if args.no_open else []) + (["--token", args.token] if getattr(args, "token", None) else []) + (["--tunnel"] if getattr(args, "tunnel", False) else [])
         return ui_main(ui_args)
     if args.command == "logs":
         if args.project and apply_project_env(args.project):

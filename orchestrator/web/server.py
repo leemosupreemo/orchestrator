@@ -23,12 +23,14 @@ import base64
 import errno
 import fcntl
 import hmac
+import io
 import json
 import mimetypes
 import os
 import re
 import secrets
 import shutil
+import zipfile
 import signal
 import ssl
 import struct
@@ -49,6 +51,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator import integrations
+from orchestrator import new_project
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
@@ -1241,6 +1244,95 @@ def build_git_push(params: dict[str, Any], root: Path) -> list[str]:
     return ["git", "push", "-u", "origin", branch]
 
 
+def build_splinter(params: dict[str, Any], root: Path) -> list[str]:
+    return orchestrator_argv("script", "splinter_job.py", _job_path(params, root))
+
+
+def build_export_job(params: dict[str, Any], root: Path) -> list[str]:
+    argv = orchestrator_argv("script", "export_job.py", _job_path(params, root))
+    dest = _choice(params, "destination", ["icloud", "gdrive", "downloads", "local"])
+    if dest:
+        argv += ["--destination", dest]
+    return argv
+
+
+def build_simulator_visual_check(params: dict[str, Any], root: Path) -> list[str]:
+    argv = orchestrator_argv("script", "simulator_visual_check.py")
+    destination = _text(params, "destination", limit=200)
+    if destination:
+        argv += ["--destination", destination]
+    if params.get("no_build"):
+        argv.append("--no-build")
+    wait = params.get("wait")
+    if wait:
+        try:
+            wait_float = float(wait)
+            argv += ["--wait", str(wait_float)]
+        except (ValueError, TypeError):
+            pass
+    return argv
+
+
+def build_worker_install(params: dict[str, Any], root: Path) -> list[str]:
+    machine = _text(params, "machine", required=False, limit=100)
+    return orchestrator_argv("worker-install", *(["--machine", machine] if machine else []))
+
+
+def visual_checks_inventory(root: Path) -> list[dict[str, Any]]:
+    output_dirs = [runtime_dir(root) / "output", root / "output"]
+    runs = []
+    seen = set()
+    for out_base in output_dirs:
+        if not out_base.is_dir():
+            continue
+        for child in out_base.glob("visual-check-*"):
+            if not child.is_dir() or child.name in seen:
+                continue
+            seen.add(child.name)
+            report_file = child / "report.md"
+            report_text = report_file.read_text(encoding="utf-8", errors="replace") if report_file.is_file() else ""
+            screenshots = sorted([p.name for p in child.glob("*.png")])
+            mtime = child.stat().st_mtime
+            runs.append({
+                "id": child.name,
+                "created_at": datetime.fromtimestamp(mtime).isoformat(),
+                "report": report_text,
+                "screenshots": screenshots,
+                "count": len(screenshots),
+            })
+    return sorted(runs, key=lambda x: x["created_at"], reverse=True)
+
+
+def get_role_prompts(root: Path) -> list[dict[str, Any]]:
+    roles = [
+        {"id": "architect", "name": "Senior Architect", "file": "agent_lead.md", "desc": "Reviews proposals, sets architecture standards & acceptance criteria"},
+        {"id": "planner", "name": "Planner Agent", "file": "planner_feature.md", "desc": "Breaks down requirements, investigates codebase, designs task plans"},
+        {"id": "builder", "name": "Builder Agent", "file": "builder_feature_task.md", "desc": "Implements code changes, tests, and resolves compilation errors"},
+        {"id": "reviewer", "name": "Reviewer Agent", "file": "reviewer.md", "desc": "Evaluates diffs, checks test coverage and regression risks"},
+    ]
+    prompts_dir = runtime_dir(root) / "prompts"
+    results = []
+    for r in roles:
+        custom_file = prompts_dir / r["file"]
+        is_custom = custom_file.is_file()
+        content = ""
+        if is_custom:
+            try:
+                content = custom_file.read_text(encoding="utf-8")
+            except Exception:
+                content = ""
+        results.append({
+            "id": r["id"],
+            "name": r["name"],
+            "file": r["file"],
+            "description": r["desc"],
+            "custom": is_custom,
+            "customized": is_custom,
+            "content": content[:10_000] if is_custom else "",
+        })
+    return results
+
+
 # --------------------------------------------------------------------------- configuration
 
 API_KEYS = [
@@ -1313,7 +1405,8 @@ def archived_jobs(root: Path) -> list[dict[str, Any]]:
 
 def config_state(root: Path) -> dict[str, Any]:
     settings = read_settings(root)
-    machines_raw = read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", [])
+    machines_file = runtime_dir(root) / "config" / "machines.json"
+    machines_raw = read_json_file(machines_file).get("machines", [])
     provider = settings.get("notification_provider", "gmail")
     return {
         "base_branch": base_branch(root, settings),
@@ -1331,10 +1424,45 @@ def config_state(root: Path) -> dict[str, Any]:
         "archived": archived_jobs(root),
         "docs": [{k: v for k, v in d.items() if k != "path"} for d in doc_entries(root)],
         "instructions": [{"cli": cli, "file": f, "exists": (root / f).is_file()} for cli, f in INSTRUCTION_FILES.items()],
-        "machines": [{"name": m.get("name"), "mode": m.get("execution_mode"), "roles": m.get("roles", []),
-                      "models": len(m.get("models", [])), "priority": m.get("priority"),
+        "machines": [{"name": m.get("name"), "mode": m.get("execution_mode", "remote"), "roles": m.get("roles", []),
+                      "ssh_target": m.get("ssh_target", ""), "repo_path": m.get("repo_path", ""),
+                      "enabled": m.get("enabled", True), "models": len(m.get("models", [])),
+                      "priority": m.get("priority", 1),
                       "xcode": bool(m.get("supports_xcode")), "simulator": bool(m.get("supports_simulator"))}
                      for m in machines_raw if isinstance(m, dict)],
+        "models": {
+            "assignments": settings.get("default_models", {
+                "architect": "claude-sonnet-4-6",
+                "planner": "claude-sonnet-4-6",
+                "builder": "claude-sonnet-4-6",
+                "reviewer": "claude-sonnet-4-6",
+            }),
+            "available": [
+                {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (Recommended)", "provider": "Anthropic"},
+                {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "provider": "Anthropic"},
+                {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "provider": "Google"},
+                {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "provider": "Google"},
+                {"id": "gpt-4o", "label": "GPT-4o", "provider": "OpenAI"},
+                {"id": "o3-mini", "label": "o3-mini", "provider": "OpenAI"},
+            ],
+            **settings.get("default_models", {
+                "architect": "claude-sonnet-4-6",
+                "planner": "claude-sonnet-4-6",
+                "builder": "claude-sonnet-4-6",
+                "reviewer": "claude-sonnet-4-6",
+            }),
+        },
+        "firebase": {
+            "app_id": settings.get("firebase_app_id", ""),
+            "tester_groups": settings.get("firebase_tester_groups", "testers"),
+            "service_account_path": settings.get("firebase_service_account_path", ""),
+            "cli_installed": shutil.which("firebase") is not None,
+        },
+        "xcode_cloud": {
+            "configured": (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists(),
+            "ci_scripts_exists": (root / "ci_scripts").is_dir(),
+        },
+        "role_prompts": get_role_prompts(root),
         "allowed_emails": [{"email": e, "source": src} for e, src in allowed_auth_sources(root).items()],
         "menus": CONFIG_MENUS,
     }
@@ -1407,6 +1535,73 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
             raise UIError("A job with that id already exists")
         shutil.move(str(src), str(dest))
         return {"ok": True}
+    elif part == "models":
+        assignments = body.get("models")
+        if isinstance(assignments, dict):
+            settings["default_models"] = {k: str(v).strip() for k, v in assignments.items()}
+    elif part == "firebase":
+        for k in ("firebase_app_id", "firebase_tester_groups", "firebase_service_account_path"):
+            val = _text(body, k, limit=500)
+            if val or k in body:
+                settings[k] = val
+    elif part == "role-prompts":
+        role_id = _text(body, "id", required=True)
+        content = _text(body, "content", limit=20_000)
+        prompts_dir = runtime_dir(root) / "prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        filename_map = {
+            "architect": "agent_lead.md",
+            "planner": "planner_feature.md",
+            "builder": "builder_feature_task.md",
+            "reviewer": "reviewer.md",
+        }
+        if role_id not in filename_map:
+            raise UIError("Unknown role ID")
+        target_file = prompts_dir / filename_map[role_id]
+        if body.get("revert"):
+            if target_file.exists():
+                target_file.unlink()
+        else:
+            target_file.write_text(content + "\n", encoding="utf-8")
+        return {"ok": True}
+    elif part == "fleet":
+        op = _choice(body, "op", ["add", "remove", "toggle"])
+        machines_file = runtime_dir(root) / "config" / "machines.json"
+        machines_data = read_json_file(machines_file) or {}
+        machines_list = list(machines_data.get("machines", []))
+        if op == "add":
+            name = _text(body, "name", required=True, limit=50)
+            target = _text(body, "ssh_target", limit=200)
+            repo = _text(body, "repo_path", limit=500)
+            mode = _choice(body, "mode", ["local", "remote"], "remote")
+            new_m = {
+                "name": name,
+                "execution_mode": mode,
+                "ssh_target": target,
+                "repo_path": repo,
+                "enabled": True,
+                "roles": ["builder", "verifier"] if mode == "remote" else ["architect", "planner", "builder", "reviewer"],
+                "models": [],
+                "priority": 2 if mode == "remote" else 1,
+            }
+            machines_list = [m for m in machines_list if m.get("name") != name]
+            machines_list.append(new_m)
+            machines_data["machines"] = machines_list
+            write_json_file(machines_file, machines_data)
+            return {"ok": True}
+        elif op == "remove":
+            name = _text(body, "name", required=True)
+            machines_data["machines"] = [m for m in machines_list if m.get("name") != name]
+            write_json_file(machines_file, machines_data)
+            return {"ok": True}
+        elif op == "toggle":
+            name = _text(body, "name", required=True)
+            for m in machines_list:
+                if m.get("name") == name:
+                    m["enabled"] = not m.get("enabled", True)
+            machines_data["machines"] = machines_list
+            write_json_file(machines_file, machines_data)
+            return {"ok": True}
     else:
         raise UIError("Unknown configuration section", HTTPStatus.NOT_FOUND)
     write_settings(root, settings)
@@ -1548,6 +1743,47 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
     return existing
 
 
+# --------------------------------------------------------------------------- new project
+
+
+def new_project_state() -> dict[str, Any]:
+    from orchestrator.setup_checklist import github_cli_state
+    return {"questions": new_project.QUESTIONS, "draft": new_project.load_draft(),
+            "github": github_cli_state(fresh=True), "default_parent": new_project.default_parent()}
+
+
+def create_new_project(server: "UIServer") -> dict[str, Any]:
+    draft = new_project.load_draft()
+    if not draft:
+        raise UIError("There's no project in progress. Start by describing it.")
+    if draft.get("created_root"):
+        raise UIError("This project is already created. Finish the GitHub step to publish it.")
+    try:
+        result = new_project.create_project(draft)
+    except new_project.NewProjectError as exc:
+        raise UIError(str(exc))
+    server.set_root(Path(result["root"]))
+    # The draft stays until GitHub is done, so a failed publish can be retried from where they were.
+    if result["github_ok"]:
+        new_project.clear_draft()
+    else:
+        new_project.save_draft({**draft, "step": "create", "waiting_on_github": True, "created_root": result["root"]})
+    return result
+
+
+def publish_known_project(root_str: str, visibility: str) -> dict[str, Any]:
+    root = safe_resolve(Path(root_str).expanduser())
+    known = {str(safe_resolve(Path(p["root"]).expanduser())) for p in load_recent_projects().get("projects", []) if p.get("root")}
+    if str(root) not in known or not (root / ".git").exists():
+        raise UIError("That isn't one of your projects")
+    if git(root, "remote", "get-url", "origin"):
+        raise UIError("This project already has a GitHub remote")
+    step = new_project.publish_to_github(root, root.name, "public" if visibility == "public" else "private")
+    if step["ok"]:
+        new_project.clear_draft()
+    return step
+
+
 def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
     return lambda params, root: orchestrator_argv("script", "manual_run.py", mode)
 
@@ -1589,6 +1825,16 @@ ACTIONS: dict[str, Action] = {
     "logs_setup": Action("Device logs setup", lambda p, r: orchestrator_argv("logs", "setup")),
     "logs_pull": Action("Pull device logs", build_logs_pull, fields=["session", "level", "query"]),
     "logs_tail": Action("Follow device logs", build_logs_tail, fields=["session"]),
+    "splinter": Action("Splinter into sub-jobs", build_splinter,
+                       confirm="Decomposes this feature plan into child task jobs and issues.", fields=["job"]),
+    "export_job": Action("Export job bundle", build_export_job, fields=["job", "destination"]),
+    "visual_check": Action("Simulator visual check", build_simulator_visual_check, fields=["destination", "wait", "no_build"]),
+    "worker_install": Action("Install worker dependencies", build_worker_install, fields=["machine"]),
+    "sync_fleet": Action("Sync fleet code", lambda p, r: orchestrator_argv("script", "sync_fleet.py")),
+    "fleet_llm_check": Action("Fleet LLM latency & quota check", lambda p, r: orchestrator_argv("script", "fleet_llm_check.py")),
+    "update_local": Action("Update Orchestrator (local)", lambda p, r: orchestrator_argv("update")),
+    "update_fleet": Action("Update Orchestrator (fleet-wide)", lambda p, r: orchestrator_argv("update", "--fleet")),
+    "scaffold_canary": Action("Scaffold canary test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "scaffold-canary")),
 }
 
 
@@ -1693,7 +1939,14 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _host_ok(self) -> bool:
         allowed = self.server.allowed_hosts
-        return allowed is None or (self.headers.get("Host") or "") in allowed
+        if allowed is None:
+            return True
+        h = (self.headers.get("Host") or "").lower()
+        if h in allowed:
+            return True
+        if h.endswith(".trycloudflare.com") or ".trycloudflare.com:" in h:
+            return True
+        return False
 
     def _authed(self) -> bool:
         supplied = ""
@@ -1941,6 +2194,20 @@ class UIHandler(BaseHTTPRequestHandler):
             else:
                 text = target.read_text(encoding="utf-8", errors="replace")
             self._json({"path": str(target.relative_to(safe_resolve(runtime_dir(root)))), "text": text})
+        elif method == "GET" and parts == ["new-project"]:
+            self._json(new_project_state())
+        elif method == "POST" and parts == ["new-project", "draft"]:
+            self._json({"draft": new_project.save_draft(self._body())})
+        elif method == "POST" and parts == ["new-project", "discard"]:
+            self._body()
+            new_project.clear_draft()
+            self._json({"ok": True})
+        elif method == "POST" and parts == ["new-project", "create"]:
+            self._body()
+            self._json(create_new_project(self.server))
+        elif method == "POST" and parts == ["new-project", "publish"]:
+            body = self._body()
+            self._json({"step": publish_known_project(str(body.get("root") or ""), str(body.get("visibility") or "private"))})
         elif method == "GET" and parts == ["integrations"]:
             self._json({"integrations": integrations.public_catalog(saved_integrations(root), read_settings(root).get("integration_options"))})
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "options":
@@ -1975,6 +2242,47 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(self._tests(root, refresh=bool(query.get("refresh"))))
         elif method == "GET" and parts == ["devlogs"]:
             self._json({"pulls": device_log_pulls(root), "sessions": self._device_sessions(root)})
+        elif method == "GET" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "export-zip":
+            job_id = parts[1]
+            try:
+                job_path = resolve_job_path(root, job_id)
+            except UIError:
+                self._error(HTTPStatus.NOT_FOUND, "Job not found")
+                return
+            if not job_path.is_file():
+                self._error(HTTPStatus.NOT_FOUND, "Job not found")
+                return
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(job_path, arcname=f"{job_id}/job.json")
+                for p, arc in [
+                    (runtime_dir(root) / "jobs" / f"{job_id}-brief.md", f"{job_id}/brief.md"),
+                    (runtime_dir(root) / "jobs" / f"{job_id}-plan.md", f"{job_id}/plan.md"),
+                    (runtime_dir(root) / "jobs" / f"{job_id}-diff.patch", f"{job_id}/diff.patch"),
+                    (runtime_dir(root) / "logs" / f"{job_id}.log", f"{job_id}/execution.log"),
+                    (runtime_dir(root) / "output" / f"{job_id}-verification.md", f"{job_id}/verification.md"),
+                ]:
+                    if p.is_file():
+                        zf.write(p, arcname=arc)
+            data = zip_buffer.getvalue()
+            self._send(HTTPStatus.OK, data, "application/zip", {
+                "Content-Disposition": f'attachment; filename="{job_id}-export.zip"'
+            })
+        elif method == "GET" and parts == ["visual-checks"]:
+            self._json({"checks": visual_checks_inventory(root)})
+        elif method == "GET" and len(parts) >= 4 and parts[0] == "visual-checks" and parts[2] == "screenshots":
+            run_id = parts[1]
+            img_name = parts[3]
+            target = None
+            for out_base in [runtime_dir(root) / "output", root / "output"]:
+                cand = out_base / run_id / img_name
+                if cand.is_file():
+                    target = cand
+                    break
+            if not target:
+                self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
+                return
+            self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
         elif method == "POST" and parts == ["project"]:
             self._switch_project(self._body())
         elif method == "GET" and parts == ["runs"]:
@@ -2148,6 +2456,36 @@ def open_browser(url: str) -> None:
         subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def start_tunnel(port: int) -> tuple[subprocess.Popen | None, str | None]:
+    cloudflared = shutil.which("cloudflared")
+    if not cloudflared:
+        return None, None
+    try:
+        proc = subprocess.Popen(
+            [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{port}", "--metrics", "127.0.0.1:0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception:
+        return None, None
+    tunnel_url = None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        line = proc.stdout.readline() if proc.stdout else ""
+        if not line:
+            time.sleep(0.1)
+            continue
+        m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+        if m:
+            tunnel_url = m.group(0)
+            break
+    return proc, tunnel_url
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orchestrator ui", description="Local web interface for the orchestrator.")
     parser.add_argument("--host", default="127.0.0.1",
@@ -2155,6 +2493,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
     parser.add_argument("--token", default=None, help="Fixed access token for this session")
+    parser.add_argument("--tunnel", action="store_true", help="Start a Cloudflare tunnel for remote access from phone")
     args = parser.parse_args(argv)
 
     root = find_project_root()
@@ -2176,6 +2515,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"\033[93m  Listening on {args.host}: anyone who can reach it still needs the token above. "
               "Only bind to a private network (e.g. Tailscale).\033[0m")
+    tunnel_proc = None
+    if getattr(args, "tunnel", False):
+        print("  Starting Cloudflare tunnel for remote/phone access...")
+        tunnel_proc, tunnel_url = start_tunnel(args.port)
+        if tunnel_url:
+            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={tunnel_url}"
+            print(f"  \033[92m✓ Tunnel URL:\033[0m   {tunnel_url}/?token={server.token}")
+            print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
+        else:
+            print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out).\033[0m")
     print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
     if not args.no_open:
         open_browser(url)
@@ -2184,6 +2533,15 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
+        if tunnel_proc:
+            try:
+                tunnel_proc.terminate()
+                tunnel_proc.wait(timeout=2)
+            except Exception:
+                try:
+                    tunnel_proc.kill()
+                except Exception:
+                    pass
         server.sessions.stop_all()
         server.server_close()
     return 0

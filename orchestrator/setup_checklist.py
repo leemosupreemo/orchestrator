@@ -42,8 +42,11 @@ def _run(argv: list[str], cwd: Path | None = None, timeout: int = 6) -> subproce
         return None
 
 
-def github_cli_state() -> dict[str, Any]:
-    """{'installed': bool, 'user': str | None}"""
+def github_cli_state(fresh: bool = False) -> dict[str, Any]:
+    """{'installed': bool, 'user': str | None}. `fresh` skips the short-lived cache."""
+    if fresh:
+        _cache.pop("gh", None)
+
     def probe() -> dict[str, Any]:
         if not shutil.which("gh"):
             return {"installed": False, "user": None}
@@ -132,6 +135,8 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
         _item("docs", "Grounding docs (AGENTS.md, docs/)", False,
               (root / "AGENTS.md").exists() and (root / "docs" / "architecture.md").exists(),
               "Give the AI the project's rules and architecture", action={"type": "route", "to": "#/config"}, group="Recommended"),
+        _item("connections", "Connect Jira, Trello, Sentry or Figma", False, bool(settings.get("integrations")),
+              "Tie jobs to tickets, pull in error logs and designs", action={"type": "route", "to": "#/connections"}, group="Optional"),
         _item("firebase", "Firebase delivery to testers", False, bool(project.get("firebase_distribution")),
               "Send builds to testers after a job", action=menu("firebase"), group="Optional"),
         _item("email", "Email notifications", False, bool(settings.get("notification_emails")),

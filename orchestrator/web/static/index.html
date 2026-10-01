@@ -47,9 +47,13 @@
         <span class="label">Tools</span>
         <a href="#/tests" data-route="tests"><span>Tests</span></a>
         <a href="#/git" data-route="git"><span>Git</span></a>
-        <div class="nav-item-row">
-          <a href="#/config" data-route="config"><span>Configuration</span></a>
-          <button type="button" class="nav-context-btn" id="config-submenus-btn" aria-label="Configuration submenus" title="All Configuration submenus">▾</button>
+        <a href="#/connections" data-route="connections"><span>Connections</span></a>
+        <div class="nav-item-row configuration-nav-item">
+          <button type="button" class="configuration-menu-trigger" id="configuration-menu-trigger" data-route="config"
+                  aria-haspopup="menu" aria-controls="configuration-context-menu" aria-expanded="false">
+            <span>Configuration</span><span aria-hidden="true">▾</span>
+          </button>
+          <div class="configuration-context-menu" id="configuration-context-menu" role="menu" hidden></div>
         </div>
       </nav>
       <button class="btn ghost console-btn" data-action="console"><svg class="icon"><use href="#i-terminal"/></svg>Open full console</button>
@@ -58,10 +62,7 @@
     <main class="main">
       <header class="topbar">
         <div class="topbar-text">
-          <div class="topbar-title-row">
-            <h1 id="page-title">Home</h1>
-            <div id="topbar-languages" class="topbar-languages" hidden></div>
-          </div>
+          <h1 id="page-title">Home</h1>
           <p class="sub" id="page-sub"></p>
         </div>
         <div class="topbar-actions" id="topbar-actions"></div>

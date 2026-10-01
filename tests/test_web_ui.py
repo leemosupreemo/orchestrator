@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import http.client
+import io
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,7 +71,7 @@ class ServerTestCase(unittest.TestCase):
         conn.close()
         try:
             data = json.loads(raw) if raw else None
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             data = raw
         return res, data
 
@@ -235,6 +237,324 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
         })
 
 
+class ConfigurationPagesUiTests(unittest.TestCase):
+    def run_configuration_script(self, source: str):
+        helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "configuration.js"
+        result = subprocess.run(
+            ["node", "-e", f"require(process.argv[1]);\n{source}", str(helper)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_registry_exposes_phase_one_native_routes(self):
+        entries = self.run_configuration_script("""
+const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
+process.stdout.write(JSON.stringify(Object.fromEntries(entries.map((entry) => [entry.id, entry]))));
+""")
+        self.assertEqual({key: entries[key]["route"] for key in (
+            "api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"
+        )}, {
+            "api-keys": "#/config/api-keys",
+            "base-branch": "#/config/base-branch",
+            "projects": "#/projects",
+            "archived-jobs": "#/config/archived-jobs",
+            "email": "#/config/email",
+            "documentation": "#/config/documentation",
+        })
+        self.assertTrue(all(entries[key]["enabled"] for key in (
+            "api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"
+        )))
+
+    def test_registry_exposes_all_configuration_entries_enabled(self):
+        result = self.run_configuration_script("""
+const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
+const ids = ['models', 'ai-instructions', 'fleet', 'firebase', 'xcode-cloud',
+  'setup-wizard', 'audit', 'self-tests', 'updates'];
+const active = Object.fromEntries(ids.map((id) => [id, entries.find((entry) => entry.id === id)]));
+process.stdout.write(JSON.stringify({active, menu: globalThis.ConfigurationPages.renderMenu()}));
+""")
+        for entry_id, entry in result["active"].items():
+            self.assertTrue(entry["enabled"])
+            self.assertEqual(entry["route"], f"#/config/{entry_id}")
+            self.assertIsNone(entry["status"])
+        self.assertEqual(result["menu"].count(" disabled"), 0)
+        self.assertNotIn('data-config-route="null"', result["menu"])
+        self.assertNotIn("Coming next", result["menu"])
+
+    def test_resolver_accepts_only_enabled_native_configuration_pages(self):
+        result = self.run_configuration_script("""
+const pages = globalThis.ConfigurationPages;
+process.stdout.write(JSON.stringify({
+  enabled: pages.resolve('api-keys'),
+  models: pages.resolve('models'),
+  external: pages.resolve('projects'),
+  unknown: pages.resolve('unknown')
+}));
+""")
+        self.assertEqual(result["enabled"]["route"], "#/config/api-keys")
+        self.assertEqual(result["models"]["route"], "#/config/models")
+        self.assertIsNone(result["external"])
+        self.assertIsNone(result["unknown"])
+
+    def test_menu_controller_closes_accessibly_and_navigates_enabled_entries(self):
+        result = self.run_configuration_script("""
+class EventTarget {
+  constructor() {
+    this.listeners = {};
+    this.attributes = {};
+    this.hidden = true;
+    this.focusCount = 0;
+  }
+  addEventListener(type, listener) { (this.listeners[type] ||= []).push(listener); }
+  removeEventListener(type, listener) {
+    this.listeners[type] = (this.listeners[type] || []).filter((item) => item !== listener);
+  }
+  dispatch(type, event = {}) {
+    event.type = type;
+    event.target ||= this;
+    event.preventDefault ||= () => {};
+    for (const listener of this.listeners[type] || []) listener(event);
+  }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  contains(target) { return target === this || target.owner === this; }
+  focus() { this.focusCount += 1; }
+}
+const trigger = new EventTarget();
+const menu = new EventTarget();
+const documentTarget = new EventTarget();
+const routes = [];
+const controller = globalThis.ConfigurationPages.createMenuController({
+  trigger,
+  menu,
+  document: documentTarget,
+  navigate: (route) => routes.push(route)
+});
+controller.open();
+const expanded = trigger.attributes['aria-expanded'];
+documentTarget.dispatch('keydown', {key: 'Escape'});
+const escapeClosed = menu.hidden;
+controller.open();
+documentTarget.dispatch('pointerdown', {target: {}});
+const outsideClosed = menu.hidden;
+const enabled = {
+  disabled: false,
+  closest: (selector) => selector === '[data-config-route]' ? enabled : null,
+  getAttribute: () => '#/config/api-keys'
+};
+controller.open();
+menu.dispatch('click', {target: enabled});
+const disabled = {
+  disabled: true,
+  closest: (selector) => selector === '[data-config-route]' ? disabled : null,
+  getAttribute: () => '#/config/models'
+};
+controller.open();
+menu.dispatch('click', {target: disabled});
+controller.destroy();
+process.stdout.write(JSON.stringify({
+  expanded,
+  escapeClosed,
+  outsideClosed,
+  focusCount: trigger.focusCount,
+  routes,
+  disabledStayedOpen: !menu.hidden
+}));
+""")
+        self.assertEqual(result, {
+            "expanded": "true",
+            "escapeClosed": True,
+            "outsideClosed": True,
+            "focusCount": 1,
+            "routes": ["#/config/api-keys"],
+            "disabledStayedOpen": True,
+        })
+
+    def test_configuration_chooser_uses_registry_without_terminal_actions(self):
+        result = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render(undefined, {});
+process.stdout.write(JSON.stringify(page));
+""")
+        self.assertEqual(result["title"], "Configuration")
+        for group in ("Models &amp; instructions", "Projects &amp; machines",
+                      "Delivery &amp; notifications", "Help &amp; health"):
+            self.assertIn(group, result["html"])
+        for route in ("#/config/api-keys", "#/config/base-branch", "#/projects",
+                      "#/config/archived-jobs", "#/config/email", "#/config/documentation",
+                      "#/config/models", "#/config/fleet", "#/config/firebase"):
+            self.assertIn(route, result["html"])
+        self.assertEqual(result["html"].count(" disabled"), 0)
+        self.assertNotIn("Coming next", result["html"])
+        self.assertNotIn('data-action="config_menu"', result["html"])
+
+    def test_api_keys_page_shows_status_without_rendering_secrets(self):
+        result = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('api-keys', {
+  keys: [
+    {id: 'anthropic_api_key', label: 'Anthropic', saved: true, env: true, value: 'sk-do-not-render'},
+    {id: 'openai_api_key', label: 'OpenAI', saved: false, env: true},
+    {id: 'ollama_api_key', label: 'Ollama', saved: false, env: false}
+  ],
+  ollama_host: 'http://ollama.example'
+});
+process.stdout.write(JSON.stringify(page));
+""")
+        self.assertEqual(result["title"], "API Keys")
+        for label in ("Anthropic", "OpenAI", "Ollama", "Saved", "From environment", "Not set"):
+            self.assertIn(label, result["html"])
+        self.assertNotIn("sk-do-not-render", result["html"])
+        self.assertEqual(result["html"].count("Host URL"), 1)
+        self.assertIn("http://ollama.example", result["html"])
+
+    def test_mutation_guard_blocks_duplicates_and_recovers(self):
+        result = self.run_configuration_script("""
+(async () => {
+  let release;
+  let calls = 0;
+  const run = globalThis.ConfigurationPages.createMutationGuard((request) => {
+    calls += 1;
+    if (request.mode === 'pending') return new Promise((resolve) => { release = resolve; });
+    if (request.mode === 'reject') return Promise.reject(new Error('nope'));
+    return Promise.resolve(request.mode);
+  });
+  const firstPromise = run({mode: 'pending'});
+  const blocked = await run({mode: 'blocked'});
+  release('done');
+  const first = await firstPromise;
+  const afterResolve = await run({mode: 'after-resolve'});
+  let rejection = '';
+  try { await run({mode: 'reject'}); } catch (error) { rejection = error.message; }
+  const afterReject = await run({mode: 'after-reject'});
+  process.stdout.write(JSON.stringify({calls, blocked, first, afterResolve, rejection, afterReject}));
+})();
+""")
+        self.assertEqual(result, {
+            "calls": 4,
+            "blocked": None,
+            "first": "done",
+            "afterResolve": "after-resolve",
+            "rejection": "nope",
+            "afterReject": "after-reject",
+        })
+
+    def test_route_match_rejects_responses_for_pages_the_user_left(self):
+        result = self.run_configuration_script("""
+const matches = globalThis.ConfigurationPages.routeMatches;
+process.stdout.write(JSON.stringify({
+  sameSection: matches({page: 'config', args: ['api-keys']}, 'api-keys'),
+  chooser: matches({page: 'config', args: []}, undefined),
+  otherSection: matches({page: 'config', args: ['email']}, 'api-keys'),
+  otherPage: matches({page: 'projects', args: []}, 'api-keys')
+}));
+""")
+        self.assertEqual(result, {
+            "sameSection": True,
+            "chooser": True,
+            "otherSection": False,
+            "otherPage": False,
+        })
+
+    def test_base_branch_page_uses_only_escaped_backend_branches(self):
+        result = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('base-branch', {
+  base_branch: 'feature/one',
+  branches: ['main', 'feature/one', '\"><script>bad()</script>']
+});
+process.stdout.write(JSON.stringify(page));
+""")
+        self.assertEqual(result["title"], "Base Branch")
+        self.assertIn('<option value="feature/one" selected>', result["html"])
+        self.assertIn('&quot;&gt;&lt;script&gt;bad()&lt;/script&gt;', result["html"])
+        self.assertNotIn('<script>bad()</script>', result["html"])
+        self.assertNotIn("develop", result["html"])
+
+    def test_archived_jobs_page_marks_corrupt_entries_and_empty_state(self):
+        result = self.run_configuration_script("""
+const populated = globalThis.ConfigurationPages.render('archived-jobs', {
+  archived: [
+    {id: 'job-1', job_id: 'JOB-1', title: 'Ready <now>', status: 'completed', corrupt: false},
+    {id: 'broken', job_id: 'BROKEN', title: 'Unreadable', status: 'unknown', corrupt: true}
+  ]
+});
+const empty = globalThis.ConfigurationPages.render('archived-jobs', {archived: []});
+process.stdout.write(JSON.stringify({populated, empty}));
+""")
+        html = result["populated"]["html"]
+        self.assertEqual(result["populated"]["title"], "Archived Jobs")
+        for text in ("JOB-1", "Ready &lt;now&gt;", "completed", "BROKEN", "Corrupt"):
+            self.assertIn(text, html)
+        self.assertIn('data-config-action="archive-restore"', html)
+        self.assertIn('data-id="job-1"', html)
+        self.assertRegex(html, r'BROKEN[\s\S]*?<button[^>]*disabled')
+        self.assertIn("No archived jobs", result["empty"]["html"])
+
+    def test_email_page_reports_sender_readiness_without_secret_values(self):
+        result = self.run_configuration_script("""
+const gmail = globalThis.ConfigurationPages.render('email', {email: {
+  provider: 'gmail', providers: ['gmail', 'resend'], recipients: ['person<one>@example.com'],
+  smtp_email: 'sender@example.com', smtp_password_set: true, smtp_password: 'mail-secret',
+  resend_from_email: '', resend_display_name: '', resend_api_key_set: false
+}});
+const resend = globalThis.ConfigurationPages.render('email', {email: {
+  provider: 'resend', providers: ['gmail', 'resend'], recipients: ['person@example.com'],
+  smtp_email: '', smtp_password_set: false, resend_from_email: 'updates@example.com',
+  resend_display_name: 'Updates', resend_api_key_set: true, resend_api_key: 'resend-secret'
+}});
+const empty = globalThis.ConfigurationPages.render('email', {email: {
+  provider: 'gmail', providers: ['gmail', 'resend'], recipients: [], smtp_email: '',
+  smtp_password_set: false, resend_from_email: '', resend_display_name: '', resend_api_key_set: false
+}});
+process.stdout.write(JSON.stringify({gmail, resend, empty}));
+""")
+        gmail = result["gmail"]["html"]
+        resend = result["resend"]["html"]
+        empty = result["empty"]["html"]
+        self.assertEqual(result["gmail"]["title"], "Email Notifications")
+        self.assertIn("Gmail is ready", gmail)
+        self.assertIn("App password saved", gmail)
+        self.assertIn("person&lt;one&gt;@example.com", gmail)
+        self.assertIn('data-config-action="email-test"', gmail)
+        self.assertIn("Resend is ready", resend)
+        self.assertIn("API key saved", resend)
+        self.assertNotIn("mail-secret", gmail)
+        self.assertNotIn("resend-secret", resend)
+        self.assertIn("No recipients yet", empty)
+        self.assertNotIn('data-config-action="email-test"', empty)
+
+    def test_documentation_page_groups_allowlisted_opaque_documents(self):
+        result = self.run_configuration_script("""
+const grouped = globalThis.ConfigurationPages.render('documentation', {docs: [
+  {id: '0', name: 'Getting <Started>.md', section: 'Orchestrator docs', path: '/must/not/render'},
+  {id: '7', name: 'Project Guide.md', section: 'Project docs'}
+]});
+const oneGroup = globalThis.ConfigurationPages.render('documentation', {docs: [
+  {id: '2', name: 'Only.md', section: 'Orchestrator docs'}
+]});
+const pages = [
+  globalThis.ConfigurationPages.render(undefined, {}),
+  globalThis.ConfigurationPages.render('api-keys', {keys: []}),
+  globalThis.ConfigurationPages.render('base-branch', {branches: []}),
+  globalThis.ConfigurationPages.render('archived-jobs', {archived: []}),
+  globalThis.ConfigurationPages.render('email', {email: {recipients: []}}),
+  grouped
+];
+process.stdout.write(JSON.stringify({grouped, oneGroup, allHtml: pages.map((page) => page.html).join('')}));
+""")
+        grouped = result["grouped"]["html"]
+        self.assertEqual(result["grouped"]["title"], "Documentation")
+        self.assertIn("Orchestrator docs", grouped)
+        self.assertIn("Project docs", grouped)
+        self.assertIn("Getting &lt;Started&gt;.md", grouped)
+        self.assertIn('data-id="0"', grouped)
+        self.assertIn('data-id="7"', grouped)
+        self.assertNotIn("/must/not/render", grouped)
+        self.assertNotIn("Project docs", result["oneGroup"]["html"])
+        for terminal_handoff in ('data-action="config_menu"', "data-scroll-to", "Open Full CLI Menu"):
+            self.assertNotIn(terminal_handoff, result["allHtml"])
+
+
 class ReadApiTests(ServerTestCase):
     def test_jobs_list_and_detail(self):
         _, data = self.request("GET", "/api/jobs")
@@ -256,6 +576,19 @@ class ReadApiTests(ServerTestCase):
         self.assertEqual((res.status, data["text"]), (200, "# Brief\n"))
         res, _ = self.request("GET", "/api/file?path=../../etc/passwd")
         self.assertEqual(res.status, 404)
+
+    def test_configuration_documents_are_allowlisted_by_opaque_id(self):
+        docs = self.root / "docs"
+        docs.mkdir()
+        guide = docs / "private-guide.md"
+        guide.write_text("project-only marker\n")
+        entry = next(item for item in ui.doc_entries(self.root) if item["name"] == guide.name)
+
+        res, data = self.request("GET", f"/api/config/doc?id={entry['id']}")
+        self.assertEqual((res.status, data), (200, {"name": guide.name, "text": "project-only marker\n"}))
+        for invalid in ("missing", "..%2F0"):
+            res, _ = self.request("GET", f"/api/config/doc?id={invalid}")
+            self.assertEqual(res.status, 404)
 
     def test_devlogs_reports_unconfigured(self):
         _, data = self.request("GET", "/api/devlogs")
@@ -347,14 +680,31 @@ class ActionTests(unittest.TestCase):
         sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
         sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
         ui.config_update(self.root, "email", {"op": "add", "email": "a@b.co"})
+        ui.config_update(self.root, "email", {"op": "add", "email": "a@b.co"})
+        ui.config_update(self.root, "email", {
+            "op": "provider", "provider": "gmail", "smtp_email": "sender@example.com",
+            "smtp_password": "mail-secret",
+        })
+        ui.config_update(self.root, "email", {"op": "provider", "provider": "gmail", "smtp_password": ""})
         ui.config_update(self.root, "keys", {"id": "anthropic_api_key", "value": "sk-secret"})
         ui.config_update(self.root, "base-branch", {"branch": "main"})
         state = ui.config_state(self.root)
         self.assertEqual(state["email"]["recipients"], ["a@b.co"])
+        self.assertTrue(state["email"]["smtp_password_set"])
+        self.assertEqual(ui.read_settings(self.root)["smtp_password"], "mail-secret")
         self.assertEqual(state["base_branch"], "main")
         self.assertNotIn("sk-secret", json.dumps(state))  # secrets never leave the server
+        self.assertNotIn("mail-secret", json.dumps(state))
         self.assertTrue([k for k in state["keys"] if k["id"] == "anthropic_api_key"][0]["saved"])
+        archive = ui.jobs_dir(self.root) / "archive"
+        archive.mkdir(parents=True)
+        archived_file = archive / "job-ready.json"
+        archived_file.write_text(json.dumps({"job_id": "job-ready", "title": "Ready", "status": "completed"}))
+        ui.config_update(self.root, "archived-restore", {"id": "job-ready"})
+        self.assertFalse(archived_file.exists())
+        self.assertTrue((ui.jobs_dir(self.root) / "job-ready.json").is_file())
         for part, body in (("email", {"op": "add", "email": "nope"}), ("keys", {"id": "evil", "value": "x"}),
+                           ("email", {"op": "provider", "provider": "carrier-pigeon"}),
                            ("base-branch", {"branch": "origin/evil"}), ("archived-restore", {"id": "../x"}), ("bogus", {})):
             with self.assertRaises(ui.UIError):
                 ui.config_update(self.root, part, body)
@@ -655,6 +1005,39 @@ class RunApiTests(ServerTestCase):
             self.assertEqual(res.status, 403)
             self.assertIn("not authorized", data["error"])
 
+    def test_auth_refuses_accounts_without_a_verified_email(self):
+        # e.g. a GitHub account whose email is missing, or one the provider hasn't verified
+        for info, expected in (({"email": ""}, "didn't share an email"),
+                               ({"email": "tester@example.com", "emailVerified": False}, "isn't verified")):
+            with patch("orchestrator.web.server.verify_firebase_id_token", return_value=info), \
+                 patch("orchestrator.web.server.allowed_auth_emails", return_value={"tester@example.com"}):
+                res, data = self.request("POST", "/api/auth", body={"id_token": "t"}, headers=UI_HEADERS, auth=False)
+                self.assertEqual(res.status, 403, info)
+                self.assertIn(expected, data["error"])
+
+    def test_auth_is_closed_when_no_emails_are_allowed(self):
+        with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": "anyone@example.com"}), \
+             patch("orchestrator.web.server.allowed_auth_emails", return_value=set()):
+            res, data = self.request("POST", "/api/auth", body={"id_token": "t"}, headers=UI_HEADERS, auth=False)
+            self.assertEqual(res.status, 403)
+            self.assertIn("sign-in is closed", data["error"])
+        # the access token path is unaffected
+        res, _ = self.request("POST", "/api/auth", body={"token": "test-token"}, headers=UI_HEADERS, auth=False)
+        self.assertEqual(res.status, 200)
+
+    def test_allowed_emails_can_be_managed_and_report_their_source(self):
+        with patch.dict(os.environ, {"ORCHESTRATOR_ALLOWED_EMAILS": "env@example.com"}):
+            ui.config_update(self.root, "allowed-email", {"op": "add", "email": "New@Example.com"})
+            sources = ui.allowed_auth_sources(self.root)
+            self.assertEqual(sources["env@example.com"], "environment")
+            self.assertEqual(sources["new@example.com"], "settings")
+            with self.assertRaises(ui.UIError):  # can't remove what this page didn't add
+                ui.config_update(self.root, "allowed-email", {"op": "remove", "email": "env@example.com"})
+            with self.assertRaises(ui.UIError):
+                ui.config_update(self.root, "allowed-email", {"op": "add", "email": "not-an-email"})
+            ui.config_update(self.root, "allowed-email", {"op": "remove", "email": "new@example.com"})
+            self.assertNotIn("new@example.com", ui.allowed_auth_sources(self.root))
+
     def test_auth_logout_clears_cookie(self):
         res, data = self.request("POST", "/api/auth/logout", body={}, headers=UI_HEADERS)
         self.assertEqual(res.status, 200)
@@ -744,9 +1127,83 @@ class RunApiTests(ServerTestCase):
             self.assertIn("languages", p)
             self.assertIsInstance(p["languages"], list)
 
+    def test_job_export_zip_endpoint(self):
+        res, data = self.request("GET", "/api/jobs/20260922-bug-1/export-zip")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.getheader("Content-Type"), "application/zip")
+        self.assertIn("20260922-bug-1-export.zip", res.getheader("Content-Disposition", ""))
+        zip_bytes = io.BytesIO(data)
+        with zipfile.ZipFile(zip_bytes, "r") as zf:
+            names = zf.namelist()
+            self.assertIn("20260922-bug-1/job.json", names)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_visual_checks_endpoint(self):
+        res, data = self.request("GET", "/api/visual-checks")
+        self.assertEqual(res.status, 200)
+        self.assertIn("checks", data)
+        self.assertIsInstance(data["checks"], list)
+
+    def test_config_models_update(self):
+        body = {
+            "models": {
+                "architect": "claude-3-7-sonnet",
+                "planner": "gpt-4o",
+                "builder": "claude-3-5-sonnet",
+                "reviewer": "claude-3-7-sonnet"
+            }
+        }
+        res, data = self.request("POST", "/api/config/models", body=body, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        state = ui.config_state(self.root)
+        self.assertEqual(state["models"]["architect"], "claude-3-7-sonnet")
+
+    def test_config_role_prompts_update(self):
+        body = {
+            "id": "architect",
+            "content": "Custom architect system instructions"
+        }
+        res, data = self.request("POST", "/api/config/role-prompts", body=body, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        state = ui.config_state(self.root)
+        architect_prompt = next(p for p in state["role_prompts"] if p["id"] == "architect")
+        self.assertTrue(architect_prompt["customized"])
+        self.assertIn("Custom architect system instructions", architect_prompt["content"])
+
+    def test_config_fleet_actions(self):
+        res, data = self.request("POST", "/api/config/fleet", body={
+            "op": "add", "name": "build-mac-1", "ssh_target": "user@mac1", "repo_path": "/Users/user/repo", "mode": "remote"
+        }, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        state = ui.config_state(self.root)
+        mac = next(m for m in state["machines"] if m["name"] == "build-mac-1")
+        self.assertEqual(mac["ssh_target"], "user@mac1")
+        self.assertTrue(mac["enabled"])
+
+        res, data = self.request("POST", "/api/config/fleet", body={"op": "toggle", "name": "build-mac-1"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        state = ui.config_state(self.root)
+        mac = next(m for m in state["machines"] if m["name"] == "build-mac-1")
+        self.assertFalse(mac["enabled"])
+
+        res, data = self.request("POST", "/api/config/fleet", body={"op": "remove", "name": "build-mac-1"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        state = ui.config_state(self.root)
+        self.assertFalse(any(m["name"] == "build-mac-1" for m in state["machines"]))
+
+    def test_config_firebase_update(self):
+        body = {
+            "firebase_app_id": "1:123456:ios:abcdef",
+            "firebase_tester_groups": "internal-testers"
+        }
+        res, data = self.request("POST", "/api/config/firebase", body=body, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        state = ui.config_state(self.root)
+        self.assertEqual(state["firebase"]["app_id"], "1:123456:ios:abcdef")
+        self.assertEqual(state["firebase"]["tester_groups"], "internal-testers")
 
 
 
@@ -770,3 +1227,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
     def test_each_secondary_action_appears_once(self):
         for action in ("revise", "select_models", "ask_ai", "link_logs", "attach_mockup", "discard_job"):
             self.assertLessEqual(self.source.count(f'act("{action}", j)') + self.job_page.count(f'data-action="{action}"'), 1, action)
+
+
+if __name__ == "__main__":
+    unittest.main()
