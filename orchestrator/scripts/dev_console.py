@@ -3876,12 +3876,13 @@ def perform_job_revert(job: dict[str, Any]) -> int:
                 count += 1
     return count
 
-def handle_discard_job(job: dict[str, Any]):
+def handle_discard_job(job: dict[str, Any], confirmed: bool = False):
+    """`confirmed` is for callers that already asked (the web UI): no prompts."""
     print_header(f"Discarding & Reverting Job: {job.get('job_id')}")
 
     warning = "\033[1;91m⚠️  WARNING: THIS WILL PERMANENTLY DELETE ALL LOCAL PROGRESS & CODE CHANGES.\033[0m\n"
     warning += "Are you sure you want to DISCARD this job and REVERT its changes?"
-    if not prompt_confirm(warning, default=False):
+    if not confirmed and not prompt_confirm(warning, default=False):
         return
 
     # 1. Surgical File Revert
@@ -3915,7 +3916,8 @@ def handle_discard_job(job: dict[str, Any]):
     # Archive with discarded status
     archive_path = archive_job(job, status="discarded")
     print(f"\n✅ Job discarded and AI changes surgically reverted.")
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    if not confirmed:
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_merge_cleanup(job: dict[str, Any]):
     pr_number = job.get("pr_number")

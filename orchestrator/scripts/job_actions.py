@@ -4,6 +4,7 @@ so the web UI (and scripts) can run them. Each one reuses the console's own
 implementation; the helpers below are shared with the console, not copies.
 
     job_actions.py merge   <job.json>                 # Merge & Mark Completed
+    job_actions.py discard <job.json>                 # revert the job's AI changes, delete its branch, archive it
     job_actions.py answer  <job.json> --answer TEXT   # answer the planner's question
     job_actions.py approve <job.json>                 # accept suggestions / approve design / approve plan
     job_actions.py revise  <job.json> --change TEXT [--where TEXT] [--done-when TEXT]
@@ -91,6 +92,13 @@ def merge(path: Path) -> int:
     from dev_console import handle_merge_cleanup
 
     handle_merge_cleanup(load_job(path))
+    return 0
+
+
+def discard(path: Path) -> int:
+    from dev_console import handle_discard_job
+
+    handle_discard_job(load_job(path), confirmed=True)
     return 0
 
 
@@ -268,7 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
     for name, help_text in [("merge", "Merge the job's PR, clean up its branch and archive it"),
-                            ("approve", "Accept architect suggestions, approve a design, or approve a plan")]:
+                            ("approve", "Accept architect suggestions, approve a design, or approve a plan"),
+                            ("discard", "Revert the job's AI changes, delete its AI branch and archive it")]:
         sub.add_parser(name, help=help_text).add_argument("job_file")
     answer_p = sub.add_parser("answer", help="Answer the planner's clarification question and re-plan")
     answer_p.add_argument("job_file")
@@ -313,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
         return merge(path)
     if args.action == "approve":
         return approve(path)
+    if args.action == "discard":
+        return discard(path)
     if args.action == "revise":
         return revise(path, args.change.strip(), args.where.strip(), args.done_when.strip())
     return answer(path, args.answer.strip())

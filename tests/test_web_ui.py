@@ -1228,6 +1228,15 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         for action in ("revise", "select_models", "ask_ai", "link_logs", "attach_mockup", "discard_job"):
             self.assertLessEqual(self.source.count(f'act("{action}", j)') + self.job_page.count(f'data-action="{action}"'), 1, action)
 
+    def test_debug_layout_toggles_removed(self):
+        self.assertNotIn("orchestrator_home_version", self.source)
+        self.assertNotIn("(debug)", self.source)
+
+    def test_discard_is_a_confirmed_server_action(self):
+        self.assertIn("discard", ui.ACTIONS)
+        self.assertTrue(ui.ACTIONS["discard"].confirm)
+        self.assertNotIn('runAction("console")', self.source[self.source.index("discard_job(params)"):][:120])
+
 
 if __name__ == "__main__":
     unittest.main()

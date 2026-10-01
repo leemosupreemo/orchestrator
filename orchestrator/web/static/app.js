@@ -549,11 +549,7 @@ const dialogs = {
       }).catch(err => toast(err.message, true));
     }
   },
-  async discard_job(params) {
-    if (confirm("⚠️ WARNING: THIS WILL PERMANENTLY DELETE ALL LOCAL PROGRESS & CODE CHANGES.\n\nAre you sure you want to DISCARD this job and REVERT its changes?")) {
-      runAction("console");
-    }
-  },
+  discard_job(params) { return runAction("discard", { job: params.job }); },
   async splinter_job(params) {
     if (confirm("Decompose this feature plan into separate parallel child tasks and GitHub sub-issues?")) {
       await runAction("splinter", { job: params.job });
@@ -1025,20 +1021,7 @@ function jobItem(j, { withAction = false } = {}) {
     <div class="side">${jobPill(j)}${next}</div></div>`;
 }
 
-function statusPill(status) {
-  const s = String(status || "unknown");
-  const cls = ({ completed: "ok", "review-needed": "warn", debugging: "bad", failed: "bad", "build-failed": "bad",
-                 planned: "run", scheduled: "run", running: "run", "in-progress": "run" })[s] || "";
-  return `<span class="pill ${cls}">${esc(s.replace(/-/g, " "))}</span>`;
-}
 
-function originalJobItem(j) {
-  const progress = j.tasks_total ? ` · ${j.tasks_done}/${j.tasks_total} tasks` : "";
-  const meta = [j.type || j.kind, j.branch, ago(j.updated)].filter(Boolean).map(esc).join(" · ");
-  return `<a class="item" href="#/jobs/${encodeURIComponent(j.id)}">
-    <div class="main-col"><div class="title">${esc(j.title)}</div><div class="meta">${meta}${esc(progress)}</div></div>
-    ${statusPill(j.status)}</a>`;
-}
 
 function formatJobDate(ts) {
   if (!ts) return "—";
@@ -1301,56 +1284,6 @@ pages.home = async (_, query) => {
   if (!p.branches) { // server predates the project-state branch list: use the Git endpoint
     try { p.branches = (await api("git")).branches || []; } catch { p.branches = []; }
   }
-  const isOriginal = localStorage.getItem("orchestrator_home_version") === "original";
-
-  if (isOriginal) {
-    const active = jobs.filter((j) => !["completed", "archived"].includes(j.status));
-    const recentRuns = state.runs.slice(0, 5);
-    return {
-      title: p.name,
-      sub: statusLine(p),
-      actions: `<button class="btn small" id="toggle-home-version-btn" style="border: 1px dashed var(--accent);" title="Switch back to modern home layout">⏭ Modern Home</button>
-                <a class="btn primary" href="#/new">New job</a>`,
-      html: `
-        <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
-        <div class="stats" style="margin-bottom: 16px;">
-          <div class="card stat"><div class="k">Branch</div><div class="v mono">${esc(p.branch || "—")}</div></div>
-          <div class="card stat"><div class="k">Uncommitted files</div><div class="v">${p.dirty_files}</div></div>
-          <div class="card stat"><div class="k">Open jobs</div><div class="v">${active.length}</div></div>
-          <div class="card stat"><div class="k">Running now</div><div class="v">${state.runs.filter((r) => r.running).length}</div></div>
-        </div>
-        <section class="card" style="margin-bottom: 16px;">
-          <div class="card-h"><h2>Quick actions</h2></div>
-          <div class="card-b grid">
-            <a class="btn tile" href="#/new"><strong>New job</strong><span>Bug, feature, design…</span></a>
-            <button class="btn tile" data-action="fix"><strong>Quick fix</strong><span>Describe it, it runs</span></button>
-            <button class="btn tile" data-action="logs_pull" ${p.remote_logs ? "" : "disabled"}><strong>Pull device logs</strong><span>${p.remote_logs ? "Newest app launch" : "Set up under Device logs"}</span></button>
-            <button class="btn tile" data-action="build"><strong>Build</strong><span>Manual build, saved log</span></button>
-            <button class="btn tile" data-action="test"><strong>Test</strong><span>Manual test run</span></button>
-            <button class="btn tile" data-action="distribute" ${p.firebase_distribution ? "" : "disabled"}><strong>Distribute</strong><span>${p.firebase_distribution ? "Firebase to testers" : "Firebase not configured"}</span></button>
-            <button class="btn tile" data-action="check"><strong>Setup check</strong><span>CLIs, auth, config</span></button>
-            <button class="btn tile" data-action="console"><strong>Full console</strong><span>Everything else</span></button>
-          </div>
-        </section>
-        <section class="card" style="margin-bottom: 16px;">
-          <div class="card-h"><h2>Recent jobs</h2><a href="#/jobs">All jobs</a></div>
-          <div class="list">${jobs.slice(0, 6).map(originalJobItem).join("") || `<div class="empty">No jobs yet. Start one with New job.</div>`}</div>
-        </section>
-        <section class="card">
-          <div class="card-h"><h2>Recent runs</h2><a href="#/runs">All runs</a></div>
-          <div class="list">${recentRuns.map(runItem).join("") || `<div class="empty">Nothing has run from the UI yet.</div>`}</div>
-        </section>`,
-      after: () => {
-        renderProjectSelect($(".project-select-inline"));
-        $("#toggle-home-version-btn")?.addEventListener("click", () => {
-          localStorage.setItem("orchestrator_home_version", "modern");
-          toast("Switched to Modern Home layout");
-          route();
-        });
-      },
-    };
-  }
-
   // 1) Default ordered by most recent
   const sortedJobs = sortJobs(jobs);
 
@@ -1374,11 +1307,9 @@ pages.home = async (_, query) => {
   return {
     title: p.name,
     sub: statusLine(p),
-    actions: `<button class="btn small ghost" id="toggle-home-version-btn" style="border: 1px dashed var(--border);" title="Compare with original 8-tile home screen">⏮ Original Home (debug)</button>`,
     html: `
       <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
       <div class="hero-actions" style="margin-bottom: 16px;">
-        <a class="btn primary big desktop-only" href="#/new">New job</a>
         <button class="btn big" ${act("fix")}>Fix something</button>
         ${moreActionsMenu(p, { left: true })}
       </div>
@@ -1410,21 +1341,8 @@ pages.home = async (_, query) => {
       </section>`,
     after: () => {
       renderProjectSelect($(".project-select-inline"));
-      $("#toggle-home-version-btn")?.addEventListener("click", () => {
-        localStorage.setItem("orchestrator_home_version", "original");
-        toast("Switched to Original Home layout");
-        route();
-      });
     },
   };
-};
-
-const ORIGINAL_JOB_FILTERS = {
-  open: ["Open", (j) => !["completed", "archived"].includes(j.status)],
-  review: ["Review", (j) => j.status === "review-needed"],
-  debugging: ["Debugging", (j) => j.status === "debugging"],
-  completed: ["Completed", (j) => j.status === "completed"],
-  all: ["All", () => true],
 };
 
 const JOB_FILTERS = {
@@ -1436,50 +1354,18 @@ const JOB_FILTERS = {
 
 pages.jobs = async (_, query) => {
   const { jobs } = await api("jobs");
-  const isOriginal = localStorage.getItem("orchestrator_jobs_version") === "original";
-
-  if (isOriginal) {
-    let filter = query.get("filter");
-    if (!ORIGINAL_JOB_FILTERS[filter]) filter = "open";
-    const shown = jobs.filter(ORIGINAL_JOB_FILTERS[filter][1]);
-    return {
-      title: "Jobs",
-      sub: `${jobs.length} total`,
-      actions: `<button class="btn small" id="toggle-jobs-version-btn" style="border: 1px dashed var(--accent);" title="Switch back to modern jobs layout">⏭ Modern Jobs</button>
-                <a class="btn primary" href="#/new">New job</a>`,
-      html: `
-        <div class="filters">${Object.entries(ORIGINAL_JOB_FILTERS).map(([key, [label, fn]]) =>
-          `<a class="btn small ${key === filter ? "on" : ""}" href="#/jobs?filter=${key}">${label} (${jobs.filter(fn).length})</a>`).join("")}
-        </div>
-        <section class="card"><div class="list">${shown.map(originalJobItem).join("") || `<div class="empty">No jobs here.</div>`}</div></section>`,
-      after: () => {
-        $("#toggle-jobs-version-btn")?.addEventListener("click", () => {
-          localStorage.setItem("orchestrator_jobs_version", "modern");
-          toast("Switched to Modern Jobs layout");
-          route();
-        });
-      },
-    };
-  }
-
   let filter = query.get("filter");
   if (!JOB_FILTERS[filter]) filter = jobs.some(JOB_FILTERS.needs_you[1]) ? "needs_you" : "all";
   const shown = jobs.filter(JOB_FILTERS[filter][1]);
   return {
     title: "Jobs",
-    actions: `<button class="btn small ghost" id="toggle-jobs-version-btn" style="border: 1px dashed var(--border);" title="Compare with original status-filtered jobs screen">⏮ Original Jobs (debug)</button>
-              <a class="btn primary" href="#/new">New job</a>`,
+    actions: `<a class="btn primary" href="#/new">New job</a>`,
     html: `
       <div class="filters">${Object.entries(JOB_FILTERS).map(([key, [label, fn]]) =>
         `<a class="btn small ${key === filter ? "on" : ""}" href="#/jobs?filter=${key}">${label} (${jobs.filter(fn).length})</a>`).join("")}
       </div>
       <section class="card"><div class="list">${shown.map((j) => jobItem(j, { withAction: filter === "needs_you" })).join("") || `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description; <strong>Fix something</strong> goes straight to a quick fix.' : 'No jobs match this filter.'}</div>`}</div></section>`,
     after: () => {
-      $("#toggle-jobs-version-btn")?.addEventListener("click", () => {
-        localStorage.setItem("orchestrator_jobs_version", "original");
-        toast("Switched to Original Jobs layout");
-        route();
-      });
     },
   };
 };
@@ -1582,7 +1468,7 @@ pages.job = async ([id]) => {
 
   const next = s.state.next;
   const heroAction = activeRun
-    ? `<button class="btn danger" data-stop="${esc(activeRun.id)}">Stop</button>`
+    ? `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`
     : next ? `<button class="btn primary big" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : "";
 
   const logFiles = logs.flatMap((l) => l.files.length

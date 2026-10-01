@@ -1813,6 +1813,8 @@ ACTIONS: dict[str, Action] = {
     "git_new_branch": Action("New branch", build_git_new_branch, fields=["name"]),
     "merge": Action("Merge & complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "merge", _job_path(p, r)),
                     confirm="Merges the job's PR on GitHub, deletes its AI branch and archives the job.", fields=["job"]),
+    "discard": Action("Discard job", lambda p, r: orchestrator_argv("script", "job_actions.py", "discard", _job_path(p, r)),
+                      confirm="Reverts the files this job changed, deletes its AI branch and archives the job. This can't be undone.", fields=["job"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
