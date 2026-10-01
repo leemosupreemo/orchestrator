@@ -21,9 +21,9 @@ checked in a browser yet.
 - [x] **Info goes general -> detailed, actionable first.** Hero, then Progress, Changes, then docs, links, tasks, runs, logs, raw JSON.
 - [x] **No redundant CTAs on one screen.** Job page: one primary action, one menu, each action once. Home: one New job per viewport. Guarded by tests.
 - [x] **Statuses made clear (one vocabulary).** Job page, home and jobs lists all use the server's `state` (label, reason, tone, next action). Duplicate emoji vocabularies and banners removed.
-- [ ] **Express intent; if no strong opinion, LLM recommends.** New-job form has no "you decide" option.
+- [x] **Express intent; if no strong opinion, LLM recommends.** New-job form has a "You decide the details" option (on by default). The planner is told to pick conventional defaults and record each as an assumption; the job page lists them under "What the AI assumed".
 - [~] **Easy to tweak / course-correct.** Revise plan, Run fix, Still broken?, model override. No inline edit of tasks.
-- [ ] **Talk to the LLM directly, tied to the job.** "Ask AI" is a one-off action, not a conversation thread on the job.
+- [x] **Talk to the LLM directly, tied to the job.** "Ask about this job" thread on the job page; messages are stored in the job file. Read-only: it advises, and Revise plan / Run fix act. (The old Ask AI action started a fix run; removed.)
 - [ ] **Organize features with no overlap (discrete elements).** No feature/area model; jobs are a flat list.
 - [ ] **See how pieces fit the overall picture.** No map or roadmap view.
 - [ ] **Mark features complete (knowing they're never fully done).** Depends on the feature model.
@@ -36,7 +36,7 @@ checked in a browser yet.
 - [~] **Changes made clear.** Changes card shows file chips, diffstat and reasoning. No inline diff or per-task attribution.
 - [x] **Easy to fix bugs I find.** "Fix something" on Home, "Still broken?" on a job.
 - [ ] **Handles everything; comes to me only with critical questions.** "Action required" filter exists. No cross-job inbox of questions.
-- [~] **Notifications when done or problem.** Email settings only. No browser or Slack notification from the web UI.
+- [~] **Notifications when done or problem.** Browser notifications (opt-in, sidebar button) when a run finishes, fails, or waits for input, plus a count in the tab title. Works while the tab is in the background, not when it is closed. Email settings exist separately. No Slack or mobile push.
 
 ## D. Testing and quality
 

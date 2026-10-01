@@ -619,6 +619,14 @@ class ActionTests(unittest.TestCase):
         self.assertIn("--no-dispatch", argv)
         self.assertEqual(argv[argv.index("--branch-mode") + 1], "new")
 
+    def test_new_job_recommend_adds_decision_latitude_to_the_spec(self):
+        argv = ui.build_new_job({"type": "feature", "summary": "Add rematch", "recommend": True}, self.root)
+        text = Path(argv[argv.index("--spec-file") + 1]).read_text()
+        self.assertTrue(text.startswith("Add rematch"))
+        self.assertIn("assumptions", text)
+        plain = ui.build_new_job({"type": "feature", "summary": "Add rematch"}, self.root)
+        self.assertNotIn("--spec-file", plain)
+
     def test_new_job_validates_input(self):
         with self.assertRaises(ui.UIError):
             ui.build_new_job({"type": "rm -rf", "summary": "x"}, self.root)

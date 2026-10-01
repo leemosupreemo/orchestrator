@@ -1128,6 +1128,15 @@ def _session_id(params: dict[str, Any]) -> str | None:
     return session or None
 
 
+RECOMMEND_NOTE = (
+    "\n\n## Decision latitude\n"
+    "The requester has no strong opinion on how this is done. Where the request leaves a choice open "
+    "(approach, UX details, naming, libraries), pick the most conventional option for this codebase and "
+    "record each choice in `assumptions` with a one-line reason so it can be reviewed. Only stop to ask "
+    "when a wrong guess would be costly to undo or the goal itself is unclear."
+)
+
+
 def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     job_type = _choice(params, "type", JOB_TYPES, "bug")
     summary = _text(params, "summary", required=True, limit=500)
@@ -1137,6 +1146,8 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     params["_linked"] = linked  # picked up by _start_run to record the links on the created job
     if block:
         spec = (spec or summary) + block
+    if params.get("recommend"):
+        spec = (spec or summary) + RECOMMEND_NOTE
     if spec:
         spec_dir = runtime_dir(root) / "ui" / "specs"
         spec_dir.mkdir(parents=True, exist_ok=True)
@@ -1795,7 +1806,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free", "links"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free", "links", "recommend"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),

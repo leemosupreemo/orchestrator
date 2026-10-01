@@ -1435,6 +1435,7 @@ pages.job = async ([id]) => {
   const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
+  const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
   const conversation = Array.isArray(job.conversation) ? job.conversation.filter((m) => m && m.text) : [];
 
   let visualChecks = [];
@@ -1498,6 +1499,10 @@ pages.job = async ([id]) => {
           <div class="muted">${esc(testsDisplay)} · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}</div>
         </div>
       </section>
+
+      ${assumptions.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
+        <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+        <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
 
       <section class="card" style="margin-bottom: 16px;">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
@@ -1660,6 +1665,7 @@ pages.new = async (_, query) => {
       <label class="field"><span>Details <span class="muted">(optional)</span></span>
         <textarea name="spec" placeholder="Steps to reproduce, expected vs actual, acceptance criteria, links…"></textarea>
       </label>
+      <label class="check"><input type="checkbox" name="recommend" checked><span>You decide the details<small>I don't have a strong opinion. The AI picks sensible defaults and lists what it assumed so you can change it.</small></span></label>
       ${picker.html}
       <details class="advanced"><summary>Options</summary>
         <div class="stack">
@@ -1686,7 +1692,7 @@ pages.new = async (_, query) => {
       try { links = JSON.parse(f.get("links") || "[]"); } catch { /* none */ }
       runAction("new_job", {
         type: f.get("type"), summary: f.get("summary"), spec: f.get("spec"), branch_mode: f.get("branch_mode") || "new",
-        no_dispatch: f.has("no_dispatch"), yolo: f.has("yolo"), free: f.has("free"), links,
+        no_dispatch: f.has("no_dispatch"), recommend: f.has("recommend"), yolo: f.has("yolo"), free: f.has("free"), links,
       });
     });
   },
