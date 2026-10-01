@@ -1597,18 +1597,17 @@ ACTIONS: dict[str, Action] = {
 
 def get_or_create_ui_token(supplied: str | None = None) -> str:
     """Return the supplied token or read/persist a stable token in ~/.orchestrator/ui_token."""
-    token_file = Path.home() / ".orchestrator" / "ui_token"
     if supplied and supplied.strip():
-        token = supplied.strip()
-    else:
-        if token_file.is_file():
-            try:
-                existing = token_file.read_text().strip()
-                if existing:
-                    return existing
-            except Exception:
-                pass
-        token = secrets.token_urlsafe(24)
+        return supplied.strip()
+    token_file = Path.home() / ".orchestrator" / "ui_token"
+    if token_file.is_file():
+        try:
+            existing = token_file.read_text().strip()
+            if existing:
+                return existing
+        except Exception:
+            pass
+    token = secrets.token_urlsafe(24)
     try:
         token_file.parent.mkdir(parents=True, exist_ok=True)
         token_file.write_text(token)
