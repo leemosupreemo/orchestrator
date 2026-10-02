@@ -1371,6 +1371,59 @@ class WebhookNotificationTests(ServerTestCase):
         self.assertEqual([(i["id"].split(":")[0], i["hash"]) for i in state["inbox"]], [("job", "#/jobs/20260922-bug-1")])
 
 
+class TestCaseViewTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def setUp(self):
+        super().setUp()
+        ui._TEST_SCAN_CACHE.clear()
+        tests_dir = self.root / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_seat.py").write_text("def test_keeps_seat():\n    pass\n\n# TC-1-03\ndef test_other():\n    pass\n")
+        path = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        job = json.loads(path.read_text())
+        job["plan"] = {"test_cases": [
+            {"id": "TC-1-01", "area": "Lobby", "title": "Seat kept", "type": "unit", "expected": "Seat stays", "tests": ["test_keeps_seat"], "steps": ["a"]},
+            {"id": "TC-1-02", "area": "Lobby", "title": "Rejoin flow", "type": "integration", "expected": "Rejoins", "tests": ["test_not_written_yet"]},
+            {"id": "TC-1-03", "area": "Lobby", "title": "Marked by id", "type": "unit", "expected": "ok"},
+            {"id": "TC-1-04", "area": "Lobby", "title": "No test", "type": "ui", "expected": "ok"},
+            {"id": "TC-1-05", "area": "Device", "title": "Check on phone", "type": "manual", "expected": "ok"},
+        ]}
+        path.write_text(json.dumps(job))
+
+    def test_job_detail_reports_each_cases_coverage(self):
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        view = data["test_cases"]
+        self.assertEqual({c["id"]: c["status"] for c in view["cases"]},
+                         {"TC-1-01": "covered", "TC-1-02": "planned", "TC-1-03": "covered", "TC-1-04": "unassigned", "TC-1-05": "manual"})
+        summary = view["summary"]
+        self.assertEqual((summary["covered"], summary["planned"], summary["unassigned"], summary["manual"], summary["automated"]), (2, 1, 1, 1, 4))
+        self.assertEqual(summary["covered_pct"], 50.0)
+        self.assertEqual(summary["by_type"], {"unit": 2, "integration": 1, "ui": 1, "manual": 1})
+        covered = next(c for c in view["cases"] if c["id"] == "TC-1-01")
+        self.assertTrue(covered["found_in"][0].endswith("test_seat.py"))
+
+    def test_job_without_cases_has_an_empty_view(self):
+        path = self.root / ".orchestrator" / "jobs" / "20260923-feature-2.json"
+        path.write_text(json.dumps({"title": "Old job", "type": "feature", "status": "planned"}))
+        _, data = self.request("GET", "/api/jobs/20260923-feature-2")
+        self.assertEqual(data["test_cases"]["cases"], [])
+        self.assertIsNone(data["test_cases"]["summary"]["covered_pct"])
+
+    def test_library_endpoint_reads_the_repos_case_files(self):
+        lib = self.root / "docs" / "test-cases" / "lobby"
+        lib.mkdir(parents=True)
+        (lib / "TC-9-01.json").write_text(json.dumps({"id": "TC-9-01", "area": "Lobby", "title": "From library", "type": "unit", "expected": "ok", "tests": ["test_keeps_seat"]}))
+        _, data = self.request("GET", "/api/test-cases")
+        self.assertEqual([(c["id"], c["status"]) for c in data["cases"]], [("TC-9-01", "covered")])
+
+    def test_scan_is_reused_between_requests(self):
+        with patch.object(ui.test_case_lib, "scan_tests", wraps=ui.test_case_lib.scan_tests) as scan:
+            self.request("GET", f"/api/jobs/{self.JOB}")
+            self.request("GET", "/api/test-cases")
+        self.assertEqual(scan.call_count, 1)
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")
@@ -1539,6 +1592,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
         self.assertIn("drawFeatureLinks", self.source)
+        self.assertIn("testCaseRowsHtml(testCases.cases)", self.job_page)
         self.assertIn('view=map', self.source)
 
     def test_discard_is_a_confirmed_server_action(self):

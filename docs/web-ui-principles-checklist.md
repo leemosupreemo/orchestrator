@@ -40,7 +40,7 @@ checked in a browser yet.
 
 ## D. Testing and quality
 
-- [~] **TDD and thorough testing (unit, integration, test cases).** Plans must now carry test cases (server side). Tests page and coverage exist. Web UI does not show a job's test cases.
+- [x] **TDD and thorough testing (unit, integration, test cases).** Job page has a Test cases card: covered / planned / no test / manual, split by unit, integration and UI, with steps, expected result and where each test lives, and a warning when automated cases that are due have no test. The Tests page lists the whole project's case library by area with status filters. Coverage is read from the code (an assigned test exists, or a test carries the case id), not from what the model says. Not yet: running a single case from the UI, or a test-first gate that blocks building until tests exist.
 - [ ] **Anti-gold-plating (refactor pass).** No scope-creep check.
 - [ ] **UX heuristics analysis via UI builder.** Figma attach only.
 

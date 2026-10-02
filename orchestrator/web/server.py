@@ -54,6 +54,7 @@ from orchestrator import integrations
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
 from orchestrator import notifier
+from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.setup_checklist import setup_checklist
@@ -578,6 +579,36 @@ def resolve_job_path(root: Path, job_id: str) -> Path:
     return path
 
 
+_TEST_SCAN_CACHE: dict[str, tuple[float, Any]] = {}
+TEST_SCAN_TTL = 20.0
+
+
+def test_index(root: Path) -> dict[str, Any]:
+    """The repo's test code scan, reused for a few seconds (it walks every test file)."""
+    key = str(root)
+    hit = _TEST_SCAN_CACHE.get(key)
+    if hit and time.time() - hit[0] < TEST_SCAN_TTL:
+        return hit[1]
+    index = test_case_lib.scan_tests(root)
+    _TEST_SCAN_CACHE[key] = (time.time(), index)
+    return index
+
+
+def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | None = None) -> dict[str, Any]:
+    """Cases with their coverage status, plus counts by status and by kind of test."""
+    cov = test_case_lib.coverage(root, cases, test_index(root))
+    rows = []
+    for c in cases:
+        c_cov = cov[c["id"]]
+        rows.append({"id": c["id"], "area": c.get("area") or "General", "title": c.get("title", ""), "type": c.get("type", "unit"),
+                     "priority": c.get("priority", "medium"), "preconditions": c.get("preconditions") or [], "steps": c.get("steps") or [],
+                     "expected": c.get("expected", ""), "covers": c.get("covers") or [], "task": c.get("task"),
+                     "status": c_cov["status"], "found_in": c_cov["tests"], "assigned": c_cov["assigned"],
+                     "due": due_ids is None or c["id"] in due_ids})
+    by_type = {t: sum(1 for r in rows if r["type"] == t) for t in test_case_lib.CASE_TYPES}
+    return {"cases": rows, "summary": {**test_case_lib.summarize(cases, cov), "by_type": by_type}}
+
+
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
@@ -626,6 +657,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "changes": job_changes(root, job),
         "links": github_links(root, job),
         "test_summary": test_summary,
+        "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
         "pipeline": pipeline,
         "tasks": tasks,
         "completed_tasks": completed,
@@ -2302,6 +2334,8 @@ class UIHandler(BaseHTTPRequestHandler):
             for job in jobs:
                 job["active_run"] = job["id"] in running
             self._json({"jobs": jobs})
+        elif method == "GET" and parts == ["test-cases"]:
+            self._json(test_case_view(root, test_case_lib.load_library(root)))
         elif method == "GET" and parts == ["inbox"]:
             self._json(inbox_overview(root, self.server.sessions))
         elif method == "GET" and parts == ["features"]:

@@ -1460,6 +1460,8 @@ pages.job = async ([id]) => {
   const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
+  const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
+  const missingTests = testCases.cases.filter((c) => c.due && (c.status === "unassigned" || c.status === "planned")).length;
   let featureName = "";
   if (s.feature) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
   const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
@@ -1526,6 +1528,11 @@ pages.job = async ([id]) => {
           <div class="muted">${esc(testsDisplay)}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}` : ""}</div>
         </div>
       </section>
+
+      <section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Test cases</h2>${testCases.cases.length ? `<span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</div>
+        ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad" style="margin-top:10px">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}</div>
+        <div class="list">${testCaseRowsHtml(testCases.cases)}</div>`
+          : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}</section>
 
       ${assumptions.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
@@ -1924,9 +1931,42 @@ pages.devlogs = async () => {
   };
 };
 
+const TC_STATUS = { unassigned: ["No test", "failed", 0], planned: ["Test planned", "attention", 1], covered: ["Covered", "done", 2], manual: ["Manual", "working", 3] };
+
+function testCaseSummaryHtml(summary) {
+  const kinds = Object.entries(summary.by_type || {}).filter(([, n]) => n).map(([t, n]) => `${n} ${t}`).join(" · ");
+  const pct = summary.covered_pct;
+  return `<div class="stack">
+    ${pct === null ? "" : `<div class="tasks-progress-wrap"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${pct}%"></div></div>
+      <span class="progress-text">${summary.covered}/${summary.automated} automated covered</span></div>`}
+    <div class="muted">${esc(kinds)}${summary.manual ? ` (${summary.manual} checked by hand)` : ""}</div></div>`;
+}
+
+function testCaseRowsHtml(cases) {
+  const sorted = [...cases].sort((a, b) => TC_STATUS[a.status][2] - TC_STATUS[b.status][2] || a.id.localeCompare(b.id));
+  return sorted.map((c) => {
+    const [label, tone] = TC_STATUS[c.status];
+    const where = c.found_in.length ? c.found_in : c.assigned;
+    return `<details class="item tc-row"><summary><span class="pill ${tone}">${esc(label)}</span>
+      <span class="mono tc-id">${esc(c.id)}</span><span class="tc-title">${esc(c.title)}</span><span class="muted tc-type">${esc(c.type)}${c.due ? "" : " · later task"}</span></summary>
+      <div class="tc-body stack">
+        ${c.preconditions.length ? `<div><strong>Given</strong><ul>${c.preconditions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
+        ${c.steps.length ? `<div><strong>Steps</strong><ol>${c.steps.map((t) => `<li>${esc(t)}</li>`).join("")}</ol></div>` : ""}
+        <div><strong>Expected</strong> ${esc(c.expected)}</div>
+        ${c.covers.length ? `<div class="muted">Covers: ${c.covers.map(esc).join("; ")}</div>` : ""}
+        ${where.length ? `<div class="muted mono">${c.status === "covered" ? "Found in" : "Assigned"}: ${where.map(esc).join(", ")}</div>`
+          : c.status === "manual" ? "" : `<div class="muted">No test is assigned yet. The builder writes it, and it's checked after every build.</div>`}
+      </div></details>`;
+  }).join("");
+}
+
 pages.tests = async (_, query) => {
   view.innerHTML = `<div class="empty">Finding tests…</div>`;
-  const data = await api(`tests${query.get("refresh") ? "?refresh=1" : ""}`);
+  const [data, caseView] = await Promise.all([api(`tests${query.get("refresh") ? "?refresh=1" : ""}`), api("test-cases").catch(() => ({ cases: [], summary: null }))]);
+  const caseFilter = TC_STATUS[query.get("cases")] ? query.get("cases") : "all";
+  const shownCases = caseView.cases.filter((c) => caseFilter === "all" || c.status === caseFilter);
+  const byArea = new Map();
+  for (const c of shownCases) byArea.set(c.area, [...(byArea.get(c.area) || []), c]);
   const cov = data.coverage;
   const filter = (query.get("q") || "").toLowerCase();
   // Discovery also matches source files with no tests in them; those aren't runnable suites.
@@ -1939,6 +1979,11 @@ pages.tests = async (_, query) => {
     actions: `<button class="btn primary" ${act("test")}>Run all tests</button>${moreMenu([["Measure coverage", act("coverage"), "Full test run with coverage; takes a while"], ["Refresh list", `data-href="#/tests?refresh=1"`], ["Expand coverage (AI job)", `data-href="#/new?type=coverage"`]])}`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
+      ${caseView.cases.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Test cases</h2>
+        <div class="filters">${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
+          `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div></div>
+        <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
+        ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
       ${data.frameworks ? `
       <section class="card"><div class="card-h"><h2>Test Frameworks &amp; Canary Scaffolding</h2>
         <div class="row">
