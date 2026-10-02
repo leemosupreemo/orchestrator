@@ -625,6 +625,58 @@ class ReadApiTests(ServerTestCase):
         self.assertIs(state["project"]["mobile_app"], True)
         self.assertIn('state.project?.mobile_app === false', (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js").read_text())
 
+    def test_features_carry_the_combined_check_result_and_say_when_it_is_stale(self):
+        import subprocess as sp
+        run = lambda *a: sp.run(["git", *a], cwd=self.root, capture_output=True, text=True, check=True, env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+        run("init", "-q", "-b", "main")
+        (self.root / "x.txt").write_text("x")
+        run("add", "x.txt")
+        run("commit", "-q", "-m", "base")
+        for b in ("ai/one", "ai/two"):
+            run("branch", b)
+        runtime = self.root / ".orchestrator"
+        (runtime / "features.json").write_text(json.dumps({"features": [{"id": "feat", "name": "Feat", "status": "in-progress", "paths": [], "depends_on": []}]}))
+        for n, b in ((1, "ai/one"), (2, "ai/two")):
+            (runtime / "jobs" / f"20260922-comb-{n}.json").write_text(json.dumps({"job_id": f"20260922-comb-{n}", "status": "review-needed", "title": f"C{n}", "type": "feature-plan", "branch": b, "feature": "feat"}))
+        _, data = self.request("GET", "/api/features")
+        combine = next(f for f in data["features"] if f["id"] == "feat")["combine"]
+        self.assertEqual((sorted(combine["branches"]), combine["result"], combine["stale"]), (["ai/one", "ai/two"], None, False))
+        from orchestrator import integration_check as ic
+        heads = ic.branch_heads(self.root, ["ai/one", "ai/two"])
+        ic.save_result(runtime, "feat", {"status": "pass", "base_head": run("rev-parse", "main"), "heads": heads, "merged": ["ai/one", "ai/two"]})
+        _, data = self.request("GET", "/api/features")
+        self.assertFalse(next(f for f in data["features"] if f["id"] == "feat")["combine"]["stale"])
+        run("checkout", "-q", "ai/one")
+        (self.root / "y.txt").write_text("y")
+        run("add", "y.txt")
+        run("commit", "-q", "-m", "moved")
+        run("checkout", "-q", "main")
+        _, data = self.request("GET", "/api/features")
+        self.assertTrue(next(f for f in data["features"] if f["id"] == "feat")["combine"]["stale"])
+        res, data = self.request("POST", "/api/runs", body={"action": "verify_feature", "params": {"feature": "nope"}}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)  # an unknown feature is refused before anything runs
+        res, _ = self.request("POST", "/api/runs", body={"action": "verify_feature", "params": {}}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+
+    def test_preflight_reports_a_missing_build_tool_and_blocks_a_planned_job_with_it(self):
+        runtime = self.root / ".orchestrator"
+        cfg = json.loads((runtime / "project.json").read_text()) if (runtime / "project.json").exists() else {}
+        cfg.update({"build_command": "definitely-not-a-real-tool --build", "test_command": "python3 -m unittest"})
+        (runtime / "project.json").write_text(json.dumps(cfg))
+        (runtime / "config").mkdir(exist_ok=True)
+        (runtime / "config" / "machines.json").write_text(json.dumps({"machines": [{"name": "local", "enabled": True, "execution_mode": "local", "models": ["m"]}]}))
+        (runtime / "jobs" / "20260922-pre-1.json").write_text(json.dumps({"job_id": "20260922-pre-1", "status": "planned", "title": "P", "type": "feature-plan"}))
+        _, data = self.request("GET", "/api/preflight?refresh=1")
+        items = {i["id"]: i for i in data["items"]}
+        self.assertEqual(items["build-tool"]["status"], "fail")
+        self.assertIn("definitely-not-a-real-tool", items["build-tool"]["detail"])
+        self.assertEqual(items["test-tool"]["status"], "ok")
+        self.assertNotIn("xcode", items)  # not an Apple project
+        _, detail = self.request("GET", "/api/jobs/20260922-pre-1")
+        self.assertIn("build-tool", [b["id"] for b in detail["blockers"]])
+        _, done = self.request("GET", "/api/jobs/20260922-bug-1")
+        self.assertEqual(done["blockers"], [])  # finished jobs aren't blocked by the machine
+
     def test_job_id_validated(self):
         res, _ = self.request("GET", "/api/jobs/..%2Fproject")
         self.assertEqual(res.status, 400)
@@ -812,7 +864,8 @@ class ActionTests(unittest.TestCase):
         sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
         sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
-                  "name": "Suite", "branch": "main", "menu": "keys"}
+                  "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score"}
+        (self.root / ".orchestrator" / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "planned", "paths": [], "depends_on": []}]}))
         for key, action in ui.ACTIONS.items():
             argv = action.build(dict(params, name="feature/x") if key == "git_new_branch" else params, self.root)
             if key == "stash_checkout":
@@ -1895,7 +1948,8 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
         self.assertIn('["Build", act("build")', self.js)  # Tests
-        self.assertIn('Check this computer', self.js)  # Check-up
+        self.assertIn('Will this computer build it?', self.js)  # Check-up: probes
+        self.assertIn('Setup tools', self.js)  # Check-up: the setup checks and wizard
         for action in ("check", "check_config", "worker_check", "wizard"):
             self.assertIn(f'["{action}", ', self.js)
         self.assertIn('act("distribute")', self.js)  # Delivery

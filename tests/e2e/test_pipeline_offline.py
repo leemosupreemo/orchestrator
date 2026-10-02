@@ -172,6 +172,56 @@ class TaskCheckpointTests(unittest.TestCase):
             self.project.git("checkout", "-q", "main")
 
 
+class CombinedCheckTests(unittest.TestCase):
+    """Two jobs of one feature that each pass alone but break the project's tests together."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.project = p = DummyProject([FREE]).create()
+        base = p.git("rev-parse", "main")
+        scoring = (p.root / "wordgame" / "scoring.py").read_text()
+        # Job 1 changes what 'tea' scores (and its own test agrees); job 2 adds a test that relies on the old value.
+        p.git("checkout", "-q", "-b", "ai/one", base)
+        (p.root / "wordgame" / "scoring.py").write_text(scoring.replace('"aeioulnrst"', '"aeioulnrs"').replace('"dg"', '"dgt"'))
+        tests = (p.root / "tests" / "test_scoring.py").read_text()
+        (p.root / "tests" / "test_scoring.py").write_text(tests.replace('score("tea"), 3)', 'score("tea"), 4)').replace('score("t-e!"), 2)', 'score("t-e!"), 3)'))
+        p.git("commit", "-q", "-am", "job one")
+        p.git("checkout", "-q", "-b", "ai/two", base)
+        (p.root / "tests" / "test_extra.py").write_text("import unittest\nfrom wordgame.scoring import score\n\nclass Extra(unittest.TestCase):\n    def test_tea_is_three(self):\n        self.assertEqual(score('tea'), 3)\n")
+        p.git("add", "-A")
+        p.git("commit", "-q", "-m", "job two")
+        p.git("checkout", "-q", "main")
+        rt = p.root / ".orchestrator"
+        (rt / "jobs").mkdir(exist_ok=True)
+        (rt / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "in-progress", "paths": [], "depends_on": []}]}))
+        for n, b in ((1, "ai/one"), (2, "ai/two")):
+            (rt / "jobs" / f"20261001-000000-feature-{n}.json").write_text(json.dumps({"job_id": f"20261001-000000-feature-{n}", "status": "review-needed", "title": f"Job {n}", "type": "feature-plan", "branch": b, "feature": "word-score"}))
+        cls.verify = p.orchestrator("script", "verify_integration.py", "word-score")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def test_each_branch_passes_alone(self):
+        for b in ("ai/one", "ai/two"):
+            self.project.git("checkout", "-q", b)
+            try:
+                self.assertEqual(self.project.run_tests().returncode, 0, b)
+            finally:
+                self.project.git("checkout", "-q", "main")
+
+    def test_together_they_fail_and_the_result_says_so(self):
+        self.assertEqual(self.verify.returncode, 1, self.verify.stdout[-800:])
+        result = json.loads((self.project.root / ".orchestrator" / "integration" / "word-score.json").read_text())
+        self.assertEqual((result["status"], sorted(result["merged"])), ("test-failed", ["ai/one", "ai/two"]))
+        self.assertIn("test_tea_is_three", result["test"]["tail"])
+
+    def test_the_checkout_is_untouched(self):
+        self.assertEqual(self.project.git("branch", "--show-current"), "main")
+        self.assertEqual(self.project.git("status", "--porcelain"), "")
+        self.assertEqual(self.project.git("worktree", "list").count("\n"), 0)
+
+
 class BuilderTestCommandTests(unittest.TestCase):
     """The worker checks which tests the builder ran before it counts a task as done."""
 

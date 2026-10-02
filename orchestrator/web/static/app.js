@@ -1936,6 +1936,21 @@ function drawFeatureLinks(map) {
   }).join("") : "";
 }
 
+// "Do this feature's jobs work together?": one line, one action, and the last result in plain words.
+function combineLine(f) {
+  const c = f.combine;
+  if (!c || c.branches.length < 2) return "";
+  const r = c.result;
+  const stale = c.stale ? ` <span class="muted">Out of date: a branch or the base has changed since.</span>` : "";
+  const files = (r?.conflicts || []).map((x) => `${esc(x.branch)}${x.files.length ? ` (${x.files.map(esc).join(", ")})` : ""}`).join("; ");
+  const say = !r ? `<span class="muted">Not checked yet. Each job passed alone; this tries them all together.</span>`
+    : r.status === "pass" ? `<span class="pill done">Works together</span> <span class="muted">${r.merged.length} branches merged, build and tests pass.</span>`
+    : r.status === "conflict" ? `<span class="pill failed">Conflict</span> <span class="muted">These don't merge cleanly: ${files}.</span>`
+    : r.status === "build-failed" || r.status === "test-failed" ? `<span class="pill failed">${r.status === "build-failed" ? "Build fails" : "Tests fail"} together</span> <span class="muted">Each branch passed alone; the combination doesn't.</span>`
+    : `<span class="muted">${esc(r.error || "Couldn't check.")}</span>`;
+  return `<div class="row gap-10">${say}${stale}<button type="button" class="btn small" ${act("verify_feature", { feature: f.id })}>${r ? "Check again" : "Check together"}</button></div>`;
+}
+
 pages.features = async (_, query) => {
   const view_ = query.get("view") === "map" ? "map" : "list";
   const [{ features, overlaps, archived_jobs: archived }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
@@ -1975,6 +1990,7 @@ pages.features = async (_, query) => {
       <div class="card-b stack">
         ${f.summary ? `<div>${esc(f.summary)}</div>` : ""}
         ${f.reopened ? `<div class="muted">Reopened: new work was added after it was marked complete.</div>` : ""}
+        ${combineLine(f)}
         ${f.kpis.length ? `<div><a href="#/measure">KPIs</a>: ${["on-track", "behind", "no-data", "no-target"].map((k) => [k, f.kpis.filter((x) => x.status.state === k).length]).filter(([, n]) => n).map(([k, n]) => `${n} ${KPI_STATE[k][0].toLowerCase()}`).join(" · ")}</div>` : ""}
         ${f.paths.length ? `<div class="muted mono">${f.paths.map(esc).join(" · ")}</div>` : ""}
         <div class="tasks-progress-wrap"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${pct}%"></div></div>
@@ -2228,9 +2244,23 @@ pages.checkup = async () => {
       <section class="card"><div class="card-h"><h2>Everything</h2><span class="muted">Product state. Tools and keys are in the setup checklist.</span></div>
         <div class="list">${d.items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div>
           <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>
-      <section class="card mt-16"><div class="card-h"><h2>Check this computer</h2><span class="muted">Tools, logins and machines, not the product.</span></div>
+      <section class="card mt-16"><div class="card-h"><h2>Will this computer build it?</h2><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
+        <div class="list" id="preflight-list"><div class="item"><div class="main-col muted">Checking this computer…</div></div></div></section>
+      <section class="card mt-16"><div class="card-h"><h2>Setup tools</h2></div>
         <div class="list">${[["check", "Tools and logins", "CLIs, sign-ins and keys"], ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"], ["wizard", "Setup wizard", "Walk through project, tools and delivery setup"]].map(([a, title, hint]) =>
           `<div class="item"><div class="main-col"><div class="title">${title}</div><div class="meta">${hint}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>`,
+    after: () => {
+      const paint = async (refresh) => {
+        const box = $("#preflight-list");
+        try {
+          const { items } = await api(`preflight${refresh ? "?refresh=1" : ""}`);
+          const icon = { ok: `<span class="setup-icon done" aria-label="fine">✓</span>`, warn: `<span class="pill attention">Maybe</span>`, fail: `<span class="pill failed">Blocks</span>` };
+          box.innerHTML = items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}${i.fix && !i.route ? ` · ${esc(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.fix || "Open")}</a></div>` : ""}</div>`).join("") || `<div class="empty">Nothing to check.</div>`;
+        } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+      };
+      paint(false);
+      $("#preflight-refresh")?.addEventListener("click", () => paint(true));
+    },
   };
 };
 

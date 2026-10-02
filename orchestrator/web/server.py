@@ -56,6 +56,8 @@ from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
 from orchestrator import task_revert
+from orchestrator import preflight
+from orchestrator import integration_check
 from orchestrator import new_job_form
 from orchestrator import notifier
 from orchestrator import plan_edit
@@ -659,7 +661,18 @@ def features_overview(root: Path) -> dict[str, Any]:
     features = feature_store.load(runtime_dir(root))
     files = {j["id"]: job_touched_files(read_json_file(jobs_dir(root) / f"{j['id']}.json"))
              for j in jobs if j.get("feature")}
-    return {"features": feature_store.rollup(features, jobs + archived), "archived_jobs": archived, "overlaps": feature_store.overlaps(features, jobs, files),
+    rolled = feature_store.rollup(features, jobs + archived)
+    base = read_json_file(runtime_dir(root) / "project.json").get("base_branch") or "main"
+    for f in rolled:
+        branches = []
+        for j in jobs:
+            if j.get("feature") == f["id"] and j.get("branch") and j["status"] not in ("discarded", "archived") and j["branch"] not in branches:
+                branches.append(j["branch"])
+        result = integration_check.load_result(runtime_dir(root), f["id"])
+        base_head = git(root, "rev-parse", f"refs/heads/{base}")
+        f["combine"] = {"branches": branches, "result": result,
+                        "stale": integration_check.is_stale(result, base_head, integration_check.branch_heads(root, branches))}
+    return {"features": rolled, "archived_jobs": archived, "overlaps": feature_store.overlaps(features, jobs, files),
             "unassigned": [j["id"] for j in jobs if not j.get("feature") and j["state"]["group"] != "done"]}
 
 
@@ -739,6 +752,55 @@ def job_scope(root: Path, job: dict[str, Any]) -> dict[str, Any] | None:
     return result
 
 
+_PREFLIGHT_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+PREFLIGHT_TTL = 60.0
+
+
+def is_apple_app(root: Path, config: dict[str, Any]) -> bool:
+    try:
+        return bool(config.get("xcode_project") or config.get("xcode_workspace") or any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace")) or (root / "Package.swift").is_file())
+    except OSError:
+        return False
+
+
+def preflight_overview(root: Path, refresh: bool = False) -> list[dict[str, str]]:
+    """Will this computer be able to build and test the project? Cheap probes, cached for a minute."""
+    import shutil
+    key = str(root)
+    hit = _PREFLIGHT_CACHE.get(key)
+    if hit and not refresh and time.time() - hit[0] < PREFLIGHT_TTL:
+        return hit[1]
+    search_path = os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
+
+    def run(argv: list[str]) -> tuple[int, str]:
+        exe = shutil.which(argv[0], path=search_path)
+        if not exe:
+            return 127, ""
+        try:
+            res = subprocess.run([exe, *argv[1:]], cwd=root, capture_output=True, text=True, timeout=15, env={**os.environ, "PATH": search_path})
+            return res.returncode, (res.stdout or "") + (res.stderr or "")
+        except (OSError, subprocess.TimeoutExpired):
+            return 124, "timed out"
+
+    def model_clis(model: str) -> list[str]:
+        try:
+            from orchestrator.scripts.model_registry import get_model
+            meta = get_model(model)
+            return list(meta.required_clis) if meta else []
+        except Exception:
+            return []
+
+    config = read_json_file(runtime_dir(root) / "project.json")
+    machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
+    try:
+        free = shutil.disk_usage(root).free / 1e9
+    except OSError:
+        free = None
+    items = preflight.checks(config, machines, is_apple_app(root, config), free, run, lambda t: shutil.which(t, path=search_path) is not None, model_clis)
+    _PREFLIGHT_CACHE[key] = (time.time(), items)
+    return items
+
+
 def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     import shutil
     from orchestrator import run_check
@@ -747,7 +809,14 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     except OSError:
         free = None
     machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
-    return run_check.blockers(job, machines, free, run_check.MIN_DISK_GB, run_check.model_names_overlap)
+    found = run_check.blockers(job, machines, free, run_check.MIN_DISK_GB, run_check.model_names_overlap)
+    if job.get("status") in run_check.CHECKED_STATUSES:
+        have = {b["id"] for b in found}
+        for item in preflight.failures(preflight_overview(root)):
+            if item["id"] != "disk" and item["id"] not in have:  # disk is already said, with this job's numbers
+                hint = "" if item["route"] or not item["fix"] else f" {item['fix']}."
+                found.append({"id": item["id"], "text": f"{item['title']}. {item['detail']}{hint}", "fix": item["fix"] if item["route"] else "", "route": item["route"]})
+    return found
 
 
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
@@ -1558,6 +1627,15 @@ def build_debug(params: dict[str, Any], root: Path) -> list[str]:
     return argv
 
 
+def build_verify_feature(params: dict[str, Any], root: Path) -> list[str]:
+    feature = _text(params, "feature", required=True)
+    try:
+        feature_store.get(feature_store.load(runtime_dir(root)), feature)
+    except feature_store.FeatureError as exc:
+        raise UIError(str(exc))
+    return orchestrator_argv("script", "verify_integration.py", feature)
+
+
 def build_fix(params: dict[str, Any], root: Path) -> list[str]:
     argv = orchestrator_argv("fix", _text(params, "feedback", required=True))
     if params.get("job"):
@@ -2316,6 +2394,7 @@ ACTIONS: dict[str, Action] = {
     "export_job": Action("Export job bundle", build_export_job, fields=["job", "destination"]),
     "visual_check": Action("Simulator visual check", build_simulator_visual_check, fields=["destination", "wait", "no_build", "job"]),
     "worker_install": Action("Install worker dependencies", build_worker_install, fields=["machine"]),
+    "verify_feature": Action("Check the feature's jobs together", build_verify_feature, fields=["feature"]),
     "sync_fleet": Action("Sync fleet code", lambda p, r: orchestrator_argv("script", "sync_fleet.py")),
     "fleet_llm_check": Action("Fleet LLM latency & quota check", lambda p, r: orchestrator_argv("script", "fleet_llm_check.py")),
     "update_local": Action("Update Orchestrator (local)", lambda p, r: orchestrator_argv("update")),
@@ -2792,6 +2871,8 @@ class UIHandler(BaseHTTPRequestHandler):
                     self._json({**proposal, "diff": product_docs.unified_diff(current, proposal["markdown"])})
             except product_docs.ProductDocError as exc:
                 raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+        elif method == "GET" and parts == ["preflight"]:
+            self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root))
         elif method == "POST" and parts == ["delivery", "rerun"]:

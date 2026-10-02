@@ -198,4 +198,5 @@ class DummyProject:
         return json.loads(files[-1].read_text()) if files else {}
 
     def run_tests(self) -> subprocess.CompletedProcess:
-        return subprocess.run([PYTHON, "-m", "unittest", "discover", "-s", "tests"], cwd=self.root, capture_output=True, text=True)
+        # No bytecode cache: tests switch branches within one second, and a .pyc from the previous branch can look current.
+        return subprocess.run([PYTHON, "-m", "unittest", "discover", "-s", "tests"], cwd=self.root, capture_output=True, text=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
