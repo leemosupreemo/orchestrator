@@ -132,15 +132,6 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 .topbar-text { min-width: 0; }
 .topbar h1 { font-size: var(--text-2xl); font-weight: 650; }
 .sub { margin: var(--space-1) 0 0; color: var(--muted); font-size: var(--text-md); }
-.topbar-title-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.topbar-title-row h1 {
-  margin: 0;
-}
 .topbar-languages {
   display: inline-flex;
   align-items: center;
@@ -328,11 +319,6 @@ input:focus, textarea:focus, select:focus, .btn:focus-visible, summary:focus-vis
 details.advanced { border: 1px solid var(--border); border-radius: var(--r-md); }
 details.advanced > summary { cursor: pointer; padding: var(--space-3) var(--space-3); color: var(--muted); font-weight: 550; }
 details.advanced > .stack { padding: var(--space-1) var(--space-3) var(--space-3); }
-
-/* detail */
-dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); margin: 0; }
-dl.kv dt { color: var(--muted); font-size: var(--text-sm); }
-dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 pre.file {
   margin: 0; padding: var(--space-4) var(--space-4); max-height: 70vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   background: var(--panel-2); border-radius: 0 0 var(--radius) var(--radius);
@@ -405,7 +391,7 @@ dialog h2 { font-size: var(--text-lg); }
     position: fixed; inset: auto 0 0 0; height: auto; z-index: 20; flex-direction: row; gap: 0;
     padding: var(--space-1) var(--space-1) calc(var(--space-1) + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--border);
   }
-  .brand, .project-switch, .console-btn, .new-job-btn, .connection-btn { display: none !important; }
+  .brand, .project-switch, .console-btn, .new-job-btn { display: none !important; }
   .nav { flex-direction: row; width: 100%; justify-content: space-around; align-items: center; }
   .nav a { flex-direction: column; gap: var(--space-0); font-size: var(--text-2xs); padding: var(--space-2) var(--space-0); flex: 1; text-align: center; position: relative; }
   .nav .icon { width: 22px; height: 22px; }
@@ -458,7 +444,6 @@ dialog h2 { font-size: var(--text-lg); }
   .item:has(.side .btn) .main-col { flex-basis: 100%; }
   .item:has(.side .btn) .side { width: 100%; justify-content: space-between; }
   .mobile-only { display: flex; }
-  .desktop-only { display: none; }
   .more-menu { position: fixed; left: 12px; right: 12px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom)); }
   .term-input { display: flex; }
 }
@@ -544,23 +529,6 @@ dialog h2 { font-size: var(--text-lg); }
 .sso-btn.github-btn:hover {
   background: #32383f;
   border-color: #5b636b;
-}
-.sso-divider {
-  display: flex;
-  align-items: center;
-  text-align: center;
-  color: var(--muted);
-  font-size: var(--text-xs);
-  margin: var(--space-1) 0;
-}
-.sso-divider::before,
-.sso-divider::after {
-  content: "";
-  flex: 1;
-  border-bottom: 1px solid var(--border);
-}
-.sso-divider span {
-  padding: 0 var(--space-3);
 }
 .app.session-locked .sidebar {
   opacity: 0.35;
@@ -699,31 +667,10 @@ dialog h2 { font-size: var(--text-lg); }
   gap: var(--space-3);
   grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
 }
-.tile {
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1);
-  padding: var(--space-4) var(--space-4);
-  min-height: 84px;
-}
-.tile strong {
-  font-weight: 600;
-}
-.tile span {
-  color: var(--muted);
-  font-size: var(--text-sm);
-  font-weight: 400;
-}
 @media (max-width: 760px) {
   .grid, .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
-  }
-  .tile {
-    min-height: 72px;
-    padding: var(--space-3);
   }
   .stat {
     padding: var(--space-3);
@@ -902,21 +849,6 @@ dialog h2 { font-size: var(--text-lg); }
 .live-run .main-col { min-width: 0; flex: 1 1 260px; color: var(--text); }
 .live-run .last-line { color: var(--muted); font-size: var(--text-xs); margin-top: var(--space-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Job Detail Page Rich Categories */
-.job-kind-badge {
-  display: inline-block;
-  font-size: var(--text-2xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: var(--space-0) var(--space-2);
-  border-radius: var(--r-xs);
-  background: var(--panel-2);
-  color: var(--accent);
-  margin-right: var(--space-2);
-  vertical-align: middle;
-}
-
 .job-hero {
   display: flex;
   align-items: center;
@@ -936,38 +868,6 @@ dialog h2 { font-size: var(--text-lg); }
 .job-hero.tone-failed { border-color: var(--bad); background: var(--bad-soft); }
 .job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); min-width: 0; flex: 1 1 260px; }
 .job-hero-reason { margin: 0; font-size: var(--text-md); overflow-wrap: anywhere; }
-
-/* Detail Attributes Grid */
-.grid-details {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-  gap: var(--space-4);
-}
-.detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.detail-item.full-width {
-  grid-column: 1 / -1;
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--border);
-}
-.detail-item .label {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-}
-.detail-item .value {
-  font-size: var(--text-md);
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
 
 /* Tasks Progress Bar */
 .tasks-progress-wrap {
@@ -996,16 +896,6 @@ dialog h2 { font-size: var(--text-lg); }
   color: var(--text);
   white-space: nowrap;
 }
-.next-task-line {
-  font-size: var(--text-sm);
-  color: var(--muted);
-  margin-top: var(--space-1);
-  font-family: var(--mono);
-}
-.next-task-line strong {
-  color: var(--text);
-  font-family: inherit;
-}
 
 /* Delta Card */
 .delta-summary-line {
@@ -1024,18 +914,6 @@ dialog h2 { font-size: var(--text-lg); }
 .delta-line.total {
   color: var(--text);
 }
-.delta-files-list {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  font-size: var(--text-sm);
-  margin-top: var(--space-1);
-}
-.file-prefix {
-  color: var(--muted);
-  font-family: var(--mono);
-}
 .delta-file-chip {
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -1043,7 +921,6 @@ dialog h2 { font-size: var(--text-lg); }
   border-radius: var(--r-xs);
   font-size: var(--text-xs);
 }
-
 
 .sort-head { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .sort-head:hover { color: var(--text); }

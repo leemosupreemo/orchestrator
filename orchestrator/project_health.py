@@ -8,7 +8,6 @@ gathers, so the rules are easy to read and test.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
 from orchestrator.product_docs import REVIEW_AFTER_JOBS

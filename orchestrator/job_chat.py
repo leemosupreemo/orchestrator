@@ -7,7 +7,6 @@ course-correction advice. Changes still go through Revise plan or Run fix.
 """
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 from pathlib import Path
