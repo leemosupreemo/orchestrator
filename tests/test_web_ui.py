@@ -617,6 +617,14 @@ class ReadApiTests(ServerTestCase):
         res, _ = self.request("POST", "/api/delivery/rerun", {"run_id": 12}, headers={"Content-Type": "application/json"})
         self.assertEqual(res.status, 403)  # needs the UI headers like every other write
 
+    def test_mobile_app_detection_decides_whether_device_tools_are_offered(self):
+        _, state = self.request("GET", "/api/state")
+        self.assertIs(state["project"]["mobile_app"], False)  # the test project is a plain Python project
+        (self.root / "ios").mkdir()
+        _, state = self.request("GET", "/api/state")
+        self.assertIs(state["project"]["mobile_app"], True)
+        self.assertIn('state.project?.mobile_app === false', (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js").read_text())
+
     def test_job_id_validated(self):
         res, _ = self.request("GET", "/api/jobs/..%2Fproject")
         self.assertEqual(res.status, 400)
@@ -1855,6 +1863,12 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('body: {op: "test"}', self.js)
         self.assertIn("Saved, but the test message failed", self.js)
         self.assertIn("Saved, but the test event failed", self.js)
+
+    def test_a_kpi_that_is_behind_offers_a_prefilled_improvement_job(self):
+        fn = self.js[self.js.index("function improveKpiSummary"):self.js.index("pages.measure = async")]
+        for part in ("k.event", "k.target", "last?.decision", "how we will know it worked"):
+            self.assertIn(part, fn)
+        self.assertIn('st.state === "behind" ? `<a class="btn small primary"', self.js)  # only when behind: one obvious next step per KPI
 
     def test_toasts_explain_errors_and_alert_setup_is_reachable(self):
         self.assertIn("Errors.explain(message)", self.js)

@@ -1132,6 +1132,18 @@ def get_project_languages(root: Path, github_repo: str | None = None) -> list[di
     return langs
 
 
+def is_mobile_app(root: Path, config: dict[str, Any]) -> bool:
+    """True when the project builds an app for a phone or simulator, which is when device logs and simulator checks mean something."""
+    if config.get("xcode_project") or config.get("xcode_workspace") or config.get("app_bundle_id") or config.get("remote_logs"):
+        return True
+    try:
+        if any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace")) or (root / "Package.swift").is_file():
+            return True
+        return (root / "android").is_dir() or (root / "app" / "src" / "main" / "AndroidManifest.xml").is_file() or (root / "ios").is_dir()
+    except OSError:
+        return False
+
+
 def project_state(root: Path) -> dict[str, Any]:
     config = read_json_file(runtime_dir(root) / "project.json")
     status = git(root, "status", "--porcelain")
@@ -1173,6 +1185,7 @@ def project_state(root: Path) -> dict[str, Any]:
         "scheme": config.get("scheme"),
         "firebase_distribution": bool(config.get("firebase_distribution")),
         "remote_logs": bool(config.get("remote_logs")),
+        "mobile_app": is_mobile_app(root, config),
         "configured": bool(config),
         "source_type": root_source_type,
         "source_label": root_source_label,

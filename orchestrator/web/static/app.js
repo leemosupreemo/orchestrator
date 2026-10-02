@@ -732,6 +732,9 @@ async function refreshState() {
     badge.classList.toggle("working", waiting === 0);
     badge.title = waiting ? `${waiting} waiting for you` : `${running.length} running`;
   }
+  // Device logs and simulator checks only mean something for a project that builds an app.
+  const navDevlogs = document.querySelector('.nav [data-route="devlogs"]');
+  if (navDevlogs) navDevlogs.hidden = state.project?.mobile_app === false;
   const inboxBadge = $("#inbox-badge");
   if (inboxBadge) {
     inboxBadge.hidden = !state.inbox_count;
@@ -1366,7 +1369,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   items.push(["Attach logs", act("link_logs", j), "Device crash logs or test traces"]);
   items.push(["Attach mockup or reference", act("attach_mockup", j)]);
   items.push(["Override models", act("select_models", j), "Planner, builder and reviewer"]);
-  items.push(["Simulator visual check", act("run_visual_check", j), "Boot the simulator and capture screenshots"]);
+  if (state.project?.mobile_app !== false) items.push(["Simulator visual check", act("run_visual_check", j), "Boot the simulator and capture screenshots"]);
   items.push(["Export bundle", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"]);
   items.push("---");
   for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, "On GitHub"]);
@@ -2125,6 +2128,15 @@ function kpiFormBody(k = {}) {
     </div>`;
 }
 
+// A KPI that is behind its target becomes a pre-filled feature job: what is measured, how far off, and the last decision made.
+function improveKpiSummary(k, st) {
+  const unit = k.unit ? ` ${k.unit}` : "";
+  const last = (k.measurements || []).slice(-1)[0];
+  return `Improve "${k.name}" (event ${k.event}): it is ${st.latest ? st.latest.value : "unknown"}${unit} and should be ${k.direction === "up" ? "at least" : "at most"} ${k.target}${unit}.`
+    + (last?.decision ? ` Last decision: ${last.decision}${last.note ? ` (${last.note})` : ""}.` : "")
+    + " Propose the smallest change most likely to move it, and say how we will know it worked.";
+}
+
 pages.measure = async () => {
   const data = await api("analytics");
   const { features } = data;
@@ -2136,7 +2148,7 @@ pages.measure = async () => {
         <div class="meta"><span class="mono">${esc(k.event)}</span> · ${k.target === null ? "no target" : `${k.direction === "up" ? "at least" : "at most"} ${esc(k.target)}${k.unit ? ` ${esc(k.unit)}` : ""}`}</div></div>
       <div class="kpi-latest">${st.latest ? `<strong>${esc(st.latest.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</strong><span class="muted">${esc(ago(st.latest.t))}${trend ? ` · ${trend}` : ""}</span>` : `<span class="muted">—</span>`}</div>
       <span class="pill ${tone}">${esc(label)}</span>
-      <div class="side"><button class="btn small" data-kpi="measure" data-f="${esc(f.id)}" data-k="${esc(k.id)}">Log result</button>
+      <div class="side">${st.state === "behind" ? `<a class="btn small primary" href="#/new?type=feature&feature=${encodeURIComponent(f.id)}&summary=${encodeURIComponent(improveKpiSummary(k, st))}">Plan an improvement</a>` : ""}<button class="btn small" data-kpi="measure" data-f="${esc(f.id)}" data-k="${esc(k.id)}">Log result</button>
         ${moreMenu([["Edit", `data-kpi="edit" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`], ["Delete", `data-kpi="delete" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`, "You can undo for 10 seconds", "danger"]])}</div>
       ${k.measurements.length ? `<details class="kpi-log"><summary>Learning log (${k.measurements.length})</summary>${k.measurements.slice().reverse().map((m) => `<div class="kpi-entry"><span class="mono">${esc(m.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</span> <span class="muted">${esc(ago(m.t))}</span>${m.decision ? ` <span class="pill ${m.decision === "drop" ? "failed" : m.decision === "iterate" ? "attention" : "done"}">${esc(DECISION_LABEL[m.decision])}</span>` : ""}${m.note ? ` <span>${esc(m.note)}</span>` : ""}</div>`).join("")}</details>` : ""}
     </div>`;
@@ -3610,7 +3622,7 @@ const palette = { open: false, entries: [], shown: [], active: 0, opener: null }
 
 function paletteBase() {
   const go = (hash) => () => { location.hash = hash; };
-  const entries = PALETTE_PAGES.map(([label, hash, hint]) => ({ label, hint, group: "Pages", order: 1, run: go(hash) }));
+  const entries = PALETTE_PAGES.filter(([, hash]) => !(hash === "#/devlogs" && state.project?.mobile_app === false)).map(([label, hash, hint]) => ({ label, hint, group: "Pages", order: 1, run: go(hash) }));
   const act_ = (label, hint, fn) => entries.push({ label, hint, group: "Actions", order: 0, run: fn });
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
   act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());
@@ -3693,7 +3705,7 @@ function closeMore() { if (moreSheet.hidden) return; moreSheet.hidden = true; mo
 moreBtn?.addEventListener("click", () => {
   if (!moreSheet.hidden) return closeMore();
   moreSheet.innerHTML = `<div class="more-sheet-h"><strong>More</strong><button type="button" class="btn small ghost" data-more-close aria-label="Close">✕</button></div>
-    <nav aria-label="More pages">${MORE_LINKS.map(([label, href]) => `<a href="${href}">${esc(label)}</a>`).join("")}</nav>
+    <nav aria-label="More pages">${MORE_LINKS.filter(([, href]) => !(href === "#/devlogs" && state.project?.mobile_app === false)).map(([label, href]) => `<a href="${href}">${esc(label)}</a>`).join("")}</nav>
     <div class="more-sheet-actions"><button type="button" class="btn" data-more-search>Search</button><a class="btn" href="#/new">New job</a>
       ${Notifications.supported() ? `<button type="button" class="btn" data-more-notify>${Notifications.enabled() ? "Turn off alerts" : "Notify me when done"}</button>` : ""}
       <button type="button" class="btn" data-more-lock>Lock session</button></div>`;

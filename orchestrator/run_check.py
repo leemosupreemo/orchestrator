@@ -53,6 +53,6 @@ def blockers(job: dict[str, Any], machines: list[dict[str, Any]], disk_free_gb: 
     found = []
     local = [m for m in usable if m.get("execution_mode", "local") == "local"]
     if disk_free_gb is not None and local and len(local) == len(usable) and disk_free_gb < min_disk_gb:
-        found.append({"id": "low-disk", "text": f"Only {disk_free_gb:.0f} GB is free on this computer and builds want {min_disk_gb} GB. The scheduler will refuse to start.",
+        found.append({"id": "low-disk", "text": f"Only {disk_free_gb:.0f} GB is free on this computer and builds want {min_disk_gb} GB. Free some space, or lower the limit with ORCHESTRATOR_MIN_DISK_GB if this project builds small.",
                       "fix": "", "route": ""})
     return found
