@@ -125,6 +125,46 @@ class PromptAndReplyTests(Base):
         self.assertEqual(P.unified_diff("same\n", "same\n"), [])
 
 
+class PlanUpkeepTests(Base):
+    def test_a_finished_job_is_listed_under_done_recently_newest_first(self):
+        P.scaffold(self.root)
+        self.assertTrue(P.note_done(self.root, "Add rematch", "20260901-feature-5"))
+        self.assertTrue(P.note_done(self.root, "Fix rejoin  crash", "20260902-bug-6"))
+        text = P.read(self.root, "plan")
+        done = text.split("## Done recently")[1]
+        self.assertLess(done.index("Fix rejoin crash"), done.index("Add rematch"))
+        self.assertIn("(`20260902-bug-6`, " + time.strftime("%Y-%m-%d") + ")", done)
+        self.assertNotIn("What shipped", done)  # the template's guidance line is replaced by real entries
+        for heading in ("## Now", "## Next", "## Later"):
+            self.assertIn(heading, text)  # the rest of the plan is untouched
+
+    def test_it_never_adds_a_job_twice_creates_a_plan_or_accepts_junk(self):
+        self.assertFalse(P.note_done(self.root, "Something", "j1"))  # no plan file: leave the project alone
+        self.assertIsNone(P.read(self.root, "plan"))
+        P.scaffold(self.root)
+        self.assertTrue(P.note_done(self.root, "Something", "j1"))
+        self.assertFalse(P.note_done(self.root, "Something", "j1"))
+        self.assertFalse(P.note_done(self.root, "", "j2"))
+        self.assertFalse(P.note_done(self.root, "Title", ""))
+        self.assertEqual(P.read(self.root, "plan").count("`j1`"), 1)
+
+    def test_the_list_is_kept_short_and_other_sections_after_it_survive(self):
+        P.write(self.root, "plan", "# Plan\n\n## Now\n\nthe slice\n\n## Done recently\n\n- old (`a`, 2026-01-01)\n\n## Notes\n\nkeep me\n")
+        for i in range(P.MAX_DONE + 5):
+            P.note_done(self.root, f"Job {i}", f"id{i}")
+        text = P.read(self.root, "plan")
+        done = text.split("## Done recently")[1].split("## Notes")[0]
+        self.assertEqual(done.count("\n- "), P.MAX_DONE)
+        self.assertIn(f"Job {P.MAX_DONE + 4}", done)
+        self.assertNotIn("(`a`", done)  # the oldest fell off
+        self.assertIn("## Notes\n\nkeep me", text)
+
+    def test_a_plan_without_the_heading_gets_one(self):
+        P.write(self.root, "plan", "# Plan\n\n## Now\n\nthe slice\n")
+        P.note_done(self.root, "First", "j1")
+        self.assertTrue(P.read(self.root, "plan").rstrip().endswith("- First (`j1`, " + time.strftime("%Y-%m-%d") + ")"))
+
+
 class ReviewDueTests(Base):
     def test_no_reminder_until_there_is_enough_to_review(self):
         self.assertIsNone(P.review_due(self.root, P.REVIEW_AFTER_JOBS - 1))

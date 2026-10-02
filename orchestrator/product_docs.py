@@ -370,3 +370,31 @@ def review_due(root: Path, jobs_total: int) -> dict[str, Any] | None:
         return None
     reason = f"The last review was {review['days']} days ago." if review else "No review has been run yet."
     return {"reason": f"{reason} It checks drift from the brief, architecture, duplication and UX consistency.", "days": review["days"] if review else None}
+
+
+# --------------------------------------------------------------------------- keeping the plan current
+
+DONE_HEADING = "## Done recently"
+MAX_DONE = 15
+
+
+def note_done(root: Path, title: str, job_id: str) -> bool:
+    """Record a finished job under "Done recently" in the plan, so planners can see what already exists.
+    Only touches a plan that already exists, never adds the same job twice, and keeps the list short."""
+    path = path_of(root, "plan")
+    text = read(root, "plan")
+    title = " ".join(str(title or "").split())[:140]
+    if text is None or not title or not job_id or f"`{job_id}`" in text:
+        return False
+    bullet = f"- {title} (`{job_id}`, {time.strftime('%Y-%m-%d')})"
+    lines = text.rstrip("\n").split("\n")
+    if DONE_HEADING in lines:
+        start = lines.index(DONE_HEADING) + 1
+        end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+        body = [l for l in lines[start:end] if l.strip() and not re.fullmatch(r"_.*_", l.strip())]
+        body = ([bullet] + body)[:MAX_DONE]  # newest first
+        lines[start:end] = [""] + body + [""] * (1 if end < len(lines) else 0)
+    else:
+        lines += ["", DONE_HEADING, "", bullet]
+    write(root, "plan", "\n".join(lines))
+    return True
