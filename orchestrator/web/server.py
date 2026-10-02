@@ -562,9 +562,9 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         }
 
     pipeline = {
-        "planner": job.get("planner") or "gemini-3.1-pro-preview",
-        "builder": job.get("builder") or "gpt-5.4",
-        "reviewer": job.get("reviewer") or "gemini-3.1-pro-preview",
+        "planner": job.get("planner") or None,
+        "builder": job.get("builder") or None,
+        "reviewer": job.get("reviewer") or None,
     }
 
     tasks = job.get("tasks") if isinstance(job.get("tasks"), list) else (job.get("plan", {}).get("tasks", []) if isinstance(job.get("plan"), dict) else [])
@@ -2182,7 +2182,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["features"]:
             body = self._body()
             try:
-                feature_store.create(runtime_dir(root), str(body.get("name") or ""), str(body.get("summary") or ""), body.get("paths"))
+                feature_store.create(runtime_dir(root), str(body.get("name") or ""), str(body.get("summary") or ""), body.get("paths"), body.get("depends_on"))
             except feature_store.FeatureError as exc:
                 raise UIError(str(exc))
             self._json(features_overview(root))
@@ -2191,7 +2191,7 @@ class UIHandler(BaseHTTPRequestHandler):
             try:
                 if "status" in body:
                     feature_store.set_status(runtime_dir(root), parts[1], str(body["status"]))
-                fields = {k: body[k] for k in ("name", "summary", "paths") if k in body}
+                fields = {k: body[k] for k in ("name", "summary", "paths", "depends_on") if k in body}
                 if fields:
                     feature_store.update(runtime_dir(root), parts[1], **fields)
             except feature_store.FeatureError as exc:

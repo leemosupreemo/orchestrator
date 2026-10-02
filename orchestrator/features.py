@@ -60,6 +60,55 @@ def _paths(raw: Any) -> list[str]:
     return out
 
 
+def _deps(raw: Any, features: list[dict[str, Any]], self_id: str | None) -> list[str]:
+    ids = raw.splitlines() if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    known = {f["id"] for f in features}
+    out = []
+    for item in ids:
+        d = str(item).strip()
+        if not d or d in out:
+            continue
+        if d == self_id:
+            raise FeatureError("A feature can't depend on itself")
+        if d not in known:
+            raise FeatureError(f"Unknown feature: {d}")
+        out.append(d)
+    return out
+
+
+def _would_cycle(features: list[dict[str, Any]], feature_id: str, deps: list[str]) -> bool:
+    """True if making `feature_id` depend on `deps` lets a dependency lead back to it."""
+    graph = {f["id"]: list(f.get("depends_on") or []) for f in features}
+    graph[feature_id] = deps
+    seen, stack = set(), list(deps)
+    while stack:
+        node = stack.pop()
+        if node == feature_id:
+            return True
+        if node not in seen:
+            seen.add(node)
+            stack.extend(graph.get(node, []))
+    return False
+
+
+def layers(features: list[dict[str, Any]]) -> dict[str, int]:
+    """Depth of each feature: 0 has no dependencies, otherwise 1 + its deepest dependency.
+    Dependencies on missing features are ignored."""
+    graph = {f["id"]: [d for d in f.get("depends_on") or [] if d != f["id"]] for f in features}
+    depth: dict[str, int] = {}
+
+    def visit(node: str, trail: frozenset[str]) -> int:
+        if node in depth:
+            return depth[node]
+        deps = [d for d in graph[node] if d in graph and d not in trail]  # `trail` guards hand-edited cycles
+        depth[node] = 1 + max((visit(d, trail | {node}) for d in deps), default=-1)
+        return depth[node]
+
+    for node in graph:
+        visit(node, frozenset())
+    return depth
+
+
 def get(features: list[dict[str, Any]], feature_id: str) -> dict[str, Any]:
     for f in features:
         if f["id"] == feature_id:
@@ -67,7 +116,7 @@ def get(features: list[dict[str, Any]], feature_id: str) -> dict[str, Any]:
     raise FeatureError("Feature not found")
 
 
-def create(runtime: Path, name: str, summary: str = "", paths: Any = None) -> dict[str, Any]:
+def create(runtime: Path, name: str, summary: str = "", paths: Any = None, depends_on: Any = None) -> dict[str, Any]:
     name = (name or "").strip()
     if not name:
         raise FeatureError("A feature needs a name")
@@ -80,7 +129,7 @@ def create(runtime: Path, name: str, summary: str = "", paths: Any = None) -> di
     while fid in taken:
         fid, n = f"{base}-{n}", n + 1
     feature = {"id": fid, "name": name, "summary": (summary or "").strip()[:500], "paths": _paths(paths),
-               "status": "planned", "created": time.time(), "completed_at": None, "reopened": False}
+               "depends_on": _deps(depends_on, features, None), "status": "planned", "created": time.time(), "completed_at": None, "reopened": False}
     save(runtime, features + [feature])
     return feature
 
@@ -97,6 +146,11 @@ def update(runtime: Path, feature_id: str, **fields: Any) -> dict[str, Any]:
         feature["summary"] = str(fields["summary"] or "").strip()[:500]
     if "paths" in fields:
         feature["paths"] = _paths(fields["paths"])
+    if "depends_on" in fields:
+        deps = _deps(fields["depends_on"], features, feature_id)
+        if _would_cycle(features, feature_id, deps):
+            raise FeatureError("That would make features depend on each other in a circle")
+        feature["depends_on"] = deps
     save(runtime, features)
     return feature
 
@@ -116,7 +170,8 @@ def set_status(runtime: Path, feature_id: str, status: str) -> dict[str, Any]:
 def delete(runtime: Path, feature_id: str) -> None:
     features = load(runtime)
     get(features, feature_id)
-    save(runtime, [f for f in features if f["id"] != feature_id])
+    save(runtime, [{**f, "depends_on": [d for d in f.get("depends_on") or [] if d != feature_id]}
+                   for f in features if f["id"] != feature_id])
 
 
 def note_work_attached(runtime: Path, feature_id: str, job_group: str) -> None:
@@ -135,10 +190,14 @@ def note_work_attached(runtime: Path, feature_id: str, job_group: str) -> None:
 def rollup(features: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each feature with its job counts. `jobs` are web job summaries (need `feature`, `state`)."""
     out = []
+    depth = layers(features)
+    status = {f["id"]: f.get("status") for f in features}
     for f in features:
         mine = [j for j in jobs if j.get("feature") == f["id"]]
+        deps = [d for d in f.get("depends_on") or [] if d in status]
         groups = [(j.get("state") or {}).get("group") for j in mine]
-        out.append({**f, "jobs_total": len(mine), "jobs_done": groups.count("done"),
+        waiting = [] if f.get("status") == "complete" else [d for d in deps if status[d] != "complete"]
+        out.append({**f, "depends_on": deps, "layer": depth[f["id"]], "waiting_on": waiting, "jobs_total": len(mine), "jobs_done": groups.count("done"),
                     "jobs_working": groups.count("working"), "jobs_need_you": groups.count("needs_you"),
                     "job_ids": [j["id"] for j in mine]})
     return out

@@ -117,5 +117,50 @@ class RollupAndOverlapTests(unittest.TestCase):
         self.assertEqual(F.overlaps(feats, [job("1", "a"), job("2", "a")], {"1": ["x"], "2": ["x"]}), [])
 
 
+class DependencyTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.rt = Path(self.tmp.name)
+        self.auth = F.create(self.rt, "Auth")["id"]
+        self.lobby = F.create(self.rt, "Lobby", depends_on=[self.auth])["id"]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rolled(self):
+        return {f["id"]: f for f in F.rollup(F.load(self.rt), [])}
+
+    def test_layers_follow_the_deepest_dependency(self):
+        chat = F.create(self.rt, "Chat", depends_on=[self.auth, self.lobby])["id"]
+        r = self.rolled()
+        self.assertEqual((r[self.auth]["layer"], r[self.lobby]["layer"], r[chat]["layer"]), (0, 1, 2))
+
+    def test_unknown_self_and_circular_dependencies_are_rejected(self):
+        with self.assertRaises(F.FeatureError):
+            F.create(self.rt, "X", depends_on=["nope"])
+        with self.assertRaises(F.FeatureError):
+            F.update(self.rt, self.auth, depends_on=[self.auth])
+        with self.assertRaises(F.FeatureError):
+            F.update(self.rt, self.auth, depends_on=[self.lobby])  # lobby already needs auth
+        self.assertEqual(self.rolled()[self.auth]["depends_on"], [])
+
+    def test_waiting_on_lists_unfinished_dependencies_until_complete(self):
+        self.assertEqual(self.rolled()[self.lobby]["waiting_on"], [self.auth])
+        F.set_status(self.rt, self.auth, "complete")
+        self.assertEqual(self.rolled()[self.lobby]["waiting_on"], [])
+        F.set_status(self.rt, self.lobby, "complete")
+        F.set_status(self.rt, self.auth, "in-progress")
+        self.assertEqual(self.rolled()[self.lobby]["waiting_on"], [])  # a finished feature isn't "waiting"
+
+    def test_deleting_a_feature_removes_it_as_a_dependency(self):
+        F.delete(self.rt, self.auth)
+        self.assertEqual(self.rolled()[self.lobby]["depends_on"], [])
+        self.assertEqual(self.rolled()[self.lobby]["layer"], 0)
+
+    def test_hand_edited_cycles_do_not_hang_layout(self):
+        feats = [{"id": "x", "depends_on": ["y"]}, {"id": "y", "depends_on": ["x"]}]
+        self.assertEqual(set(F.layers(feats)), {"x", "y"})
+
+
 if __name__ == "__main__":
     unittest.main()

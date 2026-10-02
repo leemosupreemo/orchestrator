@@ -1514,7 +1514,7 @@ pages.job = async ([id]) => {
             <span class="progress-text">${tasksPct}%</span>
           </div>
           ${nextTask ? `<div>Next: <strong>${esc(nextTask)}</strong></div>` : ""}
-          <div class="muted">${esc(testsDisplay)} · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}</div>
+          <div class="muted">${esc(testsDisplay)}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}` : ""}</div>
         </div>
       </section>
 
@@ -1627,7 +1627,7 @@ pages.job = async ([id]) => {
         <div class="list">${logFiles.map((f) => f.path
           ? `<a class="item" href="#/file?path=${encodeURIComponent(f.path)}"><div class="main-col"><div class="title mono">${esc(f.label)}</div></div></a>`
           : `<div class="item"><div class="main-col"><div class="title">${esc(f.label)}</div></div></div>`).join("")
-          || `<div class="empty">No logs linked. Click “Link Logs” above to attach.</div>`}</div></section>
+          || `<div class="empty">No logs linked. Use Attach logs in the More menu.</div>`}</div></section>
 
       <!-- Output Files -->
       ${outputs.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Output files</h2><span class="count">${outputs.length}</span></div>
@@ -1719,24 +1719,66 @@ pages.new = async (_, query) => {
 
 const FEATURE_STATUS = { planned: ["Planned", "working"], "in-progress": ["In progress", "working"], complete: ["Complete", "done"] };
 
-function featureFormBody(f = {}) {
+function featureFormBody(f = {}, others = []) {
   return `<label class="field"><span>Name</span><input type="text" name="name" required maxlength="80" value="${esc(f.name || "")}" placeholder="e.g. Lobby seats"></label>
     <label class="field"><span>What it does <span class="muted">(optional)</span></span><textarea name="summary" rows="2" maxlength="500">${esc(f.summary || "")}</textarea></label>
     <label class="field"><span>Code it owns <span class="muted">(optional, one path per line)</span></span><textarea name="paths" rows="3" placeholder="Sources/Lobby/">${esc((f.paths || []).join("\n"))}</textarea>
-      <small class="muted">Used to warn when two features claim the same code.</small></label>`;
+      <small class="muted">Used to warn when two features claim the same code.</small></label>
+    ${others.length ? `<fieldset class="field"><span>Builds on <span class="muted">(optional)</span></span>${others.map((o) => `<label class="check"><input type="checkbox" name="depends_on" value="${esc(o.id)}" ${(f.depends_on || []).includes(o.id) ? "checked" : ""}><span>${esc(o.name)}</span></label>`).join("")}</fieldset>` : ""}`;
 }
 
-pages.features = async () => {
+function featureValues(v) { // formDialog keeps one value per name, so read the checkboxes ourselves
+  return { ...v, depends_on: [...document.querySelectorAll('#dialog-form input[name="depends_on"]:checked')].map((i) => i.value) };
+}
+
+function drawFeatureLinks(map) {
+  const svg = map.querySelector(".fmap-links");
+  const box = map.getBoundingClientRect();
+  svg.setAttribute("width", box.width); svg.setAttribute("height", box.height);
+  const wide = getComputedStyle(map).flexDirection === "row";
+  svg.innerHTML = wide ? [...map.querySelectorAll(".fmap-node[data-deps]")].flatMap((node) => {
+    const to = node.getBoundingClientRect();
+    return node.dataset.deps.split(",").filter(Boolean).map((id) => {
+      const from = map.querySelector(`.fmap-node[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect();
+      if (!from) return "";
+      const x1 = from.right - box.left, y1 = from.top + from.height / 2 - box.top, x2 = to.left - box.left, y2 = to.top + to.height / 2 - box.top;
+      const mid = (x1 + x2) / 2;
+      return `<path d="M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}" class="fmap-link"/>`;
+    });
+  }).join("") : "";
+}
+
+pages.features = async (_, query) => {
+  const view_ = query.get("view") === "map" ? "map" : "list";
   const [{ features, overlaps }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
   const byId = new Map(jobs.map((j) => [j.id, j]));
   const names = new Map(features.map((f) => [f.id, f.name]));
   const loose = jobs.filter((j) => !j.feature && j.state.group !== "done");
+  const overlapping = new Set(overlaps.flatMap((o) => o.features));
+  const toggle = `<div class="filters"><a class="btn small ${view_ === "list" ? "on" : ""}" href="#/features">List</a><a class="btn small ${view_ === "map" ? "on" : ""}" href="#/features?view=map">Map</a></div>`;
+  const mapHtml = () => {
+    const depth = Math.max(...features.map((f) => f.layer));
+    const cols = Array.from({ length: depth + 1 }, (_, layer) => features.filter((f) => f.layer === layer));
+    return `<div class="fmap" id="fmap"><svg class="fmap-links" aria-hidden="true"></svg>
+      ${cols.map((col, layer) => `<div class="fmap-col"><div class="fmap-col-h">${layer === 0 ? "Foundations" : `Builds on layer ${layer}`}</div>
+        ${col.map((f) => {
+          const [label, tone] = FEATURE_STATUS[f.status] || FEATURE_STATUS.planned;
+          return `<a class="fmap-node tone-${tone}" href="#/features?focus=${encodeURIComponent(f.id)}" data-id="${esc(f.id)}" data-deps="${esc(f.depends_on.join(","))}">
+            <strong>${overlapping.has(f.id) ? "⚠ " : ""}${esc(f.name)}</strong>
+            <span class="pill ${tone}">${esc(label)}</span>
+            <span class="muted">${f.jobs_done}/${f.jobs_total} jobs${f.jobs_need_you ? ` · ${f.jobs_need_you} need you` : ""}</span>
+            ${f.depends_on.length ? `<span class="muted">Builds on ${f.depends_on.map((d) => esc(names.get(d) || d)).join(", ")}</span>` : ""}
+            ${f.waiting_on.length ? `<span class="fmap-wait">Waiting on ${f.waiting_on.map((d) => esc(names.get(d) || d)).join(", ")}</span>` : ""}
+          </a>`;
+        }).join("")}</div>`).join("")}</div>
+      ${loose.length ? `<div class="muted" style="margin-top:12px">${loose.length} open job${loose.length === 1 ? "" : "s"} not in any feature.</div>` : ""}`;
+  };
   const card = (f) => {
     const [label, tone] = FEATURE_STATUS[f.status] || FEATURE_STATUS.planned;
     const pct = f.jobs_total ? Math.round((f.jobs_done / f.jobs_total) * 100) : 0;
     const complete = f.status === "complete";
     return `<section class="card" style="margin-bottom: 16px;" data-feature="${esc(f.id)}">
-      <div class="card-h"><h2>${esc(f.name)}</h2><span class="pill ${tone}">${esc(label)}</span>
+      <div class="card-h"><div class="row" style="gap:10px"><h2>${esc(f.name)}</h2><span class="pill ${tone}">${esc(label)}</span></div>
         ${moreMenu([
           [complete ? "Reopen" : "Mark complete", `data-feature-action="${complete ? "reopen" : "complete"}" data-id="${esc(f.id)}"`, complete ? "More work is coming" : "Done for now. New work reopens it"],
           ["Edit", `data-feature-action="edit" data-id="${esc(f.id)}"`],
@@ -1756,23 +1798,40 @@ pages.features = async () => {
     title: "Features",
     sub: "What the jobs add up to. Each feature owns its own slice of the code.",
     actions: `<button class="btn primary" id="new-feature">New feature</button>`,
-    html: `
+    html: view_ === "map" && features.length ? `
+      ${toggle}
+      ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
+      ${mapHtml()}` : `
+      ${features.length ? toggle : ""}
       ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
       ${features.map(card).join("") || `<div class="empty">No features yet. A feature is something a user would name, like “Lobby seats”. Create one, then group jobs under it.</div>`}
       ${loose.length ? `<section class="card"><div class="card-h"><h2>Not in a feature</h2><span class="count">${loose.length}</span></div>
         <div class="list">${loose.map((j) => jobItem(j)).join("")}</div></section>` : ""}`,
     after: () => {
+      const map = $("#fmap");
+      if (map) {
+        const redraw = () => drawFeatureLinks(map);
+        redraw();
+        window.addEventListener("resize", redraw);
+        cleanup.push(() => window.removeEventListener("resize", redraw));
+      }
+      const focus = query.get("focus");
+      if (focus) {
+        const el = view.querySelector(`[data-feature="${CSS.escape(focus)}"]`);
+        el?.scrollIntoView({ block: "center" });
+        el?.classList.add("highlight-flash");
+      }
       $("#new-feature").addEventListener("click", async () => {
-        const v = await formDialog("New feature", featureFormBody(), "Create");
+        const v = await formDialog("New feature", featureFormBody({}, features), "Create");
         if (!v) return;
-        try { await api("features", { method: "POST", body: v }); toast("Feature created"); route(); } catch (e) { toast(e.message, true); }
+        try { await api("features", { method: "POST", body: featureValues(v) }); toast("Feature created"); route(); } catch (e) { toast(e.message, true); }
       });
       view.querySelectorAll("[data-feature-action]").forEach((btn) => btn.addEventListener("click", async () => {
         const id = btn.dataset.id, f = features.find((x) => x.id === id);
         try {
           if (btn.dataset.featureAction === "edit") {
-            const v = await formDialog("Edit feature", featureFormBody(f), "Save");
-            if (v) await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: v });
+            const v = await formDialog("Edit feature", featureFormBody(f, features.filter((o) => o.id !== id)), "Save");
+            if (v) await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: featureValues(v) });
             else return;
           } else if (btn.dataset.featureAction === "delete") {
             if (!(await formDialog("Delete feature", `<p>Delete “${esc(f.name)}”? Its ${f.jobs_total} job(s) stay, but are no longer in a feature.</p>`, "Delete"))) return;

@@ -25,7 +25,7 @@ checked in a browser yet.
 - [~] **Easy to tweak / course-correct.** Revise plan, Run fix, Still broken?, model override. No inline edit of tasks.
 - [x] **Talk to the LLM directly, tied to the job.** "Ask about this job" thread on the job page; messages are stored in the job file. Read-only: it advises, and Revise plan / Run fix act. (The old Ask AI action started a fix run; removed.)
 - [x] **Organize features with no overlap (discrete elements).** Features page: create/edit/delete, group jobs under a feature (job menu: Move to feature), roll-up progress. Overlap warnings when two features claim the same code paths, or two in-flight jobs on different features change the same file. Not yet: choosing the feature while creating a job, or auto-suggesting one.
-- [ ] **See how pieces fit the overall picture.** No map or roadmap view.
+- [x] **See how pieces fit the overall picture.** Features > Map: features laid out in layers (foundations on the left, what builds on them to the right) with dependency lines, status, job progress, "waiting on" for unfinished dependencies and overlap flags. Dependencies are set by hand in the feature form; circular ones are rejected. Not yet: dependencies inferred from code, or a view of jobs inside the map.
 - [x] **Mark features complete (knowing they're never fully done).** "Mark complete" records when; attaching new open work reopens the feature and says so.
 
 ## C. Running jobs and control
@@ -67,4 +67,4 @@ checked in a browser yet.
 - [ ] Remove the 75 inline `style=` attributes in `app.js`.
 - [ ] Per-job visual QA (the screenshots card shows the newest check from the whole project).
 - [ ] Accessibility pass (emoji-only status in a few lists, dialog focus).
-- [ ] Verify in a browser (desktop and phone width).
+- [~] Verify in a browser. Features list/map and the job page were rendered in headless Chrome at desktop width and looked right after two fixes. Phone width, Home, New job, the chat and notifications are still unchecked.

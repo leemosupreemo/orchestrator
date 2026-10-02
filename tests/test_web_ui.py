@@ -1245,6 +1245,12 @@ class JobChatEndpointTests(ServerTestCase):
         self.assertIn(res.status, (400, 403))
 
 
+class PipelineTests(ServerTestCase):
+    def test_job_detail_does_not_invent_pipeline_models(self):
+        res, data = self.request("GET", "/api/jobs/20260922-bug-1")
+        self.assertEqual(data["pipeline"], {"planner": None, "builder": None, "reviewer": None})
+
+
 class FeatureEndpointTests(ServerTestCase):
     JOB = "20260922-bug-1"
 
@@ -1294,6 +1300,15 @@ class FeatureEndpointTests(ServerTestCase):
         self.assertEqual((res.status, data["features"]), (200, []))
         _, jobs = self.request("GET", "/api/jobs")
         self.assertIsNone(jobs["jobs"][0]["feature"])
+
+    def test_dependencies_through_the_api(self):
+        self.post("/api/features", {"name": "Auth"})
+        _, data = self.post("/api/features", {"name": "Lobby", "depends_on": ["auth"]})
+        lobby = next(f for f in data["features"] if f["id"] == "lobby")
+        self.assertEqual((lobby["layer"], lobby["waiting_on"]), (1, ["auth"]))
+        res, err = self.post("/api/features/auth", {"depends_on": ["lobby"]})
+        self.assertEqual(res.status, 400)
+        self.assertIn("circle", err["error"])
 
     def test_validation_and_ui_header(self):
         res, _ = self.post("/api/features", {"name": " "})
@@ -1369,6 +1384,8 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("pages.features = async", self.source)
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
+        self.assertIn("drawFeatureLinks", self.source)
+        self.assertIn('view=map', self.source)
 
     def test_discard_is_a_confirmed_server_action(self):
         self.assertIn("discard", ui.ACTIONS)
