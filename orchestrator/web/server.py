@@ -1976,7 +1976,7 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
 
 def new_project_state() -> dict[str, Any]:
     from orchestrator.setup_checklist import github_cli_state
-    return {"questions": new_project.QUESTIONS, "draft": new_project.load_draft(),
+    return {"platform_needs": new_project.PLATFORM_NEEDS, "questions": new_project.QUESTIONS, "draft": new_project.load_draft(),
             "github": github_cli_state(fresh=True), "default_parent": new_project.default_parent()}
 
 

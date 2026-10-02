@@ -15,7 +15,7 @@ GITHUB_CHOICE = "GitHub (recommended)"
 LOCAL_CHOICE = "Local only (you can publish it later; jobs need GitHub)"
 
 
-def run(*, ask: Callable[..., str], choose: Callable[[str, list[str]], str], confirm: Callable[[str, bool], bool],
+def run(*, ask: Callable[..., str], choose: Callable[[str, list[str]], str], choose_many: Callable[[str, list[str]], list[str]], confirm: Callable[[str, bool], bool],
         out: Callable[[str], None], github_state: Callable[[], dict[str, Any]], github_login: Callable[[], None]) -> tuple[int, Path | None]:
     """Returns (exit code, project root if one was created and the wizard should run on it)."""
     draft = np.load_draft()
@@ -78,7 +78,14 @@ def run(*, ask: Callable[..., str], choose: Callable[[str, list[str]], str], con
                 continue
             if q["help"]:
                 out(f"  ({q['help']})")
-            if q["kind"] == "choice":
+            if q["kind"] == "multi":
+                picked: list[str] = []
+                while not picked:
+                    picked = choose_many(q["label"], q["options"])
+                    if not picked:
+                        out("  Pick at least one.")
+                answers[q["key"]] = ", ".join(picked)
+            elif q["kind"] == "choice":
                 answers[q["key"]] = choose(q["label"], q["options"])
             elif q["kind"] == "area":
                 answers[q["key"]] = _lines(ask, q["label"], q["required"])

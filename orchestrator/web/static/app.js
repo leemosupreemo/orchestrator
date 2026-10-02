@@ -2718,6 +2718,10 @@ function npQuestion(q, value) {
   const label = `<span>${esc(q.label)}${q.required ? "" : ` <span class="muted">(optional)</span>`}</span>`;
   const help = q.help ? `<small class="hint-text">${esc(q.help)}</small>` : "";
   if (q.kind === "area") return `<label class="field">${label}<textarea name="${q.key}" rows="3" ${q.required ? "required" : ""}>${esc(value)}</textarea>${help}</label>`;
+  if (q.kind === "multi") {
+    const chosen = new Set(value.split(",").map((v) => v.trim()).filter(Boolean));
+    return `<fieldset class="field np-multi"><span>${esc(q.label)}</span>${q.options.map((o) => `<label class="check"><input type="checkbox" name="${q.key}" value="${esc(o)}" ${chosen.has(o) ? "checked" : ""}><span>${esc(o)}</span></label>`).join("")}${help}</fieldset>`;
+  }
   if (q.kind === "choice") return `<label class="field">${label}<select name="${q.key}" required><option value="" disabled ${value ? "" : "selected"}>Choose…</option>${q.options.map((o) => `<option ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>${help}</label>`;
   return `<label class="field">${label}<input type="text" name="${q.key}" value="${esc(value)}" maxlength="200" ${q.required ? "required" : ""}>${help}</label>`;
 }
@@ -2734,7 +2738,7 @@ pages["new-project"] = async (_, query) => {
   draft.parent = draft.parent || data.default_parent;
   const gh = data.github;
   const step = draft.created_root ? "create" : (query.get("step") || draft.step || "describe");
-  const answersFrom = (form) => Object.fromEntries(data.questions.map((q) => [q.key, (new FormData(form).get(q.key) || "").toString().trim()]));
+  const answersFrom = (form) => Object.fromEntries(data.questions.map((q) => [q.key, q.kind === "multi" ? new FormData(form).getAll(q.key).join(", ") : (new FormData(form).get(q.key) || "").toString().trim()]));
   const resume = data.draft && !query.get("step") && draft.step !== "describe"
     ? `<div class="banner attention np-resume"><p><strong>Picking up where you left off</strong>${draft.answers.name ? ` on “${esc(draft.answers.name)}”` : ""}.${draft.waiting_on_github ? " You were finishing GitHub." : ""}</p></div>` : "";
   const discard = data.draft ? `<button type="button" class="btn ghost" id="np-discard">Start over</button>` : "";
@@ -2758,7 +2762,9 @@ pages["new-project"] = async (_, query) => {
       after: () => {
         $("#np-describe").addEventListener("submit", async (e) => {
           e.preventDefault();
-          try { await npSave({ ...draft, answers: answersFrom(e.target), step: "where" }); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
+          const picked = answersFrom(e.target);
+          if (!picked.platform) { toast("Pick at least one platform, or choose “Not sure”.", true); return; }
+          try { await npSave({ ...draft, answers: picked, step: "where" }); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
         });
         $("#np-discard")?.addEventListener("click", async () => { await api("new-project/discard", { method: "POST", body: {} }); route(); });
       },
@@ -2821,6 +2827,8 @@ pages["new-project"] = async (_, query) => {
       ${githubPending ? `<div class="card card-b stack"><strong>Your project is saved on this computer.</strong>
         <span class="muted">GitHub isn't done yet. Jobs need it, so finish it now or later from here.</span>${ghPanel()}
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
+      ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
+      ${(result?.platform_needs || []).map((n) => `<section class="card" style="margin-top:16px"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
       <div class="row" style="margin-top:16px"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
       <p class="muted">“Set up this project” runs the setup wizard, which asks how it's built and tested so jobs can run.</p>`,
     after: () => {

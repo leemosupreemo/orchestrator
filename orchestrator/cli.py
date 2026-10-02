@@ -1041,6 +1041,17 @@ def run_new_project(args: argparse.Namespace) -> int:
     def choose(label: str, options: list[str]) -> str:
         return prompt_radio(label, options, options[0], clear_screen=False)
 
+    def choose_many(label: str, options: list[str]) -> list[str]:
+        print(f"\n{label}")
+        for number, option in enumerate(options, 1):
+            print(f"  {number}. {option}")
+        raw = prompt_text("Numbers separated by commas, e.g. 1,5", None, skip_available=False)
+        picked = []
+        for part in raw.replace(" ", "").split(","):
+            if part.isdigit() and 1 <= int(part) <= len(options) and options[int(part) - 1] not in picked:
+                picked.append(options[int(part) - 1])
+        return picked
+
     def confirm(label: str, default: bool) -> bool:
         return prompt_yes_no(label, default, skip_available=False)
 
@@ -1048,7 +1059,7 @@ def run_new_project(args: argparse.Namespace) -> int:
         subprocess.run(["gh", "auth", "login"], check=False)
 
     print("\n\033[1;96m" + "=" * 20 + " Start a new project " + "=" * 20 + "\033[0m")
-    code, root = new_project_cli.run(ask=ask, choose=choose, confirm=confirm, out=print,
+    code, root = new_project_cli.run(ask=ask, choose=choose, choose_many=choose_many, confirm=confirm, out=print,
                                      github_state=lambda: github_cli_state(fresh=True), github_login=github_login)
     if code == 0 and root and not args.no_wizard and prompt_yes_no("Run the setup wizard for it now?", True, skip_available=False):
         return main(["wizard", "--root", str(root)])

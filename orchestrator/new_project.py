@@ -25,13 +25,25 @@ QUESTIONS: list[dict[str, Any]] = [
     {"key": "audience", "label": "Who is it for?", "help": "The people who'll use it.", "kind": "text", "required": True},
     {"key": "problem", "label": "What problem does it solve for them?", "help": "Why would they want it?", "kind": "area", "required": True},
     {"key": "features", "label": "What must it do on day one?", "help": "Up to five things, one per line. Keep it to the essentials.", "kind": "area", "required": True},
-    {"key": "platform", "label": "What are you building?", "help": "", "kind": "choice", "required": True,
-     "options": ["iOS app", "macOS app", "Web app", "Backend / API", "Command-line tool or library", "Something else"]},
+    {"key": "platform", "label": "What are you building it for?", "help": "Pick every platform you want, or let the AI recommend.", "kind": "multi", "required": True,
+     "options": ["iOS app", "Android app", "macOS app", "Windows or Linux app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"]},
     {"key": "stack", "label": "Any technology you want, or want to avoid?", "help": "Optional. e.g. SwiftUI, no third-party UI kits.", "kind": "area", "required": False},
     {"key": "done", "label": "How will you know version 1 works?", "help": "Optional. The test you'd run to say \"yes, that's it\".", "kind": "area", "required": False},
 ]
 REQUIRED = [q["key"] for q in QUESTIONS if q["required"]]
-PLATFORMS = QUESTIONS[5]["options"]
+PLATFORMS = next(q["options"] for q in QUESTIONS if q["key"] == "platform")
+RECOMMEND = "Not sure: recommend for me"
+
+# What each choice needs before jobs can build, test and ship it.
+PLATFORM_NEEDS: dict[str, list[str]] = {
+    "iOS app": ["An Xcode project with a scheme and a test target", "Firebase App Distribution (or TestFlight) to put builds on testers' phones", "Simulator checks for screens"],
+    "Android app": ["A Gradle project with unit and instrumented test tasks", "Firebase App Distribution to put builds on testers' phones"],
+    "macOS app": ["An Xcode project with a scheme and a test target", "Code signing for sharing builds"],
+    "Windows or Linux app": ["A build toolchain for the framework you pick", "A packaging step testers can install"],
+    "Web app": ["A package manager and a dev server", "A unit test runner plus a browser test tool", "Hosting for a preview link"],
+    "Backend / API": ["A runtime and a test runner", "A way to run it locally with a database", "A deploy target"],
+    "Command-line tool or library": ["A language toolchain and test runner", "A package registry if others will install it"],
+}
 STEPS = ["describe", "where", "create", "done"]
 
 
@@ -88,6 +100,21 @@ def default_parent() -> str:
     return str(Path.home() / "Projects")
 
 
+def platform_list(value: str) -> list[str]:
+    """The platforms in an answer, in the order given. Accepts the old single-choice values too."""
+    out = []
+    for item in re.split(r"[,\n]", value or ""):
+        item = item.strip()
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
+def platform_needs(value: str) -> list[dict[str, Any]]:
+    """What to set up next for each chosen platform (none for "recommend" or free text)."""
+    return [{"platform": p, "needs": PLATFORM_NEEDS[p]} for p in platform_list(value) if p in PLATFORM_NEEDS]
+
+
 def missing_answers(answers: dict[str, str]) -> list[str]:
     return [q["label"] for q in QUESTIONS if q["required"] and not str(answers.get(q["key"], "")).strip()]
 
@@ -116,7 +143,17 @@ def render_brief(a: dict[str, str]) -> str:
              "## The problem", "", a["problem"], "",
              "## Version 1 must do", ""]
     lines += [f"{i}. {f}" for i, f in enumerate(features, 1)] or ["_Not specified yet._"]
-    lines += ["", "## Platform", "", a.get("platform") or "Not specified", ""]
+    chosen = platform_list(a.get("platform", ""))
+    recommend = RECOMMEND in chosen
+    chosen = [p for p in chosen if p != RECOMMEND]
+    lines += ["", "## Platforms", ""]
+    if recommend:
+        lines += ["_Not decided._ The AI should recommend platforms, with reasons, in its first plan, based on the audience and problem above.", ""]
+    if chosen:
+        lines += [f"- {p}" for p in chosen]
+    elif not recommend:
+        lines.append("Not specified")
+    lines.append("")
     if a.get("stack"):
         lines += ["## Technology preferences", "", a["stack"], ""]
     if a.get("done"):
@@ -215,4 +252,5 @@ def create_project(draft: dict[str, Any]) -> dict[str, Any]:
     remember_project(root, answers["name"], active=True)
     steps.append({"name": "Added to your projects", "ok": True, "detail": answers["name"]})
     return {"root": str(root), "name": answers["name"], "steps": steps, "github": github,
+            "platform_needs": platform_needs(answers.get("platform", "")), "recommend_platform": RECOMMEND in platform_list(answers.get("platform", "")),
             "github_ok": (not github) or steps[-2]["ok"]}

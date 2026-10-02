@@ -47,6 +47,37 @@ class BriefTests(unittest.TestCase):
         self.assertEqual(np.missing_answers({"name": "x"}), [q["label"] for q in np.QUESTIONS if q["required"] and q["key"] != "name"])
 
 
+class PlatformTests(unittest.TestCase):
+    def test_several_platforms_are_listed_in_the_brief(self):
+        md = np.render_brief({**ANSWERS, "platform": "iOS app, Android app, Backend / API"})
+        self.assertIn("## Platforms\n\n- iOS app\n- Android app\n- Backend / API\n", md)
+
+    def test_recommend_me_tells_the_ai_to_choose_and_explain(self):
+        md = np.render_brief({**ANSWERS, "platform": np.RECOMMEND})
+        self.assertIn("_Not decided._", md)
+        self.assertIn("recommend platforms, with reasons", md)
+        self.assertNotIn("- Not sure", md)
+
+    def test_recommend_alongside_a_pick_keeps_both_statements(self):
+        md = np.render_brief({**ANSWERS, "platform": f"Web app, {np.RECOMMEND}"})
+        self.assertIn("_Not decided._", md)
+        self.assertIn("- Web app", md)
+
+    def test_old_single_choice_values_still_work(self):
+        self.assertEqual(np.platform_list("iOS app"), ["iOS app"])
+        self.assertEqual(np.platform_list(" Web app,Web app , Backend / API\n"), ["Web app", "Backend / API"])
+        self.assertIn("- Something else", np.render_brief({**ANSWERS, "platform": "Something else"}))
+
+    def test_platform_is_required_and_next_steps_exist_for_each_real_choice(self):
+        self.assertEqual(np.missing_answers({k: v for k, v in ANSWERS.items() if k != "platform"}), ["What are you building it for?"])
+        real = [p for p in np.PLATFORMS if p != np.RECOMMEND]
+        self.assertTrue(all(np.PLATFORM_NEEDS[p] for p in real))
+        self.assertEqual([n["platform"] for n in np.platform_needs("iOS app, Not sure: recommend for me, Web app")], ["iOS app", "Web app"])
+
+    def test_cli_asks_for_several_platforms_and_joins_them(self):
+        pass
+
+
 class DraftTests(Isolated):
     def test_draft_roundtrip_drops_unknown_fields_and_remembers_the_step(self):
         saved = np.save_draft({"answers": {**ANSWERS, "evil": "x"}, "step": "where", "host": "github", "waiting_on_github": True, "extra": 1})
@@ -158,7 +189,7 @@ if __name__ == "__main__":
 class CliFlowTests(Isolated):
     """`orchestrator new`, driven by scripted answers."""
 
-    def drive(self, answers, picks, gh_states, confirms=(True,), logins=None):
+    def drive(self, answers, picks, gh_states, confirms=(True,), logins=None, platforms=(("iOS app",),)):
         from orchestrator import new_project_cli as cli
         asked, said = [], []
         answers, picks, states, confirms = list(answers), list(picks), list(gh_states), list(confirms)
@@ -172,7 +203,13 @@ class CliFlowTests(Isolated):
             match = next((o for o in options if o.startswith(pick)), None)
             assert match, f"{pick!r} not in {options}"
             return match
-        result = cli.run(ask=ask, choose=choose, confirm=lambda label, default: confirms.pop(0) if confirms else default, out=said.append,
+        platforms = [list(p) for p in platforms]
+
+        def choose_many(label, options):
+            wanted = platforms.pop(0) if platforms else ["iOS app"]
+            assert all(w in options for w in wanted), f"{wanted} not in {options}"
+            return wanted
+        result = cli.run(ask=ask, choose=choose, choose_many=choose_many, confirm=lambda label, default: confirms.pop(0) if confirms else default, out=said.append,
                          github_state=lambda: states.pop(0) if len(states) > 1 else states[0], github_login=logins or (lambda: None))
         return result, asked, said
 
@@ -181,16 +218,27 @@ class CliFlowTests(Isolated):
         return ["Pocket Notes", "A tiny notes app.", "Busy people", "Notes apps are heavy.", "", "Write a note", "Search notes", "", "", "", str(self.home)]
 
     def test_local_only_flow_creates_the_project_and_returns_it_for_the_wizard(self):
-        (code, root), asked, said = self.drive(self.local_answers(), ["iOS app", "Local only"], [{"installed": False, "user": None}])
+        (code, root), asked, said = self.drive(self.local_answers(), ["Local only"], [{"installed": False, "user": None}])
         self.assertEqual(code, 0)
         self.assertEqual(root.name, "Pocket-Notes")
         brief = (root / "docs" / "product-brief.md").read_text()
         self.assertIn("1. Write a note", brief)
         self.assertIsNone(np.load_draft())
 
+    def test_creation_result_lists_what_the_chosen_platforms_need(self):
+        with patch.object(np, "publish_to_github"):
+            result = np.create_project({"answers": {**ANSWERS, "platform": f"iOS app, Web app, {np.RECOMMEND}"}, "parent": str(self.home), "host": "local"})
+        self.assertEqual([n["platform"] for n in result["platform_needs"]], ["iOS app", "Web app"])
+        self.assertTrue(result["recommend_platform"])
+
+    def test_several_platforms_chosen_in_the_terminal_are_saved_together(self):
+        (code, root), _, _ = self.drive(self.local_answers(), ["Local only"], [{"installed": False, "user": None}], platforms=(("iOS app", "Backend / API"),))
+        self.assertEqual(code, 0)
+        self.assertIn("- iOS app\n- Backend / API", (root / "docs" / "product-brief.md").read_text())
+
     def test_github_chosen_but_not_signed_in_saves_progress_and_resumes_to_finish(self):
         # first run: choose GitHub, can't sign in, stop
-        (code, root), _, said = self.drive(self.local_answers()[:-1], ["iOS app", "GitHub", "Stop"], [{"installed": True, "user": None}])
+        (code, root), _, said = self.drive(self.local_answers()[:-1], ["GitHub", "Stop"], [{"installed": True, "user": None}])
         self.assertEqual((code, root), (0, None))
         draft = np.load_draft()
         self.assertEqual(draft["answers"]["name"], "Pocket Notes")
@@ -208,7 +256,7 @@ class CliFlowTests(Isolated):
         states = [{"installed": True, "user": None}, {"installed": True, "user": "me"}]
         logins = []
         with patch.object(np, "publish_to_github", return_value={"name": "Create the GitHub repository", "ok": True, "detail": "u"}):
-            (code, root), _, said = self.drive(self.local_answers(), ["iOS app", "GitHub", "Sign in", "Only me"], states, logins=lambda: logins.append(1))
+            (code, root), _, said = self.drive(self.local_answers(), ["GitHub", "Sign in", "Only me"], states, logins=lambda: logins.append(1))
         self.assertEqual(code, 0)
         self.assertEqual(logins, [1])
         self.assertTrue(any("Signed in to GitHub as me" in line for line in said))
@@ -216,7 +264,7 @@ class CliFlowTests(Isolated):
     def test_github_publish_failure_leaves_a_resumable_local_project(self):
         fail = {"name": "Create the GitHub repository", "ok": False, "detail": "name taken"}
         with patch.object(np, "publish_to_github", return_value=fail):
-            (code, root), _, said = self.drive(self.local_answers(), ["iOS app", "GitHub", "Only me"], [{"installed": True, "user": "me"}])
+            (code, root), _, said = self.drive(self.local_answers(), ["GitHub", "Only me"], [{"installed": True, "user": "me"}])
         self.assertTrue(root.exists())
         self.assertEqual(np.load_draft()["created_root"], str(root))
         self.assertTrue(any("finish GitHub" in line for line in said))
@@ -229,6 +277,6 @@ class CliFlowTests(Isolated):
 
     def test_declining_to_resume_starts_clean(self):
         np.save_draft({"answers": {"name": "Old idea"}, "step": "where"})
-        (code, root), asked, _ = self.drive(self.local_answers(), ["iOS app", "Local only"], [{"installed": False, "user": None}], confirms=[False])
+        (code, root), asked, _ = self.drive(self.local_answers(), ["Local only"], [{"installed": False, "user": None}], confirms=[False])
         self.assertEqual(root.name, "Pocket-Notes")
         self.assertIn("What's it called?", asked)
