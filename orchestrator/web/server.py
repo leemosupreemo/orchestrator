@@ -810,7 +810,8 @@ def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
     local_summary = git(root, "diff", "--shortstat", "HEAD", "--")
     local_files = [f for f in git(root, "diff", "--name-only", "HEAD", "--").splitlines() if f.strip()]
 
-    all_impacted = sorted(list(set(changed_files + local_files + [str(f) for f in files])))
+    # Orchestrator's own state (jobs, receipts, config) isn't part of the work being reviewed.
+    all_impacted = sorted(f for f in set(changed_files + local_files + [str(f) for f in files]) if not f.startswith(".orchestrator/"))
 
     return {
         "files": all_impacted[:200],
@@ -821,6 +822,28 @@ def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         "base": base,
         "hypothesis": job.get("builder_hypothesis") or "",
     }
+
+
+MAX_DIFF_CHARS = 60_000
+
+
+def job_file_diff(root: Path, job: dict[str, Any], path: str) -> dict[str, Any]:
+    """One file's diff for a job: its branch against the base, or its uncommitted edits. Only files that
+    are actually part of the job's changes can be asked for."""
+    changes = job_changes(root, job)
+    branch = job.get("branch")
+    base = changes["base"]
+    in_branch = bool(branch and re.fullmatch(r"[A-Za-z0-9._/-]+", branch) and re.fullmatch(r"[A-Za-z0-9._/-]+", base)
+                     and path in git(root, "diff", "--name-only", f"{base}...{branch}", "--").splitlines())
+    if in_branch:
+        text = subprocess.run(["git", "diff", "--no-color", "-U3", f"{base}...{branch}", "--", path], cwd=root, capture_output=True, text=True, timeout=10).stdout
+    elif path in changes["local_files"]:
+        text = subprocess.run(["git", "diff", "--no-color", "-U3", "HEAD", "--", path], cwd=root, capture_output=True, text=True, timeout=10).stdout
+    else:
+        raise UIError("That file isn't part of this job's changes", HTTPStatus.NOT_FOUND)
+    binary = text.startswith("Binary files") or "\nBinary files " in text
+    return {"path": path, "source": "branch" if in_branch else "local", "binary": binary,
+            "diff": "" if binary else text[:MAX_DIFF_CHARS], "truncated": len(text) > MAX_DIFF_CHARS}
 
 
 def repo_web_url(root: Path) -> str | None:
@@ -2659,6 +2682,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(str(exc), HTTPStatus.NOT_FOUND)
             write_json_file(job_path, job)
             self._json({"ok": True, "feature": job.get("feature")})
+        elif method == "GET" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "diff":
+            job = read_json_file(resolve_job_path(root, parts[1]))
+            self._json(job_file_diff(root, job, (query.get("path") or [""])[0]))
         elif method == "GET" and len(parts) == 2 and parts[0] == "jobs":
             detail = job_detail(root, parts[1])
             detail["runs"] = self.server.sessions.list(job_id=parts[1])

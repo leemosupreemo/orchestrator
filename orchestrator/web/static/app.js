@@ -1560,7 +1560,7 @@ pages.job = async ([id]) => {
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
         <div class="card-b delta-summary-line">
           <div class="delta-line unsaved">${esc(deltaUnsaved)}</div>
-          <div class="delta-files-list">${filesHtml}</div>
+          <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more (see the full diffstat below)</div>` : ""}</div>
         </div>
         ${changes?.hypothesis ? `<div class="card-b" style="border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px;"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
@@ -1681,6 +1681,18 @@ pages.job = async ([id]) => {
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
     `,
     after: () => {
+      view.querySelectorAll("[data-diff-path]").forEach((box) => box.addEventListener("toggle", async () => {
+        if (!box.open || box.dataset.loaded) return;
+        box.dataset.loaded = "1";
+        const pre = box.querySelector("pre");
+        try {
+          const d = await api(`jobs/${encodeURIComponent(id)}/diff?path=${encodeURIComponent(box.dataset.diffPath)}`);
+          pre.innerHTML = d.binary ? "Binary file: no text diff." : !d.diff.trim() ? "No changes to show." : d.diff.split("\n").map((line) => {
+            const kind = line.startsWith("@@") ? "hunk" : line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "del" : "";
+            return `<span class="diff-line ${kind}">${esc(line)}</span>`;
+          }).join("") + (d.truncated ? `<span class="diff-line hunk">… diff truncated</span>` : "");
+        } catch (e) { pre.textContent = e.message; box.dataset.loaded = ""; }
+      }));
       view.querySelectorAll("[data-scope-accept]").forEach((btn) => btn.addEventListener("click", async () => {
         try { await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "accept", paths: JSON.parse(btn.dataset.scopeAccept) } }); toast("Accepted as in scope"); route(); } catch (e) { toast(e.message, true); }
       }));

@@ -1789,6 +1789,42 @@ class ScopeEndpointTests(ServerTestCase):
         _, data = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "reset"}, headers=UI_HEADERS)
         self.assertEqual(len(data["scope"]["findings"]), 3)
 
+    def test_a_files_diff_is_available_inline(self):
+        res, data = self.request("GET", f"/api/jobs/{self.JOB}/diff?path=src/seat.py")
+        self.assertEqual((res.status, data["source"], data["binary"], data["truncated"]), (200, "branch", False, False))
+        self.assertIn("-x = 1", data["diff"])
+        self.assertIn("+x = 2", data["diff"])
+
+    def test_orchestrators_own_files_are_not_listed_as_the_jobs_changes(self):
+        self.sh("checkout", "-q", "ai/issue-1")
+        (self.root / ".orchestrator" / "extra.json").write_text("{}")
+        self.sh("add", "-f", ".orchestrator/extra.json")
+        self.sh("commit", "-qm", "state")
+        self.sh("checkout", "-q", "main")
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertNotIn(".orchestrator/extra.json", data["changes"]["files"])
+        self.assertIn("src/seat.py", data["changes"]["files"])
+
+    def test_only_files_in_the_jobs_changes_can_be_read(self):
+        (self.root / "secret.txt").write_text("TOPSECRET")
+        for path in ("secret.txt", "../secret.txt", "/etc/hosts", "", "src/untouched.py"):
+            res, data = self.request("GET", f"/api/jobs/{self.JOB}/diff?path={path}")
+            self.assertEqual(res.status, 404, path)
+            self.assertNotIn("TOPSECRET", json.dumps(data))
+
+    def test_binary_and_oversized_diffs_are_handled(self):
+        self.sh("checkout", "-q", "ai/issue-1")
+        (self.root / "logo.bin").write_bytes(bytes(range(256)) * 4)
+        (self.root / "big.txt").write_text("line\n" * 40000)
+        self.sh("add", "logo.bin", "big.txt")
+        self.sh("commit", "-qm", "more")
+        self.sh("checkout", "-q", "main")
+        _, binary = self.request("GET", f"/api/jobs/{self.JOB}/diff?path=logo.bin")
+        self.assertEqual((binary["binary"], binary["diff"]), (True, ""))
+        _, big = self.request("GET", f"/api/jobs/{self.JOB}/diff?path=big.txt")
+        self.assertTrue(big["truncated"])
+        self.assertLessEqual(len(big["diff"]), ui.MAX_DIFF_CHARS)
+
     def test_accept_needs_files(self):
         res, _ = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "accept", "paths": []}, headers=UI_HEADERS)
         self.assertEqual(res.status, 400)
