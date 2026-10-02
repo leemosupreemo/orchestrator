@@ -194,6 +194,19 @@ class KpiStoreTests(unittest.TestCase):
         self.assertEqual(self.kpis(), [])
 
 
+class ServesTests(unittest.TestCase):
+    def test_a_feature_can_say_which_use_case_it_serves_and_edit_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rt = Path(tmp)
+            f = F.create(rt, "Rematch", serves="  As a player I can ask for a rematch  ")
+            self.assertEqual(f["serves"], "As a player I can ask for a rematch")
+            F.update(rt, f["id"], serves="As a player I can keep playing")
+            self.assertEqual(F.load(rt)[0]["serves"], "As a player I can keep playing")
+            F.update(rt, f["id"], serves="x" * 500)
+            self.assertEqual(len(F.load(rt)[0]["serves"]), 300)
+            self.assertEqual(F.restore(rt, {**F.load(rt)[0], "id": "copy"})["serves"], "x" * 300)
+
+
 class RestoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

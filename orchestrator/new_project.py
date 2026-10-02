@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from orchestrator import product_docs
 from orchestrator.project_config import remember_project, safe_resolve, user_state_dir
 
 # (key, label, help, kind, required, options)
@@ -164,9 +165,14 @@ def render_brief(a: dict[str, str]) -> str:
 
 def render_agents(name: str) -> str:
     return (f"# {name}: instructions for AI helpers\n\n"
-            "Read `docs/product-brief.md` first. It says what this product is, who it's for and what version 1 must do.\n\n"
-            "- Prefer minimal, reviewable changes.\n- Don't build anything the brief lists as out of scope.\n"
-            "- If the brief and the code disagree, ask before deciding which is right.\n")
+            "Read `docs/product-brief.md` first. It says what this product is, who it's for and what version 1 must do. Then read, in order:\n\n"
+            "- `docs/product/use-cases.md`: the users, the core use cases, and the non-goals (do not build non-goals)\n"
+            "- `docs/product/journey.md`: the path a person takes from first contact to repeat use\n"
+            "- `docs/product/screens.md`: every screen and why it exists\n"
+            "- `docs/product/architecture-decisions.md`: what is hard to change, and what was decided\n"
+            "- `docs/product/plan.md`: the slice being built now\n\n"
+            "Rules:\n- Prefer minimal, reviewable changes.\n- Build one working end-to-end slice at a time; keep the build and tests passing.\n"
+            "- Don't build anything the documents list as a non-goal.\n- If the documents and the code disagree, ask before deciding which is right.\n")
 
 
 # --------------------------------------------------------------------------- creating it
@@ -205,6 +211,7 @@ def create_local(answers: dict[str, str], parent: str) -> tuple[Path, list[dict[
     except OSError as exc:
         raise NewProjectError(f"Couldn't create {root}: {exc.strerror}") from None
     (root / "docs" / "product-brief.md").write_text(render_brief(answers), encoding="utf-8")
+    product_docs.scaffold(root)
     (root / "AGENTS.md").write_text(render_agents(answers["name"]), encoding="utf-8")
     (root / "README.md").write_text(f"# {answers['name']}\n\n{answers['pitch']}\n\nSee [the product brief](docs/product-brief.md).\n", encoding="utf-8")
     steps.append({"name": "Created the folder and product brief", "ok": True, "detail": str(root)})

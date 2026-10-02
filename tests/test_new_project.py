@@ -225,6 +225,20 @@ class CliFlowTests(Isolated):
         self.assertIn("1. Write a note", brief)
         self.assertIsNone(np.load_draft())
 
+    def test_a_new_project_gets_the_whole_set_of_product_documents(self):
+        with patch.object(np, "publish_to_github"):
+            result = np.create_project({"answers": ANSWERS, "parent": str(self.home), "host": "local"})
+        root = Path(result["root"])
+        for rel in ("docs/product-brief.md", "docs/product/use-cases.md", "docs/product/journey.md", "docs/product/screens.md",
+                    "docs/product/architecture-decisions.md", "docs/product/plan.md"):
+            self.assertTrue((root / rel).is_file(), rel)
+        agents = (root / "AGENTS.md").read_text()
+        for rel in ("docs/product/use-cases.md", "docs/product/plan.md"):
+            self.assertIn(rel, agents)
+        self.assertIn("one working end-to-end slice at a time", agents)
+        from orchestrator import product_docs
+        self.assertEqual(product_docs.context_block(root).count("###"), 1)  # only the brief is filled in; templates are not context
+
     def test_creation_result_lists_what_the_chosen_platforms_need(self):
         with patch.object(np, "publish_to_github"):
             result = np.create_project({"answers": {**ANSWERS, "platform": f"iOS app, Web app, {np.RECOMMEND}"}, "parent": str(self.home), "host": "local"})

@@ -709,6 +709,12 @@ class ActionTests(unittest.TestCase):
         self.assertIn("Auth: Sources/Auth/", text)  # other features' paths to stay out of
         self.assertEqual(params["_feature"], "lobby")
 
+    def test_the_planner_is_told_which_use_case_a_feature_serves(self):
+        ui.feature_store.create(self.root / ".orchestrator", "Rematch", "Ask again", serves="As a player I can ask for a rematch")
+        argv = ui.build_new_job({"type": "feature", "summary": "Add rematch button", "feature": "rematch"}, self.root)
+        text = Path(argv[argv.index("--spec-file") + 1]).read_text()
+        self.assertIn("It serves this use case: As a player I can ask for a rematch", text)
+
     def test_new_job_rejects_an_unknown_feature(self):
         with self.assertRaises(ui.UIError):
             ui.build_new_job({"type": "feature", "summary": "x", "feature": "ghost"}, self.root)
@@ -2242,6 +2248,92 @@ class PlanTaskEditEndpointTests(ServerTestCase):
         self.assertIn(res.status, (400, 403))
         res, _ = self.request("POST", "/api/jobs/nope/plan-tasks", body={"op": "add", "title": "x"}, headers=UI_HEADERS)
         self.assertEqual(res.status, 404)
+
+
+class ProductEndpointTests(ServerTestCase):
+    FILLED = "# Users\n\n## Primary user\n\nCasual players who want a quick game.\n\n## Core use cases\n\n- Start a match\n- Take a turn\n"
+
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def test_lists_every_document_with_whether_it_exists_and_is_filled(self):
+        _, data = self.request("GET", "/api/product")
+        self.assertEqual([d["id"] for d in data["docs"]], ["brief", "use-cases", "journey", "screens", "architecture", "plan"])
+        self.assertTrue(all(not d["exists"] for d in data["docs"]))
+        self.assertIsNone(data["review"])
+
+    def test_scaffold_creates_missing_templates_without_overwriting(self):
+        self.post("/api/product/journey", {"text": "# Mine\n\nkeep this\nand this\nand this\n"})
+        _, data = self.post("/api/product/scaffold", {})
+        self.assertNotIn("journey", data["created"])
+        self.assertIn("use-cases", data["created"])
+        _, doc = self.request("GET", "/api/product/journey")
+        self.assertIn("keep this", doc["text"])
+        self.assertFalse({d["id"]: d for d in data["docs"]}["use-cases"]["filled"])  # a fresh template isn't "filled"
+
+    def test_read_save_and_validation(self):
+        _, doc = self.request("GET", "/api/product/use-cases")
+        self.assertEqual((doc["exists"], doc["filled"]), (False, False))
+        self.assertIn("Primary user", doc["text"])  # a missing document shows its template
+        res, data = self.post("/api/product/use-cases", {"text": self.FILLED})
+        self.assertEqual(res.status, 200)
+        self.assertTrue({d["id"]: d for d in data["docs"]}["use-cases"]["filled"])
+        self.assertEqual((self.root / "docs" / "product" / "use-cases.md").read_text(), self.FILLED)
+        for bad in ({"text": ""}, {"text": "x" * (ui.product_docs.MAX_DOC_CHARS + 1)}, {}):
+            self.assertEqual(self.post("/api/product/use-cases", bad)[0].status, 400)
+
+    def test_only_known_documents_can_be_read_or_written(self):
+        for doc_id in ("nope", "..%2F..%2Fetc%2Fpasswd", "README"):
+            self.assertEqual(self.request("GET", f"/api/product/{doc_id}")[0].status, 404, doc_id)
+            self.assertIn(self.post(f"/api/product/{doc_id}", {"text": "x"})[0].status, (400, 404), doc_id)
+        self.assertFalse((self.root / "README.md").exists())
+
+    def test_saving_requires_the_ui_header(self):
+        res, _ = self.request("POST", "/api/product/plan", body={"text": "x"}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+
+    def test_refine_asks_questions_then_proposes_and_shows_a_diff_without_saving(self):
+        ui.product_docs.write(self.root, "use-cases", self.FILLED)
+        replies = ['{"questions": [{"question": "Who plays?", "why": "Shapes the tone"}]}',
+                   json.dumps({"summary": "Added a non-goals list", "markdown": self.FILLED + "\n## Non-goals\n\n- No chat\n- No accounts\n- No ads\n"})]
+        seen = []
+
+        def fake(self_, root, prompt, model="", timeout=150):
+            seen.append(prompt)
+            return replies.pop(0)
+
+        with patch.object(ui.UIHandler, "_model_call", fake):
+            res, q = self.post("/api/product/use-cases/refine", {"mode": "questions", "instruction": "add non-goals"})
+            self.assertEqual((res.status, q["questions"][0]["question"]), (200, "Who plays?"))
+            res, p = self.post("/api/product/use-cases/refine", {"mode": "propose", "instruction": "add non-goals", "answers": [{"question": "Who plays?", "answer": "Two friends"}]})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(p["summary"], "Added a non-goals list")
+        self.assertIn("+- No chat", p["diff"])
+        self.assertIn("Two friends", seen[1])
+        self.assertEqual((self.root / "docs" / "product" / "use-cases.md").read_text(), self.FILLED)  # nothing is written until the person accepts
+
+    def test_refine_reports_a_bad_model_reply_and_validates_the_mode(self):
+        with patch.object(ui.UIHandler, "_model_call", lambda self_, root, prompt, model="", timeout=150: "not json"):
+            res, data = self.post("/api/product/plan/refine", {"mode": "propose", "instruction": "x"})
+        self.assertEqual(res.status, 502)
+        self.assertIn("expected form", data["error"])
+        self.assertEqual(self.post("/api/product/plan/refine", {"mode": "write-it-all"})[0].status, 400)
+        self.assertEqual(self.post("/api/product/ghost/refine", {"mode": "propose"})[0].status, 404)
+
+    def test_model_failures_surface_cleanly(self):
+        err = ui.UIError("No model is available.", 502)
+        with patch.object(ui.UIHandler, "_model_call", side_effect=err):
+            res, data = self.post("/api/product/plan/refine", {"mode": "questions"})
+        self.assertEqual((res.status, data["error"]), (502, "No model is available."))
+
+    def test_review_request_text_and_last_review(self):
+        _, data = self.request("GET", "/api/product/review-request")
+        self.assertIn("Do NOT change any code", data["summary"])
+        folder = self.root / "docs" / "product" / "reviews"
+        folder.mkdir(parents=True)
+        (folder / "2026-10-01.md").write_text("findings")
+        _, listing = self.request("GET", "/api/product")
+        self.assertEqual(listing["review"]["path"], "docs/product/reviews/2026-10-01.md")
 
 
 class PipelineTests(ServerTestCase):

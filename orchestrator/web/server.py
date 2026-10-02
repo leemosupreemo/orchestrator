@@ -58,6 +58,7 @@ from orchestrator import inbox as inbox_view
 from orchestrator import new_job_form
 from orchestrator import notifier
 from orchestrator import plan_edit
+from orchestrator import product_docs
 from orchestrator import project_health
 from orchestrator import scope_check
 from orchestrator.stack_detection import detect_project_stack
@@ -642,6 +643,8 @@ def project_facts(root: Path) -> dict[str, Any]:
         "ci": workflows.is_dir() and any(workflows.glob("*.y*ml")) or (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists(),
         "pipeline_failing": bool(base_runs) and base_runs[0]["tone"] == "failed",
         "distribution": bool(config.get("firebase_distribution")), "builds_sent": len(delivery_view.receipts(runtime_dir(root))),
+        "docs": [{"id": d["id"], "title": d["title"], "filled": d["filled"], "exists": d["exists"]} for d in product_docs.listing(root)],
+        "review": product_docs.last_review(root),
     }
 
 
@@ -1370,6 +1373,8 @@ def feature_context(chosen: dict[str, Any], features: list[dict[str, Any]]) -> s
     lines = ["", "", "## Feature context", f"This work belongs to the feature \"{chosen['name']}\"."]
     if chosen.get("summary"):
         lines.append(f"What it does: {chosen['summary']}")
+    if chosen.get("serves"):
+        lines.append(f"It serves this use case: {chosen['serves']}. Say so in the plan's summary, and check each task still serves it.")
     if chosen.get("paths"):
         lines.append("It owns these paths; keep changes inside them where you can: " + ", ".join(chosen["paths"]))
     deps = [names[d] for d in chosen.get("depends_on") or [] if d in names]
@@ -2571,6 +2576,18 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # surface, don't crash the handler thread
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
+    def _model_call(self, root: Path, prompt: str, model: str = "", timeout: int = 150) -> str:
+        """One read-only model turn (prompt in, answer out) in a child process, so a slow or failing model can't hang the server."""
+        argv = orchestrator_argv("script", "job_chat_run.py", *(["--model", model] if model else []))
+        try:
+            res = subprocess.run(argv, input=prompt, cwd=root, env=self.server.child_env(), capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise UIError("The model took too long. Try a shorter request.", HTTPStatus.GATEWAY_TIMEOUT)
+        marker = "<<<ORCHESTRATOR-REPLY>>>"
+        if res.returncode != 0 or marker not in res.stdout:
+            raise UIError((res.stderr.strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
+        return res.stdout.split(marker, 1)[1]
+
     def _static(self, path: str, query: dict[str, list[str]]) -> None:
         token = (query.get("token") or [""])[0]
         if path in ("/", "/index.html") and token:
@@ -2701,6 +2718,45 @@ class UIHandler(BaseHTTPRequestHandler):
             self._body_read = True
             data = self.rfile.read(length) if length > 0 else b""
             self._json(save_upload(root, (query.get("name") or [""])[0], data))
+        elif method == "GET" and parts == ["product"]:
+            self._json({"docs": product_docs.listing(root), "review": product_docs.last_review(root)})
+        elif method == "GET" and parts == ["product", "review-request"]:
+            self._json({"summary": product_docs.review_instruction(root)})
+        elif method == "POST" and parts == ["product", "scaffold"]:
+            self._json({"created": product_docs.scaffold(root), "docs": product_docs.listing(root)})
+        elif method == "GET" and len(parts) == 2 and parts[0] == "product":
+            try:
+                doc = product_docs.get(parts[1])
+            except product_docs.ProductDocError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND)
+            text = product_docs.read(root, parts[1])
+            self._json({"id": doc["id"], "title": doc["title"], "path": doc["path"], "purpose": doc["purpose"], "exists": text is not None,
+                        "filled": product_docs.is_filled(text), "text": text if text is not None else (doc["template"] or "")})
+        elif method == "POST" and len(parts) == 2 and parts[0] == "product":
+            try:
+                product_docs.write(root, parts[1], str(self._body().get("text") or ""))
+            except product_docs.ProductDocError as exc:
+                raise UIError(str(exc))
+            self._json({"ok": True, "docs": product_docs.listing(root)})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "product" and parts[2] == "refine":
+            body = self._body()
+            mode = _choice(body, "mode", ["questions", "propose"])
+            instruction = _text(body, "instruction", limit=4000)
+            try:
+                doc = product_docs.get(parts[1])
+            except product_docs.ProductDocError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND)
+            try:
+                current = product_docs.read(root, parts[1]) or doc["template"] or ""
+                if mode == "questions":
+                    questions = product_docs.parse_questions(self._model_call(root, product_docs.questions_prompt(root, parts[1], instruction)))
+                    self._json({"questions": questions})
+                else:
+                    answers = [a for a in (body.get("answers") or []) if isinstance(a, dict)][:6]
+                    proposal = product_docs.parse_proposal(self._model_call(root, product_docs.refine_prompt(root, parts[1], instruction, answers)))
+                    self._json({**proposal, "diff": product_docs.unified_diff(current, proposal["markdown"])})
+            except product_docs.ProductDocError as exc:
+                raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root))
         elif method == "GET" and parts == ["test-cases"]:
@@ -2712,7 +2768,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["features"]:
             body = self._body()
             try:
-                feature_store.create(runtime_dir(root), str(body.get("name") or ""), str(body.get("summary") or ""), body.get("paths"), body.get("depends_on"))
+                feature_store.create(runtime_dir(root), str(body.get("name") or ""), str(body.get("summary") or ""), body.get("paths"), body.get("depends_on"), str(body.get("serves") or ""))
             except feature_store.FeatureError as exc:
                 raise UIError(str(exc))
             self._json(features_overview(root))
@@ -2737,7 +2793,7 @@ class UIHandler(BaseHTTPRequestHandler):
             try:
                 if "status" in body:
                     feature_store.set_status(runtime_dir(root), parts[1], str(body["status"]))
-                fields = {k: body[k] for k in ("name", "summary", "paths", "depends_on") if k in body}
+                fields = {k: body[k] for k in ("name", "summary", "paths", "depends_on", "serves") if k in body}
                 if fields:
                     feature_store.update(runtime_dir(root), parts[1], **fields)
             except feature_store.FeatureError as exc:
@@ -2839,18 +2895,9 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "planner": job.get("planner"), "builder": job.get("builder"), "reviewer": job.get("reviewer")})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "chat":
             job_path = resolve_job_path(root, parts[1])
-            env = self.server.child_env()
 
             def llm(prompt: str, model: str) -> str:
-                argv = orchestrator_argv("script", "job_chat_run.py", *(["--model", model] if model else []))
-                try:
-                    res = subprocess.run(argv, input=prompt, cwd=root, env=env, capture_output=True, text=True, timeout=150)
-                except subprocess.TimeoutExpired:
-                    raise UIError("The model took too long. Try a shorter question.", HTTPStatus.GATEWAY_TIMEOUT)
-                marker = "<<<ORCHESTRATOR-REPLY>>>"
-                if res.returncode != 0 or marker not in res.stdout:
-                    raise UIError((res.stderr.strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
-                return res.stdout.split(marker, 1)[1]
+                return self._model_call(root, prompt, model)
 
             try:
                 thread = job_chat.ask(job_path, str(self._body().get("message") or ""), llm, root, read_json_file, write_json_file)

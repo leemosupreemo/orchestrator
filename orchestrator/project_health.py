@@ -14,6 +14,7 @@ from typing import Any
 BRIEF_JOB = ("Write docs/product-brief.md: what this product is, who it's for, the problem it solves, "
              "and what version 1 must do. Base it on the code and README.")
 UNRELEASED_WARN = 20
+REVIEW_AFTER_JOBS = 5
 
 
 def brief_platforms(brief_text: str) -> tuple[list[str], bool]:
@@ -36,6 +37,15 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
     items.append(_item("brief", "Product brief", "ok", "docs/product-brief.md says what this is and what version 1 must do.") if f["brief"]
                  else _item("brief", "Product brief", "todo", "Nothing says what this product is for, so every job guesses.",
                             job={"type": "quick", "summary": BRIEF_JOB}, label="Draft one"))
+
+    docs = f.get("docs") or []
+    missing = [d for d in docs if d["id"] != "brief" and not d["filled"]]
+    if docs and not missing:
+        items.append(_item("product-docs", "Product documents", "ok", "Users and non-goals, journey, screens, technical decisions and the current plan are written."))
+    elif docs:
+        names = ", ".join(d["title"].lower() for d in missing[:3]) + ("…" if len(missing) > 3 else "")
+        items.append(_item("product-docs", "Product documents", "todo", f"{len(missing)} of {len(docs) - 1} aren't filled in yet ({names}). Builders plan against these, so gaps become guesses.",
+                           route="#/product", label="Fill them in"))
 
     if f["recommend_pending"]:
         items.append(_item("platforms", "Platforms", "warn", "Platforms are still undecided. Ask for a recommendation in your next plan, then record the choice in the brief.",
@@ -93,6 +103,16 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
         items.append(_item("release", "Releases", "warn", f"{f['unreleased']} changes since {f['tag']}. Time for a release?", route="#/delivery", label="See what's live"))
     else:
         items.append(_item("release", "Releases", "ok", f"Last release {f['tag']}."))
+
+    review = f.get("review")
+    if review and not review["stale"]:
+        items.append(_item("review", "Product review", "ok", f"Last review {review['days']} day(s) ago."))
+    elif f["jobs_total"] >= REVIEW_AFTER_JOBS:
+        detail = f"Last review was {review['days']} days ago." if review else "No review yet."
+        items.append(_item("review", "Product review", "warn", f"{detail} A review checks drift from the brief, architecture, duplication and UX consistency.",
+                           route="#/product", label="Run a review"))
+    else:
+        items.append(_item("review", "Product review", "ok", f"Worth doing after about {REVIEW_AFTER_JOBS} jobs."))
 
     if f["features_needing_kpis"]:
         items.append(_item("kpis", "Measuring it", "todo", f"{f['features_needing_kpis']} feature(s) with work in them have no KPI, so you can't tell if they worked.", route="#/measure", label="Add KPIs"))
