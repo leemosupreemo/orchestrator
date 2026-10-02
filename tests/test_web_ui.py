@@ -1370,6 +1370,14 @@ class WebhookNotificationTests(ServerTestCase):
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
 
+    def test_state_says_whether_the_webhook_is_on_without_revealing_it(self):
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual(state["alerts"], {"webhook": False})
+        ui.write_settings(self.root, {"notification_webhook": self.URL})
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual(state["alerts"], {"webhook": True})
+        self.assertNotIn("secret", json.dumps(state))
+
     def test_state_carries_the_inbox_items_the_browser_notifies_from(self):
         _, state = self.request("GET", "/api/state")
         self.assertEqual([(i["id"].split(":")[0], i["hash"]) for i in state["inbox"]], [("job", "#/jobs/20260922-bug-1")])
@@ -1704,6 +1712,16 @@ class AccessibilityStaticTests(unittest.TestCase):
         for jargon in ('label: "Machine Fleet"', 'label: "Prerequisite Audit"', 'label: "Self-Tests"'):
             self.assertNotIn(jargon, config)
 
+    def test_saving_a_webhook_or_analytics_key_tests_it_straight_away(self):
+        self.assertIn('body: {op: "test"}', self.js)
+        self.assertIn("Saved, but the test message failed", self.js)
+        self.assertIn("Saved, but the test event failed", self.js)
+
+    def test_toasts_explain_errors_and_the_inbox_shows_alert_status(self):
+        self.assertIn("Errors.explain(message)", self.js)
+        self.assertIn('<script src="errors.js">', self.html)
+        self.assertIn("Alerts: browser", self.js)
+
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
@@ -1906,6 +1924,31 @@ class PaletteLogicTests(unittest.TestCase):
     def test_results_are_capped(self):
         many = [{"label": f"Job {i}", "hint": "", "order": 2} for i in range(100)]
         self.assertEqual(len(self.ranked("job", many)), 40)
+
+
+class ErrorHintTests(unittest.TestCase):
+    def explain(self, message):
+        module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "errors.js"
+        script = "const e = require(process.argv[1]); process.stdout.write(JSON.stringify(e.explain(JSON.parse(process.argv[2]))));"
+        result = subprocess.run(["node", "-e", script, str(module), json.dumps(message)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_known_failures_say_what_to_do_next(self):
+        self.assertIn("Check that it's still running", self.explain("Failed to fetch"))
+        self.assertIn("Archived Jobs", self.explain("Job not found"))
+        self.assertIn("Measure page", self.explain("Amplitude rejected the key (401)"))
+        self.assertIn("incoming webhook", self.explain("The webhook answered 404"))
+        self.assertIn("gh auth login", self.explain("Not signed in to GitHub yet."))
+        self.assertIn("Configuration > Models", self.explain("No model is available. Check Configuration > Models."))
+
+    def test_the_original_message_is_kept_and_punctuated(self):
+        out = self.explain("The webhook answered 404")
+        self.assertTrue(out.startswith("The webhook answered 404. "))
+        self.assertEqual(self.explain("Something odd happened"), "Something odd happened")
+
+    def test_empty_messages_get_a_fallback(self):
+        self.assertEqual(self.explain(""), "Something went wrong. Try again.")
 
 
 class PipelineTests(ServerTestCase):

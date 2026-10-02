@@ -2468,6 +2468,7 @@ class UIHandler(BaseHTTPRequestHandler):
         if method == "GET" and parts == ["state"]:
             self._json({"project": project_state(root), "runs": self.server.sessions.list(),
                         **inbox_state(root, self.server.sessions),
+                        "alerts": {"webhook": bool(read_settings(root).get("notification_webhook"))},
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
                                     for k, a in ACTIONS.items()},
                         "token": self.server.token})

@@ -120,7 +120,7 @@ async function api(path, { method = "GET", body } = {}) {
 
 function toast(message, bad = false, action = null) {
   const el = $("#toast");
-  el.textContent = message;
+  el.textContent = bad ? Errors.explain(message) : message;
   if (action) { // e.g. { label: "Undo", run: async () => … }: stays long enough to be noticed
     const btn = document.createElement("button");
     btn.type = "button"; btn.className = "toast-action"; btn.textContent = action.label;
@@ -1918,7 +1918,7 @@ pages.inbox = async () => {
   for (const i of elsewhere) byProject.set(i.project.root, [...(byProject.get(i.project.root) || []), i]);
   return {
     title: "Inbox",
-    sub: here.length ? `${here.length} waiting on you in ${state.project.name}` : "Nothing is waiting on you.",
+    sub: `${here.length ? `${here.length} waiting on you in ${esc(state.project.name)}` : "Nothing is waiting on you."} <span class="muted">· Alerts: browser ${Notifications.enabled() ? "on" : "off"}, Slack ${state.alerts?.webhook ? "on" : `<a href="#/config/chat">off</a>`}</span>`,
     html: `
       ${here.length ? `<section class="card mb-16"><div class="list">${here.map((i) => row(i)).join("")}</div></section>`
         : `<div class="empty">You're clear. Questions, reviews, failures and stalled runs show up here as they happen.</div>`}
@@ -2020,7 +2020,14 @@ pages.measure = async () => {
         const v = await formDialog("Connect analytics", `<label class="field"><span>Provider</span><select name="provider">${data.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === data.provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
           <label class="field"><span>Project token or API key</span><input type="password" name="key" autocomplete="off" placeholder="${data.key_set ? "Saved. Leave blank to keep" : ""}"></label>
           <label class="field"><span>Region</span><select name="region"><option value="us" ${data.region !== "eu" ? "selected" : ""}>US</option><option value="eu" ${data.region === "eu" ? "selected" : ""}>EU</option></select></label>`, "Save");
-        if (v) call("config/analytics", { op: "set", ...v }, "Analytics saved");
+        if (v) {
+          try {
+            await api("config/analytics", { method: "POST", body: { op: "set", ...v } });
+            try { await api("config/analytics", { method: "POST", body: { op: "test" } }); toast("Saved and tested: a test event was sent. Check the provider's live view."); }
+            catch (e) { toast(`Saved, but the test event failed: ${e.message}`, true); }
+            reload();
+          } catch (e) { toast(e.message, true); }
+        }
       });
       $("#analytics-test")?.addEventListener("click", () => call("config/analytics", { op: "test" }, "Test event sent. Check the provider's live view."));
       $("#analytics-clear")?.addEventListener("click", () => call("config/analytics", { op: "clear" }, "Disconnected"));
@@ -2292,7 +2299,7 @@ async function runConfigMutation(button, request, successMessage) {
   }
 }
 
-function showConfigMutationDialog(title, bodyHtml, okLabel, buildRequest, successMessage) {
+function showConfigMutationDialog(title, bodyHtml, okLabel, buildRequest, successMessage, afterSave = null) {
   const dlg = $("#dialog");
   const form = $("#dialog-form");
   const ok = $("#dialog-ok");
@@ -2310,6 +2317,7 @@ function showConfigMutationDialog(title, bodyHtml, okLabel, buildRequest, succes
     const request = buildRequest(Object.fromEntries(new FormData(form).entries()));
     const saved = await runConfigMutation(ok, request, successMessage);
     if (saved && dlg.open) dlg.close("ok");
+    if (saved && afterSave) await afterSave();
   };
   form.addEventListener("submit", onSubmit);
   dlg.addEventListener("close", () => form.removeEventListener("submit", onSubmit), {once: true});
@@ -2426,7 +2434,11 @@ pages.config = async (args = []) => {
               `<label class="field"><span>Webhook URL</span><input type="url" name="url" required autocomplete="off" placeholder="https://hooks.slack.com/services/…"></label>`,
               "Save",
               (values) => ({part: "webhook", body: {op: "set", url: values.url}}),
-              "Webhook saved",
+              "Webhook saved. Sending a test message…",
+              async () => {
+                try { await api("config/webhook", {method: "POST", body: {op: "test"}}); toast("Webhook saved and tested: check your channel for the message."); }
+                catch (error) { toast(`Saved, but the test message failed: ${error.message}`, true); }
+              },
             );
           } else if (action === "chat-clear") {
             await runConfigMutation(button, {part: "webhook", body: {op: "clear"}}, "Webhook removed");
