@@ -50,7 +50,7 @@ checked in a browser yet.
 - [x] **Handoff once built to try with a group.** Send to a Firebase tester group from the Delivery page or a job. Paste the group's Firebase invite link once (Configuration > Tester builds) and Delivery shows it with a Copy button, so anyone can join and install without being added one by one. The link is Firebase's, not an Orchestrator page; the app does not host installs itself.
 - [x] **Versions, branches, what's live/prod.** Delivery > Live treats the base branch as production: its newest commit, the last release tag, and how many changes are not yet released. Next to it: what testers have, and what is ready to ship. Not yet: named environments beyond "live" and "testers".
 - [~] **Good CI/CD.** Delivery > Pipeline shows recent GitHub Actions runs (status, branch, link) and whether the base branch build is passing, next to the Live card. Needs `gh` signed in; Xcode Cloud is only detected, not read. No re-run or trigger from the UI.
-- [~] **Use on mobile and distribute to mobile.** Responsive layout; job page is a long scroll on a phone.
+- [x] **Use on mobile and distribute to mobile.** Phone layout verified at 390px in light and dark: bottom bar plus a More sheet reach every page, long job-page sections fold, and the alerts and invite link work from a phone. Distribution to phones is Firebase (send a build, share the invite link). Not tested on a real phone or tablet.
 
 ## F. Integrations and measurement
 
@@ -65,6 +65,6 @@ checked in a browser yet.
 - [x] Debug "Original Home/Jobs" toggles and their duplicate layouts removed.
 - [x] Fixed the carried-over failing test (its fixture lacked the test cases plans now require).
 - [x] Inline `style=` attributes in `app.js` cut from 97 to 50 by replacing repeated spacing with utility classes. The rest are dynamic (progress widths) or one-offs.
-- [ ] Per-job visual QA (the screenshots card shows the newest check from the whole project).
+- [x] Per-job visual QA: a visual check started from a job is tagged with it and only that job's page shows its screenshots. Also fixed: the check list looked for folders the script never creates, so the card could not have shown real results; screenshot URLs are now strictly validated (hardening; the old path handling was not shown to be exploitable).
 - [x] Accessibility pass, measured with a Chrome DevTools audit over 12 pages x phone/desktop x light/dark: fixed contrast failures (light-theme accent, warn, ok, bad and muted colours; white text on amber badges), a duplicate icon id, an unlabelled chat box, small tap targets, and no visible focus ring on links. Added a skip link, a page title that updates per page (with the inbox count), focus moved to the page heading on navigation, and removed `aria-live` from the whole page. Audit result: 0 issues in overflow, names, labels, contrast and ids. Not covered: a real screen reader, keyboard-only walkthrough of every dialog, and the terminal pages.
 - [x] Verified in a browser (headless Chrome via DevTools) at 390px and 1300px, light and dark, for every main page. Found and fixed: on phones the Lock session and Notify buttons were off-screen, and Tests, Git, Delivery, Measure, Check-up and Connections had no way in (now a "More" sheet in the bottom bar). Not tested: a real phone, tablet widths, landscape, the terminal/run pages, and the sign-in screen.

@@ -1965,6 +1965,62 @@ class ErrorHintTests(unittest.TestCase):
         self.assertEqual(self.explain(""), "Something went wrong. Try again.")
 
 
+class VisualCheckTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def make_check(self, base, name, job=None, png=b"\x89PNG\r\n"):
+        folder = self.root / ".orchestrator" / "output" / base / name if base else self.root / ".orchestrator" / "output" / name
+        folder.mkdir(parents=True)
+        (folder / "shot-1.png").write_bytes(png)
+        (folder / "report.md").write_text("# report")
+        if job:
+            (folder / "meta.json").write_text(json.dumps({"job_id": job}))
+        return folder
+
+    def test_finds_the_folders_the_script_actually_writes_and_their_job(self):
+        self.make_check("manual", "20260923-101500-visual-check", job=self.JOB)
+        self.make_check(None, "visual-check-legacy")
+        _, data = self.request("GET", "/api/visual-checks")
+        by_id = {c["id"]: c for c in data["checks"]}
+        self.assertEqual(by_id["20260923-101500-visual-check"]["job"], self.JOB)
+        self.assertIsNone(by_id["visual-check-legacy"]["job"])
+        self.assertEqual(by_id["20260923-101500-visual-check"]["screenshots"], ["shot-1.png"])
+
+    def test_screenshots_are_served_from_either_location(self):
+        self.make_check("manual", "20260923-101500-visual-check")
+        self.make_check(None, "visual-check-legacy")
+        for run in ("20260923-101500-visual-check", "visual-check-legacy"):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("GET", f"/api/visual-checks/{run}/screenshots/shot-1.png", headers={"Authorization": "Bearer test-token"})
+            res = conn.getresponse()
+            self.assertEqual((res.status, res.read()[:4], res.getheader("Content-Type")), (200, b"\x89PNG", "image/png"), run)
+            conn.close()
+
+    def test_urls_cannot_reach_other_files(self):
+        (self.root / ".env").write_text("SECRET=1")
+        (self.root / "notes.png").write_bytes(b"x")
+        self.make_check("manual", "20260923-101500-visual-check")
+        for run, name in (("..", ".env"), ("..", "notes.png"), ("20260923-101500-visual-check", "report.md"), (".hidden", "a.png"),
+                          ("20260923-101500-visual-check", "..%2Fnotes.png"), ("20260923-101500-visual-check", "missing.png")):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("GET", f"/api/visual-checks/{run}/screenshots/{name}", headers={"Authorization": "Bearer test-token"})
+            res = conn.getresponse()
+            body = res.read()
+            self.assertEqual(res.status, 404, (run, name))
+            self.assertNotIn(b"SECRET", body)
+            conn.close()
+
+    def test_a_visual_check_started_from_a_job_is_tagged_with_it(self):
+        argv = ui.build_simulator_visual_check({"job": self.JOB}, self.root)
+        self.assertEqual(argv[argv.index("--job") + 1], self.JOB)
+        self.assertNotIn("--job", ui.build_simulator_visual_check({}, self.root))
+        with self.assertRaises(ui.UIError):
+            ui.build_simulator_visual_check({"job": "nope"}, self.root)
+
+    def test_the_job_page_only_shows_its_own_checks(self):
+        self.assertIn('.filter((c) => c.job === id)', (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text())
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")

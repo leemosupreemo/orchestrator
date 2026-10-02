@@ -572,8 +572,8 @@ const dialogs = {
       }
     }
   },
-  async run_visual_check() {
-    await runAction("visual_check", {});
+  async run_visual_check(params) {
+    await runAction("visual_check", params?.job ? { job: params.job } : {});
   },
 };
 
@@ -1485,7 +1485,7 @@ pages.job = async ([id]) => {
   const conversation = Array.isArray(job.conversation) ? job.conversation.filter((m) => m && m.text) : [];
 
   let visualChecks = [];
-  try { visualChecks = (await api("visual-checks")).checks || []; } catch {}
+  try { visualChecks = ((await api("visual-checks")).checks || []).filter((c) => c.job === id); } catch {}
   const canSplinter = (kindUpper === "FEATURE" || kindUpper === "PLAN" || s.type === "feature-plan" || job.type === "feature-plan") && tasksTotal > 0 && s.status !== "decomposed";
 
   // Delta calculations

@@ -1502,6 +1502,9 @@ def build_export_job(params: dict[str, Any], root: Path) -> list[str]:
 
 def build_simulator_visual_check(params: dict[str, Any], root: Path) -> list[str]:
     argv = orchestrator_argv("script", "simulator_visual_check.py")
+    job = _text(params, "job", limit=200)
+    if job:
+        argv += ["--job", resolve_job_path(root, job).stem]
     destination = _text(params, "destination", limit=200)
     if destination:
         argv += ["--destination", destination]
@@ -1522,29 +1525,54 @@ def build_worker_install(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("worker-install", *(["--machine", machine] if machine else []))
 
 
+VISUAL_RUN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def visual_check_dirs(root: Path) -> list[Path]:
+    """Every folder a visual check can live in: `visual-check-*` under output/, and the
+    `<timestamp>-visual-check` folders the script writes under output/manual/."""
+    found = []
+    for out_base in (runtime_dir(root) / "output", root / "output"):
+        if out_base.is_dir():
+            found += [p for p in out_base.glob("visual-check-*") if p.is_dir()]
+        manual = out_base / "manual"
+        if manual.is_dir():
+            found += [p for p in manual.glob("*-visual-check") if p.is_dir()]
+    return found
+
+
 def visual_checks_inventory(root: Path) -> list[dict[str, Any]]:
-    output_dirs = [runtime_dir(root) / "output", root / "output"]
-    runs = []
-    seen = set()
-    for out_base in output_dirs:
-        if not out_base.is_dir():
+    runs, seen = [], set()
+    for child in visual_check_dirs(root):
+        if child.name in seen:
             continue
-        for child in out_base.glob("visual-check-*"):
-            if not child.is_dir() or child.name in seen:
-                continue
-            seen.add(child.name)
-            report_file = child / "report.md"
-            report_text = report_file.read_text(encoding="utf-8", errors="replace") if report_file.is_file() else ""
-            screenshots = sorted([p.name for p in child.glob("*.png")])
-            mtime = child.stat().st_mtime
-            runs.append({
-                "id": child.name,
-                "created_at": datetime.fromtimestamp(mtime).isoformat(),
-                "report": report_text,
-                "screenshots": screenshots,
-                "count": len(screenshots),
-            })
+        seen.add(child.name)
+        report_file = child / "report.md"
+        report_text = report_file.read_text(encoding="utf-8", errors="replace") if report_file.is_file() else ""
+        screenshots = sorted([p.name for p in child.glob("*.png")])
+        mtime = child.stat().st_mtime
+        runs.append({
+            "id": child.name,
+            "job": read_json_file(child / "meta.json").get("job_id"),
+            "created_at": datetime.fromtimestamp(mtime).isoformat(),
+            "report": report_text,
+            "screenshots": screenshots,
+            "count": len(screenshots),
+        })
     return sorted(runs, key=lambda x: x["created_at"], reverse=True)
+
+
+def visual_check_image(root: Path, run_id: str, name: str) -> Path | None:
+    """A screenshot inside one visual-check folder, or None. Both parts are validated so a URL can't name
+    anything else on disk."""
+    if not VISUAL_RUN_RE.match(run_id) or not VISUAL_RUN_RE.match(name) or not name.lower().endswith(".png") or run_id.startswith("."):
+        return None
+    for folder in visual_check_dirs(root):
+        if folder.name == run_id:
+            candidate = (folder / name).resolve()
+            if candidate.parent == folder.resolve() and candidate.is_file():
+                return candidate
+    return None
 
 
 def get_role_prompts(root: Path) -> list[dict[str, Any]]:
@@ -2137,7 +2165,7 @@ ACTIONS: dict[str, Action] = {
     "splinter": Action("Splinter into sub-jobs", build_splinter,
                        confirm="Decomposes this feature plan into child task jobs and issues.", fields=["job"]),
     "export_job": Action("Export job bundle", build_export_job, fields=["job", "destination"]),
-    "visual_check": Action("Simulator visual check", build_simulator_visual_check, fields=["destination", "wait", "no_build"]),
+    "visual_check": Action("Simulator visual check", build_simulator_visual_check, fields=["destination", "wait", "no_build", "job"]),
     "worker_install": Action("Install worker dependencies", build_worker_install, fields=["machine"]),
     "sync_fleet": Action("Sync fleet code", lambda p, r: orchestrator_argv("script", "sync_fleet.py")),
     "fleet_llm_check": Action("Fleet LLM latency & quota check", lambda p, r: orchestrator_argv("script", "fleet_llm_check.py")),
@@ -2779,14 +2807,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["visual-checks"]:
             self._json({"checks": visual_checks_inventory(root)})
         elif method == "GET" and len(parts) >= 4 and parts[0] == "visual-checks" and parts[2] == "screenshots":
-            run_id = parts[1]
-            img_name = parts[3]
-            target = None
-            for out_base in [runtime_dir(root) / "output", root / "output"]:
-                cand = out_base / run_id / img_name
-                if cand.is_file():
-                    target = cand
-                    break
+            target = visual_check_image(root, parts[1], parts[3])
             if not target:
                 self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
                 return
