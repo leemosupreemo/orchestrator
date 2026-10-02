@@ -72,7 +72,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 13px; }
 
 /* sidebar */
 .sidebar {
-  position: sticky; top: 0; height: 100vh;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 16px;
   padding: 20px 14px; background: var(--panel); border-right: 1px solid var(--border);
 }
@@ -1082,9 +1082,9 @@ dialog h2 { font-size: 17px; }
   outline-offset: 2px;
 }
 .configuration-context-menu {
-  position: absolute;
-  left: calc(100% + 10px);
-  bottom: 0;
+  position: fixed; /* fixed so the scrolling sidebar can't clip it */
+  left: 242px;
+  bottom: 16px;
   z-index: 100;
   width: min(380px, calc(100vw - 268px));
   max-height: min(80vh, 680px);
@@ -1375,3 +1375,15 @@ dialog h2 { font-size: 17px; }
 .palette-foot { padding: 8px 14px; font-size: 12px; border-top: 1px solid var(--border); }
 @media (max-width: 760px) { .search-btn { display: none !important; } .palette { top: 8vh; } .palette-hint { display: none; } .palette-item { grid-template-columns: minmax(0, 1fr) auto; } }
 .palette[hidden], .palette-backdrop[hidden] { display: none; }
+
+.fold > summary { cursor: pointer; list-style: none; min-height: 44px; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::after { content: "▸"; color: var(--muted); margin-left: 8px; }
+.fold[open] > summary::after { content: "▾"; }
+
+@media (min-width: 761px) and (max-height: 860px) {
+  .sidebar { gap: 8px; padding: 12px 14px; }
+  .nav-secondary a { padding: 4px 10px; }
+  .nav-secondary .label { padding: 2px 10px 2px; }
+  .console-btn { margin-top: 0; }
+}

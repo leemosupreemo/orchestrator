@@ -20,19 +20,19 @@ single-reviewer expert evaluation, not user testing, and it did not use a design
 | 8 | Recognition rather than recall | On phones six pages had no way in | 3 | "More" sheet in the bottom bar (see the accessibility pass) |
 | 9 | Help and documentation | No help in the app; docs buried under Configuration | 3 | Help page (sidebar, and the phone More sheet): the flow from idea to learning, where things are, a glossary, common questions |
 | 10 | User control and freedom | Deleting a feature or KPI, and Mark complete, could not be undone | 2 | Deleting a feature or KPI shows an Undo for 10 seconds (no confirm needed); undoing restores jobs and KPI results. Mark complete can be restored from Configuration > Archived jobs and returns to its earlier status; the confirm now says so |
+| 11 | Flexibility and efficiency | No search or shortcuts after the hotkeys were removed | 2 | Command palette: Cmd/Ctrl+K or `/` jumps to any page, job or feature and runs common actions; keyboard-operable and announced as a combobox |
+| 12 | Recognition rather than recall | 13 sidebar items; Home's "Action required" filter duplicated the Inbox | 2 | Tools grouped as Build & ship / Learn & improve / Set up; the Home chip is now "Waiting on you →" and opens the Inbox |
+| 13 | Match with the real world | Jargon in Configuration | 1 | Machines, Tool check, Orchestrator health check, Tester builds (Firebase), Instructions for AI helpers, with the old term in each description |
+| 14 | Consistency | Primary action placement and job/run/task vocabulary varied | 2 | Written down in `docs/web-ui-conventions.md` and the Help glossary; a few checks are automated |
+| 15 | Error prevention | Webhook and analytics keys were only checked when you pressed "test" | 1 | Both are tested on save and the result is shown right away |
+| 16 | Help users recover from errors | Raw server messages in toasts | 2 | Known failures now say what to do next (`errors.js`); unknown ones pass through unchanged |
+| 17 | Visibility of system status | Alert status only visible in config | 1 | The Inbox header shows "Alerts: browser on/off, Slack on/off" |
+| 18 | Aesthetic and minimalist design | The job page is one long scroll on a phone | 2 | Tasks, runs, logs and output are folded on phones (open on desktop) |
 
 ## Open
 
-| # | Heuristic | Finding | Sev | Suggestion |
-|---|-----------|---------|-----|------------|
-| C | Flexibility and efficiency | The terminal-style hotkeys on the job page were removed, so power users lost shortcuts and there is no search across jobs or features | 2 | A command palette (jump to job, page or action) |
-| D | Recognition rather than recall | 13 sidebar items; Home's "Action required" filter duplicates the Inbox | 2 | Group Tools into Build / Ship / Learn; drop the filter or link it to the Inbox |
-| E | Match with the real world | Jargon survives in Configuration: "Prerequisite Audit", "Self-Tests", "Machine Fleet", "Xcode Cloud" | 1 | Plain names with the old term in the description |
-| F | Consistency | Primary actions sit in different places: top right, a hero, inline in rows. "Job", "run" and "task" are used loosely | 2 | One rule for primary action placement; a short glossary |
-| G | Error prevention | The webhook and analytics keys are checked only when you press "test" | 1 | Test on save and show the result inline |
-| H | Help users recover from errors | Server errors reach the user as a toast with the server's raw message | 2 | Pair each common failure with what to do next |
-| I | Visibility of system status | Whether browser alerts and the Slack webhook are on is visible only in the sidebar button and one config page | 1 | A line in the Inbox header: "Alerts: browser on, Slack off" |
-| J | Aesthetic and minimalist design | The job page is a long scroll of cards on a phone | 2 | Collapse Changes, Logs and Technical details by default on small screens |
+None from this evaluation. A single reviewer finds only part of the problems; real users will find
+the rest, so treat this list as a starting point, not a clearance.
 
 ## Found while testing the fixes
 
@@ -41,6 +41,11 @@ rejected POST) was left in the connection, so the next request on it failed with
 `501 Unsupported method ('{}GET')` or `400`. The server now drains unread bodies after every
 request. Three regression tests fail without the fix. Discard job still cannot be undone
 (it deletes the branch); its confirm says so.
+
+Checking the grouped sidebar at a 640px-high window showed a second bug: the sidebar did not scroll,
+so on short screens "Open full console", "Notify me" and "Lock session" were off-screen and
+unreachable (Lock sat 275px below the visible area). The sidebar now scrolls, tightens its spacing on
+short screens, and the Configuration menu is positioned so it is not clipped.
 
 ## Not evaluated
 

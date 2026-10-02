@@ -1474,6 +1474,8 @@ pages.job = async ([id]) => {
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
   const scope = data.scope || null;
+  const phone = matchMedia("(max-width: 760px)").matches;
+  const fold = (title, count, body) => `<section class="card mb-16"><details class="fold" ${phone ? "" : "open"}><summary class="card-h"><h2>${title}</h2>${count === "" ? "" : `<span class="count">${count}</span>`}</summary>${body}</details></section>`;
   const scopeWarning = scope && ["merge", "complete"].includes(s.state.next?.action) ? scope.findings.filter((f) => f.severity !== "low").reduce((n, f) => n + Math.max(f.files.length, 1), 0) : 0;
   const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
   const missingTests = testCases.cases.filter((c) => c.due && (c.status === "unassigned" || c.status === "planned")).length;
@@ -1656,30 +1658,24 @@ pages.job = async ([id]) => {
         </section>
       ` : ""}
 
-      <!-- Tasks Checklist -->
-      ${tasks.length ? `<section class="card mb-16"><div class="card-h"><h2>Tasks Checklist</h2><span class="count">${tasksDone}/${tasks.length}</span></div>
-        <div class="list">${tasks.map((t, i) => {
+      <!-- Tasks, runs, logs and output: folded on phones so the page isn't one long scroll -->
+      ${tasks.length ? fold("Tasks Checklist", `${tasksDone}/${tasks.length}`, `<div class="list">${tasks.map((t, i) => {
           const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
           const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
           const isDone = done.has(key) || done.has(String(i));
           return `<div class="item"><span aria-label="${isDone ? "done" : "to do"}">${isDone ? "✅" : "○"}</span><div class="main-col"><div class="title">${esc(title)}</div></div></div>`;
-        }).join("")}</div></section>` : ""}
+        }).join("")}</div>`) : ""}
 
-      <!-- Activity & Runs -->
-      ${runs.length ? `<section class="card mb-16"><div class="card-h"><h2>Activity & Runs</h2><span class="count">${runs.length}</span></div><div class="list">${runs.map(runItem).join("")}</div></section>` : ""}
+      ${runs.length ? fold("Activity & Runs", runs.length, `<div class="list">${runs.map(runItem).join("")}</div>`) : ""}
 
-      <!-- Logs -->
-      <section class="card mb-16"><div class="card-h"><h2>Logs</h2></div>
-        <div class="list">${logFiles.map((f) => f.path
+      ${fold("Logs", logFiles.filter((f) => f.path).length || "", `<div class="list">${logFiles.map((f) => f.path
           ? `<a class="item" href="#/file?path=${encodeURIComponent(f.path)}"><div class="main-col"><div class="title mono">${esc(f.label)}</div></div></a>`
           : `<div class="item"><div class="main-col"><div class="title">${esc(f.label)}</div></div></div>`).join("")
-          || `<div class="empty">No logs linked. Use Attach logs in the More menu.</div>`}</div></section>
+          || `<div class="empty">No logs linked. Use Attach logs in the More menu.</div>`}</div>`)}
 
-      <!-- Output Files -->
-      ${outputs.length ? `<section class="card mb-16"><div class="card-h"><h2>Output files</h2><span class="count">${outputs.length}</span></div>
-        <div class="list">${outputs.map((o) => `<a class="item" href="#/file?path=${encodeURIComponent(o.path)}">
+      ${outputs.length ? fold("Output files", outputs.length, `<div class="list">${outputs.map((o) => `<a class="item" href="#/file?path=${encodeURIComponent(o.path)}">
           <div class="main-col"><div class="title mono">${esc(o.path.split("/").slice(2).join("/") || o.path)}</div>
-          <div class="meta">${(o.size / 1024).toFixed(1)} KB · ${esc(ago(o.mtime))}</div></div></a>`).join("")}</div></section>` : ""}
+          <div class="meta">${(o.size / 1024).toFixed(1)} KB · ${esc(ago(o.mtime))}</div></div></a>`).join("")}</div>`) : ""}
 
       <!-- Technical Details -->
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
