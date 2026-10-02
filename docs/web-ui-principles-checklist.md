@@ -46,10 +46,10 @@ checked in a browser yet.
 
 ## E. Delivery and environments
 
-- [~] **Easy distribution for manual testing and device management.** Deliver and Distribute actions (Firebase). No device or tester list.
-- [~] **Handoff once built to try with a group.** Deliver to testers and export. No shareable build page.
-- [~] **Versions, branches, what's live/prod.** Git page and branch in header. No environment indicator.
-- [~] **Good CI/CD.** CI config detected. No pipeline status in UI.
+- [~] **Easy distribution for manual testing and device management.** Delivery page: latest build with testers (version, build, groups, when, which job), "Send current branch", per-job "Send to testers" for reviewed work, earlier builds, tester groups, and a warning if the Firebase CLI is missing. Testers and devices themselves are managed in the Firebase console (linked); the UI can't add or remove them.
+- [~] **Handoff once built to try with a group.** Send to a Firebase tester group from the Delivery page or a job, and see what they have. No shareable install page or invite link of its own.
+- [x] **Versions, branches, what's live/prod.** Delivery > Live treats the base branch as production: its newest commit, the last release tag, and how many changes are not yet released. Next to it: what testers have, and what is ready to ship. Not yet: named environments beyond "live" and "testers".
+- [~] **Good CI/CD.** Delivery > Pipeline shows recent GitHub Actions runs (status, branch, link) and whether the base branch build is passing, next to the Live card. Needs `gh` signed in; Xcode Cloud is only detected, not read. No re-run or trigger from the UI.
 - [~] **Use on mobile and distribute to mobile.** Responsive layout; job page is a long scroll on a phone.
 
 ## F. Integrations and measurement

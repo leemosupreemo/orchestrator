@@ -1424,6 +1424,71 @@ class TestCaseViewTests(ServerTestCase):
         self.assertEqual(scan.call_count, 1)
 
 
+class DeliveryEndpointTests(ServerTestCase):
+    def setUp(self):
+        super().setUp()
+        ui._GH_CACHE.clear()
+
+    def test_reports_receipts_ready_jobs_and_pipeline(self):
+        delivered = self.root / ".orchestrator" / "output" / "delivery"
+        delivered.mkdir(parents=True)
+        (delivered / "20260922-bug-0.json").write_text(json.dumps({"status": "delivered", "job_id": "20260922-bug-0", "version": "2.1", "build": "40", "groups": "internal", "branch": "ai/issue-0"}))
+        job = self.root / ".orchestrator" / "jobs" / "20260922-bug-1.json"
+        data = json.loads(job.read_text())
+        data["status"] = "review-needed"
+        job.write_text(json.dumps(data))
+        rows = [{"name": "CI", "status": "completed", "conclusion": "success", "url": "https://x/1", "headBranch": "main"}]
+        with patch.object(ui.subprocess, "run", wraps=ui.subprocess.run) as run:
+            real = ui.subprocess.run
+
+            def fake(argv, *a, **k):
+                if argv[0] == "gh":
+                    return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(rows), stderr="")
+                return real(argv, *a, **k)
+
+            run.side_effect = fake
+            res, out = self.request("GET", "/api/delivery")
+        self.assertEqual(res.status, 200)
+        self.assertEqual((out["testers"]["latest"]["version"], out["testers"]["latest"]["build"]), ("2.1", "40"))
+        self.assertEqual([j["id"] for j in out["ready"]], ["20260922-bug-1"])
+        self.assertEqual(out["pipeline"]["runs"][0]["tone"], "done")
+        self.assertIsNone(out["live"])  # the fixture isn't a git repo
+
+    def test_without_gh_the_pipeline_is_marked_unavailable(self):
+        real = ui.subprocess.run
+
+        def fake(argv, *a, **k):
+            if argv[0] == "gh":
+                raise FileNotFoundError("gh")
+            return real(argv, *a, **k)
+
+        with patch.object(ui.subprocess, "run", side_effect=fake):
+            res, out = self.request("GET", "/api/delivery")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(out["pipeline"], {"available": False, "runs": []})
+
+    def test_gh_results_are_cached_between_requests(self):
+        calls = []
+        real = ui.subprocess.run
+
+        def fake(argv, *a, **k):
+            if argv[0] == "gh":
+                calls.append(argv)
+                return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+            return real(argv, *a, **k)
+
+        with patch.object(ui.subprocess, "run", side_effect=fake):
+            self.request("GET", "/api/delivery")
+            self.request("GET", "/api/delivery")
+        self.assertEqual(len(calls), 1)
+
+    def test_secrets_are_not_in_the_payload(self):
+        ui.write_settings(self.root, {"firebase_app_id": "1:23:ios:abc", "firebase_service_account_path": "/secret/key.json", "firebase_tester_groups": "qa, friends"})
+        _, out = self.request("GET", "/api/delivery")
+        self.assertEqual(out["testers"]["groups"], ["qa", "friends"])
+        self.assertNotIn("/secret/key.json", json.dumps(out))
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")

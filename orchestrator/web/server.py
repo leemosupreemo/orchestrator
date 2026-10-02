@@ -51,6 +51,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator import integrations
+from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
 from orchestrator import notifier
@@ -546,6 +547,39 @@ def inbox_state(root: Path, sessions: Any) -> dict[str, Any]:
     return {"inbox_count": len(here),
             "inbox": [{"id": i["id"], "title": i["title"], "label": i["label"], "reason": i["reason"],
                        "hash": f"#/runs/{i['run_id']}" if i["kind"] == "run" else f"#/jobs/{i['job_id']}"} for i in here]}
+
+
+_GH_CACHE: dict[str, tuple[float, str | None]] = {}
+GH_TTL = 60.0
+
+
+def gh_cached(root: Path, args: list[str]) -> str | None:
+    """`gh` output for a few seconds, or None when gh is missing, signed out, or the repo isn't on GitHub."""
+    key = f"{root}:{' '.join(args)}"
+    hit = _GH_CACHE.get(key)
+    if hit and time.time() - hit[0] < GH_TTL:
+        return hit[1]
+    try:
+        res = subprocess.run(["gh", *args], cwd=root, capture_output=True, text=True, timeout=15)
+        out = res.stdout if res.returncode == 0 else None
+    except Exception:
+        out = None
+    _GH_CACHE[key] = (time.time(), out)
+    return out
+
+
+def delivery_overview(root: Path) -> dict[str, Any]:
+    settings = read_settings(root)
+    config = read_json_file(runtime_dir(root) / "project.json")
+    jobs = list_jobs(root)
+    firebase = {"configured": bool(config.get("firebase_distribution")), "app_id_set": bool(settings.get("firebase_app_id")),
+                "groups": [g.strip() for g in str(settings.get("firebase_tester_groups", "")).split(",") if g.strip()],
+                "cli_installed": shutil.which("firebase") is not None}
+    ci = (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists()
+    data = delivery_view.overview(lambda *a: git(root, *a), lambda argv: gh_cached(root, argv), runtime_dir(root),
+                                  base_branch(root, settings), jobs, firebase, ci)
+    data["web_url"] = repo_web_url(root)
+    return data
 
 
 def features_overview(root: Path) -> dict[str, Any]:
@@ -2334,6 +2368,8 @@ class UIHandler(BaseHTTPRequestHandler):
             for job in jobs:
                 job["active_run"] = job["id"] in running
             self._json({"jobs": jobs})
+        elif method == "GET" and parts == ["delivery"]:
+            self._json(delivery_overview(root))
         elif method == "GET" and parts == ["test-cases"]:
             self._json(test_case_view(root, test_case_lib.load_library(root)))
         elif method == "GET" and parts == ["inbox"]:

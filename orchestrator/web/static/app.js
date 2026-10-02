@@ -1890,6 +1890,50 @@ pages.inbox = async () => {
   };
 };
 
+pages.delivery = async () => {
+  const d = await api("delivery");
+  const { live, testers, ready, pipeline } = d;
+  const baseRun = pipeline.runs.find((r) => r.on_base);
+  const when = (iso) => (iso ? ago(Date.parse(iso) / 1000) : "");
+  const latest = testers.latest;
+  const liveCard = live ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Live</h2><span class="count mono">${esc(live.branch)}</span></div>
+      <div class="card-b stack">
+        <div><strong class="mono">${esc(live.commit)}</strong> ${esc(live.subject)} <span class="muted">· ${esc(live.when)}</span></div>
+        <div class="row" style="gap:10px">
+          <span class="muted">${live.tag ? `Last release ${esc(live.tag)}` : "No release tagged yet"}</span>
+          ${live.unreleased ? `<span class="pill attention">${live.unreleased} change${live.unreleased === 1 ? "" : "s"} not released</span>` : `<span class="pill done">Up to date</span>`}
+          ${baseRun ? `<a href="${esc(baseRun.url || "#")}" target="_blank" rel="noopener"><span class="pill ${esc(baseRun.tone)}">Build ${esc(baseRun.outcome.replace("_", " "))}</span></a>` : ""}
+        </div></div></section>`
+    : `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Live</h2></div><div class="empty">The base branch isn't in this repository yet, so there's nothing live to show.</div></section>`;
+  const testersCard = `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>With testers</h2>
+      ${testers.configured ? `<button class="btn small primary" ${act("distribute")}>Send current branch</button>` : `<a class="btn small" href="#/config/firebase">Set up Firebase</a>`}</div>
+      <div class="card-b stack">
+        ${latest ? `<div><strong>${esc(latest.version || "Unknown version")}${latest.build ? ` (${esc(latest.build)})` : ""}</strong>
+            <span class="muted">· ${esc(ago(latest.delivered))} · ${esc(latest.branch)}${latest.recipients ? ` · to ${esc(latest.recipients)}` : ""}</span>
+            ${latest.job_id ? ` <a href="#/jobs/${encodeURIComponent(latest.job_id)}">${esc(latest.title || latest.job_id)}</a>` : ""}</div>`
+          : `<div class="muted">${testers.configured ? "Nothing has been sent to testers yet." : "Testers get builds through Firebase App Distribution. Set it up once, then send any branch."}</div>`}
+        ${testers.groups.length ? `<div class="row" style="gap:6px"><span class="muted">Tester groups</span>${testers.groups.map((g) => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
+        ${testers.configured && !testers.cli_installed ? `<div class="notice bad">The Firebase CLI isn't installed on this machine, so sending will fail. Install it with <code>npm i -g firebase-tools</code>.</div>` : ""}
+        ${testers.configured ? `<div class="muted">Add or remove testers and devices in the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener">Firebase console</a>.</div>` : ""}
+      </div></section>`;
+  const readyCard = ready.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Ready to ship</h2><span class="count">${ready.length}</span></div>
+      <div class="list">${ready.map((j) => `<div class="item"><a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(j.title)}</div><div class="meta mono">${esc(j.branch)}${j.pr_number ? ` · PR #${esc(j.pr_number)}` : ""}</div></a>
+        <div class="side">${testers.configured ? `<button class="btn small" ${act("deliver", { job: j.id })}>Send to testers</button>` : ""}
+        ${j.next ? `<button class="btn small primary" ${act(j.next.action, { job: j.id })}>${esc(j.next.label)}</button>` : ""}</div></div>`).join("")}</div></section>` : "";
+  const pipelineCard = `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Pipeline</h2>${d.xcode_cloud ? `<span class="count">Xcode Cloud configured</span>` : ""}</div>
+      ${pipeline.available ? `<div class="list">${pipeline.runs.map((r) => `<a class="item" href="${esc(r.url || "#")}" target="_blank" rel="noopener"><div class="main-col"><div class="title">${esc(r.title || r.name)}</div>
+        <div class="meta"><span class="mono">${esc(r.branch)}</span> · ${esc(r.name)} · ${esc(when(r.created))}</div></div><span class="pill ${esc(r.tone)}">${esc(r.outcome.replace("_", " "))}</span></a>`).join("") || `<div class="empty">No pipeline runs yet.</div>`}</div>`
+        : `<div class="empty">Pipeline status comes from GitHub Actions. Sign in with the GitHub CLI (<code>gh auth login</code>) and push this repository to GitHub to see it here.</div>`}</section>`;
+  const buildsCard = testers.builds.length > 1 ? `<section class="card"><div class="card-h"><h2>Earlier builds</h2><span class="count">${testers.builds.length - 1}</span></div>
+      <div class="list">${testers.builds.slice(1).map((b) => `<a class="item" href="#/jobs/${encodeURIComponent(b.job_id)}"><div class="main-col"><div class="title">${esc(b.version || "?")}${b.build ? ` (${esc(b.build)})` : ""} · ${esc(b.title || b.job_id)}</div>
+        <div class="meta">${esc(ago(b.delivered))} · ${esc(b.branch)}${b.recipients ? ` · ${esc(b.recipients)}` : ""}</div></div></a>`).join("")}</div></section>` : "";
+  return {
+    title: "Delivery",
+    sub: "What's live, what testers have, and what's on the way.",
+    html: `${liveCard}${testersCard}${readyCard}${pipelineCard}${buildsCard}`,
+  };
+};
+
 pages.devlogs = async () => {
   setHeader({ title: "Device logs" });
   view.innerHTML = `<div class="empty">Loading app launches…</div>`;

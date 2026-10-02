@@ -1278,3 +1278,4 @@ dialog h2 { font-size: 17px; }
 .tc-body { padding: 8px 0 4px 8px; font-size: 13.5px; }
 .tc-body ul, .tc-body ol { margin: 4px 0 0; padding-left: 20px; }
 .tc-area-h { padding: 10px 16px 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.row .chip:not(:has(button)) { padding-right: 10px; }
