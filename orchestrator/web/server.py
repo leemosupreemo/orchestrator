@@ -55,6 +55,7 @@ from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
+from orchestrator import task_revert
 from orchestrator import new_job_form
 from orchestrator import notifier
 from orchestrator import plan_edit
@@ -738,6 +739,17 @@ def job_scope(root: Path, job: dict[str, Any]) -> dict[str, Any] | None:
     return result
 
 
+def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
+    import shutil
+    from orchestrator import run_check
+    try:
+        free = shutil.disk_usage(root).free / 1e9
+    except OSError:
+        free = None
+    machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
+    return run_check.blockers(job, machines, free, run_check.MIN_DISK_GB, run_check.model_names_overlap)
+
+
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
@@ -788,7 +800,9 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "scope": job_scope(root, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
         "pipeline": pipeline,
+        "blockers": job_blockers(root, job),
         "tasks": tasks,
+        "undoable_task": task_revert.latest_revertable(job),
         "completed_tasks": completed,
         "next_task": next_task,
         "approach": job.get("approach") or job.get("execution_strategy") or "Standard workflow",
@@ -2767,6 +2781,18 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root))
+        elif method == "POST" and parts == ["delivery", "rerun"]:
+            run_id = self._body().get("run_id")
+            if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
+                raise UIError("Which run?")
+            try:
+                res = subprocess.run(["gh", "run", "rerun", str(run_id), "--failed"], cwd=root, capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise UIError(f"Couldn't reach GitHub: {exc}", HTTPStatus.BAD_GATEWAY)
+            if res.returncode != 0:
+                raise UIError((res.stderr or res.stdout).strip().splitlines()[-1][:200] if (res.stderr or res.stdout).strip() else "GitHub refused the re-run.", HTTPStatus.BAD_GATEWAY)
+            _GH_CACHE.clear()  # so the list shows the run starting
+            self._json({"ok": True})
         elif method == "GET" and parts == ["test-cases"]:
             self._json(test_case_view(root, test_case_lib.load_library(root)))
         elif method == "GET" and parts == ["inbox"]:
@@ -2855,6 +2881,21 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(str(exc))
             write_json_file(job_path, job)
             self._json({"ok": True, "tasks": job["plan"]["tasks"], "completed": job.get("completed_task_indices", [])})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "revert-task":
+            job_path = resolve_job_path(root, parts[1])
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("A worker is running this job. Pause it first.", HTTPStatus.CONFLICT)
+            job = read_json_file(job_path)
+            index = self._body().get("index")
+            if not isinstance(index, int) or isinstance(index, bool):
+                raise UIError("Which task?")
+            try:
+                commit = task_revert.revert_latest(root, job, index)
+            except task_revert.RevertError as exc:
+                raise UIError(str(exc), HTTPStatus.CONFLICT)
+            job["updated_at"] = datetime.now().isoformat()
+            write_json_file(job_path, job)
+            self._json({"ok": True, "commit": commit, "completed": job.get("completed_task_indices", [])})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)

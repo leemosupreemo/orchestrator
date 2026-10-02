@@ -571,6 +571,52 @@ class ReadApiTests(ServerTestCase):
         _, data = self.request("GET", "/api/jobs")
         self.assertEqual([j["id"] for j in data["jobs"]].count("20260922-bug-1"), 1)
 
+    def test_job_detail_says_why_a_planned_job_cannot_start(self):
+        runtime = self.root / ".orchestrator"
+        (runtime / "config").mkdir(exist_ok=True)
+        (runtime / "config" / "machines.json").write_text('{"machines": []}')
+        jobs = runtime / "jobs"
+        (jobs / "20260922-planned-1.json").write_text(json.dumps({"job_id": "20260922-planned-1", "status": "planned", "title": "Planned", "type": "feature-plan"}))
+        _, detail = self.request("GET", "/api/jobs/20260922-planned-1")
+        self.assertEqual([b["id"] for b in detail["blockers"]], ["no-machine"])
+        _, done = self.request("GET", "/api/jobs/20260922-bug-1")
+        self.assertEqual(done["blockers"], [])
+
+    def test_undoing_a_task_is_refused_cleanly_when_it_cannot_be_done(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        (jobs / "20260922-undo-1.json").write_text(json.dumps({"job_id": "20260922-undo-1", "status": "review-needed", "title": "U", "type": "feature-plan", "branch": "ai/x",
+                                                               "completed_task_indices": [0], "task_commits": {"0": "0" * 40}}))
+        _, detail = self.request("GET", "/api/jobs/20260922-undo-1")
+        self.assertEqual(detail["undoable_task"], 0)
+        res, data = self.request("POST", "/api/jobs/20260922-undo-1/revert-task", {"index": 0}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 409)  # not on the job's branch (the test project is not even a git repo)
+        self.assertIn("Switch to ai/x", data["error"])
+        res, _ = self.request("POST", "/api/jobs/20260922-undo-1/revert-task", {"index": "0"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        res, _ = self.request("POST", "/api/jobs/20260922-undo-1/revert-task", {"index": 5}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 409)
+
+    def test_rerunning_a_failed_ci_run_asks_github_and_reports_its_refusal(self):
+        import stat
+        bin_dir = self.root / "fakebin"
+        bin_dir.mkdir()
+        log = self.root / "gh-calls.txt"
+        gh = bin_dir / "gh"
+        gh.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\n[ "$3" = "99" ] && {{ echo "run 99 cannot be rerun" >&2; exit 1; }}\nexit 0\n')
+        gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+        with patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}):
+            res, data = self.request("POST", "/api/delivery/rerun", {"run_id": 12}, headers=UI_HEADERS)
+            self.assertEqual((res.status, data["ok"]), (200, True))
+            self.assertEqual(log.read_text().strip(), "run rerun 12 --failed")  # only the failed jobs
+            res, data = self.request("POST", "/api/delivery/rerun", {"run_id": 99}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 502)
+            self.assertIn("cannot be rerun", data["error"])
+        for bad in ("12", -1, 0, True, None):
+            res, _ = self.request("POST", "/api/delivery/rerun", {"run_id": bad}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 400, bad)
+        res, _ = self.request("POST", "/api/delivery/rerun", {"run_id": 12}, headers={"Content-Type": "application/json"})
+        self.assertEqual(res.status, 403)  # needs the UI headers like every other write
+
     def test_job_id_validated(self):
         res, _ = self.request("GET", "/api/jobs/..%2Fproject")
         self.assertEqual(res.status, 400)

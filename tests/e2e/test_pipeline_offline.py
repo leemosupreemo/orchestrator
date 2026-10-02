@@ -129,6 +129,49 @@ class OfflinePipelineTests(unittest.TestCase):
         self.assertIn("score('abcdefg') includes 10 extra points", prompt)
 
 
+class TaskCheckpointTests(unittest.TestCase):
+    """Each finished task is its own commit, so the latest one can be undone."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.project = DummyProject([FREE]).create().fake_models("two_tasks")
+        p = cls.project
+        plan_job(p)
+        action(p, "approve")
+        cls.output = action(p, "approve").stdout
+        cls.job = p.job()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def test_each_task_is_committed_by_itself_and_recorded(self):
+        self.assertEqual(self.job["completed_task_indices"], [0, 1], self.output[-1500:])
+        self.assertEqual(sorted(self.job["task_commits"]), ["0", "1"])
+        subjects = self.project.git("log", "--format=%s", f"main..{self.job['branch']}").splitlines()
+        self.assertTrue(any("task 1/2" in s for s in subjects), subjects)
+        self.assertTrue(any("task 2/2" in s for s in subjects), subjects)
+        self.assertEqual(self.project.git("show", "--name-only", "--format=", self.job["task_commits"]["1"]).strip(), "README.md")
+
+    def test_the_jobs_changed_files_still_cover_every_task(self):
+        files = set(self.job["ai_modified_files"]) | set(self.job["ai_untracked_files"])
+        self.assertTrue({"wordgame/scoring.py", "tests/test_scoring.py", "README.md"} <= files, files)
+
+    def test_the_latest_task_can_be_undone_and_the_earlier_one_stays(self):
+        from orchestrator import task_revert
+        self.project.git("checkout", "-q", self.job["branch"])
+        try:
+            job = json.loads(json.dumps(self.job))
+            task_revert.revert_latest(self.project.root, job, 1)
+            self.assertNotIn("score a 10 point bonus", (self.project.root / "README.md").read_text())
+            self.assertIn("LONG_WORD_BONUS", (self.project.root / "wordgame" / "scoring.py").read_text())
+            self.assertEqual(job["completed_task_indices"], [0])
+            self.assertEqual(self.project.run_tests().returncode, 0)
+        finally:
+            self.project.git("reset", "-q", "--hard", self.job["task_commits"]["1"])
+            self.project.git("checkout", "-q", "main")
+
+
 class BuilderTestCommandTests(unittest.TestCase):
     """The worker checks which tests the builder ran before it counts a task as done."""
 

@@ -7,6 +7,7 @@ directory) or a review. Behaviour switches come from $FAKE_LLM_BEHAVIOUR, a comm
   prose_first    the first planner reply is prose, not JSON (the orchestrator should ask again)
   full_suite     the builder runs the project's whole test command, as its prompt asks
   narrow_tests   the builder runs only a test that has nothing to do with the plan
+  two_tasks      the plan has two tasks (the bonus, then a README note), each built separately
   concerns_once  the first verification raises concerns (the orchestrator should accept the suggestions and carry on)
 """
 from __future__ import annotations
@@ -50,6 +51,15 @@ def role_of(prompt: str) -> str:
 
 
 def plan() -> dict:
+    p = _plan()
+    p.pop("TWO", None)
+    if "two_tasks" in BEHAVIOUR:
+        p["tasks"].append({"title": "Document the bonus", "description": "Document the bonus", "acceptance_criteria": ["README mentions the bonus"], "likely_files": ["README.md"],
+                           "tests": ["test_seven_letters_get_the_bonus"], "complexity": "small"})
+    return p
+
+
+def _plan() -> dict:
     return {
         "title": "[Scoring] Long-word bonus", "summary": "Serves the use case 'score a word': words of 7+ letters get 10 extra points.",
         "impact_analysis": "Only score(); the existing three tests must still pass.", "research_findings": "wordgame/scoring.py holds score().",
@@ -57,13 +67,18 @@ def plan() -> dict:
         "tasks": [{"title": "A seven-letter word scores the bonus, end to end", "description": "Write the failing tests, then add the bonus to score().",
                    "acceptance_criteria": ["score('abcdefg') includes 10 extra points", "score('abcdef') is unchanged"], "likely_files": ["wordgame/scoring.py", "tests/test_scoring.py"],
                    "tests": ["test_seven_letters_get_the_bonus", "test_six_letters_get_no_bonus"], "complexity": "small"}],
+        "TWO": None,
         "test_cases": [
             {"title": "Seven letters get the bonus", "type": "unit", "expected": "10 extra points", "covers": ["score('abcdefg') includes 10 extra points"], "tests": ["test_seven_letters_get_the_bonus"]},
             {"title": "Six letters are unchanged", "type": "unit", "expected": "no bonus", "covers": ["score('abcdef') is unchanged"], "tests": ["test_six_letters_get_no_bonus"]}],
     }
 
 
-def build() -> dict:
+def build(prompt: str = "") -> dict:
+    if "two_tasks" in BEHAVIOUR and "Document the bonus" in prompt.split("Brief:")[-1][:600]:
+        readme = Path("README.md")
+        readme.write_text(readme.read_text() + "\nWords of seven or more letters score a 10 point bonus.\n")
+        return {"test_command": "python3 -m unittest discover -s tests", "summary": "Documented the bonus.", "files_changed": ["README.md"]}
     tests = Path("tests/test_scoring.py")
     text = tests.read_text()
     if "LongWordBonusTests" not in text:
@@ -103,7 +118,7 @@ def main() -> int:
         else:
             print(json.dumps({"status": "approved", "comments": "Grounded in wordgame/scoring.py.", "suggested_additions": [], "risks_identified": []}))
     elif role == "builder":
-        print("```json\n" + json.dumps(build()) + "\n```")
+        print("```json\n" + json.dumps(build(prompt)) + "\n```")
     elif role == "reviewer":
         print("## Review\n\nThe change matches the brief: the bonus applies at seven letters and tests cover both sides of the boundary. No blocking issues.\n\n**Verdict: approve**")
     else:

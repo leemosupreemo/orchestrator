@@ -539,6 +539,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                          break
 
                     job["completed_task_indices"].append(i)
+                    checkpoint_task(job, i, len(tasks), task['title'], files_touched)
                     write_json(job_path, job)
                 elif build_ok and test_ok and not was_implemented:
                     print(f"      - Task {i+1} investigation successful, but no code changed. Halting to prevent phantom completion.")
@@ -603,8 +604,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             if task_output.get("hypothesis"):
                 job["builder_hypothesis"] = task_output["hypothesis"]
 
-        job["ai_modified_files"] = ai_modified
-        job["ai_untracked_files"] = ai_untracked
+        # Files already committed task by task (checkpoint_task) are still this job's changes.
+        job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(ai_modified))
+        job["ai_untracked_files"] = sorted(set(job.get("ai_untracked_files") or []) | set(ai_untracked))
         write_json(job_path, job)
 
         # Commit changes if any
@@ -872,6 +874,23 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # Re-raise so the user still gets the full traceback for debugging
         raise
 
+
+
+def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[str]) -> None:
+    """Commits one finished task by itself and records the commit, so the task can be undone later."""
+    if not files:
+        return
+    try:
+        for f in files:
+            subprocess.run(["git", "add", "--", f], cwd=str(ROOT), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", f"feat: task {index + 1}/{total}: {title} (AI generated)"], cwd=str(ROOT), check=True, capture_output=True)
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT), check=True, capture_output=True, text=True).stdout.strip()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(f"      - Could not checkpoint task {index + 1} ({exc}); it will be committed with the rest.")
+        return
+    job.setdefault("task_commits", {})[str(index)] = sha
+    job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(files))
+    print(f"      - Task {index + 1} committed ({sha[:7]}).")
 
 
 def remove_task_views(job_path: Path) -> None:

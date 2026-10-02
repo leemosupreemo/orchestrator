@@ -64,8 +64,8 @@ class ReceiptTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.TestCase):
-    ROWS = [{"name": "CI", "status": "completed", "conclusion": "success", "url": "u1", "headBranch": "main", "displayTitle": "Merge"},
-            {"name": "CI", "status": "completed", "conclusion": "failure", "url": "u2", "headBranch": "ai/issue-3"},
+    ROWS = [{"name": "CI", "status": "completed", "conclusion": "success", "url": "u1", "headBranch": "main", "displayTitle": "Merge", "databaseId": 11},
+            {"name": "CI", "status": "completed", "conclusion": "failure", "url": "u2", "headBranch": "ai/issue-3", "databaseId": 12},
             {"name": "CI", "status": "in_progress", "conclusion": "", "url": "u3", "headBranch": "main"}]
 
     def test_maps_outcomes_to_tones_and_flags_base_runs(self):
@@ -73,6 +73,12 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(out["available"])
         self.assertEqual([(r["outcome"], r["tone"], r["on_base"]) for r in out["runs"]],
                          [("success", "done", True), ("failure", "failed", False), ("in_progress", "working", True)])
+
+    def test_only_finished_unsuccessful_runs_with_an_id_can_be_rerun(self):
+        rows = self.ROWS + [{"name": "CI", "status": "completed", "conclusion": "cancelled", "headBranch": "x", "databaseId": 14},
+                            {"name": "CI", "status": "completed", "conclusion": "failure", "headBranch": "x"}]  # no id
+        out = delivery.pipeline(lambda argv: json.dumps(rows), "main")
+        self.assertEqual([r["can_rerun"] for r in out["runs"]], [False, True, False, True, False])
 
     def test_unavailable_when_gh_is_missing_or_output_is_garbage(self):
         self.assertEqual(delivery.pipeline(lambda argv: None, "main"), {"available": False, "runs": []})

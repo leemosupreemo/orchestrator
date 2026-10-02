@@ -1497,6 +1497,8 @@ pages.job = async ([id]) => {
         <div class="job-hero-action">${heroAction}</div>
       </section>
 
+      ${(data.blockers || []).map((b) => `<div class="banner attention"><p><strong>This job can't start yet.</strong> ${esc(b.text)}${b.route ? ` <a class="btn small" href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</p></div>`).join("")}
+
       ${(job.plan?.slice_warnings || []).length ? `<section class="card mb-16"><div class="card-h"><h2>Plan check</h2></div><div class="card-b stack">
         <div>This plan looks like a stack of layers, not working slices. Mistakes in an early layer won't show until the last task.</div>
         <ul class="assumptions">${job.plan.slice_warnings.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
@@ -1636,7 +1638,8 @@ pages.job = async ([id]) => {
               <button class="btn small ghost" data-task-op="up" data-i="${i}" aria-label="Move up: ${esc(title)}" ${i === 0 || done.has(String(i - 1)) ? "disabled" : ""}>↑</button>
               <button class="btn small ghost" data-task-op="down" data-i="${i}" aria-label="Move down: ${esc(title)}" ${i === tasks.length - 1 ? "disabled" : ""}>↓</button>
               <button class="btn small ghost" data-task-op="remove" data-i="${i}" aria-label="Remove task: ${esc(title)}">Remove</button></div>` : "";
-          return `<div class="item"><span aria-label="${isDone ? "done" : "to do"}">${isDone ? "✅" : "○"}</span><div class="main-col"><div class="title">${esc(title)}</div>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}</div>${controls}</div>`;
+          const undo = data.undoable_task === i && !activeRun ? `<div class="side task-controls"><button class="btn small ghost" data-undo-task="${i}" aria-label="Undo task: ${esc(title)}">Undo</button></div>` : "";
+          return `<div class="item"><span aria-label="${isDone ? "done" : "to do"}">${isDone ? "✅" : "○"}</span><div class="main-col"><div class="title">${esc(title)}</div>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}</div>${controls}${undo}</div>`;
         }).join("") || `<div class="empty">No tasks yet.</div>`}</div>${canEditPlan ? `<div class="card-b"><button class="btn small" data-task-op="add">Add a task</button></div>` : ""}`) : ""}
 
       ${runs.length ? fold("Activity & Runs", runs.length, `<div class="list">${runs.map(runItem).join("")}</div>`) : ""}
@@ -1665,6 +1668,12 @@ pages.job = async ([id]) => {
         else if (op === "edit") { const v = await formDialog("Edit task", form(tasks[i]), "Save"); if (v) call({ op: "edit", index: i, ...v }, "Task saved"); }
         else if (op === "remove") { call({ op: "remove", index: i }, "Task removed"); }
         else call({ op: "move", index: i, direction: op });
+      }));
+      view.querySelectorAll("[data-undo-task]").forEach((btn) => btn.addEventListener("click", async () => {
+        const i = Number(btn.dataset.undoTask);
+        const ok = await formDialog("Undo this task?", `<p>This adds a commit that reverses what the task changed, and marks it not done so it can run again. Nothing is deleted from history.</p>`, "Undo task");
+        if (!ok) return;
+        try { await api(`jobs/${encodeURIComponent(id)}/revert-task`, { method: "POST", body: { index: i } }); toast("Task undone"); route(); } catch (e) { toast(e.message, true); }
       }));
       view.querySelectorAll("[data-diff-path]").forEach((box) => box.addEventListener("toggle", async () => {
         if (!box.open || box.dataset.loaded) return;
@@ -2083,8 +2092,8 @@ pages.delivery = async () => {
         <div class="side">${testers.configured ? `<button class="btn small" ${act("deliver", { job: j.id })}>Send to testers</button>` : ""}
         ${j.next ? `<button class="btn small primary" ${act(j.next.action, { job: j.id })}>${esc(j.next.label)}</button>` : ""}</div></div>`).join("")}</div></section>` : "";
   const pipelineCard = `<section class="card mb-16"><div class="card-h"><h2>Pipeline</h2>${d.xcode_cloud ? `<span class="count">Xcode Cloud configured</span>` : ""}</div>
-      ${pipeline.available ? `<div class="list">${pipeline.runs.map((r) => `<a class="item" href="${esc(r.url || "#")}" target="_blank" rel="noopener"><div class="main-col"><div class="title">${esc(r.title || r.name)}</div>
-        <div class="meta"><span class="mono">${esc(r.branch)}</span> · ${esc(r.name)} · ${esc(when(r.created))}</div></div><span class="pill ${esc(r.tone)}">${esc(r.outcome.replace("_", " "))}</span></a>`).join("") || `<div class="empty">No pipeline runs yet.</div>`}</div>`
+      ${pipeline.available ? `<div class="list">${pipeline.runs.map((r) => `<div class="item"><a class="main-col" href="${esc(r.url || "#")}" target="_blank" rel="noopener"><div class="title">${esc(r.title || r.name)}</div>
+        <div class="meta"><span class="mono">${esc(r.branch)}</span> · ${esc(r.name)} · ${esc(when(r.created))}</div></a><div class="side"><span class="pill ${esc(r.tone)}">${esc(r.outcome.replace("_", " "))}</span>${r.can_rerun ? `<button type="button" class="btn small" data-rerun="${r.id}">Re-run failed</button>` : ""}</div></div>`).join("") || `<div class="empty">No pipeline runs yet.</div>`}</div>`
         : `<div class="empty">Pipeline status comes from GitHub Actions. Sign in with the GitHub CLI (<code>gh auth login</code>) and push this repository to GitHub to see it here.</div>`}</section>`;
   const buildsCard = testers.builds.length > 1 ? `<section class="card"><div class="card-h"><h2>Earlier builds</h2><span class="count">${testers.builds.length - 1}</span></div>
       <div class="list">${testers.builds.slice(1).map((b) => `<a class="item" href="#/jobs/${encodeURIComponent(b.job_id)}"><div class="main-col"><div class="title">${esc(b.version || "?")}${b.build ? ` (${esc(b.build)})` : ""} · ${esc(b.title || b.job_id)}</div>
@@ -2093,6 +2102,13 @@ pages.delivery = async () => {
     title: "Delivery",
     sub: "What's live, what testers have, and what's on the way.",
     html: `${liveCard}${testersCard}${readyCard}${pipelineCard}${buildsCard}`,
+    after: () => {
+      view.querySelectorAll("[data-rerun]").forEach((btn) => btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try { await api("delivery/rerun", { method: "POST", body: { run_id: Number(btn.dataset.rerun) } }); toast("Re-running the failed jobs"); route(); }
+        catch (e) { toast(e.message, true); btn.disabled = false; }
+      }));
+    },
   };
 };
 

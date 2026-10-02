@@ -11,6 +11,7 @@ from typing import Any
 
 from common import CONFIG_DIR, ROOT, now_iso, read_json, run, write_json, print_phase
 from model_registry import get_model
+from orchestrator.run_check import MIN_DISK_GB, equivalent_model_names, model_names_overlap  # noqa: F401
 from probe_machine import load_machines, probe_machine
 from worker_tools import remote_env_prefix, remote_import_check_command
 
@@ -117,17 +118,6 @@ def ready_groups(job: dict[str, Any]) -> list[dict[str, Any]]:
     return ready
 
 
-def equivalent_model_names(model_name: str) -> set[str]:
-    model = get_model(model_name)
-    if not model:
-        return {model_name}
-    return {model.id, *model.aliases}
-
-
-def model_names_overlap(left: str, right: str) -> bool:
-    return bool(equivalent_model_names(left).intersection(equivalent_model_names(right)))
-
-
 def machine_supports_model(machine: dict[str, Any], candidate: str) -> bool:
     return any(model_names_overlap(candidate, machine_model) for machine_model in machine.get("models", []))
 
@@ -188,7 +178,6 @@ def format_ineligible_machines(ineligible: list[tuple[dict[str, Any], str]]) -> 
 
 
 STICKINESS_BONUS = 150.0  # Strong preference for remaining on previous machine to preserve state
-MIN_DISK_GB = int(os.environ.get("ORCHESTRATOR_MIN_DISK_GB", "15"))  # Minimum required to start a build (Xcode-sized; lower it for small projects)
 LOW_DISK_THRESHOLD = 30 # Threshold for applying penalties
 
 def score_machine(machine: dict[str, Any], probe: dict[str, Any], group: dict[str, Any], previously_assigned: str | None = None) -> tuple[float, list[str]]:

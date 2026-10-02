@@ -15,7 +15,8 @@ from typing import Any, Callable
 GitFn = Callable[..., str]
 GhFn = Callable[[list[str]], "str | None"]
 
-CI_FIELDS = "name,status,conclusion,url,createdAt,headBranch,displayTitle,event"
+RERUNNABLE = {"failure", "timed_out", "cancelled"}  # GitHub only re-runs finished runs; success needs no re-run
+CI_FIELDS = "name,status,conclusion,url,createdAt,headBranch,displayTitle,event,databaseId"
 MAX_RECEIPTS = 20
 
 
@@ -65,7 +66,8 @@ def pipeline(gh: GhFn, base: str, limit: int = 6) -> dict[str, Any]:
         tone = {"success": "done", "failure": "failed", "cancelled": "attention", "timed_out": "failed"}.get(outcome, "working")
         runs.append({"name": r.get("name") or "", "title": r.get("displayTitle") or "", "branch": r.get("headBranch") or "",
                      "outcome": outcome or "unknown", "tone": tone, "url": r.get("url"), "created": r.get("createdAt"),
-                     "on_base": r.get("headBranch") == base})
+                     "on_base": r.get("headBranch") == base, "id": r.get("databaseId"),
+                     "can_rerun": done and outcome in RERUNNABLE and isinstance(r.get("databaseId"), int)})
     return {"available": True, "runs": runs}
 
 
