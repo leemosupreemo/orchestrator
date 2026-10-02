@@ -1941,10 +1941,26 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('needs_you: ["Needs you"', home)  # a filter, not a separate section
         self.assertIn('all: ["All"', home)
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
-        self.assertIn("act(j.state.next.action", row)  # the next step is on the row
+        self.assertIn('<a class="job-table-row"', row)  # the whole row is one link, with the hover hint
+        self.assertIn("row-hover-hint", row)
+        self.assertNotIn("<button", row)  # no button on the row: the next step is on the job page
         self.assertIn('{ key: "status", dir: "asc" }', self.js)  # needs-you jobs sort first by default
         self.assertNotIn("pages.jobs", self.js)  # one jobs list, on Home
         self.assertNotIn("moreActionsMenu", self.js)  # nothing hidden in a Home menu that a page already has
+
+    def test_signing_in_shows_a_loading_screen_and_background_refreshes_leave_it_alone(self):
+        js = self.js
+        self.assertIn("function showSigningIn", js)
+        self.assertIn(".signing-in", (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "style.css").read_text())
+        refresh = js[js.index("async function refreshState()"):][:200]
+        self.assertIn("if (signingIn) return;", refresh)  # the 5 s poll must not redraw the gate mid sign-in
+        self.assertIn("if (signingIn) return;", js[js.index("async function route()"):][:200])
+        sso = js[js.index("const wireSso"):js.index("wireSso(\"#google-signin-btn\"")]
+        self.assertLess(sso.index("signingIn = true"), sso.index("signInWithPopup"))  # set before the provider window opens
+        self.assertLess(sso.index("showSigningIn("), sso.index("api(\"auth\""))  # loading screen before the token exchange
+        self.assertEqual(sso.count("endSigningIn()"), 2)  # on success and on failure, so it can never spin forever
+        self.assertIn("pendingRedirect", js)  # coming back from a redirect shows loading, not the options
+        self.assertIn("showSigningIn(\"Unlocking…\")", js)  # the token form too
 
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
         self.assertIn('["Build", act("build")', self.js)  # Tests

@@ -17,14 +17,26 @@ if (typeof window !== "undefined" && window.firebase && !window.firebase.apps?.l
   }
 }
 
+// True from the moment someone starts signing in until they are in (or told why not). While it is set, background
+// refreshes leave the page alone, so the sign-in screen is replaced by a loading screen instead of being redrawn.
+let signingIn = false;
+try { signingIn = Object.keys(sessionStorage).some((k) => k.startsWith("firebase:pendingRedirect") && sessionStorage.getItem(k) === "true"); } catch { /* storage blocked: nothing to resume */ }
+
+function endSigningIn(resume = false) {
+  signingIn = false;
+  if (resume) refreshState().then(route);
+}
+
 if (typeof window !== "undefined" && window.firebase?.auth) {
   try {
     window.firebase.auth().getRedirectResult().then(async (cred) => {
+      if (!(cred && cred.user)) { if (signingIn) endSigningIn(true); return; } // no redirect was pending after all
       if (cred && cred.user) {
         try {
           const idToken = await cred.user.getIdToken();
           const currentBackend = getBackendUrl();
           if (!currentBackend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
+            endSigningIn();
             showSignInGate("Signed in as " + (cred.user.email || "user") + ", but Backend URL is required. Enter your Mac's backend URL below.");
             return;
           }
@@ -32,13 +44,16 @@ if (typeof window !== "undefined" && window.firebase?.auth) {
           if (res.token) localStorage.setItem("orchestrator_token", res.token);
           toast(`Signed in as ${cred.user.email || "user"}`);
           document.querySelector(".app")?.classList.remove("session-locked");
+          endSigningIn();
           await refreshState();
           route();
         } catch (apiErr) {
+          endSigningIn();
           showSignInGate(`Signed in as ${cred.user.email || "user"}, but could not reach backend: ${apiErr.message}`);
         }
       }
     }).catch((err) => {
+      if (signingIn) endSigningIn(true);
       if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
         console.warn("Redirect sign-in notice:", err);
       }
@@ -685,6 +700,7 @@ let lastInbox = null; // previous inbox items, to spot new things waiting on you
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
 async function refreshState() {
+  if (signingIn) return;
   const backend = getBackendUrl();
   const token = getToken();
   if (backend === null && !token) {
@@ -814,6 +830,17 @@ document.addEventListener("change", async (e) => {
   }
 });
 
+// Shown from the click on a provider (or the token form) until the first page is ready.
+function showSigningIn(label = "Signing you in…") {
+  setHeader({ title: "Signing in", sub: "", actions: "" });
+  document.querySelector(".app")?.classList.add("session-locked");
+  view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
+      <div class="signin-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></div>
+      <div class="spinner" aria-hidden="true"></div>
+      <h2>${esc(label)}</h2>
+      <p class="muted">Connecting to your computer and loading your projects.</p></div></div>`;
+}
+
 function showSignInGate(message) {
   setHeader({ title: "Sign In", sub: "", actions: "" });
   document.querySelector(".app")?.classList.add("session-locked");
@@ -902,6 +929,7 @@ function showSignInGate(message) {
       }
       syncBackend();
       btn.disabled = true;
+      signingIn = true; // the gate stays as it is while the provider's window is open
       const originalHtml = btn.innerHTML;
       btn.innerHTML = `<span>Signing in with ${name}...</span>`;
       try {
@@ -910,11 +938,13 @@ function showSignInGate(message) {
           cred = await firebase.auth().signInWithPopup(makeProvider());
         } catch (popupErr) {
           if (popupErr.code === "auth/popup-blocked") {
+            showSigningIn(`Opening ${name}…`);
             await firebase.auth().signInWithRedirect(makeProvider());
             return;
           }
           throw popupErr;
         }
+        showSigningIn(`Signed in with ${name}. Connecting…`);
         const idToken = await cred.user.getIdToken();
         const currentBackend = getBackendUrl();
         if (!currentBackend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
@@ -930,12 +960,12 @@ function showSignInGate(message) {
         if (res.token) localStorage.setItem("orchestrator_token", res.token);
         toast(`Signed in as ${cred.user.email || `${name} user`}`);
         document.querySelector(".app")?.classList.remove("session-locked");
+        endSigningIn();
         await refreshState();
         route();
       } catch (err) {
-        btn.disabled = false;
-        btn.innerHTML = originalHtml;
-        if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") return;
+        endSigningIn();
+        if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { btn.disabled = false; btn.innerHTML = originalHtml; return; }
         const msg = explain[err.code] || err.message;
         toast(msg, true);
         showSignInGate(msg);
@@ -975,17 +1005,17 @@ function showSignInGate(message) {
       syncBackend();
       const t = (form.token?.value || "").trim();
       localStorage.setItem("orchestrator_token", t);
+      signingIn = true;
+      showSigningIn("Unlocking…");
       try {
         await api("auth", { method: "POST", body: { token: t } });
         toast("Session unlocked");
         document.querySelector(".app")?.classList.remove("session-locked");
+        endSigningIn();
         await refreshState();
         route();
       } catch (err) {
-        if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.textContent = "Use Access Token";
-        }
+        endSigningIn();
         toast(err.message, true);
         showSignInGate(err.message || "Invalid access token");
       }
@@ -1093,25 +1123,30 @@ function jobTableRow(j, { hidden = false } = {}) {
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
   ].filter(Boolean);
-  // A job that needs you is a job like any other, with its next step on the row.
-  const next = j.state?.next && j.state.group === "needs_you" && !j.active_run
-    ? `<button type="button" class="btn small ${["failed", "attention"].includes(j.state.tone) ? "primary" : ""}" ${act(j.state.next.action, { job: j.id })}>${esc(j.state.next.label)}</button>`
+
+  const reason = (j.state?.reason && j.state.group === "needs_you")
+    ? `<span class="job-reason">${esc(j.state.reason)}</span>`
     : "";
-  // When the status is just the button's own words ("Approve plan"), the reason repeats it; show it only when it adds something.
-  const sameAsButton = next && j.state.label.toLowerCase() === j.state.next.label.toLowerCase();
-  const reason = (j.state?.reason && j.state.group === "needs_you" && !sameAsButton)
-    ? `<span class="job-reason" title="${esc(j.state.reason)}">${esc(j.state.reason)}</span>`
-    : "";
+  const metaHtml = [reason, parts.join(" · ")].filter(Boolean).join(" · ");
+
   return `
-    <div class="job-table-row"${hidden ? " hidden" : ""}>
+    <a class="job-table-row"${hidden ? " hidden" : ""} href="#/jobs/${encodeURIComponent(j.id)}">
       <div class="col-job">
-        <a class="job-title" href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>
-        <div class="job-meta">${[reason, parts.join(" · ")].filter(Boolean).join(" · ")}</div>
+        <div class="job-title">${esc(j.title)}</div>
+        <div class="job-meta">${metaHtml}</div>
       </div>
-      <div class="col-status">${sameAsButton ? pill(j.state.tone, "Needs you") : jobPill(j)}</div>
-      <div class="col-action">${next}</div>
-      <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">${esc(/ago$|now$/.test(ago(j.updated)) ? ago(j.updated) : formatJobDate(j.updated))}</div>
-    </div>`;
+      <div class="col-status">
+        ${jobPill(j)}
+      </div>
+      <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">
+        <span class="date-relative">${esc(ago(j.updated))}</span>
+        <span class="date-exact muted">${esc(formatJobDate(j.updated))}</span>
+      </div>
+      <div class="row-hover-hint">
+        <span>Click for details</span>
+        <svg class="icon" style="width: 14px; height: 14px;"><use href="#i-chevron"/></svg>
+      </div>
+    </a>`;
 }
 
 function elapsed(ts) {
@@ -1334,7 +1369,6 @@ pages.home = async (_, query) => {
             <div class="job-table-header">
               <div class="col-job">Job</div>
               <button type="button" class="col-status sort-head" data-sort="status" aria-label="Sort by status">Status${sortArrow("status")}</button>
-              <div class="col-action"></div>
               <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified">Last modified${sortArrow("updated")}</button>
             </div>
             <div class="job-table-body" id="job-list">
@@ -3582,6 +3616,7 @@ function apply(result) {
 }
 
 async function route() {
+  if (signingIn) return; // the loading screen stays until sign-in finishes
   // Anything tied to the previous page goes: terminals, streams, and dialogs,
   // so an action can never run against a page you've left.
   cleanup.forEach((fn) => { try { fn(); } catch {} });
@@ -3771,5 +3806,7 @@ const lockBtn = $("#lock-btn");
 if (lockBtn) {
   lockBtn.addEventListener("click", lockSession);
 }
-refreshState().then(route);
+if (signingIn) showSigningIn(); // coming back from a provider's redirect: no sign-in options flash while the session is set up
+setTimeout(() => { if (signingIn && !getToken()) endSigningIn(true); }, 20000); // a redirect that never reports back must not leave a spinner forever
+refreshState().then(() => { if (!signingIn) route(); });
 setInterval(tick, 5000);
