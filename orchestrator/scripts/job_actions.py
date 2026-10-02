@@ -123,11 +123,21 @@ def answer(path: Path, text: str) -> int:
     if job.get("status") != "human-needed" or not question:
         print("This job isn't waiting on a question.")
         return 1
+    original = json.loads(json.dumps(job))
     record_clarification(job, question, text)
     write_json(path, job)
     print("Answer recorded. Re-planning with it...\n")
-    return run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path),
+    code = run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path),
                                      "--feedback", f"### USER CLARIFICATION ###\n{text}"])
+    if code != 0:
+        # The re-plan failed. Put the question back so the job isn't left "waiting" on nothing and can be answered again.
+        current = read_json(path)
+        if current.get("status") == "human-needed" and not current.get("human_clarification_question"):
+            current["human_clarification_question"] = question
+            current["clarification_history"] = original.get("clarification_history", [])
+            write_json(path, current)
+            print("The re-plan failed, so your question is back. Answer it again to retry.")
+    return code
 
 
 def approve(path: Path) -> int:
@@ -136,7 +146,8 @@ def approve(path: Path) -> int:
     feedback = architect_feedback(job)
     if feedback:
         print("Integrating the architect's suggestions and re-planning...\n")
-        return run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path), "--feedback", feedback])
+        # The person has accepted the architect's input; asking the architect again would only raise fresh concerns, forever.
+        return run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path), "--feedback", feedback, "--skip-verify"])
     if job.get("status") == "designing":
         print("Design approved. Generating implementation tasks from it...\n")
         apply_design_approval(job)

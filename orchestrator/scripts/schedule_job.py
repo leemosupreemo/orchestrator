@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from copy import deepcopy
@@ -187,7 +188,7 @@ def format_ineligible_machines(ineligible: list[tuple[dict[str, Any], str]]) -> 
 
 
 STICKINESS_BONUS = 150.0  # Strong preference for remaining on previous machine to preserve state
-MIN_DISK_GB = 15  # Minimum required to start a build
+MIN_DISK_GB = int(os.environ.get("ORCHESTRATOR_MIN_DISK_GB", "15"))  # Minimum required to start a build (Xcode-sized; lower it for small projects)
 LOW_DISK_THRESHOLD = 30 # Threshold for applying penalties
 
 def score_machine(machine: dict[str, Any], probe: dict[str, Any], group: dict[str, Any], previously_assigned: str | None = None) -> tuple[float, list[str]]:

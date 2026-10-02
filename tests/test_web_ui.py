@@ -565,6 +565,12 @@ class ReadApiTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         self.assertEqual(detail["outputs"][0]["path"], "output/20260922-bug-1/brief.md")
 
+    def test_the_workers_per_task_scratch_copy_is_not_listed_as_a_second_job(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        (jobs / "20260922-bug-1_task_1.json").write_text((jobs / "20260922-bug-1.json").read_text())
+        _, data = self.request("GET", "/api/jobs")
+        self.assertEqual([j["id"] for j in data["jobs"]].count("20260922-bug-1"), 1)
+
     def test_job_id_validated(self):
         res, _ = self.request("GET", "/api/jobs/..%2Fproject")
         self.assertEqual(res.status, 400)

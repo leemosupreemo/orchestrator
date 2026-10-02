@@ -337,6 +337,7 @@ def unpack_builder_result(result):
 
 
 def execute_job(job_path: Path, resume: bool = False) -> None:
+    remove_task_views(job_path)  # left over from a run that was stopped part way
     job = read_json(job_path)
 
     if resume and job.get("worker_pid"):
@@ -478,8 +479,6 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 
                 # IMPORTANT: Only mark task done if code was actually changed (patch)
                 # and validation passed. If AI only 'investigated', it's not done yet.
-                was_implemented = task_output.get("action") == "patch" or task_output.get("action") == "add_logging"
-                
                 # VERIFY: Did the AI actually touch the files it said it would?
                 # This prevents "phantom completion" where the AI runs old passing tests 
                 # but doesn't implement the current task.
@@ -487,6 +486,22 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_modified = [f for f in task_post_state["modified"] if f not in pre_state["modified"]]
                 task_untracked = [f for f in task_post_state["untracked"] if f not in pre_state["untracked"]]
                 files_touched = task_modified + task_untracked
+
+                # run_builder records which model it used on the per-task copy; keep that on the real job.
+                try:
+                    built = read_json(temp_job_path)
+                    if built.get("actual_builder_used"):
+                        job["actual_builder_used"] = built["actual_builder_used"]
+                    new_sessions = (built.get("llm_sessions") or [])[len(job.get("llm_sessions") or []):]
+                    if new_sessions:
+                        job["llm_sessions"] = (job.get("llm_sessions") or []) + new_sessions
+                except Exception:
+                    pass
+
+                # Only the debug prompts ask for an "action". A feature builder reports files and a summary, so with no action
+                # the files on disk decide; an explicit "investigate" still means nothing was changed.
+                action = task_output.get("action")
+                was_implemented = action in ("patch", "add_logging") or (not action and bool(files_touched))
                 
                 likely_files = task.get("likely_files", [])
                 actual_likely_touched = any(any(f.endswith(lf) for lf in likely_files) for f in files_touched)
@@ -495,7 +510,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 # If the builder overrode the test command to something unrelated to the task, flag it.
                 test_command_used = task_output.get("test_command", "")
                 expected_tests = task.get("tests", [])
-                test_command_ok = not expected_tests or any(et in test_command_used for et in expected_tests)
+                # Running the project's whole configured suite (or saying nothing, so the default runs) covers every planned test.
+                # Only a command that names something narrower, and not the planned tests, is a downgrade.
+                configured = " ".join((PROJECT_CONFIG.test_command or "").split())
+                used = " ".join((test_command_used or "").split())
+                runs_whole_suite = not used or (bool(configured) and used == configured)
+                test_command_ok = not expected_tests or runs_whole_suite or any(et in used for et in expected_tests)
                 
                 if build_ok and test_ok and was_implemented:
                     if likely_files and not actual_likely_touched:
@@ -533,6 +553,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     all_ok = False
                     break # Exit the loop on first failure
             
+            remove_task_views(job_path)
             build_ok = all_ok
             test_ok = all_ok
         else:
@@ -851,6 +872,17 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # Re-raise so the user still gets the full traceback for debugging
         raise
 
+
+
+def remove_task_views(job_path: Path) -> None:
+    """Deletes the per-task copies of a job (`<job>_task_N.json`) that execute_job writes for the builder.
+
+    They are scratch files; left behind they look like extra jobs with the same id in the job lists."""
+    for stale in job_path.parent.glob(f"{job_path.stem}_task_*.json"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 def main() -> None:

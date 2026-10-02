@@ -186,6 +186,32 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertTrue(job["plan"]["slice_warnings"])
         self.assertEqual(job["status"], "planned")
 
+    def test_a_replan_keeps_the_jobs_own_models_and_machines(self):
+        # Answering a question or accepting the architect's suggestions re-plans with --update. It used to fall back to the
+        # paid defaults, so a free-only job quietly started calling paid models.
+        from orchestrator.scripts import new_job
+        free = "opencode/nemotron-3-ultra-free"
+        seen = []
+
+        def fake_llm(model, prompt, *a, **k):
+            seen.append((model, k.get("allowed_models")))
+            return (self.plan_json(self.SLICED), free, "sid")
+
+        jobs_dir = self.root / ".orchestrator" / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        path = jobs_dir / "20260101-000000-feature-9.json"
+        path.write_text(json.dumps({"job_id": "20260101-000000-feature-9", "type": "feature-plan", "issue_number": 9, "title": "Add rematch", "status": "human-needed",
+                                    "planner": free, "builder": free, "reviewer": free, "allowed_models": [free], "allowed_machines": ["local"], "branch_mode": "manual", "branch": "main"}))
+        with patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), patch("orchestrator.scripts.new_job.ROOT", self.root), \
+                patch("orchestrator.scripts.new_job.gh_text", return_value=""), patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+            with patch("sys.stdin", io.StringIO("")):
+                new_job.main(["feature", "--no-dispatch", "--update", str(path), "--feedback", "answer", "--skip-verify"])
+        job = json.loads(path.read_text())
+        self.assertEqual((job["planner"], job["builder"], job["reviewer"]), (free, free, free))
+        self.assertEqual(job["allowed_models"], [free])
+        self.assertEqual(job["allowed_machines"], ["local"])
+        self.assertEqual(seen, [(free, [free])])  # one call (verification skipped), and only the allowed model
+
     def test_a_sliced_plan_costs_no_extra_model_call(self):
         prompts, job = self.run_planner([self.plan_json(self.SLICED)])
         self.assertEqual(len(prompts), 1)

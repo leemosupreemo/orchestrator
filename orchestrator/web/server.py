@@ -668,6 +668,8 @@ def list_jobs(root: Path) -> list[dict[str, Any]]:
         return []
     jobs = []
     for path in directory.glob("*.json"):
+        if re.search(r"_task_\d+$", path.stem):  # scratch copy the worker makes per task; not a job
+            continue
         job = read_json_file(path)
         if job:
             jobs.append(job_summary(path, job))

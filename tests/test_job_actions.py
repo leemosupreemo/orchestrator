@@ -31,6 +31,18 @@ class JobActionsTests(unittest.TestCase):
         self.assertEqual(argv[2:6], ["bug", "--no-dispatch", "--update", str(path.resolve())])
         self.assertIn("Four players", argv[-1])
 
+    def test_a_failed_replan_puts_the_question_back_so_the_job_is_not_stuck(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"status": "human-needed", "type": "feature-plan", "human_clarification_question": "Count punctuation?"}))
+            with patch("job_actions.subprocess.call", return_value=1):
+                self.assertEqual(job_actions.main(["answer", str(path), "--answer", "No"]), 1)
+            job = json.loads(path.read_text())
+            self.assertEqual(job["human_clarification_question"], "Count punctuation?")
+            self.assertEqual(job.get("clarification_history", []), [])
+            with patch("job_actions.subprocess.call", return_value=0):  # and it can be answered again
+                self.assertEqual(job_actions.main(["answer", str(path), "--answer", "No"]), 0)
+
     def test_answer_refuses_when_no_question_is_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "job.json"
@@ -125,8 +137,15 @@ class ApproveReviseTests(unittest.TestCase):
                "verification": {"status": "concerns", "comments": "Add tests", "suggested_additions": ["Unit test"]}}
         _, _, argv, _ = self.run_action(job, "approve")
         self.assertEqual(argv[2], "bug")
-        self.assertIn("Add tests", argv[-1])
-        self.assertIn("- Unit test", argv[-1])
+        feedback = argv[argv.index("--feedback") + 1]
+        self.assertIn("Add tests", feedback)
+        self.assertIn("- Unit test", feedback)
+
+    def test_accepting_the_architects_suggestions_does_not_ask_the_architect_again(self):
+        # Otherwise a verifier that always finds something would hold the job in "concerns" forever.
+        job = {"status": "human-needed", "type": "bug-fix", "verification": {"status": "concerns", "comments": "Add tests"}}
+        _, _, argv, _ = self.run_action(job, "approve")
+        self.assertIn("--skip-verify", argv)
 
     def test_approve_refuses_other_states(self):
         code, _, argv, _ = self.run_action({"status": "completed"}, "approve")

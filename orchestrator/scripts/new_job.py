@@ -13,6 +13,7 @@ from common import (
     gh_text,
     make_job_paths,
     now_iso,
+    read_json,
     prompt_multiline,
     prompt_radio,
     print_phase,
@@ -350,6 +351,7 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--update", help="Path to an existing job JSON to update/re-plan")
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
     parser.add_argument("--summary", help="Summary or area of focus for the job (skips interactive input prompt if provided)")
+    parser.add_argument("--skip-verify", action="store_true", help="Skip the architect's plan verification (used when a person has already accepted the architect's suggestions)")
     args = parser.parse_args(args_override)
 
     existing_job = None
@@ -363,9 +365,12 @@ def main(args_override: list[str] | None = None) -> None:
     job_type_for_defaults = args.job_type
     if job_type_for_defaults == "design": job_type_for_defaults = "feature"
     defaults = PRESETS[args.preset] if args.preset else DEFAULTS[job_type_for_defaults]
-    planner = args.planner or defaults["planner"]
-    builder = args.builder or defaults["builder"]
-    reviewer = args.reviewer or defaults["reviewer"]
+    # A re-plan keeps the job's own choices; only what is passed explicitly changes them.
+    # (Otherwise the first re-plan resets a free-only or restricted job to the paid defaults.)
+    saved = existing_job or {}
+    planner = args.planner or saved.get("planner") or defaults["planner"]
+    builder = args.builder or saved.get("builder") or defaults["builder"]
+    reviewer = args.reviewer or saved.get("reviewer") or defaults["reviewer"]
 
     # Load spec from file or URL if provided
     file_spec_content = ""
@@ -407,6 +412,8 @@ def main(args_override: list[str] | None = None) -> None:
             allowed_models = args.allowed_models.split(",") if args.allowed_models else DEFAULT_FALLBACKS
     elif args.allowed_models:
         allowed_models = args.allowed_models.split(",")
+    elif saved.get("allowed_models"):
+        allowed_models = list(saved["allowed_models"])
     else:
         footer = (
             "[\033[1;96mA\033[0m] Select All  [\033[1;92mF\033[0m] Free Only  [\033[1;93mN\033[0m] Deselect All  [\033[1;91mB\033[0m] Back"
@@ -443,6 +450,8 @@ def main(args_override: list[str] | None = None) -> None:
     machine_names = sorted([m["name"] for m in machines_config])
     if args.allowed_machines:
         allowed_machines = args.allowed_machines.split(",")
+    elif saved.get("allowed_machines"):
+        allowed_machines = list(saved["allowed_machines"])
     else:
         print("\nMachine Selection (restrict workflow to these computers):")
         initial_machines = [m["name"] for m in machines_config if m.get("enabled", True)]
@@ -787,7 +796,7 @@ def main(args_override: list[str] | None = None) -> None:
         planner_meta = get_model(actual_planner)
         
         # Only verify if the planner used was NOT an Extreme model
-        if planner_meta and planner_meta.tier > ModelTier.EXTREME:
+        if planner_meta and planner_meta.tier > ModelTier.EXTREME and not args.skip_verify:
             # Find available extreme models in allowed_models
             extreme_options = get_prioritized_models(role=ModelRole.VERIFIER, allowed_models=allowed_models)
             if extreme_options:
