@@ -23,6 +23,7 @@ BRIEF_CONTEXT_CHARS = 5000
 OTHER_CONTEXT_CHARS = 2500
 REVIEW_DIR = "docs/product/reviews"
 REVIEW_STALE_DAYS = 14
+REVIEW_AFTER_JOBS = 5  # a review has little to say before there is this much work to look at
 
 DOCS: list[dict[str, Any]] = [
     {"id": "brief", "title": "Product brief", "path": "docs/product-brief.md",
@@ -358,3 +359,14 @@ def read_last_review(root: Path) -> dict[str, Any] | None:
     except OSError:
         return None
     return {**info, "text": text}
+
+
+def review_due(root: Path, jobs_total: int) -> dict[str, Any] | None:
+    """A reminder when a product review is overdue (never run, or older than two weeks), once there are enough jobs to review."""
+    if jobs_total < REVIEW_AFTER_JOBS:
+        return None
+    review = last_review(root)
+    if review and not review["stale"]:
+        return None
+    reason = f"The last review was {review['days']} days ago." if review else "No review has been run yet."
+    return {"reason": f"{reason} It checks drift from the brief, architecture, duplication and UX consistency.", "days": review["days"] if review else None}

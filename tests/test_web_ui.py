@@ -1847,6 +1847,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Skip for now", form)
         self.assertIn('"use-cases")?.filled', form)
 
+    def test_a_review_reminder_row_links_to_the_product_page(self):
+        self.assertIn('i.kind === "reminder"', self.js)
+        self.assertIn(">Review</a>", self.js)
+
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
@@ -2397,6 +2401,33 @@ class ProductEndpointTests(ServerTestCase):
         (folder / "2026-10-01.md").write_text("findings")
         _, listing = self.request("GET", "/api/product")
         self.assertEqual(listing["review"]["path"], "docs/product/reviews/2026-10-01.md")
+
+
+class ReviewReminderEndpointTests(ServerTestCase):
+    def add_jobs(self, n):
+        for i in range(n):
+            (self.root / ".orchestrator" / "jobs" / f"2026092{i}-feature-{i + 10}.json").write_text(json.dumps({"title": f"Done {i}", "type": "feature", "status": "completed"}))
+
+    def test_no_reminder_for_a_young_project(self):
+        _, data = self.request("GET", "/api/inbox")
+        self.assertFalse([i for i in data["here"] if i["kind"] == "reminder"])
+
+    def test_an_overdue_review_shows_up_as_waiting_on_you_and_in_the_badge(self):
+        self.add_jobs(5)
+        _, data = self.request("GET", "/api/inbox")
+        reminder = next(i for i in data["here"] if i["kind"] == "reminder")
+        self.assertEqual((reminder["label"], reminder["href"]), ("Review due", "#/product"))
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual(state["inbox_count"], data["count"])
+        self.assertIn("#/product", [i["hash"] for i in state["inbox"]])
+
+    def test_running_a_review_clears_the_reminder(self):
+        self.add_jobs(5)
+        folder = self.root / "docs" / "product" / "reviews"
+        folder.mkdir(parents=True)
+        (folder / "2026-10-01.md").write_text("findings")
+        _, data = self.request("GET", "/api/inbox")
+        self.assertFalse([i for i in data["here"] if i["kind"] == "reminder"])
 
 
 class PipelineTests(ServerTestCase):

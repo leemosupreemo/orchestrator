@@ -26,16 +26,22 @@ def _run_item(run: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
             "next": None, "updated": run.get("started") or 0, "project": project}
 
 
+def _reminder_item(r: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "reminder", "id": f"reminder:{r['id']}", "title": r["title"], "label": r["label"], "reason": r["reason"], "tone": "attention",
+            "next": None, "href": r["href"], "updated": 0, "project": project}
+
+
 def _rank(item: dict[str, Any]) -> tuple:
     return (TONE_RANK.get(item["tone"], 2), -float(item["updated"] or 0))
 
 
 def build(active: dict[str, Any], jobs: list[dict[str, Any]], runs: list[dict[str, Any]],
-          others: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+          others: list[dict[str, Any]] | None = None, reminders: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """`active`/each of `others`: {name, root}. `others` entries also carry `jobs`."""
     here = [_job_item(j, active) for j in jobs
             if (j.get("state") or {}).get("group") == "needs_you" and not j.get("active_run")]
     here += [_run_item(r, active) for r in runs if r.get("running") and r.get("waiting")]
+    here += [_reminder_item(r, active) for r in reminders or []]
     elsewhere = []
     for project in others or []:
         meta = {"name": project["name"], "root": project["root"]}

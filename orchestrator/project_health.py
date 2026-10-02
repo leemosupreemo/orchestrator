@@ -11,10 +11,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from orchestrator.product_docs import REVIEW_AFTER_JOBS
+
 BRIEF_JOB = ("Write docs/product-brief.md: what this product is, who it's for, the problem it solves, "
              "and what version 1 must do. Base it on the code and README.")
 UNRELEASED_WARN = 20
-REVIEW_AFTER_JOBS = 5
 
 
 def brief_platforms(brief_text: str) -> tuple[list[str], bool]:

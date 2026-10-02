@@ -125,6 +125,25 @@ class PromptAndReplyTests(Base):
         self.assertEqual(P.unified_diff("same\n", "same\n"), [])
 
 
+class ReviewDueTests(Base):
+    def test_no_reminder_until_there_is_enough_to_review(self):
+        self.assertIsNone(P.review_due(self.root, P.REVIEW_AFTER_JOBS - 1))
+
+    def test_never_reviewed_and_stale_reviews_are_due_fresh_ones_are_not(self):
+        never = P.review_due(self.root, P.REVIEW_AFTER_JOBS)
+        self.assertIn("No review has been run yet", never["reason"])
+        folder = self.root / P.REVIEW_DIR
+        folder.mkdir(parents=True)
+        review = folder / "2026-09-01.md"
+        review.write_text("findings")
+        self.assertIsNone(P.review_due(self.root, 20))
+        old = time.time() - 30 * 86400
+        os.utime(review, (old, old))
+        due = P.review_due(self.root, 20)
+        self.assertEqual(due["days"], 30)
+        self.assertIn("30 days ago", due["reason"])
+
+
 class ReviewTests(Base):
     def test_the_review_asks_for_findings_not_code_changes(self):
         P.write(self.root, "use-cases", FILLED)

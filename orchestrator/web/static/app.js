@@ -2070,10 +2070,11 @@ pages.features = async (_, query) => {
 
 // One thing waiting on you: the job or run, why, and its single next action. `away` = another project.
 function waitingRowHtml(i, { away = false } = {}) {
-  const open = i.kind === "run" ? `#/runs/${encodeURIComponent(i.run_id)}` : `#/jobs/${encodeURIComponent(i.job_id)}`;
+  const open = i.kind === "reminder" ? i.href : i.kind === "run" ? `#/runs/${encodeURIComponent(i.run_id)}` : `#/jobs/${encodeURIComponent(i.job_id)}`;
   let button = "";
   if (away) button = `<button class="btn small" data-switch-project="${esc(i.project.root)}" data-then="${esc(open)}">Switch & open</button>`;
   else if (i.kind === "run") button = `<a class="btn small primary" href="${open}">Answer</a>`;
+  else if (i.kind === "reminder") button = `<a class="btn small primary" href="${esc(open)}">Review</a>`;
   else if (i.next) button = `<button class="btn small ${i.tone === "failed" || i.tone === "attention" ? "primary" : ""}" ${act(i.next.action, { job: i.job_id })}>${esc(i.next.label)}</button>`;
   return `<div class="item"><a class="main-col" href="${away ? "#/" : open}">
       <div class="title">${esc(i.title)}</div><div class="meta"><span class="pill ${esc(i.tone)}">${esc(i.label)}</span> ${esc(i.reason)}</div></a>

@@ -32,6 +32,12 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual(events[0]["body"], "Tb: Needs an answer")
         self.assertEqual(t.update([item("a"), item("b")], []), [])
 
+    def test_a_reminder_notifies_with_its_own_link(self):
+        t = notifier.Tracker()
+        t.update([], [])
+        events = t.update([{"id": "reminder:product-review", "kind": "reminder", "title": "Review the product", "label": "Review due", "reason": "No review yet.", "href": "#/product"}], [])
+        self.assertEqual([(e["title"], e["path"]) for e in events], [("Review due", "#/product")])
+
     def test_an_item_that_leaves_and_returns_notifies_again(self):
         t = notifier.Tracker()
         t.update([item("a")], [])

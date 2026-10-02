@@ -41,7 +41,7 @@ class Tracker:
         events: list[dict[str, Any]] = []
         for item in items:
             if not first and item["id"] not in self._seen:
-                path = f"#/runs/{item['run_id']}" if item["kind"] == "run" else f"#/jobs/{item['job_id']}"
+                path = item.get("href") or (f"#/runs/{item['run_id']}" if item["kind"] == "run" else f"#/jobs/{item['job_id']}")
                 events.append({"kind": "needs-you", "key": item["id"], "title": item["label"],
                                "body": f"{item['title']}: {item['reason']}".strip(": "), "path": path})
         for run in runs:

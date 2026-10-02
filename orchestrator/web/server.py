@@ -553,7 +553,11 @@ def inbox_overview(root: Path, sessions: Any, with_others: bool = True) -> dict[
             if str(other) == active["root"] or not jobs_dir(other).is_dir():
                 continue
             others.append({"name": p.get("name") or project_display_name(other), "root": str(other), "jobs": list_jobs(other)})
-    return inbox_view.build(active, jobs, sessions.list(), others)
+    reminders = []
+    due = product_docs.review_due(root, len(jobs) + len(archived_feature_jobs(root)))
+    if due:
+        reminders.append({"id": "product-review", "title": "Review the product", "label": "Review due", "reason": due["reason"], "href": "#/product"})
+    return inbox_view.build(active, jobs, sessions.list(), others, reminders)
 
 
 def inbox_state(root: Path, sessions: Any) -> dict[str, Any]:
@@ -561,7 +565,7 @@ def inbox_state(root: Path, sessions: Any) -> dict[str, Any]:
     here = inbox_overview(root, sessions, with_others=False)["here"]
     return {"inbox_count": len(here),
             "inbox": [{"id": i["id"], "title": i["title"], "label": i["label"], "reason": i["reason"],
-                       "hash": f"#/runs/{i['run_id']}" if i["kind"] == "run" else f"#/jobs/{i['job_id']}"} for i in here]}
+                       "hash": i.get("href") or (f"#/runs/{i['run_id']}" if i["kind"] == "run" else f"#/jobs/{i['job_id']}")} for i in here]}
 
 
 _GH_CACHE: dict[str, tuple[float, str | None]] = {}
