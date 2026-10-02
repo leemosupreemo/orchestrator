@@ -627,6 +627,32 @@ class ActionTests(unittest.TestCase):
         plain = ui.build_new_job({"type": "feature", "summary": "Add rematch"}, self.root)
         self.assertNotIn("--spec-file", plain)
 
+    def test_new_job_for_a_feature_gives_the_planner_its_context(self):
+        feature_store = ui.feature_store
+        rt = self.root / ".orchestrator"
+        feature_store.create(rt, "Auth", "Sign in", "Sources/Auth/")
+        feature_store.create(rt, "Lobby", "Seats", "Sources/Lobby/", ["auth"])
+        params = {"type": "feature", "summary": "Add rematch", "feature": "lobby"}
+        argv = ui.build_new_job(params, self.root)
+        text = Path(argv[argv.index("--spec-file") + 1]).read_text()
+        self.assertIn('belongs to the feature "Lobby"', text)
+        self.assertIn("Sources/Lobby/", text)
+        self.assertIn("It builds on: Auth", text)
+        self.assertIn("Auth: Sources/Auth/", text)  # other features' paths to stay out of
+        self.assertEqual(params["_feature"], "lobby")
+
+    def test_new_job_rejects_an_unknown_feature(self):
+        with self.assertRaises(ui.UIError):
+            ui.build_new_job({"type": "feature", "summary": "x", "feature": "ghost"}, self.root)
+
+    def test_created_job_is_put_under_its_feature(self):
+        rt = self.root / ".orchestrator"
+        ui.feature_store.create(rt, "Lobby")
+        path = rt / "jobs" / "20260922-bug-1.json"
+        ui.UIHandler._record_feature(path, self.root, "lobby")
+        self.assertEqual(json.loads(path.read_text())["feature"], "lobby")
+        self.assertEqual(ui.feature_store.load(rt)[0]["status"], "in-progress")
+
     def test_new_job_validates_input(self):
         with self.assertRaises(ui.UIError):
             ui.build_new_job({"type": "rm -rf", "summary": "x"}, self.root)

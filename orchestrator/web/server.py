@@ -1168,6 +1168,24 @@ RECOMMEND_NOTE = (
 )
 
 
+def feature_context(chosen: dict[str, Any], features: list[dict[str, Any]]) -> str:
+    """What the planner should know about where this work sits among the product's features."""
+    names = {f["id"]: f["name"] for f in features}
+    lines = ["", "", "## Feature context", f"This work belongs to the feature \"{chosen['name']}\"."]
+    if chosen.get("summary"):
+        lines.append(f"What it does: {chosen['summary']}")
+    if chosen.get("paths"):
+        lines.append("It owns these paths; keep changes inside them where you can: " + ", ".join(chosen["paths"]))
+    deps = [names[d] for d in chosen.get("depends_on") or [] if d in names]
+    if deps:
+        lines.append("It builds on: " + ", ".join(deps) + ". Use their existing interfaces; don't change them unless required.")
+    others = [f for f in features if f["id"] != chosen["id"] and f.get("paths")]
+    if others:
+        lines.append("Other features own these paths, so avoid editing them (call out in the plan if you must): "
+                     + "; ".join(f"{f['name']}: {', '.join(f['paths'])}" for f in others))
+    return "\n".join(lines)
+
+
 def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     job_type = _choice(params, "type", JOB_TYPES, "bug")
     summary = _text(params, "summary", required=True, limit=500)
@@ -1177,6 +1195,15 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     params["_linked"] = linked  # picked up by _start_run to record the links on the created job
     if block:
         spec = (spec or summary) + block
+    feature = str(params.get("feature") or "").strip()
+    if feature:
+        features = feature_store.load(runtime_dir(root))
+        try:
+            chosen = feature_store.get(features, feature)
+        except feature_store.FeatureError:
+            raise UIError("That feature no longer exists")
+        params["_feature"] = feature
+        spec = (spec or summary) + feature_context(chosen, features)
     if params.get("recommend"):
         spec = (spec or summary) + RECOMMEND_NOTE
     if spec:
@@ -1837,7 +1864,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free", "links", "recommend"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free", "links", "recommend", "feature"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
@@ -2478,10 +2505,12 @@ class UIHandler(BaseHTTPRequestHandler):
                                              runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
         session.job_id = job_id
         if key in ("new_job", "fix"):
-            self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None)
+            self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
+                                        params.get("_feature") if key == "new_job" else None)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
 
-    def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None) -> None:
+    def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None,
+                               feature: str | None = None) -> None:
         """Links the job a new-job/fix run creates, so its run can offer "Open job"."""
         before = {p.name for p in jobs_dir(root).glob("*.json")} if jobs_dir(root).exists() else set()
 
@@ -2494,12 +2523,29 @@ class UIHandler(BaseHTTPRequestHandler):
                         session.result_job = newest.stem
                         if linked:
                             self._record_links(newest, linked)
+                        if feature:
+                            self._record_feature(newest, root, feature)
                         return
                 if not session.running:
                     return
                 time.sleep(1)
 
         threading.Thread(target=watch, daemon=True).start()
+
+    @staticmethod
+    def _record_feature(job_path: Path, root: Path, feature: str) -> None:
+        """Put a just-created job under the feature it was created for."""
+        for _ in range(10):  # the job file may still be mid-write
+            job = read_json_file(job_path)
+            if job:
+                job["feature"] = feature
+                try:
+                    feature_store.note_work_attached(runtime_dir(root), feature, "working")
+                except feature_store.FeatureError:
+                    return
+                write_json_file(job_path, job)
+                return
+            time.sleep(0.5)
 
     @staticmethod
     def _record_links(job_path: Path, linked: list[dict[str, str]]) -> None:

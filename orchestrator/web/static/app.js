@@ -1668,6 +1668,8 @@ const JOB_TYPE_INFO = [
 
 pages.new = async (_, query) => {
   const picker = await linkPickerHtml();
+  let features = [];
+  try { features = (await api("features")).features; } catch { /* the field just doesn't show */ }
   return {
   title: "New job",
   sub: "Describe the work. It gets planned, then built on a worker. Anything that needs your input shows up as it runs.",
@@ -1683,6 +1685,7 @@ pages.new = async (_, query) => {
       <label class="field"><span>Details <span class="muted">(optional)</span></span>
         <textarea name="spec" placeholder="Steps to reproduce, expected vs actual, acceptance criteria, links…"></textarea>
       </label>
+      ${features.length ? `<label class="field"><span>Feature <span class="muted">(optional)</span></span><select name="feature"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>` : ""}
       <label class="check"><input type="checkbox" name="recommend" checked><span>You decide the details<small>I don't have a strong opinion. The AI picks sensible defaults and lists what it assumed so you can change it.</small></span></label>
       ${picker.html}
       <details class="advanced"><summary>Options</summary>
@@ -1710,7 +1713,7 @@ pages.new = async (_, query) => {
       try { links = JSON.parse(f.get("links") || "[]"); } catch { /* none */ }
       runAction("new_job", {
         type: f.get("type"), summary: f.get("summary"), spec: f.get("spec"), branch_mode: f.get("branch_mode") || "new",
-        no_dispatch: f.has("no_dispatch"), recommend: f.has("recommend"), yolo: f.has("yolo"), free: f.has("free"), links,
+        no_dispatch: f.has("no_dispatch"), recommend: f.has("recommend"), feature: f.get("feature") || "", yolo: f.has("yolo"), free: f.has("free"), links,
       });
     });
   },
@@ -1791,7 +1794,7 @@ pages.features = async (_, query) => {
         <div class="tasks-progress-wrap"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${pct}%"></div></div>
           <span class="progress-text">${f.jobs_done}/${f.jobs_total} jobs</span></div>
         ${f.jobs_need_you ? `<div><span class="pill attention">${f.jobs_need_you} need${f.jobs_need_you === 1 ? "s" : ""} you</span></div>` : ""}
-        <div class="list">${f.job_ids.map((id) => byId.get(id)).filter(Boolean).map((j) => jobItem(j)).join("") || `<div class="empty">No jobs yet. Open a job and choose Move to feature.</div>`}</div>
+        <div class="list">${f.job_ids.map((id) => byId.get(id)).filter(Boolean).map((j) => jobItem(j)).join("") || `<div class="empty">No jobs yet. <a href="#/new?feature=${encodeURIComponent(f.id)}">Start one</a>, or move an existing job here from its menu.</div>`}</div>
       </div></section>`;
   };
   return {

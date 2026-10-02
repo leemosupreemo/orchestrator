@@ -24,14 +24,14 @@ checked in a browser yet.
 - [x] **Express intent; if no strong opinion, LLM recommends.** New-job form has a "You decide the details" option (on by default). The planner is told to pick conventional defaults and record each as an assumption; the job page lists them under "What the AI assumed".
 - [~] **Easy to tweak / course-correct.** Revise plan, Run fix, Still broken?, model override. No inline edit of tasks.
 - [x] **Talk to the LLM directly, tied to the job.** "Ask about this job" thread on the job page; messages are stored in the job file. Read-only: it advises, and Revise plan / Run fix act. (The old Ask AI action started a fix run; removed.)
-- [x] **Organize features with no overlap (discrete elements).** Features page: create/edit/delete, group jobs under a feature (job menu: Move to feature), roll-up progress. Overlap warnings when two features claim the same code paths, or two in-flight jobs on different features change the same file. Not yet: choosing the feature while creating a job, or auto-suggesting one.
+- [x] **Organize features with no overlap (discrete elements).** Features page: create/edit/delete, group jobs under a feature (job menu: Move to feature), roll-up progress. Overlap warnings when two features claim the same code paths, or two in-flight jobs on different features change the same file. New job has a Feature field, and the planner is told the feature's purpose, owned paths and dependencies, and which paths other features own. Not yet: auto-suggesting a feature.
 - [x] **See how pieces fit the overall picture.** Features > Map: features laid out in layers (foundations on the left, what builds on them to the right) with dependency lines, status, job progress, "waiting on" for unfinished dependencies and overlap flags. Dependencies are set by hand in the feature form; circular ones are rejected. Not yet: dependencies inferred from code, or a view of jobs inside the map.
 - [x] **Mark features complete (knowing they're never fully done).** "Mark complete" records when; attaching new open work reopens the feature and says so.
 
 ## C. Running jobs and control
 
 - [x] **Start / stop / pause.** Start and Run now exist. The hero's Stop is now "Pause" (stops the worker; Resume continues from the next task). Other run views still say Stop.
-- [x] **Know job states; resume or delete.** Resume from the primary action or menu. Delete is now a real server action (`discard`): reverts the job's changes, deletes its AI branch, archives it. It previously only opened the console.
+- [x] **Know job states; resume or delete.** Reviewed jobs with no PR now end with "Mark complete" in the web UI (before, the only option was "Open in console"). Resume from the primary action or menu. Delete is now a real server action (`discard`): reverts the job's changes, deletes its AI branch, archives it. It previously only opened the console.
 - [~] **Easy to revert.** Whole-job discard works. No checkpoint or per-task revert.
 - [~] **Changes made clear.** Changes card shows file chips, diffstat and reasoning. No inline diff or per-task attribution.
 - [x] **Easy to fix bugs I find.** "Fix something" on Home, "Still broken?" on a job.
