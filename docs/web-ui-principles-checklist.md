@@ -35,7 +35,7 @@ checked in a browser yet.
 - [~] **Easy to revert.** Whole-job discard works. No checkpoint or per-task revert.
 - [~] **Changes made clear.** Changes card shows file chips, diffstat and reasoning. No inline diff or per-task attribution.
 - [x] **Easy to fix bugs I find.** "Fix something" on Home, "Still broken?" on a job.
-- [ ] **Handles everything; comes to me only with critical questions.** "Action required" filter exists. No cross-job inbox of questions.
+- [x] **Handles everything; comes to me only with critical questions.** Inbox (first item in the sidebar, with a count): every job waiting on you (questions, plan/design approvals, reviews, failures), plus runs stopped at a prompt, ranked failures first. Each row has its one next action inline. Other projects' waiting jobs are listed below with "Switch & open". The tab title shows the same count. Not yet: notifying when a job moves into the inbox without a run (only run changes notify).
 - [~] **Notifications when done or problem.** Browser notifications (opt-in, sidebar button) when a run finishes, fails, or waits for input, plus a count in the tab title. Works while the tab is in the background, not when it is closed. Email settings exist separately. No Slack or mobile push.
 
 ## D. Testing and quality

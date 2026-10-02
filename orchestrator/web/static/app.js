@@ -635,6 +635,7 @@ document.addEventListener("click", (e) => {
       .then(async () => {
         await refreshState();
         toast(`Switched to ${state.project?.name || "project"}`);
+        if (switchBtn.dataset.then) location.hash = switchBtn.dataset.then;
         route();
       })
       .catch((err) => { toast(err.message, true); route(); }); // put the highlight back
@@ -718,7 +719,13 @@ async function refreshState() {
     badge.classList.toggle("working", waiting === 0);
     badge.title = waiting ? `${waiting} waiting for you` : `${running.length} running`;
   }
-  document.title = Notifications.tabTitle("Orchestrator", Notifications.attentionCount(state.runs));
+  const inboxBadge = $("#inbox-badge");
+  if (inboxBadge) {
+    inboxBadge.hidden = !state.inbox_count;
+    inboxBadge.textContent = state.inbox_count || "";
+    inboxBadge.title = `${state.inbox_count} waiting on you`;
+  }
+  document.title = Notifications.tabTitle("Orchestrator", state.inbox_count || 0);
   const topLangsEl = $("#topbar-languages");
   if (topLangsEl && (current?.page === "home" || $("#page-title")?.textContent === state.project?.name)) {
     if (state.project?.languages?.length) {
@@ -1173,7 +1180,7 @@ function moreActionsMenu(p, opts) {
 // re-rendered by the poll when their output changes.
 
 const pages = {};
-const LIVE = new Set(["home", "jobs", "job", "activity", "git"]);
+const LIVE = new Set(["home", "jobs", "job", "activity", "git", "inbox"]);
 
 // ---------------------------------------------------------------- setup checklist
 // What a job needs (GitHub, an AI provider, a machine, project config) vs. nice-to-haves.
@@ -1846,6 +1853,31 @@ pages.features = async (_, query) => {
         } catch (e) { toast(e.message, true); }
       }));
     },
+  };
+};
+
+pages.inbox = async () => {
+  const { here, elsewhere } = await api("inbox");
+  const row = (i, { away = false } = {}) => {
+    const open = i.kind === "run" ? `#/runs/${encodeURIComponent(i.run_id)}` : `#/jobs/${encodeURIComponent(i.job_id)}`;
+    let button = "";
+    if (away) button = `<button class="btn small" data-switch-project="${esc(i.project.root)}" data-then="${esc(open)}">Switch & open</button>`;
+    else if (i.kind === "run") button = `<a class="btn small primary" href="${open}">Answer</a>`;
+    else if (i.next) button = `<button class="btn small ${i.tone === "failed" || i.tone === "attention" ? "primary" : ""}" ${act(i.next.action, { job: i.job_id })}>${esc(i.next.label)}</button>`;
+    return `<div class="item"><a class="main-col" href="${away ? "#/inbox" : open}">
+        <div class="title">${esc(i.title)}</div><div class="meta"><span class="pill ${esc(i.tone)}">${esc(i.label)}</span> ${esc(i.reason)}</div></a>
+      <div class="side">${button}</div></div>`;
+  };
+  const byProject = new Map();
+  for (const i of elsewhere) byProject.set(i.project.root, [...(byProject.get(i.project.root) || []), i]);
+  return {
+    title: "Inbox",
+    sub: here.length ? `${here.length} waiting on you in ${state.project.name}` : "Nothing is waiting on you.",
+    html: `
+      ${here.length ? `<section class="card" style="margin-bottom: 16px;"><div class="list">${here.map((i) => row(i)).join("")}</div></section>`
+        : `<div class="empty">You're clear. Questions, reviews, failures and stalled runs show up here as they happen.</div>`}
+      ${[...byProject.values()].map((items) => `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>${esc(items[0].project.name)}</h2><span class="count">${items.length}</span></div>
+        <div class="list">${items.map((i) => row(i, { away: true })).join("")}</div></section>`).join("")}`,
   };
 };
 

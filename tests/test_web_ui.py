@@ -1272,6 +1272,30 @@ class JobChatEndpointTests(ServerTestCase):
         self.assertIn(res.status, (400, 403))
 
 
+class InboxEndpointTests(ServerTestCase):
+    def test_lists_what_needs_you_and_counts_it_in_state(self):
+        res, data = self.request("GET", "/api/inbox")
+        self.assertEqual(res.status, 200)
+        self.assertEqual([i["job_id"] for i in data["here"]], ["20260922-bug-1"])
+        self.assertEqual(data["here"][0]["next"]["action"], "debug")
+        self.assertEqual(data["count"], 1)
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual(state["inbox_count"], 1)
+
+    def test_other_projects_show_up_after_the_active_one(self):
+        other = Path(self.tmp.name) / "other"
+        make_project(other)
+        ui.remember_project(other, "Other")
+        _, data = self.request("GET", "/api/inbox")
+        self.assertEqual(data["count"], 1)  # only this project's count
+        self.assertEqual([(i["project"]["name"], i["job_id"]) for i in data["elsewhere"]], [("Other", "20260922-bug-1")])
+
+    def test_a_job_in_the_middle_of_a_run_is_not_waiting_on_you(self):
+        with patch.object(ui.SessionManager, "running_job_ids", return_value={"20260922-bug-1"}):
+            _, data = self.request("GET", "/api/inbox")
+        self.assertEqual(data["here"], [])
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")

@@ -52,6 +52,7 @@ import urllib.request
 
 from orchestrator import integrations
 from orchestrator import features as feature_store
+from orchestrator import inbox as inbox_view
 from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.setup_checklist import setup_checklist
@@ -515,6 +516,25 @@ def archived_feature_jobs(root: Path) -> list[dict[str, Any]]:
         if job.get("feature") and job.get("status") == "completed":
             out.append(job_summary(path, job))
     return sorted(out, key=lambda j: j["updated"], reverse=True)
+
+
+def inbox_overview(root: Path, sessions: Any, with_others: bool = True) -> dict[str, Any]:
+    running = sessions.running_job_ids()
+    jobs = list_jobs(root)
+    for job in jobs:
+        job["active_run"] = job["id"] in running
+    active = {"name": project_display_name(root), "root": str(safe_resolve(root))}
+    others = []
+    if with_others:
+        for p in load_recent_projects().get("projects", []):
+            try:
+                other = safe_resolve(Path(str(p.get("root") or "")).expanduser())
+            except Exception:
+                continue
+            if str(other) == active["root"] or not jobs_dir(other).is_dir():
+                continue
+            others.append({"name": p.get("name") or project_display_name(other), "root": str(other), "jobs": list_jobs(other)})
+    return inbox_view.build(active, jobs, sessions.list(), others)
 
 
 def features_overview(root: Path) -> dict[str, Any]:
@@ -2174,6 +2194,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and parts == ["state"]:
             self._json({"project": project_state(root), "runs": self.server.sessions.list(),
+                        "inbox_count": inbox_overview(root, self.server.sessions, with_others=False)["count"],
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
                                     for k, a in ACTIONS.items()},
                         "token": self.server.token})
@@ -2217,6 +2238,8 @@ class UIHandler(BaseHTTPRequestHandler):
             for job in jobs:
                 job["active_run"] = job["id"] in running
             self._json({"jobs": jobs})
+        elif method == "GET" and parts == ["inbox"]:
+            self._json(inbox_overview(root, self.server.sessions))
         elif method == "GET" and parts == ["features"]:
             self._json(features_overview(root))
         elif method == "POST" and parts == ["features"]:
