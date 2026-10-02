@@ -1305,7 +1305,7 @@ pages.home = async (_, query) => {
 
   const HOME_FILTERS = {
     all: ["All", () => true],
-    needs_you: ["Action required", (j) => j.state.group === "needs_you" && !j.active_run],
+    needs_you: ["Waiting on you", (j) => j.state.group === "needs_you" && !j.active_run],
     working: ["In progress", (j) => j.state.group === "working" || j.active_run],
     done: ["Completed", (j) => j.state.group === "done"],
   };
@@ -1338,6 +1338,7 @@ pages.home = async (_, query) => {
           <div class="filters">
             ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
               const count = sortedJobs.filter(fn).length;
+              if (key === "needs_you") return `<a class="btn small" href="#/inbox" title="Everything waiting on you, across projects">${label} (${count}) →</a>`;
               return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
             }).join("")}
           </div>
@@ -1362,7 +1363,7 @@ pages.home = async (_, query) => {
 };
 
 const JOB_FILTERS = {
-  needs_you: ["Action required", (j) => j.state.group === "needs_you" && !j.active_run],
+  needs_you: ["Waiting on you", (j) => j.state.group === "needs_you" && !j.active_run],
   working: ["In progress", (j) => j.state.group === "working" || j.active_run],
   done: ["Completed", (j) => j.state.group === "done"],
   all: ["All", () => true],

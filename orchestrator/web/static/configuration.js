@@ -8,7 +8,7 @@
       entries: [
         {id: "models", label: "Models", description: "Choose the AI models available to jobs.", route: "#/config/models", enabled: true, status: null},
         {id: "api-keys", label: "API Keys", description: "Connect AI providers without displaying saved secrets.", route: "#/config/api-keys", enabled: true, status: null},
-        {id: "ai-instructions", label: "AI Instructions", description: "Manage the instructions used by AI tools.", route: "#/config/ai-instructions", enabled: true, status: null},
+        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about your project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, status: null},
       ],
     },
     {
@@ -18,7 +18,7 @@
         {id: "base-branch", label: "Base Branch", description: "Choose the branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
         {id: "archived-jobs", label: "Archived Jobs", description: "Review and restore completed work.", route: "#/config/archived-jobs", enabled: true, status: null},
-        {id: "fleet", label: "Machine Fleet", description: "Manage remote build machines.", route: "#/config/fleet", enabled: true, status: null},
+        {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, status: null},
       ],
     },
     {
@@ -27,7 +27,7 @@
       entries: [
         {id: "email", label: "Email Notifications", description: "Choose recipients and configure the sender.", route: "#/config/email", enabled: true, status: null},
         {id: "chat", label: "Slack & chat alerts", description: "Get pinged when something needs you, even with the tab closed.", route: "#/config/chat", enabled: true, status: null},
-        {id: "firebase", label: "Firebase App Distribution", description: "Configure tester releases and signing.", route: "#/config/firebase", enabled: true, status: null},
+        {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, status: null},
         {id: "xcode-cloud", label: "Xcode Cloud", description: "Configure cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
       ],
     },
@@ -37,8 +37,8 @@
       entries: [
         {id: "documentation", label: "Documentation", description: "Read Orchestrator and project guides.", route: "#/config/documentation", enabled: true, status: null},
         {id: "setup-wizard", label: "Setup Wizard", description: "Walk through initial project setup.", route: "#/config/setup-wizard", enabled: true, status: null},
-        {id: "audit", label: "Prerequisite Audit", description: "Check tools and machine readiness.", route: "#/config/audit", enabled: true, status: null},
-        {id: "self-tests", label: "Self-Tests", description: "Run checks for Orchestrator itself.", route: "#/config/self-tests", enabled: true, status: null},
+        {id: "audit", label: "Tool check", description: "Check the tools and machines jobs need are ready (prerequisite audit).", route: "#/config/audit", enabled: true, status: null},
+        {id: "self-tests", label: "Orchestrator health check", description: "Run Orchestrator's own self-tests to confirm it works on this machine.", route: "#/config/self-tests", enabled: true, status: null},
         {id: "updates", label: "Updates", description: "Update Orchestrator on local and remote machines.", route: "#/config/updates", enabled: true, status: null},
       ],
     },
@@ -390,7 +390,7 @@
       </div>
     `).join("");
     return {
-      title: "AI Instructions & Role Prompts",
+      title: "Instructions for AI helpers",
       sub: "Customize system prompts and behavioral guidelines for each specialized agent role.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
@@ -419,7 +419,7 @@
       </div>
     `).join("");
     return {
-      title: "Machine Fleet",
+      title: "Machines",
       sub: "Manage local and remote SSH machines for distributed builds, tests, and code generation.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
@@ -442,7 +442,7 @@
   function renderFirebase(state) {
     const fb = state.firebase || {};
     return {
-      title: "Firebase App Distribution",
+      title: "Tester builds (Firebase)",
       sub: "Configure automated beta releases and tester distribution.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
@@ -507,12 +507,12 @@
 
   function renderAudit(state) {
     return {
-      title: "Prerequisite Audit",
+      title: "Tool check",
       sub: "Verify developer tools, git, python, and environment readiness.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
-          <div class="card-h"><h2>System Prerequisites & Health</h2><button type="button" class="btn primary small" data-config-action="run-audit">Run Prerequisite Check</button></div>
+          <div class="card-h"><h2>Are the tools ready?</h2><button type="button" class="btn primary small" data-config-action="run-audit">Run tool check</button></div>
           <div class="card-b stack">
             <p>Checks Xcode Command Line Tools, Python 3.10+, Git, GitHub CLI (gh), model API keys, and simulator runtimes.</p>
           </div>
@@ -523,12 +523,12 @@
 
   function renderSelfTests(state) {
     return {
-      title: "Self-Tests",
+      title: "Orchestrator health check",
       sub: "Run validation suites to test Orchestrator functionality.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
-          <div class="card-h"><h2>Orchestrator Self-Tests</h2><button type="button" class="btn primary small" data-config-action="run-self-tests">Run All Self-Tests</button></div>
+          <div class="card-h"><h2>Self-tests</h2><button type="button" class="btn primary small" data-config-action="run-self-tests">Run All Self-Tests</button></div>
           <div class="card-b stack">
             <p>Runs the test suite across job scheduling, worker tools, stack detection, and model routing.</p>
           </div>

@@ -1691,6 +1691,19 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('e.key === "/"', self.js)
         self.assertIn('aria-activedescendant', self.js)
 
+    def test_sidebar_tools_are_grouped_by_purpose_and_home_points_to_the_inbox(self):
+        for label in ("Build &amp; ship", "Learn &amp; improve", "Set up"):
+            self.assertIn(f'<span class="label">{label}</span>', self.html)
+        self.assertIn('href="#/inbox" title="Everything waiting on you', self.js)
+
+    def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
+        config = (self.STATIC / "configuration.js").read_text()
+        for label, old in (("Machines", "fleet"), ("Tool check", "prerequisite audit"), ("Orchestrator health check", "self-tests"), ("Tester builds (Firebase)", "firebase app distribution")):
+            line = next(l for l in config.splitlines() if f'label: "{label}"' in l)
+            self.assertIn(old, line.lower(), label)
+        for jargon in ('label: "Machine Fleet"', 'label: "Prerequisite Audit"', 'label: "Self-Tests"'):
+            self.assertNotIn(jargon, config)
+
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
