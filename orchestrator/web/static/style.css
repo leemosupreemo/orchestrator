@@ -1396,3 +1396,4 @@ dialog h2 { font-size: 17px; }
 .diff-line.add { background: var(--ok-soft); color: var(--text); }
 .diff-line.del { background: var(--bad-soft); color: var(--text); }
 .diff-line.hunk { color: var(--muted); }
+.task-controls { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }

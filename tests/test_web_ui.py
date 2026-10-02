@@ -2057,6 +2057,54 @@ class VisualCheckTests(ServerTestCase):
         self.assertIn('.filter((c) => c.job === id)', (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text())
 
 
+class PlanTaskEditEndpointTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def setUp(self):
+        super().setUp()
+        path = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        job = json.loads(path.read_text())
+        job["plan"] = {"tasks": [{"title": "Repro"}, {"title": "Fix"}, {"title": "Verify"}]}
+        job["completed_task_indices"] = [0]
+        path.write_text(json.dumps(job))
+
+    def post(self, body):
+        return self.request("POST", f"/api/jobs/{self.JOB}/plan-tasks", body=body, headers=UI_HEADERS)
+
+    def saved(self):
+        return json.loads((self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json").read_text())
+
+    def test_edit_add_move_and_remove_are_saved_on_the_job(self):
+        res, data = self.post({"op": "edit", "index": 1, "title": "Fix the seat bug", "likely_files": "src/seat.py"})
+        self.assertEqual((res.status, data["tasks"][1]["title"]), (200, "Fix the seat bug"))
+        self.post({"op": "add", "title": "Write notes"})
+        self.post({"op": "move", "index": 2, "direction": "up"})
+        self.assertEqual([t["title"] for t in self.saved()["plan"]["tasks"]], ["Repro", "Verify", "Fix the seat bug", "Write notes"])
+        _, data = self.post({"op": "remove", "index": 3})
+        self.assertEqual(len(data["tasks"]), 3)
+        self.assertEqual(self.saved()["completed_task_indices"], [0])
+
+    def test_finished_tasks_and_bad_input_are_rejected_without_changes(self):
+        before = self.saved()
+        for body in ({"op": "edit", "index": 0, "title": "x"}, {"op": "edit", "index": 1, "title": " "}, {"op": "remove", "index": 9},
+                     {"op": "move", "index": 1, "direction": "up"}, {"op": "add"}, {"op": "explode"}):
+            res, _ = self.post(body)
+            self.assertEqual(res.status, 400, body)
+        self.assertEqual(self.saved(), before)
+
+    def test_a_running_job_cannot_be_edited(self):
+        with patch.object(ui.SessionManager, "running_job_ids", return_value={self.JOB}):
+            res, data = self.post({"op": "edit", "index": 1, "title": "x"})
+        self.assertEqual(res.status, 409)
+        self.assertIn("Pause it", data["error"])
+
+    def test_requires_the_ui_header_and_a_real_job(self):
+        res, _ = self.request("POST", f"/api/jobs/{self.JOB}/plan-tasks", body={"op": "add", "title": "x"}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+        res, _ = self.request("POST", "/api/jobs/nope/plan-tasks", body={"op": "add", "title": "x"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 404)
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")

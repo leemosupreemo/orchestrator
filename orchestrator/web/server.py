@@ -56,6 +56,7 @@ from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
 from orchestrator import notifier
+from orchestrator import plan_edit
 from orchestrator import project_health
 from orchestrator import scope_check
 from orchestrator.stack_detection import detect_project_stack
@@ -417,6 +418,14 @@ KIND_LABELS = {
 FAILING_TEST_STATUSES = {"tests-failed", "build-failed", "failed"}
 
 
+def job_task_list(job: dict[str, Any]) -> list[Any]:
+    """The job's tasks. The plan's list is what the worker runs, so it wins; older jobs only have a top-level list."""
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    if isinstance(plan.get("tasks"), list) and plan["tasks"]:
+        return plan["tasks"]
+    return job["tasks"] if isinstance(job.get("tasks"), list) else []
+
+
 def job_state(job: dict[str, Any]) -> dict[str, Any]:
     """What the job is waiting on, in plain words, and the one action that moves
     it forward. `group` is needs_you | working | done; `tone` drives colour:
@@ -424,7 +433,7 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
     status = job.get("status") or "unknown"
     tests = job.get("test_status")
     pr = job.get("pr_number")
-    tasks = job.get("tasks") if isinstance(job.get("tasks"), list) else []
+    tasks = job_task_list(job)
     remaining = len(tasks) - len(job.get("completed_tasks") or []) if tasks else 0
 
     def state(group, tone, label, reason, action=None, action_label=None):
@@ -477,7 +486,7 @@ def write_json_file(path: Path, data: dict[str, Any]) -> None:
 
 
 def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
-    tasks = job.get("tasks") if isinstance(job.get("tasks"), list) else (job.get("plan", {}).get("tasks", []) if isinstance(job.get("plan"), dict) else [])
+    tasks = job_task_list(job)
     completed = job.get("completed_tasks") or job.get("completed_task_indices") or []
     kind = job.get("type") or job.get("job_type")
     issue_num = job.get("issue_number")
@@ -749,8 +758,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "reviewer": job.get("reviewer") or None,
     }
 
-    tasks = job.get("tasks") if isinstance(job.get("tasks"), list) else (job.get("plan", {}).get("tasks", []) if isinstance(job.get("plan"), dict) else [])
-    tasks = tasks if isinstance(tasks, list) else []
+    tasks = job_task_list(job)
     completed = job.get("completed_tasks") or job.get("completed_task_indices") or []
     completed = completed if isinstance(completed, list) else []
     next_task = None
@@ -2668,6 +2676,26 @@ class UIHandler(BaseHTTPRequestHandler):
                 job.pop("scope_accepted", None)
             write_json_file(job_path, job)
             self._json({"ok": True, "scope": job_scope(root, job)})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "plan-tasks":
+            job_path = resolve_job_path(root, parts[1])
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("A worker is running this job. Pause it before changing its plan.", HTTPStatus.CONFLICT)
+            job = read_json_file(job_path)
+            body = self._body()
+            op = _choice(body, "op", ["edit", "add", "remove", "move"])
+            try:
+                if op == "edit":
+                    plan_edit.edit(job, body.get("index"), body)
+                elif op == "add":
+                    plan_edit.add(job, body)
+                elif op == "remove":
+                    plan_edit.remove(job, body.get("index"))
+                else:
+                    plan_edit.move(job, body.get("index"), str(body.get("direction") or ""))
+            except plan_edit.PlanEditError as exc:
+                raise UIError(str(exc))
+            write_json_file(job_path, job)
+            self._json({"ok": True, "tasks": job["plan"]["tasks"], "completed": job.get("completed_task_indices", [])})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)

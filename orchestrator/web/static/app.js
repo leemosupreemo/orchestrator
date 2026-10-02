@@ -1475,6 +1475,7 @@ pages.job = async ([id]) => {
   const testsDisplay = formatJobTests(testSummary);
   const scope = data.scope || null;
   const phone = matchMedia("(max-width: 760px)").matches;
+  const canEditPlan = Array.isArray(job.plan?.tasks) && !activeRun && !["completed", "archived", "discarded", "decomposed"].includes(s.status) && s.status !== "executing";
   const fold = (title, count, body) => `<section class="card mb-16"><details class="fold" ${phone ? "" : "open"}><summary class="card-h"><h2>${title}</h2>${count === "" ? "" : `<span class="count">${count}</span>`}</summary>${body}</details></section>`;
   const scopeWarning = scope && ["merge", "complete"].includes(s.state.next?.action) ? scope.findings.filter((f) => f.severity !== "low").reduce((n, f) => n + Math.max(f.files.length, 1), 0) : 0;
   const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
@@ -1659,12 +1660,18 @@ pages.job = async ([id]) => {
       ` : ""}
 
       <!-- Tasks, runs, logs and output: folded on phones so the page isn't one long scroll -->
-      ${tasks.length ? fold("Tasks Checklist", `${tasksDone}/${tasks.length}`, `<div class="list">${tasks.map((t, i) => {
+      ${tasks.length || canEditPlan ? fold("Tasks Checklist", `${tasksDone}/${tasks.length}`, `<div class="list">${tasks.map((t, i) => {
           const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
+          const detail = typeof t === "object" && t && t.title && t.description ? t.description : "";
           const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
           const isDone = done.has(key) || done.has(String(i));
-          return `<div class="item"><span aria-label="${isDone ? "done" : "to do"}">${isDone ? "✅" : "○"}</span><div class="main-col"><div class="title">${esc(title)}</div></div></div>`;
-        }).join("")}</div>`) : ""}
+          const controls = canEditPlan && !isDone ? `<div class="side task-controls">
+              <button class="btn small ghost" data-task-op="edit" data-i="${i}" aria-label="Edit task: ${esc(title)}">Edit</button>
+              <button class="btn small ghost" data-task-op="up" data-i="${i}" aria-label="Move up: ${esc(title)}" ${i === 0 || done.has(String(i - 1)) ? "disabled" : ""}>↑</button>
+              <button class="btn small ghost" data-task-op="down" data-i="${i}" aria-label="Move down: ${esc(title)}" ${i === tasks.length - 1 ? "disabled" : ""}>↓</button>
+              <button class="btn small ghost" data-task-op="remove" data-i="${i}" aria-label="Remove task: ${esc(title)}">Remove</button></div>` : "";
+          return `<div class="item"><span aria-label="${isDone ? "done" : "to do"}">${isDone ? "✅" : "○"}</span><div class="main-col"><div class="title">${esc(title)}</div>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}</div>${controls}</div>`;
+        }).join("") || `<div class="empty">No tasks yet.</div>`}</div>${canEditPlan ? `<div class="card-b"><button class="btn small" data-task-op="add">Add a task</button></div>` : ""}`) : ""}
 
       ${runs.length ? fold("Activity & Runs", runs.length, `<div class="list">${runs.map(runItem).join("")}</div>`) : ""}
 
@@ -1681,6 +1688,18 @@ pages.job = async ([id]) => {
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
     `,
     after: () => {
+      view.querySelectorAll("[data-task-op]").forEach((btn) => btn.addEventListener("click", async () => {
+        const op = btn.dataset.taskOp, i = btn.dataset.i === undefined ? null : Number(btn.dataset.i);
+        const call = async (body, ok) => { try { await api(`jobs/${encodeURIComponent(id)}/plan-tasks`, { method: "POST", body }); if (ok) toast(ok); route(); } catch (e) { toast(e.message, true); } };
+        const form = (t = {}) => `<label class="field"><span>What this step does</span><input type="text" name="title" required maxlength="200" value="${esc(t.title || "")}"></label>
+          <label class="field"><span>Details <span class="muted">(optional)</span></span><textarea name="description" rows="3" maxlength="2000">${esc(t.description || "")}</textarea></label>
+          <label class="field"><span>Done when <span class="muted">(one per line)</span></span><textarea name="acceptance_criteria" rows="3">${esc((t.acceptance_criteria || []).join("\n"))}</textarea></label>
+          <label class="field"><span>Files it should touch <span class="muted">(one per line)</span></span><textarea name="likely_files" rows="2">${esc((t.likely_files || []).join("\n"))}</textarea></label>`;
+        if (op === "add") { const v = await formDialog("Add a task", form(), "Add"); if (v) call({ op: "add", ...v }, "Task added"); }
+        else if (op === "edit") { const v = await formDialog("Edit task", form(tasks[i]), "Save"); if (v) call({ op: "edit", index: i, ...v }, "Task saved"); }
+        else if (op === "remove") { call({ op: "remove", index: i }, "Task removed"); }
+        else call({ op: "move", index: i, direction: op });
+      }));
       view.querySelectorAll("[data-diff-path]").forEach((box) => box.addEventListener("toggle", async () => {
         if (!box.open || box.dataset.loaded) return;
         box.dataset.loaded = "1";
