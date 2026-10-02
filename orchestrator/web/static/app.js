@@ -20,6 +20,7 @@ if (typeof window !== "undefined" && window.firebase && !window.firebase.apps?.l
 // True from the moment someone starts signing in until they are in (or told why not). While it is set, background
 // refreshes leave the page alone, so the sign-in screen is replaced by a loading screen instead of being redrawn.
 let signingIn = false;
+let blockedProvider = null; // set when the browser blocks the sign-in window, so full-page sign-in can be offered (it fails in some browsers)
 try { signingIn = Object.keys(sessionStorage).some((k) => k.startsWith("firebase:pendingRedirect") && sessionStorage.getItem(k) === "true"); } catch { /* storage blocked: nothing to resume */ }
 
 function endSigningIn(resume = false) {
@@ -53,10 +54,12 @@ if (typeof window !== "undefined" && window.firebase?.auth) {
         }
       }
     }).catch((err) => {
-      if (signingIn) endSigningIn(true);
-      if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
-        console.warn("Redirect sign-in notice:", err);
-      }
+      if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { if (signingIn) endSigningIn(true); return; }
+      console.warn("Redirect sign-in notice:", err);
+      endSigningIn();
+      showSignInGate(/initial state|storage|partition/i.test(`${err.code} ${err.message}`)
+        ? "Your browser kept this site from finishing full-page sign-in (it blocks the storage that step needs). Use the pop-up sign-in with pop-ups allowed, or the access token below."
+        : (err.message || "Sign-in didn't finish. Try again."));
     });
   } catch (e) {
     console.warn("getRedirectResult error:", e);
@@ -884,6 +887,7 @@ function showSignInGate(message) {
           <small class="muted" style="display: block; margin-top: 0.35rem; line-height: 1.3;">Run <code>orchestrator ui --tunnel</code> on your Mac to generate an HTTPS URL for your phone.</small>
         </div>
         ` : ""}
+        ${blockedProvider ? `<p class="muted signin-fallback">Pop-ups still blocked? <button type="button" class="linklike" id="redirect-fallback">Try full-page ${esc(blockedProvider.name)} sign-in</button>. Some browsers can't finish this way; the access token below always works.</p>` : ""}
         <details class="manual-token-details" style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
           <summary class="muted" style="cursor: pointer; user-select: none; text-align: center;">Advanced: Sign in with CLI access token</summary>
           <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
@@ -938,9 +942,8 @@ function showSignInGate(message) {
           cred = await firebase.auth().signInWithPopup(makeProvider());
         } catch (popupErr) {
           if (popupErr.code === "auth/popup-blocked") {
-            showSigningIn(`Opening ${name}…`);
-            await firebase.auth().signInWithRedirect(makeProvider());
-            return;
+            blockedProvider = { name, makeProvider };
+            throw Object.assign(new Error(`Your browser blocked the ${name} sign-in window. Allow pop-ups for this site and try again.`), { code: "auth/popup-blocked-explained" });
           }
           throw popupErr;
         }
@@ -967,11 +970,20 @@ function showSignInGate(message) {
         endSigningIn();
         if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { btn.disabled = false; btn.innerHTML = originalHtml; return; }
         const msg = explain[err.code] || err.message;
-        toast(msg, true);
+        if (err.code !== "auth/popup-blocked-explained") toast(msg, true); // the gate already says it
         showSignInGate(msg);
       }
     });
   };
+
+  $("#redirect-fallback")?.addEventListener("click", async () => {
+    const { name, makeProvider } = blockedProvider;
+    blockedProvider = null;
+    signingIn = true;
+    showSigningIn(`Opening ${name}…`);
+    try { await firebase.auth().signInWithRedirect(makeProvider()); }
+    catch (err) { endSigningIn(); showSignInGate(err.message); }
+  });
 
   wireSso("#google-signin-btn", "Google", () => {
     const p = new firebase.auth.GoogleAuthProvider();

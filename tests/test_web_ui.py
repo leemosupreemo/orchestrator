@@ -1955,10 +1955,18 @@ class AccessibilityStaticTests(unittest.TestCase):
         refresh = js[js.index("async function refreshState()"):][:200]
         self.assertIn("if (signingIn) return;", refresh)  # the 5 s poll must not redraw the gate mid sign-in
         self.assertIn("if (signingIn) return;", js[js.index("async function route()"):][:200])
-        sso = js[js.index("const wireSso"):js.index("wireSso(\"#google-signin-btn\"")]
+        sso = js[js.index("const wireSso"):js.index("$(\"#redirect-fallback\")")]  # the provider buttons
+        fallback = js[js.index("$(\"#redirect-fallback\")"):js.index("wireSso(\"#google-signin-btn\"")]
         self.assertLess(sso.index("signingIn = true"), sso.index("signInWithPopup"))  # set before the provider window opens
         self.assertLess(sso.index("showSigningIn("), sso.index("api(\"auth\""))  # loading screen before the token exchange
         self.assertEqual(sso.count("endSigningIn()"), 2)  # on success and on failure, so it can never spin forever
+        # A blocked pop-up is explained, not turned into a full-page redirect: that flow dies with "missing initial state" in
+        # browsers that partition storage between the site and Firebase's auth domain. It is offered, opt-in, instead.
+        self.assertNotIn("signInWithRedirect", sso)
+        self.assertIn("Allow pop-ups for this site", sso)
+        self.assertIn('id="redirect-fallback"', js)
+        self.assertIn("signInWithRedirect", fallback)  # only when asked for, from the fallback link
+        self.assertIn("initial state", js[js.index("Redirect sign-in notice"):][:600])  # and that error, if it reaches the app, is explained
         self.assertIn("pendingRedirect", js)  # coming back from a redirect shows loading, not the options
         self.assertIn("showSigningIn(\"Unlocking…\")", js)  # the token form too
 
