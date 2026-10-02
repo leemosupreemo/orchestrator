@@ -272,7 +272,7 @@ form.stack, .stack { display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > span { font-weight: 560; font-size: 14px; }
 .field small, .hint-text { color: var(--muted); font-size: 12.5px; }
-input[type=text], input[type=search], textarea, select {
+input[type=text], input[type=search], input[type=url], input[type=number], input[type=email], input[type=password], textarea, select {
   font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; padding: 9px 11px; width: 100%;
 }
@@ -288,7 +288,7 @@ option.manage-projects-option {
 }
 textarea { min-height: 110px; resize: vertical; }
 input:focus, textarea:focus, select:focus, .btn:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.segmented { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.segmented { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; }
 .segmented label {
   border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; background: var(--panel);
 }
@@ -1397,3 +1397,13 @@ dialog h2 { font-size: 17px; }
 .diff-line.del { background: var(--bad-soft); color: var(--text); }
 .diff-line.hunk { color: var(--muted); }
 .task-controls { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* New job */
+.nj-logs { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.nj-logs .check small { display: block; color: var(--muted); }
+.upload-chips { gap: 6px; flex-wrap: wrap; }
+input[type="file"] { font: inherit; color: var(--muted); max-width: 100%; }
+input[type="file"]::file-selector-button { font: inherit; padding: 6px 12px; margin-right: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--text); cursor: pointer; }
+fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+
+[hidden] { display: none !important; }

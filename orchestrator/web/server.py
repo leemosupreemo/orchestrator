@@ -1428,6 +1428,10 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
         rel_to_root = str(path.relative_to(safe_resolve(root)))
         refs.append({"path": rel_to_root, "name": upload_display_name(path), "type": new_job_form.reference_type(rel)})
         files.append((upload_display_name(path), new_job_form.reference_type(rel), rel_to_root))
+    for url in [u.strip() for u in (params.get("urls") or []) if isinstance(u, str) and re.fullmatch(r"https?://\S{1,2000}", u.strip())][:5]:
+        kind = "figma_url" if "figma.com" in urlparse(url).netloc else "url_reference"
+        refs.append({"url": url, "name": url, "type": kind})
+        files.append((url, kind, url))
     spec += new_job_form.attachments_block(logs, files)
     all_logs = [str(runtime_file(root, r).relative_to(safe_resolve(root))) for r in log_rels + [r for r in file_rels if new_job_form.upload_kind(r) == "log"]]
     params["_attachments"] = {"logs": all_logs, "refs": refs}
@@ -2234,7 +2238,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "repro", "expected", "vibe", "subsystems", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "repro", "expected", "vibe", "subsystems", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
@@ -3080,7 +3084,7 @@ class UIHandler(BaseHTTPRequestHandler):
                     job["last_manual_log_paths"] = list(dict.fromkeys(list(job.get("last_manual_log_paths") or []) + attachments["logs"]))
                 if attachments.get("refs"):
                     job["reference_artifacts"] = list(job.get("reference_artifacts") or []) + [
-                        {"type": r["type"], "path": r["path"], "note": r["name"]} for r in attachments["refs"]]
+                        {"type": r["type"], "note": r["name"], **{k: r[k] for k in ("path", "url") if r.get(k)}} for r in attachments["refs"]]
                 write_json_file(job_path, job)
                 return
             time.sleep(0.5)

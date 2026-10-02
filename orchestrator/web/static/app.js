@@ -1742,35 +1742,144 @@ pages.job = async ([id]) => {
 };
 
 const JOB_TYPE_INFO = [
-  ["bug", "Bug fix", "Find and fix a problem"],
-  ["feature", "Feature", "Plan, then build"],
-  ["quick", "Quick change", "Small tweak or refactor"],
-  ["design", "Design", "Prototype a screen"],
+  ["bug", "Bug fix", "Something is broken"],
+  ["feature", "Feature", "Something new"],
+  ["design", "Design", "A screen or flow"],
   ["coverage", "Tests", "Add missing tests"],
+  ["quick", "Quick change", "A small tweak"],
 ];
+const NJ_VIBES = [["minimalist", "Minimalist: clean, lots of space"], ["glassmorphism", "Glassy: frosted glass, vivid colour"], ["brutalist", "Bold: raw, high contrast"],
+  ["high-energy", "Playful: animated, dynamic"], ["gothic-noir", "Dark and moody"], ["other", "Something else…"]];
+const NJ_UPLOAD_LIMIT = 25 * 1024 * 1024;
+
+async function uploadFile(file) {
+  const backend = getBackendUrl(), token = getToken();
+  const res = await fetch(`${backend ?? ""}/api/uploads?name=${encodeURIComponent(file.name)}`, {
+    method: "POST", body: file, credentials: backend ? "omit" : "same-origin",
+    headers: { "Content-Type": "application/octet-stream", "X-Orchestrator-UI": "1", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+
+const formatBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 pages.new = async (_, query) => {
-  const picker = await linkPickerHtml();
   let features = [];
   try { features = (await api("features")).features; } catch { /* the field just doesn't show */ }
+  const wanted = query.get("type");
+  const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "bug", uploads: {}, uploading: 0, logs: new Set(), recent: null,
+    v: { summary: query.get("summary") || "", details: query.get("spec") || "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", url: "" } };
+
+  const field = (label, input, hint = "") => `<label class="field"><span>${label}</span>${input}${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
+  const opt = (text) => ` <span class="muted">(${text})</span>`;
+  const uploadBox = (label, hint, accept, optional = true) => `<div class="field"><span>${label}${optional ? opt("optional") : ""}</span>
+      <input type="file" id="nj-files" multiple accept="${accept}" aria-label="${esc(label)}"><small class="hint-text">${hint}</small>
+      <div class="upload-chips row" id="nj-chips" aria-live="polite"></div></div>`;
+  const logPicker = () => {
+    const rows = (st.recent || []).map((l, i) => `<label class="check"><input type="checkbox" data-nj-log="${esc(l.path)}" ${st.logs.has(l.path) ? "checked" : ""}>
+      <span>${esc(l.label)}<small>${esc(ago(l.mtime))} · ${esc(formatBytes(l.size))}${l.kind === "device" ? " · from a phone" : ""}${i === 0 ? " · newest" : ""}</small></span></label>`).join("");
+    return `<fieldset class="field nj-logs"><span>Logs${opt("optional")}</span>
+      ${st.recent === null ? `<small class="muted">Looking for recent logs…</small>` : rows || `<small class="muted">No recent logs found. Upload one below, or pull device logs first.</small>`}
+      ${uploadBox("Upload logs or screenshots", "A crash log, a console dump, a screenshot of the problem. We read the end of each log.", "image/*,.log,.txt,.json,.md,.crash,.ips")}</fieldset>`;
+  };
+  const featureSelect = () => features.length ? field(`Part of a feature${opt("optional")}`, `<select name="feature"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select>`) : "";
+
+  const fieldsHtml = async () => {
+    const v = st.v;
+    switch (st.type) {
+      case "bug": {
+        const picker = await linkPickerHtml({ prefer: ["sentry", "jira"], label: "Link a Sentry error or ticket", emptyHint: "" });
+        return { picker, html: `
+          ${field("What's going wrong?", `<input type="text" name="summary" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">`)}
+          ${field(`How do I make it happen?${opt("optional")}`, `<textarea name="repro" rows="3" placeholder="1. Join a lobby&#10;2. Background the app for 30 seconds&#10;3. Come back">${esc(v.repro)}</textarea>`, "One step per line.")}
+          ${field(`What should happen instead?${opt("optional")}`, `<input type="text" name="expected" maxlength="2000" value="${esc(v.expected)}" placeholder="The seat is still mine">`)}
+          ${logPicker()}${picker.html}` };
+      }
+      case "feature": {
+        const picker = await linkPickerHtml({ prefer: ["jira", "trello"], label: "Link a ticket or card", emptyHint: "" });
+        return { picker, html: `
+          ${field("What should it do?", `<input type="text" name="summary" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. Let either player ask for a rematch">`)}
+          ${field(`Anything specific?${opt("optional")}`, `<textarea name="spec" rows="4" placeholder="Who it's for, rules it must follow, what &quot;done&quot; looks like">${esc(v.details)}</textarea>`,
+            "Skip anything you don't care about. The AI picks sensible defaults and lists what it assumed, so you can change it.")}
+          ${picker.html}` };
+      }
+      case "design": {
+        const picker = await linkPickerHtml({ prefer: ["figma"], label: "Pick a Figma design", emptyHint: "" });
+        const vibeOptions = NJ_VIBES.map(([k, t]) => `<option value="${k}" ${k === v.vibe ? "selected" : ""}>${esc(t)}</option>`).join("");
+        return { picker, html: `
+          ${field("What are you designing?", `<textarea name="summary" required rows="3" maxlength="500" placeholder="e.g. A profile screen with stats, recent matches and an edit button">${esc(v.summary)}</textarea>`)}
+          ${field("Look and feel", `<select name="vibe">${vibeOptions}</select>`)}
+          <div class="field" id="nj-custom-vibe" ${v.vibe === "other" ? "" : "hidden"}>${field("Describe it", `<input type="text" name="customVibe" maxlength="200" value="${esc(v.customVibe)}" placeholder="e.g. Soft UI, like Things 3">`)}</div>
+          <fieldset class="field"><span>References${opt("optional")}</span>
+            ${uploadBox("Upload files", "Images, a PDF, a .fig file or an HTML mockup: screens you like, a sketch, an existing design.", "image/*,.pdf,.fig,.html,.htm", false)}
+            ${picker.connected ? picker.html : field("Or paste a link", `<input type="url" name="url" value="${esc(v.url)}" placeholder="https://www.figma.com/design/…">`,
+              `A Figma or other design link. <a href="#/connections">Connect Figma</a> to search your files here instead.`)}</fieldset>
+          ${field(`Anything else?${opt("optional")}`, `<textarea name="spec" rows="2" placeholder="Constraints, accessibility needs, things to avoid">${esc(v.details)}</textarea>`)}` };
+      }
+      case "coverage":
+        return { picker: null, html: `
+          ${field("What should be tested?", `<input type="text" name="summary" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. The lobby and seat assignment">`)}
+          ${field(`Specific parts${opt("optional")}`, `<input type="text" name="subsystems" maxlength="2000" value="${esc(v.subsystems)}" placeholder="e.g. SeatService, rejoin flow">`, "Leave blank to cover the whole area.")}` };
+      default:
+        return { picker: null, html: `${field("What should change?", `<textarea name="summary" required rows="4" maxlength="20000" placeholder="e.g. Rename Foo to Bar everywhere and update the docs">${esc(v.summary)}</textarea>`, "This goes straight to the builder with no separate planning step.")}` };
+    }
+  };
+
+  const mine = () => (st.uploads[st.type] ||= []); // files belong to the kind of job they were added to
+  const form = () => $("#new-job");
+  const read = (name) => form()?.elements[name]?.value ?? undefined;
+  const capture = () => { // remember what was typed before the fields are swapped
+    const v = st.v;
+    for (const [key, name] of [["summary", "summary"], ["details", "spec"], ["repro", "repro"], ["expected", "expected"], ["vibe", "vibe"], ["customVibe", "customVibe"], ["subsystems", "subsystems"], ["url", "url"]]) {
+      const val = read(name); if (val !== undefined) v[key] = val;
+    }
+  };
+  const chips = () => {
+    const box = $("#nj-chips"); if (!box) return;
+    box.innerHTML = mine().map((u, i) => `<span class="chip">${esc(u.name)} · ${esc(formatBytes(u.size))}<button type="button" data-nj-remove="${i}" aria-label="Remove ${esc(u.name)}">✕</button></span>`).join("")
+      + (st.uploading ? `<span class="muted">Uploading…</span>` : "");
+  };
+
+  let picker = null;
+  const render = async () => {
+    const out = await fieldsHtml();
+    picker = out.picker;
+    $("#nj-fields").innerHTML = out.html;
+    picker?.wire();
+    chips();
+    $("#nj-fields input, #nj-fields textarea")?.focus({ preventScroll: true });
+    $("#nj-files")?.addEventListener("change", async (e) => {
+      for (const file of [...e.target.files]) {
+        if (file.size > NJ_UPLOAD_LIMIT) { toast(`${file.name} is over ${NJ_UPLOAD_LIMIT / 1048576} MB`, true); continue; }
+        st.uploading += 1; chips();
+        try { const type = st.type; const saved = await uploadFile(file); (st.uploads[type] ||= []).push(saved); } catch (err) { toast(`${file.name}: ${err.message}`, true); }
+        st.uploading -= 1; chips();
+      }
+      e.target.value = "";
+    });
+    $("#nj-chips")?.addEventListener("click", (e) => { const b = e.target.closest("[data-nj-remove]"); if (b) { mine().splice(Number(b.dataset.njRemove), 1); chips(); } });
+    $("select[name=vibe]")?.addEventListener("change", (e) => { $("#nj-custom-vibe").hidden = e.target.value !== "other"; });
+    document.querySelectorAll("[data-nj-log]").forEach((box) => box.addEventListener("change", () => { box.checked ? st.logs.add(box.dataset.njLog) : st.logs.delete(box.dataset.njLog); }));
+    if (st.type === "bug" && st.recent === null) {
+      // only a log from the last day is likely to be about this bug, so only that one starts ticked
+      try { st.recent = (await api("recent-logs")).logs; if (st.logs.size === 0 && st.recent[0] && Date.now() / 1000 - st.recent[0].mtime < 86400) st.logs.add(st.recent[0].path);  } catch { st.recent = []; }
+      if (st.type === "bug") { capture(); await render(); }
+    }
+  };
+
   return {
-  title: "New job",
-  sub: "Describe the work. It gets planned, then built on a worker. Anything that needs your input shows up as it runs.",
-  html: `
+    title: "New job",
+    sub: "Tell it what you need. It's planned, then built on a worker, and anything that needs you shows up on Home.",
+    html: `
     <form class="card card-b stack" id="new-job">
-      <div class="field"><span>Kind</span>
-        <div class="segmented">${JOB_TYPE_INFO.map(([v, t, d], i) =>
-          `<label><input type="radio" name="type" value="${v}" ${(query.get("type") || "bug") === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
+      <div class="field"><span>What kind of work?</span>
+        <div class="segmented" role="radiogroup" aria-label="Kind of work">${JOB_TYPE_INFO.map(([v, t, d]) =>
+          `<label><input type="radio" name="type" value="${v}" ${st.type === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
         </div></div>
-      <label class="field"><span>What should happen?</span>
-        <input type="text" name="summary" required maxlength="500" value="${esc(query.get("summary") || "")}" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">
-      </label>
-      <label class="field"><span>Details <span class="muted">(optional)</span></span>
-        <textarea name="spec" placeholder="Steps to reproduce, expected vs actual, acceptance criteria, links…">${esc(query.get("spec") || "")}</textarea>
-      </label>
-      ${features.length ? `<label class="field"><span>Feature <span class="muted">(optional)</span></span><select name="feature"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>` : ""}
-      <label class="check"><input type="checkbox" name="recommend" checked><span>You decide the details<small>I don't have a strong opinion. The AI picks sensible defaults and lists what it assumed so you can change it.</small></span></label>
-      ${picker.html}
+      <div class="stack" id="nj-fields"></div>
+      ${featureSelect()}
       <details class="advanced"><summary>Options</summary>
         <div class="stack">
           <label class="field"><span>Where to work</span>
@@ -1782,24 +1891,31 @@ pages.new = async (_, query) => {
           </label>
           <label class="check"><input type="checkbox" name="no_dispatch"><span>Plan only<small>Stop after planning so you can review the plan first.</small></span></label>
           <label class="check"><input type="checkbox" name="free"><span>Free models only</span></label>
-          <label class="check risky"><input type="checkbox" name="yolo"><span>Autopilot<small>Skips every confirmation and runs follow-up steps automatically — including a real Firebase release to testers.</small></span></label>
+          <label class="check risky"><input type="checkbox" name="yolo"><span>Autopilot<small>Skips every confirmation and runs follow-up steps automatically, including a real Firebase release to testers.</small></span></label>
         </div>
       </details>
       <div class="row"><span class="spacer"></span><button class="btn primary big" type="submit">Create job</button></div>
     </form>`,
-  after: () => {
-    picker.wire();
-    $("#new-job").addEventListener("submit", (e) => {
-      e.preventDefault();
-      const f = new FormData(e.target);
-      let links = [];
-      try { links = JSON.parse(f.get("links") || "[]"); } catch { /* none */ }
-      runAction("new_job", {
-        type: f.get("type"), summary: f.get("summary"), spec: f.get("spec"), branch_mode: f.get("branch_mode") || "new",
-        no_dispatch: f.has("no_dispatch"), recommend: f.has("recommend"), feature: f.get("feature") || "", yolo: f.has("yolo"), free: f.has("free"), links,
+    after: async () => {
+      form().querySelectorAll("input[name=type]").forEach((r) => r.addEventListener("change", async () => { capture(); st.type = r.value; await render(); }));
+      await render();
+      form().addEventListener("submit", (e) => {
+        e.preventDefault();
+        if (st.uploading) { toast("Wait for the upload to finish.", true); return; }
+        capture();
+        let links = [];
+        try { links = JSON.parse(form().elements.links?.value || "[]"); } catch { /* none */ }
+        const f = new FormData(form());
+        const v = st.v;
+        const params = { type: st.type, summary: v.summary, branch_mode: f.get("branch_mode") || "new", no_dispatch: f.has("no_dispatch"), yolo: f.has("yolo"), free: f.has("free"),
+          feature: f.get("feature") || "", links, files: mine().map((u) => u.path) };
+        if (st.type === "bug") Object.assign(params, { repro: v.repro, expected: v.expected, logs: [...st.logs] });
+        if (st.type === "feature") params.spec = v.details;
+        if (st.type === "design") Object.assign(params, { spec: v.details, vibe: v.vibe === "other" ? (v.customVibe.trim() || "minimalist") : v.vibe, urls: v.url.trim() ? [v.url.trim()] : [] });
+        if (st.type === "coverage") params.subsystems = v.subsystems;
+        runAction("new_job", params);
       });
-    });
-  },
+    },
   };
 };
 
@@ -2115,7 +2231,7 @@ pages.help = async () => ({
   html: `
     <section class="card mb-16"><div class="card-h"><h2>How a piece of work flows</h2></div><div class="card-b">
       <ol class="help-steps">
-        <li><strong>Describe it.</strong> <a href="#/new">New job</a>: say what should happen, in your own words. Leave “You decide the details” on if you have no strong opinion.</li>
+        <li><strong>Describe it.</strong> <a href="#/new">New job</a>: pick the kind of work and answer only what that kind needs. A bug asks how to reproduce it and offers your latest logs; a design takes images or a Figma link; a quick change is one box. Leave out anything you don't care about and the AI picks sensible defaults, then lists what it assumed.</li>
         <li><strong>It gets planned.</strong> You may be asked a question. Anything waiting on you shows at the top of <a href="#/">Home</a>.</li>
         <li><strong>It gets built.</strong> A worker writes the code and the tests, on its own branch. Pause it any time; Resume picks up at the next task.</li>
         <li><strong>You review it.</strong> The job page shows progress, test cases, changes and a scope check. Ask the AI about it, revise the plan, or run a fix.</li>
@@ -2789,13 +2905,13 @@ pages.connections = async () => {
 
 // A small picker for linking items from connected apps. Keeps its picks in a hidden input
 // named "links" (JSON), so it works inside forms and dialogs alike.
-async function linkPickerHtml() {
+async function linkPickerHtml({ prefer = [], label = "Link from your apps", emptyHint = null } = {}) {
   let providers = [];
   try { providers = (await api("integrations")).integrations.filter((p) => p.connected); } catch { /* older server */ }
   if (!providers.length) {
-    return { html: `<div class="muted link-picker-empty">Link a Jira ticket, Trello card, Sentry issue or Figma design: <a href="#/connections">connect an app</a>.</div>`, wire: () => {} };
+    return { html: emptyHint ?? `<div class="muted link-picker-empty">Link a Jira ticket, Trello card, Sentry issue or Figma design: <a href="#/connections">connect an app</a>.</div>`, wire: () => {}, connected: false };
   }
-  const html = `<div class="link-picker field"><span>Link from your apps <span class="muted">(optional)</span></span>
+  const html = `<div class="link-picker field"><span>${esc(label)} <span class="muted">(optional)</span></span>
     <div class="row"><select class="lp-provider" aria-label="App">${providers.map((p) => `<option value="${esc(p.id)}" data-search="${p.searchable}">${esc(p.name)}</option>`).join("")}</select>
       <input type="text" class="lp-input" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;min-width:160px"><button type="button" class="btn small lp-add">Add</button></div>
     <small class="hint-text lp-hint"></small>
@@ -2826,9 +2942,11 @@ async function linkPickerHtml() {
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); root.querySelector(".lp-add").click(); } });
     root.querySelector(".lp-add").addEventListener("click", () => { const ref = input.value.trim(); if (ref) add({ provider: sel.value, ref, title: ref }); });
     chips.addEventListener("click", (e) => { const b = e.target.closest("[data-lp-remove]"); if (b) { picked.splice(Number(b.dataset.lpRemove), 1); sync(); } });
+    const first = prefer.find((id) => [...sel.options].some((o) => o.value === id));
+    if (first) sel.value = first;
     refreshHint();
   };
-  return { html, wire: () => document.querySelectorAll(".link-picker").forEach((r) => { if (!r.dataset.wired) { r.dataset.wired = "1"; wire(r); } }) };
+  return { connected: true, html, wire: () => document.querySelectorAll(".link-picker").forEach((r) => { if (!r.dataset.wired) { r.dataset.wired = "1"; wire(r); } }) };
 }
 
 document.addEventListener("click", (e) => {

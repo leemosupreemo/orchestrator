@@ -678,6 +678,17 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(params["_attachments"]["refs"], [])
         self.assertEqual(params["_attachments"]["logs"], [saved["path"]])
 
+    def test_design_links_are_listed_and_recorded_and_junk_is_ignored(self):
+        params = {"type": "design", "summary": "Login screen", "urls": ["https://www.figma.com/design/abc/Login", "https://example.com/mock", "javascript:alert(1)", "not a url", "ftp://x/y"]}
+        spec = self.spec_of(ui.build_new_job(params, self.root))
+        self.assertIn("https://www.figma.com/design/abc/Login", spec)
+        self.assertNotIn("javascript:", spec)
+        self.assertEqual([r["type"] for r in params["_attachments"]["refs"]], ["figma_url", "url_reference"])
+        path = self.root / ".orchestrator" / "jobs" / "20260922-bug-1.json"
+        ui.UIHandler._record_attachments(path, params["_attachments"])
+        refs = json.loads(path.read_text())["reference_artifacts"]
+        self.assertEqual((refs[0]["url"], refs[0]["type"], "path" in refs[0]), ("https://www.figma.com/design/abc/Login", "figma_url", False))
+
     def test_attachments_must_be_files_inside_the_runtime_folder(self):
         (self.root / "secret.txt").write_text("TOPSECRET")
         for rel in ("secret.txt", "../secret.txt", "/etc/hosts", ".orchestrator/nope.log"):
@@ -1802,6 +1813,14 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("waitingSectionHtml(waiting)", home)
         self.assertLess(home.index("waitingSectionHtml(waiting)"), home.index('class="job-table"'))
         self.assertIn('rest: ["Everything else"', home)  # jobs already shown above aren't listed twice by default
+
+    def test_new_job_asks_what_each_kind_needs_and_has_no_you_decide_toggle(self):
+        form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
+        for needle in ("How do I make it happen?", "What should happen instead?", "Look and feel", "Upload logs or screenshots",
+                       "What should be tested?", "What should change?", "recent-logs", "uploadFile(", "Pick a Figma design"):
+            self.assertIn(needle, form, needle)
+        self.assertNotIn("You decide the details", self.js)
+        self.assertNotIn("recommend", form.lower().replace("recommended", ""))
 
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
