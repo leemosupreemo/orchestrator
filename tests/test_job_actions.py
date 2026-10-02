@@ -47,6 +47,22 @@ class JobActionsTests(unittest.TestCase):
                 self.assertEqual(job_actions.main(["merge", str(path)]), 0)
         job = merge.call_args[0][0]
         self.assertEqual((job["pr_number"], job["_path"]), (141, path.resolve()))
+    def test_complete_archives_a_job_without_a_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"status": "review-needed", "branch": "ai/issue-3"}))
+            with patch("dev_console.archive_job") as archive:
+                self.assertEqual(job_actions.main(["complete", str(path)]), 0)
+        archive.assert_called_once()
+        self.assertEqual(archive.call_args.kwargs["status"], "completed")
+
+    def test_complete_refuses_a_job_with_a_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"status": "review-needed", "pr_number": 7}))
+            with patch("dev_console.archive_job") as archive:
+                self.assertEqual(job_actions.main(["complete", str(path)]), 1)
+        archive.assert_not_called()
 
 
 class ApproveReviseTests(unittest.TestCase):

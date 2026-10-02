@@ -1750,8 +1750,8 @@ function drawFeatureLinks(map) {
 
 pages.features = async (_, query) => {
   const view_ = query.get("view") === "map" ? "map" : "list";
-  const [{ features, overlaps }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
-  const byId = new Map(jobs.map((j) => [j.id, j]));
+  const [{ features, overlaps, archived_jobs: archived }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
+  const byId = new Map([...archived, ...jobs].map((j) => [j.id, j]));
   const names = new Map(features.map((f) => [f.id, f.name]));
   const loose = jobs.filter((j) => !j.feature && j.state.group !== "done");
   const overlapping = new Set(overlaps.flatMap((o) => o.features));

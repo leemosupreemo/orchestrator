@@ -763,9 +763,10 @@ class JobStateTests(unittest.TestCase):
             st = self.state(status=status)
             self.assertEqual((st["group"], st["tone"], st["next"] and st["next"]["action"]), (group, tone, action), status)
 
-    def test_review_needed_offers_merge_only_with_a_pr(self):
+    def test_review_needed_offers_merge_with_a_pr_and_mark_complete_without(self):
         self.assertEqual(self.state(status="review-needed", pr_number=141)["next"]["action"], "merge")
-        self.assertEqual(self.state(status="review-needed")["next"]["action"], "console")
+        self.assertEqual(self.state(status="review-needed")["next"]["action"], "complete")
+        self.assertTrue(ui.ACTIONS["complete"].confirm)
 
     def test_debugging_is_red_only_when_tests_fail(self):
         failing = self.state(status="debugging", test_status="tests-failed")
@@ -1309,6 +1310,20 @@ class FeatureEndpointTests(ServerTestCase):
         res, err = self.post("/api/features/auth", {"depends_on": ["lobby"]})
         self.assertEqual(res.status, 400)
         self.assertIn("circle", err["error"])
+
+    def test_finished_jobs_still_count_toward_their_feature(self):
+        archive = self.root / ".orchestrator" / "jobs" / "archive"
+        archive.mkdir()
+        (archive / "20260901-feature-9.json").write_text(json.dumps(
+            {"title": "Shipped", "type": "feature", "status": "completed", "feature": "lobby"}))
+        (archive / "20260901-feature-8.json").write_text(json.dumps(
+            {"title": "Thrown away", "type": "feature", "status": "discarded", "feature": "lobby"}))
+        self.post("/api/features", {"name": "Lobby"})
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "lobby"})
+        _, data = self.request("GET", "/api/features")
+        lobby = data["features"][0]
+        self.assertEqual((lobby["jobs_total"], lobby["jobs_done"]), (2, 1))
+        self.assertEqual([j["id"] for j in data["archived_jobs"]], ["20260901-feature-9"])
 
     def test_validation_and_ui_header(self):
         res, _ = self.post("/api/features", {"name": " "})

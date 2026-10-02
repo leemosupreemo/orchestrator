@@ -440,7 +440,7 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
     if status == "review-needed":
         if pr:
             return state("needs_you", "attention", "Ready to merge", f"PR #{pr} is ready for your review.", "merge", "Merge & complete")
-        return state("needs_you", "attention", "Ready for review", "Changes are ready; finish up in the console.", "console", "Open in console")
+        return state("needs_you", "attention", "Ready for review", "Changes are ready. No pull request was opened, so there is nothing to merge here. Mark it complete when you're happy.", "complete", "Mark complete")
     if status == "debugging":
         if tests in FAILING_TEST_STATUSES:
             label = "Build failing" if tests == "build-failed" else "Tests failing"
@@ -507,12 +507,23 @@ def job_touched_files(job: dict[str, Any]) -> list[str]:
     return sorted({str(f).strip().lstrip("./") for f in files if str(f).strip()})
 
 
+def archived_feature_jobs(root: Path) -> list[dict[str, Any]]:
+    """Finished jobs live in jobs/archive; they still count toward their feature."""
+    out = []
+    for path in (jobs_dir(root) / "archive").glob("*.json"):
+        job = read_json_file(path)
+        if job.get("feature") and job.get("status") == "completed":
+            out.append(job_summary(path, job))
+    return sorted(out, key=lambda j: j["updated"], reverse=True)
+
+
 def features_overview(root: Path) -> dict[str, Any]:
+    archived = archived_feature_jobs(root)
     jobs = list_jobs(root)
     features = feature_store.load(runtime_dir(root))
     files = {j["id"]: job_touched_files(read_json_file(jobs_dir(root) / f"{j['id']}.json"))
              for j in jobs if j.get("feature")}
-    return {"features": feature_store.rollup(features, jobs), "overlaps": feature_store.overlaps(features, jobs, files),
+    return {"features": feature_store.rollup(features, jobs + archived), "archived_jobs": archived, "overlaps": feature_store.overlaps(features, jobs, files),
             "unassigned": [j["id"] for j in jobs if not j.get("feature") and j["state"]["group"] != "done"]}
 
 
@@ -1847,6 +1858,8 @@ ACTIONS: dict[str, Action] = {
                     confirm="Merges the job's PR on GitHub, deletes its AI branch and archives the job.", fields=["job"]),
     "discard": Action("Discard job", lambda p, r: orchestrator_argv("script", "job_actions.py", "discard", _job_path(p, r)),
                       confirm="Reverts the files this job changed, deletes its AI branch and archives the job. This can't be undone.", fields=["job"]),
+    "complete": Action("Mark complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "complete", _job_path(p, r)),
+                       confirm="Archives the job as completed. Its branch is left as it is.", fields=["job"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
