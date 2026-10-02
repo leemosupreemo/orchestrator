@@ -434,7 +434,7 @@ const dialogs = {
   async link_logs(params) {
     const hasRemote = state.project?.remote_logs;
     const values = await formDialog("Link Logs (Update Context)", `
-      <p class="muted" style="margin-bottom: 8px;">Attach crash or runtime logs to guide the next repair cycle.</p>
+      <p class="muted mb-8">Attach crash or runtime logs to guide the next repair cycle.</p>
       ${hasRemote ? `<label class="check"><input type="checkbox" name="pull_device" checked><span>Pull newest device launch from Sentry</span></label>` : ''}
       <label class="field"><span>Local log path or log snippet <span class="muted">(optional)</span></span>
         <textarea name="log_text" placeholder="Paste log lines, stack traces, or file path..."></textarea>
@@ -468,7 +468,7 @@ const dialogs = {
     const jobData = await api(`jobs/${encodeURIComponent(params.job)}`);
     const p = jobData.pipeline || {};
     const values = await formDialog("Select LLM Models (Override)", `
-      <p class="muted" style="margin-bottom: 8px;">Override the model pipeline used for planning, building, and reviewing this job.</p>
+      <p class="muted mb-8">Override the model pipeline used for planning, building, and reviewing this job.</p>
       <label class="field"><span>Planner Model</span>
         <input type="text" name="planner" value="${esc(p.planner || '')}" placeholder="gemini-3.1-pro-preview">
       </label>
@@ -727,7 +727,8 @@ async function refreshState() {
     inboxBadge.textContent = state.inbox_count || "";
     inboxBadge.title = `${state.inbox_count} waiting on you`;
   }
-  document.title = Notifications.tabTitle("Orchestrator", state.inbox_count || 0);
+  const pageTitle = $("#page-title")?.textContent;
+  document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
   const topLangsEl = $("#topbar-languages");
   if (topLangsEl && (current?.page === "home" || $("#page-title")?.textContent === state.project?.name)) {
     if (state.project?.languages?.length) {
@@ -1010,7 +1011,7 @@ function setHeader({ title, sub = "", actions = "" }) {
   subEl.innerHTML = sub;
   subEl.hidden = !sub;
   $("#topbar-actions").innerHTML = actions;
-  document.title = `${title} · Orchestrator`;
+  document.title = Notifications.tabTitle(`${title} · Orchestrator`, state.inbox_count || 0);
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -1230,7 +1231,7 @@ function setupPage(s) {
       <div class="setup-progress"><div style="width:${Math.round(100 * s.required_done / s.required_total)}%"></div></div>
       <p class="muted">Jobs open a GitHub issue and pull request, call an AI provider, and run on a machine. Finish the required steps; the optional ones can wait.</p>
       <section class="card">${setupListHtml(s)}</section>
-      ${s.complete ? `<div class="row" style="margin-top:16px"><button class="btn primary big" id="setup-done">Continue to Home</button></div>` : ""}</div>`,
+      ${s.complete ? `<div class="row mt-16"><button class="btn primary big" id="setup-done">Continue to Home</button></div>` : ""}</div>`,
     after: () => {
       const seen = async () => { try { await api("config/setup-seen", { method: "POST", body: {} }); } catch {} if (setupState) setupState.seen = true; route(); };
       $("#setup-skip")?.addEventListener("click", seen);
@@ -1304,7 +1305,7 @@ pages.home = async (_, query) => {
 
   const runningRuns = state.runs.filter((r) => r.running);
   const runningBanner = runningRuns.length
-    ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Running now</h2><span class="count">${runningRuns.length}</span></div>
+    ? `<section class="card mb-16"><div class="card-h"><h2>Running now</h2><span class="count">${runningRuns.length}</span></div>
         <div class="list">${runningRuns.map(liveRunCard).join("")}</div></section>`
     : "";
 
@@ -1313,7 +1314,7 @@ pages.home = async (_, query) => {
     sub: statusLine(p),
     html: `
       <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
-      <div class="hero-actions" style="margin-bottom: 16px;">
+      <div class="hero-actions mb-16">
         <button class="btn big" ${act("fix")}>Fix something</button>
         ${moreActionsMenu(p, { left: true })}
       </div>
@@ -1505,8 +1506,8 @@ pages.job = async ([id]) => {
     sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.feature ? `<span class="sep">·</span><a href="#/features">${esc(featureName || s.feature)}</a>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter }),
     html: `
-      ${runs.filter((r) => r.running).map((r) => `<section class="card" style="margin-bottom: 16px;"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
-      ${s.question ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
+      ${runs.filter((r) => r.running).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
+      ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
         <p class="question">${esc(s.question)}</p><div><button class="btn primary" ${act("answer", { job: s.id })}>Answer</button></div></div></section>` : ""}
 
       <section class="job-hero tone-${esc(s.state.tone || "")}">
@@ -1517,7 +1518,7 @@ pages.job = async ([id]) => {
         <div class="job-hero-action">${heroAction}</div>
       </section>
 
-      <section class="card" style="margin-bottom: 16px;">
+      <section class="card mb-16">
         <div class="card-h"><h2>Progress</h2><span class="count">${tasksDone}/${tasksTotal}</span></div>
         <div class="card-b stack">
           <div class="tasks-progress-wrap">
@@ -1529,16 +1530,16 @@ pages.job = async ([id]) => {
         </div>
       </section>
 
-      <section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Test cases</h2>${testCases.cases.length ? `<span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</div>
+      <section class="card mb-16"><div class="card-h"><h2>Test cases</h2>${testCases.cases.length ? `<span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</div>
         ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad" style="margin-top:10px">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}</div>
         <div class="list">${testCaseRowsHtml(testCases.cases)}</div>`
           : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}</section>
 
-      ${assumptions.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
+      ${assumptions.length ? `<section class="card mb-16"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
 
-      <section class="card" style="margin-bottom: 16px;">
+      <section class="card mb-16">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
         <div class="card-b delta-summary-line">
           <div class="delta-line unsaved">${esc(deltaUnsaved)}</div>
@@ -1550,7 +1551,7 @@ pages.job = async ([id]) => {
 
       <!-- Decomposed Subtasks (if any) -->
       ${(job.subtask_job_ids && job.subtask_job_ids.length) ? `
-        <section class="card" style="margin-bottom: 16px;">
+        <section class="card mb-16">
           <div class="card-h"><h2>Decomposed Sub-Task Jobs</h2><span class="count">${job.subtask_job_ids.length}</span></div>
           <div class="list">
             ${job.subtask_job_ids.map((subId) => `
@@ -1565,7 +1566,7 @@ pages.job = async ([id]) => {
 
       <!-- Simulator Visual QA Screenshots (if any) -->
       ${(visualChecks.length && visualChecks[0].screenshots.length) ? `
-        <section class="card" style="margin-bottom: 16px;">
+        <section class="card mb-16">
           <div class="card-h"><h2>Simulator Visual QA Screenshots</h2><span class="count">${visualChecks[0].screenshots.length} captured</span></div>
           <div class="card-b" style="display:flex; gap:14px; overflow-x:auto; padding:12px 16px;">
             ${visualChecks[0].screenshots.map((img) => `
@@ -1580,12 +1581,12 @@ pages.job = async ([id]) => {
         </section>
       ` : ""}
 
-      <section class="card" style="margin-bottom: 16px;" id="chat-section">
+      <section class="card mb-16" id="chat-section">
         <div class="card-h"><h2>Ask about this job</h2>${conversation.length ? `<span class="count">${conversation.length}</span>` : ""}</div>
         <div class="card-b stack">
           ${conversation.length ? `<div class="chat-thread" role="log" aria-live="polite">${conversation.map((m) => `<div class="chat-msg ${m.role === "user" ? "user" : "assistant"}"><span class="chat-who">${m.role === "user" ? "You" : "AI"}</span><div class="chat-text">${esc(m.text)}</div></div>`).join("")}</div>` : `<div class="muted">Ask why something was done, what a failure means, or what to change. Answers use this job's plan, progress and diff. It can't edit code; use Revise plan or Run fix to act on the answer.</div>`}
           <form id="chat-form" class="stack">
-            <textarea name="message" required maxlength="4000" rows="2" placeholder="e.g. Why did you change the networking layer?"></textarea>
+            <textarea name="message" required maxlength="4000" rows="2" aria-label="Your question about this job" placeholder="e.g. Why did you change the networking layer?"></textarea>
             <div class="row"><span class="spacer"></span><button class="btn primary" type="submit">Send</button></div>
           </form>
         </div>
@@ -1593,17 +1594,17 @@ pages.job = async ([id]) => {
 
       <!-- Docs Section (Brief / Summary / Investigations) -->
       <div id="docs-section">
-        ${docs.map((d, i) => `<section class="card" style="margin-bottom: 16px;"><details class="raw" ${i === 0 ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
+        ${docs.map((d, i) => `<section class="card mb-16"><details class="raw" ${i === 0 ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
       </div>
 
       <!-- Linked from connected apps -->
-      <section class="card" style="margin-bottom: 16px;">
+      <section class="card mb-16">
         <div class="card-h"><h2>Linked tickets, errors &amp; designs</h2><button class="btn small" data-attach-context="${esc(s.id)}">Attach…</button></div>
         <div class="list">${(job.external_links || []).map((l) => `<div class="item"><div class="main-col"><div class="title">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.ref)} ↗</a>` : esc(l.title || l.ref)}</div>
           <div class="meta">${esc([PROVIDER_LABEL[l.provider] || l.provider, l.ref, l.detail].filter(Boolean).join(" · "))}</div></div></div>`).join("") || `<div class="empty">Nothing linked. Attach a Jira ticket, Trello card, Sentry issue or Figma design.</div>`}</div>
       </section>
 
-      ${(job.integration_log || []).length ? `<section class="card" style="margin-bottom: 16px;">
+      ${(job.integration_log || []).length ? `<section class="card mb-16">
         <div class="card-h"><h2>Updates sent to linked apps</h2></div>
         <div class="list">${job.integration_log.slice().reverse().map((e) => `<div class="item"><span aria-label="${e.ok ? "sent" : "failed"}">${e.ok ? "✅" : "⚠️"}</span><div class="main-col">
           <div class="title">${esc(e.message)}</div><div class="meta">${esc([PROVIDER_LABEL[e.provider] || e.provider, e.ref, String(e.event || "").replace(":", " · ").replace("_", " "), e.t].filter(Boolean).join(" · "))}</div></div></div>`).join("")}</div>
@@ -1611,7 +1612,7 @@ pages.job = async ([id]) => {
 
       <!-- Attached UI Mockups / References -->
       ${job.reference_artifacts?.length ? `
-        <section class="card" style="margin-bottom: 16px;">
+        <section class="card mb-16">
           <div class="card-h"><h2>Attached References & Mockups</h2><span class="count">${job.reference_artifacts.length}</span></div>
           <div class="list">
             ${job.reference_artifacts.map((ref) => `
@@ -1627,7 +1628,7 @@ pages.job = async ([id]) => {
       ` : ""}
 
       <!-- Tasks Checklist -->
-      ${tasks.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Tasks Checklist</h2><span class="count">${tasksDone}/${tasks.length}</span></div>
+      ${tasks.length ? `<section class="card mb-16"><div class="card-h"><h2>Tasks Checklist</h2><span class="count">${tasksDone}/${tasks.length}</span></div>
         <div class="list">${tasks.map((t, i) => {
           const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
           const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
@@ -1636,17 +1637,17 @@ pages.job = async ([id]) => {
         }).join("")}</div></section>` : ""}
 
       <!-- Activity & Runs -->
-      ${runs.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Activity & Runs</h2><span class="count">${runs.length}</span></div><div class="list">${runs.map(runItem).join("")}</div></section>` : ""}
+      ${runs.length ? `<section class="card mb-16"><div class="card-h"><h2>Activity & Runs</h2><span class="count">${runs.length}</span></div><div class="list">${runs.map(runItem).join("")}</div></section>` : ""}
 
       <!-- Logs -->
-      <section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Logs</h2></div>
+      <section class="card mb-16"><div class="card-h"><h2>Logs</h2></div>
         <div class="list">${logFiles.map((f) => f.path
           ? `<a class="item" href="#/file?path=${encodeURIComponent(f.path)}"><div class="main-col"><div class="title mono">${esc(f.label)}</div></div></a>`
           : `<div class="item"><div class="main-col"><div class="title">${esc(f.label)}</div></div></div>`).join("")
           || `<div class="empty">No logs linked. Use Attach logs in the More menu.</div>`}</div></section>
 
       <!-- Output Files -->
-      ${outputs.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Output files</h2><span class="count">${outputs.length}</span></div>
+      ${outputs.length ? `<section class="card mb-16"><div class="card-h"><h2>Output files</h2><span class="count">${outputs.length}</span></div>
         <div class="list">${outputs.map((o) => `<a class="item" href="#/file?path=${encodeURIComponent(o.path)}">
           <div class="main-col"><div class="title mono">${esc(o.path.split("/").slice(2).join("/") || o.path)}</div>
           <div class="meta">${(o.size / 1024).toFixed(1)} KB · ${esc(ago(o.mtime))}</div></div></a>`).join("")}</div></section>` : ""}
@@ -1790,14 +1791,14 @@ pages.features = async (_, query) => {
             ${f.waiting_on.length ? `<span class="fmap-wait">Waiting on ${f.waiting_on.map((d) => esc(names.get(d) || d)).join(", ")}</span>` : ""}
           </a>`;
         }).join("")}</div>`).join("")}</div>
-      ${loose.length ? `<div class="muted" style="margin-top:12px">${loose.length} open job${loose.length === 1 ? "" : "s"} not in any feature.</div>` : ""}`;
+      ${loose.length ? `<div class="muted mt-12">${loose.length} open job${loose.length === 1 ? "" : "s"} not in any feature.</div>` : ""}`;
   };
   const card = (f) => {
     const [label, tone] = FEATURE_STATUS[f.status] || FEATURE_STATUS.planned;
     const pct = f.jobs_total ? Math.round((f.jobs_done / f.jobs_total) * 100) : 0;
     const complete = f.status === "complete";
-    return `<section class="card" style="margin-bottom: 16px;" data-feature="${esc(f.id)}">
-      <div class="card-h"><div class="row" style="gap:10px"><h2>${esc(f.name)}</h2><span class="pill ${tone}">${esc(label)}</span></div>
+    return `<section class="card mb-16" data-feature="${esc(f.id)}">
+      <div class="card-h"><div class="row gap-10"><h2>${esc(f.name)}</h2><span class="pill ${tone}">${esc(label)}</span></div>
         ${moreMenu([
           [complete ? "Reopen" : "Mark complete", `data-feature-action="${complete ? "reopen" : "complete"}" data-id="${esc(f.id)}"`, complete ? "More work is coming" : "Done for now. New work reopens it"],
           ["Edit", `data-feature-action="edit" data-id="${esc(f.id)}"`],
@@ -1884,9 +1885,9 @@ pages.inbox = async () => {
     title: "Inbox",
     sub: here.length ? `${here.length} waiting on you in ${state.project.name}` : "Nothing is waiting on you.",
     html: `
-      ${here.length ? `<section class="card" style="margin-bottom: 16px;"><div class="list">${here.map((i) => row(i)).join("")}</div></section>`
+      ${here.length ? `<section class="card mb-16"><div class="list">${here.map((i) => row(i)).join("")}</div></section>`
         : `<div class="empty">You're clear. Questions, reviews, failures and stalled runs show up here as they happen.</div>`}
-      ${[...byProject.values()].map((items) => `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>${esc(items[0].project.name)}</h2><span class="count">${items.length}</span></div>
+      ${[...byProject.values()].map((items) => `<section class="card mb-16"><div class="card-h"><h2>${esc(items[0].project.name)}</h2><span class="count">${items.length}</span></div>
         <div class="list">${items.map((i) => row(i, { away: true })).join("")}</div></section>`).join("")}`,
   };
 };
@@ -1897,16 +1898,16 @@ pages.delivery = async () => {
   const baseRun = pipeline.runs.find((r) => r.on_base);
   const when = (iso) => (iso ? ago(Date.parse(iso) / 1000) : "");
   const latest = testers.latest;
-  const liveCard = live ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Live</h2><span class="count mono">${esc(live.branch)}</span></div>
+  const liveCard = live ? `<section class="card mb-16"><div class="card-h"><h2>Live</h2><span class="count mono">${esc(live.branch)}</span></div>
       <div class="card-b stack">
         <div><strong class="mono">${esc(live.commit)}</strong> ${esc(live.subject)} <span class="muted">· ${esc(live.when)}</span></div>
-        <div class="row" style="gap:10px">
+        <div class="row gap-10">
           <span class="muted">${live.tag ? `Last release ${esc(live.tag)}` : "No release tagged yet"}</span>
           ${live.unreleased ? `<span class="pill attention">${live.unreleased} change${live.unreleased === 1 ? "" : "s"} not released</span>` : `<span class="pill done">Up to date</span>`}
           ${baseRun ? `<a href="${esc(baseRun.url || "#")}" target="_blank" rel="noopener"><span class="pill ${esc(baseRun.tone)}">Build ${esc(baseRun.outcome.replace("_", " "))}</span></a>` : ""}
         </div></div></section>`
-    : `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Live</h2></div><div class="empty">The base branch isn't in this repository yet, so there's nothing live to show.</div></section>`;
-  const testersCard = `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>With testers</h2>
+    : `<section class="card mb-16"><div class="card-h"><h2>Live</h2></div><div class="empty">The base branch isn't in this repository yet, so there's nothing live to show.</div></section>`;
+  const testersCard = `<section class="card mb-16"><div class="card-h"><h2>With testers</h2>
       ${testers.configured ? `<button class="btn small primary" ${act("distribute")}>Send current branch</button>` : `<a class="btn small" href="#/config/firebase">Set up Firebase</a>`}</div>
       <div class="card-b stack">
         ${latest ? `<div><strong>${esc(latest.version || "Unknown version")}${latest.build ? ` (${esc(latest.build)})` : ""}</strong>
@@ -1917,11 +1918,11 @@ pages.delivery = async () => {
         ${testers.configured && !testers.cli_installed ? `<div class="notice bad">The Firebase CLI isn't installed on this machine, so sending will fail. Install it with <code>npm i -g firebase-tools</code>.</div>` : ""}
         ${testers.configured ? `<div class="muted">Add or remove testers and devices in the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener">Firebase console</a>.</div>` : ""}
       </div></section>`;
-  const readyCard = ready.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Ready to ship</h2><span class="count">${ready.length}</span></div>
+  const readyCard = ready.length ? `<section class="card mb-16"><div class="card-h"><h2>Ready to ship</h2><span class="count">${ready.length}</span></div>
       <div class="list">${ready.map((j) => `<div class="item"><a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(j.title)}</div><div class="meta mono">${esc(j.branch)}${j.pr_number ? ` · PR #${esc(j.pr_number)}` : ""}</div></a>
         <div class="side">${testers.configured ? `<button class="btn small" ${act("deliver", { job: j.id })}>Send to testers</button>` : ""}
         ${j.next ? `<button class="btn small primary" ${act(j.next.action, { job: j.id })}>${esc(j.next.label)}</button>` : ""}</div></div>`).join("")}</div></section>` : "";
-  const pipelineCard = `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Pipeline</h2>${d.xcode_cloud ? `<span class="count">Xcode Cloud configured</span>` : ""}</div>
+  const pipelineCard = `<section class="card mb-16"><div class="card-h"><h2>Pipeline</h2>${d.xcode_cloud ? `<span class="count">Xcode Cloud configured</span>` : ""}</div>
       ${pipeline.available ? `<div class="list">${pipeline.runs.map((r) => `<a class="item" href="${esc(r.url || "#")}" target="_blank" rel="noopener"><div class="main-col"><div class="title">${esc(r.title || r.name)}</div>
         <div class="meta"><span class="mono">${esc(r.branch)}</span> · ${esc(r.name)} · ${esc(when(r.created))}</div></div><span class="pill ${esc(r.tone)}">${esc(r.outcome.replace("_", " "))}</span></a>`).join("") || `<div class="empty">No pipeline runs yet.</div>`}</div>`
         : `<div class="empty">Pipeline status comes from GitHub Actions. Sign in with the GitHub CLI (<code>gh auth login</code>) and push this repository to GitHub to see it here.</div>`}</section>`;
@@ -1941,10 +1942,10 @@ const DECISION_LABEL = { keep: "Keep", iterate: "Iterate", drop: "Drop" };
 function kpiFormBody(k = {}) {
   return `<label class="field"><span>What you're measuring</span><input type="text" name="name" required maxlength="80" value="${esc(k.name || "")}" placeholder="e.g. Seat claim rate"></label>
     <label class="field"><span>Event that measures it</span><input type="text" name="event" required pattern="[a-z][a-z0-9_]{1,59}" value="${esc(k.event || "")}" placeholder="lobby_seat_claimed" autocapitalize="off"><small class="muted">Lowercase letters, numbers and underscores. The builder is told to emit it.</small></label>
-    <div class="row" style="gap:10px">
-      <label class="field" style="flex:1"><span>Better when</span><select name="direction"><option value="up" ${k.direction !== "down" ? "selected" : ""}>It goes up</option><option value="down" ${k.direction === "down" ? "selected" : ""}>It goes down</option></select></label>
-      <label class="field" style="flex:1"><span>Target <span class="muted">(optional)</span></span><input type="number" name="target" step="any" value="${k.target ?? ""}"></label>
-      <label class="field" style="flex:1"><span>Unit</span><input type="text" name="unit" maxlength="20" value="${esc(k.unit || "")}" placeholder="%"></label>
+    <div class="row gap-10">
+      <label class="field flex-1"><span>Better when</span><select name="direction"><option value="up" ${k.direction !== "down" ? "selected" : ""}>It goes up</option><option value="down" ${k.direction === "down" ? "selected" : ""}>It goes down</option></select></label>
+      <label class="field flex-1"><span>Target <span class="muted">(optional)</span></span><input type="number" name="target" step="any" value="${k.target ?? ""}"></label>
+      <label class="field flex-1"><span>Unit</span><input type="text" name="unit" maxlength="20" value="${esc(k.unit || "")}" placeholder="%"></label>
     </div>`;
 }
 
@@ -1964,14 +1965,14 @@ pages.measure = async () => {
       ${k.measurements.length ? `<details class="kpi-log"><summary>Learning log (${k.measurements.length})</summary>${k.measurements.slice().reverse().map((m) => `<div class="kpi-entry"><span class="mono">${esc(m.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</span> <span class="muted">${esc(ago(m.t))}</span>${m.decision ? ` <span class="pill ${m.decision === "drop" ? "failed" : m.decision === "iterate" ? "attention" : "done"}">${esc(DECISION_LABEL[m.decision])}</span>` : ""}${m.note ? ` <span>${esc(m.note)}</span>` : ""}</div>`).join("")}</details>` : ""}
     </div>`;
   };
-  const card = (f) => `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>${esc(f.name)}</h2><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div>
+  const card = (f) => `<section class="card mb-16"><div class="card-h"><h2>${esc(f.name)}</h2><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div>
     <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working?</div>`}</div></section>`;
   return {
     title: "Measure",
     sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
     actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
     html: `
-      <section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Analytics</h2>
+      <section class="card mb-16"><div class="card-h"><h2>Analytics</h2>
         <div class="row"><button class="btn small ${connected ? "" : "primary"}" id="analytics-set">${data.provider ? "Change" : "Connect"}</button>
         ${connected ? `<button class="btn small" id="analytics-test">Send test event</button><button class="btn small danger" id="analytics-clear">Disconnect</button>` : ""}</div></div>
         <div class="card-b stack"><strong>${connected ? `${esc(data.provider_name)} (${esc(data.region.toUpperCase())})` : data.provider ? `${esc(data.provider_name)}: key missing` : "Not connected"}</strong>
@@ -2020,7 +2021,7 @@ pages.checkup = async () => {
     title: "Check-up",
     sub: `${esc(d.name)} · ${esc(d.stage)}`,
     html: `
-      <div class="tasks-progress-wrap" style="margin-bottom: 16px;"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round((d.ok / d.total) * 100)}%"></div></div><span class="progress-text">${d.ok}/${d.total} in place</span></div>
+      <div class="tasks-progress-wrap mb-16"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round((d.ok / d.total) * 100)}%"></div></div><span class="progress-text">${d.ok}/${d.total} in place</span></div>
       ${next ? `<section class="card" style="margin-bottom: 16px; border-color: var(--accent);"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div>
         <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on the Inbox for what needs you next.</div>`}
       <section class="card"><div class="card-h"><h2>Everything</h2><span class="muted">Product state. Tools and keys are in the setup checklist.</span></div>
@@ -2118,7 +2119,7 @@ pages.tests = async (_, query) => {
     actions: `<button class="btn primary" ${act("test")}>Run all tests</button>${moreMenu([["Measure coverage", act("coverage"), "Full test run with coverage; takes a while"], ["Refresh list", `data-href="#/tests?refresh=1"`], ["Expand coverage (AI job)", `data-href="#/new?type=coverage"`]])}`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
-      ${caseView.cases.length ? `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Test cases</h2>
+      ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>
         <div class="filters">${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
           `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div></div>
         <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
@@ -2627,7 +2628,7 @@ pages.connections = async () => {
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
         </div></section>`).join("")}</div>
-      <p class="muted" style="margin-top:12px">Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>`,
+      <p class="muted mt-12">Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>`,
     after: () => {
       const onClick = async (ev) => {
         const connect = ev.target.closest("[data-conn-connect]"), disc = ev.target.closest("[data-conn-disconnect]");
@@ -2770,9 +2771,9 @@ pages["new-project"] = async (_, query) => {
     if (gh.user) return `<div class="np-gh ok">✓ Signed in to GitHub as <strong>${esc(gh.user)}</strong></div>`;
     if (!gh.installed) return `<div class="np-gh warn"><strong>GitHub needs a one-time setup.</strong> Install the GitHub CLI, then check again.
       <div class="setup-hint"><code>brew install gh</code><button type="button" class="btn small ghost" data-setup-copy="brew install gh">Copy</button></div>
-      <div class="row" style="margin-top:8px"><button type="button" class="btn small" id="np-recheck">Check again</button></div></div>`;
+      <div class="row mt-8"><button type="button" class="btn small" id="np-recheck">Check again</button></div></div>`;
     return `<div class="np-gh warn"><strong>Sign in to GitHub first.</strong> Your answers are saved, so you can come back right here.
-      <div class="row" style="margin-top:8px"><button type="button" class="btn small primary" id="np-signin">Sign in to GitHub</button><button type="button" class="btn small" id="np-recheck">I've signed in: check again</button></div></div>`;
+      <div class="row mt-8"><button type="button" class="btn small primary" id="np-signin">Sign in to GitHub</button><button type="button" class="btn small" id="np-recheck">I've signed in: check again</button></div></div>`;
   };
 
   if (step === "describe") {
@@ -2851,8 +2852,8 @@ pages["new-project"] = async (_, query) => {
         <span class="muted">GitHub isn't done yet. Jobs need it, so finish it now or later from here.</span>${ghPanel()}
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
       ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
-      ${(result?.platform_needs || []).map((n) => `<section class="card" style="margin-top:16px"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
-      <div class="row" style="margin-top:16px"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
+      ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
+      <div class="row mt-16"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
       <p class="muted">“Set up this project” runs the setup wizard, which asks how it's built and tested so jobs can run.</p>`,
     after: () => {
       $("#np-recheck")?.addEventListener("click", () => route());
@@ -2959,7 +2960,7 @@ pages.projects = async () => {
     actions: `<a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg>Start a new project</a><button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg>Add an existing project</button>`,
     html: `
       <div class="projects-container">
-        ${unfinished ? `<div class="banner attention" style="margin-bottom: 16px;"><p><strong>Unfinished new project${unfinished.answers?.name ? `: ${esc(unfinished.answers.name)}` : ""}.</strong>${unfinished.waiting_on_github ? " Waiting on GitHub." : ""}</p><a class="btn small primary" href="#/new-project">Continue</a></div>` : ""}
+        ${unfinished ? `<div class="banner attention mb-16"><p><strong>Unfinished new project${unfinished.answers?.name ? `: ${esc(unfinished.answers.name)}` : ""}.</strong>${unfinished.waiting_on_github ? " Waiting on GitHub." : ""}</p><a class="btn small primary" href="#/new-project">Continue</a></div>` : ""}
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 10px;">
           <h2 style="font-size: 1.15rem; margin: 0;">Tracked Projects (${pList.length})</h2>
           <div class="filters projects-filter">
@@ -3190,7 +3191,10 @@ async function route() {
       if (!state.project) return;
     }
     const result = await pages[r.page](r.args, r.query);
-    if (current.page === r.page && current.args.join() === r.args.join()) apply(result);
+    if (current.page === r.page && current.args.join() === r.args.join()) {
+      apply(result);
+      if (r.page !== "run") $("#page-title")?.focus({ preventScroll: true }); // so screen readers announce the new page
+    }
   } catch (e) {
     if (e.status === 401) return showLocked(e.message);
     setHeader({ title: "Something went wrong" });
@@ -3223,6 +3227,31 @@ const connBtn = $("#backend-settings-btn");
 if (connBtn) {
   connBtn.addEventListener("click", () => showSignInGate());
 }
+$("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
+
+// Phone layout: the bottom bar holds the everyday pages; everything else lives behind "More".
+const moreBtn = $("#nav-more"), moreSheet = $("#more-sheet");
+const MORE_LINKS = [["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
+function closeMore() { if (moreSheet.hidden) return; moreSheet.hidden = true; moreBtn.setAttribute("aria-expanded", "false"); }
+moreBtn?.addEventListener("click", () => {
+  if (!moreSheet.hidden) return closeMore();
+  moreSheet.innerHTML = `<div class="more-sheet-h"><strong>More</strong><button type="button" class="btn small ghost" data-more-close aria-label="Close">✕</button></div>
+    <nav aria-label="More pages">${MORE_LINKS.map(([label, href]) => `<a href="${href}">${esc(label)}</a>`).join("")}</nav>
+    <div class="more-sheet-actions"><a class="btn" href="#/new">New job</a>
+      ${Notifications.supported() ? `<button type="button" class="btn" data-more-notify>${Notifications.enabled() ? "Turn off alerts" : "Notify me when done"}</button>` : ""}
+      <button type="button" class="btn" data-more-lock>Lock session</button></div>`;
+  moreSheet.hidden = false;
+  moreBtn.setAttribute("aria-expanded", "true");
+  moreSheet.querySelector("a")?.focus();
+});
+moreSheet?.addEventListener("click", (e) => {
+  if (e.target.closest("a, [data-more-close]")) closeMore();
+  if (e.target.closest("[data-more-notify]")) { $("#notify-btn").click(); closeMore(); }
+  if (e.target.closest("[data-more-lock]")) { closeMore(); $("#lock-btn").click(); }
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMore(); });
+window.addEventListener("hashchange", closeMore);
+
 const notifyBtn = $("#notify-btn");
 function renderNotifyBtn() {
   if (!notifyBtn || !Notifications.supported()) return;

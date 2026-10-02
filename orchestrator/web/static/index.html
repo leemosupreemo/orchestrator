@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <button type="button" class="skip-link" id="skip-link">Skip to content</button>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></symbol>
     <symbol id="i-jobs" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
@@ -23,7 +24,6 @@
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></symbol>
     <symbol id="i-google" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></symbol>
-    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.69 1.25 3.35.96.1-.74.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.42-2.69 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></symbol>
     <symbol id="i-apple" viewBox="0 0 24 24"><path fill="currentColor" d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.4c.66-.82 1.11-1.96.99-3.1-.96.04-2.11.64-2.8 1.45-.6.71-1.13 1.87-.99 2.98 1.07.08 2.14-.53 2.8-1.33z"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
   </svg>
@@ -45,6 +45,7 @@
         <a href="#/projects" data-route="projects"><svg class="icon"><use href="#i-folder"/></svg><span>Projects</span></a>
         <a href="#/devlogs" data-route="devlogs"><svg class="icon"><use href="#i-phone"/></svg><span>Device logs</span></a>
         <a href="#/activity" data-route="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span><span class="badge" id="running-badge" hidden></span></a>
+        <button type="button" class="nav-more" id="nav-more" aria-haspopup="dialog" aria-expanded="false" aria-controls="more-sheet"><svg class="icon"><use href="#i-jobs"/></svg><span>More</span></button>
       </nav>
       <nav class="nav nav-secondary" aria-label="Tools">
         <span class="label">Tools</span>
@@ -69,17 +70,19 @@
     <main class="main">
       <header class="topbar">
         <div class="topbar-text">
-          <h1 id="page-title">Home</h1>
+          <h1 id="page-title" tabindex="-1">Home</h1>
           <p class="sub" id="page-sub"></p>
         </div>
         <div class="topbar-actions" id="topbar-actions"></div>
       </header>
-      <div id="view" class="view" aria-live="polite"></div>
+      <div id="view" class="view" tabindex="-1"></div>
     </main>
     <button class="setup-fab" id="setup-fab" hidden aria-label="Setup checklist"><svg class="icon"><use href="#i-activity"/></svg><span>Setup</span></button>
     <aside class="setup-panel" id="setup-panel" hidden aria-label="Setup checklist"></aside>
     <a class="floating-new-btn" id="floating-new-btn" href="#/new" aria-label="New job"><svg class="icon"><use href="#i-plus"/></svg></a>
   </div>
+
+  <div class="more-sheet" id="more-sheet" role="dialog" aria-label="More" hidden></div>
 
   <dialog id="dialog">
     <form method="dialog" id="dialog-form">

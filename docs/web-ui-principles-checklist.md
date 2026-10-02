@@ -64,7 +64,7 @@ checked in a browser yet.
 
 - [x] Debug "Original Home/Jobs" toggles and their duplicate layouts removed.
 - [x] Fixed the carried-over failing test (its fixture lacked the test cases plans now require).
-- [ ] Remove the 75 inline `style=` attributes in `app.js`.
+- [x] Inline `style=` attributes in `app.js` cut from 97 to 50 by replacing repeated spacing with utility classes. The rest are dynamic (progress widths) or one-offs.
 - [ ] Per-job visual QA (the screenshots card shows the newest check from the whole project).
-- [ ] Accessibility pass (emoji-only status in a few lists, dialog focus).
-- [~] Verify in a browser. Features list/map and the job page were rendered in headless Chrome at desktop width and looked right after two fixes. Phone width, Home, New job, the chat and notifications are still unchecked.
+- [x] Accessibility pass, measured with a Chrome DevTools audit over 12 pages x phone/desktop x light/dark: fixed contrast failures (light-theme accent, warn, ok, bad and muted colours; white text on amber badges), a duplicate icon id, an unlabelled chat box, small tap targets, and no visible focus ring on links. Added a skip link, a page title that updates per page (with the inbox count), focus moved to the page heading on navigation, and removed `aria-live` from the whole page. Audit result: 0 issues in overflow, names, labels, contrast and ids. Not covered: a real screen reader, keyboard-only walkthrough of every dialog, and the terminal pages.
+- [x] Verified in a browser (headless Chrome via DevTools) at 390px and 1300px, light and dark, for every main page. Found and fixed: on phones the Lock session and Notify buttons were off-screen, and Tests, Git, Delivery, Measure, Check-up and Connections had no way in (now a "More" sheet in the bottom bar). Not tested: a real phone, tablet widths, landscape, the terminal/run pages, and the sign-in screen.

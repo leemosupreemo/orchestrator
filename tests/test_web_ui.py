@@ -1618,6 +1618,45 @@ class HealthEndpointTests(ServerTestCase):
         self.assertEqual(self.items(data)["platforms"]["status"], "warn")
 
 
+class AccessibilityStaticTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (cls.STATIC / "index.html").read_text()
+        cls.css = (cls.STATIC / "style.css").read_text()
+        cls.js = (cls.STATIC / "app.js").read_text()
+
+    def test_no_duplicate_ids_in_the_page_shell(self):
+        import re
+        ids = re.findall(r'\bid="([^"]+)"', self.html)
+        self.assertEqual([i for i in set(ids) if ids.count(i) > 1], [])
+
+    def test_page_has_language_skip_link_and_a_focusable_heading(self):
+        self.assertIn('<html lang="en">', self.html)
+        self.assertIn('id="skip-link"', self.html)
+        self.assertIn('<h1 id="page-title" tabindex="-1">', self.html)
+
+    def test_the_whole_view_is_not_a_live_region(self):
+        self.assertNotIn('id="view" class="view" aria-live', self.html)
+
+    def test_phone_layout_keeps_every_page_reachable_through_more(self):
+        for href in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/git", "#/connections", "#/config", "#/devlogs"):
+            self.assertIn(f'"{href}"', self.js[self.js.index("const MORE_LINKS"):][:400], href)
+        self.assertIn('id="nav-more"', self.html)
+
+    def test_badges_use_ink_tokens_not_hardcoded_white(self):
+        for selector in (".badge {", ".pill-badge.needs-badge {", ".pill-badge.active-badge {"):
+            block = self.css[self.css.index(selector):][:260].split("}")[0]
+            self.assertNotIn("#fff", block, selector)
+
+    def test_every_form_field_the_ui_builds_for_chat_has_a_name(self):
+        self.assertIn('aria-label="Your question about this job"', self.js)
+
+    def test_visible_keyboard_focus_for_all_controls(self):
+        self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")
