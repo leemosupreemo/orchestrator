@@ -1542,6 +1542,11 @@ pages.job = async ([id]) => {
         <div class="job-hero-action">${heroAction}</div>
       </section>
 
+      ${(job.plan?.slice_warnings || []).length ? `<section class="card mb-16"><div class="card-h"><h2>Plan check</h2></div><div class="card-b stack">
+        <div>This plan looks like a stack of layers, not working slices. Mistakes in an early layer won't show until the last task.</div>
+        <ul class="assumptions">${job.plan.slice_warnings.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+        <div class="muted">It was already sent back once. Use Revise plan in the More menu and ask for working slices.</div></div></section>` : ""}
+
       <section class="card mb-16">
         <div class="card-h"><h2>Progress</h2><span class="count">${tasksDone}/${tasksTotal}</span></div>
         <div class="card-b stack">

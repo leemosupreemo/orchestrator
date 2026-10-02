@@ -2560,6 +2560,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
         self.assertIn("drawFeatureLinks", self.source)
+        self.assertIn("job.plan?.slice_warnings", self.job_page)
         self.assertIn('matchMedia("(max-width: 760px)")', self.job_page)
         for title in ("Tasks Checklist", "Activity & Runs", "Logs", "Output files"):
             self.assertIn(f'fold("{title}"', self.job_page, title)
