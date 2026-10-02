@@ -44,7 +44,7 @@ from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 import urllib.error
@@ -55,6 +55,7 @@ from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
+from orchestrator import new_job_form
 from orchestrator import notifier
 from orchestrator import plan_edit
 from orchestrator import project_health
@@ -1363,15 +1364,6 @@ def _session_id(params: dict[str, Any]) -> str | None:
     return session or None
 
 
-RECOMMEND_NOTE = (
-    "\n\n## Decision latitude\n"
-    "The requester has no strong opinion on how this is done. Where the request leaves a choice open "
-    "(approach, UX details, naming, libraries), pick the most conventional option for this codebase and "
-    "record each choice in `assumptions` with a one-line reason so it can be reviewed. Only stop to ask "
-    "when a wrong guess would be costly to undo or the goal itself is unclear."
-)
-
-
 def feature_context(chosen: dict[str, Any], features: list[dict[str, Any]]) -> str:
     """What the planner should know about where this work sits among the product's features."""
     names = {f["id"]: f["name"] for f in features}
@@ -1390,15 +1382,56 @@ def feature_context(chosen: dict[str, Any], features: list[dict[str, Any]]) -> s
     return "\n".join(lines)
 
 
+def runtime_file(root: Path, rel: str) -> Path:
+    """A file inside the project's runtime folder, given a project-relative path; anything else is refused."""
+    base = safe_resolve(runtime_dir(root))
+    try:
+        target = safe_resolve(root / str(rel))
+    except Exception:
+        raise UIError("That attachment isn't available")
+    if base not in target.parents or not target.is_file():
+        raise UIError("That attachment isn't available")
+    return target
+
+
+def upload_display_name(path: Path) -> str:
+    """The name the person gave the file, without the timestamp prefix we add when saving it."""
+    return re.sub(r"^\d{8}-\d{6}-[0-9a-f]{6}-", "", path.name)
+
+
 def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     job_type = _choice(params, "type", JOB_TYPES, "bug")
-    summary = _text(params, "summary", required=True, limit=500)
-    argv = orchestrator_argv("script", "new_job.py", job_type, "--summary", summary)
-    spec = _text(params, "spec", limit=200_000)
+    summary_in = _text(params, "summary", required=True, limit=20_000 if job_type == "quick" else 500)
+    fields = {"summary": summary_in, "details": _text(params, "spec", limit=200_000), "repro": _text(params, "repro", limit=20_000),
+              "expected": _text(params, "expected", limit=20_000), "vibe": _text(params, "vibe", limit=200),
+              "subsystems": _text(params, "subsystems", limit=5_000)}
+    try:
+        summary, spec = new_job_form.compose(job_type, fields)
+    except new_job_form.FormError as exc:
+        raise UIError(str(exc))
     block, linked = context_for_new_job(root, _clean_links(params.get("links")))
     params["_linked"] = linked  # picked up by _start_run to record the links on the created job
-    if block:
-        spec = (spec or summary) + block
+    spec += block
+
+    # Attachments: logs chosen from the recent list, and files uploaded just now. Both live in the runtime folder.
+    log_rels = [str(p) for p in (params.get("logs") or []) if isinstance(p, str)][:10]
+    file_rels = [str(p) for p in (params.get("files") or []) if isinstance(p, str)][:10]
+    logs, files = [], []
+    for rel in log_rels + [r for r in file_rels if new_job_form.upload_kind(r) == "log"]:
+        path = runtime_file(root, rel)
+        logs.append((upload_display_name(path), path.read_text(encoding="utf-8", errors="replace")))
+    refs = []
+    for rel in file_rels:
+        if new_job_form.upload_kind(rel) == "log":
+            continue
+        path = runtime_file(root, rel)
+        rel_to_root = str(path.relative_to(safe_resolve(root)))
+        refs.append({"path": rel_to_root, "name": upload_display_name(path), "type": new_job_form.reference_type(rel)})
+        files.append((upload_display_name(path), new_job_form.reference_type(rel), rel_to_root))
+    spec += new_job_form.attachments_block(logs, files)
+    all_logs = [str(runtime_file(root, r).relative_to(safe_resolve(root))) for r in log_rels + [r for r in file_rels if new_job_form.upload_kind(r) == "log"]]
+    params["_attachments"] = {"logs": all_logs, "refs": refs}
+
     feature = str(params.get("feature") or "").strip()
     if feature:
         features = feature_store.load(runtime_dir(root))
@@ -1408,14 +1441,19 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
             raise UIError("That feature no longer exists")
         params["_feature"] = feature
         provider = analytics.PROVIDERS.get(read_settings(root).get("analytics_provider", ""), {}).get("name")
-        spec = (spec or summary) + feature_context(chosen, features) + analytics.instrumentation_context(chosen, provider)
-    if params.get("recommend"):
-        spec = (spec or summary) + RECOMMEND_NOTE
+        spec += feature_context(chosen, features) + analytics.instrumentation_context(chosen, provider)
+    if job_type in new_job_form.LATITUDE_TYPES:
+        spec += new_job_form.LATITUDE_NOTE
+
+    if job_type == "quick":  # the terminal reads only the instruction for a quick change, so anything extra rides along in it
+        summary = (summary + spec).strip()
+        spec = ""
+    argv = orchestrator_argv("script", "new_job.py", job_type, "--summary", summary)
     if spec:
         spec_dir = runtime_dir(root) / "ui" / "specs"
         spec_dir.mkdir(parents=True, exist_ok=True)
         spec_file = spec_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{job_type}.md"
-        spec_file.write_text(spec + "\n", encoding="utf-8")
+        spec_file.write_text(spec.strip() + "\n", encoding="utf-8")
         argv += ["--spec-file", str(spec_file)]
     branch_mode = _choice(params, "branch_mode", BRANCH_MODES)
     if branch_mode:
@@ -1427,6 +1465,44 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     if params.get("free"):
         argv.append("--free")
     return argv
+
+
+RECENT_LOG_ACTIONS = {"test": "Test run", "build": "Build", "distribute": "Tester build", "fix": "Fix attempt", "debug": "Fix attempt",
+                      "visual_check": "Simulator check", "logs_pull": "Device logs", "execute": "Job run", "resume": "Job run", "new_job": "New job"}
+
+
+def recent_logs(root: Path, limit: int = 8) -> list[dict[str, Any]]:
+    """The newest logs worth attaching to a bug: pulled device launches, then test/build/fix runs."""
+    out = []
+    for pull in device_log_pulls(root)[:3]:
+        path = runtime_dir(root) / pull["path"]
+        if path.is_file():
+            session = f" {pull['session']}" if pull.get("session") else ""
+            out.append({"path": str(path.relative_to(root)), "label": f"Device launch{session}", "kind": "device", "mtime": pull["mtime"], "size": path.stat().st_size})
+    folder = runtime_dir(root) / "logs" / "ui"
+    if folder.is_dir():
+        for path in sorted(folder.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:60]:
+            action = path.stem.split("-", 3)[-1] if path.stem.count("-") >= 3 else path.stem
+            if action in RECENT_LOG_ACTIONS and path.stat().st_size > 0:
+                out.append({"path": str(path.relative_to(root)), "label": RECENT_LOG_ACTIONS[action], "kind": "run", "mtime": path.stat().st_mtime, "size": path.stat().st_size})
+    return sorted(out, key=lambda x: x["mtime"], reverse=True)[:limit]
+
+
+def save_upload(root: Path, name: str, data: bytes) -> dict[str, Any]:
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", PurePosixPath(name or "").name).strip(".-")[:80]
+    if not clean:
+        raise UIError("Give the file a name")
+    try:
+        kind = new_job_form.upload_kind(clean)
+    except new_job_form.FormError as exc:
+        raise UIError(str(exc))
+    if not data:
+        raise UIError("That file is empty")
+    folder = runtime_dir(root) / "ui" / "uploads"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}-{clean}"
+    target.write_bytes(data)
+    return {"path": str(target.relative_to(root)), "name": clean, "size": len(data), "kind": kind}
 
 
 def build_debug(params: dict[str, Any], root: Path) -> list[str]:
@@ -2158,7 +2234,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "branch_mode", "no_dispatch", "yolo", "free", "links", "recommend", "feature"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "repro", "expected", "vibe", "subsystems", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
@@ -2606,6 +2682,21 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(analytics_overview(root))
         elif method == "GET" and parts == ["health"]:
             self._json({**project_health.evaluate(project_facts(root)), "name": project_display_name(root)})
+        elif method == "GET" and parts == ["recent-logs"]:
+            self._json({"logs": recent_logs(root)})
+        elif method == "POST" and parts == ["uploads"]:
+            if self.headers.get("X-Orchestrator-UI") != "1":
+                raise UIError("Missing UI headers", HTTPStatus.FORBIDDEN)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length > new_job_form.UPLOAD_LIMIT:
+                self.close_connection = True  # the body is not read, so end this connection rather than leave it in the stream
+                raise UIError(f"That file is over {new_job_form.UPLOAD_LIMIT // (1024 * 1024)} MB", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            self._body_read = True
+            data = self.rfile.read(length) if length > 0 else b""
+            self._json(save_upload(root, (query.get("name") or [""])[0], data))
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root))
         elif method == "GET" and parts == ["test-cases"]:
@@ -2950,11 +3041,12 @@ class UIHandler(BaseHTTPRequestHandler):
         session.job_id = job_id
         if key in ("new_job", "fix"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
-                                        params.get("_feature") if key == "new_job" else None)
+                                        params.get("_feature") if key == "new_job" else None,
+                                        params.get("_attachments") if key == "new_job" else None)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
 
     def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None,
-                               feature: str | None = None) -> None:
+                               feature: str | None = None, attachments: dict[str, Any] | None = None) -> None:
         """Links the job a new-job/fix run creates, so its run can offer "Open job"."""
         before = {p.name for p in jobs_dir(root).glob("*.json")} if jobs_dir(root).exists() else set()
 
@@ -2969,12 +3061,29 @@ class UIHandler(BaseHTTPRequestHandler):
                             self._record_links(newest, linked)
                         if feature:
                             self._record_feature(newest, root, feature)
+                        if attachments and (attachments.get("logs") or attachments.get("refs")):
+                            self._record_attachments(newest, attachments)
                         return
                 if not session.running:
                     return
                 time.sleep(1)
 
         threading.Thread(target=watch, daemon=True).start()
+
+    @staticmethod
+    def _record_attachments(job_path: Path, attachments: dict[str, Any]) -> None:
+        """Attach the chosen logs and reference files to a just-created job, the way Link logs / Attach mockup do later."""
+        for _ in range(10):  # the job file may still be mid-write
+            job = read_json_file(job_path)
+            if job:
+                if attachments.get("logs"):
+                    job["last_manual_log_paths"] = list(dict.fromkeys(list(job.get("last_manual_log_paths") or []) + attachments["logs"]))
+                if attachments.get("refs"):
+                    job["reference_artifacts"] = list(job.get("reference_artifacts") or []) + [
+                        {"type": r["type"], "path": r["path"], "note": r["name"]} for r in attachments["refs"]]
+                write_json_file(job_path, job)
+                return
+            time.sleep(0.5)
 
     @staticmethod
     def _record_feature(job_path: Path, root: Path, feature: str) -> None:

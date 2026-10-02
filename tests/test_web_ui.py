@@ -609,23 +609,80 @@ class ActionTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def spec_of(self, argv):
+        return Path(argv[argv.index("--spec-file") + 1]).read_text()
+
     def test_new_job_writes_spec_file_and_passes_flags(self):
         argv = ui.build_new_job({"type": "feature", "summary": "Add rematch", "spec": "Details",
                                  "branch_mode": "new", "no_dispatch": True}, self.root)
         self.assertEqual(argv[4:9], ["script", "new_job.py", "feature", "--summary", "Add rematch"])
         spec = Path(argv[argv.index("--spec-file") + 1])
-        self.assertEqual(spec.read_text(), "Details\n")
+        self.assertTrue(spec.read_text().startswith("VISION: Add rematch\n\nADDITIONAL DETAILS:\nDetails"))
         self.assertIn(self.root / ".orchestrator" / "ui" / "specs", spec.parents)
         self.assertIn("--no-dispatch", argv)
         self.assertEqual(argv[argv.index("--branch-mode") + 1], "new")
 
-    def test_new_job_recommend_adds_decision_latitude_to_the_spec(self):
-        argv = ui.build_new_job({"type": "feature", "summary": "Add rematch", "recommend": True}, self.root)
-        text = Path(argv[argv.index("--spec-file") + 1]).read_text()
-        self.assertTrue(text.startswith("Add rematch"))
-        self.assertIn("assumptions", text)
-        plain = ui.build_new_job({"type": "feature", "summary": "Add rematch"}, self.root)
-        self.assertNotIn("--spec-file", plain)
+    def test_each_job_type_is_composed_the_way_the_terminal_flow_asks_for_it(self):
+        bug = self.spec_of(ui.build_new_job({"type": "bug", "summary": "Seat empty", "repro": "1. Join\n2. Background", "expected": "Seat kept"}, self.root))
+        self.assertIn("REPRO STEPS:\n1. Join\n2. Background", bug)
+        self.assertIn("EXPECTED BEHAVIOR:\nSeat kept", bug)
+        self.assertNotIn("Anything left open", bug)  # a bug report has nothing left to decide
+        design = self.spec_of(ui.build_new_job({"type": "design", "summary": "Profile screen", "vibe": "brutalist"}, self.root))
+        self.assertIn("DESIGN VISION: Profile screen\nPREFERRED VIBE: brutalist", design)
+        cov = self.spec_of(ui.build_new_job({"type": "coverage", "summary": "Lobby", "subsystems": "Seat service"}, self.root))
+        self.assertIn("COVERAGE FOCUS: Lobby\n\nSUBSYSTEMS: Seat service", cov)
+
+    def test_quick_is_just_the_instruction(self):
+        argv = ui.build_new_job({"type": "quick", "summary": "Rename Foo to Bar\nand update docs " + "x" * 800}, self.root)
+        self.assertEqual(argv[argv.index("--summary") + 1].splitlines()[0], "Rename Foo to Bar")
+        self.assertNotIn("--spec-file", argv)
+
+    def test_features_and_designs_are_told_to_choose_sensible_defaults_and_say_so(self):
+        for kind in ("feature", "design"):
+            self.assertIn("record each choice in `assumptions`", self.spec_of(ui.build_new_job({"type": kind, "summary": "Something"}, self.root)))
+        self.assertNotIn("--spec-file", ui.build_new_job({"type": "quick", "summary": "Tweak"}, self.root))
+
+    def test_the_old_you_decide_toggle_is_gone(self):
+        argv = ui.build_new_job({"type": "bug", "summary": "x", "recommend": True}, self.root)
+        self.assertNotIn("Decision latitude", self.spec_of(argv))
+        self.assertNotIn("recommend", ui.ACTIONS["new_job"].fields)
+
+    def test_attached_logs_are_quoted_for_the_planner_and_recorded_on_the_job(self):
+        logs = self.root / ".orchestrator" / "logs" / "ui"
+        logs.mkdir(parents=True)
+        (logs / "20260922-101010-abcdef-test.log").write_text("starting\nFAILED: seat test\n")
+        params = {"type": "bug", "summary": "Seat empty", "logs": [".orchestrator/logs/ui/20260922-101010-abcdef-test.log"]}
+        spec = self.spec_of(ui.build_new_job(params, self.root))
+        self.assertIn("### Log: test.log", spec)
+        self.assertIn("FAILED: seat test", spec)
+        path = self.root / ".orchestrator" / "jobs" / "20260922-bug-1.json"
+        ui.UIHandler._record_attachments(path, params["_attachments"])
+        self.assertEqual(json.loads(path.read_text())["last_manual_log_paths"], [".orchestrator/logs/ui/20260922-101010-abcdef-test.log"])
+
+    def test_uploaded_references_are_listed_and_recorded_as_reference_artifacts(self):
+        saved = ui.save_upload(self.root, "Login mock.PNG", b"\x89PNG\r\n")
+        params = {"type": "design", "summary": "Login screen", "files": [saved["path"]]}
+        spec = self.spec_of(ui.build_new_job(params, self.root))
+        self.assertIn("Reference files", spec)
+        self.assertIn(saved["path"], spec)
+        path = self.root / ".orchestrator" / "jobs" / "20260922-bug-1.json"
+        ui.UIHandler._record_attachments(path, params["_attachments"])
+        ref = json.loads(path.read_text())["reference_artifacts"][0]
+        self.assertEqual((ref["type"], ref["path"], ref["note"]), ("image_reference", saved["path"], "Login-mock.PNG"))
+
+    def test_uploaded_text_logs_are_treated_as_logs_not_references(self):
+        saved = ui.save_upload(self.root, "crash.log", b"EXC_BAD_ACCESS at seat.swift:42\n")
+        params = {"type": "bug", "summary": "Crash", "files": [saved["path"]]}
+        spec = self.spec_of(ui.build_new_job(params, self.root))
+        self.assertIn("EXC_BAD_ACCESS", spec)
+        self.assertEqual(params["_attachments"]["refs"], [])
+        self.assertEqual(params["_attachments"]["logs"], [saved["path"]])
+
+    def test_attachments_must_be_files_inside_the_runtime_folder(self):
+        (self.root / "secret.txt").write_text("TOPSECRET")
+        for rel in ("secret.txt", "../secret.txt", "/etc/hosts", ".orchestrator/nope.log"):
+            with self.assertRaises(ui.UIError, msg=rel):
+                ui.build_new_job({"type": "bug", "summary": "x", "logs": [rel]}, self.root)
 
     def test_new_job_for_a_feature_gives_the_planner_its_context(self):
         feature_store = ui.feature_store
@@ -1946,6 +2003,59 @@ class KeepAliveBodyTests(ServerTestCase):
     def test_a_route_that_ignores_its_body_does_not_break_the_next_request(self):
         first, second = self.two_requests("POST", "/api/analytics/plan", json.dumps({"ignored": "x" * 50}).encode(), UI_HEADERS)
         self.assertEqual((first, second), (200, 200))
+
+
+class UploadAndRecentLogsEndpointTests(ServerTestCase):
+    def upload(self, name, data, headers=None, query_name=True):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        path = f"/api/uploads?name={name}" if query_name else "/api/uploads"
+        conn.request("POST", path, body=data, headers={"Authorization": "Bearer test-token", "X-Orchestrator-UI": "1", "Content-Type": "application/octet-stream", **(headers or {})})
+        res = conn.getresponse()
+        body = json.loads(res.read() or b"{}")
+        conn.close()
+        return res.status, body
+
+    def test_a_file_is_saved_under_the_projects_uploads_folder(self):
+        status, data = self.upload("mock.png", b"\x89PNG\r\nimage")
+        self.assertEqual((status, data["kind"], data["name"], data["size"]), (200, "image", "mock.png", 11))
+        self.assertTrue(data["path"].startswith(".orchestrator/ui/uploads/"))
+        self.assertEqual((self.root / data["path"]).read_bytes(), b"\x89PNG\r\nimage")
+
+    def test_names_are_made_safe_and_types_and_sizes_are_enforced(self):
+        status, data = self.upload("..%2F..%2Fevil.log", b"x")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["path"].startswith(".orchestrator/ui/uploads/") and ".." not in data["name"])
+        self.assertEqual(self.upload("run.exe", b"x")[0], 400)
+        self.assertEqual(self.upload("empty.png", b"")[0], 400)
+        self.assertEqual(self.upload("", b"x", query_name=False)[0], 400)
+
+    def test_oversized_uploads_are_refused_and_the_connection_survives(self):
+        with patch.object(ui.new_job_form, "UPLOAD_LIMIT", 10):
+            status, data = self.upload("big.png", b"x" * 50)
+        self.assertEqual(status, 413)
+        self.assertIn("MB", data["error"])
+        self.assertEqual(self.request("GET", "/api/state")[0].status, 200)
+
+    def test_uploads_need_the_ui_header(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("POST", "/api/uploads?name=a.png", body=b"x", headers={"Authorization": "Bearer test-token", "Content-Type": "application/octet-stream"})
+        self.assertEqual(conn.getresponse().status, 403)
+        conn.close()
+
+    def test_recent_logs_lists_device_pulls_and_run_logs_newest_first_and_skips_noise(self):
+        rt = self.root / ".orchestrator"
+        (rt / "logs" / "ui").mkdir(parents=True)
+        (rt / "logs" / "ui" / "20260922-101010-abcdef-test.log").write_text("test output")
+        (rt / "logs" / "ui" / "20260922-101011-abcdef-console.log").write_text("noise")
+        (rt / "logs" / "ui" / "20260922-101012-abcdef-fix.log").write_text("")
+        pull = rt / "output" / "cloud_logs" / "20260922-090000-s1"
+        pull.mkdir(parents=True)
+        (pull / "cloud.log").write_text("device lines")
+        (pull / "meta.json").write_text(json.dumps({"session": "s1"}))
+        os.utime(rt / "logs" / "ui" / "20260922-101010-abcdef-test.log", (1_000, 1_000))
+        _, data = self.request("GET", "/api/recent-logs")
+        self.assertEqual([(l["kind"], l["label"]) for l in data["logs"]], [("device", "Device launch s1"), ("run", "Test run")])
+        self.assertEqual(data["logs"][1]["path"], ".orchestrator/logs/ui/20260922-101010-abcdef-test.log")
 
 
 class PaletteLogicTests(unittest.TestCase):
