@@ -390,10 +390,10 @@ function addProjectsDialog(trackedProjects) {
 
 const dialogs = {
   async fix(params) {
-    const values = await formDialog(params.job ? "Still broken?" : "Fix something", `
+    const values = await formDialog("Still broken?", `
       <label class="field"><span>What's wrong?</span>
-        <textarea name="feedback" required placeholder="e.g. The lobby timer doesn't reset after a rematch"></textarea>
-        <small>${params.job ? "Reopens this job with what you saw and runs a fix." : "Creates a quick bug job and runs it."}</small>
+        <textarea name="feedback" required placeholder="e.g. The lobby timer still doesn't reset after a rematch"></textarea>
+        <small>Reopens this job with what you saw and runs a fix.</small>
       </label>`, "Fix it");
     if (values?.feedback.trim()) runAction("fix", { feedback: values.feedback, job: params.job || "" });
   },
@@ -1329,7 +1329,6 @@ pages.home = async (_, query) => {
     html: `
       <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
       <div class="hero-actions mb-16">
-        <button class="btn big" ${act("fix")}>Fix something</button>
         ${moreActionsMenu(p, { left: true })}
       </div>
 
@@ -1360,7 +1359,7 @@ pages.home = async (_, query) => {
               ${filteredJobs.map(jobTableRow).join("")}
             </div>
           </div>
-        ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description; <strong>Fix something</strong> goes straight to a quick fix.' : 'No jobs match this filter.'}</div>`}
+        ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description, a bug report or a design.' : 'No jobs match this filter.'}</div>`}
       </section>`,
     after: () => {
       renderProjectSelect($(".project-select-inline"));
@@ -1387,7 +1386,7 @@ pages.jobs = async (_, query) => {
       <div class="filters">${Object.entries(JOB_FILTERS).map(([key, [label, fn]]) =>
         `<a class="btn small ${key === filter ? "on" : ""}" href="#/jobs?filter=${key}">${label} (${jobs.filter(fn).length})</a>`).join("")}
       </div>
-      <section class="card"><div class="list">${shown.map((j) => jobItem(j, { withAction: filter === "needs_you" })).join("") || `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description; <strong>Fix something</strong> goes straight to a quick fix.' : 'No jobs match this filter.'}</div>`}</div></section>`,
+      <section class="card"><div class="list">${shown.map((j) => jobItem(j, { withAction: filter === "needs_you" })).join("") || `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description, a bug report or a design.' : 'No jobs match this filter.'}</div>`}</div></section>`,
     after: () => {
     },
   };
@@ -2286,7 +2285,7 @@ pages.help = async () => ({
         <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
-      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs, and Fix something."], ["Product documents", "#/product", "The documents that define the product. Read them, edit them, or ask the AI to refine them."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
+      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product documents", "#/product", "The documents that define the product. Read them, edit them, or ask the AI to refine them."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
          ["Check-up", "#/checkup", "What's in place and what's missing for this project."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
@@ -3661,7 +3660,6 @@ function paletteBase() {
   const go = (hash) => () => { location.hash = hash; };
   const entries = PALETTE_PAGES.map(([label, hash, hint]) => ({ label, hint, group: "Pages", order: 1, run: go(hash) }));
   const act_ = (label, hint, fn) => entries.push({ label, hint, group: "Actions", order: 0, run: fn });
-  act_("Fix something", "Describe a problem; it runs a quick fix", () => (dialogs.fix ? dialogs.fix({}) : runAction("fix", {})));
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
   act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());
   if (Notifications.supported()) act_(Notifications.enabled() ? "Turn off browser alerts" : "Turn on browser alerts", "Alerts when a run finishes or needs you", () => $("#notify-btn")?.click());
