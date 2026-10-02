@@ -1557,6 +1557,67 @@ class MeasureEndpointTests(ServerTestCase):
         self.assertIn("PostHog integration", text)
 
 
+class HealthEndpointTests(ServerTestCase):
+    def setUp(self):
+        super().setUp()
+        ui._GH_CACHE.clear()
+        ui._TEST_SCAN_CACHE.clear()
+
+    def get_health(self):
+        real = ui.subprocess.run
+
+        def fake(argv, *a, **k):
+            if argv[0] == "gh":
+                raise FileNotFoundError("gh")
+            return real(argv, *a, **k)
+
+        with patch.object(ui.subprocess, "run", side_effect=fake):
+            return self.request("GET", "/api/health")
+
+    def items(self, data):
+        return {i["id"]: i for i in data["items"]}
+
+    def test_a_bare_project_is_told_what_is_missing_in_priority_order(self):
+        res, data = self.get_health()
+        self.assertEqual(res.status, 200)
+        items = self.items(data)
+        self.assertEqual(data["next"], "brief")
+        self.assertEqual((items["brief"]["status"], items["instructions"]["status"], items["repo"]["status"], items["delivery"]["status"]),
+                         ("todo", "todo", "todo", "todo"))
+        self.assertEqual(data["stage"], "Building")  # the fixture has one job
+
+    def test_brief_platforms_features_and_tests_are_read_from_the_project(self):
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "product-brief.md").write_text("# X\n\n## Platforms\n\n- iOS app\n- Backend / API\n")
+        (self.root / "AGENTS.md").write_text("# rules")
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
+        ui.feature_store.create(self.root / ".orchestrator", "Lobby")
+        _, data = self.get_health()
+        items = self.items(data)
+        self.assertEqual((items["brief"]["status"], items["instructions"]["status"], items["tests"]["status"]), ("ok", "ok", "ok"))
+        self.assertEqual(items["platforms"]["detail"], "iOS app, Backend / API")
+        self.assertEqual(items["features"]["status"], "warn")  # the fixture's open job isn't in the feature
+
+    def test_features_with_work_but_no_kpis_are_called_out(self):
+        rt = self.root / ".orchestrator"
+        ui.feature_store.create(rt, "Lobby")
+        path = rt / "jobs" / "20260922-bug-1.json"
+        job = json.loads(path.read_text())
+        job["feature"] = "lobby"
+        path.write_text(json.dumps(job))
+        _, data = self.get_health()
+        self.assertEqual(self.items(data)["kpis"]["status"], "todo")
+        self.assertIn("1 feature", self.items(data)["kpis"]["detail"])
+
+    def test_undecided_platforms_from_a_new_project_brief_are_flagged(self):
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "product-brief.md").write_text(ui.new_project.render_brief(
+            {"name": "X", "pitch": "p", "audience": "a", "problem": "q", "features": "one", "platform": ui.new_project.RECOMMEND}))
+        _, data = self.get_health()
+        self.assertEqual(self.items(data)["platforms"]["status"], "warn")
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")
@@ -1725,6 +1786,8 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
         self.assertIn("drawFeatureLinks", self.source)
+        self.assertIn('data-route="checkup"', (static / "index.html").read_text())
+        self.assertIn('query.get("summary")', self.source)
         self.assertIn('data-route="measure"', (static / "index.html").read_text())
         self.assertIn("testCaseRowsHtml(testCases.cases)", self.job_page)
         self.assertIn('view=map', self.source)

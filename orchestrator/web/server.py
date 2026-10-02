@@ -56,6 +56,8 @@ from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
 from orchestrator import notifier
+from orchestrator import project_health
+from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
 from orchestrator import new_project
@@ -588,6 +590,47 @@ def analytics_overview(root: Path) -> dict[str, Any]:
     provider = analytics.PROVIDERS.get(state["provider"], {})
     return {**state, "provider_name": provider.get("name"), "key_label": provider.get("key_label"),
             "features": feature_store.rollup(feature_store.load(runtime_dir(root)), [])}
+
+
+def project_facts(root: Path) -> dict[str, Any]:
+    """Everything the check-up rules look at, read from the project."""
+    settings = read_settings(root)
+    config = read_json_file(runtime_dir(root) / "project.json")
+    brief_file = root / "docs" / "product-brief.md"
+    brief_text = brief_file.read_text(encoding="utf-8", errors="ignore") if brief_file.is_file() else ""
+    platforms, recommend_pending = project_health.brief_platforms(brief_text)
+    try:
+        stack = detect_project_stack(root)
+        detected = "" if stack.language == "generic" else stack.display_name
+    except Exception:
+        detected = ""
+    live = delivery_view.live(lambda *a: git(root, *a), base_branch(root, settings))
+    jobs = list_jobs(root)
+    features = feature_store.load(runtime_dir(root))
+    with_jobs = {j["feature"] for j in jobs if j.get("feature")} | {j["feature"] for j in archived_feature_jobs(root)}
+    cases = test_case_lib.load_library(root)
+    gaps = 0
+    if cases:
+        cov = test_case_lib.coverage(root, cases, test_index(root))
+        gaps = sum(1 for c in cases if c.get("type") != "manual" and cov[c["id"]]["status"] in ("unassigned", "planned"))
+    kpis = [k for f in features for k in f.get("kpis") or []]
+    pipeline = delivery_view.pipeline(lambda argv: gh_cached(root, argv), base_branch(root, settings))
+    base_runs = [r for r in pipeline["runs"] if r["on_base"]]
+    workflows = root / ".github" / "workflows"
+    return {
+        "brief": bool(brief_text.strip()), "agents": any((root / n).is_file() for n in ("AGENTS.md", "CLAUDE.md", "GEMINI.md")),
+        "readme": (root / "README.md").is_file(), "platforms": platforms, "recommend_pending": recommend_pending, "detected": detected,
+        "git_repo": bool(git(root, "rev-parse", "--is-inside-work-tree")), "remote": bool(git(root, "remote", "get-url", "origin")),
+        "tag": live["tag"] if live else None, "unreleased": live["unreleased"] if live else None,
+        "jobs_total": len(jobs) + len(archived_feature_jobs(root)), "jobs_open": sum(1 for j in jobs if j["state"]["group"] != "done"),
+        "jobs_unassigned": sum(1 for j in jobs if not j.get("feature") and j["state"]["group"] != "done"),
+        "features": len(features), "suites": len(test_index(root)["suites"]), "cases_total": len(cases), "cases_gap": gaps,
+        "kpis_total": len(kpis), "kpis_measured": sum(1 for k in kpis if k.get("measurements")),
+        "features_needing_kpis": sum(1 for f in features if f["id"] in with_jobs and not f.get("kpis")),
+        "ci": workflows.is_dir() and any(workflows.glob("*.y*ml")) or (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists(),
+        "pipeline_failing": bool(base_runs) and base_runs[0]["tone"] == "failed",
+        "distribution": bool(config.get("firebase_distribution")), "builds_sent": len(delivery_view.receipts(runtime_dir(root))),
+    }
 
 
 def features_overview(root: Path) -> dict[str, Any]:
@@ -2434,6 +2477,8 @@ class UIHandler(BaseHTTPRequestHandler):
             except feature_store.FeatureError as exc:
                 raise UIError(str(exc), HTTPStatus.NOT_FOUND if "not found" in str(exc) else HTTPStatus.BAD_REQUEST)
             self._json(analytics_overview(root))
+        elif method == "GET" and parts == ["health"]:
+            self._json({**project_health.evaluate(project_facts(root)), "name": project_display_name(root)})
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root))
         elif method == "GET" and parts == ["test-cases"]:

@@ -9,8 +9,8 @@ checked in a browser yet.
 
 - [~] **On-ramp / wizard / checklist, minimum steps to the aha moment.** Setup checklist, FAB and panel exist (required vs optional). Time to first job is not measured or shortened.
 - [~] **Describe the app in my words, then answer clarifying questions.** New-project flow asks short questions and writes a brief. Job planner questions show only after planning starts.
-- [ ] **Choose platforms early on a new project.** Not asked in the new-project flow.
-- [ ] **Wizard examines current project state and says what's missing.** Checklist covers tooling, not product state.
+- [x] **Choose platforms early on a new project.** The new-project questions now ask what you're building for as a multi-select (iOS, Android, macOS, Windows/Linux, web, backend, CLI/library) or "Not sure: recommend for me". The choice goes into the product brief (an undecided choice tells the AI to recommend with reasons), and the finish page lists what each platform needs next. Works in the terminal flow too.
+- [x] **Wizard examines current project state and says what's missing.** Tools > Check-up: stage (getting started / building / with testers / released), "n of 10 in place", one highlighted next step, and every item with why and a fix: brief, platforms, AI instructions, git + remote, features, tests, CI, tester delivery, releases, KPIs. Fixes are a pre-filled new job, a link to the right page, or a command to copy. It checks product state; tools and keys stay in the setup checklist.
 - [x] **Easy login.** Google, Apple, GitHub or access token.
 - [~] **Set up machines and LLMs easily.** Config pages and counts exist. No add-machine flow from the job view.
 - [~] **Any main coding language.** Stack detection and language bar. Several actions are still iOS/Firebase specific.

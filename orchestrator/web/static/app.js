@@ -1696,7 +1696,7 @@ pages.new = async (_, query) => {
           `<label><input type="radio" name="type" value="${v}" ${(query.get("type") || "bug") === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
         </div></div>
       <label class="field"><span>What should happen?</span>
-        <input type="text" name="summary" required maxlength="500" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">
+        <input type="text" name="summary" required maxlength="500" value="${esc(query.get("summary") || "")}" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">
       </label>
       <label class="field"><span>Details <span class="muted">(optional)</span></span>
         <textarea name="spec" placeholder="Steps to reproduce, expected vs actual, acceptance criteria, links…"></textarea>
@@ -2003,6 +2003,29 @@ pages.measure = async () => {
         }
       }));
     },
+  };
+};
+
+pages.checkup = async () => {
+  const d = await api("health");
+  const action = (i) => {
+    if (i.job) return `<a class="btn small primary" href="#/new?type=${encodeURIComponent(i.job.type)}&summary=${encodeURIComponent(i.job.summary)}">${esc(i.label)}</a>`;
+    if (i.route) return `<a class="btn small ${i.status === "todo" ? "primary" : ""}" href="${esc(i.route)}">${esc(i.label)}</a>`;
+    if (i.hint) return `<div class="setup-hint"><code>${esc(i.hint)}</code><button class="btn small ghost" data-setup-copy="${esc(i.hint)}">Copy</button></div>`;
+    return "";
+  };
+  const icon = { ok: `<span class="setup-icon done" aria-label="in place">✓</span>`, todo: `<span class="setup-icon todo" aria-label="missing"></span>`, warn: `<span class="pill attention" aria-label="needs attention">!</span>` };
+  const next = d.items.find((i) => i.id === d.next);
+  return {
+    title: "Check-up",
+    sub: `${esc(d.name)} · ${esc(d.stage)}`,
+    html: `
+      <div class="tasks-progress-wrap" style="margin-bottom: 16px;"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round((d.ok / d.total) * 100)}%"></div></div><span class="progress-text">${d.ok}/${d.total} in place</span></div>
+      ${next ? `<section class="card" style="margin-bottom: 16px; border-color: var(--accent);"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div>
+        <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on the Inbox for what needs you next.</div>`}
+      <section class="card"><div class="card-h"><h2>Everything</h2><span class="muted">Product state. Tools and keys are in the setup checklist.</span></div>
+        <div class="list">${d.items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div>
+          <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>`,
   };
 };
 
