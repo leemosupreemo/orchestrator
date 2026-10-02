@@ -674,6 +674,7 @@ if (configurationTrigger && configurationMenu) {
 
 let consecutiveAuthFailures = 0;
 
+let lastInbox = null; // previous inbox items, to spot new things waiting on you
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
 async function refreshState() {
@@ -685,8 +686,9 @@ async function refreshState() {
   }
   try {
     const newState = await api("state");
-    for (const event of Notifications.events(lastRuns, newState.runs)) Notifications.show(event);
+    for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
     lastRuns = newState.runs;
+    lastInbox = newState.inbox || [];
     state = newState;
     consecutiveAuthFailures = 0;
     if (newState.token) {
@@ -2140,6 +2142,33 @@ pages.config = async (args = []) => {
             );
           } else if (action === "email-test") {
             await runAction("test_email");
+          }
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "chat") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button || button.disabled) return;
+          const action = button.dataset.configAction;
+          if (action === "chat-set") {
+            showConfigMutationDialog(
+              "Slack webhook",
+              `<label class="field"><span>Webhook URL</span><input type="url" name="url" required autocomplete="off" placeholder="https://hooks.slack.com/services/…"></label>`,
+              "Save",
+              (values) => ({part: "webhook", body: {op: "set", url: values.url}}),
+              "Webhook saved",
+            );
+          } else if (action === "chat-clear") {
+            await runConfigMutation(button, {part: "webhook", body: {op: "clear"}}, "Webhook removed");
+          } else if (action === "chat-test") {
+            await runConfigMutation(button, {part: "webhook", body: {op: "test"}}, "Test message sent");
           }
         };
         view.addEventListener("click", onClick);

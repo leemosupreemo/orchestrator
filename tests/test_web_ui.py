@@ -1296,6 +1296,81 @@ class InboxEndpointTests(ServerTestCase):
         self.assertEqual(data["here"], [])
 
 
+class WebhookNotificationTests(ServerTestCase):
+    URL = "https://hooks.slack.com/services/T000/B000/secret"
+
+    def post_hook(self, body):
+        return self.request("POST", "/api/config/webhook", body=body, headers=UI_HEADERS)
+
+    def test_save_never_echoes_the_url_and_clear_removes_it(self):
+        res, _ = self.post_hook({"op": "set", "url": self.URL})
+        self.assertEqual(res.status, 200)
+        _, config = self.request("GET", "/api/config")
+        self.assertEqual(config["webhook"], {"set": True, "host": "hooks.slack.com"})
+        self.assertNotIn("secret", json.dumps(config))
+        self.post_hook({"op": "clear"})
+        _, config = self.request("GET", "/api/config")
+        self.assertEqual(config["webhook"], {"set": False, "host": ""})
+
+    def test_rejects_non_https_and_test_without_a_webhook(self):
+        res, _ = self.post_hook({"op": "set", "url": "http://hooks.example/x"})
+        self.assertEqual(res.status, 400)
+        res, _ = self.post_hook({"op": "test"})
+        self.assertEqual(res.status, 400)
+
+    def test_test_message_is_posted_and_failures_are_reported(self):
+        self.post_hook({"op": "set", "url": self.URL})
+        with patch.object(ui.notifier, "post_webhook") as post:
+            res, _ = self.post_hook({"op": "test"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(post.call_args[0][0], self.URL)
+        self.assertIn("Test notification", post.call_args[0][1]["text"])
+        with patch.object(ui.notifier, "post_webhook", side_effect=ui.notifier.NotifyError("The webhook answered 404")):
+            res, data = self.post_hook({"op": "test"})
+        self.assertEqual(res.status, 502)
+        self.assertIn("404", data["error"])
+
+    def test_watcher_announces_only_new_items_and_posts_them(self):
+        ui.write_settings(self.root, {"notification_webhook": self.URL})
+        tracker = ui.notifier.Tracker()
+        self.assertEqual(self.server.notify_once(tracker), [])  # seeds with the job already waiting
+        (self.root / ".orchestrator" / "jobs" / "20260923-bug-2.json").write_text(json.dumps(
+            {"title": "Crash on launch", "type": "bug", "status": "failed"}))
+        with patch.object(ui.notifier, "post_webhook") as post:
+            events = self.server.notify_once(tracker)
+            again = self.server.notify_once(tracker)
+        self.assertEqual([e["path"] for e in events], ["#/jobs/20260923-bug-2"])
+        self.assertEqual(again, [])
+        self.assertEqual(post.call_count, 1)
+        self.assertIn("Crash on launch", post.call_args[0][1]["text"])
+
+    def test_watcher_tracks_but_sends_nothing_without_a_webhook(self):
+        tracker = ui.notifier.Tracker()
+        self.server.notify_once(tracker)
+        (self.root / ".orchestrator" / "jobs" / "20260923-bug-2.json").write_text(json.dumps({"title": "X", "type": "bug", "status": "failed"}))
+        with patch.object(ui.notifier, "post_webhook") as post:
+            events = self.server.notify_once(tracker)
+        self.assertEqual(len(events), 1)
+        post.assert_not_called()
+
+    def test_background_watcher_delivers_and_stops_with_the_server(self):
+        ui.write_settings(self.root, {"notification_webhook": self.URL})
+        with patch.object(ui.notifier, "post_webhook") as post:
+            thread = self.server.start_notifier(interval=0.05)
+            (self.root / ".orchestrator" / "jobs" / "20260923-bug-2.json").write_text(json.dumps({"title": "Boom", "type": "bug", "status": "failed"}))
+            deadline = time.time() + 5
+            while not post.called and time.time() < deadline:
+                time.sleep(0.05)
+        self.assertTrue(post.called)
+        self.server._stopping.set()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
+    def test_state_carries_the_inbox_items_the_browser_notifies_from(self):
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual([(i["id"].split(":")[0], i["hash"]) for i in state["inbox"]], [("job", "#/jobs/20260922-bug-1")])
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")
@@ -1407,11 +1482,25 @@ class NotificationLogicTests(unittest.TestCase):
         self.assertIn("exit 2", out[0]["body"])
         self.assertEqual(out[0]["hash"], "#/runs/r1")
 
-    def test_run_that_starts_waiting_asks_for_you_once(self):
+    def test_waiting_runs_are_announced_through_the_inbox_not_the_run_list(self):
         running = {"id": "r1", "running": True, "waiting": False, "title": "Plan"}
-        waiting = {**running, "waiting": True}
-        self.assertEqual(self.events([running], [waiting])[0]["kind"], "needs-you")
-        self.assertEqual(self.events([waiting], [waiting]), [])
+        self.assertEqual(self.events([running], [{**running, "waiting": True}]), [])
+
+    def inbox_events(self, prev, nxt):
+        module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "notifications.js"
+        script = "const n = require(process.argv[1]); const [p, x] = JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify(n.inboxEvents(p, x)));"
+        result = subprocess.run(["node", "-e", script, str(module), json.dumps([prev, nxt])], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_new_inbox_items_notify_once_and_first_poll_is_silent(self):
+        a = {"id": "job:a", "title": "Login", "label": "Question for you", "reason": "Which provider?", "hash": "#/jobs/a"}
+        b = {"id": "job:b", "title": "Chat", "label": "Tests failing", "reason": "Run a fix", "hash": "#/jobs/b"}
+        self.assertEqual(self.inbox_events(None, [a]), [])
+        out = self.inbox_events([a], [a, b])
+        self.assertEqual([(e["title"], e["body"], e["hash"]) for e in out], [("Tests failing", "Chat: Run a fix", "#/jobs/b")])
+        self.assertEqual(self.inbox_events([a, b], [a, b]), [])
+        self.assertEqual(self.inbox_events([a, b], [a]), [])
 
     def test_unchanged_and_unknown_runs_are_silent(self):
         run = {"id": "r1", "running": True, "waiting": False}

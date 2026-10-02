@@ -53,6 +53,7 @@ import urllib.request
 from orchestrator import integrations
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
+from orchestrator import notifier
 from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.setup_checklist import setup_checklist
@@ -66,6 +67,7 @@ from orchestrator.project_config import (
     safe_resolve,
 )
 
+PUBLIC_URL: dict[str, str] = {}  # {"url": ...} once the server knows where people reach it
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PACKAGE_PARENT = Path(__file__).resolve().parents[2]  # folder holding the `orchestrator` package serving this UI
 COOKIE_NAME = "orchestrator_ui"
@@ -535,6 +537,14 @@ def inbox_overview(root: Path, sessions: Any, with_others: bool = True) -> dict[
                 continue
             others.append({"name": p.get("name") or project_display_name(other), "root": str(other), "jobs": list_jobs(other)})
     return inbox_view.build(active, jobs, sessions.list(), others)
+
+
+def inbox_state(root: Path, sessions: Any) -> dict[str, Any]:
+    """What the browser polls: the count for the badge and the items it can notify about."""
+    here = inbox_overview(root, sessions, with_others=False)["here"]
+    return {"inbox_count": len(here),
+            "inbox": [{"id": i["id"], "title": i["title"], "label": i["label"], "reason": i["reason"],
+                       "hash": f"#/runs/{i['run_id']}" if i["kind"] == "run" else f"#/jobs/{i['job_id']}"} for i in here]}
 
 
 def features_overview(root: Path) -> dict[str, Any]:
@@ -1511,6 +1521,7 @@ def config_state(root: Path) -> dict[str, Any]:
             "resend_from_email": settings.get("resend_from_email", ""), "resend_display_name": settings.get("resend_display_name", ""),
             "resend_api_key_set": bool(settings.get("resend_api_key")),
         },
+        "webhook": {"set": bool(settings.get("notification_webhook")), "host": notifier.host_of(settings.get("notification_webhook", ""))},
         "archived": archived_jobs(root),
         "docs": [{k: v for k, v in d.items() if k != "path"} for d in doc_entries(root)],
         "instructions": [{"cli": cli, "file": f, "exists": (root / f).is_file()} for cli, f in INSTRUCTION_FILES.items()],
@@ -1602,6 +1613,25 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
                     settings[key] = value
         else:
             raise UIError("Unknown email operation")
+    elif part == "webhook":
+        op = _choice(body, "op", ["set", "clear", "test"])
+        if op == "set":
+            url = _text(body, "url", required=True, limit=500)
+            if not notifier.valid_webhook(url):
+                raise UIError("The webhook must be an https:// URL")
+            settings["notification_webhook"] = url
+        elif op == "clear":
+            settings.pop("notification_webhook", None)
+        else:
+            url = settings.get("notification_webhook", "")
+            if not url:
+                raise UIError("Save a webhook first")
+            try:
+                notifier.post_webhook(url, notifier.payload({"title": "Test notification", "body": "Orchestrator can reach this channel.", "path": "#/inbox"},
+                                                            project_display_name(root), PUBLIC_URL.get("url", "")))
+            except notifier.NotifyError as exc:
+                raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+            return {"ok": True}
     elif part == "allowed-email":
         op = _choice(body, "op", ["add", "remove"])
         address = _text(body, "email", required=True, limit=254).lower()
@@ -1967,6 +1997,7 @@ class UIServer(ThreadingHTTPServer):
         self.token = get_or_create_ui_token(token)
         self.sessions = SessionManager()
         self.allowed_hosts = self._allowed_hosts()
+        self._stopping = threading.Event()
 
     def _allowed_hosts(self) -> set[str] | None:
         """Host headers accepted, or None when bound to every interface: the
@@ -1978,6 +2009,10 @@ class UIServer(ThreadingHTTPServer):
         names = {host, "localhost", "127.0.0.1", "[::1]"}
         return {f"{n}:{port}" for n in names} | names
 
+    def shutdown(self) -> None:
+        self._stopping.set()
+        super().shutdown()
+
     @property
     def base_url(self) -> str:
         host, port = self.server_address[:2]
@@ -1986,6 +2021,35 @@ class UIServer(ThreadingHTTPServer):
 
     def set_root(self, root: Path) -> None:
         self.root = root
+
+    def start_notifier(self, interval: float = 15.0) -> threading.Thread:
+        """Push new inbox items and finished runs to the configured webhook, tab open or not."""
+        tracker = notifier.Tracker()
+
+        def loop() -> None:
+            while not self._stopping.wait(interval):
+                try:
+                    self.notify_once(tracker)
+                except Exception as exc:  # never let a bad webhook or odd job file kill the watcher
+                    print(f"  Notifications: {exc}", flush=True)
+
+        thread = threading.Thread(target=loop, daemon=True, name="notifier")
+        self._tracker = tracker
+        self.notify_once(tracker)  # seed so existing items aren't announced
+        thread.start()
+        return thread
+
+    def notify_once(self, tracker: "notifier.Tracker") -> list[dict[str, Any]]:
+        root = self.root
+        events = tracker.update(inbox_overview(root, self.sessions, with_others=False)["here"], self.sessions.list())
+        url = read_settings(root).get("notification_webhook")
+        if url:
+            for event in events:
+                try:
+                    notifier.post_webhook(url, notifier.payload(event, project_display_name(root), PUBLIC_URL.get("url", "")))
+                except notifier.NotifyError as exc:
+                    print(f"  Notifications: {exc}", flush=True)
+        return events
 
     def child_env(self) -> dict[str, str]:
         env = dict(os.environ)
@@ -2194,7 +2258,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and parts == ["state"]:
             self._json({"project": project_state(root), "runs": self.server.sessions.list(),
-                        "inbox_count": inbox_overview(root, self.server.sessions, with_others=False)["count"],
+                        **inbox_state(root, self.server.sessions),
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
                                     for k, a in ACTIONS.items()},
                         "token": self.server.token})
@@ -2702,6 +2766,7 @@ def main(argv: list[str] | None = None) -> int:
         tunnel_proc, tunnel_url = start_tunnel(args.port)
         if tunnel_url:
             hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={tunnel_url}"
+            PUBLIC_URL["url"] = hosted_url
             print(f"  \033[92m✓ Tunnel URL:\033[0m   {tunnel_url}/?token={server.token}")
             print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
         else:
@@ -2710,6 +2775,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_open:
         open_browser(url)
     try:
+        server.start_notifier()
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         print("\nStopping...")

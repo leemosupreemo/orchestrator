@@ -26,6 +26,7 @@
       label: "Delivery & notifications",
       entries: [
         {id: "email", label: "Email Notifications", description: "Choose recipients and configure the sender.", route: "#/config/email", enabled: true, status: null},
+        {id: "chat", label: "Slack & chat alerts", description: "Get pinged when something needs you, even with the tab closed.", route: "#/config/chat", enabled: true, status: null},
         {id: "firebase", label: "Firebase App Distribution", description: "Configure tester releases and signing.", route: "#/config/firebase", enabled: true, status: null},
         {id: "xcode-cloud", label: "Xcode Cloud", description: "Configure cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
       ],
@@ -288,6 +289,29 @@
     };
   }
 
+  function renderChat(state) {
+    const hook = state.webhook || {};
+    return {
+      title: "Slack & chat alerts",
+      sub: "A message when a job needs you, and when a run finishes or fails. Works with any Slack-compatible incoming webhook.",
+      html: `<div class="configuration-page">
+        <a class="configuration-back" href="#/config">← All configuration</a>
+        <section class="card configuration-card">
+          <div class="card-h"><h2>Webhook</h2><div class="row">
+            <button type="button" class="btn small" data-config-action="chat-set">${hook.set ? "Change" : "Add webhook"}</button>
+            ${hook.set ? `<button type="button" class="btn small primary" data-config-action="chat-test">Send test message</button>
+            <button type="button" class="btn small danger" data-config-action="chat-clear">Remove</button>` : ""}
+          </div></div>
+          <div class="card-b stack">
+            <strong>${hook.set ? "Connected" : "Not set up"}</strong>
+            <span class="configuration-status">${hook.set ? `Sending to ${escapeHtml(hook.host)}. The full address is stored but not shown.` : "Paste an https:// incoming-webhook URL from Slack (or a compatible tool)."}</span>
+            <span class="muted">Runs while the Orchestrator web server is running. Browser alerts (sidebar button) and worker emails work separately.</span>
+          </div>
+        </section>
+      </div>`,
+    };
+  }
+
   function renderDocumentation(state) {
     const docs = Array.isArray(state.docs) ? state.docs : [];
     const sections = ["Orchestrator docs", "Project docs"].map((section) => {
@@ -534,6 +558,7 @@
     if (section === "base-branch") return renderBaseBranch(state);
     if (section === "archived-jobs") return renderArchivedJobs(state);
     if (section === "email") return renderEmail(state);
+    if (section === "chat") return renderChat(state);
     if (section === "documentation") return renderDocumentation(state);
     if (section === "models") return renderModels(state);
     if (section === "ai-instructions") return renderAiInstructions(state);

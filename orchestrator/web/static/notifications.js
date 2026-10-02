@@ -2,7 +2,7 @@
   "use strict";
 
   // Turns two consecutive run lists into the moments worth interrupting someone for:
-  // a run that needs an answer, finished, or failed. First load (prev == null) is silent.
+  // a run that finished or failed. First load (prev == null) is silent.
   function events(prev, next) {
     if (!Array.isArray(prev) || !Array.isArray(next)) return [];
     const before = new Map(prev.map((run) => [run.id, run]));
@@ -13,14 +13,22 @@
       const name = run.title || run.action || "A run";
       const target = run.result_job || run.job;
       const hash = run.running || !target ? `#/runs/${run.id}` : `#/jobs/${target}`;
-      if (run.running && run.waiting && !was.waiting) {
-        out.push({ kind: "needs-you", key: `${run.id}:waiting:${run.last_line || ""}`, title: "Needs your input", body: `${name} is waiting for you.`, hash: `#/runs/${run.id}` });
-      } else if (was.running && !run.running) {
+      if (was.running && !run.running) {
         const ok = run.exit_code === 0;
         out.push({ kind: ok ? "done" : "problem", key: `${run.id}:ended`, title: ok ? "Finished" : "Problem", body: ok ? `${name} finished.` : `${name} failed (exit ${run.exit_code}).`, hash });
       }
     }
     return out;
+  }
+
+  // New things waiting on the user (the inbox: questions, reviews, failures, stalled runs).
+  // Anything already there on the previous poll stays quiet; first poll (prev == null) too.
+  function inboxEvents(prev, next) {
+    if (!Array.isArray(prev) || !Array.isArray(next)) return [];
+    const seen = new Set(prev.map((item) => item.id));
+    return next.filter((item) => !seen.has(item.id)).map((item) => ({
+      kind: "needs-you", key: item.id, title: item.label || "Needs you", body: [item.title, item.reason].filter(Boolean).join(": "), hash: item.hash,
+    }));
   }
 
   // How many runs are waiting on the user, for the tab title.
@@ -63,7 +71,7 @@
     note.onclick = () => { window.focus(); location.hash = event.hash; note.close(); };
   }
 
-  const api = { events, attentionCount, tabTitle, supported, enabled, enable, disable, show };
+  const api = { events, inboxEvents, attentionCount, tabTitle, supported, enabled, enable, disable, show };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.Notifications = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

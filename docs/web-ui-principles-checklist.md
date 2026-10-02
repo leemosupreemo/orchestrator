@@ -36,7 +36,7 @@ checked in a browser yet.
 - [~] **Changes made clear.** Changes card shows file chips, diffstat and reasoning. No inline diff or per-task attribution.
 - [x] **Easy to fix bugs I find.** "Fix something" on Home, "Still broken?" on a job.
 - [x] **Handles everything; comes to me only with critical questions.** Inbox (first item in the sidebar, with a count): every job waiting on you (questions, plan/design approvals, reviews, failures), plus runs stopped at a prompt, ranked failures first. Each row has its one next action inline. Other projects' waiting jobs are listed below with "Switch & open". The tab title shows the same count. Not yet: notifying when a job moves into the inbox without a run (only run changes notify).
-- [~] **Notifications when done or problem.** Browser notifications (opt-in, sidebar button) when a run finishes, fails, or waits for input, plus a count in the tab title. Works while the tab is in the background, not when it is closed. Email settings exist separately. No Slack or mobile push.
+- [x] **Notifications when done or problem.** Three channels: (1) browser alerts (sidebar button) for anything new in the inbox and for runs that finish or fail, firing even in a background tab; (2) Slack-compatible webhook (Configuration > Slack & chat alerts) sent by the web server for the same events, so it reaches your phone with the tab closed, with a link back to the job; (3) the worker's existing email and macOS alerts. Limits: the webhook watcher runs only while the web server runs, and covers the active project only; no native mobile push.
 
 ## D. Testing and quality
 
