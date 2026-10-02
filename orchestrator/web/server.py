@@ -578,6 +578,7 @@ def delivery_overview(root: Path) -> dict[str, Any]:
     jobs = list_jobs(root)
     firebase = {"configured": bool(config.get("firebase_distribution")), "app_id_set": bool(settings.get("firebase_app_id")),
                 "groups": [g.strip() for g in str(settings.get("firebase_tester_groups", "")).split(",") if g.strip()],
+                "invite_url": settings.get("firebase_invite_url", ""),
                 "cli_installed": shutil.which("firebase") is not None}
     ci = (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists()
     data = delivery_view.overview(lambda *a: git(root, *a), lambda argv: gh_cached(root, argv), runtime_dir(root),
@@ -1707,6 +1708,7 @@ def config_state(root: Path) -> dict[str, Any]:
             "app_id": settings.get("firebase_app_id", ""),
             "tester_groups": settings.get("firebase_tester_groups", "testers"),
             "service_account_path": settings.get("firebase_service_account_path", ""),
+            "invite_url": settings.get("firebase_invite_url", ""),
             "cli_installed": shutil.which("firebase") is not None,
         },
         "xcode_cloud": {
@@ -1841,8 +1843,10 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
         if isinstance(assignments, dict):
             settings["default_models"] = {k: str(v).strip() for k, v in assignments.items()}
     elif part == "firebase":
-        for k in ("firebase_app_id", "firebase_tester_groups", "firebase_service_account_path"):
+        for k in ("firebase_app_id", "firebase_tester_groups", "firebase_service_account_path", "firebase_invite_url"):
             val = _text(body, k, limit=500)
+            if k == "firebase_invite_url" and val and not notifier.valid_webhook(val):  # same rule: an https address, no credentials in it
+                raise UIError("The invite link must be an https:// address")
             if val or k in body:
                 settings[k] = val
     elif part == "role-prompts":

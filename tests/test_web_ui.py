@@ -1494,6 +1494,20 @@ class DeliveryEndpointTests(ServerTestCase):
             self.request("GET", "/api/delivery")
         self.assertEqual(len(calls), 1)
 
+    def test_invite_link_is_saved_validated_and_shown_for_sharing(self):
+        res, _ = self.request("POST", "/api/config/firebase", body={"firebase_invite_url": "http://insecure.example/i/1"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        link = "https://appdistribution.firebase.dev/i/abc123"
+        res, _ = self.request("POST", "/api/config/firebase", body={"firebase_app_id": "1:2:ios:a", "firebase_invite_url": link}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        _, out = self.request("GET", "/api/delivery")
+        self.assertEqual(out["testers"]["invite_url"], link)
+        _, config = self.request("GET", "/api/config")
+        self.assertEqual(config["firebase"]["invite_url"], link)
+        self.request("POST", "/api/config/firebase", body={"firebase_invite_url": ""}, headers=UI_HEADERS)
+        _, out = self.request("GET", "/api/delivery")
+        self.assertEqual(out["testers"]["invite_url"], "")
+
     def test_secrets_are_not_in_the_payload(self):
         ui.write_settings(self.root, {"firebase_app_id": "1:23:ios:abc", "firebase_service_account_path": "/secret/key.json", "firebase_tester_groups": "qa, friends"})
         _, out = self.request("GET", "/api/delivery")
