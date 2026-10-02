@@ -1245,6 +1245,65 @@ class JobChatEndpointTests(ServerTestCase):
         self.assertIn(res.status, (400, 403))
 
 
+class FeatureEndpointTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def test_create_assign_and_roll_up(self):
+        res, data = self.post("/api/features", {"name": "Lobby", "paths": "Sources/Lobby/"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["features"][0]["id"], "lobby")
+        self.assertEqual(data["unassigned"], [self.JOB])
+        res, _ = self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "lobby"})
+        self.assertEqual(res.status, 200)
+        res, data = self.request("GET", "/api/features")
+        feature = data["features"][0]
+        self.assertEqual((feature["status"], feature["jobs_total"], feature["job_ids"]), ("in-progress", 1, [self.JOB]))
+        self.assertEqual(data["unassigned"], [])
+        res, jobs = self.request("GET", "/api/jobs")
+        self.assertEqual(jobs["jobs"][0]["feature"], "lobby")
+
+    def test_assigning_to_an_unknown_feature_fails_and_unassign_works(self):
+        res, _ = self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "nope"})
+        self.assertEqual(res.status, 404)
+        self.post("/api/features", {"name": "Lobby"})
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "lobby"})
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": ""})
+        _, jobs = self.request("GET", "/api/jobs")
+        self.assertIsNone(jobs["jobs"][0]["feature"])
+
+    def test_complete_then_new_work_reopens(self):
+        self.post("/api/features", {"name": "Lobby"})
+        _, data = self.post("/api/features/lobby", {"status": "complete"})
+        self.assertEqual(data["features"][0]["status"], "complete")
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "lobby"})
+        _, data = self.request("GET", "/api/features")
+        self.assertEqual((data["features"][0]["status"], data["features"][0]["reopened"]), ("in-progress", True))
+
+    def test_overlapping_feature_paths_are_reported(self):
+        self.post("/api/features", {"name": "Lobby", "paths": "Sources/Lobby/"})
+        _, data = self.post("/api/features", {"name": "Seats", "paths": "Sources/Lobby/Seat.swift"})
+        self.assertEqual(data["overlaps"][0]["features"], ["lobby", "seats"])
+
+    def test_delete_unassigns_its_jobs(self):
+        self.post("/api/features", {"name": "Lobby"})
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "lobby"})
+        res, data = self.request("DELETE", "/api/features/lobby", headers=UI_HEADERS)
+        self.assertEqual((res.status, data["features"]), (200, []))
+        _, jobs = self.request("GET", "/api/jobs")
+        self.assertIsNone(jobs["jobs"][0]["feature"])
+
+    def test_validation_and_ui_header(self):
+        res, _ = self.post("/api/features", {"name": " "})
+        self.assertEqual(res.status, 400)
+        res, _ = self.post("/api/features/missing", {"status": "complete"})
+        self.assertEqual(res.status, 404)
+        res, _ = self.request("POST", "/api/features", body={"name": "x"}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+
+
 class NotificationLogicTests(unittest.TestCase):
     def events(self, prev, nxt):
         module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "notifications.js"
@@ -1303,6 +1362,13 @@ class JobDetailPrinciplesTests(unittest.TestCase):
     def test_debug_layout_toggles_removed(self):
         self.assertNotIn("orchestrator_home_version", self.source)
         self.assertNotIn("(debug)", self.source)
+
+    def test_features_page_is_routed_and_in_the_nav(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        self.assertIn('data-route="features"', (static / "index.html").read_text())
+        self.assertIn("pages.features = async", self.source)
+        self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
+        self.assertIn('closest("[data-job-feature]")', self.source)
 
     def test_discard_is_a_confirmed_server_action(self):
         self.assertIn("discard", ui.ACTIONS)

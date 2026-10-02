@@ -1,0 +1,186 @@
+"""Features: the product-level things jobs add up to.
+
+A feature groups jobs, owns a slice of the codebase (`paths`), and has a status
+that is a statement about now, not forever: "complete" records when it was last
+judged done and reopens the moment new work is attached. Stored in
+`<runtime>/features.json`; jobs point at a feature with `job["feature"]`.
+
+Overlap is what keeps features discrete: two features claiming the same paths,
+or two in-flight jobs on different features touching the same file.
+"""
+from __future__ import annotations
+
+import fnmatch
+import json
+import os
+import re
+import time
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+STATUSES = ("planned", "in-progress", "complete")
+DONE_GROUPS = {"done"}
+
+
+class FeatureError(ValueError):
+    pass
+
+
+def store_path(runtime: Path) -> Path:
+    return runtime / "features.json"
+
+
+def load(runtime: Path) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(store_path(runtime).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [f for f in data.get("features", []) if isinstance(f, dict) and f.get("id")] if isinstance(data, dict) else []
+
+
+def save(runtime: Path, features: list[dict[str, Any]]) -> None:
+    path = store_path(runtime)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"features": features}, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48]
+
+
+def _paths(raw: Any) -> list[str]:
+    items = raw.splitlines() if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    out = []
+    for item in items:
+        p = str(item).strip().lstrip("./")
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def get(features: list[dict[str, Any]], feature_id: str) -> dict[str, Any]:
+    for f in features:
+        if f["id"] == feature_id:
+            return f
+    raise FeatureError("Feature not found")
+
+
+def create(runtime: Path, name: str, summary: str = "", paths: Any = None) -> dict[str, Any]:
+    name = (name or "").strip()
+    if not name:
+        raise FeatureError("A feature needs a name")
+    if len(name) > 80:
+        raise FeatureError("Keep the name under 80 characters")
+    features = load(runtime)
+    base = _slug(name) or "feature"
+    taken = {f["id"] for f in features}
+    fid, n = base, 2
+    while fid in taken:
+        fid, n = f"{base}-{n}", n + 1
+    feature = {"id": fid, "name": name, "summary": (summary or "").strip()[:500], "paths": _paths(paths),
+               "status": "planned", "created": time.time(), "completed_at": None, "reopened": False}
+    save(runtime, features + [feature])
+    return feature
+
+
+def update(runtime: Path, feature_id: str, **fields: Any) -> dict[str, Any]:
+    features = load(runtime)
+    feature = get(features, feature_id)
+    if "name" in fields:
+        name = str(fields["name"] or "").strip()
+        if not name:
+            raise FeatureError("A feature needs a name")
+        feature["name"] = name[:80]
+    if "summary" in fields:
+        feature["summary"] = str(fields["summary"] or "").strip()[:500]
+    if "paths" in fields:
+        feature["paths"] = _paths(fields["paths"])
+    save(runtime, features)
+    return feature
+
+
+def set_status(runtime: Path, feature_id: str, status: str) -> dict[str, Any]:
+    if status not in STATUSES:
+        raise FeatureError(f"Status must be one of: {', '.join(STATUSES)}")
+    features = load(runtime)
+    feature = get(features, feature_id)
+    feature["status"] = status
+    if status == "complete":
+        feature["completed_at"], feature["reopened"] = time.time(), False
+    save(runtime, features)
+    return feature
+
+
+def delete(runtime: Path, feature_id: str) -> None:
+    features = load(runtime)
+    get(features, feature_id)
+    save(runtime, [f for f in features if f["id"] != feature_id])
+
+
+def note_work_attached(runtime: Path, feature_id: str, job_group: str) -> None:
+    """A job landing on a feature: planned -> in-progress; complete -> reopened (in-progress)."""
+    features = load(runtime)
+    feature = get(features, feature_id)
+    if job_group in DONE_GROUPS:
+        return
+    if feature["status"] == "complete":
+        feature["status"], feature["reopened"] = "in-progress", True
+    elif feature["status"] == "planned":
+        feature["status"] = "in-progress"
+    save(runtime, features)
+
+
+def rollup(features: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each feature with its job counts. `jobs` are web job summaries (need `feature`, `state`)."""
+    out = []
+    for f in features:
+        mine = [j for j in jobs if j.get("feature") == f["id"]]
+        groups = [(j.get("state") or {}).get("group") for j in mine]
+        out.append({**f, "jobs_total": len(mine), "jobs_done": groups.count("done"),
+                    "jobs_working": groups.count("working"), "jobs_need_you": groups.count("needs_you"),
+                    "job_ids": [j["id"] for j in mine]})
+    return out
+
+
+def _covers(a: str, b: str) -> bool:
+    """True if path pattern `a` and `b` could name the same files."""
+    if a == b or fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a):
+        return True
+    pa, pb = PurePosixPath(a.rstrip("/*")), PurePosixPath(b.rstrip("/*"))
+    return pa == pb or pa in pb.parents or pb in pa.parents
+
+
+def overlaps(features: list[dict[str, Any]], jobs: list[dict[str, Any]],
+             job_files: dict[str, list[str]] | None = None) -> list[dict[str, Any]]:
+    """Pairs of features that step on each other, with why.
+
+    `job_files` maps job id -> files that job touches (only in-flight jobs count)."""
+    found: dict[tuple[str, str], list[str]] = {}
+
+    def add(a: str, b: str, reason: str) -> None:
+        key = tuple(sorted((a, b)))
+        if reason not in found.setdefault(key, []):
+            found[key].append(reason)
+
+    for i, a in enumerate(features):
+        for b in features[i + 1:]:
+            for pa in a.get("paths", []):
+                for pb in b.get("paths", []):
+                    if _covers(pa, pb):
+                        add(a["id"], b["id"], f"both claim {pa if pa == pb else f'{pa} and {pb}'}")
+    by_file: dict[str, set[str]] = {}
+    for j in jobs:
+        if (j.get("state") or {}).get("group") == "done" or not j.get("feature"):
+            continue
+        for path in (job_files or {}).get(j["id"], []):
+            by_file.setdefault(path, set()).add(j["feature"])
+    for path, owners in by_file.items():
+        ids = sorted(owners)
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                add(a, b, f"in-flight jobs both change {path}")
+    names = {f["id"]: f["name"] for f in features}
+    return [{"features": list(key), "names": [names.get(k, k) for k in key], "reasons": reasons}
+            for key, reasons in sorted(found.items())]

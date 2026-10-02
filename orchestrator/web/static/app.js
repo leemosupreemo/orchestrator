@@ -1379,6 +1379,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     if (ctx.canSplinter) items.push(["Split into sub-jobs", act("splinter_job", j), "Parallel child jobs and GitHub sub-issues"]);
   }
   items.push("---");
+  items.push(["Move to feature…", `data-job-feature="${esc(s.id)}"`, "Group this job under a feature"]);
   items.push(["Attach logs", act("link_logs", j), "Device crash logs or test traces"]);
   items.push(["Attach mockup or reference", act("attach_mockup", j)]);
   items.push(["Override models", act("select_models", j), "Planner, builder and reviewer"]);
@@ -1392,6 +1393,21 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   items.push(["Discard job and revert changes", act("discard_job", j), "Deletes uncommitted work", "danger"]);
   return moreMenu(items);
 }
+
+document.addEventListener("click", async (e) => {
+  const mv = e.target.closest("[data-job-feature]");
+  if (!mv) return;
+  const jobId = mv.dataset.jobFeature;
+  try {
+    const [{ features }, { job }] = [await api("features"), await api(`jobs/${encodeURIComponent(jobId)}`)];
+    if (!features.length) { toast("Create a feature first.", true); location.hash = "#/features"; return; }
+    const v = await formDialog("Move to feature", `<label class="field"><span>Feature</span><select name="feature">
+      <option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${f.id === job.feature ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>`, "Move");
+    if (!v) return;
+    await api(`jobs/${encodeURIComponent(jobId)}/feature`, { method: "POST", body: { feature: v.feature } });
+    toast("Moved"); route();
+  } catch (err) { toast(err.message, true); }
+});
 
 document.addEventListener("click", (e) => {
   const open = e.target.closest("[data-open]");
@@ -1435,6 +1451,8 @@ pages.job = async ([id]) => {
   const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
+  let featureName = "";
+  if (s.feature) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
   const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
   const conversation = Array.isArray(job.conversation) ? job.conversation.filter((m) => m && m.text) : [];
 
@@ -1473,7 +1491,7 @@ pages.job = async ([id]) => {
 
   return {
     title: s.title,
-    sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
+    sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.feature ? `<span class="sep">·</span><a href="#/features">${esc(featureName || s.feature)}</a>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter }),
     html: `
       ${runs.filter((r) => r.running).map((r) => `<section class="card" style="margin-bottom: 16px;"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
@@ -1696,6 +1714,76 @@ pages.new = async (_, query) => {
       });
     });
   },
+  };
+};
+
+const FEATURE_STATUS = { planned: ["Planned", "working"], "in-progress": ["In progress", "working"], complete: ["Complete", "done"] };
+
+function featureFormBody(f = {}) {
+  return `<label class="field"><span>Name</span><input type="text" name="name" required maxlength="80" value="${esc(f.name || "")}" placeholder="e.g. Lobby seats"></label>
+    <label class="field"><span>What it does <span class="muted">(optional)</span></span><textarea name="summary" rows="2" maxlength="500">${esc(f.summary || "")}</textarea></label>
+    <label class="field"><span>Code it owns <span class="muted">(optional, one path per line)</span></span><textarea name="paths" rows="3" placeholder="Sources/Lobby/">${esc((f.paths || []).join("\n"))}</textarea>
+      <small class="muted">Used to warn when two features claim the same code.</small></label>`;
+}
+
+pages.features = async () => {
+  const [{ features, overlaps }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
+  const byId = new Map(jobs.map((j) => [j.id, j]));
+  const names = new Map(features.map((f) => [f.id, f.name]));
+  const loose = jobs.filter((j) => !j.feature && j.state.group !== "done");
+  const card = (f) => {
+    const [label, tone] = FEATURE_STATUS[f.status] || FEATURE_STATUS.planned;
+    const pct = f.jobs_total ? Math.round((f.jobs_done / f.jobs_total) * 100) : 0;
+    const complete = f.status === "complete";
+    return `<section class="card" style="margin-bottom: 16px;" data-feature="${esc(f.id)}">
+      <div class="card-h"><h2>${esc(f.name)}</h2><span class="pill ${tone}">${esc(label)}</span>
+        ${moreMenu([
+          [complete ? "Reopen" : "Mark complete", `data-feature-action="${complete ? "reopen" : "complete"}" data-id="${esc(f.id)}"`, complete ? "More work is coming" : "Done for now. New work reopens it"],
+          ["Edit", `data-feature-action="edit" data-id="${esc(f.id)}"`],
+          ["Delete", `data-feature-action="delete" data-id="${esc(f.id)}"`, "Its jobs stay, unassigned", "danger"],
+        ])}</div>
+      <div class="card-b stack">
+        ${f.summary ? `<div>${esc(f.summary)}</div>` : ""}
+        ${f.reopened ? `<div class="muted">Reopened: new work was added after it was marked complete.</div>` : ""}
+        ${f.paths.length ? `<div class="muted mono">${f.paths.map(esc).join(" · ")}</div>` : ""}
+        <div class="tasks-progress-wrap"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${pct}%"></div></div>
+          <span class="progress-text">${f.jobs_done}/${f.jobs_total} jobs</span></div>
+        ${f.jobs_need_you ? `<div><span class="pill attention">${f.jobs_need_you} need${f.jobs_need_you === 1 ? "s" : ""} you</span></div>` : ""}
+        <div class="list">${f.job_ids.map((id) => byId.get(id)).filter(Boolean).map((j) => jobItem(j)).join("") || `<div class="empty">No jobs yet. Open a job and choose Move to feature.</div>`}</div>
+      </div></section>`;
+  };
+  return {
+    title: "Features",
+    sub: "What the jobs add up to. Each feature owns its own slice of the code.",
+    actions: `<button class="btn primary" id="new-feature">New feature</button>`,
+    html: `
+      ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
+      ${features.map(card).join("") || `<div class="empty">No features yet. A feature is something a user would name, like “Lobby seats”. Create one, then group jobs under it.</div>`}
+      ${loose.length ? `<section class="card"><div class="card-h"><h2>Not in a feature</h2><span class="count">${loose.length}</span></div>
+        <div class="list">${loose.map((j) => jobItem(j)).join("")}</div></section>` : ""}`,
+    after: () => {
+      $("#new-feature").addEventListener("click", async () => {
+        const v = await formDialog("New feature", featureFormBody(), "Create");
+        if (!v) return;
+        try { await api("features", { method: "POST", body: v }); toast("Feature created"); route(); } catch (e) { toast(e.message, true); }
+      });
+      view.querySelectorAll("[data-feature-action]").forEach((btn) => btn.addEventListener("click", async () => {
+        const id = btn.dataset.id, f = features.find((x) => x.id === id);
+        try {
+          if (btn.dataset.featureAction === "edit") {
+            const v = await formDialog("Edit feature", featureFormBody(f), "Save");
+            if (v) await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: v });
+            else return;
+          } else if (btn.dataset.featureAction === "delete") {
+            if (!(await formDialog("Delete feature", `<p>Delete “${esc(f.name)}”? Its ${f.jobs_total} job(s) stay, but are no longer in a feature.</p>`, "Delete"))) return;
+            await api(`features/${encodeURIComponent(id)}`, { method: "DELETE", body: {} });
+          } else {
+            await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: { status: btn.dataset.featureAction === "complete" ? "complete" : "in-progress" } });
+          }
+          route();
+        } catch (e) { toast(e.message, true); }
+      }));
+    },
   };
 };
 

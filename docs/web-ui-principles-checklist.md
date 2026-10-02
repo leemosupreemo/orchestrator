@@ -24,9 +24,9 @@ checked in a browser yet.
 - [x] **Express intent; if no strong opinion, LLM recommends.** New-job form has a "You decide the details" option (on by default). The planner is told to pick conventional defaults and record each as an assumption; the job page lists them under "What the AI assumed".
 - [~] **Easy to tweak / course-correct.** Revise plan, Run fix, Still broken?, model override. No inline edit of tasks.
 - [x] **Talk to the LLM directly, tied to the job.** "Ask about this job" thread on the job page; messages are stored in the job file. Read-only: it advises, and Revise plan / Run fix act. (The old Ask AI action started a fix run; removed.)
-- [ ] **Organize features with no overlap (discrete elements).** No feature/area model; jobs are a flat list.
+- [x] **Organize features with no overlap (discrete elements).** Features page: create/edit/delete, group jobs under a feature (job menu: Move to feature), roll-up progress. Overlap warnings when two features claim the same code paths, or two in-flight jobs on different features change the same file. Not yet: choosing the feature while creating a job, or auto-suggesting one.
 - [ ] **See how pieces fit the overall picture.** No map or roadmap view.
-- [ ] **Mark features complete (knowing they're never fully done).** Depends on the feature model.
+- [x] **Mark features complete (knowing they're never fully done).** "Mark complete" records when; attaching new open work reopens the feature and says so.
 
 ## C. Running jobs and control
 

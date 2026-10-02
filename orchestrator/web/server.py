@@ -51,6 +51,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator import integrations
+from orchestrator import features as feature_store
 from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.setup_checklist import setup_checklist
@@ -485,6 +486,7 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "status": job.get("status") or "unknown",
         "approach": approach,
         "state": job_state(job),
+        "feature": job.get("feature") or None,
         "branch": job.get("branch"),
         "base_branch": job.get("base_branch") or "main",
         "issue_number": issue_num,
@@ -494,6 +496,24 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "tasks_done": len(completed) if isinstance(completed, list) else 0,
         "updated": path.stat().st_mtime,
     }
+
+
+def job_touched_files(job: dict[str, Any]) -> list[str]:
+    """Files a job changed or plans to change, for feature-overlap checks."""
+    files = list(job.get("ai_modified_files") or []) + list(job.get("ai_untracked_files") or [])
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    for source in [plan] + [t for t in (plan.get("tasks") or []) if isinstance(t, dict)]:
+        files += source.get("likely_files") or []
+    return sorted({str(f).strip().lstrip("./") for f in files if str(f).strip()})
+
+
+def features_overview(root: Path) -> dict[str, Any]:
+    jobs = list_jobs(root)
+    features = feature_store.load(runtime_dir(root))
+    files = {j["id"]: job_touched_files(read_json_file(jobs_dir(root) / f"{j['id']}.json"))
+             for j in jobs if j.get("feature")}
+    return {"features": feature_store.rollup(features, jobs), "overlaps": feature_store.overlaps(features, jobs, files),
+            "unassigned": [j["id"] for j in jobs if not j.get("feature") and j["state"]["group"] != "done"]}
 
 
 def list_jobs(root: Path) -> list[dict[str, Any]]:
@@ -2157,6 +2177,51 @@ class UIHandler(BaseHTTPRequestHandler):
             for job in jobs:
                 job["active_run"] = job["id"] in running
             self._json({"jobs": jobs})
+        elif method == "GET" and parts == ["features"]:
+            self._json(features_overview(root))
+        elif method == "POST" and parts == ["features"]:
+            body = self._body()
+            try:
+                feature_store.create(runtime_dir(root), str(body.get("name") or ""), str(body.get("summary") or ""), body.get("paths"))
+            except feature_store.FeatureError as exc:
+                raise UIError(str(exc))
+            self._json(features_overview(root))
+        elif method == "POST" and len(parts) == 2 and parts[0] == "features":
+            body = self._body()
+            try:
+                if "status" in body:
+                    feature_store.set_status(runtime_dir(root), parts[1], str(body["status"]))
+                fields = {k: body[k] for k in ("name", "summary", "paths") if k in body}
+                if fields:
+                    feature_store.update(runtime_dir(root), parts[1], **fields)
+            except feature_store.FeatureError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND if "not found" in str(exc) else HTTPStatus.BAD_REQUEST)
+            self._json(features_overview(root))
+        elif method == "DELETE" and len(parts) == 2 and parts[0] == "features":
+            try:
+                feature_store.delete(runtime_dir(root), parts[1])
+            except feature_store.FeatureError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND)
+            for path in jobs_dir(root).glob("*.json"):  # jobs on a deleted feature become unassigned
+                job = read_json_file(path)
+                if job.get("feature") == parts[1]:
+                    job.pop("feature")
+                    write_json_file(path, job)
+            self._json(features_overview(root))
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
+            job_path = resolve_job_path(root, parts[1])
+            job = read_json_file(job_path)
+            target = str(self._body().get("feature") or "").strip()
+            try:
+                if target:
+                    feature_store.note_work_attached(runtime_dir(root), target, job_state(job)["group"])
+                    job["feature"] = target
+                else:
+                    job.pop("feature", None)
+            except feature_store.FeatureError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND)
+            write_json_file(job_path, job)
+            self._json({"ok": True, "feature": job.get("feature")})
         elif method == "GET" and len(parts) == 2 and parts[0] == "jobs":
             detail = job_detail(root, parts[1])
             detail["runs"] = self.server.sessions.list(job_id=parts[1])

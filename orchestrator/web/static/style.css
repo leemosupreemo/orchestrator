@@ -1250,3 +1250,4 @@ dialog h2 { font-size: 17px; }
 .chat-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
 #notify-btn[hidden] { display: none; }
 .assumptions { margin: 0 0 8px; padding-left: 20px; } .assumptions li { margin: 4px 0; }
+.banner.attention { background: var(--warn-soft); }
