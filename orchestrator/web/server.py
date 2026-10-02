@@ -2720,6 +2720,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(save_upload(root, (query.get("name") or [""])[0], data))
         elif method == "GET" and parts == ["product"]:
             self._json({"docs": product_docs.listing(root), "review": product_docs.last_review(root)})
+        elif method == "GET" and parts == ["product", "last-review"]:
+            self._json({"review": product_docs.read_last_review(root)})
         elif method == "GET" and parts == ["product", "review-request"]:
             self._json({"summary": product_docs.review_instruction(root)})
         elif method == "POST" and parts == ["product", "scaffold"]:

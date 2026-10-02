@@ -330,3 +330,14 @@ def last_review(root: Path) -> dict[str, Any] | None:
         return None
     age = (time.time() - files[0].stat().st_mtime) / 86400
     return {"path": str(files[0].relative_to(root)), "days": int(age), "stale": age > REVIEW_STALE_DAYS}
+
+
+def read_last_review(root: Path) -> dict[str, Any] | None:
+    info = last_review(root)
+    if not info:
+        return None
+    try:
+        text = (root / info["path"]).read_text(encoding="utf-8")[:MAX_DOC_CHARS]
+    except OSError:
+        return None
+    return {**info, "text": text}

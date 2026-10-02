@@ -1407,3 +1407,23 @@ input[type="file"]::file-selector-button { font: inherit; padding: 6px 12px; mar
 fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 
 [hidden] { display: none !important; }
+
+/* Product documents */
+.product-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.doc-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); text-decoration: none; font-size: 13.5px; min-height: 32px; }
+.doc-chip:hover { border-color: var(--accent); }
+.doc-chip.ok span:first-child { color: var(--ok); }
+.doc-chip.draft span:first-child { color: var(--warn); }
+.doc-chip.missing { color: var(--muted); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.md { line-height: 1.6; overflow-wrap: anywhere; }
+.md h2, .md h3, .md h4 { margin: 18px 0 6px; }
+.md h2:first-child { margin-top: 0; }
+.md p { margin: 0 0 10px; }
+.md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+.md blockquote { margin: 0 0 10px; padding: 4px 12px; border-left: 3px solid var(--border); color: var(--muted); }
+.md pre { padding: 10px 12px; background: var(--panel-2); border-radius: 8px; overflow-x: auto; }
+.md table { border-collapse: collapse; margin: 0 0 10px; }
+.md th, .md td { border: 1px solid var(--border); padding: 4px 10px; text-align: left; }
+.md code { font-family: var(--mono); font-size: 0.9em; }
+#pd-text { font-family: var(--mono); font-size: 13px; width: 100%; }

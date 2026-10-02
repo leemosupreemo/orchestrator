@@ -1828,6 +1828,18 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("You decide the details", self.js)
         self.assertNotIn("recommend", form.lower().replace("recommended", ""))
 
+    def test_product_documents_are_reachable_from_home_help_palette_and_the_new_project_flow(self):
+        self.assertIn("productStripHtml(product)", self.js)
+        home = self.js[self.js.index("pages.home = async"):self.js.index("const JOB_FILTERS")]
+        self.assertLess(home.index("productStripHtml(product)"), home.index("waitingSectionHtml(waiting)"))  # toward the top of the main screen
+        self.assertIn('"#/product"', self.js)
+        self.assertIn('<script src="markdown.js">', self.html)
+        self.assertIn('href="#/product/use-cases">Start with users and non-goals', self.js)
+        self.assertIn("How do I get better plans?", self.js)
+
+    def test_a_blank_screen_gets_a_loading_message_after_a_moment(self):
+        self.assertIn("Loading…", self.js[self.js.index("async function route()"):][:2500])
+
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
@@ -2081,6 +2093,50 @@ class UploadAndRecentLogsEndpointTests(ServerTestCase):
         _, data = self.request("GET", "/api/recent-logs")
         self.assertEqual([(l["kind"], l["label"]) for l in data["logs"]], [("device", "Device launch s1"), ("run", "Test run")])
         self.assertEqual(data["logs"][1]["path"], ".orchestrator/logs/ui/20260922-101010-abcdef-test.log")
+
+
+class MarkdownRenderTests(unittest.TestCase):
+    def render(self, text):
+        module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "markdown.js"
+        script = "const m = require(process.argv[1]); process.stdout.write(m.render(JSON.parse(process.argv[2])));"
+        result = subprocess.run(["node", "-e", script, str(module), json.dumps(text)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_common_constructs(self):
+        out = self.render("# Title\n\nA **bold** and _soft_ and `code` line.\n\n- one\n- two\n\n1. first\n2. second\n\n> quoted\n\n---\n")
+        for needle in ("<h2>Title</h2>", "<strong>bold</strong>", "<em>soft</em>", "<code>code</code>", "<ul><li>one</li><li>two</li></ul>",
+                       "<ol><li>first</li><li>second</li></ol>", "<blockquote>quoted</blockquote>", "<hr>"):
+            self.assertIn(needle, out)
+
+    def test_headings_shift_down_because_the_page_has_its_own_h1(self):
+        out = self.render("# A\n## B\n### C")
+        self.assertIn("<h2>A</h2>", out)
+        self.assertIn("<h3>B</h3>", out)
+        self.assertNotIn("<h1>", out)
+
+    def test_tables_and_code_blocks(self):
+        out = self.render("| KPI | Event |\n| --- | --- |\n| Claims | `seat_claimed` |\n\n```\nlet x = 1 < 2\n```")
+        self.assertIn("<th>KPI</th>", out)
+        self.assertIn("<td><code>seat_claimed</code></td>", out)
+        self.assertIn("<pre><code>let x = 1 &lt; 2</code></pre>", out)
+
+    def test_markup_and_scripts_in_a_document_are_inert(self):
+        out = self.render("<script>alert(1)</script> <img src=x onerror=alert(1)>\n\n[click](javascript:alert(1)) [ok](https://example.com) [bad](data:text/html,x)\n\n**<b>x</b>**")
+        self.assertNotIn("<script", out)
+        self.assertNotIn("<img", out)
+        self.assertNotIn("javascript:", out)
+        self.assertNotIn("data:text", out)
+        self.assertIn('<a href="https://example.com" target="_blank" rel="noopener noreferrer">ok</a>', out)
+        self.assertIn("&lt;b&gt;x&lt;/b&gt;", out)
+
+    def test_link_text_with_quotes_cannot_break_out_of_the_tag(self):
+        out = self.render('[a" onclick="x](https://e.com/"onmouseover="y)')
+        self.assertNotIn('" onclick', out)
+        self.assertNotIn('onmouseover="y', out.replace("&quot;onmouseover=&quot;y", ""))
+
+    def test_empty_input(self):
+        self.assertEqual(self.render(""), "")
 
 
 class PaletteLogicTests(unittest.TestCase):

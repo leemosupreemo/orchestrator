@@ -1295,7 +1295,7 @@ document.addEventListener("click", (e) => {
 pages.home = async (_, query) => {
   await loadSetup();
   if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
-  const [{ jobs }, waiting] = await Promise.all([api("jobs"), api("inbox")]);
+  const [{ jobs }, waiting, product] = await Promise.all([api("jobs"), api("inbox"), api("product").catch(() => null)]);
   const p = state.project;
   if (!p.branches) { // server predates the project-state branch list: use the Git endpoint
     try { p.branches = (await api("git")).branches || []; } catch { p.branches = []; }
@@ -1332,6 +1332,8 @@ pages.home = async (_, query) => {
         <button class="btn big" ${act("fix")}>Fix something</button>
         ${moreActionsMenu(p, { left: true })}
       </div>
+
+      ${product ? productStripHtml(product) : ""}
 
       ${waitingSectionHtml(waiting)}
 
@@ -1924,6 +1926,7 @@ const FEATURE_STATUS = { planned: ["Planned", "working"], "in-progress": ["In pr
 function featureFormBody(f = {}, others = []) {
   return `<label class="field"><span>Name</span><input type="text" name="name" required maxlength="80" value="${esc(f.name || "")}" placeholder="e.g. Lobby seats"></label>
     <label class="field"><span>What it does <span class="muted">(optional)</span></span><textarea name="summary" rows="2" maxlength="500">${esc(f.summary || "")}</textarea></label>
+    <label class="field"><span>Which use case does it serve? <span class="muted">(optional)</span></span><input type="text" name="serves" maxlength="300" value="${esc(f.serves || "")}" placeholder="e.g. As a player I can ask for a rematch"><small class="hint-text">Planners are told, and keep each task tied to it.</small></label>
     <label class="field"><span>Code it owns <span class="muted">(optional, one path per line)</span></span><textarea name="paths" rows="3" placeholder="Sources/Lobby/">${esc((f.paths || []).join("\n"))}</textarea>
       <small class="muted">Used to warn when two features claim the same code.</small></label>
     ${others.length ? `<fieldset class="field"><span>Builds on <span class="muted">(optional)</span></span>${others.map((o) => `<label class="check"><input type="checkbox" name="depends_on" value="${esc(o.id)}" ${(f.depends_on || []).includes(o.id) ? "checked" : ""}><span>${esc(o.name)}</span></label>`).join("")}</fieldset>` : ""}`;
@@ -2239,7 +2242,7 @@ pages.help = async () => ({
         <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
-      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs, and Fix something."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
+      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs, and Fix something."], ["Product documents", "#/product", "The documents that define the product. Read them, edit them, or ask the AI to refine them."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
          ["Check-up", "#/checkup", "What's in place and what's missing for this project."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
@@ -2255,12 +2258,139 @@ pages.help = async () => ({
     </dl></div></section>
     <section class="card"><div class="card-h"><h2>Common questions</h2></div><div class="card-b help-faq">
       <details><summary>A job won't run</summary><p>Jobs need a machine, a model, a signed-in AI provider and a GitHub remote. <a href="#/checkup">Check-up</a> and the Setup button on Home show what is missing; <a href="#/config">Configuration</a> is where you fix it.</p></details>
+      <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product documents</a>. Every plan is written against them: who it's for, the use cases, what version 1 will not do, the journey, the screens, the technical decisions and the current slice. Use “Ask me questions first” on any document and the AI will ask only what changes the product. Run a product review now and then to catch drift.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
       <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from Configuration > Archived jobs.</p></details>
       <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends browser alerts. For Slack, add a webhook under Configuration > Slack &amp; chat alerts.</p></details>
       <details><summary>Where are the full guides?</summary><p><a href="#/config/documentation">Configuration > Documentation</a> lists the Orchestrator and project guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>`,
 });
+
+// ---------------------------------------------------------------- product documents
+const PRODUCT_SHORT = { brief: "Brief", "use-cases": "Users & non-goals", journey: "Journey", screens: "Screens", architecture: "Decisions", plan: "Plan" };
+const PRODUCT_HINT = {
+  brief: "e.g. Tighten the problem statement, and say who it is not for",
+  "use-cases": "e.g. Draft the primary user, 3-5 use cases and what version 1 will NOT do",
+  journey: "e.g. Walk through first launch to first win, and where people might quit",
+  screens: "e.g. List every screen with why it exists and how people move between them",
+  architecture: "e.g. Separate what is hard to change later from what is easy",
+  plan: "e.g. Make 'Now' the smallest slice that works end to end",
+};
+
+function productStripHtml(product) {
+  const docs = product.docs;
+  const toFill = docs.filter((d) => !d.filled).length;
+  const state = (d) => (d.filled ? ["ok", "written"] : d.exists ? ["draft", "draft"] : ["missing", "not started"]);
+  return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2>Product</h2><a href="#/product">${toFill ? `${toFill} to fill in` : "All written"}</a></div>
+    <div class="card-b stack"><div class="product-chips">${docs.map((d) => { const [cls, word] = state(d);
+      return `<a class="doc-chip ${cls}" href="#/product/${esc(d.id)}" title="${esc(d.purpose)}"><span aria-hidden="true">${cls === "ok" ? "✓" : cls === "draft" ? "◐" : "○"}</span> ${esc(PRODUCT_SHORT[d.id] || d.title)}<span class="sr-only"> (${word})</span></a>`; }).join("")}</div>
+      ${toFill ? `<div class="muted">Every job plans against these. Fill them in, or ask the AI to draft and refine them.</div>` : ""}</div></section>`;
+}
+
+pages.product = async ([id]) => {
+  if (id) return productDocPage(id);
+  const [product, last] = await Promise.all([api("product"), api("product/last-review")]);
+  const missing = product.docs.filter((d) => !d.exists);
+  const row = (d) => {
+    const [cls, word] = d.filled ? ["done", "Written"] : d.exists ? ["attention", "Draft"] : ["working", "Not started"];
+    return `<a class="item" href="#/product/${esc(d.id)}"><div class="main-col"><div class="title">${esc(d.title)}</div><div class="meta">${esc(d.purpose)}</div></div>
+      <span class="pill ${cls}">${word}</span></a>`;
+  };
+  return {
+    title: "Product documents",
+    sub: "The documents that define the product. Every job plans against them, so keep them true.",
+    actions: `${missing.length ? `<button class="btn" id="pd-scaffold">Create the ${missing.length} missing</button>` : ""}<button class="btn primary" id="pd-review">Review the product</button>`,
+    html: `
+      <section class="card mb-16"><div class="list">${product.docs.map(row).join("")}</div></section>
+      <section class="card"><div class="card-h"><h2>Product review</h2><span class="count">${product.review ? `${product.review.days} day${product.review.days === 1 ? "" : "s"} ago` : "never"}</span></div>
+        <div class="card-b stack"><div class="muted">A review checks the product against these documents: drift, architecture, duplication, UX consistency, and the next three slices. It writes a report and changes no code.</div>
+          ${last.review ? `<details class="fold"><summary>Read the last review (${esc(last.review.path)})</summary><div class="md">${Markdown.render(last.review.text)}</div></details>` : ""}</div></section>`,
+    after: () => {
+      $("#pd-scaffold")?.addEventListener("click", async () => {
+        try { const r = await api("product/scaffold", { method: "POST", body: {} }); toast(`Created ${r.created.length} document${r.created.length === 1 ? "" : "s"}. They're templates until you fill them in.`); route(); } catch (e) { toast(e.message, true); }
+      });
+      $("#pd-review").addEventListener("click", async () => {
+        try { const { summary } = await api("product/review-request"); location.hash = `#/new?type=quick&summary=${encodeURIComponent(summary)}`; } catch (e) { toast(e.message, true); }
+      });
+    },
+  };
+};
+
+async function productDocPage(id) {
+  let doc;
+  try { doc = await api(`product/${encodeURIComponent(id)}`); } catch (e) {
+    if (e.status === 404) return { title: "Product documents", html: `<div class="notice">There's no document called “${esc(id)}”. <a href="#/product">See the list</a>.</div>` };
+    throw e;
+  }
+  const status = doc.filled ? ["done", "Written"] : doc.exists ? ["attention", "Draft"] : ["working", "Not started"];
+  return {
+    title: doc.title,
+    sub: `<span class="mono">${esc(doc.path)}</span> · ${esc(doc.purpose)} · <a href="#/product">All documents</a>`,
+    actions: `<button class="btn" id="pd-edit">Edit</button>`,
+    html: `
+      <section class="card mb-16"><div class="card-h"><h2>${esc(doc.title)}</h2><span class="pill ${status[0]}">${status[1]}</span></div>
+        <div class="card-b" id="pd-body"></div></section>
+      <section class="card"><div class="card-h"><h2>Refine with AI</h2></div><div class="card-b stack" id="pd-refine"></div></section>`,
+    after: () => {
+      const body = $("#pd-body"), panel = $("#pd-refine");
+      let text = doc.text, instruction = "";
+      const view = () => {
+        body.innerHTML = doc.exists || text.trim()
+          ? `<div class="md">${Markdown.render(text)}</div>${doc.exists ? "" : `<div class="muted" style="margin-top:12px">This is a template, not saved yet. Edit it, or ask the AI to draft it.</div>`}`
+          : `<div class="empty">Nothing here yet. Ask the AI to draft it below, or write it yourself with Edit.</div>`;
+        $("#pd-edit").hidden = false;
+      };
+      const edit = () => {
+        $("#pd-edit").hidden = true;
+        body.innerHTML = `<label class="field"><span>Markdown</span><textarea id="pd-text" rows="18" spellcheck="true" aria-label="Edit ${esc(doc.title)}">${esc(text)}</textarea></label>
+          <div class="row gap-10"><button class="btn primary" id="pd-save">Save</button><button class="btn ghost" id="pd-cancel">Cancel</button></div>`;
+        $("#pd-text").focus();
+        $("#pd-cancel").addEventListener("click", view);
+        $("#pd-save").addEventListener("click", async () => {
+          try { await api(`product/${encodeURIComponent(id)}`, { method: "POST", body: { text: $("#pd-text").value } }); doc.exists = true; text = $("#pd-text").value; toast("Saved. Commit it with your next change."); view(); } catch (e) { toast(e.message, true); }
+        });
+      };
+      $("#pd-edit").addEventListener("click", edit);
+
+      const ask = (phase, extra = {}) => { // one place that renders the refine panel for each step
+        if (phase === "idle") {
+          panel.innerHTML = `<label class="field"><span>What should change?${instruction ? "" : ` <span class="muted">(optional)</span>`}</span>
+            <textarea id="pd-instruction" rows="3" maxlength="4000" placeholder="${esc(PRODUCT_HINT[id] || "")}">${esc(instruction)}</textarea>
+            <small class="hint-text">The AI sees this document and the others. It proposes a change; nothing is saved until you accept it.</small></label>
+            <div class="row gap-10"><button class="btn" id="pd-questions">Ask me questions first</button><button class="btn primary" id="pd-propose">Propose changes</button></div>`;
+          const read = () => { instruction = $("#pd-instruction").value; };
+          $("#pd-questions").addEventListener("click", async () => { read(); ask("busy", { label: "Thinking of questions…" }); try { ask("questions", { questions: (await api(`product/${encodeURIComponent(id)}/refine`, { method: "POST", body: { mode: "questions", instruction } })).questions }); } catch (e) { toast(e.message, true); ask("idle"); } });
+          $("#pd-propose").addEventListener("click", async () => { read(); propose([]); });
+        } else if (phase === "busy") {
+          panel.innerHTML = `<div class="muted" role="status">${esc(extra.label)} This can take up to a minute.</div>`;
+        } else if (phase === "questions") {
+          panel.innerHTML = `<div class="muted">Answer what you can; skip the rest.</div>
+            ${extra.questions.map((q, i) => `<label class="field"><span>${esc(q.question)}</span><input type="text" data-answer="${i}" maxlength="1000"><small class="hint-text">Why it matters: ${esc(q.why || "it changes the document")}</small></label>`).join("")}
+            <div class="row gap-10"><button class="btn primary" id="pd-with-answers">Propose changes with my answers</button><button class="btn ghost" id="pd-back">Back</button></div>`;
+          $("#pd-back").addEventListener("click", () => ask("idle"));
+          $("#pd-with-answers").addEventListener("click", () => propose(extra.questions.map((q, i) => ({ question: q.question, answer: panel.querySelector(`[data-answer="${i}"]`).value }))));
+        } else if (phase === "proposal") {
+          const p = extra.proposal;
+          panel.innerHTML = `<div><strong>Proposed change</strong>${p.summary ? `: ${esc(p.summary)}` : ""}</div>
+            ${p.diff.length ? `<pre class="diff" aria-label="Changes">${p.diff.map((l) => `<span class="diff-line ${l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : ""}">${esc(l)}</span>`).join("")}</pre>` : `<div class="muted">No changes: the document already says this.</div>`}
+            <details class="fold"><summary>Read the whole proposed document</summary><div class="md">${Markdown.render(p.markdown)}</div></details>
+            <div class="row gap-10"><button class="btn primary" id="pd-accept" ${p.diff.length ? "" : "disabled"}>Accept and save</button><button class="btn" id="pd-retry">Change my request</button><button class="btn ghost" id="pd-discard">Discard</button></div>`;
+          $("#pd-accept").addEventListener("click", async () => {
+            try { await api(`product/${encodeURIComponent(id)}`, { method: "POST", body: { text: p.markdown } }); doc.exists = true; text = p.markdown; instruction = ""; toast("Saved. Commit it with your next change."); view(); ask("idle"); route(); } catch (e) { toast(e.message, true); }
+          });
+          $("#pd-retry").addEventListener("click", () => ask("idle"));
+          $("#pd-discard").addEventListener("click", () => { instruction = ""; ask("idle"); });
+        }
+      };
+      const propose = async (answers) => {
+        ask("busy", { label: "Drafting the change…" });
+        try { ask("proposal", { proposal: await api(`product/${encodeURIComponent(id)}/refine`, { method: "POST", body: { mode: "propose", instruction, answers } }) }); } catch (e) { toast(e.message, true); ask("idle"); }
+      };
+      view();
+      ask("idle");
+    },
+  };
+}
 
 pages.devlogs = async () => {
   setHeader({ title: "Device logs" });
@@ -3092,6 +3222,9 @@ pages["new-project"] = async (_, query) => {
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
       ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
       ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
+      <section class="card mt-16"><div class="card-h"><h2>Next: define the product</h2></div><div class="card-b stack">
+        <div>Your brief is written. Before the first job, answer a few questions so the AI can draft the rest: who it's for, the core use cases, and what version 1 will <strong>not</strong> do.</div>
+        <div><a class="btn" href="#/product/use-cases">Start with users and non-goals</a></div></div></section>
       <div class="row mt-16"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
       <p class="muted">“Set up this project” runs the setup wizard, which asks how it's built and tested so jobs can run.</p>`,
     after: () => {
@@ -3397,6 +3530,7 @@ function resolveRoute() {
     return { page: "config", args: section ? [section.id] : [], nav: "config", query };
   }
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "projects", query };
+  if (parts[0] === "product") return { page: "product", args: parts[1] ? [parts[1]] : [], nav: "home", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
 }
@@ -3429,7 +3563,10 @@ async function route() {
       await refreshState();
       if (!state.project) return;
     }
-    const result = await pages[r.page](r.args, r.query);
+    // A page that takes a moment (first load runs setup checks) shouldn't leave a blank screen.
+    const slow = setTimeout(() => { if (current.page === r.page && !view.innerHTML.trim()) view.innerHTML = `<div class="empty" role="status">Loading…</div>`; }, 400);
+    let result;
+    try { result = await pages[r.page](r.args, r.query); } finally { clearTimeout(slow); }
     if (current.page === r.page && current.args.join() === r.args.join()) {
       apply(result);
       if (r.page !== "run") $("#page-title")?.focus({ preventScroll: true }); // so screen readers announce the new page
@@ -3469,7 +3606,7 @@ if (connBtn) {
 $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
 
 // ---------------------------------------------------------------- command palette
-const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
+const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product documents", "#/product", "Brief, use cases, journey, screens, decisions, plan"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
