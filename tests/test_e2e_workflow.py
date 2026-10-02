@@ -123,7 +123,7 @@ class E2EWorkflowTests(unittest.TestCase):
 
         def fake_llm(model, prompt, *a, **k):
             prompts.append(prompt)
-            return (self.PLAN, "mock-model", "sid")
+            return (self.PLAN, "gemini-3.1-pro-preview", "sid")  # a real model id, so the verification step runs as it does for real jobs
 
         from orchestrator.scripts import new_job
         with patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), patch("orchestrator.scripts.new_job.create_issue", return_value=130):
@@ -139,6 +139,14 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIn("## Product context (source of truth)", prompts[0])
         self.assertIn("No chat", prompts[0])
         self.assertLess(prompts[0].index("Product context"), prompts[0].index("Raw input:"))
+
+    def test_the_plan_verifier_checks_the_plan_against_the_documents(self):
+        prompts = self.plan_with_docs({
+            "use-cases": "# Use cases\n\n## Core use cases\n\n- As a player I can start a match\n- As a player I can take a turn\n\n## Non-goals for version 1\n\n- No chat\n- No accounts\n"})
+        verifier = [p for p in prompts if "### GENERATED PLAN ###" in p]
+        self.assertTrue(verifier, "the verifier did not run")
+        self.assertIn("Reject or flag a plan that builds a non-goal", verifier[0])
+        self.assertIn("No chat", verifier[0])
 
     def test_without_filled_documents_nothing_is_added(self):
         prompts = self.plan_with_docs({})

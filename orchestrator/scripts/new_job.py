@@ -767,6 +767,7 @@ def main(args_override: list[str] | None = None) -> None:
                 verifier_prompt = (PROMPTS_DIR / "verifier.md").read_text(encoding="utf-8")
                 if needs_test_cases:
                     verifier_prompt = f"{verifier_prompt}\n{tc.VERIFIER_INSTRUCTIONS}"
+                verifier_prompt = f"{verifier_prompt}\n{product_docs.context_block(ROOT, 'verifier')}"
                 verifier_input = f"{verifier_prompt}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### GENERATED PLAN ###\n{llm_output}"
                 
                 try:

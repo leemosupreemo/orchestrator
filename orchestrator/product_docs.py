@@ -194,23 +194,40 @@ def scaffold(root: Path) -> list[str]:
     return created
 
 
-def context_block(root: Path) -> str:
-    """What every planner should read first: the filled-in product documents, trimmed."""
+# Who is reading, how much room they get, and what to do with it. Builders and debuggers work on one task at a time, so they get
+# less text and a rule about when to stop and ask; reviewers and the plan verifier use the documents to judge the work.
+AUDIENCES: dict[str, dict[str, Any]] = {
+    "planner": {"brief": BRIEF_CONTEXT_CHARS, "other": OTHER_CONTEXT_CHARS,
+                "rule": "These documents define the product. Serve the use cases, stay inside the non-goals, and do not contradict them "
+                        "without saying so in the plan's assumptions or risks."},
+    "builder": {"brief": 2000, "other": 1500,
+                "rule": "These documents define the product. Build only what this task asks. Stay inside the non-goals and the current slice in the plan. "
+                        "If the task cannot be done without contradicting them, use `clarification_needed` instead of guessing."},
+    "reviewer": {"brief": 2000, "other": 1500,
+                 "rule": "Judge the change against these documents too. Flag work that serves no use case, builds a non-goal, "
+                         "or conflicts with a stated technical decision, even if the code is correct."},
+    "verifier": {"brief": 2000, "other": 1500,
+                 "rule": "Check the plan against these documents too. Reject or flag a plan that builds a non-goal, serves no listed use case, "
+                         "or conflicts with a stated technical decision."},
+}
+
+
+def context_block(root: Path, audience: str = "planner") -> str:
+    """The filled-in product documents, trimmed, with the rule that fits who is reading them."""
+    cfg = AUDIENCES.get(audience) or AUDIENCES["planner"]
     parts = []
     for d in DOCS:
         text = read(root, d["id"])
         if not is_filled(text):
             continue
-        limit = BRIEF_CONTEXT_CHARS if d["id"] == "brief" else OTHER_CONTEXT_CHARS
+        limit = cfg["brief"] if d["id"] == "brief" else cfg["other"]
         body = text.strip()
         if len(body) > limit:
             body = body[:limit].rstrip() + "\n...(trimmed)"
         parts.append(f"### {d['title']} (`{d['path']}`)\n{body}")
     if not parts:
         return ""
-    return ("\n\n## Product context (source of truth)\n"
-            "These documents define the product. Serve the use cases, stay inside the non-goals, and do not contradict them "
-            "without saying so in the plan's assumptions or risks.\n\n" + "\n\n".join(parts) + "\n")
+    return "\n\n## Product context (source of truth)\n" + cfg["rule"] + "\n\n" + "\n\n".join(parts) + "\n"
 
 
 def _json_reply(text: str) -> dict[str, Any]:

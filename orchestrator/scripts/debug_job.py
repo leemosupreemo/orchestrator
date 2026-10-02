@@ -196,6 +196,8 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
     # Build prompt
     prompt_template = (PROMPTS_DIR / "debug_agent.md").read_text(encoding="utf-8")
+    from orchestrator import product_docs
+    prompt_template = f"{prompt_template}\n{product_docs.context_block(ROOT, 'builder')}"
     
     # Ingest context
     brief_file = OUTPUT_DIR / job["job_id"] / "brief.md"

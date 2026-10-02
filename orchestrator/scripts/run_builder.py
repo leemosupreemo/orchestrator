@@ -241,6 +241,8 @@ If you are unsure between two valid approaches, pick the safest, most convention
 
         from test_cases import prompt_block
         test_case_block = prompt_block(job.get("plan", {}).get("test_cases") or [])
+        from orchestrator import product_docs
+        product_context = product_docs.context_block(ROOT, "builder")
 
         full_prompt = f"""{prompt_template}
 
@@ -255,6 +257,7 @@ Available Tests (use for selecting test_command):
 {test_case_block}{debug_context}
 {yolo_context}
 
+{product_context}
 Brief:
 {brief}
 """

@@ -72,8 +72,9 @@ def main() -> None:
     diff_text = load_pr_diff(args.pr_number, pr_json)
     reviewer_prompt = (PROMPTS_DIR / "reviewer.md").read_text(encoding="utf-8")
 
+    from orchestrator import product_docs
     prompt = f"""{reviewer_prompt}
-
+{product_docs.context_block(ROOT, "reviewer")}
 Brief:
 {brief}
 
@@ -85,6 +86,7 @@ Diff:
 """
 
     allowed_models = None
+    job: dict = {}  # without --job-file there is no job to update, but the session bookkeeping below still runs
     if args.job_file:
         from common import now_iso, read_json, write_json
         job_path = Path(args.job_file)
