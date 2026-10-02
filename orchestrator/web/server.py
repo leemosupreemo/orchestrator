@@ -1830,6 +1830,11 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
         if dest.exists():
             raise UIError("A job with that id already exists")
         shutil.move(str(src), str(dest))
+        job = read_json_file(dest)
+        if job.get("restore_status"):  # undo of "Mark complete": back to where it was, not "completed"
+            job["status"] = job.pop("restore_status")
+            job.pop("completed_at", None)
+            write_json_file(dest, job)
         return {"ok": True}
     elif part == "models":
         assignments = body.get("models")
@@ -2112,7 +2117,7 @@ ACTIONS: dict[str, Action] = {
     "discard": Action("Discard job", lambda p, r: orchestrator_argv("script", "job_actions.py", "discard", _job_path(p, r)),
                       confirm="Reverts the files this job changed, deletes its AI branch and archives the job. This can't be undone.", fields=["job"]),
     "complete": Action("Mark complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "complete", _job_path(p, r)),
-                       confirm="Archives the job as completed. Its branch is left as it is.", fields=["job"]),
+                       confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from Configuration > Archived jobs.", fields=["job"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
@@ -2304,6 +2309,7 @@ class UIHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1_000_000:
             raise UIError("Request too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        self._body_read = True
         try:
             data = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
@@ -2337,6 +2343,33 @@ class UIHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        self._body_read = False
+        try:
+            self._dispatch_inner(method)
+        finally:
+            self._drain_body()
+
+    def _drain_body(self) -> None:
+        """Read and discard a request body no route consumed (a DELETE with a JSON body, a rejected POST).
+        Left unread it would be parsed as the start of the next request on a kept-alive connection."""
+        if getattr(self, "_body_read", True):
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return
+        if length > 1_000_000:
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
+        self._body_read = True
+
+    def _dispatch_inner(self, method: str) -> None:
         if not self._host_ok():
             self._error(HTTPStatus.FORBIDDEN, "Unexpected Host header")
             return
@@ -2488,7 +2521,7 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "path": str(target.relative_to(root))})
         elif method == "POST" and len(parts) == 3 and parts[0] == "features" and parts[2] == "kpis":
             body = self._body()
-            op = _choice(body, "op", ["add", "update", "delete", "measure"])
+            op = _choice(body, "op", ["add", "update", "delete", "measure", "restore"])
             rt = runtime_dir(root)
             try:
                 if op == "add":
@@ -2496,7 +2529,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 elif op == "update":
                     feature_store.kpi_update(rt, parts[1], str(body.get("kpi") or ""), body)
                 elif op == "delete":
+                    gone = next((k for f in feature_store.load(rt) if f["id"] == parts[1] for k in f.get("kpis", []) if k["id"] == str(body.get("kpi") or "")), None)
                     feature_store.kpi_delete(rt, parts[1], str(body.get("kpi") or ""))
+                    self._json({**analytics_overview(root), "undo": {"kpi": gone}})
+                    return
+                elif op == "restore":
+                    feature_store.kpi_restore(rt, parts[1], body.get("kpi") if isinstance(body.get("kpi"), dict) else {})
                 else:
                     feature_store.kpi_measure(rt, parts[1], str(body.get("kpi") or ""), body.get("value"), str(body.get("note") or ""), str(body.get("decision") or ""))
             except feature_store.FeatureError as exc:
@@ -2519,6 +2557,22 @@ class UIHandler(BaseHTTPRequestHandler):
             except feature_store.FeatureError as exc:
                 raise UIError(str(exc))
             self._json(features_overview(root))
+        elif method == "POST" and parts == ["features", "restore"]:
+            body = self._body()
+            try:
+                feature = feature_store.restore(runtime_dir(root), body.get("feature"))
+            except feature_store.FeatureError as exc:
+                raise UIError(str(exc))
+            for job_id in [j for j in (body.get("jobs") or []) if isinstance(j, str)][:500]:
+                try:
+                    job_path = resolve_job_path(root, job_id)
+                except UIError:
+                    continue
+                job = read_json_file(job_path)
+                if job and not job.get("feature"):
+                    job["feature"] = feature["id"]
+                    write_json_file(job_path, job)
+            self._json(features_overview(root))
         elif method == "POST" and len(parts) == 2 and parts[0] == "features":
             body = self._body()
             try:
@@ -2531,16 +2585,19 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(str(exc), HTTPStatus.NOT_FOUND if "not found" in str(exc) else HTTPStatus.BAD_REQUEST)
             self._json(features_overview(root))
         elif method == "DELETE" and len(parts) == 2 and parts[0] == "features":
+            record = next((f for f in feature_store.load(runtime_dir(root)) if f["id"] == parts[1]), None)
             try:
                 feature_store.delete(runtime_dir(root), parts[1])
             except feature_store.FeatureError as exc:
                 raise UIError(str(exc), HTTPStatus.NOT_FOUND)
+            moved = []
             for path in jobs_dir(root).glob("*.json"):  # jobs on a deleted feature become unassigned
                 job = read_json_file(path)
                 if job.get("feature") == parts[1]:
                     job.pop("feature")
                     write_json_file(path, job)
-            self._json(features_overview(root))
+                    moved.append(path.stem)
+            self._json({**features_overview(root), "undo": {"feature": record, "jobs": moved}})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "scope":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)

@@ -1669,6 +1669,19 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("No machine set up: jobs can't run yet", self.js)
         self.assertIn("No model selected: jobs can't run yet", self.js)
 
+    def test_help_covers_every_page_it_names_and_the_undo_window(self):
+        start = self.js.index("pages.help = async")
+        help_page = self.js[start:self.js.index("pages.devlogs = async")]
+        for route in ("#/inbox", "#/features", "#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config", "#/config/documentation"):
+            self.assertIn(f'"{route}"' if route != "#/config/documentation" else route, help_page, route)
+        self.assertIn("10 seconds", help_page)
+        for page in ("inbox", "features", "tests", "delivery", "measure", "checkup"):
+            self.assertIn(f"pages.{page} = async", self.js)
+
+    def test_toast_colours_use_ink_tokens(self):
+        block = self.css[self.css.index(".toast.bad {"):][:80]
+        self.assertNotIn("#fff", block)
+
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
@@ -1744,6 +1757,95 @@ class ScopeEndpointTests(ServerTestCase):
     def test_requires_the_ui_header(self):
         res, _ = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "reset"}, headers={"Content-Type": "application/json"})
         self.assertIn(res.status, (400, 403))
+
+
+class UndoEndpointTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def test_deleting_a_feature_returns_what_is_needed_to_undo_it(self):
+        self.post("/api/features", {"name": "Lobby", "paths": "src/"})
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "lobby"})
+        res, data = self.request("DELETE", "/api/features/lobby", headers=UI_HEADERS)
+        self.assertEqual((res.status, data["features"]), (200, []))
+        self.assertEqual((data["undo"]["feature"]["id"], data["undo"]["jobs"]), ("lobby", [self.JOB]))
+        res, back = self.post("/api/features/restore", {"feature": data["undo"]["feature"], "jobs": data["undo"]["jobs"]})
+        self.assertEqual(res.status, 200)
+        self.assertEqual((back["features"][0]["id"], back["features"][0]["job_ids"]), ("lobby", [self.JOB]))
+        _, jobs = self.request("GET", "/api/jobs")
+        self.assertEqual(jobs["jobs"][0]["feature"], "lobby")
+
+    def test_restore_does_not_steal_jobs_that_were_reassigned_meanwhile(self):
+        self.post("/api/features", {"name": "Lobby"})
+        self.post("/api/features", {"name": "Chat"})
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "lobby"})
+        _, data = self.request("DELETE", "/api/features/lobby", headers=UI_HEADERS)
+        self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "chat"})
+        self.post("/api/features/restore", {"feature": data["undo"]["feature"], "jobs": data["undo"]["jobs"]})
+        _, jobs = self.request("GET", "/api/jobs")
+        self.assertEqual(jobs["jobs"][0]["feature"], "chat")
+
+    def test_restore_validates(self):
+        res, _ = self.post("/api/features/restore", {"feature": {"id": "../x", "name": "x"}})
+        self.assertEqual(res.status, 400)
+        res, _ = self.request("POST", "/api/features/restore", body={"feature": {"id": "ok", "name": "x"}}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+
+    def test_deleting_a_kpi_can_be_undone(self):
+        self.post("/api/features", {"name": "Lobby"})
+        self.post("/api/features/lobby/kpis", {"op": "add", "name": "Claims", "event": "seat_claimed", "target": 5})
+        self.post("/api/features/lobby/kpis", {"op": "measure", "kpi": "claims", "value": 3})
+        res, data = self.post("/api/features/lobby/kpis", {"op": "delete", "kpi": "claims"})
+        self.assertEqual((res.status, data["features"][0]["kpis"]), (200, []))
+        res, back = self.post("/api/features/lobby/kpis", {"op": "restore", "kpi": data["undo"]["kpi"]})
+        self.assertEqual(res.status, 200)
+        kpi = back["features"][0]["kpis"][0]
+        self.assertEqual((kpi["id"], len(kpi["measurements"])), ("claims", 1))
+
+    def test_undoing_mark_complete_puts_the_job_back_where_it_was(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        job = json.loads((jobs / f"{self.JOB}.json").read_text())
+        job.update({"status": "completed", "restore_status": "review-needed", "completed_at": "2026-01-01"})
+        (jobs / "archive").mkdir()
+        (jobs / "archive" / f"{self.JOB}.json").write_text(json.dumps(job))
+        (jobs / f"{self.JOB}.json").unlink()
+        res, _ = self.post("/api/config/archived-restore", {"id": self.JOB})
+        self.assertEqual(res.status, 200)
+        restored = json.loads((jobs / f"{self.JOB}.json").read_text())
+        self.assertEqual(restored["status"], "review-needed")
+        self.assertNotIn("restore_status", restored)
+        self.assertNotIn("completed_at", restored)
+
+
+class KeepAliveBodyTests(ServerTestCase):
+    """A request body no route reads must not leak into the next request on the same connection."""
+
+    def two_requests(self, first_method, first_path, first_body, first_headers):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        auth = {"Authorization": "Bearer test-token"}
+        conn.request(first_method, first_path, body=first_body, headers={**auth, **first_headers})
+        first = conn.getresponse()
+        first.read()
+        conn.request("GET", "/api/state", headers=auth)
+        second = conn.getresponse()
+        second.read()
+        conn.close()
+        return first.status, second.status
+
+    def test_delete_with_a_json_body_does_not_break_the_next_request(self):
+        self.request("POST", "/api/features", body={"name": "Lobby"}, headers=UI_HEADERS)
+        first, second = self.two_requests("DELETE", "/api/features/lobby", json.dumps({}).encode(), UI_HEADERS)
+        self.assertEqual((first, second), (200, 200))
+
+    def test_a_rejected_post_with_a_body_does_not_break_the_next_request(self):
+        first, second = self.two_requests("POST", "/api/features", json.dumps({"name": "x"}).encode(), {"Content-Type": "application/json"})
+        self.assertEqual((first, second), (403, 200))
+
+    def test_a_route_that_ignores_its_body_does_not_break_the_next_request(self):
+        first, second = self.two_requests("POST", "/api/analytics/plan", json.dumps({"ignored": "x" * 50}).encode(), UI_HEADERS)
+        self.assertEqual((first, second), (200, 200))
 
 
 class PipelineTests(ServerTestCase):
@@ -1914,6 +2016,9 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
         self.assertIn("drawFeatureLinks", self.source)
+        self.assertIn("pages.help = async", self.source)
+        self.assertIn('href="#/help"', (static / "index.html").read_text())
+        self.assertIn('label: "Undo"', self.source)
         self.assertIn("data-scope-accept", self.job_page)
         self.assertIn('data-scroll-to="#scope-section"', self.job_page)
         self.assertIn('data-route="checkup"', (static / "index.html").read_text())

@@ -104,6 +104,7 @@ def complete(path: Path) -> int:
     if job.get("pr_number"):
         print("This job has a pull request; use Merge & complete so the PR is merged.")
         return 1
+    job["restore_status"] = job.get("status")  # so the web UI can undo this
     archive_job(job, status="completed")
     print("Job marked complete.")
     return 0

@@ -55,6 +55,7 @@ class JobActionsTests(unittest.TestCase):
                 self.assertEqual(job_actions.main(["complete", str(path)]), 0)
         archive.assert_called_once()
         self.assertEqual(archive.call_args.kwargs["status"], "completed")
+        self.assertEqual(archive.call_args[0][0]["restore_status"], "review-needed")  # lets the web UI undo it
 
     def test_complete_refuses_a_job_with_a_pr(self):
         with tempfile.TemporaryDirectory() as tmp:

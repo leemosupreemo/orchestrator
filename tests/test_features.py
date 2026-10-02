@@ -194,5 +194,56 @@ class KpiStoreTests(unittest.TestCase):
         self.assertEqual(self.kpis(), [])
 
 
+class RestoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.rt = Path(self.tmp.name)
+        self.auth = F.create(self.rt, "Auth")["id"]
+        self.lobby = F.create(self.rt, "Lobby", "Seats", "src/lobby/", [self.auth])["id"]
+        k = F.kpi_add(self.rt, self.lobby, {"name": "Claims", "event": "seat_claimed", "target": 60})
+        F.kpi_measure(self.rt, self.lobby, k["id"], 70, "wk1", "keep")
+        F.set_status(self.rt, self.lobby, "complete")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def record(self):
+        return next(f for f in F.load(self.rt) if f["id"] == self.lobby)
+
+    def test_a_deleted_feature_comes_back_whole(self):
+        before = self.record()
+        F.delete(self.rt, self.lobby)
+        restored = F.restore(self.rt, before)
+        after = self.record()
+        for key in ("id", "name", "summary", "paths", "depends_on", "status", "completed_at"):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(after["kpis"][0]["measurements"][0]["decision"], "keep")
+        self.assertEqual(restored["id"], self.lobby)
+
+    def test_restore_rejects_clashes_bad_ids_and_junk_without_trusting_input(self):
+        with self.assertRaises(F.FeatureError):
+            F.restore(self.rt, self.record())  # already exists
+        with self.assertRaises(F.FeatureError):
+            F.restore(self.rt, {"id": "../etc", "name": "x"})
+        with self.assertRaises(F.FeatureError):
+            F.restore(self.rt, {"id": "ok", "name": " "})
+        with self.assertRaises(F.FeatureError):
+            F.restore(self.rt, "nope")
+        out = F.restore(self.rt, {"id": "new-one", "name": "New", "status": "shipped", "depends_on": ["ghost", self.auth, "new-one"],
+                                  "kpis": [{"name": "bad", "event": "Bad Event"}, {"name": "ok", "event": "ok_event", "measurements": [{"t": 1, "value": "x"}, {"t": 2, "value": 3}]}],
+                                  "evil": "x"})
+        self.assertEqual((out["status"], out["depends_on"], len(out["kpis"]), len(out["kpis"][0]["measurements"])), ("planned", [self.auth], 1, 1))
+        self.assertNotIn("evil", out)
+
+    def test_a_deleted_kpi_comes_back_with_its_results(self):
+        kpi = self.record()["kpis"][0]
+        F.kpi_delete(self.rt, self.lobby, kpi["id"])
+        F.kpi_restore(self.rt, self.lobby, kpi)
+        back = self.record()["kpis"][0]
+        self.assertEqual((back["id"], len(back["measurements"])), (kpi["id"], 1))
+        with self.assertRaises(F.FeatureError):
+            F.kpi_restore(self.rt, self.lobby, kpi)
+
+
 if __name__ == "__main__":
     unittest.main()

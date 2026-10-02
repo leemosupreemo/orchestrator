@@ -169,6 +169,50 @@ def set_status(runtime: Path, feature_id: str, status: str) -> dict[str, Any]:
     return feature
 
 
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+
+
+def _clean_measurements(raw: Any) -> list[dict[str, Any]]:
+    out = []
+    for m in raw if isinstance(raw, list) else []:
+        try:
+            out.append({"t": float(m["t"]), "value": float(m["value"]), "note": str(m.get("note", ""))[:500],
+                        "decision": m.get("decision", "") if m.get("decision", "") in analytics.DECISIONS else ""})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out[-analytics.MAX_MEASUREMENTS:]
+
+
+def restore(runtime: Path, record: dict[str, Any]) -> dict[str, Any]:
+    """Put back a feature that was just deleted (undo). Everything is re-validated; nothing is trusted."""
+    if not isinstance(record, dict) or not ID_RE.match(str(record.get("id", ""))):
+        raise FeatureError("That feature can't be restored")
+    features = load(runtime)
+    if any(f["id"] == record["id"] for f in features):
+        raise FeatureError("A feature with that id already exists")
+    name = str(record.get("name", "")).strip()
+    if not name or len(name) > 80:
+        raise FeatureError("A feature needs a name")
+    known = {f["id"] for f in features}
+    kpis = []
+    for k in record.get("kpis") or []:
+        try:
+            cleaned = analytics.clean_kpi(k)
+        except (analytics.AnalyticsError, AttributeError):
+            continue
+        cleaned["id"] = str(k.get("id") or cleaned["id"])[:40]
+        cleaned["measurements"] = _clean_measurements(k.get("measurements"))
+        kpis.append(cleaned)
+    status = record.get("status") if record.get("status") in STATUSES else "planned"
+    feature = {"id": record["id"], "name": name, "summary": str(record.get("summary", "")).strip()[:500], "paths": _paths(record.get("paths")),
+               "depends_on": [d for d in _paths(record.get("depends_on")) if d in known and d != record["id"]], "kpis": kpis, "status": status,
+               "created": float(record["created"]) if isinstance(record.get("created"), (int, float)) else time.time(),
+               "completed_at": float(record["completed_at"]) if isinstance(record.get("completed_at"), (int, float)) else None,
+               "reopened": bool(record.get("reopened"))}
+    save(runtime, features + [feature])
+    return feature
+
+
 def delete(runtime: Path, feature_id: str) -> None:
     features = load(runtime)
     get(features, feature_id)
@@ -217,6 +261,19 @@ def kpi_delete(runtime: Path, feature_id: str, kpi_id: str) -> None:
         analytics.find_kpi(f, kpi_id)
         f["kpis"] = [k for k in f["kpis"] if k["id"] != kpi_id]
     _kpi_op(runtime, feature_id, op)
+
+
+def kpi_restore(runtime: Path, feature_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Undo a KPI delete, measurements included."""
+    def op(f: dict[str, Any]) -> dict[str, Any]:
+        kpi = analytics.clean_kpi(record)
+        kpi["id"] = str(record.get("id") or kpi["id"])[:40]
+        if any(k["id"] == kpi["id"] for k in f.get("kpis", [])):
+            raise analytics.AnalyticsError("That KPI already exists")
+        kpi["measurements"] = _clean_measurements(record.get("measurements"))
+        f.setdefault("kpis", []).append(kpi)
+        return kpi
+    return _kpi_op(runtime, feature_id, op)
 
 
 def kpi_measure(runtime: Path, feature_id: str, kpi_id: str, value: Any, note: str = "", decision: str = "") -> dict[str, Any]:

@@ -18,13 +18,13 @@ single-reviewer expert evaluation, not user testing, and it did not use a design
 | 6 | Consistency | "Available" and "Installed" were both amber (the warning colour) | 2 | Installed is green; Available is neutral |
 | 7 | Consistency | Page action buttons wrapped onto two lines (Tests: "More" under "Run all tests") | 1 | One row |
 | 8 | Recognition rather than recall | On phones six pages had no way in | 3 | "More" sheet in the bottom bar (see the accessibility pass) |
+| 9 | Help and documentation | No help in the app; docs buried under Configuration | 3 | Help page (sidebar, and the phone More sheet): the flow from idea to learning, where things are, a glossary, common questions |
+| 10 | User control and freedom | Deleting a feature or KPI, and Mark complete, could not be undone | 2 | Deleting a feature or KPI shows an Undo for 10 seconds (no confirm needed); undoing restores jobs and KPI results. Mark complete can be restored from Configuration > Archived jobs and returns to its earlier status; the confirm now says so |
 
 ## Open
 
 | # | Heuristic | Finding | Sev | Suggestion |
 |---|-----------|---------|-----|------------|
-| A | Help and documentation | No help in the app. Docs are buried under Configuration > Documentation; forms have little hint text | 3 | A Help link in the sidebar and More sheet; short "why" text under each setup step |
-| B | User control and freedom | Delete feature, delete KPI, and Mark complete have a confirm but no undo (archived jobs can be restored from Configuration, but nothing says so) | 2 | A toast with Undo for 10 seconds; mention restore on the confirm |
 | C | Flexibility and efficiency | The terminal-style hotkeys on the job page were removed, so power users lost shortcuts and there is no search across jobs or features | 2 | A command palette (jump to job, page or action) |
 | D | Recognition rather than recall | 13 sidebar items; Home's "Action required" filter duplicates the Inbox | 2 | Group Tools into Build / Ship / Learn; drop the filter or link it to the Inbox |
 | E | Match with the real world | Jargon survives in Configuration: "Prerequisite Audit", "Self-Tests", "Machine Fleet", "Xcode Cloud" | 1 | Plain names with the old term in the description |
@@ -33,6 +33,14 @@ single-reviewer expert evaluation, not user testing, and it did not use a design
 | H | Help users recover from errors | Server errors reach the user as a toast with the server's raw message | 2 | Pair each common failure with what to do next |
 | I | Visibility of system status | Whether browser alerts and the Slack webhook are on is visible only in the sidebar button and one config page | 1 | A line in the Inbox header: "Alerts: browser on, Slack off" |
 | J | Aesthetic and minimalist design | The job page is a long scroll of cards on a phone | 2 | Collapse Changes, Logs and Technical details by default on small screens |
+
+## Found while testing the fixes
+
+Undo exposed a server bug: a request body that no route read (a DELETE with a JSON body, or a
+rejected POST) was left in the connection, so the next request on it failed with
+`501 Unsupported method ('{}GET')` or `400`. The server now drains unread bodies after every
+request. Three regression tests fail without the fix. Discard job still cannot be undone
+(it deletes the branch); its confirm says so.
 
 ## Not evaluated
 

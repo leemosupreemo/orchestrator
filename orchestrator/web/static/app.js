@@ -118,13 +118,19 @@ async function api(path, { method = "GET", body } = {}) {
   return data;
 }
 
-function toast(message, bad = false) {
+function toast(message, bad = false, action = null) {
   const el = $("#toast");
   el.textContent = message;
+  if (action) { // e.g. { label: "Undo", run: async () => … }: stays long enough to be noticed
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "toast-action"; btn.textContent = action.label;
+    btn.addEventListener("click", async () => { el.hidden = true; try { await action.run(); } catch (e) { toast(e.message, true); } });
+    el.append(" ", btn);
+  }
   el.className = `toast${bad ? " bad" : ""}`;
   el.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.hidden = true; }, 3500);
+  toast.timer = setTimeout(() => { el.hidden = true; }, action ? 10000 : 3500);
 }
 
 function ago(ts) {
@@ -1883,8 +1889,8 @@ pages.features = async (_, query) => {
             if (v) await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: featureValues(v) });
             else return;
           } else if (btn.dataset.featureAction === "delete") {
-            if (!(await formDialog("Delete feature", `<p>Delete “${esc(f.name)}”? Its ${f.jobs_total} job(s) stay, but are no longer in a feature.</p>`, "Delete"))) return;
-            await api(`features/${encodeURIComponent(id)}`, { method: "DELETE", body: {} });
+            const { undo } = await api(`features/${encodeURIComponent(id)}`, { method: "DELETE", body: {} });
+            toast(`Deleted “${f.name}”`, false, { label: "Undo", run: async () => { await api("features/restore", { method: "POST", body: { feature: undo.feature, jobs: undo.jobs } }); route(); } });
           } else {
             await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: { status: btn.dataset.featureAction === "complete" ? "complete" : "in-progress" } });
           }
@@ -1989,7 +1995,7 @@ pages.measure = async () => {
       <div class="kpi-latest">${st.latest ? `<strong>${esc(st.latest.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</strong><span class="muted">${esc(ago(st.latest.t))}${trend ? ` · ${trend}` : ""}</span>` : `<span class="muted">—</span>`}</div>
       <span class="pill ${tone}">${esc(label)}</span>
       <div class="side"><button class="btn small" data-kpi="measure" data-f="${esc(f.id)}" data-k="${esc(k.id)}">Log result</button>
-        ${moreMenu([["Edit", `data-kpi="edit" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`], ["Delete", `data-kpi="delete" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`, "Keeps nothing; results are deleted too", "danger"]])}</div>
+        ${moreMenu([["Edit", `data-kpi="edit" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`], ["Delete", `data-kpi="delete" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`, "You can undo for 10 seconds", "danger"]])}</div>
       ${k.measurements.length ? `<details class="kpi-log"><summary>Learning log (${k.measurements.length})</summary>${k.measurements.slice().reverse().map((m) => `<div class="kpi-entry"><span class="mono">${esc(m.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</span> <span class="muted">${esc(ago(m.t))}</span>${m.decision ? ` <span class="pill ${m.decision === "drop" ? "failed" : m.decision === "iterate" ? "attention" : "done"}">${esc(DECISION_LABEL[m.decision])}</span>` : ""}${m.note ? ` <span>${esc(m.note)}</span>` : ""}</div>`).join("")}</details>` : ""}
     </div>`;
   };
@@ -2023,7 +2029,13 @@ pages.measure = async () => {
         const path = `features/${encodeURIComponent(fid)}/kpis`;
         if (op === "add") { const v = await formDialog(`New KPI for ${f.name}`, kpiFormBody(), "Add"); if (v) call(path, { op: "add", ...v }, "KPI added"); }
         else if (op === "edit") { const v = await formDialog("Edit KPI", kpiFormBody(k), "Save"); if (v) call(path, { op: "update", kpi: k.id, ...v }, "KPI saved"); }
-        else if (op === "delete") { if (await formDialog("Delete KPI", `<p>Delete “${esc(k.name)}” and its ${k.measurements.length} logged result(s)?</p>`, "Delete")) call(path, { op: "delete", kpi: k.id }, "KPI deleted"); }
+        else if (op === "delete") {
+          try {
+            const { undo } = await api(path, { method: "POST", body: { op: "delete", kpi: k.id } });
+            toast(`Deleted “${k.name}”`, false, { label: "Undo", run: async () => { await api(path, { method: "POST", body: { op: "restore", kpi: undo.kpi } }); route(); } });
+            route();
+          } catch (e) { toast(e.message, true); }
+        }
         else {
           const v = await formDialog(`Log a result: ${k.name}`, `<label class="field"><span>Result${k.unit ? ` (${esc(k.unit)})` : ""}</span><input type="number" name="value" step="any" required></label>
             <label class="field"><span>What will you do?</span><select name="decision"><option value="">Not decided</option><option value="keep">Keep it as is</option><option value="iterate">Iterate on it</option><option value="drop">Drop it</option></select></label>
@@ -2057,6 +2069,43 @@ pages.checkup = async () => {
           <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>`,
   };
 };
+
+pages.help = async () => ({
+  title: "Help",
+  sub: "How Orchestrator works, where things are, and what the words mean.",
+  html: `
+    <section class="card mb-16"><div class="card-h"><h2>How a piece of work flows</h2></div><div class="card-b">
+      <ol class="help-steps">
+        <li><strong>Describe it.</strong> <a href="#/new">New job</a>: say what should happen, in your own words. Leave “You decide the details” on if you have no strong opinion.</li>
+        <li><strong>It gets planned.</strong> You may be asked a question. Anything waiting on you lands in the <a href="#/inbox">Inbox</a>.</li>
+        <li><strong>It gets built.</strong> A worker writes the code and the tests, on its own branch. Pause it any time; Resume picks up at the next task.</li>
+        <li><strong>You review it.</strong> The job page shows progress, test cases, changes and a scope check. Ask the AI about it, revise the plan, or run a fix.</li>
+        <li><strong>You ship it.</strong> Merge (or Mark complete), then send a build to testers from <a href="#/delivery">Delivery</a>.</li>
+        <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
+      </ol></div></section>
+    <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
+      ${[["Inbox", "#/inbox", "Everything waiting on you, across projects."], ["Home", "#/", "All jobs in this project, and Fix something."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
+         ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
+         ["Check-up", "#/checkup", "What's in place and what's missing for this project."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
+         ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
+    </div></section>
+    <section class="card mb-16"><div class="card-h"><h2>Words we use</h2></div><div class="card-b"><dl class="help-terms">
+      <dt>Job</dt><dd>One piece of work: a bug fix, feature, design, test addition or quick change. It has a plan, a branch and a status.</dd>
+      <dt>Run</dt><dd>One command Orchestrator executed, such as a build or a fix attempt. A job can have many runs.</dd>
+      <dt>Feature</dt><dd>Something a user would name, like “Lobby seats”. Jobs are grouped under features, and each feature can own parts of the code.</dd>
+      <dt>Test case</dt><dd>A planned check with steps and an expected result. It is “covered” when a test in the code carries its id or is assigned to it.</dd>
+      <dt>Scope check</dt><dd>Compares what a job changed with what it planned, and flags extras like new dependencies or unplanned files.</dd>
+      <dt>KPI</dt><dd>How you will judge a feature: an event that is tracked, with a target. You log results and decide to keep, iterate or drop.</dd>
+      <dt>Pause</dt><dd>Stops the worker. The job keeps its work; Resume continues from the next task.</dd>
+    </dl></div></section>
+    <section class="card"><div class="card-h"><h2>Common questions</h2></div><div class="card-b help-faq">
+      <details><summary>A job won't run</summary><p>Jobs need a machine, a model, a signed-in AI provider and a GitHub remote. <a href="#/checkup">Check-up</a> and the Setup button on Home show what is missing; <a href="#/config">Configuration</a> is where you fix it.</p></details>
+      <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
+      <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from Configuration > Archived jobs.</p></details>
+      <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends browser alerts. For Slack, add a webhook under Configuration > Slack &amp; chat alerts.</p></details>
+      <details><summary>Where are the full guides?</summary><p><a href="#/config/documentation">Configuration > Documentation</a> lists the Orchestrator and project guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
+    </div></section>`,
+});
 
 pages.devlogs = async () => {
   setHeader({ title: "Device logs" });
@@ -3259,7 +3308,7 @@ $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScr
 
 // Phone layout: the bottom bar holds the everyday pages; everything else lives behind "More".
 const moreBtn = $("#nav-more"), moreSheet = $("#more-sheet");
-const MORE_LINKS = [["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
+const MORE_LINKS = [["Help", "#/help"], ["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
 function closeMore() { if (moreSheet.hidden) return; moreSheet.hidden = true; moreBtn.setAttribute("aria-expanded", "false"); }
 moreBtn?.addEventListener("click", () => {
   if (!moreSheet.hidden) return closeMore();
