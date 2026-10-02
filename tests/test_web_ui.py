@@ -1685,7 +1685,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('$("#conn-banner").hidden = true', self.js)
 
     def test_setup_button_only_floats_on_the_pages_about_getting_started(self):
-        self.assertIn('["home", "inbox", "checkup"].includes(current.page)', self.js)
+        self.assertIn('["home", "checkup"].includes(current.page)', self.js)
 
     def test_home_warns_when_jobs_cannot_run(self):
         self.assertIn("No machine set up: jobs can't run yet", self.js)
@@ -1694,10 +1694,10 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_help_covers_every_page_it_names_and_the_undo_window(self):
         start = self.js.index("pages.help = async")
         help_page = self.js[start:self.js.index("pages.devlogs = async")]
-        for route in ("#/inbox", "#/features", "#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config", "#/config/documentation"):
+        for route in ("#/features", "#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config", "#/config/documentation"):
             self.assertIn(f'"{route}"' if route != "#/config/documentation" else route, help_page, route)
         self.assertIn("10 seconds", help_page)
-        for page in ("inbox", "features", "tests", "delivery", "measure", "checkup"):
+        for page in ("features", "tests", "delivery", "measure", "checkup"):
             self.assertIn(f"pages.{page} = async", self.js)
 
     def test_toast_colours_use_ink_tokens(self):
@@ -1713,10 +1713,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('e.key === "/"', self.js)
         self.assertIn('aria-activedescendant', self.js)
 
-    def test_sidebar_tools_are_grouped_by_purpose_and_home_points_to_the_inbox(self):
+    def test_sidebar_tools_are_grouped_by_purpose(self):
         for label in ("Build &amp; ship", "Learn &amp; improve", "Set up"):
             self.assertIn(f'<span class="label">{label}</span>', self.html)
-        self.assertIn('href="#/inbox" title="Everything waiting on you', self.js)
 
     def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
         config = (self.STATIC / "configuration.js").read_text()
@@ -1735,6 +1734,17 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Errors.explain(message)", self.js)
         self.assertIn('<script src="errors.js">', self.html)
         self.assertIn("Alerts: browser", self.js)
+
+    def test_there_is_no_separate_inbox_page_home_leads_with_what_is_waiting(self):
+        self.assertNotIn('data-route="inbox"', self.html)
+        self.assertNotIn("pages.inbox", self.js)
+        self.assertNotIn('"#/inbox"', self.js)
+        self.assertIn('id="inbox-badge"', self.html.split('data-route="home"')[1].split("</a>")[0])  # the count lives on Home
+        home = self.js[self.js.index("pages.home = async"):self.js.index("const ORIGINAL_JOB_FILTERS") if "const ORIGINAL_JOB_FILTERS" in self.js else self.js.index("const JOB_FILTERS")]
+        self.assertIn('api("inbox")', home)
+        self.assertIn("waitingSectionHtml(waiting)", home)
+        self.assertLess(home.index("waitingSectionHtml(waiting)"), home.index('class="job-table"'))
+        self.assertIn('rest: ["Everything else"', home)  # jobs already shown above aren't listed twice by default
 
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)

@@ -13,7 +13,7 @@ single-reviewer expert evaluation, not user testing, and it did not use a design
 | 1 | Visibility of system status | Home showed "0 machines · 0 models" as neutral text; nothing said jobs can't run without them | 3 | Replaced with a warning link: "No machine set up: jobs can't run yet" (or no model) |
 | 2 | Visibility of system status | Losing the connection (tunnel drop, laptop asleep) failed silently; the page kept showing stale data | 3 | Banner after two failed polls: "Can't reach Orchestrator right now… retrying" |
 | 3 | Match with the real world | A job waiting for you to start a fix was labelled "Debugging", which reads as if something is running | 2 | Now "Needs a fix" |
-| 4 | Aesthetic and minimalist design | The "Setup n/7" button floated over content on every page, covering text | 2 | Shown only on Home, Inbox and Check-up |
+| 4 | Aesthetic and minimalist design | The "Setup n/7" button floated over content on every page, covering text | 2 | Shown only on Home and Check-up |
 | 5 | Aesthetic and minimalist design | Tests page led with Swift-only frameworks on a Python project | 2 | Shown only for Swift or unknown-language projects |
 | 6 | Consistency | "Available" and "Installed" were both amber (the warning colour) | 2 | Installed is green; Available is neutral |
 | 7 | Consistency | Page action buttons wrapped onto two lines (Tests: "More" under "Run all tests") | 1 | One row |
@@ -21,12 +21,12 @@ single-reviewer expert evaluation, not user testing, and it did not use a design
 | 9 | Help and documentation | No help in the app; docs buried under Configuration | 3 | Help page (sidebar, and the phone More sheet): the flow from idea to learning, where things are, a glossary, common questions |
 | 10 | User control and freedom | Deleting a feature or KPI, and Mark complete, could not be undone | 2 | Deleting a feature or KPI shows an Undo for 10 seconds (no confirm needed); undoing restores jobs and KPI results. Mark complete can be restored from Configuration > Archived jobs and returns to its earlier status; the confirm now says so |
 | 11 | Flexibility and efficiency | No search or shortcuts after the hotkeys were removed | 2 | Command palette: Cmd/Ctrl+K or `/` jumps to any page, job or feature and runs common actions; keyboard-operable and announced as a combobox |
-| 12 | Recognition rather than recall | 13 sidebar items; Home's "Action required" filter duplicated the Inbox | 2 | Tools grouped as Build & ship / Learn & improve / Set up; the Home chip is now "Waiting on you →" and opens the Inbox |
+| 12 | Recognition rather than recall | 13 sidebar items; Home's "Action required" filter duplicated the Inbox | 2 | Tools grouped as Build & ship / Learn & improve / Set up; the separate Inbox page was folded into the top of Home ("Waiting on you"), so there is one place to look |
 | 13 | Match with the real world | Jargon in Configuration | 1 | Machines, Tool check, Orchestrator health check, Tester builds (Firebase), Instructions for AI helpers, with the old term in each description |
 | 14 | Consistency | Primary action placement and job/run/task vocabulary varied | 2 | Written down in `docs/web-ui-conventions.md` and the Help glossary; a few checks are automated |
 | 15 | Error prevention | Webhook and analytics keys were only checked when you pressed "test" | 1 | Both are tested on save and the result is shown right away |
 | 16 | Help users recover from errors | Raw server messages in toasts | 2 | Known failures now say what to do next (`errors.js`); unknown ones pass through unchanged |
-| 17 | Visibility of system status | Alert status only visible in config | 1 | The Inbox header shows "Alerts: browser on/off, Slack on/off" |
+| 17 | Visibility of system status | Alert status only visible in config | 1 | The "Waiting on you" section on Home shows "Alerts: browser on/off, Slack on/off" |
 | 18 | Aesthetic and minimalist design | The job page is one long scroll on a phone | 2 | Tasks, runs, logs and output are folded on phones (open on desktop) |
 
 ## Open

@@ -1194,7 +1194,7 @@ function moreActionsMenu(p, opts) {
 // re-rendered by the poll when their output changes.
 
 const pages = {};
-const LIVE = new Set(["home", "jobs", "job", "activity", "git", "inbox"]);
+const LIVE = new Set(["home", "jobs", "job", "activity", "git"]);
 
 // ---------------------------------------------------------------- setup checklist
 // What a job needs (GitHub, an AI provider, a machine, project config) vs. nice-to-haves.
@@ -1255,7 +1255,7 @@ function renderSetupFab() {
   const fab = $("#setup-fab");
   if (!fab) return;
   const s = setupState;
-  const show = s && !s.complete && ["home", "inbox", "checkup"].includes(current.page) && !(current.page === "home" && !s.seen);
+  const show = s && !s.complete && ["home", "checkup"].includes(current.page) && !(current.page === "home" && !s.seen);
   fab.hidden = !show;
   if (s) fab.querySelector("span").textContent = `Setup ${s.required_done}/${s.required_total}`;
   if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
@@ -1295,7 +1295,7 @@ document.addEventListener("click", (e) => {
 pages.home = async (_, query) => {
   await loadSetup();
   if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
-  const { jobs } = await api("jobs");
+  const [{ jobs }, waiting] = await Promise.all([api("jobs"), api("inbox")]);
   const p = state.project;
   if (!p.branches) { // server predates the project-state branch list: use the Git endpoint
     try { p.branches = (await api("git")).branches || []; } catch { p.branches = []; }
@@ -1303,15 +1303,18 @@ pages.home = async (_, query) => {
   // 1) Default ordered by most recent
   const sortedJobs = sortJobs(jobs);
 
+  // Jobs waiting on you are listed above the table, so the table's default view is everything else.
+  const isWaiting = (j) => j.state.group === "needs_you" && !j.active_run;
+  const waitingJobs = jobs.filter(isWaiting).length;
   const HOME_FILTERS = {
-    all: ["All", () => true],
-    needs_you: ["Waiting on you", (j) => j.state.group === "needs_you" && !j.active_run],
+    ...(waitingJobs ? { rest: ["Everything else", (j) => !isWaiting(j)] } : {}),
     working: ["In progress", (j) => j.state.group === "working" || j.active_run],
     done: ["Completed", (j) => j.state.group === "done"],
+    all: ["All", () => true],
   };
 
-  let filter = (query && query.get("filter")) || "all";
-  if (!HOME_FILTERS[filter]) filter = "all";
+  let filter = (query && query.get("filter")) || (waitingJobs ? "rest" : "all");
+  if (!HOME_FILTERS[filter]) filter = waitingJobs ? "rest" : "all";
   const filteredJobs = sortedJobs.filter(HOME_FILTERS[filter][1]);
 
   const runningRuns = state.runs.filter((r) => r.running);
@@ -1330,6 +1333,8 @@ pages.home = async (_, query) => {
         ${moreActionsMenu(p, { left: true })}
       </div>
 
+      ${waitingSectionHtml(waiting)}
+
       ${runningBanner}
 
       <section class="card">
@@ -1338,7 +1343,6 @@ pages.home = async (_, query) => {
           <div class="filters">
             ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
               const count = sortedJobs.filter(fn).length;
-              if (key === "needs_you") return `<a class="btn small" href="#/inbox" title="Everything waiting on you, across projects">${label} (${count}) →</a>`;
               return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
             }).join("")}
           </div>
@@ -1929,30 +1933,27 @@ pages.features = async (_, query) => {
   };
 };
 
-pages.inbox = async () => {
-  const { here, elsewhere } = await api("inbox");
-  const row = (i, { away = false } = {}) => {
-    const open = i.kind === "run" ? `#/runs/${encodeURIComponent(i.run_id)}` : `#/jobs/${encodeURIComponent(i.job_id)}`;
-    let button = "";
-    if (away) button = `<button class="btn small" data-switch-project="${esc(i.project.root)}" data-then="${esc(open)}">Switch & open</button>`;
-    else if (i.kind === "run") button = `<a class="btn small primary" href="${open}">Answer</a>`;
-    else if (i.next) button = `<button class="btn small ${i.tone === "failed" || i.tone === "attention" ? "primary" : ""}" ${act(i.next.action, { job: i.job_id })}>${esc(i.next.label)}</button>`;
-    return `<div class="item"><a class="main-col" href="${away ? "#/inbox" : open}">
-        <div class="title">${esc(i.title)}</div><div class="meta"><span class="pill ${esc(i.tone)}">${esc(i.label)}</span> ${esc(i.reason)}</div></a>
-      <div class="side">${button}</div></div>`;
-  };
+// One thing waiting on you: the job or run, why, and its single next action. `away` = another project.
+function waitingRowHtml(i, { away = false } = {}) {
+  const open = i.kind === "run" ? `#/runs/${encodeURIComponent(i.run_id)}` : `#/jobs/${encodeURIComponent(i.job_id)}`;
+  let button = "";
+  if (away) button = `<button class="btn small" data-switch-project="${esc(i.project.root)}" data-then="${esc(open)}">Switch & open</button>`;
+  else if (i.kind === "run") button = `<a class="btn small primary" href="${open}">Answer</a>`;
+  else if (i.next) button = `<button class="btn small ${i.tone === "failed" || i.tone === "attention" ? "primary" : ""}" ${act(i.next.action, { job: i.job_id })}>${esc(i.next.label)}</button>`;
+  return `<div class="item"><a class="main-col" href="${away ? "#/" : open}">
+      <div class="title">${esc(i.title)}</div><div class="meta"><span class="pill ${esc(i.tone)}">${esc(i.label)}</span> ${esc(i.reason)}</div></a>
+    <div class="side">${button}</div></div>`;
+}
+
+function waitingSectionHtml({ here, elsewhere }) {
+  if (!here.length && !elsewhere.length) return "";
   const byProject = new Map();
   for (const i of elsewhere) byProject.set(i.project.root, [...(byProject.get(i.project.root) || []), i]);
-  return {
-    title: "Inbox",
-    sub: `${here.length ? `${here.length} waiting on you in ${esc(state.project.name)}` : "Nothing is waiting on you."} <span class="muted">· Alerts: browser ${Notifications.enabled() ? "on" : "off"}, Slack ${state.alerts?.webhook ? "on" : `<a href="#/config/chat">off</a>`}</span>`,
-    html: `
-      ${here.length ? `<section class="card mb-16"><div class="list">${here.map((i) => row(i)).join("")}</div></section>`
-        : `<div class="empty">You're clear. Questions, reviews, failures and stalled runs show up here as they happen.</div>`}
-      ${[...byProject.values()].map((items) => `<section class="card mb-16"><div class="card-h"><h2>${esc(items[0].project.name)}</h2><span class="count">${items.length}</span></div>
-        <div class="list">${items.map((i) => row(i, { away: true })).join("")}</div></section>`).join("")}`,
-  };
-};
+  return `<section class="card mb-16" id="waiting-section"><div class="card-h"><h2>Waiting on you</h2><span class="count">${here.length}</span></div>
+    ${here.length ? `<div class="list">${here.map((i) => waitingRowHtml(i)).join("")}</div>` : `<div class="empty">Nothing in ${esc(state.project.name)} is waiting on you.</div>`}
+    ${[...byProject.values()].map((items) => `<div class="tc-area-h">${esc(items[0].project.name)} <span class="count">${items.length}</span></div><div class="list">${items.map((i) => waitingRowHtml(i, { away: true })).join("")}</div>`).join("")}
+    <div class="card-b muted">Alerts: browser ${Notifications.enabled() ? "on" : "off"}, Slack ${state.alerts?.webhook ? "on" : `<a href="#/config/chat">off</a>`}</div></section>`;
+}
 
 pages.delivery = async () => {
   const d = await api("delivery");
@@ -2101,7 +2102,7 @@ pages.checkup = async () => {
     html: `
       <div class="tasks-progress-wrap mb-16"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round((d.ok / d.total) * 100)}%"></div></div><span class="progress-text">${d.ok}/${d.total} in place</span></div>
       ${next ? `<section class="card" style="margin-bottom: 16px; border-color: var(--accent);"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div>
-        <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on the Inbox for what needs you next.</div>`}
+        <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on Home for what needs you next.</div>`}
       <section class="card"><div class="card-h"><h2>Everything</h2><span class="muted">Product state. Tools and keys are in the setup checklist.</span></div>
         <div class="list">${d.items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div>
           <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>`,
@@ -2115,14 +2116,14 @@ pages.help = async () => ({
     <section class="card mb-16"><div class="card-h"><h2>How a piece of work flows</h2></div><div class="card-b">
       <ol class="help-steps">
         <li><strong>Describe it.</strong> <a href="#/new">New job</a>: say what should happen, in your own words. Leave “You decide the details” on if you have no strong opinion.</li>
-        <li><strong>It gets planned.</strong> You may be asked a question. Anything waiting on you lands in the <a href="#/inbox">Inbox</a>.</li>
+        <li><strong>It gets planned.</strong> You may be asked a question. Anything waiting on you shows at the top of <a href="#/">Home</a>.</li>
         <li><strong>It gets built.</strong> A worker writes the code and the tests, on its own branch. Pause it any time; Resume picks up at the next task.</li>
         <li><strong>You review it.</strong> The job page shows progress, test cases, changes and a scope check. Ask the AI about it, revise the plan, or run a fix.</li>
         <li><strong>You ship it.</strong> Merge (or Mark complete), then send a build to testers from <a href="#/delivery">Delivery</a>.</li>
         <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
-      ${[["Inbox", "#/inbox", "Everything waiting on you, across projects."], ["Home", "#/", "All jobs in this project, and Fix something."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
+      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs, and Fix something."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
          ["Check-up", "#/checkup", "What's in place and what's missing for this project."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
@@ -3350,7 +3351,7 @@ if (connBtn) {
 $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
 
 // ---------------------------------------------------------------- command palette
-const PALETTE_PAGES = [["Inbox", "#/inbox", "What needs you"], ["Home", "#/", "All jobs"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
+const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],

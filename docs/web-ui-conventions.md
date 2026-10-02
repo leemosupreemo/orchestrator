@@ -10,7 +10,7 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 - A job's primary action is the hero button ("Run fix", "Mark complete", "Answer"). It is never
   repeated in the job's More menu, a tile, or a banner.
 - Everything else goes in one **More** menu, in the page header or on the item it affects.
-- Rows may carry one small button for that row's next step (Inbox, Ready to ship).
+- Rows may carry one small button for that row's next step (Waiting on you, Ready to ship).
 
 ## Where actions live
 
