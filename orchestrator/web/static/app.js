@@ -3306,6 +3306,93 @@ if (connBtn) {
 }
 $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
 
+// ---------------------------------------------------------------- command palette
+const PALETTE_PAGES = [["Inbox", "#/inbox", "What needs you"], ["Home", "#/", "All jobs"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
+  ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
+  ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"],
+  ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
+  ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
+const palette = { open: false, entries: [], shown: [], active: 0, opener: null };
+
+function paletteBase() {
+  const go = (hash) => () => { location.hash = hash; };
+  const entries = PALETTE_PAGES.map(([label, hash, hint]) => ({ label, hint, group: "Pages", order: 1, run: go(hash) }));
+  const act_ = (label, hint, fn) => entries.push({ label, hint, group: "Actions", order: 0, run: fn });
+  act_("Fix something", "Describe a problem; it runs a quick fix", () => (dialogs.fix ? dialogs.fix({}) : runAction("fix", {})));
+  act_("Run all tests", "Manual test run", () => runAction("test", {}));
+  act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());
+  if (Notifications.supported()) act_(Notifications.enabled() ? "Turn off browser alerts" : "Turn on browser alerts", "Alerts when a run finishes or needs you", () => $("#notify-btn")?.click());
+  return entries;
+}
+
+async function openPalette() {
+  if (palette.open) return;
+  palette.open = true;
+  palette.opener = document.activeElement;
+  palette.entries = paletteBase();
+  $("#palette-backdrop").hidden = false;
+  $("#palette").hidden = false;
+  const input = $("#palette-input");
+  input.value = "";
+  renderPalette();
+  input.focus();
+  // Jobs and features load after it opens, so it is usable straight away.
+  try {
+    const [{ jobs }, { features }] = await Promise.all([api("jobs"), api("features")]);
+    if (!palette.open) return;
+    const go = (hash) => () => { location.hash = hash; };
+    palette.entries.push(...jobs.map((j) => ({ label: j.title, hint: `${j.state.label} · ${j.kind}`, group: "Jobs", order: 2, run: go(`#/jobs/${encodeURIComponent(j.id)}`) })),
+      ...features.map((f) => ({ label: f.name, hint: "Feature", group: "Features", order: 3, run: go(`#/features?focus=${encodeURIComponent(f.id)}`) })));
+    renderPalette();
+  } catch { /* pages and actions still work */ }
+}
+
+function closePalette() {
+  if (!palette.open) return;
+  palette.open = false;
+  $("#palette").hidden = true;
+  $("#palette-backdrop").hidden = true;
+  palette.opener?.focus?.();
+}
+
+function renderPalette() {
+  const query = $("#palette-input").value;
+  palette.shown = Palette.rank(palette.entries, query);
+  palette.active = Math.min(palette.active, Math.max(palette.shown.length - 1, 0));
+  const list = $("#palette-list");
+  list.innerHTML = palette.shown.map((e, i) => `<li role="option" id="pal-${i}" aria-selected="${i === palette.active}" class="palette-item${i === palette.active ? " active" : ""}" data-i="${i}">
+      <span class="palette-label">${esc(e.label)}</span><span class="muted palette-hint">${esc(e.hint || "")}</span><span class="pill palette-group">${esc(e.group)}</span></li>`).join("")
+    || `<li class="palette-empty muted" role="presentation">Nothing matches “${esc(query)}”.</li>`;
+  const input = $("#palette-input");
+  if (palette.shown.length) input.setAttribute("aria-activedescendant", `pal-${palette.active}`); else input.removeAttribute("aria-activedescendant");
+  list.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+}
+
+function runPalette(i) {
+  const entry = palette.shown[i];
+  if (!entry) return;
+  closePalette();
+  entry.run();
+}
+
+$("#palette-input")?.addEventListener("input", () => { palette.active = 0; renderPalette(); });
+$("#palette-list")?.addEventListener("click", (e) => { const li = e.target.closest("[data-i]"); if (li) runPalette(Number(li.dataset.i)); });
+$("#palette-backdrop")?.addEventListener("click", closePalette);
+$("#search-btn")?.addEventListener("click", openPalette);
+if (!/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) { const k = $("#search-btn kbd"); if (k) k.textContent = "Ctrl K"; }
+document.addEventListener("keydown", (e) => {
+  const typing = e.target.matches?.("input, textarea, select, [contenteditable]");
+  if ((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) { e.preventDefault(); palette.open ? closePalette() : openPalette(); return; }
+  if (e.key === "/" && !typing && !palette.open && !e.metaKey && !e.ctrlKey && !$("#dialog").open) { e.preventDefault(); openPalette(); return; }
+  if (!palette.open) return;
+  if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); palette.active = Math.min(palette.active + 1, palette.shown.length - 1); renderPalette(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); palette.active = Math.max(palette.active - 1, 0); renderPalette(); }
+  else if (e.key === "Enter") { e.preventDefault(); runPalette(palette.active); }
+  else if (e.key === "Tab") { e.preventDefault(); } // focus stays in the search box while it is open
+});
+window.addEventListener("hashchange", closePalette);
+
 // Phone layout: the bottom bar holds the everyday pages; everything else lives behind "More".
 const moreBtn = $("#nav-more"), moreSheet = $("#more-sheet");
 const MORE_LINKS = [["Help", "#/help"], ["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
@@ -3314,7 +3401,7 @@ moreBtn?.addEventListener("click", () => {
   if (!moreSheet.hidden) return closeMore();
   moreSheet.innerHTML = `<div class="more-sheet-h"><strong>More</strong><button type="button" class="btn small ghost" data-more-close aria-label="Close">✕</button></div>
     <nav aria-label="More pages">${MORE_LINKS.map(([label, href]) => `<a href="${href}">${esc(label)}</a>`).join("")}</nav>
-    <div class="more-sheet-actions"><a class="btn" href="#/new">New job</a>
+    <div class="more-sheet-actions"><button type="button" class="btn" data-more-search>Search</button><a class="btn" href="#/new">New job</a>
       ${Notifications.supported() ? `<button type="button" class="btn" data-more-notify>${Notifications.enabled() ? "Turn off alerts" : "Notify me when done"}</button>` : ""}
       <button type="button" class="btn" data-more-lock>Lock session</button></div>`;
   moreSheet.hidden = false;
@@ -3323,6 +3410,7 @@ moreBtn?.addEventListener("click", () => {
 });
 moreSheet?.addEventListener("click", (e) => {
   if (e.target.closest("a, [data-more-close]")) closeMore();
+  if (e.target.closest("[data-more-search]")) { closeMore(); openPalette(); }
   if (e.target.closest("[data-more-notify]")) { $("#notify-btn").click(); closeMore(); }
   if (e.target.closest("[data-more-lock]")) { closeMore(); $("#lock-btn").click(); }
 });

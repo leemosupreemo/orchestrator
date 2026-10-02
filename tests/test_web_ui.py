@@ -1682,6 +1682,15 @@ class AccessibilityStaticTests(unittest.TestCase):
         block = self.css[self.css.index(".toast.bad {"):][:80]
         self.assertNotIn("#fff", block)
 
+    def test_command_palette_is_an_accessible_dialog_with_keyboard_shortcuts(self):
+        self.assertIn('id="palette" role="dialog" aria-modal="true"', self.html)
+        self.assertIn('role="combobox"', self.html)
+        self.assertIn('role="listbox"', self.html)
+        self.assertIn('<script src="palette.js">', self.html)
+        self.assertIn('e.key === "k"', self.js)
+        self.assertIn('e.key === "/"', self.js)
+        self.assertIn('aria-activedescendant', self.js)
+
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
@@ -1846,6 +1855,44 @@ class KeepAliveBodyTests(ServerTestCase):
     def test_a_route_that_ignores_its_body_does_not_break_the_next_request(self):
         first, second = self.two_requests("POST", "/api/analytics/plan", json.dumps({"ignored": "x" * 50}).encode(), UI_HEADERS)
         self.assertEqual((first, second), (200, 200))
+
+
+class PaletteLogicTests(unittest.TestCase):
+    ENTRIES = [{"label": "Delivery", "hint": "What's live", "order": 1}, {"label": "Deliver to testers", "hint": "", "order": 0},
+               {"label": "Seat assignment", "hint": "Ready for review", "order": 2}, {"label": "Inbox", "hint": "Delivery alerts", "order": 1},
+               {"label": "Check-up", "hint": "", "order": 1}]
+
+    def ranked(self, query, entries=None):
+        module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "palette.js"
+        script = "const p = require(process.argv[1]); const [e, q] = JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify(p.rank(e, q).map((x) => x.label)));"
+        result = subprocess.run(["node", "-e", script, str(module), json.dumps([entries or self.ENTRIES, query])], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_empty_query_lists_everything_actions_first(self):
+        self.assertEqual(self.ranked("")[0], "Deliver to testers")
+        self.assertEqual(len(self.ranked("")), 5)
+
+    def test_prefix_beats_word_start_beats_contains_beats_hint(self):
+        self.assertEqual(self.ranked("deliv"), ["Delivery", "Deliver to testers", "Inbox"])  # the shorter prefix match is the closer one; Inbox matches only through its hint
+        self.assertEqual(self.ranked("testers"), ["Deliver to testers"])
+        self.assertEqual(self.ranked("review"), ["Seat assignment"])
+
+    def test_letters_in_order_still_find_it_and_no_match_is_empty(self):
+        self.assertEqual(self.ranked("chk"), ["Check-up"])
+        self.assertEqual(self.ranked("zzz"), [])
+
+    def test_scattered_letters_must_start_at_a_word(self):
+        entries = [{"label": "Turn on browser alerts", "hint": "", "order": 0}, {"label": "Seat assignment", "hint": "", "order": 2}]
+        self.assertEqual(self.ranked("seat", entries), ["Seat assignment"])
+        self.assertEqual(self.ranked("alrt", entries), ["Turn on browser alerts"])
+
+    def test_matching_ignores_case_and_surrounding_space(self):
+        self.assertEqual(self.ranked("  INBOX "), ["Inbox"])
+
+    def test_results_are_capped(self):
+        many = [{"label": f"Job {i}", "hint": "", "order": 2} for i in range(100)]
+        self.assertEqual(len(self.ranked("job", many)), 40)
 
 
 class PipelineTests(ServerTestCase):
