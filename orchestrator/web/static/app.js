@@ -1775,6 +1775,10 @@ const formatBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `$
 pages.new = async (_, query) => {
   let features = [];
   try { features = (await api("features")).features; } catch { /* the field just doesn't show */ }
+  let undefinedProduct = false; // the use cases and non-goals haven't been written, so plans would be guessing
+  try { undefinedProduct = !(await api("product")).docs.find((d) => d.id === "use-cases")?.filled; } catch { /* older server: no nudge */ }
+  const skipKey = `orchestrator_skip_discovery:${state.project?.root || ""}`;
+  const skipped = () => { try { return localStorage.getItem(skipKey) === "1"; } catch { return false; } };
   const wanted = query.get("type");
   const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "bug", uploads: {}, uploading: 0, logs: new Set(), recent: null,
     v: { summary: query.get("summary") || "", details: query.get("spec") || "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", url: "" } };
@@ -1853,6 +1857,12 @@ pages.new = async (_, query) => {
   const render = async () => {
     const out = await fieldsHtml();
     picker = out.picker;
+    // A feature or design is planned against who it's for and what version 1 won't do; offer to write that down first.
+    const nudge = undefinedProduct && !skipped() && (st.type === "feature" || st.type === "design");
+    $("#nj-discovery").innerHTML = nudge ? `<div class="notice" role="note"><strong>Before the first feature: who is it for, and what won't version 1 do?</strong>
+      <div class="muted">Plans are much better when the AI knows. Answer a few questions (about two minutes) and it drafts the rest.</div>
+      <div class="row"><a class="btn small primary" href="#/product/use-cases">Define the product first</a><button type="button" class="btn small ghost" id="nj-skip-discovery">Skip for now</button></div></div>` : "";
+    $("#nj-skip-discovery")?.addEventListener("click", () => { try { localStorage.setItem(skipKey, "1"); } catch { /* remembered for this visit only */ } undefinedProduct = false; $("#nj-discovery").innerHTML = ""; });
     $("#nj-fields").innerHTML = out.html;
     picker?.wire();
     chips();
@@ -1885,6 +1895,7 @@ pages.new = async (_, query) => {
         <div class="segmented" role="radiogroup" aria-label="Kind of work">${JOB_TYPE_INFO.map(([v, t, d]) =>
           `<label><input type="radio" name="type" value="${v}" ${st.type === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
         </div></div>
+      <div id="nj-discovery"></div>
       <div class="stack" id="nj-fields"></div>
       ${featureSelect()}
       <details class="advanced"><summary>Options</summary>

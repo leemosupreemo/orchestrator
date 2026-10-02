@@ -1840,6 +1840,13 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_a_blank_screen_gets_a_loading_message_after_a_moment(self):
         self.assertIn("Loading…", self.js[self.js.index("async function route()"):][:2500])
 
+    def test_the_first_feature_or_design_is_nudged_toward_defining_the_product(self):
+        form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
+        self.assertIn('st.type === "feature" || st.type === "design"', form)
+        self.assertIn("Define the product first", form)
+        self.assertIn("Skip for now", form)
+        self.assertIn('"use-cases")?.filled', form)
+
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
