@@ -57,6 +57,7 @@ from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
 from orchestrator import notifier
 from orchestrator import project_health
+from orchestrator import scope_check
 from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
@@ -694,6 +695,29 @@ def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | 
     return {"cases": rows, "summary": {**test_case_lib.summarize(cases, cov), "by_type": by_type}}
 
 
+def job_scope(root: Path, job: dict[str, Any]) -> dict[str, Any] | None:
+    """Did the job's change stay inside its plan? None when there's no branch to compare."""
+    branch, base = job.get("branch"), job.get("base_branch") or "main"
+    if not branch or not git(root, "rev-parse", "--verify", "--quiet", branch):
+        return None
+    span = f"{base}...{branch}"
+    changed = scope_check.parse_numstat(git(root, "diff", "--numstat", "--no-renames", span),
+                                        git(root, "diff", "--name-status", "--no-renames", span))
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    tasks = [t for t in (plan.get("tasks") or []) if isinstance(t, dict)]
+    planned_files = list(plan.get("likely_files") or [])
+    for t in tasks:
+        planned_files += t.get("likely_files") or []
+    owned: list[str] = []
+    if job.get("feature"):
+        owned = next((f.get("paths", []) for f in feature_store.load(runtime_dir(root)) if f["id"] == job["feature"]), [])
+    result = scope_check.evaluate([str(p) for p in planned_files], len(tasks), changed, owned, job.get("scope_accepted") or [])
+    result["accepted"] = len(job.get("scope_accepted") or [])
+    result["trim"] = {"summary": f"Trim “{job.get('title') or 'this job'}” back to its plan",
+                      "spec": scope_check.trim_request([f for f in result["findings"] if f["files"]], job.get("title") or "this job")}
+    return result
+
+
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
@@ -742,6 +766,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "changes": job_changes(root, job),
         "links": github_links(root, job),
         "test_summary": test_summary,
+        "scope": job_scope(root, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
         "pipeline": pipeline,
         "tasks": tasks,
@@ -2516,6 +2541,20 @@ class UIHandler(BaseHTTPRequestHandler):
                     job.pop("feature")
                     write_json_file(path, job)
             self._json(features_overview(root))
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "scope":
+            job_path = resolve_job_path(root, parts[1])
+            job = read_json_file(job_path)
+            body = self._body()
+            op = _choice(body, "op", ["accept", "reset"])
+            if op == "accept":
+                raw = body.get("paths")
+                if not isinstance(raw, list) or not raw or len(raw) > 200:
+                    raise UIError("Choose the files to accept")
+                job["scope_accepted"] = sorted(set(job.get("scope_accepted") or []) | {str(p)[:300] for p in raw})
+            else:
+                job.pop("scope_accepted", None)
+            write_json_file(job_path, job)
+            self._json({"ok": True, "scope": job_scope(root, job)})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)

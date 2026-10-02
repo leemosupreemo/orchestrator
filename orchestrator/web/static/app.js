@@ -1466,6 +1466,8 @@ pages.job = async ([id]) => {
   const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
+  const scope = data.scope || null;
+  const scopeWarning = scope && ["merge", "complete"].includes(s.state.next?.action) ? scope.findings.filter((f) => f.severity !== "low").reduce((n, f) => n + Math.max(f.files.length, 1), 0) : 0;
   const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
   const missingTests = testCases.cases.filter((c) => c.due && (c.status === "unassigned" || c.status === "planned")).length;
   let featureName = "";
@@ -1519,6 +1521,7 @@ pages.job = async ([id]) => {
         <div class="job-hero-main">
           <span class="pill ${esc(s.state.tone || "")}">${esc(s.state.label || s.status)}</span>
           <p class="job-hero-reason">${esc(s.state.reason || "")}</p>
+          ${scopeWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#scope-section">Scope check: ${scopeWarning} beyond the plan. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
       </section>
@@ -1553,6 +1556,20 @@ pages.job = async ([id]) => {
         ${changes?.hypothesis ? `<div class="card-b" style="border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px;"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
+
+      ${scope ? `<section class="card mb-16" id="scope-section"><div class="card-h"><h2>Scope check</h2><span class="count">${scope.flagged ? `${scope.flagged} beyond the plan` : "Within the plan"}</span></div>
+        <div class="card-b stack">
+          <div class="muted">${scope.files} file${scope.files === 1 ? "" : "s"} changed, +${scope.added} lines${scope.accepted ? ` · ${scope.accepted} accepted as in scope` : ""}.${scope.clear ? " Everything changed is something the plan called for." : ""}</div>
+          ${scope.findings.map((f) => `<div class="scope-finding"><div class="row gap-10"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
+            <div class="muted">${esc(f.detail)}</div>
+            ${f.files.length ? `<ul class="scope-files mono">${f.files.slice(0, 12).map((p) => `<li>${esc(p)}</li>`).join("")}${f.files.length > 12 ? `<li class="muted">+${f.files.length - 12} more</li>` : ""}</ul>
+              <div><button class="btn small" data-scope-accept='${esc(JSON.stringify(f.files))}'>Accept as in scope</button></div>` : ""}</div>`).join("")}
+          ${scope.findings.some((f) => f.files.length) || scope.accepted ? `<div class="row gap-10">
+            ${scope.findings.some((f) => f.files.length) ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(scope.trim.summary)}&spec=${encodeURIComponent(scope.trim.spec)}">Create a job to trim it</a>` : ""}
+            ${scope.accepted ? `<button class="btn small ghost" data-scope-reset>Reset accepted</button>` : ""}</div>` : ""}
+        </div></section>` : ""}
+
+
 
       <!-- Decomposed Subtasks (if any) -->
       ${(job.subtask_job_ids && job.subtask_job_ids.length) ? `
@@ -1661,6 +1678,12 @@ pages.job = async ([id]) => {
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
     `,
     after: () => {
+      view.querySelectorAll("[data-scope-accept]").forEach((btn) => btn.addEventListener("click", async () => {
+        try { await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "accept", paths: JSON.parse(btn.dataset.scopeAccept) } }); toast("Accepted as in scope"); route(); } catch (e) { toast(e.message, true); }
+      }));
+      $("[data-scope-reset]")?.addEventListener("click", async () => {
+        try { await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "reset" } }); route(); } catch (e) { toast(e.message, true); }
+      });
       const form = $("#chat-form");
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -1705,7 +1728,7 @@ pages.new = async (_, query) => {
         <input type="text" name="summary" required maxlength="500" value="${esc(query.get("summary") || "")}" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">
       </label>
       <label class="field"><span>Details <span class="muted">(optional)</span></span>
-        <textarea name="spec" placeholder="Steps to reproduce, expected vs actual, acceptance criteria, links…"></textarea>
+        <textarea name="spec" placeholder="Steps to reproduce, expected vs actual, acceptance criteria, links…">${esc(query.get("spec") || "")}</textarea>
       </label>
       ${features.length ? `<label class="field"><span>Feature <span class="muted">(optional)</span></span><select name="feature"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>` : ""}
       <label class="check"><input type="checkbox" name="recommend" checked><span>You decide the details<small>I don't have a strong opinion. The AI picks sensible defaults and lists what it assumed so you can change it.</small></span></label>

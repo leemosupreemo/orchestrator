@@ -1673,6 +1673,79 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
 
+class ScopeEndpointTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def sh(self, *args):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True, env=env)
+
+    def setUp(self):
+        super().setUp()
+        self.sh("init", "-q", "-b", "main")
+        (self.root / "src").mkdir()
+        (self.root / "src" / "seat.py").write_text("x = 1\n")
+        (self.root / "src" / "other.py").write_text("y = 1\n")
+        self.sh("add", "src")
+        self.sh("commit", "-qm", "base")
+        self.sh("checkout", "-qb", "ai/issue-1")
+        (self.root / "src" / "seat.py").write_text("x = 2\n" * 5)
+        (self.root / "src" / "other.py").write_text("y = 2\n")
+        (self.root / "src" / "helpers.py").write_text("def h():\n    pass\n")
+        (self.root / "package.json").write_text('{"dependencies": {"left-pad": "1.0.0"}}\n')
+        self.sh("add", "src", "package.json")
+        self.sh("commit", "-qm", "work")
+        self.sh("checkout", "-q", "main")
+        path = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        job = json.loads(path.read_text())
+        job["plan"] = {"likely_files": ["src/seat.py"], "tasks": [{"title": "t", "likely_files": []}]}
+        path.write_text(json.dumps(job))
+
+    def scope(self):
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        return data["scope"]
+
+    def test_reports_what_went_beyond_the_plan(self):
+        scope = self.scope()
+        by_kind = {f["kind"]: f for f in scope["findings"]}
+        self.assertEqual(by_kind["manifest"]["files"], ["package.json"])
+        self.assertEqual(by_kind["new_files"]["files"], ["src/helpers.py"])
+        self.assertEqual(by_kind["outside_plan"]["files"], ["src/other.py"])
+        self.assertEqual((scope["files"], scope["in_scope"], scope["flagged"]), (4, 1, 3))
+        self.assertIn("src/helpers.py", scope["trim"]["spec"])
+
+    def test_accepting_files_clears_them_and_reset_brings_them_back(self):
+        res, data = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "accept", "paths": ["src/other.py", "src/helpers.py"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertEqual({f["kind"] for f in data["scope"]["findings"]}, {"manifest"})
+        self.assertEqual(self.scope()["accepted"], 2)
+        _, data = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "reset"}, headers=UI_HEADERS)
+        self.assertEqual(len(data["scope"]["findings"]), 3)
+
+    def test_accept_needs_files(self):
+        res, _ = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "accept", "paths": []}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+
+    def test_feature_paths_add_an_outside_feature_finding(self):
+        ui.feature_store.create(self.root / ".orchestrator", "Seats", paths="src/seat.py")
+        path = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        job = json.loads(path.read_text())
+        job["feature"] = "seats"
+        path.write_text(json.dumps(job))
+        kinds = [f["kind"] for f in self.scope()["findings"]]
+        self.assertIn("outside_feature", kinds)
+
+    def test_no_branch_means_no_scope_check(self):
+        path = self.root / ".orchestrator" / "jobs" / "20260923-feature-2.json"
+        path.write_text(json.dumps({"title": "Local only", "type": "feature", "status": "planned"}))
+        _, data = self.request("GET", "/api/jobs/20260923-feature-2")
+        self.assertIsNone(data["scope"])
+
+    def test_requires_the_ui_header(self):
+        res, _ = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "reset"}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")
@@ -1841,6 +1914,8 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
         self.assertIn("drawFeatureLinks", self.source)
+        self.assertIn("data-scope-accept", self.job_page)
+        self.assertIn('data-scroll-to="#scope-section"', self.job_page)
         self.assertIn('data-route="checkup"', (static / "index.html").read_text())
         self.assertIn('query.get("summary")', self.source)
         self.assertIn('data-route="measure"', (static / "index.html").read_text())

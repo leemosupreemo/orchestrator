@@ -1334,3 +1334,8 @@ dialog h2 { font-size: 17px; }
 .warn-link { color: var(--warn); font-weight: 600; }
 .badge.good { background: var(--ok-solid); color: var(--ok-solid-ink); }
 .badge.muted-badge { background: var(--panel-2); color: var(--muted); }
+
+/* Scope check */
+.scope-finding { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.scope-files { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.linklike { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; text-align: left; }
