@@ -148,6 +148,49 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIn("Reject or flag a plan that builds a non-goal", verifier[0])
         self.assertIn("No chat", verifier[0])
 
+    def plan_json(self, tasks):
+        return json.dumps({"title": "Slice Test", "summary": "Summary", "assumptions": [], "constraints": [], "risks": [], "tasks": tasks,
+                           "test_cases": [{"title": "AC holds", "type": "unit", "expected": "AC is satisfied", "covers": ["AC"], "tests": ["test_ac"]}]})
+
+    LAYERED = [{"title": "Database schema for matches", "description": "Entities and migrations", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"},
+               {"title": "Matches API endpoint", "description": "", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"},
+               {"title": "Match screen UI", "description": "", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]
+    SLICED = [{"title": "Player can start a match from the home screen", "description": "Simplest version end to end", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"},
+              {"title": "Player can take a turn", "description": "", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]
+
+    def run_planner(self, replies, kind="feature"):
+        prompts, queue = [], list(replies)
+
+        def fake_llm(model, prompt, *a, **k):
+            prompts.append(prompt)
+            return (queue.pop(0) if len(queue) > 1 else queue[0], "mock-model", "sid")
+
+        from orchestrator.scripts import new_job
+        with patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), patch("orchestrator.scripts.new_job.create_issue", return_value=131):
+            with patch("orchestrator.scripts.new_job.ROOT", self.root), patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                with patch("sys.stdin", io.StringIO("Add rematch\n\n")):
+                    new_job.main([kind, "--branch-mode", "manual", "--no-dispatch", "--summary", "Add rematch", "--allowed-models", "gemini,codex", "--allowed-machines", "local"])
+        job_files = list((self.root / ".orchestrator" / "jobs").glob("*.json"))
+        return prompts, json.loads(job_files[0].read_text())
+
+    def test_a_layered_feature_plan_is_sent_back_once_and_the_fixed_plan_is_kept(self):
+        prompts, job = self.run_planner([self.plan_json(self.LAYERED), self.plan_json(self.SLICED)])
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("PLAN SHAPE (re-plan requested)", prompts[1])
+        self.assertEqual(job["plan"]["tasks"][0]["title"], "Player can start a match from the home screen")
+        self.assertNotIn("slice_warnings", job["plan"])
+
+    def test_a_plan_that_stays_layered_is_kept_with_the_warning_visible(self):
+        prompts, job = self.run_planner([self.plan_json(self.LAYERED)])
+        self.assertEqual(len(prompts), 2)  # one re-plan, no loop
+        self.assertTrue(job["plan"]["slice_warnings"])
+        self.assertEqual(job["status"], "planned")
+
+    def test_a_sliced_plan_costs_no_extra_model_call(self):
+        prompts, job = self.run_planner([self.plan_json(self.SLICED)])
+        self.assertEqual(len(prompts), 1)
+        self.assertNotIn("slice_warnings", job["plan"])
+
     def test_without_filled_documents_nothing_is_added(self):
         prompts = self.plan_with_docs({})
         self.assertNotIn("## Product context (source of truth)", prompts[0])

@@ -32,6 +32,7 @@ from probe_machine import load_machines
 from manual_run import capture_logs
 import test_cases as tc
 from orchestrator import product_docs
+from orchestrator import slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -749,8 +750,37 @@ def main(args_override: list[str] | None = None) -> None:
                 plan.pop("test_case_problems", None)
             return plan, llm_output, actual_planner
 
+        def enforce_slices(plan: dict, llm_output: str, actual_planner: str) -> tuple[dict, str, str]:
+            """A feature plan should be a series of working slices, not a stack of layers. Sends a layered plan back
+            once; if it still looks layered, keeps it with the warning visible instead of blocking."""
+            found = slice_check.problems(plan)
+            if found:
+                print("      - The plan looks layered; asking the planner to cut it into working slices...", flush=True)
+                for problem in found:
+                    print(f"        · {problem}")
+                retry_input = (f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}{extra_input}\n\n"
+                               f"### YOUR PREVIOUS PLAN ###\n{llm_output}\n\n{slice_check.replan_request(found)}")
+                try:
+                    retry_raw, actual_planner, retry_sid = run_llm(planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+                    llm_sessions.append({"id": retry_sid, "model": actual_planner})
+                    llm_output = extract_json_block(retry_raw)
+                    plan = json.loads(llm_output)
+                except Exception as e:
+                    print(f"\033[1;91m      - Slice re-plan failed: {e}\033[0m")
+            remaining = slice_check.problems(plan)
+            if remaining:
+                print("\033[1;93m      - Plan still looks layered; flagging it for your review.\033[0m")
+                plan["slice_warnings"] = remaining
+            else:
+                plan.pop("slice_warnings", None)
+            return plan, llm_output, actual_planner
+
+        slices_matter = args.job_type == "feature" and not args.stitch
+
         if needs_test_cases and not clarification:
             plan, llm_output, actual_planner = enforce_test_cases(plan, llm_output, actual_planner)
+        if slices_matter and not clarification:
+            plan, llm_output, actual_planner = enforce_slices(plan, llm_output, actual_planner)
 
         # --- VERIFICATION STEP ---
         verification = None
@@ -812,6 +842,8 @@ def main(args_override: list[str] | None = None) -> None:
                                 print(f"      - Plan revised successfully. Proceeding...")
                                 if needs_test_cases:
                                     plan, llm_output, actual_planner = enforce_test_cases(plan, llm_output, actual_planner)
+                                if slices_matter:
+                                    plan, llm_output, actual_planner = enforce_slices(plan, llm_output, actual_planner)
                                 # Clear clarification so status stays 'planned'
                                 clarification = None
                             except:
