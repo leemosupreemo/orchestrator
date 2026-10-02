@@ -1058,7 +1058,7 @@ function formatJobDate(ts) {
 
 // Job list sorting (tap Status / Last modified; tap again to reverse).
 const GROUP_ORDER = { needs_you: 0, working: 1, done: 2 };
-let jobSort = { key: "updated", dir: "desc" };
+let jobSort = { key: "status", dir: "asc" };
 try { jobSort = JSON.parse(localStorage.getItem("orchestrator_job_sort")) || jobSort; } catch {}
 
 function sortJobs(jobs) {
@@ -1084,36 +1084,31 @@ document.addEventListener("click", (e) => {
   route();
 });
 
-function jobTableRow(j) {
+function jobTableRow(j, { hidden = false } = {}) {
   const parts = [
     j.kind,
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
   ].filter(Boolean);
-
-  const reason = (j.state?.reason && j.state.group === "needs_you")
-    ? `<span class="job-reason">${esc(j.state.reason)}</span>`
+  // A job that needs you is a job like any other, with its next step on the row.
+  const next = j.state?.next && j.state.group === "needs_you" && !j.active_run
+    ? `<button type="button" class="btn small ${["failed", "attention"].includes(j.state.tone) ? "primary" : ""}" ${act(j.state.next.action, { job: j.id })}>${esc(j.state.next.label)}</button>`
     : "";
-  const metaHtml = [reason, parts.join(" · ")].filter(Boolean).join(" · ");
-
+  // When the status is just the button's own words ("Approve plan"), the reason repeats it; show it only when it adds something.
+  const sameAsButton = next && j.state.label.toLowerCase() === j.state.next.label.toLowerCase();
+  const reason = (j.state?.reason && j.state.group === "needs_you" && !sameAsButton)
+    ? `<span class="job-reason" title="${esc(j.state.reason)}">${esc(j.state.reason)}</span>`
+    : "";
   return `
-    <a class="job-table-row" href="#/jobs/${encodeURIComponent(j.id)}">
+    <div class="job-table-row"${hidden ? " hidden" : ""}>
       <div class="col-job">
-        <div class="job-title">${esc(j.title)}</div>
-        <div class="job-meta">${metaHtml}</div>
+        <a class="job-title" href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>
+        <div class="job-meta">${[reason, parts.join(" · ")].filter(Boolean).join(" · ")}</div>
       </div>
-      <div class="col-status">
-        ${jobPill(j)}
-      </div>
-      <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">
-        <span class="date-relative">${esc(ago(j.updated))}</span>
-        <span class="date-exact muted">${esc(formatJobDate(j.updated))}</span>
-      </div>
-      <div class="row-hover-hint">
-        <span>Click for details</span>
-        <svg class="icon" style="width: 14px; height: 14px;"><use href="#i-chevron"/></svg>
-      </div>
-    </a>`;
+      <div class="col-status">${sameAsButton ? pill(j.state.tone, "Needs you") : jobPill(j)}</div>
+      <div class="col-action">${next}</div>
+      <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">${esc(/ago$|now$/.test(ago(j.updated)) ? ago(j.updated) : formatJobDate(j.updated))}</div>
+    </div>`;
 }
 
 function elapsed(ts) {
@@ -1172,29 +1167,12 @@ document.addEventListener("change", (e) => {
   sel.value = state.project?.branch; // snap back; the page refreshes once checkout finishes
 });
 
-function moreActionsMenu(p, opts) {
-  return moreMenu([
-    ["Pull device logs", p.remote_logs ? act("logs_pull") : `data-href="#/devlogs"`, p.remote_logs ? "Newest app launch" : "Set up first"],
-    ["Build", act("build")],
-    ["Run tests", act("test")],
-    ["Distribute current branch", act("distribute"), "Firebase release of what's checked out"],
-    ["Tests & coverage", `data-href="#/tests"`],
-    ["Git: pull, push, branches", `data-href="#/git"`],
-    "---",
-    ["Setup check", act("check"), "CLIs, logins, config"],
-    ["Config check", act("check_config")],
-    ["Worker check", act("worker_check"), "Remote build machines"],
-    ["Setup wizard", act("wizard"), "Project, tools and delivery setup"],
-    ["Open full console", act("console"), "Everything else"],
-  ], opts);
-}
-
 // ---------------------------------------------------------------- pages
 // Each page returns { title, sub, actions, html, after? }. Pages in LIVE are
 // re-rendered by the poll when their output changes.
 
 const pages = {};
-const LIVE = new Set(["home", "jobs", "job", "activity", "git"]);
+const LIVE = new Set(["home", "job", "activity", "git"]);
 
 // ---------------------------------------------------------------- setup checklist
 // What a job needs (GitHub, an AI provider, a machine, project config) vs. nice-to-haves.
@@ -1292,6 +1270,16 @@ document.addEventListener("click", (e) => {
   }
 });
 
+const HOME_JOBS_SHOWN = 10;
+
+// Jobs waiting in other projects: one line, not a second list.
+function elsewhereLine(items) {
+  const byProject = new Map();
+  for (const i of items || []) byProject.set(i.project.root, { name: i.project.name, n: (byProject.get(i.project.root)?.n || 0) + 1 });
+  if (!byProject.size) return "";
+  return `<div class="card-b muted">Also waiting in other projects: ${[...byProject].map(([root, p]) => `<button type="button" class="linklike" data-switch-project="${esc(root)}" data-then="#/">${esc(p.name)} (${p.n})</button>`).join(", ")}</div>`;
+}
+
 pages.home = async (_, query) => {
   await loadSetup();
   if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
@@ -1303,18 +1291,14 @@ pages.home = async (_, query) => {
   // 1) Default ordered by most recent
   const sortedJobs = sortJobs(jobs);
 
-  // Jobs waiting on you are listed above the table, so the table's default view is everything else.
-  const isWaiting = (j) => j.state.group === "needs_you" && !j.active_run;
-  const waitingJobs = jobs.filter(isWaiting).length;
   const HOME_FILTERS = {
-    ...(waitingJobs ? { rest: ["Everything else", (j) => !isWaiting(j)] } : {}),
+    all: ["All", () => true],
+    needs_you: ["Needs you", (j) => j.state.group === "needs_you" && !j.active_run],
     working: ["In progress", (j) => j.state.group === "working" || j.active_run],
     done: ["Completed", (j) => j.state.group === "done"],
-    all: ["All", () => true],
   };
-
-  let filter = (query && query.get("filter")) || (waitingJobs ? "rest" : "all");
-  if (!HOME_FILTERS[filter]) filter = waitingJobs ? "rest" : "all";
+  let filter = (query && query.get("filter")) || "all";
+  if (!HOME_FILTERS[filter]) filter = "all";
   const filteredJobs = sortedJobs.filter(HOME_FILTERS[filter][1]);
 
   const runningRuns = state.runs.filter((r) => r.running);
@@ -1328,13 +1312,7 @@ pages.home = async (_, query) => {
     sub: statusLine(p),
     html: `
       <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
-      <div class="hero-actions mb-16">
-        ${moreActionsMenu(p, { left: true })}
-      </div>
-
-      ${product ? productStripHtml(product) : ""}
-
-      ${waitingSectionHtml(waiting)}
+      ${product ? productStripHtml(product, waiting.here.filter((i) => i.kind === "reminder")) : ""}
 
       ${runningBanner}
 
@@ -1353,41 +1331,19 @@ pages.home = async (_, query) => {
             <div class="job-table-header">
               <div class="col-job">Job</div>
               <button type="button" class="col-status sort-head" data-sort="status" aria-label="Sort by status">Status${sortArrow("status")}</button>
+              <div class="col-action"></div>
               <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified">Last modified${sortArrow("updated")}</button>
             </div>
-            <div class="job-table-body">
-              ${filteredJobs.map(jobTableRow).join("")}
+            <div class="job-table-body" id="job-list">
+              ${filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
             </div>
+            ${filteredJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${filteredJobs.length}</button></div>` : ""}
           </div>
         ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description, a bug report or a design.' : 'No jobs match this filter.'}</div>`}
+        ${elsewhereLine(waiting.elsewhere)}
       </section>`,
     after: () => {
       renderProjectSelect($(".project-select-inline"));
-    },
-  };
-};
-
-const JOB_FILTERS = {
-  needs_you: ["Waiting on you", (j) => j.state.group === "needs_you" && !j.active_run],
-  working: ["In progress", (j) => j.state.group === "working" || j.active_run],
-  done: ["Completed", (j) => j.state.group === "done"],
-  all: ["All", () => true],
-};
-
-pages.jobs = async (_, query) => {
-  const { jobs } = await api("jobs");
-  let filter = query.get("filter");
-  if (!JOB_FILTERS[filter]) filter = jobs.some(JOB_FILTERS.needs_you[1]) ? "needs_you" : "all";
-  const shown = jobs.filter(JOB_FILTERS[filter][1]);
-  return {
-    title: "Jobs",
-    actions: `<a class="btn primary" href="#/new">New job</a>`,
-    html: `
-      <div class="filters">${Object.entries(JOB_FILTERS).map(([key, [label, fn]]) =>
-        `<a class="btn small ${key === filter ? "on" : ""}" href="#/jobs?filter=${key}">${label} (${jobs.filter(fn).length})</a>`).join("")}
-      </div>
-      <section class="card"><div class="list">${shown.map((j) => jobItem(j, { withAction: filter === "needs_you" })).join("") || `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description, a bug report or a design.' : 'No jobs match this filter.'}</div>`}</div></section>`,
-    after: () => {
     },
   };
 };
@@ -2093,30 +2049,6 @@ document.addEventListener("click", (e) => {
   }
 });
 
-// One thing waiting on you: the job or run, why, and its single next action. `away` = another project.
-const WAITING_SHOWN = 5;
-function waitingRowHtml(i, { away = false, hidden = false } = {}) {
-  const open = i.kind === "reminder" ? i.href : i.kind === "run" ? `#/runs/${encodeURIComponent(i.run_id)}` : `#/jobs/${encodeURIComponent(i.job_id)}`;
-  let button = "";
-  if (away) button = `<button class="btn small" data-switch-project="${esc(i.project.root)}" data-then="${esc(open)}">Switch & open</button>`;
-  else if (i.kind === "run") button = `<a class="btn small primary" href="${open}">Answer</a>`;
-  else if (i.kind === "reminder") button = `<a class="btn small primary" href="${esc(open)}">Review</a>`;
-  else if (i.next) button = `<button class="btn small ${i.tone === "failed" || i.tone === "attention" ? "primary" : ""}" ${act(i.next.action, { job: i.job_id })}>${esc(i.next.label)}</button>`;
-  return `<div class="item"${hidden ? " hidden" : ""}><a class="main-col" href="${away ? "#/" : open}">
-      <div class="title">${esc(i.title)}</div><div class="meta"><span class="pill ${esc(i.tone)}">${esc(i.label)}</span> <span class="reason-text" title="${esc(i.reason)}">${esc(i.reason)}</span></div></a>
-    <div class="side">${button}</div></div>`;
-}
-
-function waitingSectionHtml({ here, elsewhere }) {
-  if (!here.length && !elsewhere.length) return "";
-  const byProject = new Map();
-  for (const i of elsewhere) byProject.set(i.project.root, [...(byProject.get(i.project.root) || []), i]);
-  return `<section class="card mb-16" id="waiting-section"><div class="card-h"><h2>Waiting on you</h2><span class="count">${here.length}</span></div>
-    ${here.length ? `<div class="list" id="waiting-list">${here.map((i, n) => waitingRowHtml(i, { hidden: n >= WAITING_SHOWN })).join("")}</div>${here.length > WAITING_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="waiting-list">Show all ${here.length}</button></div>` : ""}` : `<div class="empty">Nothing in ${esc(state.project.name)} is waiting on you.</div>`}
-    ${[...byProject.values()].map((items, g) => `<div class="tc-area-h">${esc(items[0].project.name)} <span class="count">${items.length}</span></div><div class="list" id="waiting-away-${g}">${items.map((i, n) => waitingRowHtml(i, { away: true, hidden: n >= 3 })).join("")}</div>${items.length > 3 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="waiting-away-${g}">Show all ${items.length}</button></div>` : ""}`).join("")}
-    <div class="card-b muted">Alerts: browser ${Notifications.enabled() ? "on" : "off"}, Slack ${state.alerts?.webhook ? "on" : `<a href="#/config/chat">off</a>`}</div></section>`;
-}
-
 pages.delivery = async () => {
   const d = await api("delivery");
   const { live, testers, ready, pipeline } = d;
@@ -2267,7 +2199,10 @@ pages.checkup = async () => {
         <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on Home for what needs you next.</div>`}
       <section class="card"><div class="card-h"><h2>Everything</h2><span class="muted">Product state. Tools and keys are in the setup checklist.</span></div>
         <div class="list">${d.items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div>
-          <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>`,
+          <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>
+      <section class="card mt-16"><div class="card-h"><h2>Check this computer</h2><span class="muted">Tools, logins and machines, not the product.</span></div>
+        <div class="list">${[["check", "Tools and logins", "CLIs, sign-ins and keys"], ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"], ["wizard", "Setup wizard", "Walk through project, tools and delivery setup"]].map(([a, title, hint]) =>
+          `<div class="item"><div class="main-col"><div class="title">${title}</div><div class="meta">${hint}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>`,
   };
 };
 
@@ -2278,7 +2213,7 @@ pages.help = async () => ({
     <section class="card mb-16"><div class="card-h"><h2>How a piece of work flows</h2></div><div class="card-b">
       <ol class="help-steps">
         <li><strong>Describe it.</strong> <a href="#/new">New job</a>: pick the kind of work and answer only what that kind needs. A bug asks how to reproduce it and offers your latest logs; a design takes images or a Figma link; a quick change is one box. Leave out anything you don't care about and the AI picks sensible defaults, then lists what it assumed.</li>
-        <li><strong>It gets planned.</strong> You may be asked a question. Anything waiting on you shows at the top of <a href="#/">Home</a>.</li>
+        <li><strong>It gets planned.</strong> You may be asked a question. Anything waiting on you is marked in the job list on <a href="#/">Home</a>, with its next step on the row.</li>
         <li><strong>It gets built.</strong> A worker writes the code and the tests, on its own branch. Pause it any time; Resume picks up at the next task.</li>
         <li><strong>You review it.</strong> The job page shows progress, test cases, changes and a scope check. Ask the AI about it, revise the plan, or run a fix.</li>
         <li><strong>You ship it.</strong> Merge (or Mark complete), then send a build to testers from <a href="#/delivery">Delivery</a>.</li>
@@ -2320,14 +2255,15 @@ const PRODUCT_HINT = {
   plan: "e.g. Make 'Now' the smallest slice that works end to end",
 };
 
-function productStripHtml(product) {
+function productStripHtml(product, reminders = []) {
   const docs = product.docs;
   const toFill = docs.filter((d) => !d.filled).length;
   const state = (d) => (d.filled ? ["ok", "written"] : d.exists ? ["draft", "draft"] : ["missing", "not started"]);
   return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2>Product</h2><a href="#/product">${toFill ? `${toFill} to fill in` : "All written"}</a></div>
     <div class="card-b stack"><div class="product-chips">${docs.map((d) => { const [cls, word] = state(d);
       return `<a class="doc-chip ${cls}" href="#/product/${esc(d.id)}" title="${esc(d.purpose)}"><span aria-hidden="true">${cls === "ok" ? "✓" : cls === "draft" ? "◐" : "○"}</span> ${esc(PRODUCT_SHORT[d.id] || d.title)}<span class="sr-only"> (${word})</span></a>`; }).join("")}</div>
-      ${toFill ? `<div class="muted">Every job plans against these. Fill them in, or ask the AI to draft and refine them.</div>` : ""}</div></section>`;
+      ${toFill ? `<div class="muted">Every job plans against these. Fill them in, or ask the AI to draft and refine them.</div>` : ""}
+      ${reminders.map((r) => `<div class="row gap-10"><span class="pill attention">${esc(r.label)}</span><span class="muted">${esc(r.reason)}</span><a class="btn small primary" href="${esc(r.href)}">Review</a></div>`).join("")}</div></section>`;
 }
 
 pages.product = async ([id]) => {
@@ -2521,7 +2457,7 @@ pages.tests = async (_, query) => {
   return {
     title: "Tests",
     sub: `${withTests.length} suites · ${total} tests`,
-    actions: `<button class="btn primary" ${act("test")}>Run all tests</button>${moreMenu([["Measure coverage", act("coverage"), "Full test run with coverage; takes a while"], ["Refresh list", `data-href="#/tests?refresh=1"`], ["Expand coverage (AI job)", `data-href="#/new?type=coverage"`]])}`,
+    actions: `<button class="btn primary" ${act("test")}>Run all tests</button>${moreMenu([["Build", act("build"), "Compile without running tests"], ["Measure coverage", act("coverage"), "Full test run with coverage; takes a while"], ["Refresh list", `data-href="#/tests?refresh=1"`], ["Expand coverage (AI job)", `data-href="#/new?type=coverage"`]])}`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
       ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>

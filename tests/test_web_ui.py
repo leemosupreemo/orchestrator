@@ -1810,21 +1810,37 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Saved, but the test message failed", self.js)
         self.assertIn("Saved, but the test event failed", self.js)
 
-    def test_toasts_explain_errors_and_the_inbox_shows_alert_status(self):
+    def test_toasts_explain_errors_and_alert_setup_is_reachable(self):
         self.assertIn("Errors.explain(message)", self.js)
         self.assertIn('<script src="errors.js">', self.html)
-        self.assertIn("Alerts: browser", self.js)
+        self.assertIn("Notify me when done", self.html + self.js)  # browser alerts
+        config = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "configuration.js").read_text()
+        self.assertIn('label: "Slack & chat alerts"', config)  # the webhook, in the Configuration menu
 
-    def test_there_is_no_separate_inbox_page_home_leads_with_what_is_waiting(self):
+    def test_there_is_no_separate_inbox_page_and_a_job_waiting_on_you_is_just_a_job_in_the_list(self):
         self.assertNotIn('data-route="inbox"', self.html)
         self.assertNotIn("pages.inbox", self.js)
         self.assertNotIn('"#/inbox"', self.js)
         self.assertIn('id="inbox-badge"', self.html.split('data-route="home"')[1].split("</a>")[0])  # the count lives on Home
-        home = self.js[self.js.index("pages.home = async"):self.js.index("const ORIGINAL_JOB_FILTERS") if "const ORIGINAL_JOB_FILTERS" in self.js else self.js.index("const JOB_FILTERS")]
-        self.assertIn('api("inbox")', home)
-        self.assertIn("waitingSectionHtml(waiting)", home)
-        self.assertLess(home.index("waitingSectionHtml(waiting)"), home.index('class="job-table"'))
-        self.assertIn('rest: ["Everything else"', home)  # jobs already shown above aren't listed twice by default
+        home = self.js[self.js.index("pages.home = async"):self.js.index("function jobHeaderActions")]
+        self.assertNotIn("waitingSectionHtml", self.js)  # no second list above the jobs
+        self.assertEqual(home.count('class="job-table"'), 1)
+        self.assertIn('needs_you: ["Needs you"', home)  # a filter, not a separate section
+        self.assertIn('all: ["All"', home)
+        row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
+        self.assertIn("act(j.state.next.action", row)  # the next step is on the row
+        self.assertIn('{ key: "status", dir: "asc" }', self.js)  # needs-you jobs sort first by default
+        self.assertNotIn("pages.jobs", self.js)  # one jobs list, on Home
+        self.assertNotIn("moreActionsMenu", self.js)  # nothing hidden in a Home menu that a page already has
+
+    def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
+        self.assertIn('["Build", act("build")', self.js)  # Tests
+        self.assertIn('Check this computer', self.js)  # Check-up
+        for action in ("check", "check_config", "worker_check", "wizard"):
+            self.assertIn(f'["{action}", ', self.js)
+        self.assertIn('act("distribute")', self.js)  # Delivery
+        self.assertIn('act("logs_pull")', self.js)  # Device logs
+        self.assertIn("Open full console", self.html + self.js)
 
     def test_new_job_asks_what_each_kind_needs_and_has_no_you_decide_toggle(self):
         form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
@@ -1835,9 +1851,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("recommend", form.lower().replace("recommended", ""))
 
     def test_product_documents_are_reachable_from_home_help_palette_and_the_new_project_flow(self):
-        self.assertIn("productStripHtml(product)", self.js)
-        home = self.js[self.js.index("pages.home = async"):self.js.index("const JOB_FILTERS")]
-        self.assertLess(home.index("productStripHtml(product)"), home.index("waitingSectionHtml(waiting)"))  # toward the top of the main screen
+        self.assertIn("productStripHtml(product", self.js)
+        home = self.js[self.js.index("pages.home = async"):self.js.index("function jobHeaderActions")]
+        self.assertLess(home.index("productStripHtml(product"), home.index('class="job-table"'))  # toward the top of the main screen
         self.assertIn('"#/product"', self.js)
         self.assertIn('<script src="markdown.js">', self.html)
         self.assertIn('href="#/product/use-cases">Start with users and non-goals', self.js)

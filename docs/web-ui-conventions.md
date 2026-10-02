@@ -59,3 +59,9 @@ Rules checked on every page at 360, 430 and 1440 px, light and dark:
 - Stand-alone controls and links are at least 28 px tall on desktop and 36 px on phones; inline links inside a sentence are exempt.
 - Long model-written text (an architect's concerns, a failure reason) is shown with `clamped()` ("Show more"); rows clamp it to two lines. The same text is not shown twice on one page.
 - A list that can grow past about five items is capped with "Show all N".
+
+## Home
+
+- One list of jobs. A job that needs you is a job in an earlier status: it sorts first, says "Needs you", and carries its next step as a button on the row. There is no second "waiting" list; "Needs you" is a filter.
+- Actions belong to the page for what they act on (Tests: run, build, coverage; Delivery: send a build; Device logs: pull; Check-up: environment checks and the setup wizard). Home has no menu of them.
+- Things that are not jobs go where they belong: the product-review reminder in the Product card, other projects' waiting jobs as one line under the list.
