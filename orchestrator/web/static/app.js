@@ -1531,12 +1531,12 @@ pages.job = async ([id]) => {
     html: `
       ${runs.filter((r) => r.running).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
       ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
-        <p class="question">${esc(s.question)}</p><div><button class="btn primary" ${act("answer", { job: s.id })}>Answer</button></div></div></section>` : ""}
+        <p class="question">${clamped(s.question, 320)}</p><div><button class="btn primary" ${act("answer", { job: s.id })}>Answer</button></div></div></section>` : ""}
 
       <section class="job-hero tone-${esc(s.state.tone || "")}">
         <div class="job-hero-main">
           <span class="pill ${esc(s.state.tone || "")}">${esc(s.state.label || s.status)}</span>
-          <p class="job-hero-reason">${esc(s.state.reason || "")}</p>
+          <p class="job-hero-reason">${s.question && /architect/i.test(s.question) && /architect/i.test(s.state.reason || "") ? "The architect raised concerns (see the question above). Answer them, or accept its suggestions and re-plan." : clamped(s.state.reason || "", 320)}</p>
           ${scopeWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#scope-section">Scope check: ${scopeWarning} beyond the plan. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
@@ -2068,16 +2068,43 @@ pages.features = async (_, query) => {
   };
 };
 
+// Long model-written text (an architect's concerns, a failure reason) is shown short with "Show more".
+function clamped(text, max = 240) {
+  const t = String(text || "");
+  if (t.length <= max) return esc(t);
+  const cut = t.slice(0, max).replace(/\s+\S*$/, "");
+  return `<span data-clamp><span data-clamp-short>${esc(cut)}…</span><span data-clamp-full hidden>${esc(t)}</span> <button type="button" class="linklike" data-clamp-toggle aria-expanded="false">Show more</button></span>`;
+}
+document.addEventListener("click", (e) => {
+  const toggle = e.target.closest("[data-clamp-toggle]");
+  if (toggle) {
+    const box = toggle.closest("[data-clamp]");
+    const open = box.querySelector("[data-clamp-full]").hidden;
+    box.querySelector("[data-clamp-full]").hidden = !open;
+    box.querySelector("[data-clamp-short]").hidden = open;
+    toggle.textContent = open ? "Show less" : "Show more";
+    toggle.setAttribute("aria-expanded", String(open));
+    return;
+  }
+  const all = e.target.closest("[data-show-all]");
+  if (all) {
+    const list = document.getElementById(all.dataset.showAll);
+    list.querySelectorAll("[hidden]").forEach((el) => { el.hidden = false; });
+    all.remove();
+  }
+});
+
 // One thing waiting on you: the job or run, why, and its single next action. `away` = another project.
-function waitingRowHtml(i, { away = false } = {}) {
+const WAITING_SHOWN = 5;
+function waitingRowHtml(i, { away = false, hidden = false } = {}) {
   const open = i.kind === "reminder" ? i.href : i.kind === "run" ? `#/runs/${encodeURIComponent(i.run_id)}` : `#/jobs/${encodeURIComponent(i.job_id)}`;
   let button = "";
   if (away) button = `<button class="btn small" data-switch-project="${esc(i.project.root)}" data-then="${esc(open)}">Switch & open</button>`;
   else if (i.kind === "run") button = `<a class="btn small primary" href="${open}">Answer</a>`;
   else if (i.kind === "reminder") button = `<a class="btn small primary" href="${esc(open)}">Review</a>`;
   else if (i.next) button = `<button class="btn small ${i.tone === "failed" || i.tone === "attention" ? "primary" : ""}" ${act(i.next.action, { job: i.job_id })}>${esc(i.next.label)}</button>`;
-  return `<div class="item"><a class="main-col" href="${away ? "#/" : open}">
-      <div class="title">${esc(i.title)}</div><div class="meta"><span class="pill ${esc(i.tone)}">${esc(i.label)}</span> ${esc(i.reason)}</div></a>
+  return `<div class="item"${hidden ? " hidden" : ""}><a class="main-col" href="${away ? "#/" : open}">
+      <div class="title">${esc(i.title)}</div><div class="meta"><span class="pill ${esc(i.tone)}">${esc(i.label)}</span> <span class="reason-text" title="${esc(i.reason)}">${esc(i.reason)}</span></div></a>
     <div class="side">${button}</div></div>`;
 }
 
@@ -2086,8 +2113,8 @@ function waitingSectionHtml({ here, elsewhere }) {
   const byProject = new Map();
   for (const i of elsewhere) byProject.set(i.project.root, [...(byProject.get(i.project.root) || []), i]);
   return `<section class="card mb-16" id="waiting-section"><div class="card-h"><h2>Waiting on you</h2><span class="count">${here.length}</span></div>
-    ${here.length ? `<div class="list">${here.map((i) => waitingRowHtml(i)).join("")}</div>` : `<div class="empty">Nothing in ${esc(state.project.name)} is waiting on you.</div>`}
-    ${[...byProject.values()].map((items) => `<div class="tc-area-h">${esc(items[0].project.name)} <span class="count">${items.length}</span></div><div class="list">${items.map((i) => waitingRowHtml(i, { away: true })).join("")}</div>`).join("")}
+    ${here.length ? `<div class="list" id="waiting-list">${here.map((i, n) => waitingRowHtml(i, { hidden: n >= WAITING_SHOWN })).join("")}</div>${here.length > WAITING_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="waiting-list">Show all ${here.length}</button></div>` : ""}` : `<div class="empty">Nothing in ${esc(state.project.name)} is waiting on you.</div>`}
+    ${[...byProject.values()].map((items, g) => `<div class="tc-area-h">${esc(items[0].project.name)} <span class="count">${items.length}</span></div><div class="list" id="waiting-away-${g}">${items.map((i, n) => waitingRowHtml(i, { away: true, hidden: n >= 3 })).join("")}</div>${items.length > 3 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="waiting-away-${g}">Show all ${items.length}</button></div>` : ""}`).join("")}
     <div class="card-b muted">Alerts: browser ${Notifications.enabled() ? "on" : "off"}, Slack ${state.alerts?.webhook ? "on" : `<a href="#/config/chat">off</a>`}</div></section>`;
 }
 

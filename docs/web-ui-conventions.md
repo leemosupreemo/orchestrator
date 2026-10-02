@@ -43,3 +43,19 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   bottom bar or the More sheet.
 - Errors show what happened and what to do next (`errors.js`).
 - It is reachable from the command palette (`Cmd/Ctrl+K`): add it to `PALETTE_PAGES`.
+
+## Design tokens: spacing, type and radius
+
+`style.css` defines three scales next to the colour tokens. Use them; do not write raw `px` for padding, margin, gap, font-size or border-radius.
+
+| Scale | Tokens |
+|---|---|
+| Spacing | `--space-0` 2, `--space-1` 4, `--space-2` 8, `--space-3` 12, `--space-4` 16, `--space-5` 20, `--space-6` 24, `--space-7` 32, `--space-8` 40 |
+| Type | `--text-2xs` 11, `--text-xs` 12, `--text-sm` 13, `--text-md` 14, `--text-base` 15, `--text-lg` 16, `--text-xl` 18, `--text-2xl` 22, `--text-3xl` 28 |
+| Radius | `--r-xs` 4, `--r-sm` 6, `--r-md` 8, `--r-lg` 12 (cards; `--radius`), `--r-pill` |
+
+Rules checked on every page at 360, 430 and 1440 px, light and dark:
+- No horizontal scroll. A control that sizes itself to its content (a select, a long path) needs `max-width` and its parents `min-width: 0`.
+- Stand-alone controls and links are at least 28 px tall on desktop and 36 px on phones; inline links inside a sentence are exempt.
+- Long model-written text (an architect's concerns, a failure reason) is shown with `clamped()` ("Show more"); rows clamp it to two lines. The same text is not shown twice on one page.
+- A list that can grow past about five items is capped with "Show all N".
