@@ -1489,6 +1489,74 @@ class DeliveryEndpointTests(ServerTestCase):
         self.assertNotIn("/secret/key.json", json.dumps(out))
 
 
+class MeasureEndpointTests(ServerTestCase):
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def setUp(self):
+        super().setUp()
+        self.post("/api/features", {"name": "Lobby"})
+
+    def kpi(self, **extra):
+        return self.post("/api/features/lobby/kpis", {"op": "add", "name": "Seat claims", "event": "seat_claimed", "target": 60, **extra})
+
+    def test_provider_setup_never_echoes_the_key_and_blank_keeps_it(self):
+        res, _ = self.post("/api/config/analytics", {"op": "set", "provider": "mixpanel", "key": "SECRET-TOKEN", "region": "eu"})
+        self.assertEqual(res.status, 200)
+        _, data = self.request("GET", "/api/analytics")
+        self.assertEqual((data["provider"], data["provider_name"], data["key_set"], data["region"]), ("mixpanel", "Mixpanel", True, "eu"))
+        self.assertNotIn("SECRET-TOKEN", json.dumps(data))
+        self.post("/api/config/analytics", {"op": "set", "provider": "mixpanel", "key": "", "region": "us"})
+        self.assertEqual(ui.read_settings(self.root)["analytics_key"], "SECRET-TOKEN")
+        self.post("/api/config/analytics", {"op": "clear"})
+        _, data = self.request("GET", "/api/analytics")
+        self.assertEqual((data["provider"], data["key_set"]), ("", False))
+
+    def test_set_requires_a_known_provider_and_a_key(self):
+        self.assertEqual(self.post("/api/config/analytics", {"op": "set", "provider": "nope", "key": "k"})[0].status, 400)
+        self.assertEqual(self.post("/api/config/analytics", {"op": "set", "provider": "posthog"})[0].status, 400)
+        self.assertEqual(self.post("/api/config/analytics", {"op": "test"})[0].status, 400)
+
+    def test_connection_test_uses_the_saved_key_and_regional_host(self):
+        self.post("/api/config/analytics", {"op": "set", "provider": "amplitude", "key": "K1", "region": "eu"})
+        with patch.object(ui.analytics, "send_test") as send:
+            res, _ = self.post("/api/config/analytics", {"op": "test"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(send.call_args[0], ("amplitude", "K1", "https://api.eu.amplitude.com"))
+        with patch.object(ui.analytics, "send_test", side_effect=ui.analytics.AnalyticsError("Amplitude rejected the key (401)")):
+            res, data = self.post("/api/config/analytics", {"op": "test"})
+        self.assertEqual(res.status, 502)
+        self.assertIn("401", data["error"])
+
+    def test_kpi_lifecycle_through_the_api(self):
+        _, data = self.kpi()
+        kpi = data["features"][0]["kpis"][0]
+        self.assertEqual((kpi["event"], kpi["status"]["state"]), ("seat_claimed", "no-data"))
+        _, data = self.post("/api/features/lobby/kpis", {"op": "measure", "kpi": kpi["id"], "value": 72, "decision": "keep", "note": "week 1"})
+        self.assertEqual(data["features"][0]["kpis"][0]["status"]["state"], "on-track")
+        _, data = self.post("/api/features/lobby/kpis", {"op": "delete", "kpi": kpi["id"]})
+        self.assertEqual(data["features"][0]["kpis"], [])
+
+    def test_kpi_validation_errors(self):
+        self.assertEqual(self.kpi(event="Bad Event")[0].status, 400)
+        self.assertEqual(self.post("/api/features/lobby/kpis", {"op": "measure", "kpi": "ghost", "value": 1})[0].status, 404)
+        self.assertEqual(self.post("/api/features/nope/kpis", {"op": "add", "name": "x", "event": "ok_event"})[0].status, 404)
+
+    def test_tracking_plan_is_written_into_the_repo(self):
+        self.kpi()
+        res, data = self.post("/api/analytics/plan", {})
+        self.assertEqual((res.status, data["path"]), (200, "docs/analytics/tracking-plan.md"))
+        self.assertIn("`seat_claimed`", (self.root / data["path"]).read_text())
+
+    def test_new_job_for_a_feature_with_kpis_must_emit_their_events(self):
+        self.kpi()
+        self.post("/api/config/analytics", {"op": "set", "provider": "posthog", "key": "k"})
+        argv = ui.build_new_job({"type": "feature", "summary": "Add rematch", "feature": "lobby"}, self.root)
+        text = Path(argv[argv.index("--spec-file") + 1]).read_text()
+        self.assertIn("`seat_claimed`", text)
+        self.assertIn("PostHog integration", text)
+
+
 class PipelineTests(ServerTestCase):
     def test_job_detail_does_not_invent_pipeline_models(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1")
@@ -1657,6 +1725,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
         self.assertIn("drawFeatureLinks", self.source)
+        self.assertIn('data-route="measure"', (static / "index.html").read_text())
         self.assertIn("testCaseRowsHtml(testCases.cases)", self.job_page)
         self.assertIn('view=map', self.source)
 

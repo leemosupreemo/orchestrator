@@ -18,6 +18,8 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from orchestrator import analytics
+
 STATUSES = ("planned", "in-progress", "complete")
 DONE_GROUPS = {"done"}
 
@@ -187,6 +189,40 @@ def note_work_attached(runtime: Path, feature_id: str, job_group: str) -> None:
     save(runtime, features)
 
 
+def _kpi_op(runtime: Path, feature_id: str, op) -> dict[str, Any]:
+    features = load(runtime)
+    feature = get(features, feature_id)
+    try:
+        result = op(feature)
+    except analytics.AnalyticsError as exc:
+        raise FeatureError(str(exc))
+    save(runtime, features)
+    return result
+
+
+def kpi_add(runtime: Path, feature_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+    return _kpi_op(runtime, feature_id, lambda f: analytics.add_kpi(f, raw))
+
+
+def kpi_update(runtime: Path, feature_id: str, kpi_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+    def op(f: dict[str, Any]) -> dict[str, Any]:
+        old = analytics.find_kpi(f, kpi_id)
+        f["kpis"] = [analytics.clean_kpi(raw, old) if k["id"] == kpi_id else k for k in f["kpis"]]
+        return analytics.find_kpi(f, kpi_id)
+    return _kpi_op(runtime, feature_id, op)
+
+
+def kpi_delete(runtime: Path, feature_id: str, kpi_id: str) -> None:
+    def op(f: dict[str, Any]) -> None:
+        analytics.find_kpi(f, kpi_id)
+        f["kpis"] = [k for k in f["kpis"] if k["id"] != kpi_id]
+    _kpi_op(runtime, feature_id, op)
+
+
+def kpi_measure(runtime: Path, feature_id: str, kpi_id: str, value: Any, note: str = "", decision: str = "") -> dict[str, Any]:
+    return _kpi_op(runtime, feature_id, lambda f: analytics.log_measurement(analytics.find_kpi(f, kpi_id), value, note, decision))
+
+
 def rollup(features: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each feature with its job counts. `jobs` are web job summaries (need `feature`, `state`)."""
     out = []
@@ -197,7 +233,8 @@ def rollup(features: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[d
         deps = [d for d in f.get("depends_on") or [] if d in status]
         groups = [(j.get("state") or {}).get("group") for j in mine]
         waiting = [] if f.get("status") == "complete" else [d for d in deps if status[d] != "complete"]
-        out.append({**f, "depends_on": deps, "layer": depth[f["id"]], "waiting_on": waiting, "jobs_total": len(mine), "jobs_done": groups.count("done"),
+        kpis = [{**k, "status": analytics.status(k)} for k in f.get("kpis") or []]
+        out.append({**f, "kpis": kpis, "depends_on": deps, "layer": depth[f["id"]], "waiting_on": waiting, "jobs_total": len(mine), "jobs_done": groups.count("done"),
                     "jobs_working": groups.count("working"), "jobs_need_you": groups.count("needs_you"),
                     "job_ids": [j["id"] for j in mine]})
     return out

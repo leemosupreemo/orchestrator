@@ -1279,3 +1279,11 @@ dialog h2 { font-size: 17px; }
 .tc-body ul, .tc-body ol { margin: 4px 0 0; padding-left: 20px; }
 .tc-area-h { padding: 10px 16px 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .row .chip:not(:has(button)) { padding-right: 10px; }
+
+/* Measure */
+.kpi-row { display: grid; grid-template-columns: minmax(0, 1fr) 140px auto auto; align-items: center; gap: 12px; }
+.kpi-row .kpi-log { grid-column: 1 / -1; }
+.kpi-latest { display: flex; flex-direction: column; font-size: 13px; }
+.kpi-log summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.kpi-entry { padding: 4px 0; font-size: 13px; }
+@media (max-width: 760px) { .kpi-row { grid-template-columns: 1fr auto; } .kpi-row .kpi-latest, .kpi-row .side { grid-column: 1 / -1; } }

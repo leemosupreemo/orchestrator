@@ -51,6 +51,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator import integrations
+from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import inbox as inbox_view
@@ -580,6 +581,13 @@ def delivery_overview(root: Path) -> dict[str, Any]:
                                   base_branch(root, settings), jobs, firebase, ci)
     data["web_url"] = repo_web_url(root)
     return data
+
+
+def analytics_overview(root: Path) -> dict[str, Any]:
+    state = analytics_state(read_settings(root))
+    provider = analytics.PROVIDERS.get(state["provider"], {})
+    return {**state, "provider_name": provider.get("name"), "key_label": provider.get("key_label"),
+            "features": feature_store.rollup(feature_store.load(runtime_dir(root)), [])}
 
 
 def features_overview(root: Path) -> dict[str, Any]:
@@ -1299,7 +1307,8 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
         except feature_store.FeatureError:
             raise UIError("That feature no longer exists")
         params["_feature"] = feature
-        spec = (spec or summary) + feature_context(chosen, features)
+        provider = analytics.PROVIDERS.get(read_settings(root).get("analytics_provider", ""), {}).get("name")
+        spec = (spec or summary) + feature_context(chosen, features) + analytics.instrumentation_context(chosen, provider)
     if params.get("recommend"):
         spec = (spec or summary) + RECOMMEND_NOTE
     if spec:
@@ -1569,6 +1578,12 @@ def archived_jobs(root: Path) -> list[dict[str, Any]]:
     return items
 
 
+def analytics_state(settings: dict[str, Any]) -> dict[str, Any]:
+    provider = settings.get("analytics_provider", "")
+    return {"providers": analytics.public_providers(), "provider": provider if provider in analytics.PROVIDERS else "",
+            "key_set": bool(settings.get("analytics_key")), "region": settings.get("analytics_region", "us")}
+
+
 def config_state(root: Path) -> dict[str, Any]:
     settings = read_settings(root)
     machines_file = runtime_dir(root) / "config" / "machines.json"
@@ -1587,6 +1602,7 @@ def config_state(root: Path) -> dict[str, Any]:
             "resend_from_email": settings.get("resend_from_email", ""), "resend_display_name": settings.get("resend_display_name", ""),
             "resend_api_key_set": bool(settings.get("resend_api_key")),
         },
+        "analytics": analytics_state(settings),
         "webhook": {"set": bool(settings.get("notification_webhook")), "host": notifier.host_of(settings.get("notification_webhook", ""))},
         "archived": archived_jobs(root),
         "docs": [{k: v for k, v in d.items() if k != "path"} for d in doc_entries(root)],
@@ -1679,6 +1695,32 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
                     settings[key] = value
         else:
             raise UIError("Unknown email operation")
+    elif part == "analytics":
+        op = _choice(body, "op", ["set", "clear", "test"])
+        if op == "set":
+            provider = _choice(body, "provider", list(analytics.PROVIDERS))
+            if not provider:
+                raise UIError("Choose a provider")
+            region = _choice(body, "region", list(analytics.PROVIDERS[provider]["hosts"]), "us")
+            settings["analytics_provider"], settings["analytics_region"] = provider, region
+            key = _text(body, "key", limit=500)  # blank keeps the saved key, as with the other secrets
+            if key:
+                settings["analytics_key"] = key
+            elif not settings.get("analytics_key"):
+                raise UIError("Paste the " + analytics.PROVIDERS[provider]["key_label"].lower())
+        elif op == "clear":
+            for k in ("analytics_provider", "analytics_key", "analytics_region"):
+                settings.pop(k, None)
+        else:
+            provider = settings.get("analytics_provider", "")
+            if provider not in analytics.PROVIDERS:
+                raise UIError("Choose a provider first")
+            host = analytics.PROVIDERS[provider]["hosts"].get(settings.get("analytics_region", "us"), "")
+            try:
+                analytics.send_test(provider, settings.get("analytics_key", ""), host)
+            except analytics.AnalyticsError as exc:
+                raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+            return {"ok": True}
     elif part == "webhook":
         op = _choice(body, "op", ["set", "clear", "test"])
         if op == "set":
@@ -2368,6 +2410,30 @@ class UIHandler(BaseHTTPRequestHandler):
             for job in jobs:
                 job["active_run"] = job["id"] in running
             self._json({"jobs": jobs})
+        elif method == "GET" and parts == ["analytics"]:
+            self._json(analytics_overview(root))
+        elif method == "POST" and parts == ["analytics", "plan"]:
+            plan = analytics.tracking_plan(feature_store.load(runtime_dir(root)))
+            target = root / "docs" / "analytics" / "tracking-plan.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(plan, encoding="utf-8")
+            self._json({"ok": True, "path": str(target.relative_to(root))})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "features" and parts[2] == "kpis":
+            body = self._body()
+            op = _choice(body, "op", ["add", "update", "delete", "measure"])
+            rt = runtime_dir(root)
+            try:
+                if op == "add":
+                    feature_store.kpi_add(rt, parts[1], body)
+                elif op == "update":
+                    feature_store.kpi_update(rt, parts[1], str(body.get("kpi") or ""), body)
+                elif op == "delete":
+                    feature_store.kpi_delete(rt, parts[1], str(body.get("kpi") or ""))
+                else:
+                    feature_store.kpi_measure(rt, parts[1], str(body.get("kpi") or ""), body.get("value"), str(body.get("note") or ""), str(body.get("decision") or ""))
+            except feature_store.FeatureError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND if "not found" in str(exc) else HTTPStatus.BAD_REQUEST)
+            self._json(analytics_overview(root))
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root))
         elif method == "GET" and parts == ["test-cases"]:

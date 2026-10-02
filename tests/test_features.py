@@ -162,5 +162,37 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(set(F.layers(feats)), {"x", "y"})
 
 
+class KpiStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.rt = Path(self.tmp.name)
+        self.fid = F.create(self.rt, "Lobby")["id"]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def kpis(self):
+        return {f["id"]: f for f in F.rollup(F.load(self.rt), [])}[self.fid]["kpis"]
+
+    def test_add_measure_update_delete_round_trip(self):
+        k = F.kpi_add(self.rt, self.fid, {"name": "Seat claims", "event": "seat_claimed", "target": 60})
+        F.kpi_measure(self.rt, self.fid, k["id"], 70, "after launch", "keep")
+        row = self.kpis()[0]
+        self.assertEqual((row["status"]["state"], row["status"]["latest"]["decision"]), ("on-track", "keep"))
+        F.kpi_update(self.rt, self.fid, k["id"], {"target": 90})
+        self.assertEqual((self.kpis()[0]["status"]["state"], len(self.kpis()[0]["measurements"])), ("behind", 1))
+        F.kpi_delete(self.rt, self.fid, k["id"])
+        self.assertEqual(self.kpis(), [])
+
+    def test_errors_surface_as_feature_errors_and_save_nothing(self):
+        with self.assertRaises(F.FeatureError):
+            F.kpi_add(self.rt, self.fid, {"name": "x", "event": "Bad Name"})
+        with self.assertRaises(F.FeatureError):
+            F.kpi_measure(self.rt, self.fid, "ghost", 1)
+        with self.assertRaises(F.FeatureError):
+            F.kpi_add(self.rt, "nope", {"name": "x", "event": "ok_event"})
+        self.assertEqual(self.kpis(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

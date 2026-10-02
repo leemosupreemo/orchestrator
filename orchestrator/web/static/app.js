@@ -1806,6 +1806,7 @@ pages.features = async (_, query) => {
       <div class="card-b stack">
         ${f.summary ? `<div>${esc(f.summary)}</div>` : ""}
         ${f.reopened ? `<div class="muted">Reopened: new work was added after it was marked complete.</div>` : ""}
+        ${f.kpis.length ? `<div><a href="#/measure">KPIs</a>: ${["on-track", "behind", "no-data", "no-target"].map((k) => [k, f.kpis.filter((x) => x.status.state === k).length]).filter(([, n]) => n).map(([k, n]) => `${n} ${KPI_STATE[k][0].toLowerCase()}`).join(" · ")}</div>` : ""}
         ${f.paths.length ? `<div class="muted mono">${f.paths.map(esc).join(" · ")}</div>` : ""}
         <div class="tasks-progress-wrap"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${pct}%"></div></div>
           <span class="progress-text">${f.jobs_done}/${f.jobs_total} jobs</span></div>
@@ -1931,6 +1932,77 @@ pages.delivery = async () => {
     title: "Delivery",
     sub: "What's live, what testers have, and what's on the way.",
     html: `${liveCard}${testersCard}${readyCard}${pipelineCard}${buildsCard}`,
+  };
+};
+
+const KPI_STATE = { "no-data": ["No data yet", "working"], "no-target": ["No target", "working"], "on-track": ["On track", "done"], behind: ["Behind", "attention"] };
+const DECISION_LABEL = { keep: "Keep", iterate: "Iterate", drop: "Drop" };
+
+function kpiFormBody(k = {}) {
+  return `<label class="field"><span>What you're measuring</span><input type="text" name="name" required maxlength="80" value="${esc(k.name || "")}" placeholder="e.g. Seat claim rate"></label>
+    <label class="field"><span>Event that measures it</span><input type="text" name="event" required pattern="[a-z][a-z0-9_]{1,59}" value="${esc(k.event || "")}" placeholder="lobby_seat_claimed" autocapitalize="off"><small class="muted">Lowercase letters, numbers and underscores. The builder is told to emit it.</small></label>
+    <div class="row" style="gap:10px">
+      <label class="field" style="flex:1"><span>Better when</span><select name="direction"><option value="up" ${k.direction !== "down" ? "selected" : ""}>It goes up</option><option value="down" ${k.direction === "down" ? "selected" : ""}>It goes down</option></select></label>
+      <label class="field" style="flex:1"><span>Target <span class="muted">(optional)</span></span><input type="number" name="target" step="any" value="${k.target ?? ""}"></label>
+      <label class="field" style="flex:1"><span>Unit</span><input type="text" name="unit" maxlength="20" value="${esc(k.unit || "")}" placeholder="%"></label>
+    </div>`;
+}
+
+pages.measure = async () => {
+  const data = await api("analytics");
+  const { features } = data;
+  const connected = data.provider && data.key_set;
+  const kpiRow = (f, k) => {
+    const st = k.status, [label, tone] = KPI_STATE[st.state];
+    const trend = st.trend === "better" ? "▲ better" : st.trend === "worse" ? "▼ worse" : st.trend === "flat" ? "▬ flat" : "";
+    return `<div class="item kpi-row"><div class="main-col"><div class="title">${esc(k.name)}</div>
+        <div class="meta"><span class="mono">${esc(k.event)}</span> · ${k.target === null ? "no target" : `${k.direction === "up" ? "at least" : "at most"} ${esc(k.target)}${k.unit ? ` ${esc(k.unit)}` : ""}`}</div></div>
+      <div class="kpi-latest">${st.latest ? `<strong>${esc(st.latest.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</strong><span class="muted">${esc(ago(st.latest.t))}${trend ? ` · ${trend}` : ""}</span>` : `<span class="muted">—</span>`}</div>
+      <span class="pill ${tone}">${esc(label)}</span>
+      <div class="side"><button class="btn small" data-kpi="measure" data-f="${esc(f.id)}" data-k="${esc(k.id)}">Log result</button>
+        ${moreMenu([["Edit", `data-kpi="edit" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`], ["Delete", `data-kpi="delete" data-f="${esc(f.id)}" data-k="${esc(k.id)}"`, "Keeps nothing; results are deleted too", "danger"]])}</div>
+      ${k.measurements.length ? `<details class="kpi-log"><summary>Learning log (${k.measurements.length})</summary>${k.measurements.slice().reverse().map((m) => `<div class="kpi-entry"><span class="mono">${esc(m.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</span> <span class="muted">${esc(ago(m.t))}</span>${m.decision ? ` <span class="pill ${m.decision === "drop" ? "failed" : m.decision === "iterate" ? "attention" : "done"}">${esc(DECISION_LABEL[m.decision])}</span>` : ""}${m.note ? ` <span>${esc(m.note)}</span>` : ""}</div>`).join("")}</details>` : ""}
+    </div>`;
+  };
+  const card = (f) => `<section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>${esc(f.name)}</h2><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div>
+    <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working?</div>`}</div></section>`;
+  return {
+    title: "Measure",
+    sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
+    actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
+    html: `
+      <section class="card" style="margin-bottom: 16px;"><div class="card-h"><h2>Analytics</h2>
+        <div class="row"><button class="btn small ${connected ? "" : "primary"}" id="analytics-set">${data.provider ? "Change" : "Connect"}</button>
+        ${connected ? `<button class="btn small" id="analytics-test">Send test event</button><button class="btn small danger" id="analytics-clear">Disconnect</button>` : ""}</div></div>
+        <div class="card-b stack"><strong>${connected ? `${esc(data.provider_name)} (${esc(data.region.toUpperCase())})` : data.provider ? `${esc(data.provider_name)}: key missing` : "Not connected"}</strong>
+          <span class="muted">${connected ? "New work for a feature is told to send its KPI events here. The key is stored, never shown." : "Optional. Mixpanel, Amplitude or PostHog. Connect one so new work knows where events go, and verify it with a test event."}</span></div></section>
+      ${features.map(card).join("") || `<div class="empty">KPIs belong to features. <a href="#/features">Create a feature</a> first.</div>`}`,
+    after: () => {
+      const reload = () => route();
+      const call = async (path, body, ok) => { try { await api(path, { method: "POST", body }); if (ok) toast(ok); reload(); } catch (e) { toast(e.message, true); } };
+      $("#analytics-set").addEventListener("click", async () => {
+        const v = await formDialog("Connect analytics", `<label class="field"><span>Provider</span><select name="provider">${data.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === data.provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+          <label class="field"><span>Project token or API key</span><input type="password" name="key" autocomplete="off" placeholder="${data.key_set ? "Saved. Leave blank to keep" : ""}"></label>
+          <label class="field"><span>Region</span><select name="region"><option value="us" ${data.region !== "eu" ? "selected" : ""}>US</option><option value="eu" ${data.region === "eu" ? "selected" : ""}>EU</option></select></label>`, "Save");
+        if (v) call("config/analytics", { op: "set", ...v }, "Analytics saved");
+      });
+      $("#analytics-test")?.addEventListener("click", () => call("config/analytics", { op: "test" }, "Test event sent. Check the provider's live view."));
+      $("#analytics-clear")?.addEventListener("click", () => call("config/analytics", { op: "clear" }, "Disconnected"));
+      $("#export-plan")?.addEventListener("click", async () => { try { const r = await api("analytics/plan", { method: "POST", body: {} }); toast(`Wrote ${r.path}. Commit it with your next change.`); } catch (e) { toast(e.message, true); } });
+      view.querySelectorAll("[data-kpi]").forEach((btn) => btn.addEventListener("click", async () => {
+        const fid = btn.dataset.f, f = features.find((x) => x.id === fid), k = f?.kpis.find((x) => x.id === btn.dataset.k), op = btn.dataset.kpi;
+        const path = `features/${encodeURIComponent(fid)}/kpis`;
+        if (op === "add") { const v = await formDialog(`New KPI for ${f.name}`, kpiFormBody(), "Add"); if (v) call(path, { op: "add", ...v }, "KPI added"); }
+        else if (op === "edit") { const v = await formDialog("Edit KPI", kpiFormBody(k), "Save"); if (v) call(path, { op: "update", kpi: k.id, ...v }, "KPI saved"); }
+        else if (op === "delete") { if (await formDialog("Delete KPI", `<p>Delete “${esc(k.name)}” and its ${k.measurements.length} logged result(s)?</p>`, "Delete")) call(path, { op: "delete", kpi: k.id }, "KPI deleted"); }
+        else {
+          const v = await formDialog(`Log a result: ${k.name}`, `<label class="field"><span>Result${k.unit ? ` (${esc(k.unit)})` : ""}</span><input type="number" name="value" step="any" required></label>
+            <label class="field"><span>What will you do?</span><select name="decision"><option value="">Not decided</option><option value="keep">Keep it as is</option><option value="iterate">Iterate on it</option><option value="drop">Drop it</option></select></label>
+            <label class="field"><span>What you learned <span class="muted">(optional)</span></span><textarea name="note" rows="2" maxlength="500"></textarea></label>`, "Save");
+          if (v) call(path, { op: "measure", kpi: k.id, ...v }, "Result logged");
+        }
+      }));
+    },
   };
 };
 

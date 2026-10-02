@@ -56,8 +56,8 @@ checked in a browser yet.
 
 - [x] **Integrate with Jira and similar.** Connections page, link picker, update log.
 - [~] **Connections to other product-creation tools.** Figma, Trello, Sentry. Nothing further.
-- [ ] **KPIs and analytics setup (2-3 platforms).**
-- [ ] **Build-measure-learn.**
+- [~] **KPIs and analytics setup (2-3 platforms).** Tools > Measure: connect Mixpanel, Amplitude or PostHog (US/EU, key stored but never shown) and verify with a test event; define KPIs per feature (event, target, direction, unit); export a tracking plan to `docs/analytics/tracking-plan.md`. Jobs created under a feature are told to emit its KPI events through the project's analytics layer and add a test for each. Caveats: the test-event calls follow each provider's documented ingestion API but were only checked against fakes, not a live account; it does not read numbers back from the provider.
+- [~] **Build-measure-learn.** Each KPI has a learning log: log a result by hand with a decision (keep / iterate / drop) and a note; the page shows latest vs target, trend and on-track / behind, and feature cards summarise their KPIs. Not yet: results pulled automatically from the provider, or a job suggested from a "behind" KPI.
 - [ ] **Experimentation / A/B (future).** Deferred by design.
 
 ## Housekeeping
