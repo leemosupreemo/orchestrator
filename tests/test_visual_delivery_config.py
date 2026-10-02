@@ -256,7 +256,8 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             app_path="/tmp/test.app",
             wait=3.0,
             screenshots=1,
-            interval=1.0
+            interval=1.0,
+            job=""
         )
 
         mock_path_exists.return_value = True
