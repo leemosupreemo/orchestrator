@@ -110,6 +110,46 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIsNone(job_data["branch"])
         mock_create_issue.assert_called_once()
 
+    PLAN = json.dumps({
+        "title": "Context Test", "summary": "Summary", "assumptions": [], "constraints": [], "risks": [],
+        "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}],
+        "test_cases": [{"title": "AC holds", "type": "unit", "expected": "AC is satisfied", "covers": ["AC"], "tests": ["test_ac"]}]})
+
+    def plan_with_docs(self, docs, kind="feature"):
+        from orchestrator import product_docs
+        for doc_id, text in docs.items():
+            product_docs.write(self.root, doc_id, text)
+        prompts = []
+
+        def fake_llm(model, prompt, *a, **k):
+            prompts.append(prompt)
+            return (self.PLAN, "mock-model", "sid")
+
+        from orchestrator.scripts import new_job
+        with patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), patch("orchestrator.scripts.new_job.create_issue", return_value=130):
+            with patch("orchestrator.scripts.new_job.ROOT", self.root), patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                with patch("sys.stdin", io.StringIO("Add rematch\n\n")):
+                    new_job.main([kind, "--branch-mode", "manual", "--no-dispatch", "--summary", "Add rematch", "--allowed-models", "gemini,codex", "--allowed-machines", "local"])
+        return prompts
+
+    def test_the_planner_reads_the_product_documents_first(self):
+        prompts = self.plan_with_docs({
+            "use-cases": "# Use cases\n\n## Core use cases\n\n- As a player I can start a match\n- As a player I can take a turn\n\n## Non-goals for version 1\n\n- No chat\n- No accounts\n"})
+        self.assertTrue(prompts)
+        self.assertIn("## Product context (source of truth)", prompts[0])
+        self.assertIn("No chat", prompts[0])
+        self.assertLess(prompts[0].index("Product context"), prompts[0].index("Raw input:"))
+
+    def test_without_filled_documents_nothing_is_added(self):
+        prompts = self.plan_with_docs({})
+        self.assertNotIn("## Product context (source of truth)", prompts[0])
+
+    def test_the_feature_planner_is_told_to_build_vertical_slices(self):
+        text = (Path(__file__).resolve().parents[1] / "orchestrator" / "prompts" / "planner_feature.md").read_text()
+        self.assertIn("Vertical slices, not layers", text)
+        self.assertIn("after the FIRST task something real runs end to end", text)
+        self.assertIn("Serve the product", text)
+
     @patch("orchestrator.scripts.new_job.flush_stdin")
     @patch("orchestrator.scripts.new_job.run_llm")
     @patch("orchestrator.scripts.new_job.create_issue")

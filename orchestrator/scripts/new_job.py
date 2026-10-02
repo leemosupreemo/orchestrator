@@ -31,6 +31,7 @@ from model_registry import get_model, ModelTier
 from probe_machine import load_machines
 from manual_run import capture_logs
 import test_cases as tc
+from orchestrator import product_docs
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -650,6 +651,11 @@ def main(args_override: list[str] | None = None) -> None:
         if needs_test_cases:
             test_case_context = tc.PLANNER_INSTRUCTIONS + "\n" + tc.library_index(ROOT)
             prompt_template = f"{prompt_template}\n{test_case_context}"
+        # The product's own documents (brief, use cases and non-goals, journey, screens, decisions, plan) come first,
+        # so each plan is judged against what the product is for. It is part of the template, so retries keep it.
+        product_context = product_docs.context_block(ROOT)
+        if product_context:
+            prompt_template = f"{prompt_template}\n{product_context}"
         llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
         
         llm_sessions = []
