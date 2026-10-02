@@ -72,9 +72,9 @@ def main() -> None:
     diff_text = load_pr_diff(args.pr_number, pr_json)
     reviewer_prompt = (PROMPTS_DIR / "reviewer.md").read_text(encoding="utf-8")
 
-    from orchestrator import product_docs
+    from orchestrator import prd
     prompt = f"""{reviewer_prompt}
-{product_docs.context_block(ROOT, "reviewer")}
+{prd.context_block(ROOT, "reviewer")}
 Brief:
 {brief}
 

@@ -8,6 +8,8 @@ directory) or a review. Behaviour switches come from $FAKE_LLM_BEHAVIOUR, a comm
   full_suite     the builder runs the project's whole test command, as its prompt asks
   narrow_tests   the builder runs only a test that has nothing to do with the plan
   two_tasks      the plan has two tasks (the bonus, then a README note), each built separately
+  prd_update     when asked whether a finished job changes the product requirements, add a feature to them
+  prd_gut        ...answer with a document whose pitch has been emptied (which must be refused)
   concerns_once  the first verification raises concerns (the orchestrator should accept the suggestions and carry on)
 """
 from __future__ import annotations
@@ -39,6 +41,8 @@ def load() -> dict:
 
 
 def role_of(prompt: str) -> str:
+    if "PRODUCT DOCUMENT UPDATE" in prompt:
+        return "prd"
     if "### GENERATED PLAN ###" in prompt:
         return "verifier"
     if "Vertical slices, not layers" in prompt or "Required JSON schema" in prompt and "tasks" in prompt:
@@ -99,6 +103,19 @@ def build(prompt: str = "") -> dict:
     return {"test_command": command, "summary": "Added the long-word bonus and three tests; all tests pass.", "files_changed": ["wordgame/scoring.py", "tests/test_scoring.py"]}
 
 
+def prd_reply(prompt: str) -> str:
+    """The answer to "does this finished job change the product requirements?"."""
+    current = prompt.split("Current document:\n", 1)[1].split("\n\nWhat the job showed:", 1)[0]
+    if "prd_gut" in BEHAVIOUR:
+        import re
+        gutted = re.sub(r"(## Pitch\n\n).*?(?=\n## )", r"\1", current, count=1, flags=re.S)
+        return json.dumps({"changed": True, "summary": "Rewrote the pitch", "markdown": gutted})
+    if "prd_update" in BEHAVIOUR:
+        updated = current.replace("## Look and feel", "- Players can ask for a rematch after any game\n\n## Look and feel", 1)
+        return json.dumps({"changed": True, "summary": "Added the rematch feature this job built", "markdown": updated})
+    return json.dumps({"changed": False, "summary": "", "markdown": ""})
+
+
 def main() -> int:
     prompt = sys.stdin.read()
     state = load()
@@ -119,6 +136,8 @@ def main() -> int:
             print(json.dumps({"status": "approved", "comments": "Grounded in wordgame/scoring.py.", "suggested_additions": [], "risks_identified": []}))
     elif role == "builder":
         print("```json\n" + json.dumps(build(prompt)) + "\n```")
+    elif role == "prd":
+        print(prd_reply(prompt))
     elif role == "reviewer":
         print("## Review\n\nThe change matches the brief: the bonus applies at seven letters and tests cover both sides of the boundary. No blocking issues.\n\n**Verdict: approve**")
     else:

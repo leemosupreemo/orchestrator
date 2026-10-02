@@ -42,18 +42,6 @@ class InboxTests(unittest.TestCase):
         out = inbox.build(ME, [], [], [{"name": "Big", "root": "/p/big", "jobs": flood}])
         self.assertEqual(len(out["elsewhere"]), inbox.MAX_OTHER_PER_PROJECT)
 
-    def test_a_reminder_is_waiting_on_you_and_counts(self):
-        rem = {"id": "product-review", "title": "Review the product", "label": "Review due", "reason": "No review yet.", "href": "#/product"}
-        out = inbox.build(ME, [job("a")], [], None, [rem])
-        self.assertEqual(out["count"], 2)
-        item = next(i for i in out["here"] if i["kind"] == "reminder")
-        self.assertEqual((item["id"], item["href"], item["tone"], item["next"]), ("reminder:product-review", "#/product", "attention", None))
-
-    def test_failures_still_come_before_reminders(self):
-        rem = {"id": "r", "title": "t", "label": "l", "reason": "x", "href": "#/product"}
-        out = inbox.build(ME, [job("red", tone="failed")], [], None, [rem])
-        self.assertEqual([i["kind"] for i in out["here"]], ["job", "reminder"])
-
     def test_empty(self):
         self.assertEqual(inbox.build(ME, [], []), {"here": [], "elsewhere": [], "count": 0})
 

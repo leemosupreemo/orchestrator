@@ -129,6 +129,73 @@ class OfflinePipelineTests(unittest.TestCase):
         self.assertIn("score('abcdefg') includes 10 extra points", prompt)
 
 
+class LivingPrdTests(unittest.TestCase):
+    """When a job finishes the worker asks whether it changes the product requirements, and keeps them true."""
+
+    def run_job(self, behaviour: str, auto_update: bool = True):
+        from orchestrator import prd
+        project = DummyProject([FREE]).create().fake_models(behaviour)
+        self.addCleanup(project.cleanup)
+        doc = prd.Prd(project.root, project.root / ".orchestrator")
+        if not auto_update:
+            doc.set_auto_update(False)
+        self.before = doc.read()
+        self.assertEqual(plan_job(project).returncode, 0)
+        self.output = action(project, "approve").stdout
+        return project, doc
+
+    def prd_calls(self, project):
+        return [c for c in project.llm_calls() if c["role"] == "prd"]
+
+    def test_a_job_that_changes_the_product_updates_the_document_keeps_the_words_and_says_so(self):
+        project, doc = self.run_job("prd_update")
+        job = project.job()
+        self.assertEqual(job["status"], "review-needed", self.output[-1500:])
+        self.assertTrue(job["prd_checked"])
+        text = doc.read()
+        self.assertIn("Players can ask for a rematch after any game", text)
+        self.assertIn("A tiny word-scoring library", text)  # the person's pitch is untouched
+        self.assertIn("No network play: this is a library only", text)  # and so is Not this
+        self.assertEqual([h["source"] for h in doc.history()], ["auto", "earlier"])
+        self.assertEqual(doc.history()[0]["job"], job["job_id"])
+        self.assertEqual(doc.notice()["summary"], "Added the rematch feature this job built")
+        self.assertIn("Updated the product requirements", self.output)
+        doc.revert(doc.history()[1]["id"])  # and the person can take it back
+        self.assertEqual(doc.read(), self.before)
+
+    def test_the_model_is_given_the_document_and_what_the_job_decided_and_only_the_allowed_model_is_used(self):
+        project, doc = self.run_job("prd_update")
+        calls = self.prd_calls(project)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["model"], FREE)
+        self.assertIn("A tiny word-scoring library", calls[0]["prompt"])
+        self.assertIn("Long-word bonus", calls[0]["prompt"])  # what the job did
+        self.assertEqual({c["model"] for c in project.llm_calls()}, {FREE})
+
+    def test_no_change_needed_means_no_new_version_and_no_announcement(self):
+        project, doc = self.run_job("")
+        self.assertEqual(len(self.prd_calls(project)), 1)
+        self.assertEqual(doc.read(), self.before)
+        self.assertEqual(doc.history(), [])
+        self.assertIsNone(doc.notice())
+        self.assertTrue(project.job()["prd_checked"])
+        self.assertIn("No change needed", self.output)
+
+    def test_switched_off_the_model_is_never_asked_and_nothing_changes(self):
+        project, doc = self.run_job("prd_update", auto_update=False)
+        self.assertEqual(self.prd_calls(project), [])
+        self.assertEqual(doc.read(), self.before)
+        self.assertEqual(project.job()["status"], "review-needed")
+
+    def test_an_edit_that_guts_the_document_is_refused_and_the_job_still_finishes(self):
+        project, doc = self.run_job("prd_gut")
+        self.assertEqual(doc.read(), self.before)
+        self.assertIsNone(doc.notice())
+        self.assertEqual(doc.history(), [])
+        self.assertEqual(project.job()["status"], "review-needed")
+        self.assertIn("emptied Pitch", self.output)
+
+
 class TaskCheckpointTests(unittest.TestCase):
     """Each finished task is its own commit, so the latest one can be undone."""
 

@@ -64,9 +64,14 @@ Rules checked on every page at 360, 430 and 1440 px, light and dark:
 
 - One list of jobs. A job that needs you is a job in an earlier status: it sorts first and its status says what it needs ("Approve plan"). The whole row is one link to the job, where the next step is the primary action; rows carry no buttons. There is no second "waiting" list; "Needs you" is a filter.
 - Actions belong to the page for what they act on (Tests: run, build, coverage; Delivery: send a build; Device logs: pull; Check-up: environment checks and the setup wizard). Home has no menu of them.
-- Things that are not jobs go where they belong: the product-review reminder in the Product card, other projects' waiting jobs as one line under the list.
+- Things that are not jobs go where they belong: the Product card (what the product is, and a notice when the AI updated it), other projects' waiting jobs as one line under the list.
 
 ## Sign-in
 
 - Provider sign-in uses the pop-up. A blocked pop-up is explained ("Allow pop-ups for this site"), never silently turned into a full-page redirect: that flow fails with "Unable to process request due to missing initial state" in browsers that partition storage between the site (`swift-orch-web-20260923.web.app`) and Firebase's auth domain (`swift-orch-web-20260923.firebaseapp.com`). Full-page sign-in is offered as an opt-in link, with a warning.
 - To make redirects work everywhere, set `authDomain` in `app.js` to the site's own domain, after adding `https://<site>/__/auth/handler` as an authorized redirect URI in Google Cloud (Credentials > the Web client), as the callback URL of the GitHub OAuth app, and as an Apple Services ID return URL. Setting it first makes Google answer `redirect_uri_mismatch` (checked 2026-10-02).
+
+## Product requirements
+
+- One document, five sections, shown in full on the Product page; Home shows a short card. Guidance text is written for people who are not technical and may not know yet: "say so" is always an acceptable answer.
+- Anything the AI changes on its own is announced, shown as a diff in the history, and undoable. Never edit the document silently; never take a section's text away.

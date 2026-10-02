@@ -700,6 +700,7 @@ let consecutiveAuthFailures = 0;
 
 let pollFailures = 0; // consecutive failed background polls
 let lastInbox = null; // previous inbox items, to spot new things waiting on you
+let lastPrdNotice; // undefined until the first poll, so an update that happened while away isn't announced twice
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
 async function refreshState() {
@@ -715,6 +716,11 @@ async function refreshState() {
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
     lastRuns = newState.runs;
     lastInbox = newState.inbox || [];
+    const note = newState.product_notice;
+    if (note && note.id !== lastPrdNotice) { // the AI updated the product requirements by itself: say so once
+      if (lastPrdNotice !== undefined) { toast(`Product requirements updated: ${note.summary}`); Notifications.show({ title: "Product requirements updated", body: note.summary, key: `prd:${note.id}`, hash: "#/product?history=" + encodeURIComponent(note.id) }); }
+      lastPrdNotice = note.id;
+    } else if (!note && lastPrdNotice === undefined) lastPrdNotice = null;
     state = newState;
     consecutiveAuthFailures = 0;
     pollFailures = 0;
@@ -1362,7 +1368,7 @@ pages.home = async (_, query) => {
     sub: statusLine(p),
     html: `
       <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
-      ${product ? productStripHtml(product, waiting.here.filter((i) => i.kind === "reminder")) : ""}
+      ${product ? productStripHtml(product) : ""}
 
       ${runningBanner}
 
@@ -1772,9 +1778,9 @@ const NJ_VIBES = [["minimalist", "Minimalist: clean, lots of space"], ["glassmor
   ["high-energy", "Playful: animated, dynamic"], ["gothic-noir", "Dark and moody"], ["other", "Something else…"]];
 const NJ_UPLOAD_LIMIT = 25 * 1024 * 1024;
 
-async function uploadFile(file) {
+async function uploadFile(file, endpoint = "uploads") {
   const backend = getBackendUrl(), token = getToken();
-  const res = await fetch(`${backend ?? ""}/api/uploads?name=${encodeURIComponent(file.name)}`, {
+  const res = await fetch(`${backend ?? ""}/api/${endpoint}?name=${encodeURIComponent(file.name)}`, {
     method: "POST", body: file, credentials: backend ? "omit" : "same-origin",
     headers: { "Content-Type": "application/octet-stream", "X-Orchestrator-UI": "1", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   });
@@ -1788,8 +1794,8 @@ const formatBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `$
 pages.new = async (_, query) => {
   let features = [];
   try { features = (await api("features")).features; } catch { /* the field just doesn't show */ }
-  let undefinedProduct = false; // the use cases and non-goals haven't been written, so plans would be guessing
-  try { undefinedProduct = !(await api("product")).docs.find((d) => d.id === "use-cases")?.filled; } catch { /* older server: no nudge */ }
+  let undefinedProduct = false; // nothing says what the product is, so plans would be guessing
+  try { undefinedProduct = !(await api("product")).sections.find((x) => x.id === "pitch")?.filled; } catch { /* older server: no nudge */ }
   const skipKey = `orchestrator_skip_discovery:${state.project?.root || ""}`;
   const skipped = () => { try { return localStorage.getItem(skipKey) === "1"; } catch { return false; } };
   const wanted = query.get("type");
@@ -1872,9 +1878,9 @@ pages.new = async (_, query) => {
     picker = out.picker;
     // A feature or design is planned against who it's for and what version 1 won't do; offer to write that down first.
     const nudge = undefinedProduct && !skipped() && (st.type === "feature" || st.type === "design");
-    $("#nj-discovery").innerHTML = nudge ? `<div class="notice" role="note"><strong>Before the first feature: who is it for, and what won't version 1 do?</strong>
-      <div class="muted">Plans are much better when the AI knows. Answer a few questions (about two minutes) and it drafts the rest.</div>
-      <div class="row"><a class="btn small primary" href="#/product/use-cases">Define the product first</a><button type="button" class="btn small ghost" id="nj-skip-discovery">Skip for now</button></div></div>` : "";
+    $("#nj-discovery").innerHTML = nudge ? `<div class="notice" role="note"><strong>Before the first feature: what are you building, and who is it for?</strong>
+      <div class="muted">Plans are much better when the AI knows. Say it in a few sentences, or import a PRD you already have.</div>
+      <div class="row"><a class="btn small primary" href="#/product">Define the product first</a><button type="button" class="btn small ghost" id="nj-skip-discovery">Skip for now</button></div></div>` : "";
     $("#nj-skip-discovery")?.addEventListener("click", () => { try { localStorage.setItem(skipKey, "1"); } catch { /* remembered for this visit only */ } undefinedProduct = false; $("#nj-discovery").innerHTML = ""; });
     $("#nj-fields").innerHTML = out.html;
     picker?.wire();
@@ -2324,7 +2330,7 @@ pages.help = async () => ({
         <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
-      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product documents", "#/product", "The documents that define the product. Read them, edit them, or ask the AI to refine them."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
+      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads. Edit it, import a PRD, see its history."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
          ["Check-up", "#/checkup", "What's in place and what's missing for this project."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
@@ -2340,7 +2346,7 @@ pages.help = async () => ({
     </dl></div></section>
     <section class="card"><div class="card-h"><h2>Common questions</h2></div><div class="card-b help-faq">
       <details><summary>A job won't run</summary><p>Jobs need a machine, a model, a signed-in AI provider and a GitHub remote. <a href="#/checkup">Check-up</a> and the Setup button on Home show what is missing; <a href="#/config">Configuration</a> is where you fix it.</p></details>
-      <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product documents</a>. Every plan is written against them: who it's for, the use cases, what version 1 will not do, the journey, the screens, the technical decisions and the current slice. Use “Ask me questions first” on any document and the AI will ask only what changes the product. Run a product review now and then to catch drift.</p></details>
+      <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. Not sure what to say? Use “Help me with this” and it asks a few simple questions, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
       <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from Configuration > Archived jobs.</p></details>
       <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends browser alerts. For Slack, add a webhook under Configuration > Slack &amp; chat alerts.</p></details>
@@ -2348,131 +2354,245 @@ pages.help = async () => ({
     </div></section>`,
 });
 
-// ---------------------------------------------------------------- product documents
-const PRODUCT_SHORT = { brief: "Brief", "use-cases": "Users & non-goals", journey: "Journey", screens: "Screens", architecture: "Decisions", plan: "Plan" };
-const PRODUCT_HINT = {
-  brief: "e.g. Tighten the problem statement, and say who it is not for",
-  "use-cases": "e.g. Draft the primary user, 3-5 use cases and what version 1 will NOT do",
-  journey: "e.g. Walk through first launch to first win, and where people might quit",
-  screens: "e.g. List every screen with why it exists and how people move between them",
-  architecture: "e.g. Separate what is hard to change later from what is easy",
-  plan: "e.g. Make 'Now' the smallest slice that works end to end",
-};
+// ---------------------------------------------------------------- product requirements
+// One short living document (see orchestrator/prd.py): five sections, edited here, kept true by the AI as jobs finish,
+// with a history that can be restored and a switch for automatic updates.
 
-function productStripHtml(product, reminders = []) {
-  const docs = product.docs;
-  const toFill = docs.filter((d) => !d.filled).length;
-  const state = (d) => (d.filled ? ["ok", "written"] : d.exists ? ["draft", "draft"] : ["missing", "not started"]);
-  return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2>Product</h2><a href="#/product">${toFill ? `${toFill} to fill in` : "All written"}</a></div>
-    <div class="card-b stack"><div class="product-chips">${docs.map((d) => { const [cls, word] = state(d);
-      return `<a class="doc-chip ${cls}" href="#/product/${esc(d.id)}" title="${esc(d.purpose)}"><span aria-hidden="true">${cls === "ok" ? "✓" : cls === "draft" ? "◐" : "○"}</span> ${esc(PRODUCT_SHORT[d.id] || d.title)}<span class="sr-only"> (${word})</span></a>`; }).join("")}</div>
-      ${toFill ? `<div class="muted">Every job plans against these. Fill them in, or ask the AI to draft and refine them.</div>` : ""}
-      ${reminders.map((r) => `<div class="row gap-10"><span class="pill attention">${esc(r.label)}</span><span class="muted">${esc(r.reason)}</span><a class="btn small primary" href="${esc(r.href)}">Review</a></div>`).join("")}</div></section>`;
+const PRD_SOURCE = { you: "You", auto: "Updated automatically after a job", import: "Imported", ai: "AI help (you accepted it)", revert: "Restored an earlier version",
+  migration: "Built from the earlier documents", earlier: "Before changes were tracked" };
+const DESIGN_IMAGE = /^designs\/([A-Za-z0-9._-]+\.(?:png|jpe?g|gif|webp))$/i;
+
+function prdSnippet(md, n = 180) {
+  const text = String(md || "").replace(/^Built for:.*$/gim, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*_`#>-]/g, " ").replace(/\s+/g, " ").trim();
+  return text.length > n ? `${text.slice(0, n).replace(/\s+\S*$/, "")}…` : text;
 }
 
-pages.product = async ([id]) => {
-  if (id) return productDocPage(id);
-  const [product, last] = await Promise.all([api("product"), api("product/last-review")]);
-  const missing = product.docs.filter((d) => !d.exists);
-  const row = (d) => {
-    const [cls, word] = d.filled ? ["done", "Written"] : d.exists ? ["attention", "Draft"] : ["working", "Not started"];
-    return `<a class="item" href="#/product/${esc(d.id)}"><div class="main-col"><div class="title">${esc(d.title)}</div><div class="meta">${esc(d.purpose)}</div></div>
-      <span class="pill ${cls}">${word}</span></a>`;
-  };
-  return {
-    title: "Product documents",
-    sub: "The documents that define the product. Every job plans against them, so keep them true.",
-    actions: `${missing.length ? `<button class="btn" id="pd-scaffold">Create the ${missing.length} missing</button>` : ""}<button class="btn primary" id="pd-review">Review the product</button>`,
-    html: `
-      <section class="card mb-16"><div class="list">${product.docs.map(row).join("")}</div></section>
-      <section class="card"><div class="card-h"><h2>Product review</h2><span class="count">${product.review ? `${product.review.days} day${product.review.days === 1 ? "" : "s"} ago` : "never"}</span></div>
-        <div class="card-b stack"><div class="muted">A review checks the product against these documents: drift, architecture, duplication, UX consistency, and the next three slices. It writes a report and changes no code.</div>
-          ${last.review ? `<details class="fold"><summary>Read the last review (${esc(last.review.path)})</summary><div class="md">${Markdown.render(last.review.text)}</div></details>` : ""}</div></section>`,
-    after: () => {
-      $("#pd-scaffold")?.addEventListener("click", async () => {
-        try { const r = await api("product/scaffold", { method: "POST", body: {} }); toast(`Created ${r.created.length} document${r.created.length === 1 ? "" : "s"}. They're templates until you fill them in.`); route(); } catch (e) { toast(e.message, true); }
-      });
-      $("#pd-review").addEventListener("click", async () => {
-        try { const { summary } = await api("product/review-request"); location.hash = `#/new?type=quick&summary=${encodeURIComponent(summary)}`; } catch (e) { toast(e.message, true); }
-      });
-    },
-  };
-};
+// The banner shown on Home and on the Product page after the AI updated the document by itself.
+function prdNoticeHtml(n) {
+  return `<div class="banner attention prd-notice" role="status"><p><strong>The product requirements were updated${n.job_title ? ` after “${esc(n.job_title)}”` : ""}.</strong> ${esc(n.summary)}</p>
+    <div class="row gap-10"><a class="btn small" href="#/product?history=${encodeURIComponent(n.id)}">See what changed</a>
+      <button type="button" class="btn small" data-prd-undo="${esc(n.id)}">Undo</button>
+      <button type="button" class="btn small ghost" data-prd-dismiss>Dismiss</button></div></div>`;
+}
 
-async function productDocPage(id) {
-  let doc;
-  try { doc = await api(`product/${encodeURIComponent(id)}`); } catch (e) {
-    if (e.status === 404) return { title: "Product documents", html: `<div class="notice">There's no document called “${esc(id)}”. <a href="#/product">See the list</a>.</div>` };
-    throw e;
-  }
-  const status = doc.filled ? ["done", "Written"] : doc.exists ? ["attention", "Draft"] : ["working", "Not started"];
+document.addEventListener("click", async (e) => {
+  const dismiss = e.target.closest("[data-prd-dismiss]");
+  const undo = e.target.closest("[data-prd-undo]");
+  if (!dismiss && !undo) return;
+  try {
+    if (undo) {
+      const { history } = await api("product");
+      const i = history.findIndex((h) => h.id === undo.dataset.prdUndo);
+      if (i === -1 || !history[i + 1]) throw new Error("There's no earlier version to go back to.");
+      await api("product/revert", { method: "POST", body: { id: history[i + 1].id } });
+      toast("Went back to the version before that update");
+    }
+    await api("product/dismiss", { method: "POST", body: {} });
+    state.product_notice = null;
+    route();
+  } catch (err) { toast(err.message, true); }
+});
+
+function productStripHtml(p) {
+  const pitch = p.sections.find((s) => s.id === "pitch");
+  const chip = (s) => `<a class="doc-chip ${s.filled ? "ok" : "missing"}" href="#/product?section=${s.id}"><span aria-hidden="true">${s.filled ? "✓" : "○"}</span> ${esc(s.title)}</a>`;
+  return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2>Product</h2><a href="#/product">Open</a></div>
+    <div class="card-b stack">
+      ${p.notice ? prdNoticeHtml(p.notice) : ""}
+      ${pitch.filled ? `<p class="product-pitch">${esc(prdSnippet(pitch.body))}</p>`
+        : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
+           <div class="row gap-10"><a class="btn small primary" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import a PRD you have</a></div>`}
+      <div class="product-chips">${p.sections.map(chip).join("")}</div></div></section>`;
+}
+
+pages.product = async (_, query) => {
+  let p = await api("product");
+  const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", section: query?.get("section") || "" };
+  const sectionCard = (s) => {
+    const designs = s.id === "look" ? [...s.body.matchAll(/\]\((designs\/[^)\s]+)\)/g)].map((m) => m[1]).filter((d) => DESIGN_IMAGE.test(d)) : [];
+    return `<section class="card mb-16" id="sec-${s.id}"><div class="card-h"><h2>${esc(s.title)}</h2>${s.optional ? `<span class="muted">Optional</span>` : ""}
+        <button type="button" class="btn small" data-prd-edit="${s.id}">${s.filled ? "Edit" : "Write"}</button></div>
+      <div class="card-b stack" data-prd-body="${s.id}">
+        <div class="muted">${esc(s.hint)}</div>
+        ${s.filled ? `<div class="md">${Markdown.render(s.body)}</div>` : `<div class="prd-empty">${s.optional ? "Nothing here, and that's fine." : "Not written yet."}</div>`}
+        ${designs.length ? `<div class="prd-designs">${designs.map((d) => `<figure class="prd-design"><img alt="${esc(d.replace("designs/", ""))}" data-auth-src="product/design/${esc(d.replace("designs/", ""))}"></figure>`).join("")}</div>` : ""}
+        ${s.id === "look" ? `<div class="row gap-10"><button type="button" class="btn small" id="prd-add-file">Add a design or sketch</button>
+          <button type="button" class="btn small" id="prd-add-link">Add a link</button><button type="button" class="btn small" id="prd-add-app">Pick from a connected app</button>
+          <input type="file" id="prd-file" accept="image/*,.pdf,.fig,.html,.htm" multiple hidden></div>` : ""}
+      </div></section>`;
+  };
+  const historyRows = (h) => h.map((v, i) => `<div class="item prd-version" data-version="${esc(v.id)}"><div class="main-col"><div class="title">${esc(PRD_SOURCE[v.source] || v.source)}${i === 0 ? ` <span class="pill done">Current</span>` : ""}</div>
+      <div class="meta">${esc(ago(v.at))}${v.summary ? ` · ${esc(v.summary)}` : ""}</div><div class="prd-diff" hidden></div></div>
+      <div class="side"><button type="button" class="btn small ghost" data-prd-diff="${esc(v.id)}">See changes</button>${i === 0 ? "" : `<button type="button" class="btn small" data-prd-restore="${esc(v.id)}">Restore</button>`}</div></div>`).join("");
+  const render = () => `
+      ${p.notice ? prdNoticeHtml(p.notice) : ""}
+      <div id="prd-panel"></div>
+      ${p.sections.map(sectionCard).join("")}
+      <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
+        <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
+        <div class="muted">After a feature or design job, the AI checks whether what it learned changes this document. It only edits when something clearly changed, keeps your words, tells you, and every change is in the history below where you can undo it.</div></div></section>
+      <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
+        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
-    title: doc.title,
-    sub: `<span class="mono">${esc(doc.path)}</span> · ${esc(doc.purpose)} · <a href="#/product">All documents</a>`,
-    actions: `<button class="btn" id="pd-edit">Edit</button>`,
-    html: `
-      <section class="card mb-16"><div class="card-h"><h2>${esc(doc.title)}</h2><span class="pill ${status[0]}">${status[1]}</span></div>
-        <div class="card-b" id="pd-body"></div></section>
-      <section class="card"><div class="card-h"><h2>Refine with AI</h2></div><div class="card-b stack" id="pd-refine"></div></section>`,
+    title: "Product",
+    sub: `<span class="mono">${esc(p.path)}</span> · Every job reads this first. Edit it any time.`,
+    actions: `<button class="btn" id="prd-import">Import a PRD</button><button class="btn primary" id="prd-help">Help me with this</button>`,
+    html: render(),
     after: () => {
-      const body = $("#pd-body"), panel = $("#pd-refine");
-      let text = doc.text, instruction = "";
-      const view = () => {
-        body.innerHTML = doc.exists || text.trim()
-          ? `<div class="md">${Markdown.render(text)}</div>${doc.exists ? "" : `<div class="muted" style="margin-top:12px">This is a template, not saved yet. Edit it, or ask the AI to draft it.</div>`}`
-          : `<div class="empty">Nothing here yet. Ask the AI to draft it below, or write it yourself with Edit.</div>`;
-        $("#pd-edit").hidden = false;
+      const panel = () => $("#prd-panel");
+      const reload = async () => { p = await api("product"); $("#view").innerHTML = render(); wire(); hydrateAuthImages(); };
+      const save = async (body) => { p = await api("product", { method: "POST", body }); };
+
+      const wire = () => {
+        $("#prd-import")?.addEventListener("click", () => importPanel());
+        $("#prd-help")?.addEventListener("click", () => helpPanel());
+        view.querySelectorAll("[data-prd-edit]").forEach((btn) => btn.addEventListener("click", () => {
+          const id = btn.dataset.prdEdit, s = p.sections.find((x) => x.id === id), box = view.querySelector(`[data-prd-body="${id}"]`);
+          btn.hidden = true;
+          box.innerHTML = `<div class="muted">${esc(s.hint)}</div><label class="field"><span class="sr-only">${esc(s.title)}</span><textarea rows="${id === "pitch" ? 5 : 8}" id="prd-text-${id}" spellcheck="true" aria-label="Edit ${esc(s.title)}">${esc(s.body)}</textarea></label>
+            <div class="row gap-10"><button type="button" class="btn primary" id="prd-save-${id}">Save</button><button type="button" class="btn ghost" id="prd-cancel-${id}">Cancel</button></div>`;
+          $(`#prd-text-${id}`).focus();
+          $(`#prd-cancel-${id}`).addEventListener("click", reload);
+          $(`#prd-save-${id}`).addEventListener("click", async () => { try { await save({ section: id, body: $(`#prd-text-${id}`).value }); toast("Saved"); await reload(); } catch (e) { toast(e.message, true); } });
+        }));
+        $("#prd-auto")?.addEventListener("change", async (e) => { try { p = await api("product/settings", { method: "POST", body: { auto_update: e.target.checked } }); toast(p.auto_update ? "It will keep itself up to date" : "Automatic updates are off"); } catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); } });
+        view.querySelectorAll("[data-prd-diff]").forEach((btn) => btn.addEventListener("click", async () => {
+          const box = btn.closest(".prd-version").querySelector(".prd-diff");
+          if (!box.hidden) { box.hidden = true; btn.textContent = "See changes"; return; }
+          if (!box.dataset.loaded) {
+            try {
+              const v = await api(`product/history/${encodeURIComponent(btn.dataset.prdDiff)}`);
+              box.innerHTML = v.diff.length ? `<pre class="diff" aria-label="Changes">${v.diff.map((l) => `<span class="diff-line ${l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : ""}">${esc(l)}</span>`).join("")}</pre>` : `<div class="muted">No text changed.</div>`;
+              box.dataset.loaded = "1";
+            } catch (e) { return toast(e.message, true); }
+          }
+          box.hidden = false; btn.textContent = "Hide changes";
+        }));
+        view.querySelectorAll("[data-prd-restore]").forEach((btn) => btn.addEventListener("click", async () => {
+          const ok = await formDialog("Restore this version?", `<p>The document goes back to how it was then. What it says now stays in the history, so you can come back.</p>`, "Restore");
+          if (!ok) return;
+          try { await api("product/revert", { method: "POST", body: { id: btn.dataset.prdRestore } }); toast("Restored"); await reload(); } catch (e) { toast(e.message, true); }
+        }));
+        const file = $("#prd-file");
+        $("#prd-add-file")?.addEventListener("click", () => file.click());
+        file?.addEventListener("change", async () => {
+          for (const f of file.files) {
+            if (f.size > NJ_UPLOAD_LIMIT) { toast(`${f.name} is over 25 MB`, true); continue; }
+            try { p = await uploadFile(f, "product/design"); toast(`Added ${f.name}`); } catch (e) { toast(e.message, true); }
+          }
+          file.value = ""; await reload();
+        });
+        $("#prd-add-link")?.addEventListener("click", async () => {
+          const v = await formDialog("Add a link", `<label class="field"><span>What is it?</span><input type="text" name="label" maxlength="120" placeholder="e.g. Figma: onboarding flow"></label>
+            <label class="field"><span>Link</span><input type="url" name="url" required placeholder="https://"></label>`, "Add");
+          if (!v) return;
+          try { await api("product/reference", { method: "POST", body: { label: v.label, url: v.url } }); await reload(); } catch (e) { toast(e.message, true); }
+        });
+        $("#prd-add-app")?.addEventListener("click", async () => {
+          const picker = await linkPickerHtml({ prefer: ["figma"], label: "Pick a design or item" });
+          const dlg = formDialog("Pick from a connected app", picker.html + `<small class="hint-text">A link is added under Look and feel, with the image when the app can provide one.</small>`, "Add");
+          picker.wire();
+          const v = await dlg;
+          const links = v ? JSON.parse(v.links || "[]") : [];
+          if (!links.length) return;
+          try { await api("product/reference", { method: "POST", body: { links } }); await reload(); } catch (e) { toast(e.message, true); }
+        });
+        if (open.section) { view.querySelector(`#sec-${CSS.escape(open.section)}`)?.scrollIntoView({ block: "start" }); open.section = ""; }
+        if (open.history) {
+          const row = view.querySelector(`[data-version="${CSS.escape(open.history)}"]`);
+          row?.querySelector("[data-prd-diff]")?.click();
+          row?.scrollIntoView({ block: "center" });
+          open.history = "";
+        }
       };
-      const edit = () => {
-        $("#pd-edit").hidden = true;
-        body.innerHTML = `<label class="field"><span>Markdown</span><textarea id="pd-text" rows="18" spellcheck="true" aria-label="Edit ${esc(doc.title)}">${esc(text)}</textarea></label>
-          <div class="row gap-10"><button class="btn primary" id="pd-save">Save</button><button class="btn ghost" id="pd-cancel">Cancel</button></div>`;
-        $("#pd-text").focus();
-        $("#pd-cancel").addEventListener("click", view);
-        $("#pd-save").addEventListener("click", async () => {
-          try { await api(`product/${encodeURIComponent(id)}`, { method: "POST", body: { text: $("#pd-text").value } }); doc.exists = true; text = $("#pd-text").value; toast("Saved. Commit it with your next change."); view(); } catch (e) { toast(e.message, true); }
+
+      // Shared by Import and Help: turn a proposed document into something you can read, then accept or drop.
+      const proposalView = (proposal, { source, label, onDone }) => {
+        panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>${esc(label)}</h2></div><div class="card-b stack">
+          ${proposal.summary ? `<div>${esc(proposal.summary)}</div>` : ""}
+          ${proposal.diff.length ? `<pre class="diff" aria-label="Changes">${proposal.diff.map((l) => `<span class="diff-line ${l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : ""}">${esc(l)}</span>`).join("")}</pre>` : `<div class="muted">This would not change anything.</div>`}
+          <details class="fold"><summary>Read the whole proposed document</summary><div class="md">${Markdown.render(proposal.markdown)}</div></details>
+          <div class="row gap-10"><button type="button" class="btn primary" id="prd-accept" ${proposal.diff.length ? "" : "disabled"}>Accept and save</button><button type="button" class="btn ghost" id="prd-discard">Discard</button></div>
+          <div class="muted">Nothing is saved until you accept. You can undo it afterwards from the history.</div></div></section>`;
+        $("#prd-accept").addEventListener("click", async () => {
+          try { await save({ text: proposal.markdown, source, summary: proposal.summary }); toast("Saved"); await reload(); } catch (e) { toast(e.message, true); }
+        });
+        $("#prd-discard").addEventListener("click", () => { panel().innerHTML = ""; onDone?.(); });
+      };
+      const busy = (text) => { panel().innerHTML = `<section class="card mb-16"><div class="card-b muted" role="status">${esc(text)} This can take up to a minute.</div></section>`; };
+
+      const importPanel = () => {
+        panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>Import a PRD you already have</h2></div><div class="card-b stack">
+          <div class="muted">A markdown, text, Word or PDF file, or paste the text. It is rearranged into the five sections below, keeping your words. You see the result before anything is saved.</div>
+          <div class="row gap-10"><button type="button" class="btn" id="prd-import-file">Choose a file</button><span class="muted" id="prd-import-name"></span><input type="file" id="prd-import-input" accept=".md,.markdown,.txt,.docx,.pdf" hidden></div>
+          <label class="field"><span>Or paste it</span><textarea id="prd-import-text" rows="6" aria-label="Paste your PRD"></textarea></label>
+          <div class="row gap-10"><button type="button" class="btn primary" id="prd-import-go">Read it</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
+        const input = $("#prd-import-input");
+        $("#prd-import-file").addEventListener("click", () => input.click());
+        input.addEventListener("change", () => { $("#prd-import-name").textContent = input.files[0]?.name || ""; });
+        $("#prd-import-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
+        $("#prd-import-go").addEventListener("click", async () => {
+          const f = input.files[0], text = $("#prd-import-text").value.trim();
+          if (!f && !text) return toast("Choose a file or paste some text first.", true);
+          if (f && f.size > NJ_UPLOAD_LIMIT) return toast("That file is over 25 MB.", true);
+          busy("Reading it…");
+          try {
+            const proposal = f ? await uploadFile(f, "product/import") : await api("product/import", { method: "POST", body: { text } });
+            proposalView(proposal, { source: "import", label: "Your PRD, in this format", onDone: () => {} });
+          } catch (e) { toast(e.message, true); importPanel(); }
         });
       };
-      $("#pd-edit").addEventListener("click", edit);
 
-      const ask = (phase, extra = {}) => { // one place that renders the refine panel for each step
+      let instruction = "";
+      const helpPanel = (phase = "idle", extra = {}) => {
         if (phase === "idle") {
-          panel.innerHTML = `<label class="field"><span>What should change?${instruction ? "" : ` <span class="muted">(optional)</span>`}</span>
-            <textarea id="pd-instruction" rows="3" maxlength="4000" placeholder="${esc(PRODUCT_HINT[id] || "")}">${esc(instruction)}</textarea>
-            <small class="hint-text">The AI sees this document and the others. It proposes a change; nothing is saved until you accept it.</small></label>
-            <div class="row gap-10"><button class="btn" id="pd-questions">Ask me questions first</button><button class="btn primary" id="pd-propose">Propose changes</button></div>`;
-          const read = () => { instruction = $("#pd-instruction").value; };
-          $("#pd-questions").addEventListener("click", async () => { read(); ask("busy", { label: "Thinking of questions…" }); try { ask("questions", { questions: (await api(`product/${encodeURIComponent(id)}/refine`, { method: "POST", body: { mode: "questions", instruction } })).questions }); } catch (e) { toast(e.message, true); ask("idle"); } });
-          $("#pd-propose").addEventListener("click", async () => { read(); propose([]); });
-        } else if (phase === "busy") {
-          panel.innerHTML = `<div class="muted" role="status">${esc(extra.label)} This can take up to a minute.</div>`;
+          panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>Help me with this</h2></div><div class="card-b stack">
+            <label class="field"><span>What would you like help with? <span class="muted">(optional)</span></span><textarea id="prd-instruction" rows="3" maxlength="4000" placeholder="e.g. Fill in the gaps, or: make the features sharper">${esc(instruction)}</textarea>
+              <small class="hint-text">Not sure what to say? That's fine. It asks a few simple questions, then proposes changes. Nothing is saved until you accept.</small></label>
+            <div class="row gap-10"><button type="button" class="btn" id="prd-questions">Ask me questions first</button><button type="button" class="btn primary" id="prd-propose">Propose changes</button><button type="button" class="btn ghost" id="prd-help-cancel">Cancel</button></div></div></section>`;
+          const read = () => { instruction = $("#prd-instruction").value; };
+          $("#prd-help-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
+          $("#prd-questions").addEventListener("click", async () => { read(); busy("Thinking of questions…"); try { helpPanel("questions", { questions: (await api("product/refine", { method: "POST", body: { mode: "questions", instruction } })).questions }); } catch (e) { toast(e.message, true); helpPanel(); } });
+          $("#prd-propose").addEventListener("click", () => { read(); propose([]); });
         } else if (phase === "questions") {
-          panel.innerHTML = `<div class="muted">Answer what you can; skip the rest.</div>
-            ${extra.questions.map((q, i) => `<label class="field"><span>${esc(q.question)}</span><input type="text" data-answer="${i}" maxlength="1000"><small class="hint-text">Why it matters: ${esc(q.why || "it changes the document")}</small></label>`).join("")}
-            <div class="row gap-10"><button class="btn primary" id="pd-with-answers">Propose changes with my answers</button><button class="btn ghost" id="pd-back">Back</button></div>`;
-          $("#pd-back").addEventListener("click", () => ask("idle"));
-          $("#pd-with-answers").addEventListener("click", () => propose(extra.questions.map((q, i) => ({ question: q.question, answer: panel.querySelector(`[data-answer="${i}"]`).value }))));
-        } else if (phase === "proposal") {
-          const p = extra.proposal;
-          panel.innerHTML = `<div><strong>Proposed change</strong>${p.summary ? `: ${esc(p.summary)}` : ""}</div>
-            ${p.diff.length ? `<pre class="diff" aria-label="Changes">${p.diff.map((l) => `<span class="diff-line ${l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : ""}">${esc(l)}</span>`).join("")}</pre>` : `<div class="muted">No changes: the document already says this.</div>`}
-            <details class="fold"><summary>Read the whole proposed document</summary><div class="md">${Markdown.render(p.markdown)}</div></details>
-            <div class="row gap-10"><button class="btn primary" id="pd-accept" ${p.diff.length ? "" : "disabled"}>Accept and save</button><button class="btn" id="pd-retry">Change my request</button><button class="btn ghost" id="pd-discard">Discard</button></div>`;
-          $("#pd-accept").addEventListener("click", async () => {
-            try { await api(`product/${encodeURIComponent(id)}`, { method: "POST", body: { text: p.markdown } }); doc.exists = true; text = p.markdown; instruction = ""; toast("Saved. Commit it with your next change."); view(); ask("idle"); route(); } catch (e) { toast(e.message, true); }
-          });
-          $("#pd-retry").addEventListener("click", () => ask("idle"));
-          $("#pd-discard").addEventListener("click", () => { instruction = ""; ask("idle"); });
+          panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>A few questions</h2></div><div class="card-b stack"><div class="muted">Answer what you can; skip the rest. “I don't know yet” is a fine answer.</div>
+            ${extra.questions.map((q, i) => `<label class="field"><span>${esc(q.question)}</span><input type="text" data-answer="${i}" maxlength="1000"><small class="hint-text">Why it matters: ${esc(q.why || "it shapes what gets built")}</small></label>`).join("")}
+            <div class="row gap-10"><button type="button" class="btn primary" id="prd-with-answers">Propose changes with my answers</button><button type="button" class="btn ghost" id="prd-back">Back</button></div></div></section>`;
+          $("#prd-back").addEventListener("click", () => helpPanel());
+          $("#prd-with-answers").addEventListener("click", () => propose(extra.questions.map((q, i) => ({ question: q.question, answer: panel().querySelector(`[data-answer="${i}"]`).value }))));
         }
       };
       const propose = async (answers) => {
-        ask("busy", { label: "Drafting the change…" });
-        try { ask("proposal", { proposal: await api(`product/${encodeURIComponent(id)}/refine`, { method: "POST", body: { mode: "propose", instruction, answers } }) }); } catch (e) { toast(e.message, true); ask("idle"); }
+        busy("Drafting the changes…");
+        try { proposalView(await api("product/refine", { method: "POST", body: { mode: "propose", instruction, answers } }), { source: "ai", label: "Proposed changes", onDone: () => { instruction = ""; } }); }
+        catch (e) { toast(e.message, true); helpPanel(); }
       };
-      view();
-      ask("idle");
+
+      wire();
+      hydrateAuthImages();
+      if (open.imp) importPanel();
+      else if (!p.sections.find((s) => s.id === "pitch").filled && !p.history.length) {
+        panel().innerHTML = `<section class="card mb-16"><div class="card-b stack"><strong>Start here</strong>
+          <div>Say what you have in mind in the Pitch below, as if you were explaining it to a friend. Or let us help: import a PRD you already have, or answer a few questions.</div>
+          <div class="row gap-10"><button type="button" class="btn small primary" id="prd-start-import">Import a PRD</button><button type="button" class="btn small" id="prd-start-help">Help me with this</button></div></div></section>`;
+        $("#prd-start-import").addEventListener("click", () => importPanel());
+        $("#prd-start-help").addEventListener("click", () => helpPanel());
+      }
     },
   };
+};
+
+// Images the backend serves behind the sign-in can't be loaded by a plain <img src>; fetch them with the token instead.
+async function hydrateAuthImages(root = document) {
+  const backend = getBackendUrl(), token = getToken();
+  for (const img of root.querySelectorAll("img[data-auth-src]")) {
+    if (img.dataset.loaded) continue;
+    img.dataset.loaded = "1";
+    try {
+      const res = await fetch(`${backend ?? ""}/api/${img.dataset.authSrc}`, { credentials: backend ? "omit" : "same-origin", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (res.ok) img.src = URL.createObjectURL(await res.blob());
+    } catch { /* the alt text stays */ }
+  }
 }
 
 pages.devlogs = async () => {
@@ -3232,7 +3352,7 @@ pages["new-project"] = async (_, query) => {
     return {
       title: "Start a new project", sub: npStepper("describe"),
       html: `${resume}<form class="card card-b stack np-form" id="np-describe">
-        <p class="muted">A few quick questions. They become a product brief that you and the AI can both read. Keep the answers short; you can edit the brief any time.</p>
+        <p class="muted">A few quick questions. They become the product requirements that you and the AI can both read. Keep the answers short; you can edit it any time.</p>
         ${data.questions.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}
         <div class="row"><span class="spacer"></span>${discard}<button class="btn primary big" type="submit">Next: where it lives</button></div></form>`,
       after: () => {
@@ -3295,7 +3415,7 @@ pages["new-project"] = async (_, query) => {
   // step === "create": show what happened, and what's left
   const result = window.__npResult;
   const created = result?.root || draft.created_root;
-  const steps = result?.steps || [{ name: "Created the folder and product brief", ok: true, detail: draft.created_root }, { name: "Create the GitHub repository", ok: false, detail: "Waiting on GitHub." }];
+  const steps = result?.steps || [{ name: "Created the folder and product requirements", ok: true, detail: draft.created_root }, { name: "Create the GitHub repository", ok: false, detail: "Waiting on GitHub." }];
   const githubPending = !!draft.created_root || (result && !result.github_ok);
   return {
     title: result?.name ? `${result.name} is ready` : "Finish GitHub", sub: npStepper("create"),
@@ -3306,8 +3426,8 @@ pages["new-project"] = async (_, query) => {
       ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
       ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
       <section class="card mt-16"><div class="card-h"><h2>Next: define the product</h2></div><div class="card-b stack">
-        <div>Your brief is written. Before the first job, answer a few questions so the AI can draft the rest: who it's for, the core use cases, and what version 1 will <strong>not</strong> do.</div>
-        <div><a class="btn" href="#/product/use-cases">Start with users and non-goals</a></div></div></section>
+        <div>Your product requirements are written. Before the first job, read them over and add what's missing: how it should look and feel, and what it should <strong>not</strong> be.</div>
+        <div><a class="btn" href="#/product">Open the product requirements</a></div></div></section>
       <div class="row mt-16"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
       <p class="muted">“Set up this project” runs the setup wizard, which asks how it's built and tested so jobs can run.</p>`,
     after: () => {
@@ -3613,7 +3733,7 @@ function resolveRoute() {
     return { page: "config", args: section ? [section.id] : [], nav: "config", query };
   }
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "projects", query };
-  if (parts[0] === "product") return { page: "product", args: parts[1] ? [parts[1]] : [], nav: "home", query };
+  if (parts[0] === "product") return { page: "product", args: [], nav: "home", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
 }
@@ -3690,7 +3810,7 @@ if (connBtn) {
 $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
 
 // ---------------------------------------------------------------- command palette
-const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product documents", "#/product", "Brief, use cases, journey, screens, decisions, plan"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
+const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],

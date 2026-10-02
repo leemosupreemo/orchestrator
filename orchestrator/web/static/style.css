@@ -1341,3 +1341,13 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-top-color: var(--accent); } }
+
+/* Product requirements */
+.product-pitch { margin: 0; font-size: var(--text-base); line-height: 1.5; }
+.prd-empty { color: var(--muted); font-style: italic; }
+.prd-notice .row { margin-top: var(--space-2); }
+.prd-designs { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.prd-design { display: block; margin: 0; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--panel-2); }
+.prd-design img { display: block; max-height: 160px; max-width: 100%; min-width: 80px; min-height: 60px; object-fit: contain; }
+.prd-version .prd-diff { margin-top: var(--space-2); }
+.prd-version .prd-diff[hidden] { display: none; }

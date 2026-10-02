@@ -764,6 +764,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             capture=False,
         )
 
+        update_product_requirements(job_path)
         print_status_report(job, True, True, pr_number=pr_number, pr_url=pr_url, distributed_status=distributed_status)
         
         # Determine if we should distribute
@@ -874,6 +875,40 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # Re-raise so the user still gets the full traceback for debugging
         raise
 
+
+
+def update_product_requirements(job_path: Path) -> None:
+    """After a job finishes: see whether what it taught us changes the product requirements document, and keep it true.
+
+    The document is the person's, so this edits only when something clearly changed, keeps their words, records a version they
+    can restore, and tells them (see orchestrator/prd.py). It never stops a job: any failure is a printed note."""
+    try:
+        from orchestrator import prd
+        from llm import run_llm
+        from model_router import ModelRole
+        from common import ORCHESTRATOR_RUNTIME_DIR
+        job = read_json(job_path)
+        doc = prd.Prd(ROOT, ORCHESTRATOR_RUNTIME_DIR)
+        if not prd.should_check(job):
+            return
+        print("      - Checking whether the product requirements need updating...", flush=True)
+
+        def ask(prompt: str) -> str:
+            reply, _model, _sid = run_llm(job.get("reviewer") or job.get("planner"), prompt, cwd=ROOT, timeout=300,
+                                          allowed_models=job.get("allowed_models"), role=ModelRole.PLANNER)
+            return reply
+
+        result = prd.run_update(doc, job, ask)
+        if result["status"] in {"updated", "nochange", "rejected", "error"}:
+            fresh = read_json(job_path)  # the job may have changed while the model thought
+            fresh["prd_checked"] = True
+            write_json(job_path, fresh)
+        note = {"updated": f"Updated the product requirements: {result.get('summary', '')}", "nochange": "No change needed.",
+                "rejected": result.get("error", ""), "error": f"Couldn't check ({result.get('error', '')})."}.get(result["status"], "")
+        if note:
+            print(f"      - {note}")
+    except Exception as exc:  # never let a convenience stop a finished job
+        print(f"      - Note: couldn't check the product requirements: {exc}")
 
 
 def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[str]) -> None:

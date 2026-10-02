@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from orchestrator import new_project as np
+from orchestrator import prd
 from orchestrator.project_config import load_recent_projects
 from orchestrator.web import server as ui
 
@@ -30,17 +31,26 @@ class Isolated(unittest.TestCase):
         self.tmp.cleanup()
 
 
-class BriefTests(unittest.TestCase):
-    def test_brief_captures_every_answer_and_numbers_the_features(self):
-        md = np.render_brief(ANSWERS)
-        for needle in ("# Word Duel: product brief", "A turn-based word game.", "Friends who like games", "Async games are clunky.",
-                       "1. Start a match", "2. Take turns", "3. See scores", "iOS app", "SwiftUI", "Two phones can finish a match", "Out of scope"):
-            self.assertIn(needle, md)
+class PrdTests(unittest.TestCase):
+    def test_the_prd_is_filled_in_from_every_answer(self):
+        md = np.render_prd(ANSWERS)
+        parts = prd.split(md)
+        self.assertTrue(md.startswith("# Word Duel: product requirements"))
+        self.assertIn("A turn-based word game.", parts["pitch"])
+        self.assertIn("Problem: Async games are clunky.", parts["pitch"])
+        self.assertIn("Built for: iOS app", parts["pitch"])
+        self.assertIn("SwiftUI", parts["pitch"])
+        self.assertIn("Friends who like games", parts["who"])
+        self.assertEqual([l for l in parts["features"].splitlines() if l.startswith("- ")], ["- Start a match", "- Take turns", "- See scores"])
+        self.assertIn("Version 1 is done when: Two phones can finish a match", parts["features"])
 
-    def test_optional_sections_are_left_out_when_blank(self):
-        md = np.render_brief({**ANSWERS, "stack": "", "done": ""})
-        self.assertNotIn("Technology preferences", md)
-        self.assertNotIn("How we'll know", md)
+    def test_sections_nothing_was_asked_about_keep_their_guidance_and_stay_empty(self):
+        parts = prd.split(np.render_prd({**ANSWERS, "stack": "", "done": ""}))
+        self.assertFalse(prd.is_filled(parts["look"]))
+        self.assertFalse(prd.is_filled(parts["not"]))
+        self.assertNotIn("Technology preferences", parts["pitch"])
+        self.assertNotIn("Version 1 is done when", parts["features"])
+        self.assertIn("## Look and feel", np.render_prd(ANSWERS))  # the section is there to fill in later
 
     def test_only_the_lean_questions_are_required(self):
         self.assertEqual(len(np.REQUIRED), 6)
@@ -48,25 +58,23 @@ class BriefTests(unittest.TestCase):
 
 
 class PlatformTests(unittest.TestCase):
-    def test_several_platforms_are_listed_in_the_brief(self):
-        md = np.render_brief({**ANSWERS, "platform": "iOS app, Android app, Backend / API"})
-        self.assertIn("## Platforms\n\n- iOS app\n- Android app\n- Backend / API\n", md)
+    def test_several_platforms_are_listed_in_the_pitch(self):
+        md = np.render_prd({**ANSWERS, "platform": "iOS app, Android app, Backend / API"})
+        self.assertEqual(prd.platforms(md), (["iOS app", "Android app", "Backend / API"], False))
 
     def test_recommend_me_tells_the_ai_to_choose_and_explain(self):
-        md = np.render_brief({**ANSWERS, "platform": np.RECOMMEND})
-        self.assertIn("_Not decided._", md)
+        md = np.render_prd({**ANSWERS, "platform": np.RECOMMEND})
+        self.assertEqual(prd.platforms(md), ([], True))
         self.assertIn("recommend platforms, with reasons", md)
-        self.assertNotIn("- Not sure", md)
+        self.assertNotIn("Not sure", md)
 
-    def test_recommend_alongside_a_pick_keeps_both_statements(self):
-        md = np.render_brief({**ANSWERS, "platform": f"Web app, {np.RECOMMEND}"})
-        self.assertIn("_Not decided._", md)
-        self.assertIn("- Web app", md)
+    def test_recommend_alongside_a_pick_keeps_what_was_picked(self):
+        self.assertEqual(prd.platforms(np.render_prd({**ANSWERS, "platform": f"Web app, {np.RECOMMEND}"})), (["Web app"], False))
 
     def test_old_single_choice_values_still_work(self):
         self.assertEqual(np.platform_list("iOS app"), ["iOS app"])
         self.assertEqual(np.platform_list(" Web app,Web app , Backend / API\n"), ["Web app", "Backend / API"])
-        self.assertIn("- Something else", np.render_brief({**ANSWERS, "platform": "Something else"}))
+        self.assertEqual(prd.platforms(np.render_prd({**ANSWERS, "platform": "Something else"}))[0], ["Something else"])
 
     def test_platform_is_required_and_next_steps_exist_for_each_real_choice(self):
         self.assertEqual(np.missing_answers({k: v for k, v in ANSWERS.items() if k != "platform"}), ["What are you building it for?"])
@@ -98,11 +106,11 @@ class CreateTests(Isolated):
     def test_creates_folder_brief_agents_and_a_git_commit(self):
         root, steps = np.create_local(ANSWERS, str(self.home / "Projects"))
         self.assertEqual(root.name, "Word-Duel")
-        self.assertIn("Word Duel", (root / "docs" / "product-brief.md").read_text())
-        self.assertIn("docs/product-brief.md", (root / "AGENTS.md").read_text())
+        self.assertIn("Word Duel", (root / "docs" / "product" / "prd.md").read_text())
+        self.assertIn("docs/product/prd.md", (root / "AGENTS.md").read_text())
         self.assertTrue(all(s["ok"] for s in steps), steps)
         log = subprocess.run(["git", "log", "--oneline"], cwd=root, capture_output=True, text=True).stdout
-        self.assertIn("product brief", log)
+        self.assertIn("product requirements", log)
 
     def test_refuses_unsafe_or_incomplete_requests(self):
         with self.assertRaises(np.NewProjectError):
@@ -125,7 +133,7 @@ class CreateTests(Isolated):
     def test_github_not_ready_keeps_the_local_project_and_reports_it(self):
         with patch("orchestrator.setup_checklist.github_cli_state", return_value={"installed": True, "user": None}):
             result = np.create_project({"answers": ANSWERS, "parent": str(self.home), "host": "github"})
-        self.assertTrue(Path(result["root"], "docs", "product-brief.md").exists())
+        self.assertTrue(Path(result["root"], "docs", "product", "prd.md").exists())
         self.assertFalse(result["github_ok"])
         self.assertIn("Not signed in", result["steps"][-2]["detail"])
 
@@ -221,23 +229,24 @@ class CliFlowTests(Isolated):
         (code, root), asked, said = self.drive(self.local_answers(), ["Local only"], [{"installed": False, "user": None}])
         self.assertEqual(code, 0)
         self.assertEqual(root.name, "Pocket-Notes")
-        brief = (root / "docs" / "product-brief.md").read_text()
-        self.assertIn("1. Write a note", brief)
+        text = (root / "docs" / "product" / "prd.md").read_text()
+        self.assertIn("- Write a note", prd.split(text)["features"])
         self.assertIsNone(np.load_draft())
 
-    def test_a_new_project_gets_the_whole_set_of_product_documents(self):
+    def test_a_new_project_gets_one_product_requirements_doc_that_every_ai_reads_first(self):
         with patch.object(np, "publish_to_github"):
             result = np.create_project({"answers": ANSWERS, "parent": str(self.home), "host": "local"})
         root = Path(result["root"])
-        for rel in ("docs/product-brief.md", "docs/product/use-cases.md", "docs/product/journey.md", "docs/product/screens.md",
-                    "docs/product/architecture-decisions.md", "docs/product/plan.md"):
-            self.assertTrue((root / rel).is_file(), rel)
+        self.assertTrue((root / "docs" / "product" / "prd.md").is_file())
+        self.assertFalse((root / "docs" / "product-brief.md").exists())  # no separate brief or six scaffolds any more
+        self.assertEqual(sorted(p.name for p in (root / "docs" / "product").iterdir()), ["prd.md"])
         agents = (root / "AGENTS.md").read_text()
-        for rel in ("docs/product/use-cases.md", "docs/product/plan.md"):
-            self.assertIn(rel, agents)
+        self.assertIn("docs/product/prd.md", agents)
         self.assertIn("one working end-to-end slice at a time", agents)
-        from orchestrator import product_docs
-        self.assertEqual(product_docs.context_block(root).count("###"), 1)  # only the brief is filled in; templates are not context
+        self.assertIn("Not this", agents)
+        context = prd.context_block(root)
+        self.assertIn("### Pitch", context)
+        self.assertNotIn("### Look and feel", context)  # unfilled sections are not context
 
     def test_creation_result_lists_what_the_chosen_platforms_need(self):
         with patch.object(np, "publish_to_github"):
@@ -248,7 +257,7 @@ class CliFlowTests(Isolated):
     def test_several_platforms_chosen_in_the_terminal_are_saved_together(self):
         (code, root), _, _ = self.drive(self.local_answers(), ["Local only"], [{"installed": False, "user": None}], platforms=(("iOS app", "Backend / API"),))
         self.assertEqual(code, 0)
-        self.assertIn("- iOS app\n- Backend / API", (root / "docs" / "product-brief.md").read_text())
+        self.assertEqual(prd.platforms((root / "docs" / "product" / "prd.md").read_text())[0], ["iOS app", "Backend / API"])
 
     def test_github_chosen_but_not_signed_in_saves_progress_and_resumes_to_finish(self):
         # first run: choose GitHub, can't sign in, stop

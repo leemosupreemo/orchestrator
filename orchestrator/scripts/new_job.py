@@ -32,7 +32,7 @@ from model_registry import get_model, ModelTier
 from probe_machine import load_machines
 from manual_run import capture_logs
 import test_cases as tc
-from orchestrator import product_docs
+from orchestrator import prd
 from orchestrator import slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -663,7 +663,7 @@ def main(args_override: list[str] | None = None) -> None:
             prompt_template = f"{prompt_template}\n{test_case_context}"
         # The product's own documents (brief, use cases and non-goals, journey, screens, decisions, plan) come first,
         # so each plan is judged against what the product is for. It is part of the template, so retries keep it.
-        product_context = product_docs.context_block(ROOT)
+        product_context = prd.context_block(ROOT)
         if product_context:
             prompt_template = f"{prompt_template}\n{product_context}"
         llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
@@ -806,7 +806,7 @@ def main(args_override: list[str] | None = None) -> None:
                 verifier_prompt = (PROMPTS_DIR / "verifier.md").read_text(encoding="utf-8")
                 if needs_test_cases:
                     verifier_prompt = f"{verifier_prompt}\n{tc.VERIFIER_INSTRUCTIONS}"
-                verifier_prompt = f"{verifier_prompt}\n{product_docs.context_block(ROOT, 'verifier')}"
+                verifier_prompt = f"{verifier_prompt}\n{prd.context_block(ROOT, 'verifier')}"
                 verifier_input = f"{verifier_prompt}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### GENERATED PLAN ###\n{llm_output}"
                 
                 try:

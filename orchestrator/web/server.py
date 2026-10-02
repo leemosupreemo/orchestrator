@@ -61,7 +61,7 @@ from orchestrator import integration_check
 from orchestrator import new_job_form
 from orchestrator import notifier
 from orchestrator import plan_edit
-from orchestrator import product_docs
+from orchestrator import prd as prd_doc
 from orchestrator import project_health
 from orchestrator import scope_check
 from orchestrator.stack_detection import detect_project_stack
@@ -556,11 +556,7 @@ def inbox_overview(root: Path, sessions: Any, with_others: bool = True) -> dict[
             if str(other) == active["root"] or not jobs_dir(other).is_dir():
                 continue
             others.append({"name": p.get("name") or project_display_name(other), "root": str(other), "jobs": list_jobs(other)})
-    reminders = []
-    due = product_docs.review_due(root, len(jobs) + len(archived_feature_jobs(root)))
-    if due:
-        reminders.append({"id": "product-review", "title": "Review the product", "label": "Review due", "reason": due["reason"], "href": "#/product"})
-    return inbox_view.build(active, jobs, sessions.list(), others, reminders)
+    return inbox_view.build(active, jobs, sessions.list(), others)
 
 
 def inbox_state(root: Path, sessions: Any) -> dict[str, Any]:
@@ -616,9 +612,10 @@ def project_facts(root: Path) -> dict[str, Any]:
     """Everything the check-up rules look at, read from the project."""
     settings = read_settings(root)
     config = read_json_file(runtime_dir(root) / "project.json")
-    brief_file = root / "docs" / "product-brief.md"
-    brief_text = brief_file.read_text(encoding="utf-8", errors="ignore") if brief_file.is_file() else ""
-    platforms, recommend_pending = project_health.brief_platforms(brief_text)
+    doc = prd_doc.Prd(root, runtime_dir(root))
+    doc.migrate_legacy()
+    prd_text = doc.read()
+    platforms, recommend_pending = prd_doc.platforms(prd_text)
     try:
         stack = detect_project_stack(root)
         detected = "" if stack.language == "generic" else stack.display_name
@@ -638,7 +635,7 @@ def project_facts(root: Path) -> dict[str, Any]:
     base_runs = [r for r in pipeline["runs"] if r["on_base"]]
     workflows = root / ".github" / "workflows"
     return {
-        "brief": bool(brief_text.strip()), "agents": any((root / n).is_file() for n in ("AGENTS.md", "CLAUDE.md", "GEMINI.md")),
+        "prd_sections": {x["id"]: x["filled"] for x in prd_doc.sections_view(prd_text)} if prd_text else {}, "prd_auto_update": doc.auto_update(), "agents": any((root / n).is_file() for n in ("AGENTS.md", "CLAUDE.md", "GEMINI.md")),
         "readme": (root / "README.md").is_file(), "platforms": platforms, "recommend_pending": recommend_pending, "detected": detected,
         "git_repo": bool(git(root, "rev-parse", "--is-inside-work-tree")), "remote": bool(git(root, "remote", "get-url", "origin")),
         "tag": live["tag"] if live else None, "unreleased": live["unreleased"] if live else None,
@@ -650,8 +647,6 @@ def project_facts(root: Path) -> dict[str, Any]:
         "ci": workflows.is_dir() and any(workflows.glob("*.y*ml")) or (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists(),
         "pipeline_failing": bool(base_runs) and base_runs[0]["tone"] == "failed",
         "distribution": bool(config.get("firebase_distribution")), "builds_sent": len(delivery_view.receipts(runtime_dir(root))),
-        "docs": [{"id": d["id"], "title": d["title"], "filled": d["filled"], "exists": d["exists"]} for d in product_docs.listing(root)],
-        "review": product_docs.last_review(root),
     }
 
 
@@ -1599,7 +1594,10 @@ def recent_logs(root: Path, limit: int = 8) -> list[dict[str, Any]]:
     return sorted(out, key=lambda x: x["mtime"], reverse=True)[:limit]
 
 
-def save_upload(root: Path, name: str, data: bytes) -> dict[str, Any]:
+PROVIDER_NAMES = {"jira": "Jira", "trello": "Trello", "sentry": "Sentry", "figma": "Figma"}
+
+
+def save_upload(root: Path, name: str, data: bytes, folder: Path | None = None) -> dict[str, Any]:
     clean = re.sub(r"[^A-Za-z0-9._-]+", "-", PurePosixPath(name or "").name).strip(".-")[:80]
     if not clean:
         raise UIError("Give the file a name")
@@ -1609,7 +1607,7 @@ def save_upload(root: Path, name: str, data: bytes) -> dict[str, Any]:
         raise UIError(str(exc))
     if not data:
         raise UIError("That file is empty")
-    folder = runtime_dir(root) / "ui" / "uploads"
+    folder = folder or runtime_dir(root) / "ui" / "uploads"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}-{clean}"
     target.write_bytes(data)
@@ -2629,6 +2627,116 @@ class UIHandler(BaseHTTPRequestHandler):
             self.close_connection = True
         self._body_read = True
 
+    def _product_route(self, root: Path, method: str, parts: list[str], query: dict[str, list[str]]) -> None:
+        """/api/product...: the one product requirements document, its history, settings, designs and AI help."""
+        doc = prd_doc.Prd(root, runtime_dir(root))
+        doc.migrate_legacy()
+        try:
+            if method == "GET" and parts == ["product"]:
+                self._json(doc.overview())
+            elif method == "GET" and len(parts) == 3 and parts[1] == "design":
+                name = parts[2]
+                folder = root / prd_doc.DESIGNS_DIR
+                target = folder / name
+                if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or not target.is_file():
+                    raise UIError("That design isn't there.", HTTPStatus.NOT_FOUND)
+                inline = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}.get(target.suffix.lower())
+                # Only real images are shown in place. Anything else (HTML, SVG, PDF) is a download, so an uploaded file can never run in the app's origin.
+                headers: dict[str, str] = {}
+                if not inline:
+                    headers["Content-Disposition"] = f'attachment; filename="{name}"'
+                self._send(HTTPStatus.OK, target.read_bytes(), inline or "application/octet-stream", headers)
+            elif method == "GET" and len(parts) == 3 and parts[1] == "history":
+                v = doc.version(parts[2])
+                older = [x for x in doc._versions() if x["at"] < v["at"]]
+                self._json({"id": v["id"], "at": v["at"], "source": v["source"], "summary": v["summary"], "job": v.get("job", ""), "content": v["content"],
+                            "diff": prd_doc.unified_diff(older[-1]["content"] if older else "", v["content"], "before", "this version")})
+            elif method == "POST" and parts == ["product"]:
+                body = self._body()
+                source = _choice(body, "source", ["you", "import", "ai"]) if body.get("source") else "you"
+                summary = _text(body, "summary", limit=300)
+                if "section" in body:
+                    doc.set_section(str(body["section"]), str(body.get("body") or ""), source, summary)
+                else:
+                    doc.write(str(body.get("text") or ""), source, summary)
+                self._json(doc.overview())
+            elif method == "POST" and parts == ["product", "settings"]:
+                doc.set_auto_update(bool(self._body().get("auto_update")))
+                self._json(doc.overview())
+            elif method == "POST" and parts == ["product", "dismiss"]:
+                doc.dismiss_notice()
+                self._json({"ok": True})
+            elif method == "POST" and parts == ["product", "revert"]:
+                doc.revert(_text(self._body(), "id", required=True))
+                self._json(doc.overview())
+            elif method == "POST" and parts == ["product", "reference"]:
+                body = self._body()
+                picked = _clean_links(body.get("links"))
+                if picked:  # items chosen from a connected app (a Figma frame, say): the link, plus its image when there is one
+                    try:
+                        contexts = integrations.build_context(picked, saved_integrations(root))
+                    except integrations.IntegrationError as exc:
+                        raise integration_error(exc)
+                    for ctx in contexts:
+                        doc.add_reference(f"{PROVIDER_NAMES.get(ctx.item.provider, ctx.item.provider)}: {ctx.item.title}", ctx.item.url or ctx.item.ref)
+                        img = _save_image(root, root / prd_doc.DESIGNS_DIR, ctx)
+                        if img:
+                            doc.add_reference(f"{ctx.item.title} (image)", f"designs/{Path(img).name}")
+                else:
+                    url = _text(body, "url", required=True, limit=2000)
+                    if not re.match(r"https?://", url):
+                        raise UIError("Use a link that starts with http:// or https://")
+                    doc.add_reference(_text(body, "label", limit=120) or url, url)
+                self._json(doc.overview())
+            elif method == "POST" and parts == ["product", "design"]:
+                data = self._read_upload()
+                saved = save_upload(root, (query.get("name") or [""])[0], data, folder=root / prd_doc.DESIGNS_DIR)
+                if saved["kind"] == "log":
+                    raise UIError("Add an image, PDF, Figma export or HTML file. Logs belong on a job.")
+                doc.add_reference(saved["name"], f"designs/{Path(saved['path']).name}")
+                self._json(doc.overview())
+            elif method == "POST" and parts == ["product", "refine"]:
+                body = self._body()
+                mode = _choice(body, "mode", ["questions", "propose"])
+                instruction = _text(body, "instruction", limit=4000)
+                current = doc.read() or prd_doc.template()
+                if mode == "questions":
+                    self._json({"questions": prd_doc.parse_questions(self._model_call(root, prd_doc.questions_prompt(current, instruction)))})
+                else:
+                    answers = [a for a in (body.get("answers") or []) if isinstance(a, dict)][:6]
+                    proposal = prd_doc.parse_proposal(self._model_call(root, prd_doc.refine_prompt(current, instruction, answers)))
+                    self._json({**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])})
+            elif method == "POST" and parts == ["product", "import"]:
+                if (self.headers.get("Content-Type") or "").startswith("application/json"):
+                    body = self._body()
+                    source, name = _text(body, "text", required=True, limit=prd_doc.MAX_IMPORT_CHARS * 2), "pasted text"
+                else:
+                    name = (query.get("name") or [""])[0]
+                    source = prd_doc.extract_text(name, self._read_upload())
+                if not source.strip():
+                    raise UIError("There was no text in that.")
+                current = doc.read() or prd_doc.template()
+                proposal = prd_doc.parse_proposal(self._model_call(root, prd_doc.import_prompt(source, name), timeout=240))
+                self._json({**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])})
+            else:
+                raise UIError("Not found", HTTPStatus.NOT_FOUND)
+        except prd_doc.PrdError as exc:
+            raise UIError(str(exc), HTTPStatus.BAD_GATEWAY if "model" in str(exc).lower() else HTTPStatus.BAD_REQUEST)
+
+    def _read_upload(self) -> bytes:
+        """The raw request body as a file upload, refused (without reading it) when it is over the limit."""
+        if self.headers.get("X-Orchestrator-UI") != "1":
+            raise UIError("Missing UI headers", HTTPStatus.FORBIDDEN)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > new_job_form.UPLOAD_LIMIT:
+            self.close_connection = True  # the body is not read, so end this connection rather than leave it in the stream
+            raise UIError(f"That file is over {new_job_form.UPLOAD_LIMIT // (1024 * 1024)} MB", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        self._body_read = True
+        return self.rfile.read(length) if length > 0 else b""
+
     def _dispatch_inner(self, method: str) -> None:
         if not self._host_ok():
             self._error(HTTPStatus.FORBIDDEN, "Unexpected Host header")
@@ -2726,7 +2834,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 "script-src 'self' https://cdn.jsdelivr.net https://www.gstatic.com https://apis.google.com; "
                 "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
                 "font-src 'self' https://fonts.gstatic.com; "
-                "img-src 'self' data: https://*.googleusercontent.com https://lh3.googleusercontent.com; "
+                "img-src 'self' data: blob: https://*.googleusercontent.com https://lh3.googleusercontent.com; "
                 "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.googleapis.com https://*.firebaseapp.com; "
                 "frame-src 'self' https://swift-orch-web-20260923.firebaseapp.com https://*.firebaseapp.com; "
                 "frame-ancestors 'none'"
@@ -2740,6 +2848,7 @@ class UIHandler(BaseHTTPRequestHandler):
         if method == "GET" and parts == ["state"]:
             self._json({"project": project_state(root), "runs": self.server.sessions.list(),
                         **inbox_state(root, self.server.sessions),
+                        "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
                         "alerts": {"webhook": bool(read_settings(root).get("notification_webhook"))},
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
                                     for k, a in ACTIONS.items()},
@@ -2818,59 +2927,9 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["recent-logs"]:
             self._json({"logs": recent_logs(root)})
         elif method == "POST" and parts == ["uploads"]:
-            if self.headers.get("X-Orchestrator-UI") != "1":
-                raise UIError("Missing UI headers", HTTPStatus.FORBIDDEN)
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                length = 0
-            if length > new_job_form.UPLOAD_LIMIT:
-                self.close_connection = True  # the body is not read, so end this connection rather than leave it in the stream
-                raise UIError(f"That file is over {new_job_form.UPLOAD_LIMIT // (1024 * 1024)} MB", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            self._body_read = True
-            data = self.rfile.read(length) if length > 0 else b""
-            self._json(save_upload(root, (query.get("name") or [""])[0], data))
-        elif method == "GET" and parts == ["product"]:
-            self._json({"docs": product_docs.listing(root), "review": product_docs.last_review(root)})
-        elif method == "GET" and parts == ["product", "last-review"]:
-            self._json({"review": product_docs.read_last_review(root)})
-        elif method == "GET" and parts == ["product", "review-request"]:
-            self._json({"summary": product_docs.review_instruction(root)})
-        elif method == "POST" and parts == ["product", "scaffold"]:
-            self._json({"created": product_docs.scaffold(root), "docs": product_docs.listing(root)})
-        elif method == "GET" and len(parts) == 2 and parts[0] == "product":
-            try:
-                doc = product_docs.get(parts[1])
-            except product_docs.ProductDocError as exc:
-                raise UIError(str(exc), HTTPStatus.NOT_FOUND)
-            text = product_docs.read(root, parts[1])
-            self._json({"id": doc["id"], "title": doc["title"], "path": doc["path"], "purpose": doc["purpose"], "exists": text is not None,
-                        "filled": product_docs.is_filled(text), "text": text if text is not None else (doc["template"] or "")})
-        elif method == "POST" and len(parts) == 2 and parts[0] == "product":
-            try:
-                product_docs.write(root, parts[1], str(self._body().get("text") or ""))
-            except product_docs.ProductDocError as exc:
-                raise UIError(str(exc))
-            self._json({"ok": True, "docs": product_docs.listing(root)})
-        elif method == "POST" and len(parts) == 3 and parts[0] == "product" and parts[2] == "refine":
-            body = self._body()
-            mode = _choice(body, "mode", ["questions", "propose"])
-            instruction = _text(body, "instruction", limit=4000)
-            try:
-                doc = product_docs.get(parts[1])
-            except product_docs.ProductDocError as exc:
-                raise UIError(str(exc), HTTPStatus.NOT_FOUND)
-            try:
-                current = product_docs.read(root, parts[1]) or doc["template"] or ""
-                if mode == "questions":
-                    questions = product_docs.parse_questions(self._model_call(root, product_docs.questions_prompt(root, parts[1], instruction)))
-                    self._json({"questions": questions})
-                else:
-                    answers = [a for a in (body.get("answers") or []) if isinstance(a, dict)][:6]
-                    proposal = product_docs.parse_proposal(self._model_call(root, product_docs.refine_prompt(root, parts[1], instruction, answers)))
-                    self._json({**proposal, "diff": product_docs.unified_diff(current, proposal["markdown"])})
-            except product_docs.ProductDocError as exc:
-                raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+            self._json(save_upload(root, (query.get("name") or [""])[0], self._read_upload()))
+        elif parts and parts[0] == "product":
+            self._product_route(root, method, parts, query)
         elif method == "GET" and parts == ["preflight"]:
             self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
         elif method == "GET" and parts == ["delivery"]:

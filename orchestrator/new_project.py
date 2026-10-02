@@ -1,7 +1,7 @@
 """Starting a brand-new project (as opposed to adding one that already exists).
 
 Flow: a few lean questions about the product -> where it lives (GitHub preferred,
-or local only) -> create the folder, a product brief the AI can read, a git repo,
+or local only) -> create the folder, a product requirements doc the AI can read, a git repo,
 and (optionally) the GitHub repo. Progress is saved as a draft so someone who has
 to stop, say to sign in to GitHub, picks up where they left off.
 
@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from orchestrator import product_docs
+from orchestrator import prd
 from orchestrator.project_config import remember_project, safe_resolve, user_state_dir
 
 # (key, label, help, kind, required, options)
@@ -133,46 +133,38 @@ def feature_lines(text: str) -> list[str]:
     return [i for i in items if i][:8]
 
 
-def render_brief(a: dict[str, str]) -> str:
-    """The product brief: plain markdown any AI (or person) can read first."""
-    features = feature_lines(a.get("features", ""))
-    lines = [f"# {a['name']}: product brief", "",
-             "_Written when the project was started. The orchestrator and any AI helping on this project should read this first, "
-             "and keep it up to date as the product changes._", "",
-             "## What it is", "", a["pitch"], "",
-             "## Who it's for", "", a["audience"], "",
-             "## The problem", "", a["problem"], "",
-             "## Version 1 must do", ""]
-    lines += [f"{i}. {f}" for i, f in enumerate(features, 1)] or ["_Not specified yet._"]
+def render_prd(a: dict[str, str]) -> str:
+    """The product requirements doc (see orchestrator/prd.py) filled in from the wizard's answers; anything unanswered keeps its guidance."""
+    text = prd.template(a["name"])
     chosen = platform_list(a.get("platform", ""))
     recommend = RECOMMEND in chosen
     chosen = [p for p in chosen if p != RECOMMEND]
-    lines += ["", "## Platforms", ""]
-    if recommend:
-        lines += ["_Not decided._ The AI should recommend platforms, with reasons, in its first plan, based on the audience and problem above.", ""]
+    pitch = [a["pitch"].strip()]
+    if a.get("problem", "").strip():
+        pitch.append(f"Problem: {a['problem'].strip()}")
     if chosen:
-        lines += [f"- {p}" for p in chosen]
-    elif not recommend:
-        lines.append("Not specified")
-    lines.append("")
-    if a.get("stack"):
-        lines += ["## Technology preferences", "", a["stack"], ""]
-    if a.get("done"):
-        lines += ["## How we'll know version 1 works", "", a["done"], ""]
-    lines += ["## Out of scope for version 1", "", "_Add things that are explicitly not being built yet, so nobody builds them by accident._", ""]
-    return "\n".join(lines)
+        pitch.append("Built for: " + ", ".join(chosen))
+    elif recommend:
+        pitch.append("Built for: not decided yet. The AI should recommend platforms, with reasons, in its first plan.")
+    if a.get("stack", "").strip():
+        pitch.append(f"Technology preferences: {a['stack'].strip()}")
+    text = prd.replace_section(text, "pitch", "\n\n".join(pitch))
+    text = prd.replace_section(text, "who", a["audience"].strip())
+    features = feature_lines(a.get("features", ""))
+    if features:
+        body = "\n".join(f"- {f}" for f in features)
+        if a.get("done", "").strip():
+            body += f"\n\nVersion 1 is done when: {a['done'].strip()}"
+        text = prd.replace_section(text, "features", body)
+    return text
 
 
 def render_agents(name: str) -> str:
     return (f"# {name}: instructions for AI helpers\n\n"
-            "Read `docs/product-brief.md` first. It says what this product is, who it's for and what version 1 must do. Then read, in order:\n\n"
-            "- `docs/product/use-cases.md`: the users, the core use cases, and the non-goals (do not build non-goals)\n"
-            "- `docs/product/journey.md`: the path a person takes from first contact to repeat use\n"
-            "- `docs/product/screens.md`: every screen and why it exists\n"
-            "- `docs/product/architecture-decisions.md`: what is hard to change, and what was decided\n"
-            "- `docs/product/plan.md`: the slice being built now\n\n"
+            f"Read `{prd.PATH}` first. It says what this product is, who it's for, what it must do, how it should look and feel, and what it must not be. "
+            "It is a living document: it is kept up to date as jobs finish, and the person can edit it any time.\n\n"
             "Rules:\n- Prefer minimal, reviewable changes.\n- Build one working end-to-end slice at a time; keep the build and tests passing.\n"
-            "- Don't build anything the documents list as a non-goal.\n- If the documents and the code disagree, ask before deciding which is right.\n")
+            "- Don't build anything listed under \"Not this\".\n- If the document and the code disagree, ask before deciding which is right.\n\n")
 
 
 # --------------------------------------------------------------------------- creating it
@@ -210,18 +202,18 @@ def create_local(answers: dict[str, str], parent: str) -> tuple[Path, list[dict[
         (root / "docs").mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise NewProjectError(f"Couldn't create {root}: {exc.strerror}") from None
-    (root / "docs" / "product-brief.md").write_text(render_brief(answers), encoding="utf-8")
-    product_docs.scaffold(root)
+    (root / prd.PATH).parent.mkdir(parents=True, exist_ok=True)
+    (root / prd.PATH).write_text(render_prd(answers), encoding="utf-8")
     (root / "AGENTS.md").write_text(render_agents(answers["name"]), encoding="utf-8")
-    (root / "README.md").write_text(f"# {answers['name']}\n\n{answers['pitch']}\n\nSee [the product brief](docs/product-brief.md).\n", encoding="utf-8")
-    steps.append({"name": "Created the folder and product brief", "ok": True, "detail": str(root)})
+    (root / "README.md").write_text(f"# {answers['name']}\n\n{answers['pitch']}\n\nSee [the product requirements](docs/product/prd.md).\n", encoding="utf-8")
+    steps.append({"name": "Created the folder and product requirements", "ok": True, "detail": str(root)})
 
     init = _git(["init", "-q", "-b", "main"], root)
     if init.returncode != 0:
         steps.append({"name": "Set up git", "ok": False, "detail": (init.stderr or init.stdout).strip()})
         return root, steps
     _git(["add", "."], root)
-    commit = _git(["commit", "-q", "-m", "Start project with product brief"], root)
+    commit = _git(["commit", "-q", "-m", "Start project with product requirements"], root)
     steps.append({"name": "Set up git", "ok": commit.returncode == 0,
                   "detail": "First commit made." if commit.returncode == 0 else
                   ((commit.stderr or commit.stdout).strip() or "Couldn't commit. Set git user.name and user.email, then commit.")})

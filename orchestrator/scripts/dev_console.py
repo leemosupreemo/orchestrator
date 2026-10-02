@@ -3539,13 +3539,6 @@ def archive_job(job: dict[str, Any], status: str = "completed"):
     job["status"] = status
     job["completed_at"] = now_iso()
     
-    if status == "completed":  # keep the product plan's "Done recently" list true
-        try:
-            from orchestrator import product_docs
-            product_docs.note_done(ROOT, job.get("title") or job.get("summary") or "", str(job.get("job_id") or ""))
-        except Exception as exc:  # the plan is a convenience; never let it stop a job from being archived
-            print(f"      - Note: couldn't update the product plan: {exc}")
-
     job_path = Path(job["_path"])
     archive_path = ARCHIVE_DIR / job_path.name
     

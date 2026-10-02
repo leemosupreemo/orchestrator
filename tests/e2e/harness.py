@@ -50,46 +50,18 @@ class ScoreTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 '''
-USE_CASES = """# Users, use cases and non-goals
+PRD_PITCH = "A tiny word-scoring library for a two-player word game.\n\nBuilt for: Python library"
+PRD_WHO = "Two friends playing casually, a minute at a time."
+PRD_FEATURES = "- As a player, I can score a word so that I know how many points it is worth\n- As a player, I can compare two words so that I can see which is worth more"
+PRD_NOT = "- No accounts or logins\n- No chat\n- No network play: this is a library only"
 
-## Primary user
 
-Two friends who want a quick word game they can play when they each have a minute.
-
-## Core use cases
-
-- As a player, I can score a word so that I know how many points it is worth
-- As a player, I can compare two words so that I can see which is worth more
-
-## Edge cases that matter
-
-- Empty words and words with punctuation must not crash
-
-## Non-goals for version 1
-
-- No accounts or logins
-- No chat
-- No network play: this is a library only
-"""
-BRIEF = """# Word Duel: product brief
-
-## What it is
-
-A tiny word-scoring library for a two-player word game.
-
-## Who it's for
-
-Two friends playing casually.
-
-## The problem
-
-Scoring words by hand is slow and argued over.
-
-## Version 1 must do
-
-1. Score a word
-2. Compare two words
-"""
+def prd_text() -> str:
+    from orchestrator import prd
+    text = prd.template("Word Duel")
+    for section, body in (("pitch", PRD_PITCH), ("who", PRD_WHO), ("features", PRD_FEATURES), ("not", PRD_NOT)):
+        text = prd.replace_section(text, section, body)
+    return text
 
 
 class DummyProject:
@@ -128,10 +100,8 @@ class DummyProject:
         (self.root / ".gitignore").write_text("__pycache__/\n*.pyc\n.orchestrator/\n")
         if with_product_docs:
             sys.path.insert(0, str(REPO))
-            from orchestrator import product_docs
-            product_docs.write(self.root, "brief", BRIEF)
-            product_docs.scaffold(self.root)
-            product_docs.write(self.root, "use-cases", USE_CASES)
+            (self.root / "docs" / "product").mkdir(parents=True)
+            (self.root / "docs" / "product" / "prd.md").write_text(prd_text())
         runtime = self.root / ".orchestrator"
         (runtime / "config").mkdir(parents=True)
         (runtime / "project.json").write_text(json.dumps({

@@ -19,6 +19,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from orchestrator import prd as prd_mod
 from orchestrator.web import server as ui  # noqa: E402
 
 UI_HEADERS = {"Content-Type": "application/json", "X-Orchestrator-UI": "1"}
@@ -123,6 +124,7 @@ class AuthTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         self.assertIn(b"Orchestrator", body)
         self.assertIn("frame-ancestors 'none'", res.getheader("Content-Security-Policy"))
+        self.assertIn("img-src 'self' data: blob:", res.getheader("Content-Security-Policy"))  # fetched design images are shown from blob: URLs
 
     def test_static_traversal_blocked(self):
         res, _ = self.request("GET", "/../server.py", auth=False)
@@ -1794,21 +1796,23 @@ class HealthEndpointTests(ServerTestCase):
         res, data = self.get_health()
         self.assertEqual(res.status, 200)
         items = self.items(data)
-        self.assertEqual(data["next"], "brief")
-        self.assertEqual((items["brief"]["status"], items["instructions"]["status"], items["repo"]["status"], items["delivery"]["status"]),
+        self.assertEqual(data["next"], "prd")
+        self.assertEqual((items["prd"]["status"], items["instructions"]["status"], items["repo"]["status"], items["delivery"]["status"]),
                          ("todo", "todo", "todo", "todo"))
         self.assertEqual(data["stage"], "Building")  # the fixture has one job
 
-    def test_brief_platforms_features_and_tests_are_read_from_the_project(self):
-        (self.root / "docs").mkdir()
-        (self.root / "docs" / "product-brief.md").write_text("# X\n\n## Platforms\n\n- iOS app\n- Backend / API\n")
+    def test_prd_platforms_features_and_tests_are_read_from_the_project(self):
+        (self.root / "docs" / "product").mkdir(parents=True)
+        text = prd_mod.replace_section(prd_mod.template("X"), "pitch", "A thing.\n\nBuilt for: iOS app, Backend / API")
+        text = prd_mod.replace_section(prd_mod.replace_section(text, "who", "Friends"), "features", "- One")
+        (self.root / "docs" / "product" / "prd.md").write_text(text)
         (self.root / "AGENTS.md").write_text("# rules")
         (self.root / "tests").mkdir()
         (self.root / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
         ui.feature_store.create(self.root / ".orchestrator", "Lobby")
         _, data = self.get_health()
         items = self.items(data)
-        self.assertEqual((items["brief"]["status"], items["instructions"]["status"], items["tests"]["status"]), ("ok", "ok", "ok"))
+        self.assertEqual((items["prd"]["status"], items["instructions"]["status"], items["tests"]["status"]), ("ok", "ok", "ok"))
         self.assertEqual(items["platforms"]["detail"], "iOS app, Backend / API")
         self.assertEqual(items["features"]["status"], "warn")  # the fixture's open job isn't in the feature
 
@@ -1823,9 +1827,9 @@ class HealthEndpointTests(ServerTestCase):
         self.assertEqual(self.items(data)["kpis"]["status"], "todo")
         self.assertIn("1 feature", self.items(data)["kpis"]["detail"])
 
-    def test_undecided_platforms_from_a_new_project_brief_are_flagged(self):
-        (self.root / "docs").mkdir()
-        (self.root / "docs" / "product-brief.md").write_text(ui.new_project.render_brief(
+    def test_undecided_platforms_from_a_new_project_prd_are_flagged(self):
+        (self.root / "docs" / "product").mkdir(parents=True)
+        (self.root / "docs" / "product" / "prd.md").write_text(ui.new_project.render_prd(
             {"name": "X", "pitch": "p", "audience": "a", "problem": "q", "features": "one", "platform": ui.new_project.RECOMMEND}))
         _, data = self.get_health()
         self.assertEqual(self.items(data)["platforms"]["status"], "warn")
@@ -1994,8 +1998,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertLess(home.index("productStripHtml(product"), home.index('class="job-table"'))  # toward the top of the main screen
         self.assertIn('"#/product"', self.js)
         self.assertIn('<script src="markdown.js">', self.html)
-        self.assertIn('href="#/product/use-cases">Start with users and non-goals', self.js)
+        self.assertIn('href="#/product">Open the product requirements', self.js)
         self.assertIn("How do I get better plans?", self.js)
+        self.assertNotIn("#/product/", self.js)  # one document, no sub-pages
 
     def test_a_blank_screen_gets_a_loading_message_after_a_moment(self):
         self.assertIn("Loading…", self.js[self.js.index("async function route()"):][:2500])
@@ -2005,11 +2010,36 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('st.type === "feature" || st.type === "design"', form)
         self.assertIn("Define the product first", form)
         self.assertIn("Skip for now", form)
-        self.assertIn('"use-cases")?.filled', form)
+        self.assertIn('x.id === "pitch")?.filled', form)  # nothing says what the product is
 
-    def test_a_review_reminder_row_links_to_the_product_page(self):
-        self.assertIn('i.kind === "reminder"', self.js)
-        self.assertIn(">Review</a>", self.js)
+    def test_the_product_page_is_one_document_with_five_sections_you_can_edit_import_and_restore(self):
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        for part in ('data-prd-edit', 'api("product/settings"', 'api("product/revert"', 'product/history/', '"product/import"', '"product/design"', 'product/reference',
+                     'api("product/refine"', "Update this automatically when jobs finish", "Import a PRD", "Help me with this", "Nothing is saved until you accept"):
+            self.assertIn(part, page, part)
+        self.assertNotIn("product/scaffold", self.js)  # no six documents to create
+        self.assertNotIn("last-review", self.js)  # and no separate review job
+        self.assertIn("Optional", page)  # look and feel, and not-this, are optional
+        # Look and feel takes uploads, a pasted link, and an item picked from a connected app (Figma).
+        self.assertIn("linkPickerHtml({ prefer: [\"figma\"]", page)
+
+    def test_an_automatic_update_is_announced_with_undo_and_dismiss(self):
+        for part in ("prdNoticeHtml", "data-prd-undo", "data-prd-dismiss", "Product requirements updated"):
+            self.assertIn(part, self.js, part)
+        refresh = self.js[self.js.index("async function refreshState()"):][:2500]
+        self.assertIn("product_notice", refresh)  # the toast and the browser notification come from the poll
+        self.assertIn("Notifications.show", refresh)
+        self.assertIn("lastPrdNotice !== undefined", refresh)  # an update seen on first load is a banner, not a surprise toast
+        home = self.js[self.js.index("function productStripHtml"):][:900]
+        self.assertIn("prdNoticeHtml(p.notice)", home)
+        self.assertIn("Import a PRD you have", home)
+
+    def test_design_images_load_with_the_token_not_a_bare_img_src(self):
+        self.assertIn("data-auth-src", self.js)
+        self.assertIn("img-src 'self' data: blob:", (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "server.py").read_text())
+        fn = self.js[self.js.index("async function hydrateAuthImages"):][:900]
+        self.assertIn("Authorization", fn)
+        self.assertIn("createObjectURL", fn)
 
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
@@ -2478,51 +2508,134 @@ class PlanTaskEditEndpointTests(ServerTestCase):
 
 
 class ProductEndpointTests(ServerTestCase):
-    FILLED = "# Users\n\n## Primary user\n\nCasual players who want a quick game.\n\n## Core use cases\n\n- Start a match\n- Take a turn\n"
+    """/api/product: the one product requirements document, its history, settings, designs, import and AI help."""
+    PITCH = "A word game for two friends.\n\nBuilt for: iOS app"
 
     def post(self, path, body):
         return self.request("POST", path, body=body, headers=UI_HEADERS)
 
-    def test_lists_every_document_with_whether_it_exists_and_is_filled(self):
+    def raw_post(self, path, data, ctype="application/octet-stream", headers={"X-Orchestrator-UI": "1"}):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("POST", path, body=data, headers={"Authorization": "Bearer test-token", "Content-Type": ctype, **headers})
+        res = conn.getresponse()
+        raw = res.read()
+        conn.close()
+        try:
+            return res, json.loads(raw)
+        except json.JSONDecodeError:
+            return res, raw
+
+    def raw_get(self, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", path, headers={"Authorization": "Bearer test-token"})
+        res = conn.getresponse()
+        data = res.read()
+        conn.close()
+        return res, data
+
+    def doc(self):
+        return prd_mod.Prd(self.root, self.root / ".orchestrator")
+
+    def test_a_new_project_shows_the_template_with_five_empty_sections_and_updates_on(self):
         _, data = self.request("GET", "/api/product")
-        self.assertEqual([d["id"] for d in data["docs"]], ["brief", "use-cases", "journey", "screens", "architecture", "plan"])
-        self.assertTrue(all(not d["exists"] for d in data["docs"]))
-        self.assertIsNone(data["review"])
+        self.assertEqual((data["exists"], data["auto_update"], data["notice"], data["history"], data["path"]), (False, True, None, [], "docs/product/prd.md"))
+        self.assertEqual([s["id"] for s in data["sections"]], ["pitch", "who", "features", "look", "not"])
+        self.assertFalse(any(s["filled"] for s in data["sections"]))
+        self.assertIn("## Pitch", data["text"])
+        self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())  # looking does not create files
 
-    def test_scaffold_creates_missing_templates_without_overwriting(self):
-        self.post("/api/product/journey", {"text": "# Mine\n\nkeep this\nand this\nand this\n"})
-        _, data = self.post("/api/product/scaffold", {})
-        self.assertNotIn("journey", data["created"])
-        self.assertIn("use-cases", data["created"])
-        _, doc = self.request("GET", "/api/product/journey")
-        self.assertIn("keep this", doc["text"])
-        self.assertFalse({d["id"]: d for d in data["docs"]}["use-cases"]["filled"])  # a fresh template isn't "filled"
-
-    def test_read_save_and_validation(self):
-        _, doc = self.request("GET", "/api/product/use-cases")
-        self.assertEqual((doc["exists"], doc["filled"]), (False, False))
-        self.assertIn("Primary user", doc["text"])  # a missing document shows its template
-        res, data = self.post("/api/product/use-cases", {"text": self.FILLED})
+    def test_editing_a_section_saves_it_and_records_a_version(self):
+        res, data = self.post("/api/product", {"section": "pitch", "body": self.PITCH})
         self.assertEqual(res.status, 200)
-        self.assertTrue({d["id"]: d for d in data["docs"]}["use-cases"]["filled"])
-        self.assertEqual((self.root / "docs" / "product" / "use-cases.md").read_text(), self.FILLED)
-        for bad in ({"text": ""}, {"text": "x" * (ui.product_docs.MAX_DOC_CHARS + 1)}, {}):
-            self.assertEqual(self.post("/api/product/use-cases", bad)[0].status, 400)
+        self.assertTrue(next(s for s in data["sections"] if s["id"] == "pitch")["filled"])
+        self.assertIn("A word game", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertEqual([(h["source"], h["summary"]) for h in data["history"]], [("you", "Edited Pitch")])
 
-    def test_only_known_documents_can_be_read_or_written(self):
-        for doc_id in ("nope", "..%2F..%2Fetc%2Fpasswd", "README"):
-            self.assertEqual(self.request("GET", f"/api/product/{doc_id}")[0].status, 404, doc_id)
-            self.assertIn(self.post(f"/api/product/{doc_id}", {"text": "x"})[0].status, (400, 404), doc_id)
-        self.assertFalse((self.root / "README.md").exists())
+    def test_the_whole_document_can_be_saved_and_bad_input_is_refused(self):
+        res, data = self.post("/api/product", {"text": prd_mod.replace_section(prd_mod.template(), "pitch", self.PITCH)})
+        self.assertEqual(res.status, 200)
+        for bad in ({"section": "nope", "body": "x"}, {"text": "x" * (prd_mod.MAX_DOC_CHARS + 1)}, {"section": "pitch", "body": "x", "source": "evil"}):
+            self.assertEqual(self.post("/api/product", bad)[0].status, 400, bad)
 
     def test_saving_requires_the_ui_header(self):
-        res, _ = self.request("POST", "/api/product/plan", body={"text": "x"}, headers={"Content-Type": "application/json"})
+        res, _ = self.request("POST", "/api/product", body={"section": "pitch", "body": "x"}, headers={"Content-Type": "application/json"})
         self.assertIn(res.status, (400, 403))
+        self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())
 
-    def test_refine_asks_questions_then_proposes_and_shows_a_diff_without_saving(self):
-        ui.product_docs.write(self.root, "use-cases", self.FILLED)
+    def test_automatic_updates_can_be_switched_off_and_stay_off(self):
+        _, data = self.post("/api/product/settings", {"auto_update": False})
+        self.assertFalse(data["auto_update"])
+        self.assertFalse(self.request("GET", "/api/product")[1]["auto_update"])
+        self.assertTrue(self.post("/api/product/settings", {"auto_update": True})[1]["auto_update"])
+
+    def test_history_shows_what_changed_and_any_version_can_be_restored(self):
+        self.post("/api/product", {"section": "pitch", "body": "First idea"})
+        self.post("/api/product", {"section": "pitch", "body": "Second idea"})
+        _, data = self.request("GET", "/api/product")
+        newest, oldest = data["history"][0], data["history"][1]
+        _, v = self.request("GET", f"/api/product/history/{newest['id']}")
+        self.assertIn("-First idea", v["diff"])
+        self.assertIn("+Second idea", v["diff"])
+        res, restored = self.post("/api/product/revert", {"id": oldest["id"]})
+        self.assertEqual(res.status, 200)
+        self.assertIn("First idea", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertEqual(restored["history"][0]["source"], "revert")
+        self.assertEqual(len(restored["history"]), 3)  # nothing was lost
+        self.assertEqual(self.post("/api/product/revert", {"id": "ghost"})[0].status, 400)
+        self.assertEqual(self.request("GET", "/api/product/history/ghost")[0].status, 400)
+
+    def test_an_automatic_update_is_announced_in_state_until_dismissed_and_can_be_undone(self):
+        self.post("/api/product", {"section": "pitch", "body": self.PITCH})
+        doc = self.doc()
+        changed = prd_mod.replace_section(doc.read(), "features", "- Rematch after any game")
+        job = {"job_id": "j1", "title": "Add rematch", "type": "feature-plan"}
+        out = prd_mod.run_update(doc, job, lambda prompt: json.dumps({"changed": True, "summary": "Added rematch", "markdown": changed}))
+        self.assertEqual(out["status"], "updated")
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual((state["product_notice"]["summary"], state["product_notice"]["job_title"]), ("Added rematch", "Add rematch"))
+        _, data = self.request("GET", "/api/product")
+        self.assertEqual((data["notice"]["id"], data["history"][0]["source"]), (state["product_notice"]["id"], "auto"))
+        self.post("/api/product/revert", {"id": data["history"][1]["id"]})  # Undo
+        self.assertNotIn("Rematch", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertEqual(self.post("/api/product/dismiss", {})[1], {"ok": True})
+        self.assertIsNone(self.request("GET", "/api/state")[1]["product_notice"])
+
+    def test_links_must_be_web_links(self):
+        self.post("/api/product", {"section": "pitch", "body": self.PITCH})
+        res, data = self.post("/api/product/reference", {"label": "Figma: home", "url": "https://figma.com/file/abc"})
+        self.assertEqual(res.status, 200)
+        self.assertIn("[Figma: home](https://figma.com/file/abc)", next(s for s in data["sections"] if s["id"] == "look")["body"])
+        for bad in ("javascript:alert(1)", "/etc/passwd", ""):
+            self.assertEqual(self.post("/api/product/reference", {"url": bad})[0].status, 400, bad)
+
+    def test_a_design_is_saved_in_the_repo_listed_under_look_and_feel_and_shown_safely(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+        res, data = self.raw_post("/api/product/design?name=Home%20sketch.png", png)
+        self.assertEqual(res.status, 200, data)
+        saved = [p.name for p in (self.root / "docs" / "product" / "designs").iterdir()]
+        self.assertEqual(len(saved), 1)
+        self.assertIn(f"designs/{saved[0]}", next(s for s in data["sections"] if s["id"] == "look")["body"])
+        res, body = self.raw_get(f"/api/product/design/{saved[0]}")
+        self.assertEqual((res.status, res.getheader("Content-Type"), body), (200, "image/png", png))
+        # Anything that is not a plain image is a download, never shown in the app's own origin.
+        res, _ = self.raw_post("/api/product/design?name=page.html", b"<script>alert(1)</script>")
+        html_name = next(p.name for p in (self.root / "docs" / "product" / "designs").iterdir() if p.suffix == ".html")
+        res, body = self.raw_get(f"/api/product/design/{html_name}")
+        self.assertEqual(res.getheader("Content-Type"), "application/octet-stream")
+        self.assertIn("attachment", res.getheader("Content-Disposition"))
+        for name in ("..%2F..%2Fproject.json", "nope.png", "a%2Fb.png"):
+            self.assertEqual(self.raw_get(f"/api/product/design/{name}")[0].status, 404, name)
+
+    def test_design_uploads_refuse_logs_empty_files_and_a_missing_ui_header(self):
+        self.assertEqual(self.raw_post("/api/product/design?name=out.log", b"text")[0].status, 400)
+        self.assertEqual(self.raw_post("/api/product/design?name=a.png", b"")[0].status, 400)
+        self.assertEqual(self.raw_post("/api/product/design?name=a.png", b"x", headers={})[0].status, 403)
+
+    def test_ai_help_asks_questions_then_proposes_and_shows_a_diff_without_saving(self):
+        self.post("/api/product", {"section": "pitch", "body": self.PITCH})
+        before = (self.root / "docs" / "product" / "prd.md").read_text()
         replies = ['{"questions": [{"question": "Who plays?", "why": "Shapes the tone"}]}',
-                   json.dumps({"summary": "Added a non-goals list", "markdown": self.FILLED + "\n## Non-goals\n\n- No chat\n- No accounts\n- No ads\n"})]
+                   json.dumps({"summary": "Added who it is for", "markdown": prd_mod.replace_section(before, "who", "Two friends who have a minute.")})]
         seen = []
 
         def fake(self_, root, prompt, model="", timeout=150):
@@ -2530,64 +2643,69 @@ class ProductEndpointTests(ServerTestCase):
             return replies.pop(0)
 
         with patch.object(ui.UIHandler, "_model_call", fake):
-            res, q = self.post("/api/product/use-cases/refine", {"mode": "questions", "instruction": "add non-goals"})
+            res, q = self.post("/api/product/refine", {"mode": "questions", "instruction": "fill the gaps"})
             self.assertEqual((res.status, q["questions"][0]["question"]), (200, "Who plays?"))
-            res, p = self.post("/api/product/use-cases/refine", {"mode": "propose", "instruction": "add non-goals", "answers": [{"question": "Who plays?", "answer": "Two friends"}]})
-        self.assertEqual(res.status, 200)
-        self.assertEqual(p["summary"], "Added a non-goals list")
-        self.assertIn("+- No chat", p["diff"])
+            res, p = self.post("/api/product/refine", {"mode": "propose", "instruction": "fill the gaps", "answers": [{"question": "Who plays?", "answer": "Two friends"}]})
+        self.assertEqual((res.status, p["summary"]), (200, "Added who it is for"))
+        self.assertIn("+Two friends who have a minute.", p["diff"])
         self.assertIn("Two friends", seen[1])
-        self.assertEqual((self.root / "docs" / "product" / "use-cases.md").read_text(), self.FILLED)  # nothing is written until the person accepts
+        self.assertIn("A word game", seen[0])  # it sees the document
+        self.assertEqual((self.root / "docs" / "product" / "prd.md").read_text(), before)  # nothing is written until the person accepts
+        res, saved = self.post("/api/product", {"text": p["markdown"], "source": "ai", "summary": p["summary"]})
+        self.assertEqual(saved["history"][0]["source"], "ai")
 
-    def test_refine_reports_a_bad_model_reply_and_validates_the_mode(self):
+    def test_ai_help_reports_bad_replies_bad_modes_and_model_failures_cleanly(self):
         with patch.object(ui.UIHandler, "_model_call", lambda self_, root, prompt, model="", timeout=150: "not json"):
-            res, data = self.post("/api/product/plan/refine", {"mode": "propose", "instruction": "x"})
+            res, data = self.post("/api/product/refine", {"mode": "propose", "instruction": "x"})
         self.assertEqual(res.status, 502)
         self.assertIn("expected form", data["error"])
-        self.assertEqual(self.post("/api/product/plan/refine", {"mode": "write-it-all"})[0].status, 400)
-        self.assertEqual(self.post("/api/product/ghost/refine", {"mode": "propose"})[0].status, 404)
-
-    def test_model_failures_surface_cleanly(self):
-        err = ui.UIError("No model is available.", 502)
-        with patch.object(ui.UIHandler, "_model_call", side_effect=err):
-            res, data = self.post("/api/product/plan/refine", {"mode": "questions"})
+        self.assertEqual(self.post("/api/product/refine", {"mode": "write-it-all"})[0].status, 400)
+        with patch.object(ui.UIHandler, "_model_call", side_effect=ui.UIError("No model is available.", 502)):
+            res, data = self.post("/api/product/refine", {"mode": "questions"})
         self.assertEqual((res.status, data["error"]), (502, "No model is available."))
 
-    def test_review_request_text_and_last_review(self):
-        _, data = self.request("GET", "/api/product/review-request")
-        self.assertIn("Do NOT change any code", data["summary"])
-        folder = self.root / "docs" / "product" / "reviews"
-        folder.mkdir(parents=True)
-        (folder / "2026-10-01.md").write_text("findings")
-        _, listing = self.request("GET", "/api/product")
-        self.assertEqual(listing["review"]["path"], "docs/product/reviews/2026-10-01.md")
+    def test_importing_pasted_text_or_a_file_proposes_the_five_sections_and_saves_nothing(self):
+        proposal = json.dumps({"summary": "Kept everything", "markdown": prd_mod.replace_section(prd_mod.template(), "pitch", "From my old PRD")})
+        seen = []
 
+        def fake(self_, root, prompt, model="", timeout=150):
+            seen.append((prompt, timeout))
+            return proposal
 
-class ReviewReminderEndpointTests(ServerTestCase):
-    def add_jobs(self, n):
-        for i in range(n):
-            (self.root / ".orchestrator" / "jobs" / f"2026092{i}-feature-{i + 10}.json").write_text(json.dumps({"title": f"Done {i}", "type": "feature", "status": "completed"}))
+        with patch.object(ui.UIHandler, "_model_call", fake):
+            res, p = self.post("/api/product/import", {"text": "OLD PRD: a word game"})
+            self.assertEqual((res.status, p["summary"]), (200, "Kept everything"))
+            self.assertIn("OLD PRD: a word game", seen[0][0])
+            self.assertIn("+From my old PRD", p["diff"])
+            res, p = self.raw_post("/api/product/import?name=prd.md", b"# My PRD\n\nA word game from a file")
+            self.assertEqual(res.status, 200, p)
+            self.assertIn("A word game from a file", seen[1][0])
+        self.assertGreaterEqual(seen[0][1], 240)  # reading a long document takes a while
+        self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())
 
-    def test_no_reminder_for_a_young_project(self):
-        _, data = self.request("GET", "/api/inbox")
-        self.assertFalse([i for i in data["here"] if i["kind"] == "reminder"])
+    def test_import_refuses_unsupported_files_empty_input_and_a_missing_ui_header(self):
+        self.assertEqual(self.raw_post("/api/product/import?name=deck.pptx", b"x")[0].status, 400)
+        self.assertEqual(self.post("/api/product/import", {"text": "   "})[0].status, 400)
+        self.assertEqual(self.raw_post("/api/product/import?name=a.md", b"x", headers={})[0].status, 403)
 
-    def test_an_overdue_review_shows_up_as_waiting_on_you_and_in_the_badge(self):
-        self.add_jobs(5)
-        _, data = self.request("GET", "/api/inbox")
-        reminder = next(i for i in data["here"] if i["kind"] == "reminder")
-        self.assertEqual((reminder["label"], reminder["href"]), ("Review due", "#/product"))
-        _, state = self.request("GET", "/api/state")
-        self.assertEqual(state["inbox_count"], data["count"])
-        self.assertIn("#/product", [i["hash"] for i in state["inbox"]])
+    def test_an_older_projects_documents_become_the_prd_the_first_time_it_is_opened(self):
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / "docs" / "product-brief.md").write_text("# X\n\n## What it is\n\nA word game from the old brief.\n")
+        _, data = self.request("GET", "/api/product")
+        self.assertTrue(data["exists"])
+        self.assertIn("A word game from the old brief.", next(s for s in data["sections"] if s["id"] == "pitch")["body"])
+        self.assertEqual(data["history"][0]["source"], "migration")
+        self.assertTrue((self.root / "docs" / "product-brief.md").exists())  # the old file stays
 
-    def test_running_a_review_clears_the_reminder(self):
-        self.add_jobs(5)
-        folder = self.root / "docs" / "product" / "reviews"
-        folder.mkdir(parents=True)
-        (folder / "2026-10-01.md").write_text("findings")
-        _, data = self.request("GET", "/api/inbox")
-        self.assertFalse([i for i in data["here"] if i["kind"] == "reminder"])
+    def test_check_up_follows_what_is_written(self):
+        def item():
+            return next(i for i in self.request("GET", "/api/health")[1]["items"] if i["id"] == "prd")
+        self.assertEqual((item()["status"], item()["route"]), ("todo", "#/product"))
+        for section, body in (("pitch", self.PITCH), ("who", "Two friends"), ("features", "- Score a word")):
+            self.post("/api/product", {"section": section, "body": body})
+        self.assertEqual(item()["status"], "ok")
+        self.post("/api/product/settings", {"auto_update": False})
+        self.assertIn("Automatic updates are off", item()["detail"])
 
 
 class PipelineTests(ServerTestCase):

@@ -115,10 +115,12 @@ class E2EWorkflowTests(unittest.TestCase):
         "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}],
         "test_cases": [{"title": "AC holds", "type": "unit", "expected": "AC is satisfied", "covers": ["AC"], "tests": ["test_ac"]}]})
 
-    def plan_with_docs(self, docs, kind="feature"):
-        from orchestrator import product_docs
-        for doc_id, text in docs.items():
-            product_docs.write(self.root, doc_id, text)
+    PRD_TEXT = None
+
+    def plan_with_docs(self, prd_text, kind="feature"):
+        from orchestrator import prd
+        if prd_text:
+            prd.Prd(self.root, self.root / ".orchestrator").write(prd_text, record=False)
         prompts = []
 
         def fake_llm(model, prompt, *a, **k):
@@ -132,20 +134,25 @@ class E2EWorkflowTests(unittest.TestCase):
                     new_job.main([kind, "--branch-mode", "manual", "--no-dispatch", "--summary", "Add rematch", "--allowed-models", "gemini,codex", "--allowed-machines", "local"])
         return prompts
 
-    def test_the_planner_reads_the_product_documents_first(self):
-        prompts = self.plan_with_docs({
-            "use-cases": "# Use cases\n\n## Core use cases\n\n- As a player I can start a match\n- As a player I can take a turn\n\n## Non-goals for version 1\n\n- No chat\n- No accounts\n"})
+    @staticmethod
+    def prd_with_non_goals():
+        from orchestrator import prd
+        text = prd.replace_section(prd.template("Word Duel"), "pitch", "A word game for two friends.")
+        text = prd.replace_section(text, "features", "- As a player I can start a match\n- As a player I can take a turn")
+        return prd.replace_section(text, "not", "- No chat\n- No accounts")
+
+    def test_the_planner_reads_the_product_requirements_first(self):
+        prompts = self.plan_with_docs(self.prd_with_non_goals())
         self.assertTrue(prompts)
-        self.assertIn("## Product context (source of truth)", prompts[0])
+        self.assertIn("## Product context (source of truth", prompts[0])
         self.assertIn("No chat", prompts[0])
         self.assertLess(prompts[0].index("Product context"), prompts[0].index("Raw input:"))
 
-    def test_the_plan_verifier_checks_the_plan_against_the_documents(self):
-        prompts = self.plan_with_docs({
-            "use-cases": "# Use cases\n\n## Core use cases\n\n- As a player I can start a match\n- As a player I can take a turn\n\n## Non-goals for version 1\n\n- No chat\n- No accounts\n"})
+    def test_the_plan_verifier_checks_the_plan_against_the_requirements(self):
+        prompts = self.plan_with_docs(self.prd_with_non_goals())
         verifier = [p for p in prompts if "### GENERATED PLAN ###" in p]
         self.assertTrue(verifier, "the verifier did not run")
-        self.assertIn("Reject or flag a plan that builds a non-goal", verifier[0])
+        self.assertIn("Reject or flag a plan that builds something under", verifier[0])
         self.assertIn("No chat", verifier[0])
 
     def plan_json(self, tasks):
@@ -217,9 +224,9 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertEqual(len(prompts), 1)
         self.assertNotIn("slice_warnings", job["plan"])
 
-    def test_without_filled_documents_nothing_is_added(self):
-        prompts = self.plan_with_docs({})
-        self.assertNotIn("## Product context (source of truth)", prompts[0])
+    def test_without_a_written_prd_nothing_is_added(self):
+        prompts = self.plan_with_docs("")
+        self.assertNotIn("## Product context (source of truth", prompts[0])
 
     def test_the_feature_planner_is_told_to_build_vertical_slices(self):
         text = (Path(__file__).resolve().parents[1] / "orchestrator" / "prompts" / "planner_feature.md").read_text()

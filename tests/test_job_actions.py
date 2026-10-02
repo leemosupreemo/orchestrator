@@ -78,36 +78,18 @@ class JobActionsTests(unittest.TestCase):
         archive.assert_not_called()
 
 
-class ArchiveKeepsThePlanCurrentTests(unittest.TestCase):
-    def test_completing_a_job_records_it_in_the_product_plan_but_discarding_does_not(self):
+class ArchivingTests(unittest.TestCase):
+    def test_a_completed_and_a_discarded_job_are_both_archived(self):
         import dev_console
-        from orchestrator import product_docs
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            product_docs.scaffold(root)
             (root / "archive").mkdir()
             for status, jid in (("completed", "j-done"), ("discarded", "j-gone")):
                 job_file = root / f"{jid}.json"
                 job_file.write_text(json.dumps({"job_id": jid, "title": f"Title {jid}", "status": "review-needed"}))
-                job = {"job_id": jid, "title": f"Title {jid}", "_path": job_file}
                 with patch.object(dev_console, "ROOT", root), patch.object(dev_console, "ARCHIVE_DIR", root / "archive"):
-                    dev_console.archive_job(job, status=status)
-            plan = product_docs.read(root, "plan")
-            self.assertIn("Title j-done", plan)
-            self.assertNotIn("j-gone", plan)
-            self.assertTrue((root / "archive" / "j-gone.json").exists())  # both were still archived
-
-    def test_a_failure_to_update_the_plan_never_blocks_archiving(self):
-        import dev_console
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "archive").mkdir()
-            job_file = root / "j1.json"
-            job_file.write_text(json.dumps({"job_id": "j1", "title": "T"}))
-            with patch.object(dev_console, "ROOT", root), patch.object(dev_console, "ARCHIVE_DIR", root / "archive"), \
-                    patch("orchestrator.product_docs.note_done", side_effect=OSError("disk full")):
-                dev_console.archive_job({"job_id": "j1", "title": "T", "_path": job_file}, status="completed")
-            self.assertTrue((root / "archive" / "j1.json").exists())
+                    dev_console.archive_job({"job_id": jid, "title": f"Title {jid}", "_path": job_file}, status=status)
+            self.assertEqual(sorted(p.name for p in (root / "archive").glob("*.json")), ["j-done.json", "j-gone.json"])
 
 
 class ApproveReviseTests(unittest.TestCase):

@@ -45,7 +45,7 @@ Required JSON schema:
 - **Groundedness**: Every file in `likely_files` must have been verified to exist or its parent directory confirmed for new files.
 - **TDD Integration**: Ensure tasks include clear instructions for writing tests before production code.
 - **Vertical slices, not layers**: Order the tasks so that after the FIRST task something real runs end to end, even if it is the simplest version of the feature. Never plan "build the data layer, then the API, then the UI". Each later task adds one capability on top of something that already works, and each one ends with the build and tests passing.
-- **Serve the product**: If a "Product context" section is present, say in `summary` which use case this serves, keep inside its non-goals, and note in `assumptions` or `risks` anything that would contradict it.
+- **Serve the product**: If a "Product context" section is present, say in `summary` which of its core features this serves, keep inside what it says under "Not this", match the look and feel it describes, and note in `assumptions` or `risks` anything that would contradict it.
 - **Minimalism**: Prefer small, surgical changes over large refactors unless explicitly requested.
 - **No Hallucinations**: If you don't find a file, don't invent one. Use your tools to find it.
 
