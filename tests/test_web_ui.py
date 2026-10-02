@@ -794,6 +794,10 @@ class JobStateTests(unittest.TestCase):
         self.assertEqual(self.state(status="review-needed")["next"]["action"], "complete")
         self.assertTrue(ui.ACTIONS["complete"].confirm)
 
+    def test_a_debugging_job_waiting_for_you_says_it_needs_a_fix(self):
+        waiting = self.state(status="debugging")
+        self.assertEqual((waiting["label"], waiting["tone"], waiting["next"]["action"]), ("Needs a fix", "attention", "debug"))
+
     def test_debugging_is_red_only_when_tests_fail(self):
         failing = self.state(status="debugging", test_status="tests-failed")
         self.assertEqual((failing["tone"], failing["label"], failing["next"]["action"]), ("failed", "Tests failing", "debug"))
@@ -1652,6 +1656,18 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_every_form_field_the_ui_builds_for_chat_has_a_name(self):
         self.assertIn('aria-label="Your question about this job"', self.js)
+
+    def test_connection_loss_is_shown_not_silent(self):
+        self.assertIn('id="conn-banner"', self.html)
+        self.assertIn("pollFailures >= 2", self.js)
+        self.assertIn('$("#conn-banner").hidden = true', self.js)
+
+    def test_setup_button_only_floats_on_the_pages_about_getting_started(self):
+        self.assertIn('["home", "inbox", "checkup"].includes(current.page)', self.js)
+
+    def test_home_warns_when_jobs_cannot_run(self):
+        self.assertIn("No machine set up: jobs can't run yet", self.js)
+        self.assertIn("No model selected: jobs can't run yet", self.js)
 
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)

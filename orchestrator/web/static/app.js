@@ -674,6 +674,7 @@ if (configurationTrigger && configurationMenu) {
 
 let consecutiveAuthFailures = 0;
 
+let pollFailures = 0; // consecutive failed background polls
 let lastInbox = null; // previous inbox items, to spot new things waiting on you
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
@@ -691,6 +692,8 @@ async function refreshState() {
     lastInbox = newState.inbox || [];
     state = newState;
     consecutiveAuthFailures = 0;
+    pollFailures = 0;
+    $("#conn-banner").hidden = true;
     if (newState.token) {
       localStorage.setItem("orchestrator_token", newState.token);
     }
@@ -707,6 +710,8 @@ async function refreshState() {
     }
     // Transient network errors, tunnel drops, or 502/504 errors should NEVER lock the user out!
     console.warn("Background state refresh notice (will retry):", e.message);
+    pollFailures += 1;
+    if (pollFailures >= 2) $("#conn-banner").hidden = false; // two misses in a row: say so, rather than showing stale data silently
     if (!state.project) {
       showSignInGate(`Unable to reach Orchestrator on your Mac: ${e.message}`);
     }
@@ -1141,7 +1146,7 @@ function statusLine(p) {
     : "";
   // Row 1: the branch. Row 2: the stats, then the language mix.
   return `<span class="status-line status-stack"><span class="status-branch">${branchPicker}</span>
-    <span class="status-stats"><span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}${langs}</span></span>`;
+    <span class="status-stats"><span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : p.machine_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>` : p.model_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}${langs}</span></span>`;
 }
 
 // git refuses to switch when uncommitted changes would be overwritten, so offer to set them aside.
@@ -1244,7 +1249,7 @@ function renderSetupFab() {
   const fab = $("#setup-fab");
   if (!fab) return;
   const s = setupState;
-  const show = s && !s.complete && !(current.page === "home" && !s.seen);
+  const show = s && !s.complete && ["home", "inbox", "checkup"].includes(current.page) && !(current.page === "home" && !s.seen);
   fab.hidden = !show;
   if (s) fab.querySelector("span").textContent = `Setup ${s.required_done}/${s.required_total}`;
   if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
@@ -2124,7 +2129,7 @@ pages.tests = async (_, query) => {
           `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div></div>
         <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
         ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
-      ${data.frameworks ? `
+      ${data.frameworks && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `
       <section class="card"><div class="card-h"><h2>Test Frameworks &amp; Canary Scaffolding</h2>
         <div class="row">
           ${!data.frameworks.canary_suite?.installed ? `<button class="btn small primary" ${act("scaffold_canary")}>Scaffold Canary Suite</button>` : ""}
@@ -2136,7 +2141,7 @@ pages.tests = async (_, query) => {
           <div style="border:1px solid var(--border); border-radius:8px; padding:12px 14px; flex:1 1 200px; background:var(--bg-subtle, rgba(255,255,255,0.02));">
             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
               <strong>${esc(f.name)}</strong>
-              <span class="badge ${f.installed ? "good" : ""}">${f.installed ? "Installed" : "Available"}</span>
+              <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Installed" : "Available"}</span>
             </div>
             <div style="font-size:12px; color:var(--muted);">${esc(f.desc)}</div>
           </div>

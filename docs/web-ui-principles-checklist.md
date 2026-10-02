@@ -42,7 +42,7 @@ checked in a browser yet.
 
 - [x] **TDD and thorough testing (unit, integration, test cases).** Job page has a Test cases card: covered / planned / no test / manual, split by unit, integration and UI, with steps, expected result and where each test lives, and a warning when automated cases that are due have no test. The Tests page lists the whole project's case library by area with status filters. Coverage is read from the code (an assigned test exists, or a test carries the case id), not from what the model says. Not yet: running a single case from the UI, or a test-first gate that blocks building until tests exist.
 - [ ] **Anti-gold-plating (refactor pass).** No scope-creep check.
-- [ ] **UX heuristics analysis via UI builder.** Figma attach only.
+- [~] **UX heuristics analysis (use ui builder connection).** Expert evaluation against Nielsen's ten heuristics, written up in `docs/web-ui-heuristics.md`: 8 findings fixed, 10 open with severity and a suggestion each. It was done by reviewing rendered pages and code, not through the Figma connection (which links designs to jobs but can't analyse screens), and not with real users. Not yet: an analysis built into the product that runs on a design or on the running app.
 
 ## E. Delivery and environments
 

@@ -453,7 +453,7 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         if tests in FAILING_TEST_STATUSES:
             label = "Build failing" if tests == "build-failed" else "Tests failing"
             return state("needs_you", "failed", label, "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
-        return state("needs_you", "attention", "Debugging", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
+        return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
     if status in {"executing", "running", "in-progress", "decomposed"}:
