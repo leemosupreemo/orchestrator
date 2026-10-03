@@ -516,6 +516,30 @@ class FakeTunnelProcess:
         self.exit_code = -9
 
 
+class ProjectTitleTests(unittest.TestCase):
+    def test_home_title_is_the_project_switcher_and_branch_is_labelled(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        home = js[js.index("  return {\n    title: p.name,"):][:700]
+        self.assertIn('<span class="label">Project</span>', home)
+        self.assertIn('class="project-select-inline title-project-select"', home)  # the existing switch handler covers it
+        self.assertNotIn("project-inline", js)  # the second project picker under the branch is gone
+        status = js[js.index("function statusLine"):][:1600]
+        self.assertIn('<span class="status-branch"><span class="label">Branch</span>', status)
+        header = js[js.index("function setHeader"):][:600]
+        self.assertIn("heading.dataset.title = title", header)  # the tab title stays the name, not every option's text
+        self.assertIn('$("#page-title")?.dataset.title', js)
+        self.assertNotIn('$("#page-title")?.textContent', js)
+
+
+class ProductStripTests(unittest.TestCase):
+    def test_the_card_itself_opens_the_product_requirements(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        strip = js[js.index("function productStripHtml"):][:1400]
+        self.assertIn('<h2><a class="card-title-link" href="#/product">Product</a></h2>', strip)
+        self.assertIn('<a class="product-pitch" href="#/product"', strip)
+        self.assertNotIn(">Open</a>", strip)  # no separate Open link
+
+
 class UiShutdownTests(unittest.TestCase):
     """Stopping `orchestrator ui` the way a service manager or `kill` does must close its tunnel, as Ctrl-C does."""
 

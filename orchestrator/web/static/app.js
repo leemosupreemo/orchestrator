@@ -826,10 +826,10 @@ async function refreshState() {
     inboxBadge.textContent = state.inbox_count || "";
     inboxBadge.title = `${state.inbox_count} waiting on you`;
   }
-  const pageTitle = $("#page-title")?.textContent;
+  const pageTitle = $("#page-title")?.dataset.title;
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
   const topLangsEl = $("#topbar-languages");
-  if (topLangsEl && (current?.page === "home" || $("#page-title")?.textContent === state.project?.name)) {
+  if (topLangsEl && (current?.page === "home" || $("#page-title")?.dataset.title === state.project?.name)) {
     if (state.project?.languages?.length) {
       topLangsEl.innerHTML = renderLanguagesBar(state.project.languages, { maxLabels: 3 });
       topLangsEl.title = state.project.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · ");
@@ -1365,8 +1365,13 @@ async function lockSession() {
   showSignInGate("Session locked. Please sign in again.");
 }
 
-function setHeader({ title, sub = "", actions = "" }) {
-  $("#page-title").textContent = title;
+// `titleHtml` replaces the plain title with markup (Home's project switcher); `title` stays the page's name for the
+// browser tab and anything else that asks what page this is (#page-title's data-title).
+function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
+  const heading = $("#page-title");
+  if (titleHtml) heading.innerHTML = titleHtml;
+  else heading.textContent = title;
+  heading.dataset.title = title;
   const subEl = $("#page-sub");
   subEl.innerHTML = sub;
   subEl.hidden = !sub;
@@ -1500,7 +1505,7 @@ function statusLine(p) {
     ? `<span class="sep">·</span><span class="topbar-languages" title="${esc(p.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · "))}">${renderLanguagesBar(p.languages, { maxLabels: 3 })}</span>`
     : "";
   // Row 1: the branch. Row 2: the stats, then the language mix.
-  return `<span class="status-line status-stack"><span class="status-branch">${branchPicker}</span>
+  return `<span class="status-line status-stack"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>
     <span class="status-stats"><span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : p.machine_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>` : p.model_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}${langs}</span></span>`;
 }
 
@@ -1677,9 +1682,11 @@ pages.home = async (_, query) => {
 
   return {
     title: p.name,
+    // The project's name is the switcher: one control to change project, labelled, above the labelled branch.
+    titleHtml: `<label class="title-switch"><span class="label">Project</span>
+      <select class="project-select-inline title-project-select" aria-label="Project"><option>${esc(p.name)}</option></select></label>`,
     sub: statusLine(p),
     html: `
-      <label class="mobile-only project-inline"><span class="label">Project</span><select class="project-select-inline"></select></label>
       ${product ? productStripHtml(product) : ""}
 
       ${runningBanner}
@@ -2874,9 +2881,10 @@ async function waitForTask(started) {
 
 function productStripHtml(p) {
   const lead = p.sections.find((x) => x.id === "pitch" && x.filled) || p.sections.find((x) => x.filled);
-  return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2>Product</h2><a href="#/product">Open</a></div>
+  // The heading and the pitch open the product requirements: the Product page isn't in the sidebar, so this is the way in.
+  return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2></div>
     <div class="card-b stack">
-      ${lead ? `<p class="product-pitch">${esc(prdSnippet(lead.body))}</p>`
+      ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build. All of it is optional.</p>
            <div class="row gap-10">${p.can_draft ? `<a class="btn small primary" href="#/product?draft=1">Draft it from my project</a><a class="btn small" href="#/product">Write it</a>` : `<a class="btn small primary" href="#/product">Write it</a>`}<a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
     </div></section>`;
