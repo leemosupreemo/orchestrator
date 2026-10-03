@@ -269,6 +269,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
 
         with (
             patch("argparse.ArgumentParser.parse_args", return_value=test_args),
+            patch("simulator_visual_check.extract_commands", return_value=("xcodebuild build", "xcodebuild test")),
             patch("pathlib.Path.mkdir"),
             patch("pathlib.Path.unlink"),
             patch("pathlib.Path.is_symlink", return_value=False),
