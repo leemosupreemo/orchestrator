@@ -9,7 +9,17 @@ guard FileManager.default.isExecutableFile(atPath: python.path) else {
     fputs("The private Orchestrator runtime is missing. Reinstall the application.\n", stderr)
     exit(78)
 }
-let arguments = [python.path, "-P", "-m", "orchestrator.desktop_agent"] + Array(CommandLine.arguments.dropFirst())
+let info = (try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist"))).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] } ?? [:]
+let integration = info["OrchestratorIntegrationFixture"] as? Bool == true
+if integration && info["CFBundleIdentifier"] as? String != "com.orchestrator.desktop.integration" { exit(78) }
+var extraArguments = Array(CommandLine.arguments.dropFirst())
+if integration {
+    setenv("ORCHESTRATOR_USER_STATE_DIR", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".orchestrator-desktop-test").path, 1)
+    if !extraArguments.contains("--control-dir") {
+        extraArguments += ["--control-dir", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Orchestrator/test").path]
+    }
+}
+let arguments = [python.path, "-P", "-m", "orchestrator.desktop_agent"] + extraArguments
 let privateBin = resources.appendingPathComponent("bin").path
 let home = FileManager.default.homeDirectoryForCurrentUser.path
 setenv("PATH", "\(privateBin):\(python.deletingLastPathComponent().path):/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin", 1)

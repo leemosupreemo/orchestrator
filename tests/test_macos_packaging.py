@@ -14,6 +14,12 @@ spec.loader.exec_module(build)
 
 
 class MacOSPackagingTests(unittest.TestCase):
+    def test_login_fixture_uses_distinct_service_identity(self):
+        info, agent = build.service_identity(integration=True)
+        self.assertEqual(info["CFBundleIdentifier"], "com.orchestrator.desktop.integration")
+        self.assertEqual(agent["Label"], "com.orchestrator.desktop.integration.agent")
+        self.assertTrue(info["OrchestratorIntegrationFixture"])
+        self.assertNotEqual(agent["Label"], "com.orchestrator.ui")
     def test_manifest_has_exact_verified_inputs_for_both_architectures(self):
         manifest = build.load_manifest(PATH.with_name("dependencies.json"))
         for architecture in ("arm64", "x86_64"):

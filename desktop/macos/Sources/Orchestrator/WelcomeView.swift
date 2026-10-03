@@ -4,6 +4,7 @@ import DesktopCore
 struct WelcomeView: View {
     let controller: MenuController
     @ObservedObject var state: DesktopState
+    @ObservedObject var services: ServiceController
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Label("Orchestrator on this Mac", systemImage: "terminal").font(.title2)
@@ -21,6 +22,8 @@ struct WelcomeView: View {
                 Button("Create a project…") { controller.openBrowser("#/new-project") }
             }
             Text("Git, GitHub, AI tools and your project's build tools may require their own installation and sign-in. Pairing and local setup work before those are ready.").font(.caption).foregroundStyle(.secondary)
+            Toggle("Start at login", isOn: Binding(get: { services.desired }, set: { controller.setStartAtLogin($0) }))
+            if services.registration == .requiresApproval { Button("Open Login Items Settings…") { services.openApprovalSettings() } }
             Button("Open Orchestrator") { controller.openBrowser("#/") }.keyboardShortcut(.defaultAction)
             if !state.error.isEmpty { Text(state.error).foregroundStyle(.red).textSelection(.enabled) }
             Spacer(minLength: 0)

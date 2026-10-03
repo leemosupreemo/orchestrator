@@ -80,7 +80,7 @@ class ActivityGate:
         if not reason:
             raise ValueError("A preparation reason is required")
         with self._lock:
-            if self._active or self._reason:
+            if self._active or (self._reason and not (self._reason == "update" and reason == "stop")):
                 return False
             self._reason = reason
             return True

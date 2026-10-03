@@ -4,6 +4,7 @@ import DesktopCore
 struct SettingsView: View {
     let controller: MenuController
     @ObservedObject var state: DesktopState
+    @ObservedObject var services: ServiceController
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Orchestrator Settings").font(.title2)
@@ -12,10 +13,14 @@ struct SettingsView: View {
             Text("Account: \(state.status?["pairing"]?["owner_email"]?.string ?? "Not connected")")
             Button("Connect this Mac…") { controller.pair(); controller.showWelcome() }
             Toggle("Remote access", isOn: Binding(get: { state.status?["remote_enabled"]?.bool ?? false }, set: { state.perform("remote_access", params: ["enabled": .bool($0)]) })).disabled(state.status == nil)
-            Text("Start at login: not enabled in this development checkpoint.").font(.caption)
+            Toggle("Start at login", isOn: Binding(get: { services.desired }, set: { controller.setStartAtLogin($0) }))
+            Text("Background permission: \(services.registration.rawValue)").font(.caption)
+            if services.pending { Text("Waiting for current work to finish before changing background mode.").font(.caption) }
+            if services.registration == .requiresApproval { Button("Open Login Items Settings…") { services.openApprovalSettings() } }
             Button("Stop Orchestrator on this Mac") { controller.stop() }.disabled(!state.canStop)
             Text(state.canStop ? "Stopping leaves your settings and projects intact." : "Stop is unavailable while work is running or activity is unknown.").font(.caption).foregroundStyle(.secondary)
             Text("Version: \(state.status?["runner"]?["version"]?.string ?? "Unknown")")
+            Button("Remove background components…") { controller.removeBackgroundComponents() }.disabled(!state.canStop)
             if !state.operation.isEmpty { Text(state.operation).font(.callout) }
             if !state.error.isEmpty { Text(state.error).foregroundStyle(.red).textSelection(.enabled) }
             Spacer(minLength: 0)

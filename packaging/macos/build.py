@@ -128,7 +128,17 @@ def validate_macho(bundle: Path, architecture: str) -> None:
                 raise ValueError(f"Nonportable runtime dependency: {path.name}")
 
 
-def build_bundle(architecture: str, output_dir: Path, manifest: Path, version: str, build_number: int) -> Path:
+def service_identity(integration: bool = False) -> tuple[dict, dict]:
+    info = plistlib.loads((HERE / "Info.plist").read_bytes())
+    agent = plistlib.loads((HERE / "agent.plist").read_bytes())
+    if integration:
+        info.update(CFBundleIdentifier="com.orchestrator.desktop.integration", CFBundleDisplayName="Orchestrator Integration", OrchestratorIntegrationFixture=True)
+        agent["Label"] = "com.orchestrator.desktop.integration.agent"
+    info["OrchestratorAgentPlist"] = agent["Label"] + ".plist"
+    return info, agent
+
+
+def build_bundle(architecture: str, output_dir: Path, manifest: Path, version: str, build_number: int, integration: bool = False) -> Path:
     if architecture not in ARCHES or not re.fullmatch(r"\d+\.\d+\.\d+(?:[a-z0-9.-]+)?", version) or type(build_number) is not int or build_number <= 0:
         raise ValueError("Choose arm64/x86_64, an explicit release version and a positive build number.")
     dependencies = load_manifest(manifest)
@@ -172,9 +182,12 @@ def build_bundle(architecture: str, output_dir: Path, manifest: Path, version: s
         binary_dir = Path(subprocess.check_output(list(map(str, swift + ["--show-bin-path"])), text=True).strip())
         for name in ("Orchestrator", "OrchestratorAgentLauncher"):
             shutil.copy2(binary_dir / name, macos / name)
-        info = plistlib.loads((HERE / "Info.plist").read_bytes())
+        info, agent = service_identity(integration)
         info.update(CFBundleShortVersionString=version, CFBundleVersion=str(build_number), OrchestratorArchitecture=architecture, OrchestratorDevelopmentBuild=True)
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+        agents = bundle / "Contents/Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / info["OrchestratorAgentPlist"]).write_bytes(plistlib.dumps(agent))
         shutil.copy2(manifest, resources / "dependencies.json")
         shutil.copy2(HERE / "THIRD_PARTY_NOTICES.md", resources / "THIRD_PARTY_NOTICES.md")
         validate_macho(bundle, architecture)
@@ -196,10 +209,11 @@ def main():
     parser.add_argument("--version", default=tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["version"])
     parser.add_argument("--build-number", type=int, required=True)
     parser.add_argument("--development", action="store_true")
+    parser.add_argument("--integration-fixture", action="store_true")
     args = parser.parse_args()
     if not args.development:
         parser.error("Assembly requires --development. Sign and notarize verified artifacts with release.py.")
-    print(build_bundle(args.arch, args.output, args.manifest, args.version, args.build_number))
+    print(build_bundle(args.arch, args.output, args.manifest, args.version, args.build_number, args.integration_fixture))
 
 
 if __name__ == "__main__":

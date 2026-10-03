@@ -6,6 +6,10 @@ import Darwin
 @MainActor final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, ObservableObject {
     let state: DesktopState
     let client: AgentClient
+    lazy var services = ServiceController(bundle: Bundle.main.bundleURL, adapter: .live(client: client, start: { [weak self] in
+        guard let self else { return }
+        try self.launchAgent()
+    }))
     let opener = BrowserOpener(open: { NSWorkspace.shared.open($0) })
     let hostedOrigin = URL(string: "https://swift-orch-web-20260923.web.app")!
     private var item: NSStatusItem!
@@ -18,14 +22,14 @@ import Darwin
         Notification.Name((Bundle.main.bundleIdentifier ?? "com.orchestrator.desktop") + ".show")
     }
     override init() {
-        let client = AgentClient(socketPath: ProcessInfo.processInfo.environment["ORCHESTRATOR_DESKTOP_CONTROL_DIR"].map { $0 + "/agent.sock" } ?? AgentClient.defaultSocketPath)
+        let client = AgentClient(socketPath: DesktopPaths.controlDirectory + "/agent.sock")
         self.client = client
         state = DesktopState(request: { command, params in try await client.request(command: command, params: params) })
         super.init()
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
-            let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ORCHESTRATOR_DESKTOP_CONTROL_DIR"] ?? NSString(string: AgentClient.defaultSocketPath).deletingLastPathComponent)
+            let directory = URL(fileURLWithPath: DesktopPaths.controlDirectory)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             lease = Darwin.open(directory.appendingPathComponent("menu.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
             var info = stat()
@@ -47,8 +51,9 @@ import Darwin
         rebuildMenu()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in Task { @MainActor in await self?.refresh() } }
         Task {
-            await state.refresh()
-            if state.status == nil { startAgent() }
+            do {
+                try await LifecycleCoordinator(client: client, services: services, start: { [weak self] in try self?.launchAgent() }).ensureRunning()
+            } catch { state.error = error.localizedDescription }
             await refresh()
             if state.status?["setup"]?.string != "ready" { showWelcome() }
             if CommandLine.arguments.contains("--smoke-menu") {
@@ -57,11 +62,10 @@ import Darwin
             }
         }
     }
-    func startAgent() {
+    func launchAgent() throws {
         let launcher = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/OrchestratorAgentLauncher")
         guard FileManager.default.isExecutableFile(atPath: launcher.path) else {
-            state.error = "The bundled agent is missing. Reinstall Orchestrator, or use the development fixture agent."
-            return
+            throw AgentError(code: "missing_runtime", message: "The bundled agent is missing. Reinstall Orchestrator, or use the development fixture agent.")
         }
         do {
             let process = Process()
@@ -69,13 +73,17 @@ import Darwin
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try process.run()
-        } catch { state.error = "Could not start the bundled agent. Open Diagnostics." }
+        } catch { throw AgentError(code: "start_failed", message: "Could not start the bundled agent. Open Diagnostics.") }
     }
     func refresh() async {
         guard !refreshPending else { return }
         refreshPending = true
         defer { refreshPending = false }
         await state.refresh()
+        if services.pending, state.canStop {
+            do { try await services.reconcile() }
+            catch { state.error = error.localizedDescription }
+        }
         if let pairing = state.status?["pairing"], pairing["state"]?.string == "waiting", let url = pairing["url"]?.string, url != openedPairing {
             do { try opener.openPairing(url, trustedOrigin: hostedOrigin); openedPairing = url }
             catch { state.error = error.localizedDescription }
@@ -134,10 +142,26 @@ import Darwin
     func stop() {
         Task {
             do {
-                let result = try await state.command("stop_if_idle")
-                if result["accepted"]?.bool != true { state.error = result["reason"]?.string ?? "Work is still running." }
+                try await services.stopIfIdle()
                 await state.refresh()
             } catch { state.error = error.localizedDescription }
+        }
+    }
+    func setStartAtLogin(_ enabled: Bool) {
+        Task {
+            do { try await services.setStartAtLogin(enabled) }
+            catch { state.error = error.localizedDescription }
+        }
+    }
+    func removeBackgroundComponents() {
+        let alert = NSAlert()
+        alert.messageText = "Remove Orchestrator's background components?"
+        alert.informativeText = "The agent stops only when idle. Your projects, settings, account connection and history are retained. You can then move the application to Trash."
+        alert.addButton(withTitle: "Remove components"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            do { try await services.removeBackgroundComponents(); await state.refresh() }
+            catch { state.error = error.localizedDescription }
         }
     }
     private func window<V: View>(_ key: String, title: String, view: V) {
@@ -150,8 +174,8 @@ import Darwin
     }
     func showStartupError(_ message: String) { let alert = NSAlert(); alert.messageText = "Orchestrator could not start"; alert.informativeText = message; alert.runModal(); NSApplication.shared.terminate(nil) }
     @objc func reopen() { showWelcome() }
-    @objc func showWelcome() { window("welcome", title: "Welcome to Orchestrator", view: WelcomeView(controller: self, state: state)) }
-    @objc func showSettings() { window("settings", title: "Orchestrator Settings", view: SettingsView(controller: self, state: state)) }
+    @objc func showWelcome() { window("welcome", title: "Welcome to Orchestrator", view: WelcomeView(controller: self, state: state, services: services)) }
+    @objc func showSettings() { window("settings", title: "Orchestrator Settings", view: SettingsView(controller: self, state: state, services: services)) }
     @objc func showDiagnostics() { window("diagnostics", title: "Orchestrator Diagnostics", view: DiagnosticsView(state: state)) }
     @objc func checkUpdates() { state.operation = "App updates are not configured for this development build."; showSettings() }
     @objc func openWorkspace() { openBrowser("#/") }

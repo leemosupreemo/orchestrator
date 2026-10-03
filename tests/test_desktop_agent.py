@@ -84,6 +84,13 @@ class DesktopAgentTests(unittest.TestCase):
             self.assertFalse(result["accepted"])
         self.assertTrue(self.thread.is_alive())
 
+    def test_prepared_update_can_stop_without_reopening_admissions(self):
+        self.start()
+        self.assertTrue(self.request("prepare_update")["result"]["accepted"])
+        self.assertTrue(self.request("stop_if_idle")["result"]["accepted"])
+        self.thread.join(5)
+        self.assertFalse(self.thread.is_alive())
+
     def test_remote_off_leaves_running_session_alive(self):
         self.project()
         self.start()
@@ -149,7 +156,7 @@ class DesktopAgentTests(unittest.TestCase):
         self.dependencies.tunnel_stop = stopped.append
         self.project()
         self.start()
-        self.wait(lambda: self.agent._remote_thread is not None and not self.agent._remote_thread.is_alive())
+        self.wait(lambda: proc in stopped)
         self.assertIn(proc, stopped)
         self.assertIsNone(self.agent._tunnel_proc)
         self.assertEqual(self.request("status")["result"]["remote_access"], "unavailable")
@@ -158,12 +165,17 @@ class DesktopAgentTests(unittest.TestCase):
         from unittest.mock import Mock
         proc = Mock()
         proc.poll.return_value = None
-        self.dependencies.tunnel_start = lambda port: (self.gate.wait(3) and proc, "https://fixture.trycloudflare.com")
+        started = threading.Event()
+        def connect(port):
+            started.set()
+            self.gate.wait(3)
+            return proc, "https://fixture.trycloudflare.com"
+        self.dependencies.tunnel_start = connect
         stopped = []
         self.dependencies.tunnel_stop = stopped.append
         root = self.project()
         self.start()
-        self.wait(lambda: self.agent._remote_thread is not None)
+        self.wait(started.is_set)
         (root / ".orchestrator/project.json").unlink()
         self.wait(lambda: self.agent.local.root is None)
         self.gate.set()
