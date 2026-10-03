@@ -2331,6 +2331,7 @@ pages.features = async (_, query) => {
         ])}</div>
       <div class="card-b stack">
         ${f.summary ? `<div>${esc(f.summary)}</div>` : ""}
+        ${FeaturePlan.renderStories(f.stories)}
         ${f.reopened ? `<div class="muted">Reopened: new work was added after it was marked complete.</div>` : ""}
         ${combineLine(f)}
         ${f.kpis.length ? `<div><a href="#/measure">KPIs</a>: ${["on-track", "behind", "no-data", "no-target"].map((k) => [k, f.kpis.filter((x) => x.status.state === k).length]).filter(([, n]) => n).map(([k, n]) => `${n} ${KPI_STATE[k][0].toLowerCase()}`).join(" · ")}</div>` : ""}
@@ -2344,14 +2345,16 @@ pages.features = async (_, query) => {
   return {
     title: "Features",
     sub: "What the jobs add up to. Each feature owns its own slice of the code.",
-    actions: `<button class="btn primary" id="new-feature">New feature</button>`,
+    actions: `<button class="btn" id="draft-features" title="AI proposes features, stories and an order from your product requirements">Draft from product requirements</button><button class="btn primary" id="new-feature">New feature</button>`,
     html: view_ === "map" && features.length ? `
       ${toggle}
+      <div id="feature-proposal-slot"></div>
       ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
       ${mapHtml()}` : `
       ${features.length ? toggle : ""}
       ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
-      ${features.map(card).join("") || `<div class="empty">No features yet. A feature is something a user would name, like “Lobby seats”. Create one, then group jobs under it.</div>`}
+      <div id="feature-proposal-slot"></div>
+      ${features.map(card).join("") || `<div class="empty">No features yet. A feature is something a user would name, like “Lobby seats”. <strong>Draft from product requirements</strong> proposes them for you, or create one yourself.</div>`}
       ${loose.length ? `<section class="card"><div class="card-h"><h2>Not in a feature</h2><span class="count">${loose.length}</span></div>
         <div class="list">${loose.map((j) => jobItem(j)).join("")}</div></section>` : ""}`,
     after: () => {
@@ -2368,6 +2371,29 @@ pages.features = async (_, query) => {
         el?.scrollIntoView({ block: "center" });
         el?.classList.add("highlight-flash");
       }
+      $("#draft-features").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        const slot = $("#feature-proposal-slot");
+        slot.innerHTML = `<div class="banner"><p>Reading your product requirements and drafting features. This takes a minute or two.</p></div>`;
+        try {
+          const proposal = await waitForTask(await api("features/propose", { method: "POST", body: {} }));
+          slot.innerHTML = FeaturePlan.renderProposal(proposal);
+          slot.scrollIntoView({ block: "start" });
+          $("#feature-proposal-discard").addEventListener("click", () => { slot.innerHTML = ""; });
+          $("#feature-proposal-form").addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const chosen = new FormData(e.target).getAll("chosen");
+            if (!chosen.length) { toast("Tick at least one feature, or discard the draft.", "warning"); return; }
+            try {
+              await api("features/accept", { method: "POST", body: { features: proposal.features, chosen } });
+              toast(`Added ${chosen.length} feature${chosen.length === 1 ? "" : "s"}`);
+              route();
+            } catch (err) { toast(err.message, true); }
+          });
+        } catch (err) { slot.innerHTML = ""; toast(err.message, true); }
+        finally { button.disabled = false; }
+      });
       $("#new-feature").addEventListener("click", async () => {
         const v = await formDialog("New feature", featureFormBody({}, features), "Create");
         if (!v) return;

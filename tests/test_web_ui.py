@@ -941,6 +941,27 @@ process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: pag
         self.assertIn("Drive &lt;web&gt; apps", html)
         self.assertEqual(result["entry"], "#/config/ai")  # members can use it too
 
+    def test_feature_proposal_view_groups_by_build_order_and_escapes(self):
+        helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
+        source = """
+const P = globalThis.FeaturePlan;
+const html = P.renderProposal({warnings: ["\\"<b>\\" overlaps"], features: [
+  {name: "Play a round", summary: "One game", stories: ["As a player I can play."], depends_on: [], paths: ["app/game/"], layer: 0},
+  {name: "Chat <script>", summary: "", stories: [], depends_on: ["Play a round"], paths: [], layer: 1}]});
+process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]), none: P.renderStories([])}));"""
+        result = subprocess.run(["node", "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        html = out["html"]
+        self.assertLess(html.index("Start with these"), html.index("Then these (layer 2)"))
+        self.assertLess(html.index("Play a round"), html.index("Chat &lt;script&gt;"))
+        self.assertIn('value="Play a round" checked', html)
+        self.assertIn("&quot;&lt;b&gt;&quot; overlaps", html)
+        self.assertNotIn("<script>", html)
+        self.assertIn("Builds on Play a round", html)
+        self.assertIn("As &lt;a&gt;", out["stories"])
+        self.assertEqual(out["none"], "")
+
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
 const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
@@ -1327,6 +1348,60 @@ process.stdout.write(JSON.stringify({grouped, oneGroup, allHtml: pages.map((page
 
 
 class ReadApiTests(ServerTestCase):
+    def write_prd(self):
+        from orchestrator import prd as prd_doc
+        path = self.root / prd_doc.PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(prd_doc.replace_section(prd_doc.template("Word Duel"), "pitch", "A turn-based word game to play with friends."))
+
+    def wait_task(self, task):
+        for _ in range(100):
+            _, data = self.request("GET", f"/api/product/task/{task}")
+            if data["status"] != "running":
+                return data
+            time.sleep(0.05)
+        self.fail("the task never finished")
+
+    def test_feature_draft_needs_product_requirements(self):
+        res, data = self.request("POST", "/api/features/propose", {}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        res, _ = self.request("POST", "/api/features/propose", {})
+        self.assertEqual(res.status, 403)  # another site can't start a model run
+        self.assertIn("product requirements", data["error"])
+
+    def test_feature_draft_proposes_then_accept_creates_chosen_in_order(self):
+        self.write_prd()
+        answer = json.dumps({"features": [
+            {"name": "Challenge a friend", "summary": "Invite someone", "stories": ["As a player I can invite a friend."],
+             "paths": ["app/social/"], "depends_on": ["Play a round"], "serves": "Playing with friends"},
+            {"name": "Play a round", "summary": "One game", "stories": ["As a player I can play a round."], "paths": ["app/game/"],
+             "depends_on": [], "serves": "Play"}]})
+        calls = []
+        with patch.object(ui.UIHandler, "_model_call", lambda handler, root, prompt, model="", timeout=150: calls.append(prompt) or answer):
+            res, started = self.request("POST", "/api/features/propose", {}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202)
+            task = self.wait_task(started["task"])
+        self.assertEqual(task["status"], "done", task)
+        self.assertIn("A turn-based word game", calls[0])
+        proposal = task["result"]
+        self.assertEqual([f["name"] for f in proposal["features"]], ["Play a round", "Challenge a friend"])
+        self.assertEqual(self.request("GET", "/api/features")[1]["features"], [])  # nothing saved yet
+
+        res, data = self.request("POST", "/api/features/accept", {"features": proposal["features"], "chosen": ["Challenge a friend"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)  # it builds on a feature that wasn't chosen
+        res, data = self.request("POST", "/api/features/accept", {"features": proposal["features"], "chosen": ["Play a round", "Challenge a friend"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200, data)
+        saved = {f["name"]: f for f in data["features"]}
+        self.assertEqual(saved["Challenge a friend"]["depends_on"], [saved["Play a round"]["id"]])
+        self.assertEqual(saved["Play a round"]["stories"], ["As a player I can play a round."])
+
+    def test_feature_accept_rechecks_what_the_page_sends(self):
+        tampered = [{"name": "A", "depends_on": ["B"], "layer": 0}, {"name": "B", "depends_on": ["A"], "layer": 0}]
+        res, data = self.request("POST", "/api/features/accept", {"features": tampered, "chosen": ["A", "B"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn("circle", data["error"])
+        self.assertEqual(self.request("GET", "/api/features")[1]["features"], [])
+
     def test_ai_providers_lists_free_first_with_status_here(self):
         with patch("orchestrator.setup_checklist.ready_llm_providers", return_value=["claude"]), \
                 patch("orchestrator.web.server.shutil.which", side_effect=lambda cli, path=None: "/bin/x" if cli == "claude" else None):

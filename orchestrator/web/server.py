@@ -60,6 +60,7 @@ from orchestrator import integrations
 from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
+from orchestrator import feature_map
 from orchestrator import inbox as inbox_view
 from orchestrator import task_revert
 from orchestrator import preflight
@@ -1705,6 +1706,8 @@ def feature_context(chosen: dict[str, Any], features: list[dict[str, Any]]) -> s
         lines.append(f"What it does: {chosen['summary']}")
     if chosen.get("serves"):
         lines.append(f"It serves this use case: {chosen['serves']}. Say so in the plan's summary, and check each task still serves it.")
+    if chosen.get("stories"):
+        lines.append("Its user stories (the plan should deliver these):\n" + "\n".join(f"- {s}" for s in chosen["stories"]))
     if chosen.get("paths"):
         lines.append("It owns these paths; keep changes inside them where you can: " + ", ".join(chosen["paths"]))
     deps = [names[d] for d in chosen.get("depends_on") or [] if d in names]
@@ -3579,6 +3582,31 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["inbox"]:
             self._json(inbox_overview(root, self.server.sessions, runs=self._sessions_view()))
         elif method == "GET" and parts == ["features"]:
+            self._json(features_overview(root))
+        elif method == "POST" and parts == ["features", "propose"]:
+            # Draft a feature map from the product requirements in the background; the page polls /api/product/task/<id>.
+            self._body()  # requires the UI header like every other change, so another site can't start (and bill) a model run
+            prd_text = prd_doc.Prd(root, runtime_dir(root)).read() or ""
+            if not prd_doc.is_filled_doc(prd_text):
+                raise UIError("Write the product requirements first (Product), so there's something to plan features from.")
+            existing = feature_store.load(runtime_dir(root))
+            request = feature_map.prompt(prd_text, existing, prd_doc.project_digest(root))
+
+            def work() -> dict[str, Any]:
+                try:
+                    return feature_map.parse(self._model_call(root, request, timeout=240), existing)
+                except feature_map.FeatureMapError:
+                    return feature_map.parse(self._model_call(root, request + prd_doc.FORMAT_REMINDER, timeout=240), existing)
+
+            self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
+        elif method == "POST" and parts == ["features", "accept"]:
+            body = self._body()
+            existing = feature_store.load(runtime_dir(root))
+            try:  # what comes back from the page is checked again, never trusted
+                proposal = feature_map.parse(json.dumps({"features": body.get("features") if isinstance(body.get("features"), list) else []}), existing)
+                feature_map.accept(runtime_dir(root), proposal["features"], [str(c) for c in body.get("chosen") or [] if isinstance(c, str)])
+            except (feature_map.FeatureMapError, feature_store.FeatureError) as exc:
+                raise UIError(str(exc))
             self._json(features_overview(root))
         elif method == "POST" and parts == ["features"]:
             body = self._body()
