@@ -1417,6 +1417,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     if (ctx.canSplinter) items.push(["Split into sub-jobs", act("splinter_job", j), "Parallel child jobs and GitHub sub-issues"]);
   }
   items.push("---");
+  items.push(["Open documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page in Docs"]);
   items.push(["Move to feature…", `data-job-feature="${esc(s.id)}"`, "Group this job under a feature"]);
   items.push(["Attach logs", act("link_logs", j), "Device crash logs or test traces"]);
   items.push(["Attach mockup or reference", act("attach_mockup", j)]);
@@ -2035,6 +2036,7 @@ pages.features = async (_, query) => {
     return `<section class="card mb-16" data-feature="${esc(f.id)}">
       <div class="card-h"><div class="row gap-10"><h2>${esc(f.name)}</h2><span class="pill ${tone}">${esc(label)}</span></div>
         ${moreMenu([
+          ["Documentation", `data-href="#/docs/feature/${encodeURIComponent(f.id)}"`, "This feature's page in Docs"],
           [complete ? "Reopen" : "Mark complete", `data-feature-action="${complete ? "reopen" : "complete"}" data-id="${esc(f.id)}"`, complete ? "More work is coming" : "Done for now. New work reopens it"],
           ["Edit", `data-feature-action="edit" data-id="${esc(f.id)}"`],
           ["Delete", `data-feature-action="delete" data-id="${esc(f.id)}"`, "Its jobs stay, unassigned", "danger"],
@@ -2353,6 +2355,94 @@ pages.help = async () => ({
       <details><summary>Where are the full guides?</summary><p><a href="#/config/documentation">Configuration > Documentation</a> lists the Orchestrator and project guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>`,
 });
+
+// ---------------------------------------------------------------- docs hub
+// Everything written about the project in one place: the product requirements, a page for every feature and every job (composed
+// from the live project, so it can't go stale), and the project's own markdown files. One file can be downloaded with all of it.
+
+function downloadText(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+pages.docs = async (args, query) => {
+  const [kind, id] = args || [];
+  if (kind === "job" || kind === "feature" || kind === "file") {
+    const path = kind === "file" ? `docs/file?path=${encodeURIComponent(query?.get("path") || "")}` : `docs/${kind}/${encodeURIComponent(id || "")}`;
+    let doc;
+    try { doc = await api(path); } catch (e) {
+      return { title: "Docs", html: `<div class="notice">${esc(e.message)} <a href="#/docs">Back to all docs</a></div>` };
+    }
+    const open = kind === "job" ? `<a class="btn" href="#/jobs/${encodeURIComponent(id)}">Open the job</a>` : kind === "feature" ? `<a class="btn" href="#/features">Open in Features</a>` : "";
+    return {
+      title: doc.title,
+      sub: `<a href="#/docs">← All docs</a>${kind === "file" ? ` · <span class="mono">${esc(doc.path)}</span>` : ""}`,
+      actions: `${open}<button class="btn" id="doc-download">Download .md</button>`,
+      html: `<section class="card"><div class="card-b"><div class="md">${Markdown.render(doc.markdown)}</div></div></section>`,
+      after: () => $("#doc-download").addEventListener("click", () => downloadText(`${(doc.title || "document").replace(/[^A-Za-z0-9._-]+/g, "-")}.md`, doc.markdown)),
+    };
+  }
+
+  const d = await api("docs");
+  const SHOWN = 15;
+  const featureRow = (f) => `<a class="item doc-row" href="#/docs/feature/${encodeURIComponent(f.id)}" data-find="${esc(`${f.name} ${f.summary}`.toLowerCase())}"><div class="main-col"><div class="title">${esc(f.name)}</div>
+      <div class="meta">${f.summary ? `${esc(f.summary)} · ` : ""}${f.jobs ? `${f.jobs_done} of ${f.jobs} jobs done` : "no jobs yet"}</div></div><div class="side"><span class="pill ${f.status === "complete" ? "done" : "working"}">${esc(f.status === "in-progress" ? "In progress" : f.status === "complete" ? "Complete" : "Planned")}</span></div></a>`;
+  const jobRow = (j, n) => `<a class="item doc-row" ${n >= SHOWN ? "hidden" : ""} href="#/docs/job/${encodeURIComponent(j.id)}" data-group="${esc(j.group || "")}" data-find="${esc(`${j.title} ${j.feature_name} ${j.blurb} ${j.kind}`.toLowerCase())}"><div class="main-col"><div class="title">${esc(j.title)}</div>
+      <div class="meta">${[j.kind, j.feature_name, ago(j.updated)].filter(Boolean).map(esc).join(" · ")}${j.blurb ? `<br><span class="doc-blurb">${esc(j.blurb)}</span>` : ""}</div></div><div class="side"><span class="pill ${esc(j.group === "done" ? "done" : j.group === "needs_you" ? "attention" : "working")}">${esc(j.label)}</span></div></a>`;
+  const groups = [...new Set(d.files.map((f) => f.group))];
+  const fileRows = groups.map((g) => `<div class="tc-area-h">${esc(g)}</div>${d.files.filter((f) => f.group === g).map((f) => `<a class="item doc-row" href="#/docs/file?path=${encodeURIComponent(f.path)}" data-find="${esc(`${f.title} ${f.path}`.toLowerCase())}"><div class="main-col"><div class="title">${esc(f.title)}</div><div class="meta mono">${esc(f.path)}</div></div></a>`).join("")}`).join("");
+  const pr = d.product;
+  return {
+    title: "Docs",
+    sub: "Everything about this project in one place. Job and feature pages are generated from the live project, so they stay true.",
+    actions: `<button class="btn" id="docs-export">Download everything (.md)</button>`,
+    html: `
+      <label class="field docs-search"><span class="sr-only">Search the docs</span><input type="search" id="docs-q" placeholder="Search features, jobs and files" autocomplete="off" aria-label="Search the docs"></label>
+      <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2><a href="#/product">${pr.exists ? "Open" : "Write it"}</a></div>
+        <div class="card-b">${pr.exists && pr.pitch ? `<p class="product-pitch">${esc(prdSnippet(pr.pitch, 220))}</p><div class="muted">${pr.written} of ${pr.total} sections written · <span class="mono">${esc(pr.path)}</span></div>`
+          : `<div class="muted">Nothing says what this product is yet. <a href="#/product">Write the pitch</a>, import a PRD, or draft one from the project.</div>`}</div></section>
+      <section class="card mb-16"><div class="card-h"><h2>Features</h2><span class="count">${d.features.length}</span></div>
+        <div class="list" id="docs-features">${d.features.length ? d.features.map(featureRow).join("") : `<div class="empty">No features yet. <a href="#/features">Group your jobs into features</a> and each gets a page here.</div>`}</div></section>
+      <section class="card mb-16"><div class="card-h"><h2>Jobs</h2><span class="count">${d.jobs.length}</span>
+        <div class="filters"><button type="button" class="btn small on" data-docs-group="">All</button><button type="button" class="btn small" data-docs-group="done">Done</button><button type="button" class="btn small" data-docs-group="open">Not done</button></div></div>
+        <div class="list" id="docs-jobs">${d.jobs.length ? d.jobs.map(jobRow).join("") : `<div class="empty">No jobs yet.</div>`}</div>
+        ${d.jobs.length > SHOWN ? `<div class="card-b"><button type="button" class="btn small" id="docs-more">Show all ${d.jobs.length}</button></div>` : ""}</section>
+      <section class="card"><div class="card-h"><h2>Project files</h2><span class="count">${d.files.length}</span></div>
+        <div class="list" id="docs-files">${d.files.length ? fileRows : `<div class="empty">No README or docs/ folder found.</div>`}</div></section>`,
+    after: () => {
+      const q = $("#docs-q"), rows = () => [...view.querySelectorAll(".doc-row")];
+      let group = "", all = false;
+      const apply = () => {
+        const term = q.value.trim().toLowerCase();
+        let shown = 0;
+        for (const r of rows()) {
+          const inJobs = r.closest("#docs-jobs");
+          const okTerm = !term || r.dataset.find.includes(term);
+          const g = r.dataset.group;
+          const okGroup = !inJobs || !group || (group === "done" ? g === "done" : g !== "done");
+          let visible = okTerm && okGroup;
+          if (inJobs && visible) { shown++; if (!all && !term && shown > SHOWN) visible = false; }
+          r.hidden = !visible;
+        }
+        $("#docs-more")?.toggleAttribute("hidden", all || !!term);
+      };
+      q.addEventListener("input", apply);
+      $("#docs-more")?.addEventListener("click", () => { all = true; apply(); });
+      view.querySelectorAll("[data-docs-group]").forEach((b) => b.addEventListener("click", () => {
+        group = b.dataset.docsGroup; all = false;
+        view.querySelectorAll("[data-docs-group]").forEach((x) => x.classList.toggle("on", x === b));
+        apply();
+      }));
+      $("#docs-export").addEventListener("click", async (e) => {
+        e.target.disabled = true;
+        try { const r = await api("docs/export"); downloadText(r.name.replace(/[^A-Za-z0-9._-]+/g, "-"), r.markdown); } catch (err) { toast(err.message, true); }
+        e.target.disabled = false;
+      });
+    },
+  };
+};
 
 // ---------------------------------------------------------------- product requirements
 // One short living document (see orchestrator/prd.py): five sections, edited here, kept true by the AI as jobs finish,
@@ -3745,6 +3835,7 @@ function resolveRoute() {
   }
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "projects", query };
   if (parts[0] === "product") return { page: "product", args: [], nav: "home", query };
+  if (parts[0] === "docs") return { page: "docs", args: parts.slice(1), nav: "docs", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
 }
@@ -3821,7 +3912,7 @@ if (connBtn) {
 $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
 
 // ---------------------------------------------------------------- command palette
-const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
+const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Docs", "#/docs", "Every feature, job and project file in one place"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
@@ -3908,7 +3999,7 @@ window.addEventListener("hashchange", closePalette);
 
 // Phone layout: the bottom bar holds the everyday pages; everything else lives behind "More".
 const moreBtn = $("#nav-more"), moreSheet = $("#more-sheet");
-const MORE_LINKS = [["Help", "#/help"], ["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
+const MORE_LINKS = [["Help", "#/help"], ["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Docs", "#/docs"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
 function closeMore() { if (moreSheet.hidden) return; moreSheet.hidden = true; moreBtn.setAttribute("aria-expanded", "false"); }
 moreBtn?.addEventListener("click", () => {
   if (!moreSheet.hidden) return closeMore();

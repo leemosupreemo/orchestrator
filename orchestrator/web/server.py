@@ -63,6 +63,7 @@ from orchestrator import new_job_form
 from orchestrator import notifier
 from orchestrator import plan_edit
 from orchestrator import prd as prd_doc
+from orchestrator import project_docs
 from orchestrator import project_health
 from orchestrator import scope_check
 from orchestrator.stack_detection import detect_project_stack
@@ -961,6 +962,97 @@ def github_links(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
         if number and url and str(url).startswith("https://"):
             links.append({"label": f"{kind} #{number}", "url": url})
     return links
+
+
+# --------------------------------------------------------------------------- documentation hub
+
+
+def _all_job_files(root: Path) -> dict[str, Path]:
+    """Every job file by id: running and waiting ones, and the finished ones in the archive."""
+    found: dict[str, Path] = {}
+    for folder in (jobs_dir(root) / "archive", jobs_dir(root)):  # a live job wins over an archived copy of the same id
+        if folder.is_dir():
+            for path in folder.glob("*.json"):
+                if not re.search(r"_task_\d+$", path.stem):
+                    found[path.stem] = path
+    return found
+
+
+def _blurb(job: dict[str, Any], n: int = 170) -> str:
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    text = re.sub(r"\s+", " ", str(plan.get("summary") or job.get("raw_input") or "")).strip()
+    return text if len(text) <= n else text[:n].rsplit(" ", 1)[0] + "…"
+
+
+def _job_review(root: Path, job: dict[str, Any]) -> str:
+    n = job.get("pr_number")
+    for rel in ((f"output/pr-{n}/review.md",) if n else ()) + (f"output/{job.get('job_id')}/review.md",):
+        text = read_limited(runtime_dir(root) / rel, 12_000)
+        if text and text.strip():
+            return text
+    return ""
+
+
+def docs_job_markdown(root: Path, job_id: str) -> tuple[str, str]:
+    path = _all_job_files(root).get(job_id)
+    if not path:
+        raise UIError("That job isn't here.", HTTPStatus.NOT_FOUND)
+    job = read_json_file(path)
+    features = {f["id"]: f.get("name") or f["id"] for f in feature_store.load(runtime_dir(root))}
+    links = [{"title": l["label"], "url": l["url"]} for l in github_links(root, job)]
+    links += [{"title": l.get("title") or l.get("ref"), "url": l.get("url", "")} for l in job.get("external_links") or [] if isinstance(l, dict)]
+    changed = list(dict.fromkeys([*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or [])]))
+    return str(job.get("title") or job_id), project_docs.job_doc(job, _job_review(root, job), changed, features.get(job.get("feature") or "", ""), links)
+
+
+def docs_feature_markdown(root: Path, feature_id: str) -> tuple[str, str]:
+    features = feature_store.load(runtime_dir(root))
+    jobs = []
+    for jid, path in _all_job_files(root).items():
+        job = read_json_file(path)
+        if job.get("feature") == feature_id:
+            jobs.append({**job_summary(path, job), "blurb": _blurb(job)})
+    jobs.sort(key=lambda j: j["updated"])
+    rolled = feature_store.rollup(features, jobs)
+    mine = next((f for f in rolled if f["id"] == feature_id), None)
+    if not mine:
+        raise UIError("That feature isn't here.", HTTPStatus.NOT_FOUND)
+    return str(mine.get("name") or feature_id), project_docs.feature_doc(mine, jobs, {f["id"]: f.get("name") or f["id"] for f in features})
+
+
+def docs_index(root: Path) -> dict[str, Any]:
+    doc = prd_doc.Prd(root, runtime_dir(root))
+    doc.migrate_legacy()
+    features = feature_store.load(runtime_dir(root))
+    names = {f["id"]: f.get("name") or f["id"] for f in features}
+    jobs = []
+    for jid, path in _all_job_files(root).items():
+        job = read_json_file(path)
+        if not job:
+            continue
+        s = job_summary(path, job)
+        jobs.append({"id": jid, "title": s["title"], "kind": s["kind"], "status": s["status"], "label": (s.get("state") or {}).get("label") or s["status"],
+                     "group": (s.get("state") or {}).get("group"), "updated": s["updated"], "feature": job.get("feature") or "", "feature_name": names.get(job.get("feature") or "", ""),
+                     "blurb": _blurb(job), "archived": path.parent.name == "archive"})
+    jobs.sort(key=lambda j: j["updated"], reverse=True)
+    by_feature: dict[str, list[dict[str, Any]]] = {}
+    for j in jobs:
+        by_feature.setdefault(j["feature"], []).append(j)
+    sections = prd_doc.sections_view(doc.read())
+    return {"product": {"exists": doc.exists(), "written": sum(1 for x in sections if x["filled"]), "total": len(sections), "path": prd_doc.PATH,
+                        "pitch": next((x["body"] for x in sections if x["id"] == "pitch" and x["filled"]), "")[:240]},
+            "features": [{"id": f["id"], "name": f.get("name") or f["id"], "status": f.get("status"), "summary": str(f.get("summary") or "")[:200],
+                          "jobs": len(by_feature.get(f["id"], [])), "jobs_done": sum(1 for j in by_feature.get(f["id"], []) if j["group"] == "done")} for f in features],
+            "jobs": jobs, "files": project_docs.project_files(root)}
+
+
+def docs_export(root: Path) -> str:
+    doc = prd_doc.Prd(root, runtime_dir(root))
+    idx = docs_index(root)
+    feats = [(f, docs_feature_markdown(root, f["id"])[1]) for f in idx["features"]]
+    jobs = [(j, docs_job_markdown(root, j["id"])[1]) for j in idx["jobs"]]
+    files = [(f["path"], project_docs.read_project_file(root, f["path"])) for f in idx["files"] if f["path"] != prd_doc.PATH]
+    return project_docs.export_all(project_display_name(root), doc.read(), feats, jobs, files)
 
 
 def git_state(root: Path) -> dict[str, Any]:
@@ -2942,6 +3034,26 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(save_upload(root, (query.get("name") or [""])[0], self._read_upload()))
         elif parts and parts[0] == "product":
             self._product_route(root, method, parts, query)
+        elif method == "GET" and parts and parts[0] == "docs":
+            try:
+                if parts == ["docs"]:
+                    self._json(docs_index(root))
+                elif len(parts) == 3 and parts[1] == "job":
+                    title, md = docs_job_markdown(root, parts[2])
+                    self._json({"title": title, "markdown": md})
+                elif len(parts) == 3 and parts[1] == "feature":
+                    title, md = docs_feature_markdown(root, parts[2])
+                    self._json({"title": title, "markdown": md})
+                elif parts == ["docs", "file"]:
+                    rel = (query.get("path") or [""])[0]
+                    md = project_docs.read_project_file(root, rel)
+                    self._json({"path": rel, "title": next((f["title"] for f in project_docs.project_files(root) if f["path"] == rel), rel), "markdown": md})
+                elif parts == ["docs", "export"]:
+                    self._json({"markdown": docs_export(root), "name": f"{project_display_name(root)}-documentation.md"})
+                else:
+                    raise UIError("Not found", HTTPStatus.NOT_FOUND)
+            except project_docs.DocsError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND)
         elif method == "GET" and parts == ["preflight"]:
             self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
         elif method == "GET" and parts == ["delivery"]:

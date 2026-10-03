@@ -47,12 +47,22 @@
         i++;
       } else if (/^[-*+]\s+/.test(line) || /^\d+[.)]\s+/.test(line)) {
         const ordered = /^\d+[.)]\s+/.test(line);
+        const top = ordered ? /^\d+[.)]\s+/ : /^[-*+]\s+/;
         const items = [];
-        while (i < lines.length && (ordered ? /^\d+[.)]\s+/ : /^[-*+]\s+/).test(lines[i])) {
-          items.push(`<li>${inline(lines[i].replace(ordered ? /^\d+[.)]\s+/ : /^[-*+]\s+/, ""))}</li>`);
+        while (i < lines.length) {
+          const cur = lines[i];
+          if (top.test(cur)) items.push({ text: cur.replace(top, ""), kids: [], more: [] });
+          else if (items.length && /^\s{2,}[-*+]\s+/.test(cur)) items[items.length - 1].kids.push(cur.replace(/^\s+[-*+]\s+/, "")); // one level of nesting
+          else if (items.length && /^\s{2,}\S/.test(cur)) items[items.length - 1].more.push(cur.trim()); // a wrapped line of the same item
+          else break;
           i++;
         }
-        out.push(`<${ordered ? "ol" : "ul"}>${items.join("")}</${ordered ? "ol" : "ul"}>`);
+        const body = (t) => { // "[x] text" / "[ ] text" are check boxes
+          const task = t.match(/^\[( |x|X)\]\s+(.*)$/);
+          return task ? `<span class="task${task[1] === " " ? "" : " done"}" role="img" aria-label="${task[1] === " " ? "not done" : "done"}">${task[1] === " " ? "☐" : "☑"}</span> ${inline(task[2])}` : inline(t);
+        };
+        const html = items.map((it) => `<li>${body(it.text)}${it.more.map((m) => `<br>${inline(m)}`).join("")}${it.kids.length ? `<ul>${it.kids.map((k) => `<li>${body(k)}</li>`).join("")}</ul>` : ""}</li>`);
+        out.push(`<${ordered ? "ol" : "ul"}>${html.join("")}</${ordered ? "ol" : "ul"}>`);
       } else if (/^>\s?/.test(line)) {
         const quote = [];
         while (i < lines.length && /^>\s?/.test(lines[i])) quote.push(lines[i++].replace(/^>\s?/, ""));

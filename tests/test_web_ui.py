@@ -2037,6 +2037,16 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Draft it from my project", home)  # an existing project is offered a draft from Home too
         self.assertIn("p.can_draft", home)
 
+    def test_the_docs_hub_is_in_the_nav_palette_and_linked_from_jobs_and_features(self):
+        self.assertIn('href="#/docs" data-route="docs"', self.html)
+        self.assertIn('["Docs", "#/docs"', self.js)  # the More sheet and the command palette
+        self.assertIn('parts[0] === "docs"', self.js)
+        self.assertIn('"Open documentation"', self.js)  # a job's menu
+        self.assertIn('data-href="#/docs/feature/', self.js)  # a feature's menu
+        page = self.js[self.js.index("pages.docs = async"):self.js.index("// ---------------------------------------------------------------- product requirements")]
+        for part in ('api("docs/export")', "Download everything", "Download .md", "docs-q", 'docs/${kind}/', "Project files", "Product requirements"):
+            self.assertIn(part, page, part)
+
     def test_design_images_load_with_the_token_not_a_bare_img_src(self):
         self.assertIn("data-auth-src", self.js)
         self.assertIn("img-src 'self' data: blob:", (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "server.py").read_text())
@@ -2312,6 +2322,20 @@ class MarkdownRenderTests(unittest.TestCase):
         for needle in ("<h2>Title</h2>", "<strong>bold</strong>", "<em>soft</em>", "<code>code</code>", "<ul><li>one</li><li>two</li></ul>",
                        "<ol><li>first</li><li>second</li></ol>", "<blockquote>quoted</blockquote>", "<hr>"):
             self.assertIn(needle, out)
+
+    def test_check_boxes_nesting_and_wrapped_lines_in_lists(self):
+        out = self.render("- [x] **Done task**\n  Wrapped detail\n  - Done when: it works\n- [ ] Open task\n\nplain")
+        self.assertIn('<span class="task done" role="img" aria-label="done">☑</span> <strong>Done task</strong>', out)
+        self.assertIn("<br>Wrapped detail", out)
+        self.assertIn("<ul><li>Done when: it works</li></ul>", out)
+        self.assertIn('<span class="task" role="img" aria-label="not done">☐</span> Open task', out)
+        self.assertEqual(out.count("<ul>"), 2)  # one list with one nested list, and the paragraph after it is not swallowed
+        self.assertIn("<p>plain</p>", out)
+
+    def test_nested_content_stays_inert(self):
+        out = self.render("- a\n  - <script>alert(1)</script> [x](javascript:alert(1))")
+        self.assertNotIn("<script", out)
+        self.assertNotIn("javascript:", out)
 
     def test_headings_shift_down_because_the_page_has_its_own_h1(self):
         out = self.render("# A\n## B\n### C")
@@ -2759,6 +2783,89 @@ class ProductEndpointTests(ServerTestCase):
         self.assertEqual(item()["status"], "ok")
         self.post("/api/product/settings", {"auto_update": False})
         self.assertIn("Automatic updates are off", item()["detail"])
+
+
+class DocsEndpointTests(ServerTestCase):
+    """/api/docs: one place for the product requirements, every feature and job, and the project's own files."""
+
+    def setUp(self):
+        super().setUp()
+        rt = self.root / ".orchestrator"
+        (rt / "jobs" / "archive").mkdir(parents=True, exist_ok=True)
+        ui.feature_store.create(rt, "Rematch", summary="Play again with the same person")
+        live = {"job_id": "20261001-feature-7", "title": "Add rematch", "type": "feature-plan", "status": "review-needed", "feature": "rematch", "pr_number": 7, "issue_number": 7,
+                "plan": {"summary": "Players can start another game", "tasks": [{"title": "Button", "acceptance_criteria": ["One tap"]}]}, "completed_task_indices": [0],
+                "ai_modified_files": ["app/rematch.py"]}
+        archived = {"job_id": "20260930-feature-5", "title": "Old finished job", "type": "feature-plan", "status": "completed", "feature": "rematch", "plan": {"summary": "Done long ago"}}
+        (rt / "jobs" / "20261001-feature-7.json").write_text(json.dumps(live))
+        (rt / "jobs" / "archive" / "20260930-feature-5.json").write_text(json.dumps(archived))
+        (rt / "jobs" / "20261001-feature-7_task_1.json").write_text(json.dumps(live))  # the worker's scratch copy is not a job
+        review = rt / "output" / "pr-7"
+        review.mkdir(parents=True)
+        (review / "review.md").write_text("Looks right to me. One nit about naming.")
+        (self.root / "README.md").write_text("# Word Duel\n\nA game")
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / "docs" / "guide.md").write_text("# How to play\n\nTake turns.")
+        (self.root / "secrets.md").write_text("TOKEN")
+
+    def test_the_index_lists_product_features_jobs_including_finished_ones_and_files(self):
+        _, d = self.request("GET", "/api/docs")
+        self.assertEqual((d["product"]["exists"], d["product"]["total"]), (False, 5))
+        self.assertEqual([(f["id"], f["jobs"], f["jobs_done"]) for f in d["features"]], [("rematch", 2, 1)])
+        ids = [j["id"] for j in d["jobs"]]
+        self.assertIn("20261001-feature-7", ids)
+        self.assertIn("20260930-feature-5", ids)  # finished jobs are in the archive but still documented
+        self.assertFalse([i for i in ids if "_task_" in i])
+        archived = next(j for j in d["jobs"] if j["id"] == "20260930-feature-5")
+        self.assertEqual((archived["archived"], archived["feature_name"], archived["blurb"]), (True, "Rematch", "Done long ago"))
+        paths = [f["path"] for f in d["files"]]
+        self.assertIn("README.md", paths)
+        self.assertIn("docs/guide.md", paths)
+        self.assertNotIn("secrets.md", paths)
+
+    def test_the_product_requirements_show_when_written(self):
+        self.request("POST", "/api/product", body={"section": "pitch", "body": "A quick word game for two friends."}, headers=UI_HEADERS)
+        _, d = self.request("GET", "/api/docs")
+        self.assertEqual((d["product"]["exists"], d["product"]["written"]), (True, 1))
+        self.assertIn("quick word game", d["product"]["pitch"])
+
+    def test_a_job_page_is_composed_from_the_job_its_review_and_its_feature(self):
+        res, d = self.request("GET", "/api/docs/job/20261001-feature-7")
+        self.assertEqual((res.status, d["title"]), (200, "Add rematch"))
+        for needle in ("**Feature:** Rematch", "Players can start another game", "- [x] **Button**", "Done when: One tap", "`app/rematch.py`", "Looks right to me", "**Pull request:** #7"):
+            self.assertIn(needle, d["markdown"], needle)
+        _, old = self.request("GET", "/api/docs/job/20260930-feature-5")
+        self.assertIn("Done long ago", old["markdown"])  # an archived job works too
+
+    def test_a_feature_page_lists_every_job_that_went_into_it(self):
+        _, d = self.request("GET", "/api/docs/feature/rematch")
+        self.assertEqual(d["title"], "Rematch")
+        for needle in ("Play again with the same person", "## Jobs (1 of 2 done)", "**Add rematch**", "**Old finished job**", "Done long ago"):
+            self.assertIn(needle, d["markdown"], needle)
+
+    def test_project_files_open_only_when_they_are_part_of_the_documentation(self):
+        _, d = self.request("GET", "/api/docs/file?path=docs%2Fguide.md")
+        self.assertEqual((d["title"], "Take turns." in d["markdown"]), ("How to play", True))
+        for bad in ("secrets.md", "..%2Foutside.md", "%2Fetc%2Fpasswd", ".orchestrator%2Fjobs%2Fx.json", ""):
+            self.assertEqual(self.request("GET", f"/api/docs/file?path={bad}")[0].status, 404, bad)
+
+    def test_unknown_jobs_features_and_routes_are_404(self):
+        for path in ("/api/docs/job/nope", "/api/docs/feature/nope", "/api/docs/job/..%2F..%2Fproject", "/api/docs/whatever"):
+            self.assertEqual(self.request("GET", path)[0].status, 404, path)
+
+    def test_the_export_is_one_document_with_everything_in_it(self):
+        self.request("POST", "/api/product", body={"section": "pitch", "body": "A quick word game."}, headers=UI_HEADERS)
+        _, d = self.request("GET", "/api/docs/export")
+        md = d["markdown"]
+        self.assertTrue(d["name"].endswith("-documentation.md"))
+        for needle in ("project documentation", "A quick word game.", "Rematch", "Add rematch", "Old finished job", "File: `README.md`", "Take turns.", "Looks right to me"):
+            self.assertIn(needle, md, needle)
+        self.assertNotIn("TOKEN", md)
+        self.assertEqual([l for l in md.splitlines() if l.startswith("# ")], [md.splitlines()[0]])  # one top-level title
+
+    def test_documentation_is_read_only_and_needs_a_session(self):
+        self.assertEqual(self.request("GET", "/api/docs", auth=False)[0].status, 401)
+        self.assertIn(self.request("POST", "/api/docs", body={}, headers=UI_HEADERS)[0].status, (404, 405))
 
 
 class PipelineTests(ServerTestCase):
