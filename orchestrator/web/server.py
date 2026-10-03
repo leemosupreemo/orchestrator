@@ -2778,6 +2778,7 @@ class UIServer(ThreadingHTTPServer):
             return True
 
     def start_heartbeat(self, endpoint: Callable[[], str], interval: float = account.HEARTBEAT_SECONDS) -> threading.Thread | None:
+        # Also reports how many runs are going, so the account can say so if this computer disappears mid-run.
         """While this computer is paired, tell the control plane it is up and where to reach it."""
         if account.load_machine() is None:
             return None
@@ -2787,7 +2788,7 @@ class UIServer(ThreadingHTTPServer):
             if machine is None:
                 return False
             try:
-                account.heartbeat(machine, endpoint())
+                account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")))
             except account.AccountError as exc:
                 if exc.status == 410:
                     print("  This computer was removed from its account. Run `orchestrator connect` to add it again.", flush=True)
@@ -2823,6 +2824,12 @@ class UIServer(ThreadingHTTPServer):
     def notify_once(self, tracker: "notifier.Tracker") -> list[dict[str, Any]]:
         root = self.root
         events = tracker.update(inbox_overview(root, self.sessions, with_others=False)["here"], self.sessions.list())
+        machine = account.load_machine()
+        if machine and events:  # phones and browsers on the account, even with no tab open
+            try:
+                account.send_events(machine, events, project_display_name(root))
+            except account.AccountError as exc:
+                print(f"  Push notifications: {exc}", flush=True)
         url = read_settings(root).get("notification_webhook")
         if url:
             for event in events:

@@ -147,14 +147,23 @@ def connect(name: str | None = None, out: Callable[[str], None] = print, sleep: 
     raise AccountError("The pairing code expired. Run `orchestrator connect` again.", 410)
 
 
-def heartbeat(machine: dict[str, Any], endpoint: str) -> dict[str, Any]:
-    """Tell the control plane this computer is up and where browsers reach it. Forgets the pairing if the account removed it."""
+def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0) -> dict[str, Any]:
+    """Tell the control plane this computer is up, where browsers reach it, and how many runs are going (so it can say
+    so if the computer disappears mid-run). Forgets the pairing if the account removed it."""
     try:
-        return call("machine/heartbeat", {"endpoint": endpoint, "version": package_version(), "os": os_label()}, machine=machine)
+        return call("machine/heartbeat", {"endpoint": endpoint, "version": package_version(), "os": os_label(),
+                                          "running": running}, machine=machine)
     except AccountError as exc:
         if exc.status == 410:
             forget_machine()
         raise
+
+
+def send_events(machine: dict[str, Any], events: list[dict[str, Any]], project: str) -> None:
+    """Push what the UI server noticed to the owner's phones and browsers: [{key, title, body, path}] (notifier.Tracker)."""
+    if events:
+        call("machine/events", {"events": [{"key": e["key"], "title": f"{e['title']} · {project}", "body": e["body"],
+                                            "path": e["path"]} for e in events]}, machine=machine)
 
 
 def disconnect() -> bool:

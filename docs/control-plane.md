@@ -41,13 +41,30 @@ A ticket for one computer is useless on another. This is why the hosted app does
 
 While `orchestrator ui` runs on a paired computer, it reports every 60 seconds with its version and its `https://` address (from `--tunnel`, `--tunnel-token` with `--public-url`, or `--public-url`). If the account removed the computer, the reply says so and the computer forgets its pairing.
 
+## Notifications
+
+Alerts reach a person's phones and browsers even with Orchestrator closed. They turn them on with **Notify me when done** in the hosted app (on iPhone and iPad, after adding it to the Home Screen: iOS only allows web push for home-screen apps).
+
+- **From the computer.** The UI server already notices when something starts waiting on you or a run finishes or fails (`notifier.Tracker`). On a paired computer it also sends those events to `/cp/machine/events`, and the control plane pushes them through Firebase Cloud Messaging to every device the owner turned alerts on in. Tapping one opens the hosted app on that computer (`?machine=…`) at the page it is about.
+- **From the control plane.** The heartbeat includes how many runs are going. A scheduled function (`sweep`, every 5 minutes) alerts the owner once when a computer stops reporting while runs were going. An idle computer going to sleep is not news.
+- **What passes through.** The event's title (with the project name) and one line of text, on their way to the push service. Only each device's push token is stored, and tokens a push service reports as gone are dropped.
+- Pushes are data-only and shown by the app's service worker (`firebase-messaging-sw.js`). Each carries the same tag as the alert an open tab shows for that event, so the two replace each other instead of doubling up.
+- Slack webhooks are still sent by the computer itself (Configuration → Slack & chat alerts).
+
 ## Deploying
 
 Needs the Blaze plan (Cloud Functions) and Firestore enabled on the project.
 
 ```bash
-cd cloud/functions && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt && cd ../..
+cd cloud/functions && python3.12 -m venv venv && ./venv/bin/pip install -r requirements.txt && cd ../..
 firebase deploy --only firestore:rules,functions:control-plane,hosting
+```
+
+The Python venv must be built with Python 3.12 (the function's runtime): the CLI runs `python3.12` from it.
+
+```bash
+# once per project: delete old function images so they don't accrue storage charges
+firebase functions:artifacts:setpolicy --location us-central1 --days 1 --force
 ```
 
 Optional: a Firestore TTL policy on the `pairings` collection's `expire_at` field sweeps old codes. Expired codes are refused either way.

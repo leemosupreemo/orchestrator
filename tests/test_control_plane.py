@@ -39,7 +39,7 @@ def verify_user(token: str) -> dict:
     return USERS[token]
 
 
-class ControlPlaneTests(unittest.TestCase):
+class PlaneCase(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.store = cp.MemoryStore()
@@ -65,6 +65,8 @@ class ControlPlaneTests(unittest.TestCase):
     def beat(self, machine_id, secret, endpoint="https://studio.run.example.com"):
         return self.call("POST", "/cp/machine/heartbeat", {"endpoint": endpoint}, machine_auth=f"Machine {machine_id}:{secret}")
 
+
+class ControlPlaneTests(PlaneCase):
     def test_pairing_hands_over_the_secret_once(self):
         status, started = self.call("POST", "/cp/pair/start", {"name": "Studio Mac"})
         self.assertEqual(len(started["code"]), 8)
@@ -173,6 +175,116 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(self.call("GET", "/cp/nope")[0], 404)
 
 
+class FakePusher:
+    def __init__(self):
+        self.sent: list[tuple[list[str], dict]] = []
+        self.gone: set[str] = set()
+
+    def send(self, tokens, message):
+        self.sent.append((list(tokens), dict(message)))
+        return [t for t in tokens if t in self.gone]
+
+
+class NotificationTests(PlaneCase):
+    def setUp(self):
+        super().setUp()
+        self.pusher = FakePusher()
+        self.plane = cp.ControlPlane(self.store, now=self.clock, pusher=self.pusher)
+
+    def register(self, token, user="alice-token"):
+        return self.call("POST", "/cp/push/register", {"token": token, "label": "iPhone · Safari"}, user=user)
+
+    def events(self, machine_id, secret, events):
+        return self.call("POST", "/cp/machine/events", {"events": events}, machine_auth=f"Machine {machine_id}:{secret}")
+
+    def test_events_reach_the_owners_devices_only(self):
+        machine_id, secret = self.pair()
+        self.register("a" * 40)
+        self.register("b" * 40)
+        self.register("c" * 40, user="bob-token")
+        status, data = self.events(machine_id, secret, [
+            {"key": "inbox-1", "title": "Plan ready · Demo", "body": "Lobby: approve the plan", "path": "#/jobs/20260922-bug-1"}])
+        self.assertEqual((status, data["sent"]), (200, 1))
+        tokens, message = self.pusher.sent[0]
+        self.assertEqual(sorted(tokens), ["a" * 40, "b" * 40])
+        self.assertEqual(message["tag"], "inbox-1")
+        self.assertEqual(message["link"], f"{cp.HOSTED_APP_URL}/?machine={machine_id}#/jobs/20260922-bug-1")
+
+    def test_event_links_only_go_to_app_routes(self):
+        machine_id, secret = self.pair()
+        self.register("a" * 40)
+        self.events(machine_id, secret, [{"key": "k", "title": "t", "body": "b", "path": "javascript:alert(1)"},
+                                         {"key": "k2", "title": "t", "body": "b", "path": "https://evil.example.com"}])
+        for _, message in self.pusher.sent:
+            self.assertEqual(message["link"], f"{cp.HOSTED_APP_URL}/?machine={machine_id}#/")
+
+    def test_events_need_the_machine_secret_and_are_capped(self):
+        machine_id, secret = self.pair()
+        self.register("a" * 40)
+        self.assertEqual(self.events(machine_id, "wrong", [{"title": "x"}])[0], 401)
+        _, data = self.events(machine_id, secret, [{"key": str(i), "title": "x"} for i in range(50)])
+        self.assertEqual(data["sent"], cp.MAX_EVENTS_PER_CALL)
+
+    def test_no_devices_means_nothing_is_sent(self):
+        machine_id, secret = self.pair()
+        _, data = self.events(machine_id, secret, [{"key": "k", "title": "x"}])
+        self.assertEqual(data["sent"], 0)
+        self.assertEqual(self.pusher.sent, [])
+        self.assertEqual(self.call("POST", "/cp/push/test", user="alice-token")[0], 409)
+
+    def test_dead_tokens_are_dropped(self):
+        machine_id, secret = self.pair()
+        self.register("a" * 40)
+        self.register("b" * 40)
+        self.pusher.gone = {"a" * 40}
+        self.events(machine_id, secret, [{"key": "1", "title": "x"}])
+        self.events(machine_id, secret, [{"key": "2", "title": "x"}])
+        self.assertEqual(self.pusher.sent[-1][0], ["b" * 40])
+
+    def test_register_unregister_and_test(self):
+        self.assertEqual(self.register("short")[0], 400)
+        self.assertEqual(self.register("a" * 40)[0], 200)
+        self.assertEqual(self.register("a" * 40)[0], 200)  # the same browser again: still one device
+        self.assertEqual(len(self.store.where("push_tokens", "uid", "u-alice")), 1)
+        _, data = self.call("POST", "/cp/push/test", user="alice-token")
+        self.assertEqual(data["sent"], 1)
+        self.call("POST", "/cp/push/unregister", {"token": "a" * 40}, user="bob-token")  # not theirs: ignored
+        self.assertEqual(len(self.store.where("push_tokens", "uid", "u-alice")), 1)
+        self.call("POST", "/cp/push/unregister", {"token": "a" * 40}, user="alice-token")
+        self.assertEqual(self.store.where("push_tokens", "uid", "u-alice"), [])
+        self.assertEqual(self.call("POST", "/cp/push/register", {"token": "a" * 40})[0], 401)
+
+    def test_device_cap(self):
+        for i in range(cp.MAX_DEVICES_PER_USER):
+            self.assertEqual(self.register(f"{i:040d}")[0], 200)
+        self.assertEqual(self.register("z" * 40)[0], 409)
+
+    def test_sweep_alerts_once_when_a_busy_computer_disappears(self):
+        machine_id, secret = self.pair()
+        self.register("a" * 40)
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "", "running": 2}, machine_auth=f"Machine {machine_id}:{secret}")
+        self.assertEqual(self.plane.sweep(), 0)  # still reporting
+        self.clock.t += cp.ONLINE_WINDOW + 1
+        self.assertEqual(self.plane.sweep(), 1)
+        _, message = self.pusher.sent[-1]
+        self.assertEqual(message["title"], "Studio Mac went offline")
+        self.assertIn("2 runs were in progress", message["body"])
+        self.assertEqual(message["tag"], f"offline:{machine_id}")
+        self.assertEqual(self.plane.sweep(), 0)  # once per disappearance
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "", "running": 1}, machine_auth=f"Machine {machine_id}:{secret}")
+        self.clock.t += cp.ONLINE_WINDOW + 1
+        self.assertEqual(self.plane.sweep(), 1)  # back, busy, gone again
+        self.assertIn("1 run was in progress", self.pusher.sent[-1][1]["body"])
+
+    def test_sweep_ignores_idle_computers(self):
+        machine_id, secret = self.pair()
+        self.register("a" * 40)
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "", "running": 0}, machine_auth=f"Machine {machine_id}:{secret}")
+        self.clock.t += cp.ONLINE_WINDOW + 1
+        self.assertEqual(self.plane.sweep(), 0)
+        self.assertEqual(self.pusher.sent, [])
+
+
 class _PlaneHandler(BaseHTTPRequestHandler):
     plane: cp.ControlPlane
 
@@ -267,6 +379,31 @@ class EndToEndTests(unittest.TestCase):
         status, data = auth({"ticket": issued["ticket"]})  # replayed
         self.assertEqual(status, 401)
         self.assertIn("already used", data["error"])
+
+    def test_events_and_running_count_reach_the_control_plane(self):
+        machine, _ = self.connect_as()
+        pusher = FakePusher()
+        self.plane.pusher = pusher
+        self.plane.handle("POST", "/cp/push/register", {"authorization": "Bearer alice-token"}, {"token": "t" * 40}, verify_user)
+        account.heartbeat(machine, "", running=3)
+        self.assertEqual(self.plane.store.get("machines", machine["machine_id"])["running"], 3)
+        account.send_events(machine, [{"key": "k1", "title": "Plan ready", "body": "Lobby", "path": "#/jobs/j1"}], "Demo")
+        self.assertEqual(pusher.sent[0][1]["title"], "Plan ready · Demo")
+        self.assertTrue(pusher.sent[0][1]["link"].endswith(f"?machine={machine['machine_id']}#/jobs/j1"))
+
+    def test_the_ui_server_forwards_what_it_notices(self):
+        machine, _ = self.connect_as()
+        server = ui.UIServer(("127.0.0.1", 0), self.root, token="owner-token")
+        self.addCleanup(server.server_close)
+        tracker = ui.notifier.Tracker()
+        with patch.object(ui.account, "send_events") as send:
+            server.notify_once(tracker)  # seeds: nothing sent
+            send.assert_not_called()
+            event = {"kind": "needs-you", "key": "x", "title": "Needs you", "body": "b", "path": "#/"}
+            with patch.object(tracker, "update", return_value=[event]):
+                server.notify_once(tracker)
+            send.assert_called_once()
+            self.assertEqual(send.call_args.args[1], [event])
 
     def test_heartbeat_forgets_a_removed_machine(self):
         machine, _ = self.connect_as()

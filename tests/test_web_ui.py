@@ -430,6 +430,27 @@ process.stdout.write(JSON.stringify({ids, menu: globalThis.ConfigurationPages.re
         self.assertIn("computers", hosted["ids"])
         self.assertTrue(hosted["menu"])
 
+    def test_the_hosted_app_can_be_installed_and_receive_push(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        html = (static / "index.html").read_text()
+        manifest = json.loads((static / "manifest.webmanifest").read_text())
+        self.assertIn('rel="manifest"', html)
+        self.assertIn('rel="apple-touch-icon"', html)
+        self.assertIn("firebase-messaging-compat.js", html)
+        self.assertEqual(manifest["display"], "standalone")  # iOS only allows web push for home-screen apps
+        for icon in manifest["icons"]:
+            self.assertTrue((static / icon["src"]).is_file(), icon["src"])
+        worker = (static / "firebase-messaging-sw.js").read_text()
+        self.assertIn("onBackgroundMessage", worker)
+        self.assertIn("tag: data.tag", worker)  # replaces the open tab's alert for the same event
+        self.assertLess(worker.index('addEventListener("notificationclick"'), worker.index("importScripts("))
+        js = (static / "app.js").read_text()
+        self.assertIn('serviceWorker.register("firebase-messaging-sw.js")', js)
+        self.assertIn("await disablePush()", js[js.index("async function lockSession"):][:300])  # signing out stops alerts
+        follow = js[js.index("function followAlertLink"):][:900]
+        self.assertIn('params.get("machine")', follow)
+        self.assertLess(js.index("function followAlertLink"), js.index("refreshState().then(() => { if (!signingIn) route(); });"))
+
     def test_app_loads_account_before_app(self):
         html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
         self.assertLess(html.index('src="account.js"'), html.index('src="app.js"'))

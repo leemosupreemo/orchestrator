@@ -938,6 +938,9 @@ async function unlockWith(token, message) {
   endSigningIn();
   await refreshState();
   route();
+  let pushToken = null;
+  try { pushToken = localStorage.getItem(PUSH_KEY); } catch { /* storage blocked */ }
+  if (Account.active() && Notifications.enabled() && !pushToken) enablePush().catch(() => {}); // alerts were on before push existed
 }
 
 let accountPoll = null;
@@ -1267,6 +1270,7 @@ async function lockSession() {
   try {
     await api("auth/logout", { method: "POST", body: {} });
   } catch {}
+  await disablePush(); // a signed-out device stops getting this account's alerts
   if (window.firebase?.auth) {
     try {
       await firebase.auth().signOut();
@@ -2567,7 +2571,7 @@ pages.help = async () => ({
       <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. All of it is optional, and “not sure yet” is a fine answer. Draft it from your project, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
       <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from Configuration > Archived jobs.</p></details>
-      <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends browser alerts. For Slack, add a webhook under Configuration > Slack &amp; chat alerts.</p></details>
+      <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends alerts to this device. Turned on in the hosted app, they arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run (on iPhone, add it to your Home Screen first). For Slack, add a webhook under Configuration > Slack &amp; chat alerts.</p></details>
       <details><summary>Where are the full guides?</summary><p><a href="#/config/documentation">Configuration > Documentation</a> lists the Orchestrator and project guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>`,
 });
@@ -4286,18 +4290,70 @@ moreSheet?.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMore(); });
 window.addEventListener("hashchange", closeMore);
 
+// On the hosted app, alerts also come as push through your account, so they arrive with the app closed.
+const PUSH_KEY = "orchestrator_push_token";
+const isIos = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isInstalled = () => navigator.standalone === true || window.matchMedia?.("(display-mode: standalone)").matches;
+const needsHomeScreen = () => Account.active() && isIos() && !isInstalled(); // iOS only allows web push for home-screen apps
+
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const device = isIos() ? (/iPad/.test(ua) || navigator.maxTouchPoints > 1 && !/iPhone/.test(ua) ? "iPad" : "iPhone")
+    : /Android/.test(ua) ? "Android" : /Mac/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Linux";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : "Safari";
+  return `${device} · ${browser}`;
+}
+
+async function enablePush() {
+  if (!Account.active() || !window.firebase?.messaging || !("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.register("firebase-messaging-sw.js");
+  const token = await firebase.messaging().getToken({ serviceWorkerRegistration: registration });
+  if (!token) throw new Error("This browser didn't allow push alerts.");
+  await cpApi("push/register", { method: "POST", body: { token, label: deviceLabel() } });
+  try { localStorage.setItem(PUSH_KEY, token); } catch { /* registered; just not remembered here */ }
+}
+
+async function disablePush() {
+  let token = null;
+  try { token = localStorage.getItem(PUSH_KEY); localStorage.removeItem(PUSH_KEY); } catch { /* nothing kept */ }
+  if (!token) return;
+  try { await cpApi("push/unregister", { method: "POST", body: { token } }); } catch { /* signed out: the token lapses on its own */ }
+  try { await firebase.messaging().deleteToken(); } catch { /* already gone */ }
+}
+
 const notifyBtn = $("#notify-btn");
 function renderNotifyBtn() {
-  if (!notifyBtn || !Notifications.supported()) return;
+  if (!notifyBtn) return;
+  if (needsHomeScreen()) {
+    notifyBtn.hidden = false;
+    notifyBtn.textContent = "Get alerts on this phone";
+    notifyBtn.title = "Add Orchestrator to your Home Screen first";
+    return;
+  }
+  if (!Notifications.supported()) return;
   notifyBtn.hidden = false;
   const on = Notifications.enabled();
   notifyBtn.textContent = on ? "Notifications on" : "Notify me when done";
-  notifyBtn.title = on ? "Click to turn off" : "Browser alerts when a run finishes, fails or needs you";
+  notifyBtn.title = on ? "Click to turn off"
+    : Account.active() ? "Alerts on this device when a run finishes, fails or needs you, even with Orchestrator closed"
+    : "Browser alerts when a run finishes, fails or needs you";
 }
 notifyBtn?.addEventListener("click", async () => {
-  if (Notifications.enabled()) { Notifications.disable(); renderNotifyBtn(); return; }
+  if (needsHomeScreen()) {
+    toast("First add Orchestrator to your Home Screen (Share, then Add to Home Screen) and open it from there.", "info");
+    return;
+  }
+  if (Notifications.enabled()) { Notifications.disable(); disablePush(); renderNotifyBtn(); return; }
   const result = await Notifications.enable();
   if (result !== "granted") toast("Allow notifications in your browser to turn this on.", "warning");
+  else if (Account.active()) {
+    try {
+      await enablePush();
+      toast("Alerts are on for this device, even when Orchestrator is closed.");
+    } catch (err) {
+      toast(`Alerts work while Orchestrator is open, but not when it's closed: ${err.message}`, "warning");
+    }
+  }
   renderNotifyBtn();
 });
 renderNotifyBtn();
@@ -4305,6 +4361,21 @@ const lockBtn = $("#lock-btn");
 if (lockBtn) {
   lockBtn.addEventListener("click", lockSession);
 }
+// A tapped alert opens the computer it came from (?machine=…), at the page it is about (the hash).
+(function followAlertLink() {
+  const params = new URLSearchParams(location.search);
+  const machine = params.get("machine");
+  if (!machine) return;
+  params.delete("machine");
+  history.replaceState(null, "", location.pathname + (params.toString() ? `?${params}` : "") + location.hash);
+  if (!Account.active()) return;
+  try {
+    if (localStorage.getItem(Account.MACHINE_KEY) === machine) return;
+    localStorage.setItem(Account.MACHINE_KEY, machine); // a different computer: open that one instead
+    localStorage.removeItem("orchestrator_backend");
+    localStorage.removeItem("orchestrator_token");
+  } catch { /* storage blocked: the computer list is shown instead */ }
+})();
 if (signingIn) showSigningIn(); // coming back from a provider's redirect: no sign-in options flash while the session is set up
 setTimeout(() => { if (signingIn && !getToken()) endSigningIn(true); }, 20000); // a redirect that never reports back must not leave a spinner forever
 refreshState().then(() => { if (!signingIn) route(); });

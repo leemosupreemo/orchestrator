@@ -13,6 +13,14 @@ Firebase Auth. Routes (all JSON, under /cp on the hosted app):
   GET  /cp/machines        signed-in user                            -> {machines: [...]}
   POST /cp/machines/remove signed-in user {machine_id}               -> {ok}
   POST /cp/machine/ticket  signed-in user {machine_id}               -> {ticket, endpoint}
+  POST /cp/machine/events  computer (same) {events: [{key, title, body, path}]} -> {sent}
+  POST /cp/push/register   signed-in user {token, label}             -> {ok}
+  POST /cp/push/unregister signed-in user {token}                    -> {ok}
+  POST /cp/push/test       signed-in user                            -> {sent}
+
+Notifications: a computer forwards what its UI server noticed (something needs you, a run ended) and the control plane
+pushes it to every browser and phone the owner turned alerts on in. The scheduled sweep() adds what only the control
+plane can see: a computer that stopped reporting while work was running on it. Nothing is stored but the push tokens.
 
 A ticket is `<payload>.<signature>`: payload is base64url JSON {v, mid, uid, email, exp, nonce}, signature is
 base64url HMAC-SHA256 of the payload text keyed with the machine's secret. The computer checks it (orchestrator/account.py),
@@ -35,6 +43,9 @@ ONLINE_WINDOW = 180       # a computer is online if it reported within this many
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
 CODE_LENGTH = 8
 MAX_MACHINES_PER_USER = 20
+MAX_DEVICES_PER_USER = 20
+MAX_EVENTS_PER_CALL = 10
+HOSTED_APP_URL = "https://swift-orch-web-20260923.web.app"
 
 
 class ControlError(Exception):
@@ -49,6 +60,12 @@ class Store(Protocol):
     def update(self, collection: str, doc_id: str, fields: dict[str, Any]) -> None: ...
     def delete(self, collection: str, doc_id: str) -> None: ...
     def where(self, collection: str, field: str, value: Any) -> list[tuple[str, dict[str, Any]]]: ...
+
+
+class Pusher(Protocol):
+    def send(self, tokens: list[str], message: dict[str, str]) -> list[str]:
+        """Deliver to each token; return the tokens that are gone for good (uninstalled, revoked) so they can be dropped."""
+        ...
 
 
 class MemoryStore:
@@ -107,9 +124,10 @@ def _endpoint(value: Any) -> str:
 
 
 class ControlPlane:
-    def __init__(self, store: Store, now: Callable[[], float] = time.time):
+    def __init__(self, store: Store, now: Callable[[], float] = time.time, pusher: Pusher | None = None):
         self.store = store
         self.now = now
+        self.pusher = pusher
 
     # -- pairing, from the computer
 
@@ -188,7 +206,12 @@ class ControlPlane:
 
     def heartbeat(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
         machine_id, machine = self._machine_from_header(auth_header)
-        fields: dict[str, Any] = {"last_seen": self.now(), "endpoint": _endpoint(body.get("endpoint"))}
+        try:
+            running = max(0, min(int(body.get("running") or 0), 999))
+        except (TypeError, ValueError):
+            running = 0
+        fields: dict[str, Any] = {"last_seen": self.now(), "endpoint": _endpoint(body.get("endpoint")),
+                                  "running": running, "busy": running > 0, "offline_notified": False}
         for key, limit in (("version", 40), ("name", 80), ("os", 40)):
             if body.get(key):
                 fields[key] = _clean(body[key], limit)
@@ -244,6 +267,75 @@ class ControlPlane:
                   "exp": int(self.now()) + TICKET_TTL, "nonce": secrets.token_urlsafe(12)}
         return {"ticket": sign_ticket(stored["secret"], claims), "endpoint": view["endpoint"]}
 
+    # -- notifications
+
+    def _devices(self, uid: str) -> list[tuple[str, dict[str, Any]]]:
+        return self.store.where("push_tokens", "uid", uid)
+
+    def _push(self, uid: str, messages: list[dict[str, str]]) -> int:
+        devices = self._devices(uid)
+        if not devices or not messages or self.pusher is None:
+            return 0
+        tokens = [d["token"] for _, d in devices]
+        gone: set[str] = set()
+        for message in messages:
+            gone.update(self.pusher.send([t for t in tokens if t not in gone], message))
+        for doc_id, device in devices:
+            if device["token"] in gone:
+                self.store.delete("push_tokens", doc_id)
+        return len(messages)
+
+    def register_device(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        token = _clean(body.get("token"), 4096)
+        if len(token) < 20:
+            raise ControlError("That browser didn't give a notification token.")
+        doc_id = _hash(token)
+        if self.store.get("push_tokens", doc_id) is None and len(self._devices(user["uid"])) >= MAX_DEVICES_PER_USER:
+            raise ControlError(f"Alerts are on in {MAX_DEVICES_PER_USER} browsers already. Turn them off in one first.", 409)
+        self.store.set("push_tokens", doc_id, {"uid": user["uid"], "token": token, "label": _clean(body.get("label"), 80),
+                                               "created": self.now()})
+        return {"ok": True}
+
+    def unregister_device(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        doc_id = _hash(_clean(body.get("token"), 4096))
+        device = self.store.get("push_tokens", doc_id)
+        if device is not None and device["uid"] == user["uid"]:
+            self.store.delete("push_tokens", doc_id)
+        return {"ok": True}
+
+    def test_push(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        if not self._devices(user["uid"]):
+            raise ControlError("Alerts aren't on in any browser yet.", 409)
+        return {"sent": self._push(user["uid"], [_message("test", "Alerts are on", "You'll hear from Orchestrator here.", "")])}
+
+    def machine_events(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        raw = body.get("events")
+        if not isinstance(raw, list):
+            raise ControlError("events must be a list")
+        messages = [_message(_clean(e.get("key"), 120), _clean(e.get("title"), 120) or "Orchestrator", _clean(e.get("body"), 400),
+                             _link(machine_id, e.get("path")))
+                    for e in raw[:MAX_EVENTS_PER_CALL] if isinstance(e, dict)]
+        return {"sent": self._push(machine["owner_uid"], messages)}
+
+    def sweep(self) -> int:
+        """Alert owners whose computer stopped reporting while work was running on it. Once per disappearance."""
+        cutoff = self.now() - ONLINE_WINDOW
+        alerted = 0
+        for machine_id, machine in self.store.where("machines", "busy", True):
+            if machine.get("offline_notified") or (machine.get("last_seen") or 0) >= cutoff:
+                continue
+            running = int(machine.get("running") or 0)
+            work = f"{running} run{'s' if running != 1 else ''}" if running else "work"
+            self._push(machine["owner_uid"], [_message(
+                f"offline:{machine_id}", f"{machine['name']} went offline",
+                f"It stopped responding while {work} {'were' if running > 1 else 'was'} in progress. "
+                "It may be asleep or have lost its connection; work continues when it's back.",
+                _link(machine_id, "#/"))])
+            self.store.update("machines", machine_id, {"offline_notified": True})
+            alerted += 1
+        return alerted
+
     # -- routing
 
     def handle(self, method: str, path: str, headers: dict[str, str], body: dict[str, Any],
@@ -256,6 +348,7 @@ class ControlPlane:
                 ("POST", "/pair/poll"): lambda: self.poll_pairing(body),
                 ("POST", "/machine/heartbeat"): lambda: self.heartbeat(headers.get("authorization", ""), body),
                 ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
+                ("POST", "/machine/events"): lambda: self.machine_events(headers.get("authorization", ""), body),
             }.get((method, route))
             if computer:
                 return 200, computer()
@@ -265,6 +358,9 @@ class ControlPlane:
                 ("GET", "/machines"): lambda user, _body: self.list_machines(user),
                 ("POST", "/machines/remove"): self.remove_machine,
                 ("POST", "/machine/ticket"): self.issue_ticket,
+                ("POST", "/push/register"): self.register_device,
+                ("POST", "/push/unregister"): self.unregister_device,
+                ("POST", "/push/test"): self.test_push,
             }.get((method, route))
             if person is None:
                 raise ControlError("Not found", 404)
@@ -280,6 +376,20 @@ class ControlPlane:
             return 200, person(user, body)
         except ControlError as exc:
             return exc.status, {"error": str(exc)}
+
+
+def _message(key: str, title: str, body: str, link: str) -> dict[str, str]:
+    """A push, as data only: the app's service worker shows it, so it looks the same in every browser. The tag matches
+    the alert an open tab shows for the same event, so the two replace each other instead of doubling up."""
+    return {"tag": key or "orchestrator", "title": title, "body": body, "link": link or HOSTED_APP_URL + "/"}
+
+
+def _link(machine_id: str, path: Any) -> str:
+    """Opens the hosted app on that computer, at the page the event is about (a hash route like #/jobs/<id>)."""
+    route = str(path or "")
+    if not re.fullmatch(r"#/[A-Za-z0-9_./?=&%-]*", route):
+        route = "#/"
+    return f"{HOSTED_APP_URL}/?machine={machine_id}{route}"
 
 
 def _require_email(user: dict[str, Any]) -> str:

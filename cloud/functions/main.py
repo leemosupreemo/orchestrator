@@ -5,8 +5,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from firebase_admin import auth, firestore, initialize_app
-from firebase_functions import https_fn, options
+from firebase_admin import auth, exceptions, firestore, initialize_app, messaging
+from firebase_functions import https_fn, options, scheduler_fn
 
 from control_plane import ControlError, ControlPlane
 
@@ -42,6 +42,22 @@ def _with_expiry(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+class FcmPusher:
+    """Web push through Firebase Cloud Messaging. Data-only, so the app's service worker decides how it looks."""
+
+    GONE = (messaging.UnregisteredError, messaging.SenderIdMismatchError, exceptions.InvalidArgumentError)
+
+    def send(self, tokens: list[str], message: dict[str, str]) -> list[str]:
+        gone: list[str] = []
+        for start in range(0, len(tokens), 500):
+            batch = tokens[start:start + 500]
+            result = messaging.send_each_for_multicast(messaging.MulticastMessage(
+                tokens=batch, data=message,
+                webpush=messaging.WebpushConfig(headers={"Urgency": "high", "TTL": "86400"})))
+            gone += [t for t, r in zip(batch, result.responses) if not r.success and isinstance(r.exception, self.GONE)]
+        return gone
+
+
 def _verify_user(id_token: str) -> dict[str, Any]:
     claims = auth.verify_id_token(id_token)
     return {"uid": claims["uid"], "email": claims.get("email", ""), "email_verified": bool(claims.get("email_verified"))}
@@ -50,11 +66,22 @@ def _verify_user(id_token: str) -> dict[str, Any]:
 _plane: ControlPlane | None = None
 
 
-@https_fn.on_request(region="us-central1", max_instances=10, memory=options.MemoryOption.MB_256)
-def cp(req: https_fn.Request) -> https_fn.Response:
+def _get_plane() -> ControlPlane:
     global _plane
     if _plane is None:
-        _plane = ControlPlane(FirestoreStore())
+        _plane = ControlPlane(FirestoreStore(), pusher=FcmPusher())
+    return _plane
+
+
+@scheduler_fn.on_schedule(schedule="every 5 minutes", region="us-central1", max_instances=1)
+def sweep(event: scheduler_fn.ScheduledEvent) -> None:
+    """Tell people when a computer stops reporting while work is running on it."""
+    _get_plane().sweep()
+
+
+@https_fn.on_request(region="us-central1", max_instances=10, memory=options.MemoryOption.MB_256)
+def cp(req: https_fn.Request) -> https_fn.Response:
+    plane = _get_plane()
     if req.method == "POST" and req.content_length and req.content_length > 16_384:
         return _json(413, {"error": "Request too large"})
     try:
@@ -64,7 +91,7 @@ def cp(req: https_fn.Request) -> https_fn.Response:
     except ControlError as exc:
         return _json(exc.status, {"error": str(exc)})
     headers = {k.lower(): v for k, v in req.headers.items()}
-    status, payload = _plane.handle(req.method, req.path, headers, body, _verify_user)
+    status, payload = plane.handle(req.method, req.path, headers, body, _verify_user)
     return _json(status, payload)
 
 
