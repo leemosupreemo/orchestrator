@@ -389,6 +389,25 @@ class E2EWorkflowTests(unittest.TestCase):
 
     @patch("orchestrator.scripts.new_job.run_llm")
     @patch("orchestrator.scripts.new_job.create_issue")
+    def test_new_job_records_its_feature_and_plan_run_as_it_is_created(self, mock_create_issue, mock_llm):
+        """Jobs created at the same time each know their feature: new_job writes it, nothing guesses afterwards."""
+        mock_create_issue.return_value = 132
+        mock_llm.side_effect = AssertionError("a quick job must not call the planner")
+        from orchestrator import features as feature_store
+        runtime = self.root / ".orchestrator"
+        feature_store.create(runtime, "Lobby")
+        from orchestrator.scripts import new_job
+        args = ["quick", "--summary", "Add a lobby timer", "--branch-mode", "manual", "--no-dispatch",
+                "--feature", "lobby", "--plan-run", "r1"]
+        with patch("orchestrator.scripts.new_job.ROOT", self.root):
+            with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                new_job.main(args)
+        job = json.loads(next((self.root / ".orchestrator" / "jobs").glob("*.json")).read_text())
+        self.assertEqual((job["feature"], job["plan_run"]), ("lobby", "r1"))
+        self.assertEqual(feature_store.load(runtime)[0]["status"], "in-progress")
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
     def test_quick_job_makes_one_issue_and_skips_ai_planning(self, mock_create_issue, mock_llm):
         """A quick change is the instruction itself: one GitHub issue, no planner call, one job file named after it."""
         mock_create_issue.return_value = 131

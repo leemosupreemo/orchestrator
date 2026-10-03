@@ -1440,7 +1440,8 @@ class PlanRunApiTests(ServerTestCase):
             if (ui.runtime_dir(self.root) / "config" / "machines.json").exists() else []
         self.assertEqual(len(argvs), min(2, ui.plan_run.capacity(machines)))  # Play and Lobby are both ready; machines limit it
         self.assertIn("--no-dispatch", argvs[0])
-        self.assertTrue(any(a.endswith(":play-a-round") for a in argvs[0]))
+        self.assertIn("play-a-round", argvs[0][argvs[0].index("--feature") + 1:][:1])
+        self.assertIn("--plan-run", argvs[0])
         plan = self.request("GET", "/api/features")[1]["plan"]
         rows = {r["feature"]: r for r in plan["rows"]}
         self.assertEqual(rows["chat"]["state"], "waiting")
@@ -1462,7 +1463,8 @@ class PlanRunApiTests(ServerTestCase):
         run_id = ui.plan_run.load(ui.runtime_dir(self.root))["id"]
         self.write_job("j-play", "play-a-round", run_id, "completed", archived=True)
         self.server.plan_tick()
-        self.assertTrue(any(a.endswith(":chat") for a in self.plan_argv()[-1]))
+        last = self.plan_argv()[-1]
+        self.assertEqual(last[last.index("--feature") + 1], "chat")
         self.write_job("j-chat", "chat", run_id, "completed", archived=True)
         self.server.plan_tick()
         self.assertTrue(ui.plan_run.load(ui.runtime_dir(self.root))["finished"])
@@ -1856,13 +1858,12 @@ class ActionTests(unittest.TestCase):
         with self.assertRaises(ui.UIError):
             ui.build_new_job({"type": "feature", "summary": "x", "feature": "ghost"}, self.root)
 
-    def test_created_job_is_put_under_its_feature(self):
-        rt = self.root / ".orchestrator"
-        ui.feature_store.create(rt, "Lobby")
-        path = rt / "jobs" / "20260922-bug-1.json"
-        ui.UIHandler._record_feature(path, self.root, "lobby")
-        self.assertEqual(json.loads(path.read_text())["feature"], "lobby")
-        self.assertEqual(ui.feature_store.load(rt)[0]["status"], "in-progress")
+    def test_new_job_for_a_feature_hands_new_job_its_feature(self):
+        # new_job.py records it on the job as it's created (tests/test_e2e_workflow.py covers that side).
+        ui.feature_store.create(self.root / ".orchestrator", "Lobby")
+        argv = ui.build_new_job({"type": "bug", "summary": "Timer resets", "feature": "lobby"}, self.root)
+        self.assertEqual(argv[argv.index("--feature") + 1], "lobby")
+        self.assertNotIn("--feature", ui.build_new_job({"type": "bug", "summary": "Timer resets"}, self.root))
 
     def test_new_job_validates_input(self):
         with self.assertRaises(ui.UIError):

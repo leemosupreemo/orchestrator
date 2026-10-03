@@ -1793,6 +1793,8 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
         summary = (summary + spec).strip()
         spec = ""
     argv = orchestrator_argv("script", "new_job.py", job_type, "--summary", summary)
+    if params.get("_feature"):
+        argv += ["--feature", params["_feature"]]
     if spec:
         spec_dir = runtime_dir(root) / "ui" / "specs"
         spec_dir.mkdir(parents=True, exist_ok=True)
@@ -2980,17 +2982,13 @@ class UIServer(ThreadingHTTPServer):
                 if job:
                     starting.pop(fid)
                     self._plan_sessions.pop(fid, None)
-                    try:
-                        feature_store.note_work_attached(runtime, fid, job["state"]["group"])
-                    except feature_store.FeatureError:
-                        pass
             decision = plan_run.decide(run, features, jobs, slots, self._planning_alive(starting))
             by_id = {f["id"]: f for f in features}
             for fid in decision["start"]:
                 feature = by_id[fid]
                 params = {"type": "feature", "summary": f"{feature['name']}: {feature.get('summary') or feature['name']}"[:500],
                           "feature": fid, "branch_mode": "new", "no_dispatch": True}
-                argv = build_new_job(params, root) + ["--plan-run", f"{run['id']}:{fid}"]
+                argv = build_new_job(params, root) + ["--plan-run", run["id"]]
                 session = self.sessions.start("new_job", f"Build the plan · {feature['name']}", argv, root, self.child_env(),
                                               runtime / "logs" / "ui")
                 self._plan_sessions[fid] = session
@@ -4121,13 +4119,12 @@ class UIHandler(BaseHTTPRequestHandler):
         self._audit("run_started", action=key, job=job_id)
         if key in ("new_job", "fix"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
-                                        params.get("_feature") if key == "new_job" else None,
                                         params.get("_attachments") if key == "new_job" else None)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
 
     def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None,
-                               feature: str | None = None, attachments: dict[str, Any] | None = None) -> None:
-        """Links the job a new-job/fix run creates, so its run can offer "Open job"."""
+                               attachments: dict[str, Any] | None = None) -> None:
+        """Links the job a new-job/fix run creates, so its run can offer "Open job". (Its feature is recorded by new_job.py.)"""
         before = {p.name for p in jobs_dir(root).glob("*.json")} if jobs_dir(root).exists() else set()
 
         def watch() -> None:
@@ -4139,8 +4136,6 @@ class UIHandler(BaseHTTPRequestHandler):
                         session.result_job = newest.stem
                         if linked:
                             self._record_links(newest, linked)
-                        if feature:
-                            self._record_feature(newest, root, feature)
                         if attachments and (attachments.get("logs") or attachments.get("refs")):
                             self._record_attachments(newest, attachments)
                         return
@@ -4161,21 +4156,6 @@ class UIHandler(BaseHTTPRequestHandler):
                 if attachments.get("refs"):
                     job["reference_artifacts"] = list(job.get("reference_artifacts") or []) + [
                         {"type": r["type"], "note": r["name"], **{k: r[k] for k in ("path", "url") if r.get(k)}} for r in attachments["refs"]]
-                write_json_file(job_path, job)
-                return
-            time.sleep(0.5)
-
-    @staticmethod
-    def _record_feature(job_path: Path, root: Path, feature: str) -> None:
-        """Put a just-created job under the feature it was created for."""
-        for _ in range(10):  # the job file may still be mid-write
-            job = read_json_file(job_path)
-            if job:
-                job["feature"] = feature
-                try:
-                    feature_store.note_work_attached(runtime_dir(root), feature, "working")
-                except feature_store.FeatureError:
-                    return
                 write_json_file(job_path, job)
                 return
             time.sleep(0.5)
