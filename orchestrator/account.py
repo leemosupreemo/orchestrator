@@ -123,10 +123,29 @@ def format_code(code: str) -> str:
     return f"{code[:4]}-{code[4:]}" if len(code) == 8 else code
 
 
+def start_pairing(name: str | None = None) -> dict:
+    name = name or default_name()
+    return {**call("pair/start", {"name": name, "os": os_label(), "version": package_version()}), "name": name}
+
+
+def poll_pairing(pairing: dict) -> dict:
+    return call("pair/poll", {"code": pairing["code"], "poll_secret": pairing["poll_secret"]})
+
+
+def finish_pairing(pairing: dict, claimed: dict) -> dict:
+    if claimed.get("status") != "claimed":
+        raise AccountError("Pairing hasn't completed.")
+    machine = {"machine_id": claimed["machine_id"], "machine_secret": claimed["machine_secret"],
+               "owner_email": str(claimed.get("owner_email") or "").lower(), "name": pairing["name"],
+               "control_url": control_url(), "paired_at": time.time()}
+    save_machine(machine)
+    return machine
+
+
 def connect(name: str | None = None, out: Callable[[str], None] = print, sleep: Callable[[float], None] = time.sleep,
             poll_every: float = 3.0) -> dict[str, Any]:
     """Pair this computer with an account: show a code, wait for someone signed in to confirm it, keep the secret."""
-    started = call("pair/start", {"name": name or default_name(), "os": os_label(), "version": package_version()})
+    started = start_pairing(name)
     code = started["code"]
     out("")
     out(f"  Your code: {format_code(code)}")
@@ -137,17 +156,13 @@ def connect(name: str | None = None, out: Callable[[str], None] = print, sleep: 
     while time.time() < deadline:
         sleep(poll_every)
         try:
-            result = call("pair/poll", {"code": code, "poll_secret": started["poll_secret"]})
+            result = poll_pairing(started)
         except AccountError as exc:
             if exc.status in (404, 410):
                 raise
             continue  # a dropped connection: keep waiting
         if result.get("status") == "claimed":
-            machine = {"machine_id": result["machine_id"], "machine_secret": result["machine_secret"],
-                       "owner_email": str(result.get("owner_email") or "").lower(), "name": name or default_name(),
-                       "control_url": control_url(), "paired_at": time.time()}
-            save_machine(machine)
-            return machine
+            return finish_pairing(started, result)
     raise AccountError("The pairing code expired. Run `orchestrator connect` again.", 410)
 
 

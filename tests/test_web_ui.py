@@ -3836,6 +3836,22 @@ class JobDeleteEndpointTests(ServerTestCase):
 
 
 class StableUrlAndTunnelTests(unittest.TestCase):
+    def test_silent_tunnel_discovery_has_a_real_deadline(self):
+        import sys
+        real_popen = subprocess.Popen
+        child = real_popen([sys.executable, "-c", "import time; time.sleep(30)"], stdout=subprocess.PIPE, text=True)
+        try:
+            with patch("shutil.which", return_value="fixture"), patch("subprocess.Popen", return_value=child):
+                before = time.monotonic()
+                proc, url = ui.start_tunnel(8765, discovery_timeout=.05)
+                self.assertLess(time.monotonic() - before, 1)
+                self.assertIs(proc, child)
+                self.assertIsNone(url)
+        finally:
+            child.terminate()
+            child.wait(timeout=3)
+            child.stdout.close()
+
     @patch("shutil.which", return_value="/usr/local/bin/tailscale")
     @patch("subprocess.check_output")
     def test_get_tailscale_info_success(self, mock_subp, mock_which):

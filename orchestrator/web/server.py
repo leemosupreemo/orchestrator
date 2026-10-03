@@ -28,6 +28,7 @@ import io
 import json
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -2757,9 +2758,11 @@ class UIServer(ThreadingHTTPServer):
             self.server_close()
             raise ValueError("Desktop handoff requires loopback")
         self.desktop_listener = desktop_listener
+        self.accepting_requests = True
         self._context = shared._context if shared else SimpleNamespace(root=root, selected_root=root)
-        self.root = root
-        self.selected_root = root
+        if not shared:
+            self.root = root
+            self.selected_root = root
         self.bootstrap_enabled = bootstrap_mode or root is None
         self.token = get_or_create_ui_token(token)
         self.sign_ins = SignInStore(user_state_dir() / "ui_sign_ins.json")
@@ -2902,6 +2905,8 @@ class UIServer(ThreadingHTTPServer):
 
     def notify_once(self, tracker: "notifier.Tracker") -> list[dict[str, Any]]:
         root = self.root
+        if root is None:
+            return []
         events = tracker.update(inbox_overview(root, self.sessions, with_others=False)["here"], self.sessions.list())
         machine = account.load_machine()
         if machine and events:  # phones and browsers on the account, even with no tab open
@@ -3303,6 +3308,9 @@ class UIHandler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         query = parse_qs(url.query)
         try:
+            if not self.server.accepting_requests:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Remote access is turned off.")
+                return
             if url.path == "/desktop/open":
                 if not self.server.desktop_listener or method != "GET":
                     self._error(HTTPStatus.NOT_FOUND, "Not found")
@@ -4064,6 +4072,8 @@ class UIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         while True:
+            if not self.server.accepting_requests:
+                return
             offset, data, finished = session.read(offset, timeout=15)
             if data:
                 payload = json.dumps({"offset": offset, "data": base64.b64encode(data).decode("ascii")})
@@ -4115,7 +4125,7 @@ def _drain(proc: subprocess.Popen) -> None:
     threading.Thread(target=pump, daemon=True, name="cloudflared-output").start()
 
 
-def start_tunnel(port: int, token: str | None = None) -> tuple[subprocess.Popen | None, str | None]:
+def start_tunnel(port: int, token: str | None = None, discovery_timeout: float = 15.0) -> tuple[subprocess.Popen | None, str | None]:
     cloudflared = shutil.which("cloudflared")
     if not cloudflared:
         return None, None
@@ -4139,21 +4149,31 @@ def start_tunnel(port: int, token: str | None = None) -> tuple[subprocess.Popen 
         )
     except Exception:
         return None, None
-    tunnel_url = None
-    deadline = time.time() + 15
-    while time.time() < deadline:
+    found: queue.Queue[str] = queue.Queue(maxsize=1)
+    def discover_and_drain() -> None:
+        try:
+            while proc.stdout:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+                if match:
+                    try:
+                        found.put_nowait(match.group(0))
+                    except queue.Full:
+                        pass
+        except (OSError, ValueError, StopIteration):
+            pass
+    threading.Thread(target=discover_and_drain, daemon=True, name="cloudflared-output").start()
+    deadline = time.monotonic() + discovery_timeout
+    while time.monotonic() < deadline:
+        try:
+            return proc, found.get(timeout=min(.1, max(0, deadline - time.monotonic())))
+        except queue.Empty:
+            pass
         if proc.poll() is not None:
             break
-        line = proc.stdout.readline() if proc.stdout else ""
-        if not line:
-            time.sleep(0.1)
-            continue
-        m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
-        if m:
-            tunnel_url = m.group(0)
-            break
-    _drain(proc)
-    return proc, tunnel_url
+    return proc, None
 
 
 class TunnelKeeper:
