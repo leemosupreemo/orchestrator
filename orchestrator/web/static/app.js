@@ -156,7 +156,9 @@ function clearMessage(id) {
 
 function toast(message, kind = false, action = null) {
   const level = kind === true ? "error" : typeof kind === "string" ? kind : "success";
-  return notify(level, level === "error" ? Errors.explain(message) : message, action ? { actions: [action] } : {});
+  const text = level === "error" ? Errors.explain(message) : message;
+  const isConnection = text.startsWith("Can't reach Orchestrator.");
+  return notify(level, text, { ...(isConnection ? { id: "connection" } : {}), ...(action ? { actions: [action] } : {}) });
 }
 
 function ago(ts) {
@@ -797,7 +799,7 @@ async function refreshState() {
     pollFailures += 1;
     if (pollFailures >= 2 && !connectionLost) { // two misses in a row: say so, rather than showing stale data silently
       connectionLost = true;
-      notify("warning", "Can't reach Orchestrator. Showing the last data it sent. Retrying…", { id: "connection", sticky: true });
+      notify("warning", "Can't reach Orchestrator. Check that it's running and that you're online.", { id: "connection", sticky: true });
     }
     if (!state.project) {
       showSignInGate(`Unable to reach Orchestrator on your Mac: ${e.message}`);

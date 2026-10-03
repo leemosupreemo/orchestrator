@@ -1881,7 +1881,7 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_connection_loss_is_a_sticky_message_over_the_page_that_clears_itself(self):
         self.assertNotIn("conn-banner", self.html + self.js)  # no separate banner: it is one of the overlay messages
         self.assertIn("pollFailures >= 2", self.js)
-        self.assertIn("Can't reach Orchestrator. Showing the last data it sent. Retrying…", self.js)
+        self.assertIn("Can't reach Orchestrator. Check that it's running and that you're online.", self.js)
         refresh = self.js[self.js.index("async function refreshState()"):][:3600]
         self.assertIn('{ id: "connection", sticky: true }', refresh)  # stays until it is over
         self.assertIn('clearMessage("connection")', refresh)  # and goes when the server answers again
