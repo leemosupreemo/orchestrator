@@ -387,6 +387,30 @@ class E2EWorkflowTests(unittest.TestCase):
         mock_create_issue.assert_called_once()
 
 
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_quick_job_makes_one_issue_and_skips_ai_planning(self, mock_create_issue, mock_llm):
+        """A quick change is the instruction itself: one GitHub issue, no planner call, one job file named after it."""
+        mock_create_issue.return_value = 131
+        mock_llm.side_effect = AssertionError("a quick job must not call the planner")
+
+        from orchestrator.scripts import new_job
+        args = ["quick", "--summary", "Rename the Save button to Done", "--branch-mode", "manual", "--no-dispatch"]
+        with patch("orchestrator.scripts.new_job.ROOT", self.root):
+            with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                new_job.main(args)
+
+        mock_create_issue.assert_called_once()
+        job_files = list((self.root / ".orchestrator" / "jobs").glob("*.json"))
+        self.assertEqual([f.name for f in job_files], [f.name for f in job_files if "-quick-131" in f.name])
+        self.assertEqual(len(job_files), 1)
+        job_data = json.loads(job_files[0].read_text())
+        self.assertEqual(job_data["type"], "quick-fix")
+        self.assertEqual(job_data["issue_number"], 131)
+        self.assertEqual(job_data["actual_planner_used"], "user-prompt")
+        self.assertEqual(job_data["status"], "planned")
+        self.assertIn("Rename the Save button to Done", json.dumps(job_data["plan"]))
+
 if __name__ == "__main__":
     unittest.main()
 
