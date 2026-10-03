@@ -2433,6 +2433,12 @@ def _main(argv: list[str] | None = None) -> int:
     connect_parser.add_argument("--name", help="What to call this computer in the web app (default: its hostname)")
     connect_parser.add_argument("--status", action="store_true", help="Show which account this computer is connected to")
     subparsers.add_parser("disconnect", help="Remove this computer from your account")
+    enroll_parser = subparsers.add_parser("enroll", help="Set up a Mac nobody sits at over SSH, with a token from Add a Mac")
+    enroll_parser.add_argument("--token", help="The one-time token from Add a Mac in the web app")
+    enroll_parser.add_argument("--token-stdin", action="store_true", help="Read the token from standard input instead")
+    enroll_parser.add_argument("--project", required=True, help="A project folder on this Mac, or a git URL to clone into ~/Projects")
+    enroll_parser.add_argument("--model", action="append", dest="models", help="AI model for a new project's setup (repeatable; default codex)")
+    enroll_parser.add_argument("--name", help="What to call this Mac in the web app (default: its hostname)")
 
     service_parser = subparsers.add_parser("service", help="Keep Orchestrator running in the background, starting at login")
     service_actions = service_parser.add_subparsers(dest="service_action", required=True)
@@ -2526,6 +2532,14 @@ def _main(argv: list[str] | None = None) -> int:
         return connect_command(args.name, args.status)
     if args.command == "disconnect":
         return disconnect_command()
+    if args.command == "enroll":
+        from orchestrator.enroll import enroll, read_token
+        try:
+            token = read_token(args.token, args.token_stdin)
+        except ValueError as exc:
+            print(exc)
+            return 1
+        return enroll(token, args.project, models=args.models, name=args.name)
     if args.command == "service":
         return service_command(args.service_action, getattr(args, "keep_awake", False))
     if args.command == "logs":
