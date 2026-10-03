@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.orchestrator.desktop</string>
+<key>CFBundleName</key><string>Orchestrator</string>
+<key>CFBundleDisplayName</key><string>Orchestrator</string>
+<key>CFBundleExecutable</key><string>Orchestrator</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSUIElement</key><true/>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSHumanReadableCopyright</key><string>Orchestrator contributors</string>
+<key>OrchestratorHostedOrigin</key><string>https://swift-orch-web-20260923.web.app</string>
+</dict></plist>

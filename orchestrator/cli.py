@@ -2101,6 +2101,10 @@ def installed_with_pipx() -> bool:
 
 
 def update_command(args: argparse.Namespace) -> int:
+    from orchestrator.desktop_runtime import is_packaged_install
+    if is_packaged_install():
+        print("Open Orchestrator's menu and choose Check for Updates to update this application.")
+        return 0
     from orchestrator.project_config import PACKAGE_ROOT
     from orchestrator import __version__, account
     from orchestrator.scripts.common import print_header, print_section

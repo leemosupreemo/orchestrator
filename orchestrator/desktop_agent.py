@@ -359,7 +359,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--control-dir", type=Path, default=Path.home() / "Library/Application Support/Orchestrator/control")
     args = parser.parse_args(argv)
-    agent = DesktopAgent(user_state_dir(), args.control_dir, {})
+    runtime = {}
+    if os.environ.get("ORCHESTRATOR_PACKAGED_APP"):
+        from orchestrator.desktop_runtime import bundle_environment
+        runtime = bundle_environment(Path(os.environ["ORCHESTRATOR_PACKAGED_APP"]), [])
+    agent = DesktopAgent(user_state_dir(), args.control_dir, runtime)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: agent.stop_event.set())
     return agent.run()
