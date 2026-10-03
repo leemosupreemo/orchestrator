@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -894,8 +895,11 @@ def update_product_requirements(job_path: Path) -> None:
         print("      - Checking whether the product requirements need updating...", flush=True)
 
         def ask(prompt: str) -> str:
-            reply, _model, _sid = run_llm(job.get("reviewer") or job.get("planner"), prompt, cwd=ROOT, timeout=300,
-                                          allowed_models=job.get("allowed_models"), role=ModelRole.PLANNER)
+            # An empty scratch folder, not the project: this is a question, and an agentic model must not be able to write the
+            # document itself (that would skip the history) or touch anything else.
+            with tempfile.TemporaryDirectory(prefix="orchestrator-model-") as scratch:
+                reply, _model, _sid = run_llm(job.get("reviewer") or job.get("planner"), prompt, cwd=Path(scratch), timeout=300,
+                                              allowed_models=job.get("allowed_models"), role=ModelRole.PLANNER)
             return reply
 
         result = prd.run_update(doc, job, ask)

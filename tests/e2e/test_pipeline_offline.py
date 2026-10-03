@@ -20,6 +20,10 @@ FREE = "opencode/nemotron-3-ultra-free"
 SUMMARY = "Add a long-word bonus: a word with 7 or more letters scores 10 extra points"
 
 
+def project_calls(project: DummyProject, role: str):
+    return [c for c in project.llm_calls() if c["role"] == role]
+
+
 def plan_job(project: DummyProject, kind: str = "feature", summary: str = SUMMARY):
     return project.orchestrator("script", "new_job.py", kind, "--summary", summary, "--branch-mode", "new", "--no-dispatch", "--planner", FREE,
                                 "--builder", FREE, "--reviewer", FREE, "--allowed-models", FREE, "--allowed-machines", "local")
@@ -132,9 +136,9 @@ class OfflinePipelineTests(unittest.TestCase):
 class LivingPrdTests(unittest.TestCase):
     """When a job finishes the worker asks whether it changes the product requirements, and keeps them true."""
 
-    def run_job(self, behaviour: str, auto_update: bool = True):
+    def run_job(self, behaviour: str, auto_update: bool = True, with_prd: bool = True):
         from orchestrator import prd
-        project = DummyProject([FREE]).create().fake_models(behaviour)
+        project = DummyProject([FREE]).create(with_product_docs=with_prd).fake_models(behaviour)
         self.addCleanup(project.cleanup)
         doc = prd.Prd(project.root, project.root / ".orchestrator")
         if not auto_update:
@@ -181,6 +185,23 @@ class LivingPrdTests(unittest.TestCase):
         self.assertTrue(project.job()["prd_checked"])
         self.assertIn("No change needed", self.output)
 
+    def test_a_project_with_no_prd_still_runs_adds_no_context_and_never_makes_one_up(self):
+        project, doc = self.run_job("prd_update", with_prd=False)
+        job = project.job()
+        self.assertEqual(job["status"], "review-needed", self.output[-1500:])
+        self.assertFalse(doc.exists())
+        self.assertEqual(self.prd_calls(project), [])  # nothing written yet, so nothing to keep true
+        self.assertFalse(job.get("prd_checked"))  # and it will be checked once there is something to check
+        for role in ("planner", "builder", "reviewer"):
+            self.assertNotIn("## Product context (source of truth", project_calls(project, role)[0]["prompt"], role)
+
+    def test_an_agentic_model_asked_about_the_document_cannot_write_it_directly(self):
+        # It writes the file itself and then says "no change": with no scratch folder the document would be silently replaced, with no version.
+        project, doc = self.run_job("writes_files")
+        self.assertEqual(doc.read(), self.before)
+        self.assertEqual(doc.history(), [])
+        self.assertEqual(project.git("status", "--porcelain"), "")
+
     def test_switched_off_the_model_is_never_asked_and_nothing_changes(self):
         project, doc = self.run_job("prd_update", auto_update=False)
         self.assertEqual(self.prd_calls(project), [])
@@ -194,6 +215,22 @@ class LivingPrdTests(unittest.TestCase):
         self.assertEqual(doc.history(), [])
         self.assertEqual(project.job()["status"], "review-needed")
         self.assertIn("emptied Pitch", self.output)
+
+
+class ReadOnlyModelCallTests(unittest.TestCase):
+    """The web app's "just answer me" model calls (chat, Help me, Import, Draft) must not be able to change the project."""
+
+    def test_an_agentic_model_asked_for_an_answer_writes_into_the_scratch_folder_not_the_project(self):
+        import tempfile
+        project = DummyProject([FREE]).create(with_product_docs=False).fake_models("writes_files")
+        self.addCleanup(project.cleanup)
+        with tempfile.TemporaryDirectory() as scratch:
+            res = project.orchestrator("script", "job_chat_run.py", "--model", FREE, "--cwd", scratch, "--timeout", "60", input="Say hello")
+            self.assertEqual(res.returncode, 0, res.stderr[-600:])
+            self.assertIn("<<<ORCHESTRATOR-REPLY>>>", res.stdout)
+            self.assertTrue((Path(scratch) / "docs" / "product" / "prd.md").exists(), "the model did not run in the folder it was given")
+        self.assertFalse((project.root / "docs" / "product" / "prd.md").exists(), "the model changed the project")
+        self.assertEqual(project.git("status", "--porcelain"), "")
 
 
 class TaskCheckpointTests(unittest.TestCase):

@@ -311,7 +311,7 @@ class Prd:
     def overview(self) -> dict[str, Any]:
         text = self.read()
         return {"exists": text is not None, "text": text if text is not None else template(), "sections": sections_view(text),
-                "auto_update": self.auto_update(), "notice": self.notice(), "path": PATH,
+                "auto_update": self.auto_update(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
                 "history": self.history()}
 
     # ---- an old project's documents become the PRD (the old files are left where they are)
@@ -448,6 +448,117 @@ def parse_proposal(reply: str) -> dict[str, str]:
 
 def unified_diff(old: str, new: str, old_label: str = "current", new_label: str = "proposed") -> list[str]:
     return list(difflib.unified_diff((old or "").splitlines(), (new or "").splitlines(), old_label, new_label, lineterm="", n=2))
+
+
+# --------------------------------------------------------------------------- drafting one from an existing project
+
+DIGEST_CHARS = 14_000
+_SKIP_DIRS = {".git", ".orchestrator", "node_modules", ".build", "build", "dist", "target", "venv", ".venv", "__pycache__", "Pods", "DerivedData", ".idea", ".vscode"}
+_CODE_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".swift", ".kt", ".java", ".go", ".rs", ".rb", ".php", ".cs", ".c", ".cc", ".cpp", ".m", ".dart", ".sh", ".html", ".css", ".vue", ".svelte"}
+_DOC_NAMES = ("README.md", "README.rst", "README.txt", "README")
+_MANIFESTS = ("package.json", "pyproject.toml", "Package.swift", "Cargo.toml", "go.mod", "build.gradle", "build.gradle.kts", "pubspec.yaml", "Gemfile", "composer.json", "requirements.txt")
+
+
+def _read(path: Path, limit: int) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+def can_draft(root: Path) -> bool:
+    """True when there is something to read: a README or other notes, a manifest, or source files."""
+    root = Path(root)
+    try:
+        if any((root / n).is_file() for n in (*_DOC_NAMES, *_MANIFESTS, "AGENTS.md", "CLAUDE.md")):
+            return True
+        for child in root.iterdir():
+            if child.name in _SKIP_DIRS or child.name.startswith("."):
+                continue
+            if child.is_file() and child.suffix in _CODE_EXTS:
+                return True
+            if child.is_dir() and any(f.suffix in _CODE_EXTS for f in list(child.iterdir())[:200] if f.is_file()):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def project_digest(root: Path, recent_commits: list[str] | None = None) -> str:
+    """A bounded summary of an existing project for a model to infer what it is: notes, manifests, layout, languages, recent history."""
+    root = Path(root)
+    parts: list[str] = []
+    for name in _DOC_NAMES:
+        text = _read(root / name, 6000)
+        if text.strip():
+            parts.append(f"### {name}\n{text.strip()}")
+            break
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        text = _read(root / name, 2000)
+        if text.strip():
+            parts.append(f"### {name}\n{text.strip()}")
+    docs = root / "docs"
+    if docs.is_dir():
+        for f in sorted(docs.glob("*.md"))[:4]:
+            if f.name.lower().startswith("prd"):
+                continue
+            text = _read(f, 1500)
+            if text.strip():
+                parts.append(f"### docs/{f.name}\n{text.strip()}")
+    for name in _MANIFESTS:
+        text = _read(root / name, 1200)
+        if text.strip():
+            parts.append(f"### {name}\n{text.strip()}")
+    names, exts = [], {}
+    try:
+        for child in sorted(root.iterdir()):
+            if child.name in _SKIP_DIRS or child.name.startswith("."):
+                continue
+            names.append(child.name + ("/" if child.is_dir() else ""))
+        for f in list(root.rglob("*"))[:5000]:
+            if f.is_file() and f.suffix in _CODE_EXTS and not (set(f.relative_to(root).parts) & _SKIP_DIRS):
+                exts[f.suffix] = exts.get(f.suffix, 0) + 1
+    except OSError:
+        pass
+    if names:
+        parts.append("### Top-level files and folders\n" + ", ".join(names[:70]))
+    if exts:
+        parts.append("### Source files by type\n" + ", ".join(f"{e} x{n}" for e, n in sorted(exts.items(), key=lambda x: -x[1])[:8]))
+    if recent_commits:
+        parts.append("### Recent commit subjects (newest first)\n" + "\n".join(f"- {c}" for c in recent_commits[:30]))
+    return "\n\n".join(parts)[:DIGEST_CHARS]
+
+
+def draft_prompt(digest: str, current: str = "") -> str:
+    existing = (f"\nThe person has already written some of it; keep what they wrote and only add:\n{current}\n" if is_filled_doc(current) else "")
+    return f"""Someone is adding an existing project and has no product requirements yet. Work out what this product is from what is in the project, and draft a short requirements document for it.
+
+What is in the project:
+{digest or '(nothing readable was found)'}
+{existing}
+How to write it:
+- Describe what the product DOES TODAY and who it appears to be for, from the evidence above. Do not invent a vision, users or goals the project doesn't show.
+- Anything you are inferring rather than reading, say so ("Appears to be ..."). Anything the project doesn't tell you, write "TBD:" and the plain question the person can answer. Pitch and Core features should be mostly facts from the project.
+- Core features: what the code and notes show it can do now, as short lines.
+- Look and feel: only if the project shows it (a design system, screenshots, UI copy); otherwise leave a TBD question.
+- Not this: leave it empty. Only the person can say what it should not be.
+- On the "Built for:" line of the Pitch, list the platforms the project clearly targets.
+- {SHAPE}
+
+Reply with ONLY JSON: {{"summary": "what you inferred, how sure you are, and what you could not tell", "markdown": "the complete document"}}"""
+
+
+def parse_draft(reply: str, current: str = "") -> dict[str, str]:
+    """A drafted proposal. "Not this" is always the person's own: a draft can't invent guardrails that builders and reviewers would treat as law."""
+    proposal = parse_proposal(reply)
+    mine = split(current or "").get("not", "")
+    proposal["markdown"] = replace_section(proposal["markdown"], "not", mine)
+    proposal["summary"] = (proposal["summary"] + " I left \"Not this\" for you: only you can say what it shouldn't be.").strip()
+    return proposal
+
+
+def is_filled_doc(text: str) -> bool:
+    return any(is_filled(b) for b in split(text or "").values())
 
 
 # --------------------------------------------------------------------------- reading an existing PRD

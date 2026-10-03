@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import http.client
+import shutil
 import io
 import json
 import os
@@ -2014,7 +2015,7 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_the_product_page_is_one_document_with_five_sections_you_can_edit_import_and_restore(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        for part in ('data-prd-edit', 'api("product/settings"', 'api("product/revert"', 'product/history/', '"product/import"', '"product/design"', 'product/reference',
+        for part in ('product/draft', "Draft it from my project", "open.draft", 'data-prd-edit', 'api("product/settings"', 'api("product/revert"', 'product/history/', '"product/import"', '"product/design"', 'product/reference',
                      'api("product/refine"', "Update this automatically when jobs finish", "Import a PRD", "Help me with this", "Nothing is saved until you accept"):
             self.assertIn(part, page, part)
         self.assertNotIn("product/scaffold", self.js)  # no six documents to create
@@ -2030,9 +2031,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("product_notice", refresh)  # the toast and the browser notification come from the poll
         self.assertIn("Notifications.show", refresh)
         self.assertIn("lastPrdNotice !== undefined", refresh)  # an update seen on first load is a banner, not a surprise toast
-        home = self.js[self.js.index("function productStripHtml"):][:900]
+        home = self.js[self.js.index("function productStripHtml"):][:1700]
         self.assertIn("prdNoticeHtml(p.notice)", home)
         self.assertIn("Import a PRD you have", home)
+        self.assertIn("Draft it from my project", home)  # an existing project is offered a draft from Home too
+        self.assertIn("p.can_draft", home)
 
     def test_design_images_load_with_the_token_not_a_bare_img_src(self):
         self.assertIn("data-auth-src", self.js)
@@ -2663,6 +2666,56 @@ class ProductEndpointTests(ServerTestCase):
         with patch.object(ui.UIHandler, "_model_call", side_effect=ui.UIError("No model is available.", 502)):
             res, data = self.post("/api/product/refine", {"mode": "questions"})
         self.assertEqual((res.status, data["error"]), (502, "No model is available."))
+
+    def test_an_existing_project_can_be_read_and_drafted_without_saving_or_inventing_not_this(self):
+        # The fixture project has files, so first make it a project with nothing to read.
+        for child in list(self.root.iterdir()):
+            if child.name != ".orchestrator" and child.name != ".git":
+                shutil.rmtree(child) if child.is_dir() else child.unlink()
+        res, data = self.post("/api/product/draft", {})
+        self.assertEqual(res.status, 400)
+        self.assertIn("nothing in this project to read", data["error"])
+        self.assertFalse(self.request("GET", "/api/product")[1]["can_draft"])
+        (self.root / "README.md").write_text("# Word Duel\n\nA word game for two friends.")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "Add scoring"], cwd=self.root, check=True)
+        self.assertTrue(self.request("GET", "/api/product")[1]["can_draft"])
+        seen = []
+
+        def fake(self_, root, prompt, model="", timeout=150):
+            seen.append((prompt, timeout))
+            return json.dumps({"summary": "Inferred from the README.", "markdown": prd_mod.replace_section(prd_mod.replace_section(
+                prd_mod.template(), "pitch", "A word game for two friends."), "not", "- Not an IDE")})
+
+        with patch.object(ui.UIHandler, "_model_call", fake):
+            res, p = self.post("/api/product/draft", {})
+        self.assertEqual(res.status, 200, p)
+        self.assertIn("A word game for two friends.", seen[0][0])  # the README was read
+        self.assertIn("Add scoring", seen[0][0])  # and the history
+        self.assertGreaterEqual(seen[0][1], 240)  # reading a project takes a while
+        self.assertIn("+A word game for two friends.", p["diff"])
+        self.assertNotIn("Not an IDE", p["markdown"])  # guardrails are the person's
+        self.assertIn("only you can say", p["summary"])
+        self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())  # nothing is saved until they accept
+
+    def test_model_calls_get_an_empty_scratch_folder_never_the_project(self):
+        calls = []
+        real = ui.subprocess.run
+
+        def fake(argv, *a, **k):
+            if "job_chat_run.py" in " ".join(argv):
+                scratch = Path(argv[argv.index("--cwd") + 1])
+                calls.append((scratch, list(scratch.iterdir()), scratch.is_relative_to(self.root)))
+                return subprocess.CompletedProcess(argv, 0, stdout="<<<ORCHESTRATOR-REPLY>>>\nhello", stderr="")
+            return real(argv, *a, **k)
+
+        handler = ui.UIHandler.__new__(ui.UIHandler)
+        handler.server = self.server
+        with patch.object(ui.subprocess, "run", side_effect=fake):
+            self.assertEqual(handler._model_call(self.root, "hi").strip(), "hello")
+        scratch, contents, inside = calls[0]
+        self.assertEqual((contents, inside), ([], False))  # empty, and not inside the project
+        self.assertFalse(scratch.exists())  # and cleaned up afterwards
 
     def test_importing_pasted_text_or_a_file_proposes_the_five_sections_and_saves_nothing(self):
         proposal = json.dumps({"summary": "Kept everything", "markdown": prd_mod.replace_section(prd_mod.template(), "pitch", "From my old PRD")})

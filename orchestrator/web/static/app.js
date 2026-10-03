@@ -1879,7 +1879,7 @@ pages.new = async (_, query) => {
     // A feature or design is planned against who it's for and what version 1 won't do; offer to write that down first.
     const nudge = undefinedProduct && !skipped() && (st.type === "feature" || st.type === "design");
     $("#nj-discovery").innerHTML = nudge ? `<div class="notice" role="note"><strong>Before the first feature: what are you building, and who is it for?</strong>
-      <div class="muted">Plans are much better when the AI knows. Say it in a few sentences, or import a PRD you already have.</div>
+      <div class="muted">Plans are much better when the AI knows. Say it in a few sentences, let it draft one from this project, or import a PRD you already have.</div>
       <div class="row"><a class="btn small primary" href="#/product">Define the product first</a><button type="button" class="btn small ghost" id="nj-skip-discovery">Skip for now</button></div></div>` : "";
     $("#nj-skip-discovery")?.addEventListener("click", () => { try { localStorage.setItem(skipKey, "1"); } catch { /* remembered for this visit only */ } undefinedProduct = false; $("#nj-discovery").innerHTML = ""; });
     $("#nj-fields").innerHTML = out.html;
@@ -2401,13 +2401,13 @@ function productStripHtml(p) {
       ${p.notice ? prdNoticeHtml(p.notice) : ""}
       ${pitch.filled ? `<p class="product-pitch">${esc(prdSnippet(pitch.body))}</p>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-10"><a class="btn small primary" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import a PRD you have</a></div>`}
+           <div class="row gap-10">${p.can_draft ? `<a class="btn small primary" href="#/product?draft=1">Draft it from my project</a><a class="btn small" href="#/product">Write it</a>` : `<a class="btn small primary" href="#/product">Write it</a>`}<a class="btn small" href="#/product?import=1">Import a PRD you have</a></div>`}
       <div class="product-chips">${p.sections.map(chip).join("")}</div></div></section>`;
 }
 
 pages.product = async (_, query) => {
   let p = await api("product");
-  const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", section: query?.get("section") || "" };
+  const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1", section: query?.get("section") || "" };
   const sectionCard = (s) => {
     const designs = s.id === "look" ? [...s.body.matchAll(/\]\((designs\/[^)\s]+)\)/g)].map((m) => m[1]).filter((d) => DESIGN_IMAGE.test(d)) : [];
     return `<section class="card mb-16" id="sec-${s.id}"><div class="card-h"><h2>${esc(s.title)}</h2>${s.optional ? `<span class="muted">Optional</span>` : ""}
@@ -2436,7 +2436,7 @@ pages.product = async (_, query) => {
   return {
     title: "Product",
     sub: `<span class="mono">${esc(p.path)}</span> · Every job reads this first. Edit it any time.`,
-    actions: `<button class="btn" id="prd-import">Import a PRD</button><button class="btn primary" id="prd-help">Help me with this</button>`,
+    actions: `${p.can_draft ? `<button class="btn" id="prd-draft">Draft it from my project</button>` : ""}<button class="btn" id="prd-import">Import a PRD</button><button class="btn primary" id="prd-help">Help me with this</button>`,
     html: render(),
     after: () => {
       const panel = () => $("#prd-panel");
@@ -2446,6 +2446,7 @@ pages.product = async (_, query) => {
       const wire = () => {
         $("#prd-import")?.addEventListener("click", () => importPanel());
         $("#prd-help")?.addEventListener("click", () => helpPanel());
+        $("#prd-draft")?.addEventListener("click", () => draftPanel());
         view.querySelectorAll("[data-prd-edit]").forEach((btn) => btn.addEventListener("click", () => {
           const id = btn.dataset.prdEdit, s = p.sections.find((x) => x.id === id), box = view.querySelector(`[data-prd-body="${id}"]`);
           btn.hidden = true;
@@ -2543,6 +2544,13 @@ pages.product = async (_, query) => {
         });
       };
 
+      // An existing project: read what is there (README, notes, manifests, layout, recent commits) and propose a first version.
+      const draftPanel = async () => {
+        busy("Reading your project and drafting…");
+        try { proposalView(await api("product/draft", { method: "POST", body: {} }), { source: "ai", label: "Drafted from your project", onDone: () => {} }); }
+        catch (e) { toast(e.message, true); panel().innerHTML = ""; }
+      };
+
       let instruction = "";
       const helpPanel = (phase = "idle", extra = {}) => {
         if (phase === "idle") {
@@ -2571,10 +2579,13 @@ pages.product = async (_, query) => {
       wire();
       hydrateAuthImages();
       if (open.imp) importPanel();
+      else if (open.draft && p.can_draft) draftPanel();
       else if (!p.sections.find((s) => s.id === "pitch").filled && !p.history.length) {
+        const existing = p.can_draft; // there is already a project to read
         panel().innerHTML = `<section class="card mb-16"><div class="card-b stack"><strong>Start here</strong>
-          <div>Say what you have in mind in the Pitch below, as if you were explaining it to a friend. Or let us help: import a PRD you already have, or answer a few questions.</div>
-          <div class="row gap-10"><button type="button" class="btn small primary" id="prd-start-import">Import a PRD</button><button type="button" class="btn small" id="prd-start-help">Help me with this</button></div></div></section>`;
+          <div>${existing ? "This project already exists, so we can read it and draft the first version for you to correct. Or say what you have in mind in the Pitch below, as if explaining it to a friend." : "Say what you have in mind in the Pitch below, as if you were explaining it to a friend."} You can also import a PRD you already have, or answer a few questions. Not sure? Say so; it fills in as you build.</div>
+          <div class="row gap-10">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft it from my project</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import a PRD</button><button type="button" class="btn small" id="prd-start-help">Help me with this</button></div></div></section>`;
+        $("#prd-start-draft")?.addEventListener("click", () => draftPanel());
         $("#prd-start-import").addEventListener("click", () => importPanel());
         $("#prd-start-help").addEventListener("click", () => helpPanel());
       }

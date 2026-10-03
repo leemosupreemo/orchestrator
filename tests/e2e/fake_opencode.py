@@ -8,6 +8,7 @@ directory) or a review. Behaviour switches come from $FAKE_LLM_BEHAVIOUR, a comm
   full_suite     the builder runs the project's whole test command, as its prompt asks
   narrow_tests   the builder runs only a test that has nothing to do with the plan
   two_tasks      the plan has two tasks (the bonus, then a README note), each built separately
+  writes_files   behave like an agent with file tools: write docs/product/prd.md into the folder it was started in
   prd_update     when asked whether a finished job changes the product requirements, add a feature to them
   prd_gut        ...answer with a document whose pitch has been emptied (which must be refused)
   concerns_once  the first verification raises concerns (the orchestrator should accept the suggestions and carry on)
@@ -124,6 +125,10 @@ def main() -> int:
     planner_calls = sum(1 for c in state["calls"] if c["role"] == "planner")
     verifier_calls = sum(1 for c in state["calls"] if c["role"] == "verifier")
     STATE.write_text(json.dumps(state))
+    if "writes_files" in BEHAVIOUR and role in ("prd", "other"):  # the read-only questions; builders and planners legitimately work in the project
+        target = Path("docs/product/prd.md")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# written by an agentic model\n")
     if role == "planner":
         if "prose_first" in BEHAVIOUR and planner_calls == 1:
             print("I looked through the code and wrote my plan to plan.json. It adds the bonus in score().")

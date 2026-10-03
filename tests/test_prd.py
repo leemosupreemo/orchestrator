@@ -238,6 +238,83 @@ class ModelReplyTests(unittest.TestCase):
             self.assertIn("TBD", text)
 
 
+class DraftTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def write(self, rel, text="x"):
+        f = self.root / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+
+    def test_an_empty_folder_has_nothing_to_draft_from(self):
+        self.assertFalse(prd.can_draft(self.root))
+        (self.root / ".git").mkdir()
+        self.write(".orchestrator/config.json")
+        self.write("node_modules/a.js")
+        self.assertFalse(prd.can_draft(self.root))  # tooling and dependencies don't count
+
+    def test_a_readme_a_manifest_or_source_files_are_enough(self):
+        self.write("README.md", "# Thing")
+        self.assertTrue(prd.can_draft(self.root))
+        for rel in ("package.json", "src/app.swift", "app.py"):
+            other = Path(tempfile.mkdtemp(dir=self.tmp.name))
+            (other / Path(rel).parent).mkdir(parents=True, exist_ok=True)
+            (other / rel).write_text("x")
+            self.assertTrue(prd.can_draft(other), rel)
+
+    def test_the_digest_carries_notes_manifests_layout_languages_and_history_and_skips_the_noise(self):
+        self.write("README.md", "# Word Duel\n\nA word game for two friends.")
+        self.write("AGENTS.md", "Use python3 only")
+        self.write("pyproject.toml", '[project]\nname = "wordduel"\ndescription = "scoring"')
+        self.write("docs/guide.md", "How to play")
+        self.write("docs/prd.md", "OLD PRD TEXT")  # an existing PRD is not evidence of the project
+        self.write("wordgame/scoring.py")
+        self.write("wordgame/rules.py")
+        self.write("web/app.js")
+        self.write("node_modules/dep/x.js")
+        self.write(".orchestrator/secret.json", "TOKEN")
+        d = prd.project_digest(self.root, ["Add rematch", "Fix scoring"])
+        for needle in ("A word game for two friends", "Use python3 only", 'name = "wordduel"', "How to play", "wordgame/", ".py x2", ".js x1", "- Add rematch", "- Fix scoring"):
+            self.assertIn(needle, d, needle)
+        for noise in ("OLD PRD TEXT", "TOKEN", "node_modules", "dep/x.js"):
+            self.assertNotIn(noise, d, noise)
+
+    def test_the_digest_is_bounded(self):
+        self.write("README.md", "x" * 50_000)
+        self.write("pyproject.toml", "y" * 50_000)
+        self.assertLessEqual(len(prd.project_digest(self.root, ["c"] * 100)), prd.DIGEST_CHARS)
+
+    def test_the_prompt_says_to_report_what_it_does_today_and_to_say_what_it_is_unsure_of(self):
+        text = prd.draft_prompt("### README.md\nA word game", prd.template())
+        for needle in ("A word game", "DOES TODAY", "Do not invent", "TBD:", "Not this: leave it empty", "Built for:", "own words"):
+            self.assertIn(needle, text, needle)
+        self.assertIn("nothing readable", prd.draft_prompt("", ""))
+        self.assertNotIn("already written some", text)  # an empty template is not "something the person wrote"
+        self.assertIn("already written some", prd.draft_prompt("d", FILLED))
+        self.assertIn("Two friends who have a minute", prd.draft_prompt("d", FILLED))  # so it keeps and adds
+
+    def test_a_draft_can_never_write_not_this_but_keeps_what_the_person_wrote(self):
+        reply = json.dumps({"summary": "Inferred from the README.", "markdown": prd.replace_section(prd.replace_section(prd.template(), "pitch", "A word game."), "not", "- Not an IDE\n- Not a SaaS")})
+        fresh = prd.parse_draft(reply, "")
+        self.assertFalse(prd.is_filled(prd.split(fresh["markdown"])["not"]))  # nothing invented
+        self.assertEqual(prd.split(fresh["markdown"])["pitch"], "A word game.")
+        self.assertIn("only you can say", fresh["summary"])
+        mine = prd.parse_draft(reply, prd.replace_section(prd.template(), "not", "- No ads"))
+        self.assertEqual(prd.split(mine["markdown"])["not"], "- No ads")
+        with self.assertRaises(prd.PrdError):
+            prd.parse_draft("not json", "")
+
+    def test_overview_says_whether_a_draft_is_possible(self):
+        tmp, root, p = project()
+        self.addCleanup(tmp.cleanup)
+        self.assertFalse(p.overview()["can_draft"])
+        (root / "README.md").write_text("# x")
+        self.assertTrue(p.overview()["can_draft"])
+
+
 JOB = {"job_id": "j1", "title": "Add rematch", "type": "feature-plan", "builder_summary": "Added a rematch button",
        "plan": {"summary": "Players can rematch", "assumptions": ["Rematch keeps the same opponent"],
                 "tasks": [{"acceptance_criteria": ["A rematch starts with one tap"]}]},

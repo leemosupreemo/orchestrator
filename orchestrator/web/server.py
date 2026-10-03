@@ -35,6 +35,7 @@ import signal
 import ssl
 import struct
 import subprocess
+import tempfile
 import sys
 import termios
 import threading
@@ -2706,6 +2707,14 @@ class UIHandler(BaseHTTPRequestHandler):
                     answers = [a for a in (body.get("answers") or []) if isinstance(a, dict)][:6]
                     proposal = prd_doc.parse_proposal(self._model_call(root, prd_doc.refine_prompt(current, instruction, answers)))
                     self._json({**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])})
+            elif method == "POST" and parts == ["product", "draft"]:
+                if not prd_doc.can_draft(root):
+                    raise UIError("There's nothing in this project to read yet (no README, notes or code). Describe it in your own words instead.")
+                commits = git(root, "log", "--format=%s", "-n", "30").splitlines()
+                current = doc.read() or prd_doc.template()
+                digest = prd_doc.project_digest(root, commits)
+                proposal = prd_doc.parse_draft(self._model_call(root, prd_doc.draft_prompt(digest, current), timeout=270), current)
+                self._json({**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])})
             elif method == "POST" and parts == ["product", "import"]:
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
                     body = self._body()
@@ -2798,11 +2807,14 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _model_call(self, root: Path, prompt: str, model: str = "", timeout: int = 150) -> str:
         """One read-only model turn (prompt in, answer out) in a child process, so a slow or failing model can't hang the server."""
-        argv = orchestrator_argv("script", "job_chat_run.py", *(["--model", model] if model else []))
-        try:
-            res = subprocess.run(argv, input=prompt, cwd=root, env=self.server.child_env(), capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise UIError("The model took too long. Try a shorter request.", HTTPStatus.GATEWAY_TIMEOUT)
+        # The model works in an empty scratch folder, not the project: an agentic model (one with file tools) asked for an answer
+        # would otherwise be free to write files into the repository. Everything it needs is in the prompt.
+        with tempfile.TemporaryDirectory(prefix="orchestrator-model-") as scratch:
+            argv = orchestrator_argv("script", "job_chat_run.py", *(["--model", model] if model else []), "--timeout", str(max(30, timeout - 15)), "--cwd", scratch)
+            try:
+                res = subprocess.run(argv, input=prompt, cwd=root, env=self.server.child_env(), capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                raise UIError("The model took too long. Try a shorter request.", HTTPStatus.GATEWAY_TIMEOUT)
         marker = "<<<ORCHESTRATOR-REPLY>>>"
         if res.returncode != 0 or marker not in res.stdout:
             raise UIError((res.stderr.strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
