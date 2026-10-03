@@ -2,9 +2,10 @@
 
 One list feeds the web UI's setup checklist. Each item is `required` or
 optional, says whether it's done, and says how to fix it. "Required" matches
-what a job actually needs: `new job` opens a GitHub issue (its number becomes the
-job id) and finishing opens a PR, every planning/build step calls an LLM, and
-work runs on a machine listed in machines.json.
+what a job actually needs: a git repository; with GitHub (`code_host`) a GitHub
+remote and a signed-in `gh`, because each job is an issue and finishing opens a
+PR; every planning/build step calls an LLM; and work runs on a machine listed
+in machines.json. With plain git (GitLab, Bitbucket, no remote) no GitHub is needed.
 """
 from __future__ import annotations
 
@@ -107,7 +108,9 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
 
     is_git = (root / ".git").exists()
     origin = (_run(["git", "remote", "get-url", "origin"], cwd=root) or subprocess.CompletedProcess([], 1, "", "")).stdout.strip() if is_git else ""
-    gh = github_cli_state()
+    from orchestrator.code_host import host_kind, resolve_mode
+    github = resolve_mode(project.get("code_host"), origin) == "github"
+    gh = github_cli_state() if github else {"installed": bool(shutil.which("gh")), "user": None}
     providers = ready_llm_providers(settings)
     models = list(dict.fromkeys(m for mach in machines if mach.get("enabled", True) for m in mach.get("models", [])))
 
@@ -115,14 +118,25 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
         _item("project", "Project configured", True, bool(project), "Name, build and test settings" if project else "No .orchestrator/project.json yet",
               action=wizard, group="Project"),
         _item("git", "Git repository", True, is_git, "Initialized" if is_git else "This folder isn't a git repository",
-              hint=None if is_git else "git init", group="GitHub"),
-        _item("github_remote", "GitHub remote (origin)", True, bool(GITHUB_REMOTE.search(origin)),
-              origin if GITHUB_REMOTE.search(origin) else ("origin isn't a GitHub URL" if origin else "No origin remote"),
-              hint=None if GITHUB_REMOTE.search(origin) else "gh repo create --source . --push", group="GitHub"),
-        _item("github_cli", "GitHub CLI signed in", True, bool(gh["user"]),
-              f"Signed in as {gh['user']}" if gh["user"] else ("Installed, not signed in" if gh["installed"] else "GitHub CLI (gh) isn't installed"),
-              action=menu("github") if gh["installed"] and not gh["user"] else None,
-              hint=None if gh["installed"] else "brew install gh", group="GitHub"),
+              hint=None if is_git else "git init", group="GitHub" if github else "Git"),
+    ]
+    if github:
+        items += [
+            _item("github_remote", "GitHub remote (origin)", True, bool(GITHUB_REMOTE.search(origin)),
+                  origin if GITHUB_REMOTE.search(origin) else ("origin isn't a GitHub URL" if origin else "No origin remote"),
+                  hint=None if GITHUB_REMOTE.search(origin) else "gh repo create --source . --push", group="GitHub"),
+            _item("github_cli", "GitHub CLI signed in", True, bool(gh["user"]),
+                  f"Signed in as {gh['user']}" if gh["user"] else ("Installed, not signed in" if gh["installed"] else "GitHub CLI (gh) isn't installed"),
+                  action=menu("github") if gh["installed"] and not gh["user"] else None,
+                  hint=None if gh["installed"] else "brew install gh", group="GitHub"),
+        ]
+    else:
+        host = {"gitlab": "GitLab", "bitbucket": "Bitbucket", "azure": "Azure DevOps", "github": "GitHub"}.get(host_kind(origin), "")
+        items.append(_item("remote", "Git remote (origin)", False, bool(origin),
+                           f"{host + ': ' if host else ''}{origin}. Finished jobs are pushed here as branches." if origin
+                           else "None: finished work stays on this computer as branches.",
+                           hint=None if origin else "git remote add origin <url>", group="Git"))
+    items += [
         _item("llm", "An AI provider is ready", True, bool(providers),
               ", ".join(providers[:4]) if providers else "No logged-in AI CLI or API key found",
               action={"type": "route", "to": "#/config"}, group="AI"),

@@ -45,7 +45,7 @@ from common import (
     update_issue_status,
     write_json,
 )
-from open_or_update_pr import open_or_update_pr
+from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
 from orchestrator.project_config import PROJECT_CONFIG
 
@@ -76,9 +76,16 @@ def current_git_branch() -> str:
     ).decode("utf-8").strip()
 
 
-def prepare_git_branch(job: dict, issue_number: int) -> Tuple[str, str]:
+def job_branch_name(job: dict, issue_number: int | None) -> str:
+    """`ai/issue-<n>-<title>` for a GitHub job; plain git has no issue, so its local reference names the branch."""
+    if issue_number:
+        return f'ai/issue-{issue_number}-{slugify(job["title"])}'
+    return f'ai/job-{job.get("job_ref") or job["job_id"].rsplit("-", 1)[-1]}-{slugify(job["title"])}'
+
+
+def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
     base_branch = job.get("base_branch") or os.environ.get("BASE_BRANCH", PROJECT_CONFIG.base_branch)
-    generated_branch = f'ai/issue-{issue_number}-{slugify(job["title"])}'
+    generated_branch = job_branch_name(job, issue_number)
     branch_mode = normalize_branch_mode(job.get("branch_mode"))
 
     if branch_mode == "manual":
@@ -209,8 +216,10 @@ def print_status_report(job: dict, build_ok: bool, test_ok: bool, pr_number: Opt
             print(f"  1. Review PR changes on GitHub:\n     \033[4;96m{clickable_pr}\033[0m")
         elif pr_number:
             print(f"  1. Review PR changes on GitHub:\n     \033[1;96mgh pr view {pr_number} --web\033[0m")
+        elif job.get("merge_request_url"):
+            print(f"  1. Review the branch {job.get('branch')}, or open a merge request:\n     \033[4;96m{job['merge_request_url']}\033[0m")
         else:
-            print("  1. Review changes on GitHub.")
+            print(f"  1. Review the changes on branch {job.get('branch')}.")
         
         print("  2. Test and verify manually on device (via Firebase App Distribution) or simulator.")
         print("  3. Follow up based on your verification:")
@@ -366,7 +375,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         print("      - RESUME MODE ENABLED")
     status_bar.render()
 
-    issue_number = job["issue_number"]
+    issue_number = job.get("issue_number")
+    job_label = f"Issue #{issue_number}" if issue_number else f"job {job['job_id']}"
+    job["code_host"] = PROJECT_CONFIG.code_host_mode
 
     try:
         print_phase("git_prep")
@@ -375,7 +386,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         print_phase("status_update")
         status_bar.render()
-        print(f"[2/4] Updating issue #{issue_number} status to 'executing'...")
+        print(f"[2/4] Updating {job_label} status to 'executing'...")
         is_debug = job.get("status") == "debugging"
 
         job["branch"] = branch
@@ -465,7 +476,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                         send_notifications(
                             job,
                             "Job Paused: Clarification Needed",
-                            f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
+                            f"Builder needs clarification for {job_label}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
                         )
                         return
                     except Exception as e:
@@ -585,7 +596,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     send_notifications(
                         job,
                         "Job Paused: Clarification Needed",
-                        f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
+                        f"Builder needs clarification for {job_label}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
                     )
                     return
 
@@ -709,7 +720,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         print_phase("pull_request")
         status_bar.render()
         print(f"[4/4] Implementation successful. Opening/updating Pull Request...")
-        pr_number, pr_url = open_or_update_pr(job_path)
+        if PROJECT_CONFIG.uses_github:
+            pr_number, pr_url = open_or_update_pr(job_path)
+        else:
+            print("      - Plain git (no GitHub): pushing the branch for review instead of opening a pull request.")
+            pr_number, pr_url = None, None
+            job["merge_request_url"] = push_branch_for_review(job)
         if pr_url:
             try:
                 from orchestrator.integrations_sync import notify_job_event
@@ -756,10 +772,15 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         print_phase("review")
         status_bar.render()
-        print(f"\n[5/5] Triggering local AI review for PR #{pr_number}...")
         brief_file = OUTPUT_DIR / job["job_id"] / "brief.md"
+        if pr_number:
+            print(f"\n[5/5] Triggering local AI review for PR #{pr_number}...")
+            review_target = str(pr_number)
+        else:  # no pull request (plain git, or GitHub couldn't open one): review the branch's own diff
+            print(f"\n[5/5] Triggering local AI review for branch {branch}...")
+            review_target = f"--branch {shlex.quote(branch)} --base {shlex.quote(base_branch)}"
         run_shell(
-            f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "review_ready.py"))} {pr_number} --reviewer {shlex.quote(job["reviewer"])} --brief-file {shlex.quote(str(brief_file))} --job-file {shlex.quote(str(job_path))}',
+            f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "review_ready.py"))} {review_target} --reviewer {shlex.quote(job["reviewer"])} --brief-file {shlex.quote(str(brief_file))} --job-file {shlex.quote(str(job_path))}',
             cwd=ROOT,
             check=True,
             capture=False,
@@ -779,7 +800,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         send_notifications(
             job, 
             "Job Complete: SUCCESS", 
-            f"Implementation successful for Issue #{issue_number}.\nPR: #{pr_number}\nTitle: {job['title']}",
+            f"Implementation successful for {job_label}.\n" + (f"PR: #{pr_number}" if pr_number else f"Branch: {branch}") + f"\nTitle: {job['title']}",
             summary=job_summary
         )
 
@@ -837,7 +858,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         send_notifications(
             job,
             "Job Paused: Clarification Needed",
-            f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {e.question}\nTitle: {job['title']}",
+            f"Builder needs clarification for {job_label}.\nQuestion: {e.question}\nTitle: {job['title']}",
             summary=job_summary
         )
         return
@@ -869,7 +890,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         send_notifications(
             job, 
             "Job Complete: FAILED", 
-            f"Critical error during execution for Issue #{issue_number}.\nError: {e}\nTitle: {job['title']}",
+            f"Critical error during execution for {job_label}.\nError: {e}\nTitle: {job['title']}",
             summary=job_summary
         )
 

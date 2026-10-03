@@ -10,6 +10,10 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
 
     if not config.project_name:
         errors.append("project_name is required.")
+    if config.code_host.strip().lower() not in ("auto", "github", "git"):
+        errors.append('code_host must be "github", "git" or "auto".')
+    if config.code_host.strip().lower() not in ("auto", "github", "git"):
+        errors.append('code_host must be "github", "git" or "auto".')
     if config.uses_xcode and not config.scheme:
         errors.append("scheme is required. Set it in .orchestrator/project.json.")
     if not config.xcode_project and not config.xcode_workspace and not config.build_command:

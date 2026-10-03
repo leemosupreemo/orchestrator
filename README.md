@@ -19,7 +19,7 @@ Orchestrator began with deep support for Swift and Xcode. It is now expanding ac
     *   **Reviewer**: Audits the implementation, test coverage, and regression risks before changes are finalized.
 *   **Fleet Orchestration**: Dispatch heavy builds or exhaustive test suites to remote machines via SSH. The Orchestrator handles branch synchronization, worker package installation, remote execution, and job output automatically.
 *   **Interactive Account Setup**: Detect installed AI and GitHub CLIs, then sign in or add API keys from the wizard without restarting.
-*   **Automated GitHub PR & Issue Workflow**: Integrates with GitHub through the `gh` CLI to create issues, open pull requests, and post automated status updates.
+*   **GitHub, GitLab, Bitbucket or plain git**: With GitHub, jobs become issues and finished work a pull request (through the `gh` CLI). With any other host, or none, jobs run on their own branches, which are pushed for a merge request or merged locally. See [Code hosts](docs/code-hosts.md).
 *   **Multi-Language Project Setup (Beta)**: Detect Rust, Python, Node.js/TypeScript, Go, Swift Package Manager, and Xcode projects, then configure the appropriate build and test commands.
 
 ---
@@ -146,6 +146,7 @@ orchestrator update --fleet   # Enabled remote machines
 
 - [Getting Started](docs/getting-started.md): What Orchestrator does and the first commands to run.
 - [User Guide](docs/user-guide.md): Comprehensive setup, commands, and troubleshooting.
+- [Code hosts](docs/code-hosts.md): GitHub, GitLab, Bitbucket, other hosts, or no remote.
 - [Product requirements](docs/product-requirements.md): The one living document every AI reads first: how to start it (write, draft from a project, import), how it keeps itself true, and how to undo it.
 
 ---

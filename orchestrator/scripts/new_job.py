@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import secrets
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from model_registry import get_model, ModelTier
 from probe_machine import load_machines
 from manual_run import capture_logs
 import test_cases as tc
+from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import prd
 from orchestrator import slice_check
 
@@ -96,6 +98,18 @@ def create_issue(title: str, body: str, labels: list[str]) -> int:
                     continue
             raise
 
+
+
+def file_job(title: str, body: str, labels: list[str]) -> tuple[int | None, str]:
+    """Record a new job where the project tracks work: (issue number, the reference that names the job).
+
+    With GitHub (`code_host`), the job is a GitHub issue and its number names the job, its branch and its test cases.
+    With plain git there is no issue: a short random reference names them instead."""
+    if PROJECT_CONFIG.uses_github:
+        print(f"      - Creating GitHub issue: {title}...", flush=True)
+        number = create_issue(title, body, labels)
+        return number, str(number)
+    return None, secrets.token_hex(3)
 
 
 def normalize_verification(payload: dict, verifier_model: str) -> dict | None:
@@ -550,9 +564,9 @@ def main(args_override: list[str] | None = None) -> None:
         body = build_quick_issue_body(plan, yolo=args.yolo)
         labels = ["job:quick", "status:planned"]
         
-        print(f"[1/2] Creating GitHub issue: {title}...", flush=True)
-        issue_number = create_issue(title, body, labels)
-        job_id = f"{timestamp()}-quick-{issue_number}"
+        print(f"[1/2] Creating job: {title}...", flush=True)
+        issue_number, job_ref = file_job(title, body, labels)
+        job_id = f"{timestamp()}-quick-{job_ref}"
         
         actual_planner = "user-prompt"
         verification = None
@@ -878,16 +892,17 @@ def main(args_override: list[str] | None = None) -> None:
 
         if existing_job:
             job_id = existing_job["job_id"]
-            issue_number = existing_job["issue_number"]
+            issue_number = existing_job.get("issue_number")
+            job_ref = existing_job.get("job_ref") or str(issue_number)
             paths = make_job_paths(job_id)
-            
-            # Update GitHub issue body
-            print(f"[2/3] Updating GitHub issue: #{issue_number}...", flush=True)
-            gh_text("issue", "edit", str(issue_number), "--body", body)
+
+            if issue_number:
+                print(f"[2/3] Updating GitHub issue: #{issue_number}...", flush=True)
+                gh_text("issue", "edit", str(issue_number), "--body", body)
         else:
-            print(f"[2/3] Creating GitHub issue: {title}...", flush=True)
-            issue_number = create_issue(title, body, labels)
-            job_id = f"{timestamp()}-{job_id_kind}-{issue_number}"
+            print(f"[2/3] Creating job: {title}...", flush=True)
+            issue_number, job_ref = file_job(title, body, labels)
+            job_id = f"{timestamp()}-{job_id_kind}-{job_ref}"
             paths = make_job_paths(job_id)
 
         status = "planned"
@@ -900,6 +915,8 @@ def main(args_override: list[str] | None = None) -> None:
             "type": job_type if not existing_job else job.get("type", job_type),
             "source": "manual" if args.job_type == "bug" else "planned_feature",
             "issue_number": issue_number,
+            "job_ref": job_ref,
+            "code_host": "github" if issue_number else "git",
             "title": title if not existing_job else job.get("title", title),
             "status": status,
             "planner": planner,
@@ -937,7 +954,7 @@ def main(args_override: list[str] | None = None) -> None:
         if needs_test_cases and isinstance(plan.get("test_cases"), list):
             previous = (existing_job or {}).get("plan", {}).get("test_cases") or []
             try:
-                plan["test_cases"] = tc.normalize_cases(plan["test_cases"], issue_number, job_id, existing=previous)
+                plan["test_cases"] = tc.normalize_cases(plan["test_cases"], issue_number or job_ref, job_id, existing=previous)
             except tc.TestCaseError as e:
                 plan.setdefault("test_case_problems", []).append(f"`test_cases` is malformed: {e}.")
                 plan["test_cases"] = []
@@ -946,6 +963,7 @@ def main(args_override: list[str] | None = None) -> None:
                 section += ["", "> ⚠️ **Test cases need attention:** " + " ".join(p.splitlines()[0] for p in plan["test_case_problems"])]
             if section:
                 body = body + "\n" + "\n".join(section)
+            if section and issue_number:
                 try:
                     gh_text("issue", "edit", str(issue_number), "--body", body)
                 except Exception as e:
@@ -1008,7 +1026,8 @@ def main(args_override: list[str] | None = None) -> None:
         job_file_display = str(paths.job_file)
 
     print(f"      - Created job file: {job_file_display}")
-    print(f"      - Created issue: #{issue_number}")
+    if issue_number:
+        print(f"      - Created issue: #{issue_number}")
 
     if not args.no_dispatch and status == "planned":
         print(f"[3/3] Scheduling job {job_id}...", flush=True)

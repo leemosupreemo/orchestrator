@@ -89,7 +89,7 @@ class DummyProject:
             raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()}")
         return res.stdout.strip()
 
-    def create(self, with_product_docs: bool = True) -> "DummyProject":
+    def create(self, with_product_docs: bool = True, code_host: str = "github") -> "DummyProject":
         (self.root / "wordgame").mkdir(parents=True)
         (self.root / "tests").mkdir()
         (self.root / "wordgame" / "__init__.py").write_text("")
@@ -106,6 +106,8 @@ class DummyProject:
         (runtime / "config").mkdir(parents=True)
         (runtime / "project.json").write_text(json.dumps({
             "project_name": "Word Duel", "base_branch": "main", "pr_base_branch": "main", "branch_prefix": "ai/issue", "git_remote": str(self.remote),
+            # GitHub's pipeline by default (gh is faked; the local remote isn't on github.com), or "git" for plain git.
+            "code_host": code_host,
             "build_command": "python3 -m compileall -q wordgame", "test_command": "python3 -m unittest discover -s tests", "firebase_distribution": False}, indent=2))
         (runtime / "config" / "machines.json").write_text(json.dumps({"version": 1, "machines": [{
             "name": "local", "enabled": True, "execution_mode": "local", "ssh_target": None, "repo_path": str(self.root), "roles": ["planner", "reviewer", "worker", "build", "test"],

@@ -28,7 +28,7 @@ try:
 except:
     pass
 
-from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence
+from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence, is_ai_branch, merge_branch_locally
 from llm import SUPPORTED_MODELS, DEFAULT_FALLBACKS, run_llm, extract_json_block
 from model_router import ModelRole
 from model_registry import get_all_models, ModelTier
@@ -3901,7 +3901,7 @@ def handle_discard_job(job: dict[str, Any], confirmed: bool = False):
         except:
             curr = ""
             
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - AI-managed branch detected: {branch}")
             if curr == branch:
                 base_branch = job.get("base_branch", PROJECT_CONFIG.base_branch)
@@ -3926,6 +3926,9 @@ def handle_merge_cleanup(job: dict[str, Any]):
     branch = job.get("branch")
 
     if not pr_number:
+        if branch and job.get("code_host") == "git":
+            handle_local_merge(job)
+            return
         print("!!! Error: No PR number found for this job.")
         return
 
@@ -3956,7 +3959,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
 
     # 3. Local branch cleanup (ONLY if merge succeeded and AI-managed)
     if branch:
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - Deleting local branch: {branch}...")
             # Check current branch first
             try:
@@ -3982,6 +3985,29 @@ def handle_merge_cleanup(job: dict[str, Any]):
     archive_path = archive_job(job)
 
     print(f"\n✅ Successfully merged and archived to {archive_path.name}")
+    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+
+def handle_local_merge(job: dict[str, Any]):
+    """Merge & complete without a pull request (plain git): merge the job's branch into its base on this computer."""
+    branch = job["branch"]
+    base = job.get("base_branch") or PROJECT_CONFIG.base_branch
+    print_header(f"Merging {branch} into {base}")
+    ok, message = merge_branch_locally(branch, base, f"Merge {branch}: {job.get('title', job.get('job_id'))}")
+    print(f"      - {message}")
+    if not ok:
+        print("\n\033[1;91m!!! Merge didn't happen. The job is still ready for review.\033[0m")
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        return
+    if is_ai_branch(branch):
+        print(f"      - Deleting local branch: {branch}...")
+        subprocess.run(["git", "branch", "-d", branch], cwd=str(ROOT), capture_output=True)
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+    archive_path = archive_job(job)
+    print(f"\n✅ Merged and archived to {archive_path.name}")
     input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_archived_jobs_menu(session_allowed_machines, session_allowed_models):

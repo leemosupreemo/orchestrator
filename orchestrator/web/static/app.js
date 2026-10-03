@@ -1699,7 +1699,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   if (state.project?.mobile_app !== false) items.push(["Simulator visual check", act("run_visual_check", j), "Boot the simulator and capture screenshots"]);
   items.push(["Export bundle", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"]);
   items.push("---");
-  for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, "On GitHub"]);
+  for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]);
   if (s.issue_number) items.push(["Close GitHub issue", `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`]);
   if (state.you?.role !== "member") items.push(["Open in console", act("console")]);
   return `${moreMenu(items)}<button type="button" class="btn danger" ${act("delete_job", j)}${s.active_run ? ' disabled title="Stop the running task before deleting"' : ""}>Delete</button>`;

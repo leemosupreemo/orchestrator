@@ -539,6 +539,11 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
     if status == "review-needed":
         if pr:
             return state("needs_you", "attention", "Ready to merge", f"PR #{pr} is ready for your review.", "merge", "Merge & complete")
+        if job.get("code_host") == "git" and job.get("branch"):
+            where = " A merge request link is on the job." if job.get("merge_request_url") else ""
+            return state("needs_you", "attention", "Ready to merge",
+                         f"The changes are on {job['branch']}. Merge & complete merges it into {job.get('base_branch') or 'the base branch'} "
+                         f"on this computer; or merge it on your git host and mark it complete.{where}", "merge", "Merge & complete")
         return state("needs_you", "attention", "Ready for review", "Changes are ready. No pull request was opened, so there is nothing to merge here. Mark it complete when you're happy.", "complete", "Mark complete")
     if status == "debugging":
         if tests in FAILING_TEST_STATUSES:
@@ -794,7 +799,7 @@ def delete_job(root: Path, job_id: str, revert: bool = False) -> None:
                     except OSError:
                         pass
         branch = job.get("branch")
-        if branch and branch.startswith("ai/issue-"):
+        if branch and branch.startswith(("ai/issue-", "ai/job-")):  # only branches Orchestrator made for jobs
             try:
                 curr = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(root)).decode("utf-8").strip()
             except Exception:
@@ -919,7 +924,10 @@ def preflight_overview(root: Path, refresh: bool = False) -> list[dict[str, str]
         free = shutil.disk_usage(root).free / 1e9
     except OSError:
         free = None
-    items = preflight.checks(config, machines, is_apple_app(root, config), free, run, lambda t: shutil.which(t, path=search_path) is not None, model_clis)
+    from orchestrator.code_host import origin_url, resolve_mode
+    github = resolve_mode(config.get("code_host"), config.get("git_remote") or origin_url(root)) == "github"
+    items = preflight.checks(config, machines, is_apple_app(root, config), free, run, lambda t: shutil.which(t, path=search_path) is not None,
+                             model_clis, github=github)
     _PREFLIGHT_CACHE[key] = (time.time(), items)
     return items
 
@@ -1087,6 +1095,12 @@ def github_links(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
         url = job.get("issue_url" if key == "issue_number" else "pr_url") or (f"{base}/{path}/{number}" if base and number else None)
         if number and url and str(url).startswith("https://"):
             links.append({"label": f"{kind} #{number}", "url": url})
+    request = str(job.get("merge_request_url") or "")
+    if request.startswith("https://") and not job.get("pr_number"):  # plain git: open a merge request on the host
+        from orchestrator.code_host import host_kind
+        kind = host_kind(request)
+        links.append({"label": "pull request" if kind in ("github", "bitbucket") else "merge request", "url": request,
+                      "where": {"github": "On GitHub", "gitlab": "On GitLab", "bitbucket": "On Bitbucket"}.get(kind, "On your git host")})
     return links
 
 

@@ -38,7 +38,9 @@ def command_tools(command: str | None) -> list[str]:
 
 
 def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app: bool, disk_free_gb: float | None,
-           run: Run, which: Which, model_clis: Callable[[str], list[str]] = lambda m: []) -> list[dict[str, str]]:
+           run: Run, which: Which, model_clis: Callable[[str], list[str]] = lambda m: [],
+           github: bool = True) -> list[dict[str, str]]:
+    """`github`: the project uses GitHub issues and pull requests (code_host); plain git needs no GitHub check."""
     out: list[dict[str, str]] = []
 
     # 1. The programs the build and test commands start.
@@ -66,14 +68,17 @@ def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app:
     elif needed:
         out.append(_item("model-clis", "ok", "The models' command-line tools are installed", ", ".join(sorted(needed))))
 
-    # 3. GitHub: needed to open pull requests and read CI.
-    if which("gh"):
+    # 3. GitHub, for a project that uses it: each job is a GitHub issue, so without it no job can start.
+    if github and which("gh"):
         code, text = run(["gh", "auth", "status"])
-        out.append(_item("github", "ok" if code == 0 else "warn", "GitHub is signed in" if code == 0 else "GitHub isn't signed in",
-                         "Pull requests and CI status will work." if code == 0 else "Jobs will build, but no pull request can be opened and CI status won't show.",
+        out.append(_item("github", "ok" if code == 0 else "fail", "GitHub is signed in" if code == 0 else "GitHub isn't signed in",
+                         "Issues, pull requests and CI status will work." if code == 0
+                         else "Jobs can't start: each one is a GitHub issue. Or set code_host to \"git\" to work without GitHub.",
                          "" if code == 0 else "Run `gh auth login` in a terminal"))
-    else:
-        out.append(_item("github", "warn", "The GitHub CLI isn't installed", "Jobs will build, but no pull request can be opened.", "Install it with `brew install gh`"))
+    elif github:
+        out.append(_item("github", "fail", "The GitHub CLI isn't installed",
+                         "Jobs can't start: each one is a GitHub issue. Or set code_host to \"git\" to work without GitHub.",
+                         "Install it with `brew install gh`"))
 
     # 4. Apple apps: Xcode, its first-launch setup, and a simulator that works.
     if is_apple_app:

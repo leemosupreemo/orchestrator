@@ -36,7 +36,7 @@ orchestrator --help
 The package has no Python runtime dependencies outside the standard library. Some workflows require external command-line tools:
 
 - Xcode project build/test: `xcodebuild`, `xcrun`
-- GitHub issue and pull request workflow: `gh`
+- GitHub issue and pull request workflow: `gh` (not needed for GitLab, Bitbucket or plain git; see [Code hosts](code-hosts.md))
 - Remote workers: `ssh`, `scp`, `rsync`
 - AI providers: at least one of `codex`, `antigravity`, `claude`, `opencode`, `ollama`, or matching API key configuration
 - Firebase delivery: `firebase` plus a project-local distribution script
@@ -526,7 +526,7 @@ Common issues:
 - `No AI providers found`: authenticate a provider CLI or export a supported API key.
 - SSH worker is `NOT READY`: run `orchestrator worker-install --machine NAME`, then rerun `worker-check`.
 - Remote worker imports fail after package changes: rerun `worker-install` to refresh the source copy.
-- GitHub actions fail: install `gh` and run `gh auth login`.
+- GitHub actions fail: install `gh` and run `gh auth login`, or set `"code_host": "git"` to work without GitHub ([Code hosts](code-hosts.md)).
 - `orchestrator logs` reports `Sentry refused the token (403)`: the token lacks `org:read`, `project:read` or `event:read`. Create a new one and rerun `orchestrator logs setup`.
 - `No app sessions found`: the build predates remote logging, the app was never opened, or it is an App Store build (errors only). Open the app, wait a few seconds, and retry.
 

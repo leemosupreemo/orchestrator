@@ -48,6 +48,12 @@ class E2EWorkflowTests(unittest.TestCase):
         # Initialize orchestrator in this project
         from orchestrator import cli
         cli.main(["init", "--root", str(self.root), "--project-name", "TestProject", "--base-branch", "master"])
+        # These tests cover the GitHub flow (issues are mocked); this throwaway repo has no GitHub origin to detect.
+        config = self.root / ".orchestrator" / "project.json"
+        config.write_text(json.dumps({**json.loads(config.read_text()), "code_host": "github"}))
+        for mod_name in list(sys.modules.keys()):  # init loaded the config before that; read it again
+            if mod_name.startswith("orchestrator") or mod_name in ["common", "new_job", "probe_machine", "llm", "model_router", "model_registry"]:
+                del sys.modules[mod_name]
         
         # Mock some required files for new_job.py
         (self.root / "docs").mkdir(exist_ok=True)

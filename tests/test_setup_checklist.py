@@ -35,11 +35,21 @@ class SetupChecklistTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             result = _checklist(Path(d), gh={"installed": False, "user": None}, providers=[])
             items = _by_id(result)
-            for key in ("project", "git", "github_remote", "github_cli", "llm", "machines", "models"):
+            for key in ("project", "git", "llm", "machines", "models"):
                 self.assertTrue(items[key]["required"] and not items[key]["done"], key)
             self.assertFalse(result["complete"])
-            self.assertEqual(items["github_cli"]["hint"], "brew install gh")
+            # No GitHub remote, so plain git: GitHub isn't asked for, and a remote is optional.
+            self.assertNotIn("github_cli", items)
+            self.assertFalse(items["remote"]["required"])
             self.assertTrue(all(not items[k]["required"] for k in ("firebase", "email", "workers", "prompts")))
+
+    def test_github_project_needs_github(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root)
+            items = _by_id(_checklist(root, gh={"installed": False, "user": None}))
+            self.assertTrue(items["github_cli"]["required"] and not items["github_cli"]["done"])
+            self.assertEqual(items["github_cli"]["hint"], "brew install gh")
 
     def test_fully_configured_project_is_complete(self):
         with tempfile.TemporaryDirectory() as d:
@@ -49,10 +59,22 @@ class SetupChecklistTests(unittest.TestCase):
             self.assertTrue(result["complete"], [i["id"] for i in result["items"] if i["required"] and not i["done"]])
             self.assertEqual(result["required_done"], result["required_total"])
 
-    def test_github_is_required_even_when_everything_else_is_ready(self):
+    def test_gitlab_project_is_complete_without_github(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             self.make_project(root, origin="https://gitlab.com/me/app.git")
+            result = _checklist(root, gh={"installed": False, "user": None})
+            items = _by_id(result)
+            self.assertTrue(result["complete"], [i["id"] for i in result["items"] if i["required"] and not i["done"]])
+            self.assertTrue(items["remote"]["done"])
+            self.assertIn("GitLab", items["remote"]["detail"])
+            self.assertNotIn("github_cli", items)
+
+    def test_choosing_github_mode_requires_github_even_on_another_host(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root, origin="https://gitlab.com/me/app.git")
+            (root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "App", "code_host": "github"}))
             result = _checklist(root, gh={"installed": True, "user": None})
             items = _by_id(result)
             self.assertFalse(items["github_remote"]["done"])

@@ -37,9 +37,10 @@ class CommandToolsTests(unittest.TestCase):
 
 
 class GenericChecks(unittest.TestCase):
-    def go(self, config=None, machines=None, installed=(), results=None, apple=False, disk=100.0, clis=None):
+    def go(self, config=None, machines=None, installed=(), results=None, apple=False, disk=100.0, clis=None, github=True):
         run, which, _ = probes(installed, results)
-        return by_id(pf.checks(config or {}, machines if machines is not None else [machine()], apple, disk, run, which, lambda m: (clis or {}).get(m, [])))
+        return by_id(pf.checks(config or {}, machines if machines is not None else [machine()], apple, disk, run, which,
+                               lambda m: (clis or {}).get(m, []), github=github))
 
     def test_a_missing_build_tool_fails_and_points_at_project_settings(self):
         r = self.go({"build_command": "cargo build", "test_command": "cargo test"}, installed=("gh",))
@@ -62,11 +63,15 @@ class GenericChecks(unittest.TestCase):
         r = self.go(machines=[machine(execution_mode="remote", models=["m"])], clis={"m": ["only-on-remote"]})
         self.assertNotIn("model-clis", r)
 
-    def test_github_signed_out_is_a_warning_not_a_blocker(self):
+    def test_a_github_project_cant_start_jobs_without_github(self):
         r = self.go(installed=("gh",), results={"gh auth status": (1, "not logged in")})
-        self.assertEqual(r["github"]["status"], "warn")
+        self.assertEqual(r["github"]["status"], "fail")
+        self.assertIn("code_host", r["github"]["detail"])  # says how to work without it
         self.assertEqual(self.go(installed=("gh",))["github"]["status"], "ok")
-        self.assertEqual(self.go()["github"]["status"], "warn")  # gh not installed
+        self.assertEqual(self.go()["github"]["status"], "fail")  # gh not installed
+
+    def test_a_plain_git_project_needs_no_github(self):
+        self.assertNotIn("github", self.go(github=False))
 
     def test_low_disk_blocks_only_when_work_runs_here(self):
         self.assertEqual(self.go(disk=3)["disk"]["status"], "fail")

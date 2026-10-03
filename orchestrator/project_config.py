@@ -258,6 +258,18 @@ class ProjectConfig:
     firebase_groups: str | None = None
     # Central runtime-log store the app ships to; see scripts/cloud_logs.py.
     remote_logs: dict[str, Any] = field(default_factory=dict)
+    # "github", "git" or "auto" (the default: GitHub when origin is on github.com). See orchestrator/code_host.py.
+    code_host: str = "auto"
+
+    @property
+    def code_host_mode(self) -> str:
+        """"github" (issues and pull requests through gh) or "git" (plain git branches, any host or none)."""
+        from orchestrator.code_host import resolve_mode
+        return resolve_mode(self.code_host, self.git_remote or "")
+
+    @property
+    def uses_github(self) -> bool:
+        return self.code_host_mode == "github"
 
     @property
     def stack(self) -> Any:
@@ -432,6 +444,7 @@ def load_project_config(root: Path | None = None) -> ProjectConfig:
         firebase_testers=data.get("firebase_testers"),
         firebase_groups=data.get("firebase_groups"),
         remote_logs=data.get("remote_logs") or {},
+        code_host=str(data.get("code_host") or "auto"),
     )
 
 

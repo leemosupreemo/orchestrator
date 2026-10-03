@@ -133,6 +133,57 @@ class OfflinePipelineTests(unittest.TestCase):
         self.assertIn("score('abcdefg') includes 10 extra points", prompt)
 
 
+class PlainGitPipelineTests(unittest.TestCase):
+    """The same journey without GitHub (code_host "git"): no issue, no pull request, the branch pushed to a plain git
+    remote, reviewed from its own diff, then merged on this computer. The fake gh records any call; none may happen."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.project = DummyProject([FREE]).create(code_host="git").fake_models("prose_first,concerns_once")
+        p = cls.project
+        cls.steps = {"plan": plan_job(p)}
+        cls.steps["accept"] = action(p, "approve")
+        cls.steps["approve"] = action(p, "approve")
+        cls.after_run = p.job()
+        cls.main_before_merge = p.git("rev-parse", "main")
+        cls.steps["merge"] = p.orchestrator("script", "job_actions.py", "merge", str(p.jobs()[-1]), input="\n")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def explain(self):
+        return "\n".join(f"$ {k} (exit {v.returncode})\n{re.sub(chr(27) + r'\[[0-9;?]*[a-zA-Z]', '', v.stdout)[-1500:]}\n{v.stderr[-800:]}" for k, v in self.steps.items())
+
+    def test_github_is_never_called(self):
+        self.assertEqual(self.project.gh()["calls"], [], self.explain())
+
+    def test_the_job_runs_on_its_own_branch_without_an_issue(self):
+        job = self.after_run
+        self.assertEqual(job["status"], "review-needed", self.explain())
+        self.assertIsNone(job.get("issue_number"))
+        self.assertEqual(job["code_host"], "git")
+        self.assertRegex(job["branch"], r"^ai/job-[0-9a-f]{6}-")
+        self.assertIn(job["job_ref"], job["job_id"])
+
+    def test_the_branch_is_pushed_to_the_remote(self):
+        pushed = self.project.git("ls-remote", "--heads", "origin", self.after_run["branch"])
+        self.assertIn(self.after_run["branch"], pushed, self.explain())
+
+    def test_the_reviewer_reads_the_branch_diff(self):
+        prompt = [c for c in self.project.llm_calls() if c["role"] == "reviewer"][0]["prompt"]
+        self.assertIn(f"Branch {self.after_run['branch']} against main", prompt)
+        self.assertIn("wordgame/scoring.py", prompt)
+
+    def test_merge_and_complete_merges_on_this_computer_without_pushing_main(self):
+        self.assertEqual(self.steps["merge"].returncode, 0, self.explain())
+        p = self.project
+        self.assertNotEqual(p.git("rev-parse", "main"), self.main_before_merge)
+        self.assertIn(self.after_run["branch"], p.git("log", "-1", "--format=%s", "main"))
+        self.assertEqual(p.git("rev-parse", "origin/main"), self.main_before_merge, "main must not be pushed for you")
+        self.assertEqual(p.jobs(), [], "the job should be archived")
+
+
 class LivingPrdTests(unittest.TestCase):
     """When a job finishes the worker asks whether it changes the product requirements, and keeps them true."""
 
