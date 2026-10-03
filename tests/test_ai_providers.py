@@ -34,9 +34,10 @@ class AiProviderTests(unittest.TestCase):
                 self.assertIn(p["cost"], ai_providers.COST_ORDER)
                 self.assertTrue(p["link"].startswith("https://"))
                 self.assertIn(p["cli"], LLM_CLIS)  # setup_checklist can detect it
-                if p.get("key"):
-                    self.assertIn(p["key"], API_KEY_ENV)  # and the API Keys page can save it
-        self.assertEqual({p["cli"] for p in ai_providers.PROVIDERS}, set(LLM_CLIS))
+                if p.get("key"):  # the API Keys page and the checklist read the key's setting, label and variable from here
+                    self.assertTrue(p["env"].isupper() and p["key_label"].strip())
+                    self.assertEqual(API_KEY_ENV[p["key"]], p["env"])
+        self.assertEqual(LLM_CLIS, [p["cli"] for p in ai_providers.PROVIDERS])  # one list, not two kept in step
 
     def test_plugins_match_the_recommendations_doc(self):
         doc = (REPO / "docs" / "recommended-mcp-plugins.md").read_text()

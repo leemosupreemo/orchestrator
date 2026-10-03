@@ -2080,12 +2080,7 @@ def get_role_prompts(root: Path) -> list[dict[str, Any]]:
 
 # --------------------------------------------------------------------------- configuration
 
-API_KEYS = [
-    ("gemini_api_key", "Antigravity / Gemini", "GEMINI_API_KEY"),
-    ("anthropic_api_key", "Claude", "ANTHROPIC_API_KEY"),
-    ("openai_api_key", "Codex / OpenAI", "OPENAI_API_KEY"),
-    ("ollama_api_key", "Ollama Cloud", "OLLAMA_API_KEY"),
-]
+from orchestrator.ai_providers import API_KEYS  # (setting, label, environment variable), one list of providers
 EMAIL_SECRET_KEYS = ("smtp_password", "resend_api_key")
 EMAIL_PROVIDERS = ["gmail", "resend"]
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")

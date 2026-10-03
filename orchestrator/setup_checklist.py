@@ -19,9 +19,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-API_KEY_ENV = {"gemini_api_key": "GEMINI_API_KEY", "anthropic_api_key": "ANTHROPIC_API_KEY",
-               "openai_api_key": "OPENAI_API_KEY", "ollama_api_key": "OLLAMA_API_KEY"}
-LLM_CLIS = ["claude", "codex", "agy", "gemini", "opencode", "ollama"]
+from orchestrator import ai_providers
+
+API_KEY_ENV = {key: env for key, _label, env in ai_providers.API_KEYS}  # one list of providers: orchestrator/ai_providers.py
+LLM_CLIS = ai_providers.CLIS
 GITHUB_REMOTE = re.compile(r"github\.com[:/]")
 
 _cache: dict[str, tuple[float, Any]] = {}
