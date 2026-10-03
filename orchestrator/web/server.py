@@ -4351,6 +4351,15 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
     if not args.no_open:
         open_browser(url)
+
+    # A service manager or `kill` stops with SIGTERM, a closed terminal with SIGHUP: clean up as Ctrl-C does, so the
+    # tunnel and running commands don't outlive the server. Hangups stay ignored under nohup, which asks for that.
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        if signal.getsignal(sig) is not signal.SIG_IGN:
+            signal.signal(sig, stop)
     try:
         server.start_notifier()
         server.serve_forever(poll_interval=0.5)

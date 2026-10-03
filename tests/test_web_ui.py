@@ -6,6 +6,7 @@ import shutil
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -492,6 +493,51 @@ class FakeTunnelProcess:
 
     def kill(self):
         self.exit_code = -9
+
+
+class UiShutdownTests(unittest.TestCase):
+    """Stopping `orchestrator ui` the way a service manager or `kill` does must close its tunnel, as Ctrl-C does."""
+
+    SCRIPT = """
+import sys
+from pathlib import Path
+from orchestrator.web import server
+
+class FakeKeeper:
+    def __init__(self, *args, **kwargs): pass
+    def start(self): return "https://fake.trycloudflare.com"
+    def stop(self): Path(sys.argv[2]).write_text("stopped")
+
+server.TunnelKeeper = FakeKeeper
+server.find_project_root = lambda *a, **k: Path(sys.argv[1])
+raise SystemExit(server.main(["--no-open", "--tunnel", "--port", "0"]))
+"""
+
+    def run_until_ready(self, folder):
+        from orchestrator.project_setup import apply_project_setup
+        base = Path(folder).resolve()
+        root = base / "project"
+        root.mkdir()
+        env = {**os.environ, "ORCHESTRATOR_USER_STATE_DIR": str(base / "state"), "PYTHONPATH": str(PACKAGE_ROOT)}
+        with patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(base / "state")}):
+            apply_project_setup(root, {"build_command": "true", "test_command": "true", "models": ["codex"]})
+        marker = base / "tunnel-stopped"
+        proc = subprocess.Popen([sys.executable, "-c", self.SCRIPT, str(root), str(marker)], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            if "Ctrl-C to stop" in line:
+                return proc, marker
+        proc.wait(5)
+        self.fail("orchestrator ui didn't start")
+
+    def test_terminate_and_hangup_close_the_tunnel(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            with self.subTest(signal=sig.name), tempfile.TemporaryDirectory() as folder:
+                proc, marker = self.run_until_ready(folder)
+                proc.send_signal(sig)
+                self.assertEqual(proc.wait(10), 0)
+                proc.stdout.close()
+                self.assertEqual(marker.read_text(), "stopped")
 
 
 class TunnelKeeperTests(unittest.TestCase):
