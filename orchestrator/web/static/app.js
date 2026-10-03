@@ -1160,6 +1160,7 @@ function showSignInGate(message) {
   const isRemote = window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost";
   const hosted = Account.active();
   const hostedUser = hosted ? window.firebase?.auth?.().currentUser : null;
+  const providers = Account.providerSignInWorks();
   view.innerHTML = `
     <div class="signin-wrap">
       <div class="signin-card">
@@ -1173,7 +1174,11 @@ function showSignInGate(message) {
             ${message ? `<span style="color: var(--err);">${esc(message)}</span>` : "Sign in to access and manage projects on your computer."}
           </p>
         </div>
-        <div class="sso-buttons">
+        ${providers ? "" : `<div class="notice signin-elsewhere">
+          <p>Google, Apple and GitHub sign-in work on the Orchestrator site, which then opens this computer for you.</p>
+          <a class="btn primary" href="${esc(Account.HOSTED_ORIGINS[0])}" style="width: 100%; justify-content: center;">Sign in on the Orchestrator site</a>
+          <p class="muted">Or use the access token below${location.hostname === "127.0.0.1" ? `, or open <a href="${esc(location.href.replace("//127.0.0.1", "//localhost"))}">localhost</a> instead of 127.0.0.1` : ""}.</p></div>`}
+        <div class="sso-buttons" ${providers ? "" : "hidden"}>
           <button type="button" class="sso-btn google-btn" id="google-signin-btn">
             <svg class="icon"><use href="#i-google"/></svg>
             <span>Continue with Google</span>
@@ -1265,7 +1270,9 @@ function showSignInGate(message) {
       } catch (err) {
         endSigningIn();
         if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { btn.disabled = false; btn.innerHTML = originalHtml; return; }
-        const msg = explain[err.code] || err.message;
+        const msg = explain[err.code] || (err.code === "auth/unauthorized-domain"
+          ? `${name} sign-in doesn't work at this address. Sign in on the Orchestrator site (${Account.HOSTED_ORIGINS[0]}), which opens this computer for you, or use the access token below.`
+          : err.message);
         if (err.code !== "auth/popup-blocked-explained") toast(msg, true); // the gate already says it
         showSignInGate(msg);
       }

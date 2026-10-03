@@ -845,6 +845,22 @@ process.stdout.write(JSON.stringify({
         self.assertIn("expired", result["expired"])
         self.assertNotIn("cmd", result["expired"])
 
+    def test_provider_sign_in_is_offered_only_where_firebase_allows_it(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const at = (href) => { const u = new URL(href); return {origin: u.origin, hostname: u.hostname}; };
+process.stdout.write(JSON.stringify([
+  "https://swift-orch-web-20260923.web.app/", "https://swift-orch-web-20260923.firebaseapp.com/#/",
+  "http://localhost:8765/", "http://127.0.0.1:8765/", "https://some-words-here.trycloudflare.com/",
+].map((href) => A.providerSignInWorks(at(href)))));""")
+        self.assertEqual(result, [True, True, True, False, False])
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        gate = js[js.index("function showSignInGate"):][:4000]
+        self.assertIn("Account.providerSignInWorks()", gate)
+        self.assertIn("Sign in on the Orchestrator site", gate)
+        self.assertIn('class="sso-buttons" ${providers ? "" : "hidden"}', gate)
+        self.assertIn('err.code === "auth/unauthorized-domain"', js)  # explained, not Firebase's raw message
+
     def test_first_screen_asks_what_to_build_before_any_setup(self):
         result = self.run_account_script("""
 const A = globalThis.Account;

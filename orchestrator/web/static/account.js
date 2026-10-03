@@ -46,6 +46,12 @@
     return HOSTED_ORIGINS.includes(origin);
   }
 
+  // Google, Apple and GitHub sign-in (Firebase) only work on domains the Firebase project authorizes: the hosted app and
+  // "localhost". Not 127.0.0.1, and never a tunnel address, which changes every time the tunnel restarts.
+  function providerSignInWorks(loc = root.location) {
+    return isHosted(loc?.origin) || loc?.hostname === "localhost";
+  }
+
   // On the hosted app your computers are found through your account, unless a link named one (?backend=…).
   function active(loc = root.location) {
     return isHosted(loc?.origin) && !new URLSearchParams(loc?.search || "").get("backend");
@@ -264,6 +270,6 @@
     HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
     enrollCommand, renderEnroll, outdated,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
-    renderMachines, renderPair, pendingIdea, saveIdea, clearIdea, ideaRoute,
+    renderMachines, renderPair, providerSignInWorks, pendingIdea, saveIdea, clearIdea, ideaRoute,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);
