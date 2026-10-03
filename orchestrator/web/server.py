@@ -3745,7 +3745,8 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "tailscale", False):
         ts_ip, ts_dns = get_tailscale_info()
         if ts_ip:
-            args.host = ts_ip
+            if args.host == "127.0.0.1":
+                args.host = "0.0.0.0"
             if not public_url:
                 public_url = f"http://{ts_dns or ts_ip}:{args.port}"
         else:
