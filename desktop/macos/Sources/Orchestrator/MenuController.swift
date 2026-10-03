@@ -17,7 +17,12 @@ import Darwin
         prepare: { [weak self] in try await self?.updateCoordinator.prepareInstallation() })
     lazy var updater: SparkleAdapter = {
         let value = SparkleAdapter(coordinator: updateCoordinator, scheduler: scheduler)
-        value.displayError = { [weak self] message in self?.state.operation = message; self?.showSettings() }
+        value.displayError = { [weak self] message in
+            guard let self else { return }
+            self.state.operation = message
+            if !self.handlingUpdateRequest { self.showSettings() }  // nobody may be watching a requested update
+        }
+        value.requestFinished = { [weak self] result in self?.reportUpdate(result); self?.handlingUpdateRequest = false }
         return value
     }()
     let opener = BrowserOpener(open: { NSWorkspace.shared.open($0) })
@@ -30,6 +35,8 @@ import Darwin
     private var openedPairing: String?
     private var refreshPending = false
     private var recordedRegistration = ""
+    private var handlingUpdateRequest = false
+    private var reportedUpdate = ""
     /// Set by `orchestrator enroll` over SSH: register login items and start the agent without showing a window.
     private let registerBackground = CommandLine.arguments.contains("--register-background")
     private var registerName: Notification.Name { Notification.Name(activationName.rawValue + ".register") }
@@ -71,8 +78,9 @@ import Darwin
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in Task { @MainActor in await self?.refresh() } }
         Task {
             do {
-                try await updateCoordinator.recoverAfterRelaunch()
+                let updated = try await updateCoordinator.recoverAfterRelaunch()
                 updater.start()
+                if updated { reportUpdate("current") }
                 if registerBackground { await registerInBackground() }
                 else { try await lifecycle.ensureRunning() }
             } catch { state.error = error.localizedDescription }
@@ -119,6 +127,12 @@ import Darwin
         await state.refresh()
         recordRegistration()
         await scheduler.observe(state.activity)
+        if state.status?["update_request"]?.bool == true, !handlingUpdateRequest {
+            handlingUpdateRequest = true; reportedUpdate = ""
+            if updater.requestUpdate() { reportUpdate("checking") }
+            else { reportUpdate("unavailable"); handlingUpdateRequest = false }
+        }
+        if handlingUpdateRequest, scheduler.waiting, state.activity == .busy { reportUpdate("waiting_for_work") }
         if services.pending, state.canStop {
             do { try await services.reconcile() }
             catch { state.error = error.localizedDescription }
@@ -235,6 +249,12 @@ import Darwin
     @objc func showSettings() { window("settings", title: "Orchestrator Settings", view: SettingsView(controller: self, state: state, services: services)) }
     @objc func showDiagnostics() { window("diagnostics", title: "Orchestrator Diagnostics", view: DiagnosticsView(state: state)) }
     @objc func checkUpdates() { updater.check() }
+    /// Tells the hosted app, through the agent's next heartbeat, how an update it asked for is going.
+    func reportUpdate(_ progress: String) {
+        guard progress != reportedUpdate else { return }
+        reportedUpdate = progress
+        Task { _ = try? await state.command("update_progress", params: ["state": .string(progress)]) }
+    }
     func setAutomaticUpdates(_ enabled: Bool) { scheduler.setEnabled(enabled); updater.applyAutomatic() }
     @objc func openWorkspace() { openBrowser("#/") }
     @objc func openProjects() { openBrowser("#/projects") }

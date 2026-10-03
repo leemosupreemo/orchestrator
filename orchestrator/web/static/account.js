@@ -12,6 +12,18 @@
   // its state and its heartbeat. Raise it in the same change that makes the page rely on something newer.
   const REQUIRED_RUNNER_API = 2;
   const UPDATE_HINT = "Update it: run `orchestrator update` on it.";
+  const APP_UPDATE_HINT = "Choose Update to update it.";
+  // What a Mac running the Orchestrator app reports about an update this page asked for.
+  const UPDATE_PROGRESS = {
+    requested: "Update requested. It starts within a minute.",
+    checking: "Looking for an update…",
+    waiting_for_work: "An update is ready. It installs when the current work finishes.",
+    updating: "Updating…",
+    current: "Up to date.",
+    failed: "The last update didn't finish. Try again, or open Diagnostics on it.",
+    unavailable: "This Mac can't update itself yet: its app has no update feed.",
+  };
+  const UPDATE_BUSY = ["requested", "checking", "waiting_for_work", "updating"];
 
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>'"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[c]);
@@ -67,7 +79,7 @@
   const outdated = (apiVersion) => (apiVersion || 0) < REQUIRED_RUNNER_API;
 
   function machineStatus(m, now) {
-    if (m.reachable && outdated(m.api_version)) return {tone: "warn", text: `Online, but running an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${UPDATE_HINT}`};
+    if (m.reachable && outdated(m.api_version)) return {tone: "warn", text: `Online, but running an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`};
     if (m.reachable) return {tone: "good", text: "Online"};
     if (m.online) return {tone: "warn", text: "Online, but not reachable from the web yet. Restart it with `orchestrator ui --tunnel`."};
     if (m.last_seen) return {tone: "muted", text: `Offline · last seen ${ago(m.last_seen, now)}. Start \`orchestrator ui --tunnel\` on it.`};
@@ -100,14 +112,18 @@
     const list = machines || [];
     const rows = list.map((m) => {
       const s = machineStatus(m, now);
+      const progress = UPDATE_PROGRESS[m.update_state] || "";
+      const canUpdate = m.updatable && m.online && !UPDATE_BUSY.includes(m.update_state);
       return `<div class="account-machine">
         <div class="account-machine-main">
           <strong>${escapeHtml(m.name)}</strong>
-          <span class="muted">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`].filter(Boolean).join(" · "))}</span>
+          <span class="muted">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</span>
           <span class="account-status ${s.tone}">${code(s.text)}</span>
+          ${progress && m.update_state !== "current" ? `<span class="muted account-update">${escapeHtml(progress)}</span>` : ""}
         </div>
         <div class="row gap-10">
           ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : ""}
+          ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update</button>` : ""}
           <button type="button" class="btn small ghost" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove</button>
         </div>
       </div>`;
@@ -148,7 +164,7 @@
   }
 
   root.Account = {
-    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, outdated,
+    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, outdated,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
     renderMachines, renderPair,
   };

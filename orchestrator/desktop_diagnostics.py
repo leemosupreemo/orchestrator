@@ -15,7 +15,7 @@ STATES = {
     "update": {"current", "installing"},
     "pairing": {"not_connected", "starting", "waiting", "connected", "expired", "cancelled", "failed"},
     "legacy": {"none", "foreign", "running", "stopped"},
-    "last_error": {"", "pairing_failed", "tunnel_failed", "heartbeat_failed"},
+    "last_error": {"", "pairing_failed", "tunnel_failed", "heartbeat_failed", "menu_start_failed"},
 }
 CHECK_NAMES = {"git", "gh", "xcodebuild", "cloudflared", "claude", "codex", "opencode"}
 CHECK_STATES = {"found", "missing"}

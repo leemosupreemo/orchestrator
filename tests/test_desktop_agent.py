@@ -23,6 +23,15 @@ class DesktopAgentTests(unittest.TestCase):
         self.beats = []
         self.legacy = {"state": "none", "manual_server": False}
         self.migrations = []
+        self.reply = {"ok": True}
+        self.reported = []
+        self.opened = []
+
+        def beat(machine, endpoint, running=0, update_state=None):
+            self.beats.append(endpoint)
+            self.reported.append(update_state)
+            reply, self.reply = self.reply, {"ok": True}
+            return reply
 
         def start(port):
             self.gate.wait(3)
@@ -30,7 +39,7 @@ class DesktopAgentTests(unittest.TestCase):
 
         self.dependencies = AgentDependencies(
             pair_start=lambda name=None: {"name": name or "Mac", "code": "12345678", "poll_secret": "private-poll", "expires_in": 600},
-            pair_poll=lambda pairing: {"status": "pending"}, heartbeat=lambda machine, endpoint, running=0: self.beats.append(endpoint),
+            pair_poll=lambda pairing: {"status": "pending"}, heartbeat=beat, open_app=lambda: self.opened.append(True),
             tunnel_start=start, tunnel_stop=lambda proc: None, legacy_inspect=lambda state_dir: dict(self.legacy),
             legacy_migrate=lambda state_dir, consent: self.migrations.append(consent) or {"migrated": consent, "state": "none"})
         self.agent = DesktopAgent(self.base / "state", self.base / "ctl", {}, self.dependencies)
@@ -130,6 +139,27 @@ class DesktopAgentTests(unittest.TestCase):
         self.legacy = {"state": "none", "manual_server": False}
         self.assertEqual(self.request("legacy_status")["result"]["state"], "none")
         self.wait(lambda: self.beats)
+
+    def test_hosted_update_request_reaches_status_and_progress_goes_back(self):
+        self.project()
+        self.reply = {"ok": True, "update_requested": True}
+        self.start()
+        self.wait(lambda: self.request("status")["result"]["update_request"])
+        self.assertEqual(self.request("update_progress", {"state": "<b>"})["ok"], False)
+        self.assertTrue(self.request("update_progress", {"state": "waiting_for_work"})["result"]["accepted"])
+        self.assertFalse(self.request("status")["result"]["update_request"])
+        self.wait(lambda: "waiting_for_work" in self.reported)
+        self.assertEqual(self.opened, [])  # the menu app has been asking for status
+
+    def test_update_request_starts_a_quit_menu_app_once(self):
+        self.project()
+        self.reply = {"ok": True, "update_requested": True}
+        self.start()
+        self.wait(lambda: self.agent._update_request)
+        self.agent._status_at = time.monotonic() - 120  # no menu app has checked in for two minutes
+        self.wait(lambda: self.opened)
+        time.sleep(.3)
+        self.assertEqual(self.opened, [True])
 
     def test_legacy_migration_needs_explicit_consent(self):
         self.start()

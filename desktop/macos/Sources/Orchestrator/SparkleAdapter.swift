@@ -61,6 +61,8 @@ extension GatedUserDriver: @unchecked Sendable {}
     private var driver: GatedUserDriver?
     private(set) var installationPending = false
     var displayError: (String) -> Void = { _ in }
+    /// How an update the hosted app asked for ended without installing: "current" (nothing newer) or "failed".
+    var requestFinished: (String) -> Void = { _ in }
     init(coordinator: UpdateCoordinator, scheduler: UpdateScheduler) { self.coordinator = coordinator; self.scheduler = scheduler; super.init() }
     private var configured: Bool {
         guard let feed = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String, let url = URL(string: feed), url.scheme == "https", url.host != nil,
@@ -95,6 +97,7 @@ extension GatedUserDriver: @unchecked Sendable {}
     func requestUpdate() -> Bool {
         guard start(), let updater else { return false }
         scheduler.request()
+        updater.automaticallyDownloadsUpdates = true  // never a dialog on a Mac nobody is watching; reset when the check ends
         if !updater.sessionInProgress { updater.checkForUpdatesInBackground() }
         return true
     }
@@ -124,7 +127,11 @@ extension GatedUserDriver: @unchecked Sendable {}
         Task { await coordinator.cancelInstallation(); displayError("Update did not finish. The previous background mode has been restored.") }
     }
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
-        guard error != nil else { return }
+        applyAutomatic()
+        guard let error else { return }
+        if scheduler.requested && !scheduler.waiting {
+            requestFinished((error as NSError).code == 1001 ? "current" : "failed")  // 1001: SUNoUpdateError
+        }
         if !scheduler.waiting { installationPending = false; scheduler.cancel() }
         Task { await coordinator.cancelInstallation() }
     }

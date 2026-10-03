@@ -73,13 +73,15 @@ public struct UpdateJournal: Codable {
         do { try await adapter.restore(journal.startAtLogin); try adapter.save(nil); state = .current }
         catch { state = .failed }
     }
-    public func recoverAfterRelaunch() async throws {
-        guard let journal = adapter.load() else { return }
+    /// True when this launch finished an update (the previous app recorded one before being replaced).
+    @discardableResult public func recoverAfterRelaunch() async throws -> Bool {
+        guard let journal = adapter.load() else { return false }
         guard journal.schema == 1, journal.phase == "installing", journal.identity.count <= 64 else {
             throw AgentError(code: "invalid_journal", message: "Update recovery data is invalid. Open Diagnostics.")
         }
         try await adapter.restore(journal.startAtLogin)
         try adapter.save(nil)
         state = .current
+        return true
     }
 }

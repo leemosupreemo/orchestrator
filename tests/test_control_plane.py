@@ -256,6 +256,38 @@ class EnrollmentTests(PlaneCase):
         self.assertFalse(names["Desk Mac"])
 
 
+class RemoteUpdateTests(PlaneCase):
+    def test_owner_requests_an_update_and_the_next_heartbeat_carries_it_once(self):
+        machine_id, secret = self.pair()
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "https://a.example.com", "packaged": True},
+                  machine_auth=f"Machine {machine_id}:{secret}")
+        self.assertEqual(self.call("POST", "/cp/machines/update", {"machine_id": machine_id}, user="bob-token")[0], 404)
+        self.assertEqual(self.call("POST", "/cp/machines/update", {"machine_id": machine_id})[0], 401)
+        status, _ = self.call("POST", "/cp/machines/update", {"machine_id": machine_id}, user="alice-token")
+        self.assertEqual(status, 200)
+        view = self.call("GET", "/cp/machines", user="alice-token")[1]["machines"][0]
+        self.assertEqual(view["update_state"], "requested")
+        _, first = self.beat(machine_id, secret)
+        self.assertTrue(first["update_requested"])
+        _, second = self.beat(machine_id, secret)
+        self.assertFalse(second["update_requested"])
+
+    def test_only_app_installs_can_be_asked_to_update(self):
+        machine_id, secret = self.pair()
+        self.beat(machine_id, secret)
+        view = self.call("GET", "/cp/machines", user="alice-token")[1]["machines"][0]
+        self.assertFalse(view["updatable"])
+        self.assertEqual(self.call("POST", "/cp/machines/update", {"machine_id": machine_id}, user="alice-token")[0], 409)
+
+    def test_reported_update_progress_is_kept_to_known_states(self):
+        machine_id, secret = self.pair()
+        auth = f"Machine {machine_id}:{secret}"
+        for state, shown in (("waiting_for_work", "waiting_for_work"), ("<script>", ""), ("current", "current")):
+            self.call("POST", "/cp/machine/heartbeat", {"endpoint": "", "packaged": True, "update_state": state}, machine_auth=auth)
+            view = self.call("GET", "/cp/machines", user="alice-token")[1]["machines"][0]
+            self.assertEqual(view["update_state"], shown)
+
+
 class FakePusher:
     def __init__(self):
         self.sent: list[tuple[list[str], dict]] = []

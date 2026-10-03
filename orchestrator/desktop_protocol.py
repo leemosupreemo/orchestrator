@@ -13,7 +13,9 @@ COMMAND_PARAMS = {
     "status": (), "pair_start": ("name",), "pair_cancel": (), "browser_grant": ("route",),
     "remote_access": ("enabled",), "diagnostics": (), "stop_if_idle": (),
     "prepare_update": (), "cancel_update": (), "legacy_status": (), "legacy_migrate": ("consent",),
+    "update_progress": ("state",),
 }
+UPDATE_PROGRESS = {"checking", "waiting_for_work", "updating", "current", "failed", "unavailable"}
 
 
 class ProtocolError(ValueError):
@@ -54,6 +56,8 @@ def validate_request(raw: bytes) -> dict:
         raise ProtocolError("Unknown command parameter.")
     if command == "remote_access" and type(params.get("enabled")) is not bool:
         raise ProtocolError("Remote access needs a boolean preference.")
+    if command == "update_progress" and params.get("state") not in UPDATE_PROGRESS:
+        raise ProtocolError("Unknown update progress.")
     if command == "legacy_migrate" and type(params.get("consent")) is not bool:
         raise ProtocolError("Moving an older service needs an explicit yes or no.")
     if "name" in params and (not isinstance(params["name"], str) or len(params["name"]) > 100):

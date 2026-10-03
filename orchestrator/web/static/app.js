@@ -1025,6 +1025,13 @@ function showAccountScreen(machines, message = "") {
         toast(`Removed ${button.dataset.name}`);
         openAccount({ list: true });
       } catch (err) { toast(err.message, true); button.disabled = false; }
+    } else if (action === "update") {
+      button.disabled = true;
+      try {
+        await cpApi("machines/update", { method: "POST", body: { machine_id: button.dataset.id } });
+        toast(`${button.dataset.name} will update once no work is running on it.`);
+        openAccount({ list: true });
+      } catch (err) { toast(err.message, true); button.disabled = false; }
     } else if (action === "refresh") {
       openAccount({ list: true });
     } else if (action === "sign-out") {

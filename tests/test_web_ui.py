@@ -707,6 +707,29 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("older Orchestrator", result["current"])
         self.assertFalse(result["newer"])
 
+    def test_app_installs_offer_update_and_show_its_progress(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const mk = (extra) => ({id: "m1", name: "Closet mini", version: "0.2.0", api_version: A.REQUIRED_RUNNER_API, reachable: true,
+                        online: true, last_seen: 100, ...extra});
+process.stdout.write(JSON.stringify({
+  app: A.renderMachines([mk({updatable: true})], {email: "a@x.com", now: 160}),
+  pipx: A.renderMachines([mk({updatable: false})], {email: "a@x.com", now: 160}),
+  waiting: A.renderMachines([mk({updatable: true, update_state: "waiting_for_work"})], {email: "a@x.com", now: 160}),
+  offline: A.renderMachines([mk({updatable: true, online: false, reachable: false})], {email: "a@x.com", now: 1000}),
+  oldApp: A.renderMachines([mk({updatable: true, api_version: 1})], {email: "a@x.com", now: 160}),
+  hostile: A.renderMachines([mk({updatable: true, update_state: "<img src=x>"})], {email: "a@x.com", now: 160}),
+  added: A.renderMachines([mk({added_with_command: true})], {email: "a@x.com", now: 160}),
+}));""")
+        self.assertIn('data-account-action="update"', result["app"])
+        self.assertNotIn('data-account-action="update"', result["pipx"])
+        self.assertNotIn('data-account-action="update"', result["waiting"])
+        self.assertIn("installs when the current work finishes", result["waiting"])
+        self.assertNotIn('data-account-action="update"', result["offline"])
+        self.assertIn("Choose Update", result["oldApp"])
+        self.assertNotIn("<img", result["hostile"])
+        self.assertIn("Added with a command", result["added"])
+
     def test_the_pages_required_version_is_what_this_runner_provides(self):
         # Bump both together: the page asks for exactly what the runner in this repo reports.
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "account.js").read_text()

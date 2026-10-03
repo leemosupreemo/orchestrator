@@ -9,6 +9,7 @@ import signal
 import socket
 import socketserver
 import stat
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -37,6 +38,13 @@ def _stop_tunnel(proc):
             proc.wait(timeout=3)
 
 
+def _open_app():
+    """Starts the menu app hidden, so it can install an update the hosted app asked for."""
+    bundle = os.environ.get("ORCHESTRATOR_PACKAGED_APP")
+    if bundle:
+        subprocess.run(["/usr/bin/open", "-g", "-j", "-a", bundle], capture_output=True, timeout=30)
+
+
 @dataclass
 class AgentDependencies:
     pair_start: Callable = account.start_pairing
@@ -46,6 +54,7 @@ class AgentDependencies:
     tunnel_stop: Callable = _stop_tunnel
     legacy_inspect: Callable = inspect_legacy
     legacy_migrate: Callable = migrate_legacy
+    open_app: Callable = _open_app
 
 
 def control_socket_path(control_dir: Path) -> Path:
@@ -108,6 +117,10 @@ class DesktopAgent:
         self._update = "current"
         self._legacy = {"state": "none", "manual_server": False}
         self._legacy_at = 0.0
+        self._update_request = False   # the hosted app asked this Mac to update; the menu app carries it out
+        self._update_state = ""         # what the menu app last reported, sent with the heartbeat
+        self._status_at = 0.0           # when a client (normally the menu app) last asked for status
+        self._open_app_at = 0.0
         try:
             preferences = json.loads((state_dir / "desktop.json").read_text())
             self.remote_enabled = preferences.get("remote_enabled") is not False
@@ -205,12 +218,20 @@ class DesktopAgent:
                     "remote_enabled": self.remote_enabled, "legacy": self._legacy["state"], "manual_server": self._legacy["manual_server"],
                     "activity": {"runs": runs, "tasks": max(0, active - runs)},
                     "project": {"name": root.name, "root": str(root)} if root else None, "pairing": pairing,
-                    "runner": {"version": account.package_version(), "api_version": account.API_VERSION}, "update": self._update}
+                    "runner": {"version": account.package_version(), "api_version": account.API_VERSION}, "update": self._update,
+                    "update_request": self._update_request}
 
     def handle(self, command: str, params: dict) -> dict:
         validate_request(json.dumps({"version": 1, "request_id": "internal", "command": command, "params": params}).encode())
         if command == "status":
+            self._status_at = time.monotonic()
             return self.status()
+        if command == "update_progress":
+            with self._lock:
+                self._update_state = params["state"]
+                self._update_request = False
+                self._beat_at = 0  # tell the hosted app soon
+            return {"accepted": True}
         if command == "diagnostics":
             path = os.environ.get("PATH", "")
             checks = [{"name": name, "state": "found" if shutil.which(name, path=path) else "missing"} for name in sorted(CHECK_NAMES)]
@@ -376,14 +397,29 @@ class DesktopAgent:
                 self._beat_at = time.monotonic() + account.HEARTBEAT_SECONDS
                 endpoint = self._endpoint if self.remote_enabled else ""
                 runs = sum(bool(run["running"]) for run in self.local.sessions.list())
-                self._beat_thread = threading.Thread(target=self._heartbeat, args=(machine, endpoint, runs), daemon=True)
+                self._beat_thread = threading.Thread(target=self._heartbeat, args=(machine, endpoint, runs, self._update_state), daemon=True)
                 self._beat_thread.start()
+            # An update was asked for but no menu app has checked in for a minute (someone quit it): start it hidden.
+            now = time.monotonic()
+            if self._update_request and now - self._status_at > 60 and now >= self._open_app_at:
+                self._open_app_at = now + 300
+                threading.Thread(target=self._start_menu, daemon=True).start()
 
-    def _heartbeat(self, machine, endpoint, runs):
+    def _heartbeat(self, machine, endpoint, runs, update_state):
         try:
-            self.dependencies.heartbeat(machine, endpoint, running=runs)
+            reply = self.dependencies.heartbeat(machine, endpoint, running=runs, update_state=update_state or None)
         except Exception:
             self._last_error = "heartbeat_failed"
+            return
+        if isinstance(reply, dict) and reply.get("update_requested") is True:
+            with self._lock:
+                self._update_request = True
+
+    def _start_menu(self):
+        try:
+            self.dependencies.open_app()
+        except Exception:
+            self._last_error = "menu_start_failed"
 
 
 def main(argv=None):

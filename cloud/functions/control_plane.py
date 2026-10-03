@@ -18,6 +18,7 @@ Firebase Auth. Routes (all JSON, under /cp on the hosted app):
   POST /cp/push/unregister signed-in user {token}                    -> {ok}
   POST /cp/push/test       signed-in user                            -> {sent}
   POST /cp/enroll/create   signed-in user                            -> {token, expires_in}
+  POST /cp/machines/update signed-in user {machine_id}               -> {ok}   (the next heartbeat reply asks it to update)
   POST /cp/enroll/redeem   computer       {token, name, os, version} -> {machine_id, machine_secret, owner_email}
 
 Enrollment is pairing for a computer nobody is sitting at: the owner makes a one-time token in the hosted app and runs
@@ -45,6 +46,7 @@ from typing import Any, Callable, Protocol
 PAIRING_TTL = 600         # seconds a pairing code stays valid
 ENROLLMENT_TTL = 900      # seconds an enrollment token stays valid
 ADDED_MARK_SECONDS = 86400  # how long a computer added with a token is marked so in the list
+UPDATE_STATES = {"requested", "checking", "waiting_for_work", "updating", "current", "failed", "unavailable"}
 TICKET_TTL = 120          # seconds a sign-in ticket stays valid
 ONLINE_WINDOW = 180       # a computer is online if it reported within this many seconds
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
@@ -257,12 +259,25 @@ class ControlPlane:
             api_version = 0
         fields: dict[str, Any] = {"last_seen": self.now(), "endpoint": _endpoint(body.get("endpoint")),
                                   "running": running, "busy": running > 0, "offline_notified": False,
-                                  "api_version": api_version}
+                                  "api_version": api_version, "updatable": body.get("packaged") is True}
         for key, limit in (("version", 40), ("name", 80), ("os", 40)):
             if body.get(key):
                 fields[key] = _clean(body[key], limit)
+        update_requested = bool(machine.get("update_requested"))
+        if update_requested:
+            fields["update_requested"] = False  # delivered with this reply; the Mac reports progress from now on
+        elif "update_state" in body:
+            reported = body["update_state"]
+            fields["update_state"] = reported if reported in UPDATE_STATES - {"requested"} else ""
         self.store.update("machines", machine_id, fields)
-        return {"ok": True, "owner_email": machine["owner_email"]}
+        return {"ok": True, "owner_email": machine["owner_email"], "update_requested": update_requested}
+
+    def request_update(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        if not machine.get("updatable"):
+            raise ControlError(f"{machine['name']} wasn't set up with the Orchestrator app; update it there with `orchestrator update`.", 409)
+        self.store.update("machines", machine_id, {"update_requested": True, "update_state": "requested"})
+        return {"ok": True}
 
     def leave(self, auth_header: str) -> dict[str, Any]:
         machine_id, _ = self._machine_from_header(auth_header)
@@ -277,7 +292,8 @@ class ControlPlane:
                 "api_version": machine.get("api_version", 0),
                 "endpoint": machine.get("endpoint", ""), "last_seen": machine.get("last_seen") or 0, "online": online,
                 "reachable": online and bool(machine.get("endpoint")),
-                "added_with_command": self.now() - (machine.get("enrolled") or -ADDED_MARK_SECONDS) < ADDED_MARK_SECONDS}
+                "added_with_command": self.now() - (machine.get("enrolled") or -ADDED_MARK_SECONDS) < ADDED_MARK_SECONDS,
+                "updatable": bool(machine.get("updatable")), "update_state": machine.get("update_state", "")}
 
     def _owned(self, user: dict[str, Any], machine_id: Any) -> tuple[str, dict[str, Any]]:
         machine_id = str(machine_id or "")
@@ -411,6 +427,7 @@ class ControlPlane:
                 ("POST", "/push/unregister"): self.unregister_device,
                 ("POST", "/push/test"): self.test_push,
                 ("POST", "/enroll/create"): self.create_enrollment,
+                ("POST", "/machines/update"): self.request_update,
             }.get((method, route))
             if person is None:
                 raise ControlError("Not found", 404)
