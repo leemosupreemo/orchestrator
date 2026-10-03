@@ -11,8 +11,12 @@ import Darwin
         try self.launchAgent()
     }))
     lazy var updateCoordinator = UpdateCoordinator(adapter: .live(client: client, services: services))
+    lazy var scheduler = UpdateScheduler(
+        enabled: UserDefaults.standard.object(forKey: "Orchestrator.desktop.autoUpdate") as? Bool ?? true,
+        save: { UserDefaults.standard.set($0, forKey: "Orchestrator.desktop.autoUpdate") },
+        prepare: { [weak self] in try await self?.updateCoordinator.prepareInstallation() })
     lazy var updater: SparkleAdapter = {
-        let value = SparkleAdapter(coordinator: updateCoordinator)
+        let value = SparkleAdapter(coordinator: updateCoordinator, scheduler: scheduler)
         value.displayError = { [weak self] message in self?.state.operation = message; self?.showSettings() }
         return value
     }()
@@ -68,6 +72,7 @@ import Darwin
         Task {
             do {
                 try await updateCoordinator.recoverAfterRelaunch()
+                updater.start()
                 if registerBackground { await registerInBackground() }
                 else { try await lifecycle.ensureRunning() }
             } catch { state.error = error.localizedDescription }
@@ -113,6 +118,7 @@ import Darwin
         defer { refreshPending = false }
         await state.refresh()
         recordRegistration()
+        await scheduler.observe(state.activity)
         if services.pending, state.canStop {
             do { try await services.reconcile() }
             catch { state.error = error.localizedDescription }
@@ -229,6 +235,7 @@ import Darwin
     @objc func showSettings() { window("settings", title: "Orchestrator Settings", view: SettingsView(controller: self, state: state, services: services)) }
     @objc func showDiagnostics() { window("diagnostics", title: "Orchestrator Diagnostics", view: DiagnosticsView(state: state)) }
     @objc func checkUpdates() { updater.check() }
+    func setAutomaticUpdates(_ enabled: Bool) { scheduler.setEnabled(enabled); updater.applyAutomatic() }
     @objc func openWorkspace() { openBrowser("#/") }
     @objc func openProjects() { openBrowser("#/projects") }
     @objc func toggleRemote() { state.perform("remote_access", params: ["enabled": .bool(!(state.status?["remote_enabled"]?.bool ?? false))]) }

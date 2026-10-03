@@ -12,6 +12,12 @@ import Combine
     public var canStop: Bool {
         status?["agent"]?.string == "running" && status?["activity"]?["runs"]?.int == 0 && status?["activity"]?["tasks"]?.int == 0
     }
+    /// For the update scheduler: unknown whenever the agent can't be asked, so an update never treats it as idle.
+    public var activity: UpdateScheduler.Activity {
+        guard status?["agent"]?.string == "running", let runs = status?["activity"]?["runs"]?.int,
+              let tasks = status?["activity"]?["tasks"]?.int else { return .unknown }
+        return runs + tasks == 0 ? .idle : .busy
+    }
     public var statusText: String {
         guard let status else { return "Agent unavailable" }
         let local = status["local_interface"]?.string == "ready" ? "Available locally" : "Local interface starting"

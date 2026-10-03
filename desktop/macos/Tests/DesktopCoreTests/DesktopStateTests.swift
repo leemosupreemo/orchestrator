@@ -28,6 +28,19 @@ import XCTest
         XCTAssertNil(state.legacyText)
         XCTAssertFalse(state.canMigrateLegacy)
     }
+    func testActivityForUpdatesIsUnknownUnlessTheAgentAnswers() async {
+        var reply: JSONValue = .object(["agent": .string("running"), "activity": .object(["runs": .number(0), "tasks": .number(0)])])
+        let state = DesktopState(request: { _, _ in AgentReply(result: reply) })
+        XCTAssertEqual(state.activity, .unknown)
+        await state.refresh()
+        XCTAssertEqual(state.activity, .idle)
+        reply = .object(["agent": .string("running"), "activity": .object(["runs": .number(1), "tasks": .number(0)])])
+        await state.refresh()
+        XCTAssertEqual(state.activity, .busy)
+        reply = .object(["agent": .string("running")])
+        await state.refresh()
+        XCTAssertEqual(state.activity, .unknown)
+    }
     func testUnknownActivityDisablesStop() async {
         let state = DesktopState(request: { _, _ in AgentReply(result: .object(["agent": .string("running")])) })
         await state.refresh()

@@ -7,6 +7,9 @@ public enum RegistrationState: String { case enabled, requiresApproval, notRegis
 @MainActor public struct ServiceAdapter {
     public let state: () -> RegistrationState
     public let register, unregister: () async throws -> Void
+    /// Only the agent's login item. An update keeps the menu's, so the replaced app comes back at login even when
+    /// Sparkle installs on quit without relaunching it.
+    public let unregisterAgent: () async throws -> Void
     public let prepare: () async throws -> Bool
     public let cancel: () async -> Void
     public let stop, waitStopped, start: () async throws -> Void
@@ -15,8 +18,10 @@ public enum RegistrationState: String { case enabled, requiresApproval, notRegis
     public init(state: @escaping () -> RegistrationState, register: @escaping () async throws -> Void, unregister: @escaping () async throws -> Void,
                 prepare: @escaping () async throws -> Bool, cancel: @escaping () async -> Void, stop: @escaping () async throws -> Void,
                 waitStopped: @escaping () async throws -> Void, start: @escaping () async throws -> Void,
-                load: @escaping (String) -> Bool, save: @escaping (String, Bool) -> Void) {
+                load: @escaping (String) -> Bool, save: @escaping (String, Bool) -> Void,
+                unregisterAgent: (() async throws -> Void)? = nil) {
         self.state = state; self.register = register; self.unregister = unregister; self.prepare = prepare; self.cancel = cancel
+        self.unregisterAgent = unregisterAgent ?? unregister
         self.stop = stop; self.waitStopped = waitStopped; self.start = start; self.load = load; self.save = save
     }
     public static func live(client: AgentClient, start: @escaping () async throws -> Void) -> ServiceAdapter {
@@ -58,7 +63,8 @@ public enum RegistrationState: String { case enabled, requiresApproval, notRegis
             throw AgentError(code: "stop_timeout", message: "The old agent is still running. No replacement was started.")
         }, start: start,
         load: { UserDefaults.standard.bool(forKey: "Orchestrator.desktop." + $0) },
-        save: { UserDefaults.standard.set($1, forKey: "Orchestrator.desktop." + $0) })
+        save: { UserDefaults.standard.set($1, forKey: "Orchestrator.desktop." + $0) },
+        unregisterAgent: { if agent.status == .enabled || agent.status == .requiresApproval { try await agent.unregister() } })
     }
 }
 
@@ -138,7 +144,7 @@ public enum RegistrationState: String { case enabled, requiresApproval, notRegis
         guard !changing else { throw AgentError(code: "busy", message: "A background mode change is in progress.") }
         changing = true
         defer { changing = false; registration = adapter.state() }
-        try await adapter.unregister(); try await adapter.stop(); try await adapter.waitStopped()
+        try await adapter.unregisterAgent(); try await adapter.stop(); try await adapter.waitStopped()
         suspended = true; pending = false; adapter.save("suspended", true)
     }
     public func restoreAfterUpdate(startAtLogin: Bool) async throws {

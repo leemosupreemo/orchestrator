@@ -16,7 +16,8 @@ import XCTest
                 stop: { self.events.append("stop") },
                 waitStopped: { self.events.append("wait") },
                 start: { self.events.append("start") },
-                load: { self.store[$0] ?? false }, save: { self.store[$0] = $1 })
+                load: { self.store[$0] ?? false }, save: { self.store[$0] = $1 },
+                unregisterAgent: { self.events.append("unregister-agent") })
             return ServiceController(bundle: bundle, adapter: adapter)
         }
     }
@@ -49,6 +50,13 @@ import XCTest
         do { _ = try await controller.registerInBackground(ensureRunning: {}); XCTFail("registered from a disk image") }
         catch let error as AgentError { XCTAssertEqual(error.code, "install_required") }
         catch { XCTFail("\(error)") }
+    }
+    func testUpdateStopKeepsTheMenuLoginItemSoTheAppReturnsAtLogin() async throws {
+        let fixture = Fixture(); fixture.registration = .enabled
+        let controller = fixture.controller()
+        try await controller.stopPreparedForUpdate()
+        XCTAssertEqual(fixture.events, ["unregister-agent", "stop", "wait"])
+        XCTAssertTrue(controller.suspended)
     }
     func testRegistrationRecordIsPrivateAndTyped() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("orch-reg-" + UUID().uuidString)

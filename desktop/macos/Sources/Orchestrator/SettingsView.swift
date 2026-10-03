@@ -14,6 +14,8 @@ struct SettingsView: View {
             Button("Connect this Mac…") { controller.pair(); controller.showWelcome() }
             Toggle("Remote access", isOn: Binding(get: { state.status?["remote_enabled"]?.bool ?? false }, set: { state.perform("remote_access", params: ["enabled": .bool($0)]) })).disabled(state.status == nil)
             Toggle("Start at login", isOn: Binding(get: { services.desired }, set: { controller.setStartAtLogin($0) }))
+            Toggle("Install updates automatically", isOn: Binding(get: { controller.scheduler.enabled }, set: { controller.setAutomaticUpdates($0) }))
+            Text(controller.scheduler.waiting ? "An update is ready. It installs after 10 minutes with no work running." : "Updates install only when no work is running.").font(.caption).foregroundStyle(.secondary)
             Text("Background permission: \(services.registration.rawValue)").font(.caption)
             if services.pending { Text("Waiting for current work to finish before changing background mode.").font(.caption) }
             if services.registration == .requiresApproval { Button("Open Login Items Settings…") { services.openApprovalSettings() } }
