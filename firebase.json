@@ -1,0 +1,45 @@
+{
+  "hosting": {
+    "public": "orchestrator/web/static",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/cp/**",
+        "function": {
+          "functionId": "cp",
+          "region": "us-central1"
+        }
+      }
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      }
+    ]
+  },
+  "functions": [
+    {
+      "source": "cloud/functions",
+      "codebase": "control-plane",
+      "runtime": "python312",
+      "ignore": [
+        "venv",
+        "__pycache__",
+        ".pytest_cache"
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.rules"
+  }
+}

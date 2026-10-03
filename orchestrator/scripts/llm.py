@@ -96,6 +96,13 @@ def is_quota_error(error_msg: str) -> bool:
     return any(x in error_msg.lower() for x in keywords)
 
 
+JSON_REMINDER = (
+    "\n\n### FORMAT CORRECTION ###\n"
+    "Your previous reply was not a single JSON object. Reply again with ONLY the JSON object, as plain text in your message. "
+    "Do not write it to a file, do not use tools, and do not add commentary before or after it."
+)
+
+
 def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False) -> tuple[str, str, str]:
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
@@ -129,13 +136,20 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
-                json_part = extract_json_block(raw_output)
                 try:
-                    json.loads(json_part)
+                    json.loads(extract_json_block(raw_output))
                 except json.JSONDecodeError as exc:
-                    print(f"⚠️  {current_model} produced invalid JSON. Attempting fallback...")
-                    last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc}")
-                    continue
+                    # Agentic models often do the work, then write the answer to a file or describe it in prose.
+                    # Ask the SAME model once to restate it as plain JSON before moving on to another model;
+                    # with only one model allowed (a free-only setup) there is no other to move on to.
+                    print(f"⚠️  {current_model} produced invalid JSON. Asking it to restate the answer as plain JSON...")
+                    try:
+                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id)
+                        json.loads(extract_json_block(raw_output))
+                    except json.JSONDecodeError as exc2:
+                        print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
+                        last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc2}")
+                        continue
             
             # Return the full raw output so callers can see research/thoughts
             return raw_output, current_model, actual_session_id

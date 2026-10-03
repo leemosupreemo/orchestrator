@@ -48,6 +48,12 @@ class E2EWorkflowTests(unittest.TestCase):
         # Initialize orchestrator in this project
         from orchestrator import cli
         cli.main(["init", "--root", str(self.root), "--project-name", "TestProject", "--base-branch", "master"])
+        # These tests cover the GitHub flow (issues are mocked); this throwaway repo has no GitHub origin to detect.
+        config = self.root / ".orchestrator" / "project.json"
+        config.write_text(json.dumps({**json.loads(config.read_text()), "code_host": "github"}))
+        for mod_name in list(sys.modules.keys()):  # init loaded the config before that; read it again
+            if mod_name.startswith("orchestrator") or mod_name in ["common", "new_job", "probe_machine", "llm", "model_router", "model_registry"]:
+                del sys.modules[mod_name]
         
         # Mock some required files for new_job.py
         (self.root / "docs").mkdir(exist_ok=True)
@@ -110,6 +116,130 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIsNone(job_data["branch"])
         mock_create_issue.assert_called_once()
 
+    PLAN = json.dumps({
+        "title": "Context Test", "summary": "Summary", "assumptions": [], "constraints": [], "risks": [],
+        "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}],
+        "test_cases": [{"title": "AC holds", "type": "unit", "expected": "AC is satisfied", "covers": ["AC"], "tests": ["test_ac"]}]})
+
+    PRD_TEXT = None
+
+    def plan_with_docs(self, prd_text, kind="feature"):
+        from orchestrator import prd
+        if prd_text:
+            prd.Prd(self.root, self.root / ".orchestrator").write(prd_text, record=False)
+        prompts = []
+
+        def fake_llm(model, prompt, *a, **k):
+            prompts.append(prompt)
+            return (self.PLAN, "gemini-3.1-pro-preview", "sid")  # a real model id, so the verification step runs as it does for real jobs
+
+        from orchestrator.scripts import new_job
+        with patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), patch("orchestrator.scripts.new_job.create_issue", return_value=130):
+            with patch("orchestrator.scripts.new_job.ROOT", self.root), patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                with patch("sys.stdin", io.StringIO("Add rematch\n\n")):
+                    new_job.main([kind, "--branch-mode", "manual", "--no-dispatch", "--summary", "Add rematch", "--allowed-models", "gemini,codex", "--allowed-machines", "local"])
+        return prompts
+
+    @staticmethod
+    def prd_with_non_goals():
+        from orchestrator import prd
+        text = prd.replace_section(prd.template("Word Duel"), "pitch", "A word game for two friends.")
+        text = prd.replace_section(text, "features", "- As a player I can start a match\n- As a player I can take a turn")
+        return prd.replace_section(text, "not", "- No chat\n- No accounts")
+
+    def test_the_planner_reads_the_product_requirements_first(self):
+        prompts = self.plan_with_docs(self.prd_with_non_goals())
+        self.assertTrue(prompts)
+        self.assertIn("## Product context (source of truth", prompts[0])
+        self.assertIn("No chat", prompts[0])
+        self.assertLess(prompts[0].index("Product context"), prompts[0].index("Raw input:"))
+
+    def test_the_plan_verifier_checks_the_plan_against_the_requirements(self):
+        prompts = self.plan_with_docs(self.prd_with_non_goals())
+        verifier = [p for p in prompts if "### GENERATED PLAN ###" in p]
+        self.assertTrue(verifier, "the verifier did not run")
+        self.assertIn("Reject or flag a plan that builds something under", verifier[0])
+        self.assertIn("No chat", verifier[0])
+
+    def plan_json(self, tasks):
+        return json.dumps({"title": "Slice Test", "summary": "Summary", "assumptions": [], "constraints": [], "risks": [], "tasks": tasks,
+                           "test_cases": [{"title": "AC holds", "type": "unit", "expected": "AC is satisfied", "covers": ["AC"], "tests": ["test_ac"]}]})
+
+    LAYERED = [{"title": "Database schema for matches", "description": "Entities and migrations", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"},
+               {"title": "Matches API endpoint", "description": "", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"},
+               {"title": "Match screen UI", "description": "", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]
+    SLICED = [{"title": "Player can start a match from the home screen", "description": "Simplest version end to end", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"},
+              {"title": "Player can take a turn", "description": "", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]
+
+    def run_planner(self, replies, kind="feature"):
+        prompts, queue = [], list(replies)
+
+        def fake_llm(model, prompt, *a, **k):
+            prompts.append(prompt)
+            return (queue.pop(0) if len(queue) > 1 else queue[0], "mock-model", "sid")
+
+        from orchestrator.scripts import new_job
+        with patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), patch("orchestrator.scripts.new_job.create_issue", return_value=131):
+            with patch("orchestrator.scripts.new_job.ROOT", self.root), patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                with patch("sys.stdin", io.StringIO("Add rematch\n\n")):
+                    new_job.main([kind, "--branch-mode", "manual", "--no-dispatch", "--summary", "Add rematch", "--allowed-models", "gemini,codex", "--allowed-machines", "local"])
+        job_files = list((self.root / ".orchestrator" / "jobs").glob("*.json"))
+        return prompts, json.loads(job_files[0].read_text())
+
+    def test_a_layered_feature_plan_is_sent_back_once_and_the_fixed_plan_is_kept(self):
+        prompts, job = self.run_planner([self.plan_json(self.LAYERED), self.plan_json(self.SLICED)])
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("PLAN SHAPE (re-plan requested)", prompts[1])
+        self.assertEqual(job["plan"]["tasks"][0]["title"], "Player can start a match from the home screen")
+        self.assertNotIn("slice_warnings", job["plan"])
+
+    def test_a_plan_that_stays_layered_is_kept_with_the_warning_visible(self):
+        prompts, job = self.run_planner([self.plan_json(self.LAYERED)])
+        self.assertEqual(len(prompts), 2)  # one re-plan, no loop
+        self.assertTrue(job["plan"]["slice_warnings"])
+        self.assertEqual(job["status"], "planned")
+
+    def test_a_replan_keeps_the_jobs_own_models_and_machines(self):
+        # Answering a question or accepting the architect's suggestions re-plans with --update. It used to fall back to the
+        # paid defaults, so a free-only job quietly started calling paid models.
+        from orchestrator.scripts import new_job
+        free = "opencode/nemotron-3-ultra-free"
+        seen = []
+
+        def fake_llm(model, prompt, *a, **k):
+            seen.append((model, k.get("allowed_models")))
+            return (self.plan_json(self.SLICED), free, "sid")
+
+        jobs_dir = self.root / ".orchestrator" / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        path = jobs_dir / "20260101-000000-feature-9.json"
+        path.write_text(json.dumps({"job_id": "20260101-000000-feature-9", "type": "feature-plan", "issue_number": 9, "title": "Add rematch", "status": "human-needed",
+                                    "planner": free, "builder": free, "reviewer": free, "allowed_models": [free], "allowed_machines": ["local"], "branch_mode": "manual", "branch": "main"}))
+        with patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), patch("orchestrator.scripts.new_job.ROOT", self.root), \
+                patch("orchestrator.scripts.new_job.gh_text", return_value=""), patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+            with patch("sys.stdin", io.StringIO("")):
+                new_job.main(["feature", "--no-dispatch", "--update", str(path), "--feedback", "answer", "--skip-verify"])
+        job = json.loads(path.read_text())
+        self.assertEqual((job["planner"], job["builder"], job["reviewer"]), (free, free, free))
+        self.assertEqual(job["allowed_models"], [free])
+        self.assertEqual(job["allowed_machines"], ["local"])
+        self.assertEqual(seen, [(free, [free])])  # one call (verification skipped), and only the allowed model
+
+    def test_a_sliced_plan_costs_no_extra_model_call(self):
+        prompts, job = self.run_planner([self.plan_json(self.SLICED)])
+        self.assertEqual(len(prompts), 1)
+        self.assertNotIn("slice_warnings", job["plan"])
+
+    def test_without_a_written_prd_nothing_is_added(self):
+        prompts = self.plan_with_docs("")
+        self.assertNotIn("## Product context (source of truth", prompts[0])
+
+    def test_the_feature_planner_is_told_to_build_vertical_slices(self):
+        text = (Path(__file__).resolve().parents[1] / "orchestrator" / "prompts" / "planner_feature.md").read_text()
+        self.assertIn("Vertical slices, not layers", text)
+        self.assertIn("after the FIRST task something real runs end to end", text)
+        self.assertIn("Serve the product", text)
+
     @patch("orchestrator.scripts.new_job.flush_stdin")
     @patch("orchestrator.scripts.new_job.run_llm")
     @patch("orchestrator.scripts.new_job.create_issue")
@@ -151,7 +281,8 @@ class E2EWorkflowTests(unittest.TestCase):
                 "assumptions": [],
                 "constraints": [],
                 "risks": [],
-                "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]
+                "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}],
+                "test_cases": [{"title": "AC holds", "type": "unit", "expected": "AC is satisfied", "covers": ["AC"], "tests": ["test_ac"]}]
             }), "gemini-3.1-pro-preview", "sid-1"),
             (json.dumps({"comments": "Missing status"}), "gemini-3.1-pro-preview", "sid-2"),
         ]
@@ -255,6 +386,49 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertEqual(job_data["type"], "test-audit")
         mock_create_issue.assert_called_once()
 
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_new_job_records_its_feature_and_plan_run_as_it_is_created(self, mock_create_issue, mock_llm):
+        """Jobs created at the same time each know their feature: new_job writes it, nothing guesses afterwards."""
+        mock_create_issue.return_value = 132
+        mock_llm.side_effect = AssertionError("a quick job must not call the planner")
+        from orchestrator import features as feature_store
+        runtime = self.root / ".orchestrator"
+        feature_store.create(runtime, "Lobby")
+        from orchestrator.scripts import new_job
+        args = ["quick", "--summary", "Add a lobby timer", "--branch-mode", "manual", "--no-dispatch",
+                "--feature", "lobby", "--plan-run", "r1"]
+        with patch("orchestrator.scripts.new_job.ROOT", self.root):
+            with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                new_job.main(args)
+        job = json.loads(next((self.root / ".orchestrator" / "jobs").glob("*.json")).read_text())
+        self.assertEqual((job["feature"], job["plan_run"]), ("lobby", "r1"))
+        self.assertEqual(feature_store.load(runtime)[0]["status"], "in-progress")
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_quick_job_makes_one_issue_and_skips_ai_planning(self, mock_create_issue, mock_llm):
+        """A quick change is the instruction itself: one GitHub issue, no planner call, one job file named after it."""
+        mock_create_issue.return_value = 131
+        mock_llm.side_effect = AssertionError("a quick job must not call the planner")
+
+        from orchestrator.scripts import new_job
+        args = ["quick", "--summary", "Rename the Save button to Done", "--branch-mode", "manual", "--no-dispatch"]
+        with patch("orchestrator.scripts.new_job.ROOT", self.root):
+            with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                new_job.main(args)
+
+        mock_create_issue.assert_called_once()
+        job_files = list((self.root / ".orchestrator" / "jobs").glob("*.json"))
+        self.assertEqual([f.name for f in job_files], [f.name for f in job_files if "-quick-131" in f.name])
+        self.assertEqual(len(job_files), 1)
+        job_data = json.loads(job_files[0].read_text())
+        self.assertEqual(job_data["type"], "quick-fix")
+        self.assertEqual(job_data["issue_number"], 131)
+        self.assertEqual(job_data["actual_planner_used"], "user-prompt")
+        self.assertEqual(job_data["status"], "planned")
+        self.assertIn("Rename the Save button to Done", json.dumps(job_data["plan"]))
 
 if __name__ == "__main__":
     unittest.main()

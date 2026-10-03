@@ -821,18 +821,48 @@ def get_repo_state() -> dict[str, list[str]]:
         return {"modified": modified, "untracked": untracked}
     except: return {"modified": [], "untracked": []}
 
+# Branches Orchestrator creates for jobs: `ai/issue-<n>-…` with GitHub, `ai/job-<ref>-…` with plain git. Only these
+# are deleted when a job is merged or discarded; a branch you named yourself is kept.
+AI_BRANCH_PREFIXES = ("ai/issue-", "ai/job-")
+
+
+def is_ai_branch(branch: str | None) -> bool:
+    return bool(branch) and branch.startswith(AI_BRANCH_PREFIXES)
+
+
+def merge_branch_locally(branch: str, base: str, message: str) -> tuple[bool, str]:
+    """Merge `branch` into `base` in this repository (plain git's Merge & complete). Never pushes.
+    Refuses with uncommitted changes, and leaves the repository as it was when the merge conflicts."""
+    git = lambda *args: subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True, text=True)  # noqa: E731
+    if git("status", "--porcelain").stdout.strip():
+        return False, "There are uncommitted changes in the project. Commit or stash them, then merge again."
+    if git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode != 0:
+        return False, f"The branch {branch} isn't in this repository."
+    start = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    switched = git("checkout", base)
+    if switched.returncode != 0:
+        return False, f"Couldn't switch to {base}: {(switched.stderr or '').strip()}"
+    merged = git("merge", "--no-ff", "-m", message, branch)
+    if merged.returncode != 0:
+        git("merge", "--abort")
+        if start and start != base:
+            git("checkout", start)
+        return False, f"{branch} doesn't merge cleanly into {base} (conflicts). Nothing was changed; resolve it by hand or ask the job to rebase."
+    return True, f"Merged {branch} into {base} on this computer. Push {base} when you're ready: git push origin {base}"
+
+
 def gh_json(*args: str) -> Any:
     return json.loads(run(["gh", *args], cwd=ROOT).stdout)
 
 def gh_text(*args: str) -> str:
     return run(["gh", *args], cwd=ROOT).stdout.strip()
 
-def gh_comment(issue_number: int, body: str) -> None:
-    if not shutil.which("gh"): return
+def gh_comment(issue_number: int | None, body: str) -> None:
+    if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
     run(["gh", "issue", "comment", str(issue_number), "--body", body], cwd=ROOT, check=False)
 
-def update_issue_status(issue_number: int, labels_to_add: str | list[str], labels_to_remove: str | list[str] | None = None) -> None:
-    if not shutil.which("gh"): return
+def update_issue_status(issue_number: int | None, labels_to_add: str | list[str], labels_to_remove: str | list[str] | None = None) -> None:
+    if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
     
     cmd = ["gh", "issue", "edit", str(issue_number)]
     

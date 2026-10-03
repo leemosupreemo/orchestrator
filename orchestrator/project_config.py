@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -256,6 +256,20 @@ class ProjectConfig:
     signing_style: str | None = None
     firebase_testers: str | None = None
     firebase_groups: str | None = None
+    # Central runtime-log store the app ships to; see scripts/cloud_logs.py.
+    remote_logs: dict[str, Any] = field(default_factory=dict)
+    # "github", "git" or "auto" (the default: GitHub when origin is on github.com). See orchestrator/code_host.py.
+    code_host: str = "auto"
+
+    @property
+    def code_host_mode(self) -> str:
+        """"github" (issues and pull requests through gh) or "git" (plain git branches, any host or none)."""
+        from orchestrator.code_host import resolve_mode
+        return resolve_mode(self.code_host, self.git_remote or "")
+
+    @property
+    def uses_github(self) -> bool:
+        return self.code_host_mode == "github"
 
     @property
     def stack(self) -> Any:
@@ -362,16 +376,17 @@ class ProjectConfig:
         return project_prompts if project_prompts.exists() else self.package_prompts_dir
 
 
-def load_project_config() -> ProjectConfig:
-    root = find_project_root()
-    config_path = os.environ.get("ORCHESTRATOR_CONFIG")
+def load_project_config(root: Path | None = None) -> ProjectConfig:
+    explicit_root = root is not None
+    root = safe_resolve(root) if explicit_root else find_project_root()
+    config_path = None if explicit_root else os.environ.get("ORCHESTRATOR_CONFIG")
     if config_path:
         config_file = safe_resolve(Path(config_path).expanduser())
     else:
         config_file = root / DEFAULT_RUNTIME_DIRNAME / "project.json"
 
     data = _load_json(config_file)
-    runtime_dir = Path(
+    runtime_dir = root / DEFAULT_RUNTIME_DIRNAME if explicit_root else Path(
         os.environ.get(
             "ORCHESTRATOR_RUNTIME_DIR",
             os.environ.get("AI_RUNTIME_DIR", str(root / DEFAULT_RUNTIME_DIRNAME)),
@@ -382,8 +397,8 @@ def load_project_config() -> ProjectConfig:
     runtime_dir = safe_resolve(runtime_dir)
 
     project_name = data.get("project_name") or root.name
-    xcode_project = data.get("xcode_project") or _first_match(root, "*.xcodeproj")
-    xcode_workspace = data.get("xcode_workspace") or _first_match(root, "*.xcworkspace")
+    xcode_project = data.get("xcode_project") if "xcode_project" in data else _first_match(root, "*.xcodeproj")
+    xcode_workspace = data.get("xcode_workspace") if "xcode_workspace" in data else _first_match(root, "*.xcworkspace")
     build_cmd = data.get("build_command")
     test_cmd = data.get("test_command")
     if not (xcode_project or xcode_workspace) and (build_cmd or test_cmd):
@@ -428,6 +443,8 @@ def load_project_config() -> ProjectConfig:
         signing_style=data.get("signing_style", "automatic"),
         firebase_testers=data.get("firebase_testers"),
         firebase_groups=data.get("firebase_groups"),
+        remote_logs=data.get("remote_logs") or {},
+        code_host=str(data.get("code_host") or "auto"),
     )
 
 

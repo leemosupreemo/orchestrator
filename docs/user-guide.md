@@ -36,7 +36,7 @@ orchestrator --help
 The package has no Python runtime dependencies outside the standard library. Some workflows require external command-line tools:
 
 - Xcode project build/test: `xcodebuild`, `xcrun`
-- GitHub issue and pull request workflow: `gh`
+- GitHub issue and pull request workflow: `gh` (not needed for GitLab, Bitbucket or plain git; see [Code hosts](code-hosts.md))
 - Remote workers: `ssh`, `scp`, `rsync`
 - AI providers: at least one of `codex`, `antigravity`, `claude`, `opencode`, `ollama`, or matching API key configuration
 - Firebase delivery: `firebase` plus a project-local distribution script
@@ -414,15 +414,99 @@ Firebase delivery is opt-in:
   "delivery_provider": "firebase",
   "firebase_distribution": true,
   "distribution_script_path": "scripts/distribute_ios.sh",
-  "firebase_plist_path": "MyApp/GoogleService-Info.plist"
+  "firebase_plist_path": "MyApp/GoogleService-Info.plist",
+  "firebase_groups": "internal-testers"
 }
 ```
 
 `check-config` fails early if Firebase delivery is enabled but the distribution script or plist path is missing.
 
-The delivery workflow archives and signs the iOS app, uploads the IPA to Firebase App Distribution, and can release it to configured tester emails or groups. This lets multiple testers install the beta build on their devices.
+The delivery workflow archives and signs the iOS app, uploads the IPA to Firebase App Distribution, and releases it to configured tester emails or groups. If no recipients are configured, Orchestrator uses the `internal-testers` group. Each successful delivery writes a receipt under `.orchestrator/output/delivery/` with the app version, build number, IPA path, recipients, and SHA-256 checksum.
+
+In the console, use **Quick Build & Distribution** to deliver the current branch. The live delivery test under **Firebase App Distro** also publishes a real release; it is not a dry run. A delivery job targeting another branch stops and asks you to switch explicitly so local changes are never discarded.
 
 For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://secureshellfish.app/) to connect over SSH to the machine running Orchestrator. You can manage the coding workflow remotely, run builds and tests, and trigger Firebase delivery from the same terminal session.
+
+## Web UI
+
+> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have, or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. See [Product requirements](product-requirements.md).
+
+> **Docs.** The **Docs** page (under *Learn & improve*) is the project's documentation in one place: the product requirements, a page for every feature and every job (what it is, what was decided, what was built, how it was tested, what the review said), and the project's own `README`, `AGENTS.md` and `docs/` files. Job and feature pages are generated from the live project, so they can't go stale. Search them, and **Download everything** gives one markdown file. See [Product requirements](product-requirements.md) for the PRD.
+
+`orchestrator ui` starts a local web interface for the current project and opens it in your browser:
+
+```bash
+orchestrator ui                  # http://127.0.0.1:8765/?token=...
+orchestrator ui --project Thirteen --port 9000 --no-open
+```
+
+- **Home** shows what **needs you**: a question from the planner, a plan to approve, failing tests to fix, or a PR ready to merge. Each item has the one button that moves it forward. Below that are jobs in progress and recently finished ones. **New job** is always one tap away, and less frequent actions (pull device logs, build, test, distribute the current branch, setup check, full console) sit under **More**.
+- **Jobs** filters by Needs you / In progress / Done. A job page states what it's waiting on, shows one primary action for its status (Start, Run now, Answer, Run fix, Merge & complete), and puts everything else under More. **Deliver to testers** builds *that job's* branch. **Merge & complete** merges the PR, deletes the AI branch and archives the job, the same as in the console.
+- **Device logs** lists recent app launches from the log store, with Pull and Follow buttons (see [Device Logs](#device-logs)).
+- A job page also has the approvals the planning loop needs (**Approve plan**, **Approve design**, **Accept suggestions** from the architect review), **Revise plan** to re-plan with requested changes, the job's **Changes** (why, the files it touched, and a diffstat against the base branch), its **Brief** / builder summary / investigations, and links to its issue and PR on GitHub.
+- **Tests** (under Tools, or Home → More) lists test plans and suites with a Run button each, runs everything, and measures coverage. A coverage number is marked *Estimate* when measuring failed and the console fell back to an estimate from the test count.
+- **Git** shows the branch, what there is to push and pull, and uncommitted files, with Pull, Push (with confirmation), Switch branch and New branch. Home's branch name links here.
+- **Home → More** also has Setup check, Config check, Worker check and the Setup wizard.
+- **Activity** lists every command started from the UI. Runs started from a job are named after it and appear on that job's page. When a run finishes, it offers the next step, such as **Open job** after creating one.
+
+Pages refresh themselves every few seconds, but never while you're typing, have a menu open, or have a dialog up. Leaving a page closes any dialog that was open on it.
+
+Every action runs the same CLI command you would type, inside a real terminal that is shown in the page. Prompts that need you (y/n, menus, pasted logs, passwords) appear there, and you answer them by typing into the terminal. On a phone, use the key bar under it (Enter, Esc, arrows, y/n/q, Ctrl-C, Ctrl-D). **Open full console** runs the regular `orchestrator console` in the browser for what has no page of its own: Ask AI about changes, reset & rerun, discard & revert, export context, model and API-key settings, the machine fleet, email recipients, Xcode Cloud and archived jobs. Each run's output is also saved to `.orchestrator/logs/ui/`.
+
+Use it from anywhere:
+
+1. On the computer with your projects, run `orchestrator connect`. It shows a code and a link.
+2. Open the link (or go to https://swift-orch-web-20260923.web.app and enter the code), sign in with Google, and confirm. The computer is now on your account.
+3. Start `orchestrator ui --tunnel` on it. Signing in to the hosted app from any browser opens it; with more than one computer you choose which. **Configuration → Your computers** switches between them.
+
+`orchestrator connect --status` shows which account the computer is on, and `orchestrator disconnect` removes it. See [Control plane](control-plane.md) for how it works.
+
+Access and security:
+
+- The server listens on `127.0.0.1` only. The printed URL carries the access token, kept in `~/.orchestrator/ui_token` (delete the file and restart to change it). Opening the URL once stores the token in a cookie, and every API call needs it. The access token is the owner's key: anyone holding it can do everything, so don't share it.
+- Signing in with Google (or another provider) works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page where it can be ended, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
+- Browsers can call the server only from its own pages, pages on this computer, and the hosted app. Add other origins (a custom domain, say) with `ORCHESTRATOR_ALLOWED_ORIGINS`, comma-separated.
+- The browser can only start a fixed set of actions. It never sends a command line, and file reads are limited to `.orchestrator/`.
+- From a phone, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
+- Stopping the server (Ctrl-C) also stops the commands it started.
+
+## Device Logs
+
+Builds running on a phone (Firebase App Distribution, TestFlight) can't be read over a cable from an SSH session, so the app ships its logs to a central store and Orchestrator pulls them back. Sentry Logs is the supported store: the app sends each log entry with a per-launch `app_session` attribute, plus one `remote_log.session_start` entry per launch carrying its build channel, version and build.
+
+One-time setup, from the project root:
+
+```bash
+orchestrator logs setup
+```
+
+This finds the Sentry DSN in the repo, writes a `remote_logs` block to `.orchestrator/project.json`, asks for a read token and saves it to `.orchestrator/.env` (chmod 600), then makes a live query to confirm access. Create the token under Sentry **User Settings → Personal Tokens** with scopes `org:read`, `project:read` and `event:read`. It is stored as `SENTRY_LOGS_TOKEN` because `SENTRY_AUTH_TOKEN` is usually an upload-only token for dSYMs.
+
+```json
+{
+  "remote_logs": {
+    "provider": "sentry",
+    "api_base": "https://us.sentry.io",
+    "org": "4510342215434240",
+    "project": "4510342216941568",
+    "token_env": "SENTRY_LOGS_TOKEN",
+    "session_attribute": "app_session"
+  }
+}
+```
+
+Day to day:
+
+```bash
+orchestrator logs sessions                        # recent app launches: id, time, channel, version, device
+orchestrator logs pull --latest                   # newest launch -> .orchestrator/output/cloud_logs/<ts>-<session>/cloud.log
+orchestrator logs pull --session 1a2b3c4d --level warn --query 'category:LobbyViewModel'
+orchestrator logs tail                            # follow the newest launch live (polls every 5s)
+```
+
+In the console, **Link Logs → Pull Device Logs (cloud)...** lists recent launches and links the pulled logs to the job. Choosing **Always newest launch** links `cloud:latest` instead, which re-pulls the newest launch on every debug iteration — reproduce on the phone, then rerun the debug loop without relinking. `cloud:latest` and `cloud:<session>` also work anywhere `debug_job.py --logs` takes a path.
+
+Logs reach Sentry within about 5 seconds, and immediately when the app is backgrounded. Sentry keeps them for 30 days.
 
 ## Troubleshooting
 
@@ -442,7 +526,9 @@ Common issues:
 - `No AI providers found`: authenticate a provider CLI or export a supported API key.
 - SSH worker is `NOT READY`: run `orchestrator worker-install --machine NAME`, then rerun `worker-check`.
 - Remote worker imports fail after package changes: rerun `worker-install` to refresh the source copy.
-- GitHub actions fail: install `gh` and run `gh auth login`.
+- GitHub actions fail: install `gh` and run `gh auth login`, or set `"code_host": "git"` to work without GitHub ([Code hosts](code-hosts.md)).
+- `orchestrator logs` reports `Sentry refused the token (403)`: the token lacks `org:read`, `project:read` or `event:read`. Create a new one and rerun `orchestrator logs setup`.
+- `No app sessions found`: the build predates remote logging, the app was never opened, or it is an App Store build (errors only). Open the app, wait a few seconds, and retry.
 
 ## Generated Ignore Rules
 

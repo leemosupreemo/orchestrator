@@ -24,3 +24,7 @@ test_onboarding_proj/
 *.pcm
 exports/
 *.zip
+.firebase/
+
+# Cloud Functions virtualenv (rebuilt from cloud/functions/requirements.txt)
+cloud/functions/venv/

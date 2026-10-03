@@ -28,7 +28,7 @@ try:
 except:
     pass
 
-from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence
+from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence, is_ai_branch, merge_branch_locally
 from llm import SUPPORTED_MODELS, DEFAULT_FALLBACKS, run_llm, extract_json_block
 from model_router import ModelRole
 from model_registry import get_all_models, ModelTier
@@ -2685,6 +2685,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.reset_scroll_region()
 
     # Fallback simulation/estimation if xcresult couldn't be parsed or was empty (e.g. test environment)
+    estimated = overall_pct is None
     if overall_pct is None:
         if total_tests > 0:
             overall_pct = min(95.0, round(float(total_tests * 8.5), 1))
@@ -2699,7 +2700,9 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             "overall_coverage_pct": overall_pct,
             "targets": targets_cov,
             "total_tests": total_tests,
-            "total_suites": total_suites
+            "total_suites": total_suites,
+            # True when the number is a rough estimate from the test count, not measured.
+            "estimated": estimated,
         }
         save_coverage_data(cov_record)
 
@@ -3681,6 +3684,14 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
         for d in log_dirs:
             add_log_option(d)
 
+    # 2b. Recent device log pulls (orchestrator logs pull / Pull Device Logs)
+    cloud_base = OUTPUT_DIR / "cloud_logs"
+    if cloud_base.exists():
+        cloud_dirs = sorted([d for d in cloud_base.iterdir() if d.is_dir() and not d.is_symlink()],
+                            key=lambda x: x.name, reverse=True)[:3]
+        for d in cloud_dirs:
+            add_log_option(d)
+
     # 3. Existing attached logs
     curr_logs = job.get("last_manual_log_paths", [])
     if not curr_logs and job.get("last_manual_log_path"):
@@ -3715,9 +3726,10 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
     ]
 
     paste_opt = "\033[1;96mPaste New Logs...\033[0m"
+    cloud_opt = "\033[1;96mPull Device Logs (cloud)...\033[0m"
     custom_opt = "\033[1;96mCustom Path...\033[0m"
 
-    all_options = [paste_opt, custom_opt]
+    all_options = [paste_opt, cloud_opt, custom_opt]
     if display_options:
         all_options.append("--- Recent Logs ---")
         all_options.extend(display_options)
@@ -3745,6 +3757,10 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
             log_file = capture_logs(manual_out)
             if log_file:
                 log_paths.append(str(manual_out.relative_to(ROOT)))
+        elif "Pull Device Logs (cloud)..." in s:
+            cloud_path = prompt_cloud_log_pull(status_bar)
+            if cloud_path:
+                log_paths.append(cloud_path)
         elif "Custom Path..." in s:
             print("\n    (Enter path to a log file or directory, or Enter to cancel; e.g. logs/build.log or /var/log)")
             path = prompt_input("Custom log path:", placeholder="logs/build.log or /path/to/logs", field_below=True)
@@ -3755,6 +3771,48 @@ def prompt_for_logs(job: dict[str, Any], status_bar: StatusBar | None = None) ->
             log_paths.append(option_to_path.get(s, s))
 
     return log_paths
+
+def prompt_cloud_log_pull(status_bar: StatusBar | None = None) -> str | None:
+    """Picks a recent app launch from the central log store and pulls its logs.
+
+    Returns a log directory to link, `cloud:latest` to re-pull the newest launch
+    on every debug run, or None.
+    """
+    import cloud_logs
+
+    print_header("Pull Device Logs")
+    try:
+        client = cloud_logs.default_client()
+        print("\033[90mFetching app launches from the last 24h...\033[0m")
+        sessions = cloud_logs.list_sessions(client, since="24h", limit=10)
+    except cloud_logs.CloudLogsError as exc:
+        print(f"\n\033[1;91m{exc}\033[0m")
+        input("\n\033[1;96mTap Enter to continue...\033[0m")
+        return None
+    if not sessions:
+        print("\n\033[93mNo app launches in the last 24h. Open the app, wait ~5s, and retry.\033[0m")
+        input("\n\033[1;96mTap Enter to continue...\033[0m")
+        return None
+
+    newest_opt = "Always newest launch (re-pulled on every debug run)"
+    options = [s.describe() for s in sessions] + [newest_opt]
+    choice = prompt_radio("Which app launch?", options, default=options[0], status_bar=status_bar)
+    if choice == newest_opt:
+        return "cloud:latest"
+    session = sessions[options.index(choice)].session
+    try:
+        out_dir = cloud_logs.pull(session, client=client)
+    except cloud_logs.CloudLogsError as exc:
+        print(f"\n\033[1;91m{exc}\033[0m")
+        input("\n\033[1;96mTap Enter to continue...\033[0m")
+        return None
+    try:
+        rel = str(out_dir.relative_to(ROOT))
+    except ValueError:
+        rel = str(out_dir)
+    print(f"\033[92m✅ Pulled session {session} -> {rel}\033[0m")
+    return rel
+
 
 def prompt_for_reference_artifact(job: dict[str, Any]) -> bool:
     from reference_artifacts import attach_reference_artifact
@@ -3818,12 +3876,13 @@ def perform_job_revert(job: dict[str, Any]) -> int:
                 count += 1
     return count
 
-def handle_discard_job(job: dict[str, Any]):
+def handle_discard_job(job: dict[str, Any], confirmed: bool = False):
+    """`confirmed` is for callers that already asked (the web UI): no prompts."""
     print_header(f"Discarding & Reverting Job: {job.get('job_id')}")
 
     warning = "\033[1;91m⚠️  WARNING: THIS WILL PERMANENTLY DELETE ALL LOCAL PROGRESS & CODE CHANGES.\033[0m\n"
     warning += "Are you sure you want to DISCARD this job and REVERT its changes?"
-    if not prompt_confirm(warning, default=False):
+    if not confirmed and not prompt_confirm(warning, default=False):
         return
 
     # 1. Surgical File Revert
@@ -3833,6 +3892,8 @@ def handle_discard_job(job: dict[str, Any]):
 
     # 2. Branch Management
     branch = job.get("branch")
+    ai_modified = job.get("ai_modified_files", [])
+    ai_untracked = job.get("ai_untracked_files", [])
 
     if branch:
         try:
@@ -3840,7 +3901,7 @@ def handle_discard_job(job: dict[str, Any]):
         except:
             curr = ""
             
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - AI-managed branch detected: {branch}")
             if curr == branch:
                 base_branch = job.get("base_branch", PROJECT_CONFIG.base_branch)
@@ -3857,13 +3918,17 @@ def handle_discard_job(job: dict[str, Any]):
     # Archive with discarded status
     archive_path = archive_job(job, status="discarded")
     print(f"\n✅ Job discarded and AI changes surgically reverted.")
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    if not confirmed:
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_merge_cleanup(job: dict[str, Any]):
     pr_number = job.get("pr_number")
     branch = job.get("branch")
 
     if not pr_number:
+        if branch and job.get("code_host") == "git":
+            handle_local_merge(job)
+            return
         print("!!! Error: No PR number found for this job.")
         return
 
@@ -3894,7 +3959,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
 
     # 3. Local branch cleanup (ONLY if merge succeeded and AI-managed)
     if branch:
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - Deleting local branch: {branch}...")
             # Check current branch first
             try:
@@ -3908,10 +3973,41 @@ def handle_merge_cleanup(job: dict[str, Any]):
         else:
             print(f"      - Note: Branch '{branch}' is not AI-managed. Preserving local branch.")
 
-    # 4. Archive Job
+    # 4. Tell linked tickets/cards/issues (best effort), then archive the job with that log
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None,
+                         pr_number=pr_number)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+
+    # 5. Archive Job
     archive_path = archive_job(job)
 
     print(f"\n✅ Successfully merged and archived to {archive_path.name}")
+    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+
+def handle_local_merge(job: dict[str, Any]):
+    """Merge & complete without a pull request (plain git): merge the job's branch into its base on this computer."""
+    branch = job["branch"]
+    base = job.get("base_branch") or PROJECT_CONFIG.base_branch
+    print_header(f"Merging {branch} into {base}")
+    ok, message = merge_branch_locally(branch, base, f"Merge {branch}: {job.get('title', job.get('job_id'))}")
+    print(f"      - {message}")
+    if not ok:
+        print("\n\033[1;91m!!! Merge didn't happen. The job is still ready for review.\033[0m")
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        return
+    if is_ai_branch(branch):
+        print(f"      - Deleting local branch: {branch}...")
+        subprocess.run(["git", "branch", "-d", branch], cwd=str(ROOT), capture_output=True)
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+    archive_path = archive_job(job)
+    print(f"\n✅ Merged and archived to {archive_path.name}")
     input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_archived_jobs_menu(session_allowed_machines, session_allowed_models):
@@ -4892,24 +4988,11 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                     continue
 
                 # 2. Accept Architect Suggestions
-                verification = job.get("verification")
-                if status == "human-needed" and verification and verification.get("status") in ["rejected", "concerns"]:
+                from job_actions import apply_design_approval, architect_feedback, replan_type
+                feedback = architect_feedback(job)
+                if feedback:
                     print_header("Integrating Architect Suggestions")
-                    feedback = f"Please re-plan and incorporate the Senior Architect's suggestions:\n"
-                    feedback += f"Comments: {verification.get('comments')}\n"
-                    if verification.get("suggested_additions"):
-                        feedback += "Suggested Additions:\n- " + "\n- ".join(verification["suggested_additions"])
-                    
-                    job_type_map = {
-                        "bug-fix": "bug",
-                        "bug-investigate": "bug",
-                        "feature-plan": "feature",
-                        "test-audit": "coverage",
-                        "feature-design": "design"
-                    }
-                    requested_type = job_type_map.get(job.get("type"), "feature")
-                    
-                    run_script("new_job.py", [requested_type, "--no-dispatch", "--update", str(job["_path"]), "--feedback", feedback], sub_menu=True)
+                    run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(job["_path"]), "--feedback", feedback], sub_menu=True)
                     job = refresh_job(job)
                     continue
 
@@ -4917,20 +5000,8 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                     print("\n🎨 \033[1;92mDESIGN APPROVED!\033[0m")
                     print("Transitioning to Implementation Planning phase...")
                     
-                    # Store design as context for the next planner
-                    design_spec = job.get("plan", {})
-                    job["design_spec"] = design_spec
-                    job["status"] = "planned"
-                    job["type"] = "feature-plan"
-                    
-                    # Update raw_input so the Feature Planner sees the design
-                    design_context = f"\n\n### APPROVED DESIGN SPEC (Stitch AI) ###\n"
-                    design_context += f"Summary: {design_spec.get('summary')}\n"
-                    design_context += f"Vibe: {design_spec.get('vibe')}\n"
-                    design_context += "Visual Components:\n- " + "\n- ".join(design_spec.get("visual_components", [])) + "\n"
-                    design_context += "Interaction Flows:\n- " + "\n- ".join(design_spec.get("interaction_flows", [])) + "\n"
-                    
-                    job["raw_input"] = job.get("raw_input", "") + design_context
+                    # Store the design as context for the feature planner.
+                    apply_design_approval(job)
                     save_job(job)
                     
                     # Now trigger the planning script to generate the task list
@@ -8479,7 +8550,7 @@ def handle_firebase_distro(session_allowed_machines: list[str], session_allowed_
             print("\n  \033[1;90m--- ACTIONS ---\033[0m")
             print_wrapped_kv("    [\033[1;96mL\033[0m] ", "Login to Firebase (Browser)")
             print_wrapped_kv("    [\033[1;96mK\033[0m] ", "Configure Headless Signing (Keychain Auto-Unlock)")
-            print_wrapped_kv("    [\033[1;96mT\033[0m] ", "Test Distribution Script (Dry Run via build delivery)")
+            print_wrapped_kv("    [\033[1;96mT\033[0m] ", "Run Live Build & Firebase Delivery Test")
             print_wrapped_kv("    [\033[1;96mR\033[0m] ", "Refresh Status (Re-run checks)\n")
             print_wrapped_kv("    [\033[1;91mB\033[0m] ", "Back")
             
@@ -8504,9 +8575,9 @@ def handle_firebase_distro(session_allowed_machines: list[str], session_allowed_
                 status_bar.clear_footer()
                 status_bar.reset_scroll_region(force=True)
                 clear_screen()
-                print_header("Smoke Test Delivery")
-                print("This runs the build delivery smoke test directly and streams its output without menu refreshes.")
-                print("\033[90mExpect the delivery portion to take several minutes when Xcode archiving runs.\033[0m")
+                print_header("Live Build & Firebase Delivery Test")
+                print("This archives the current branch and publishes a real Firebase App Distribution release.")
+                print("\033[90mThe operation can take several minutes and sends the build to configured recipients.\033[0m")
                 run_script("smoke_test_delivery.py", [], sub_menu=True, session_machines=session_allowed_machines, session_models=session_allowed_models)
                 needs_check = True
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import sys
 import tempfile
 import unittest
+import zipfile
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +22,40 @@ import simulator_visual_check  # noqa: E402
 
 
 class VisualDeliveryConfigTests(unittest.TestCase):
+    def test_distribution_script_options_reflect_project_script_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script = Path(temp_dir) / "ship.sh"
+            script.write_text(
+                "case $1 in\n  --project) ;;\n  --groups) ;;\n  --release-notes) ;;\nesac\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                deliver_build.distribution_script_options(script),
+                {"--project", "--groups", "--release-notes"},
+            )
+
+    def test_delivery_receipt_reads_exported_app_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ipa_path = Path(temp_dir) / "Thirteen.ipa"
+            with zipfile.ZipFile(ipa_path, "w") as archive:
+                archive.writestr(
+                    "Payload/Thirteen.app/Info.plist",
+                    plistlib.dumps({"CFBundleShortVersionString": "1.1", "CFBundleVersion": "187"}),
+                )
+
+            receipt = deliver_build.build_delivery_receipt(
+                f"Distribution complete\nIPA: {ipa_path}\n",
+                testers=None,
+                groups="internal-testers",
+            )
+
+            self.assertEqual(receipt["version"], "1.1")
+            self.assertEqual(receipt["build"], "187")
+            self.assertEqual(receipt["ipa_path"], str(ipa_path))
+            self.assertEqual(receipt["groups"], "internal-testers")
+            self.assertEqual(len(receipt["sha256"]), 64)
+
     def test_visual_check_command_replaces_destination(self) -> None:
         command = "xcodebuild build -project App.xcodeproj -destination old-destination"
 
@@ -39,7 +75,16 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             (root / "SampleApp.xcodeproj").mkdir()
             (root / "tools").mkdir()
             script = root / "tools" / "ship.sh"
-            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            script.write_text(
+                "case $1 in --project|--release-notes|--groups) ;; esac\n",
+                encoding="utf-8",
+            )
+            ipa_path = root / "SampleApp.ipa"
+            with zipfile.ZipFile(ipa_path, "w") as archive:
+                archive.writestr(
+                    "Payload/SampleApp.app/Info.plist",
+                    plistlib.dumps({"CFBundleShortVersionString": "1.0", "CFBundleVersion": "2"}),
+                )
             job_path = root / "job.json"
             job_path.write_text(
                 json.dumps({
@@ -53,7 +98,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
 
             mock_check_output.side_effect = [b"feature/build\n", b"20260902231500\n", b"2026-06-06 00:00:00\n"]
             process = MagicMock()
-            process.stdout = []
+            process.stdout = [f"IPA: {ipa_path}\n"]
             process.wait.return_value = 0
             mock_popen.return_value = process
             
@@ -70,6 +115,10 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             config.asc_key_id = None
             config.asc_issuer_id = None
             config.asc_key_path = None
+            config.firebase_plist_path = None
+            config.firebase_testers = None
+            config.firebase_groups = None
+            config.runtime_dir = root / ".orchestrator"
 
             with (
                 patch.object(deliver_build, "ROOT", root),
@@ -83,8 +132,108 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             self.assertEqual(cmd[0:2], ["/bin/bash", str(script)])
             self.assertIn("--project", cmd)
             self.assertIn(str(root / "SampleApp.xcodeproj"), cmd)
-            self.assertIn("--build-number", cmd)
-            self.assertIn("20260902231500", cmd)
+            self.assertNotIn("--build-number", cmd)
+            self.assertEqual(cmd[cmd.index("--groups") + 1], "internal-testers")
+
+    @patch("deliver_build.send_final_notification")
+    @patch("deliver_build.ensure_keychain_unlocked", return_value=(True, "Keychain is unlocked"))
+    @patch("deliver_build.subprocess.Popen")
+    @patch("deliver_build.subprocess.check_output")
+    def test_successful_script_without_reported_ipa_fails_verification(
+        self, mock_check_output, mock_popen, _unlock, mock_notify
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "SampleApp.xcodeproj").mkdir()
+            (root / "scripts").mkdir()
+            script = root / "scripts" / "distribute_ios.sh"
+            script.write_text("case $1 in --groups) ;; esac\n", encoding="utf-8")
+            job_path = root / "job.json"
+            job_path.write_text(
+                json.dumps({"job_id": "job-1", "title": "Ship build", "branch": "main"}),
+                encoding="utf-8",
+            )
+            mock_check_output.side_effect = [b"main\n", b"2026-09-11 17:00:00\n"]
+            process = MagicMock()
+            process.stdout = ["Firebase command returned successfully\n"]
+            process.wait.return_value = 0
+            mock_popen.return_value = process
+
+            config = MagicMock()
+            config.validate_distribution_config.return_value = []
+            config.distribution_script_path = "scripts/distribute_ios.sh"
+            config.xcode_project = "SampleApp.xcodeproj"
+            config.xcode_workspace = None
+            config.scheme = "SampleApp"
+            config.runtime_dir = root / ".orchestrator"
+            config.firebase_testers = None
+            config.firebase_groups = "internal-testers"
+            config.provisioning_profile_specifier = None
+            config.development_team = None
+            config.delivery_method = None
+            config.asc_key_id = None
+            config.asc_issuer_id = None
+            config.asc_key_path = None
+            config.firebase_plist_path = None
+
+            with (
+                patch.object(deliver_build, "ROOT", root),
+                patch.object(deliver_build, "PROJECT_CONFIG", config),
+                self.assertRaises(SystemExit) as exit_context,
+            ):
+                deliver_build.deliver_build(job_path)
+
+            self.assertEqual(exit_context.exception.code, 1)
+            mock_notify.assert_called_once_with(unittest.mock.ANY, "Ship build", "main", False)
+
+    @patch("deliver_build.ensure_keychain_unlocked")
+    def test_deliver_build_missing_branch_exits_nonzero_without_unlocking_keychain(self, mock_unlock) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            job_path = root / "job.json"
+            job_path.write_text(json.dumps({"job_id": "job-1", "title": "Ship build"}), encoding="utf-8")
+
+            with (
+                patch.object(deliver_build, "ROOT", root),
+                self.assertRaises(SystemExit) as exit_context,
+            ):
+                deliver_build.deliver_build(job_path)
+
+            self.assertEqual(exit_context.exception.code, 1)
+            mock_unlock.assert_not_called()
+
+    @patch("deliver_build.send_final_notification")
+    @patch("deliver_build.ensure_keychain_unlocked", return_value=(True, "Keychain is unlocked"))
+    @patch("deliver_build.subprocess.Popen")
+    @patch("deliver_build.subprocess.run")
+    @patch("deliver_build.subprocess.check_output", return_value=b"main\n")
+    def test_deliver_build_refuses_branch_mismatch_without_checkout(
+        self, _check_output, mock_run, mock_popen, _unlock, _notify
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "SampleApp.xcodeproj").mkdir()
+            (root / "scripts").mkdir()
+            (root / "scripts" / "distribute_ios.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            job_path = root / "job.json"
+            job_path.write_text(
+                json.dumps({"job_id": "job-1", "title": "Ship build", "branch": "feature/build"}),
+                encoding="utf-8",
+            )
+
+            config = MagicMock()
+            config.validate_distribution_config.return_value = []
+
+            with (
+                patch.object(deliver_build, "ROOT", root),
+                patch.object(deliver_build, "PROJECT_CONFIG", config),
+                self.assertRaises(SystemExit) as exit_context,
+            ):
+                deliver_build.deliver_build(job_path)
+
+            self.assertEqual(exit_context.exception.code, 1)
+            mock_run.assert_not_called()
+            mock_popen.assert_not_called()
 
     @patch("simulator_visual_check.plistlib.load")
     @patch("simulator_visual_check.open", create=True)
@@ -107,7 +256,8 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             app_path="/tmp/test.app",
             wait=3.0,
             screenshots=1,
-            interval=1.0
+            interval=1.0,
+            job=""
         )
 
         mock_path_exists.return_value = True
@@ -119,6 +269,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
 
         with (
             patch("argparse.ArgumentParser.parse_args", return_value=test_args),
+            patch("simulator_visual_check.extract_commands", return_value=("xcodebuild build", "xcodebuild test")),
             patch("pathlib.Path.mkdir"),
             patch("pathlib.Path.unlink"),
             patch("pathlib.Path.is_symlink", return_value=False),
@@ -147,7 +298,10 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             (root / "SampleApp.xcodeproj").mkdir()
             (root / "scripts").mkdir()
             script = root / "scripts" / "distribute_ios.sh"
-            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            script.write_text(
+                "case $1 in --project|--release-notes|--groups) ;; esac\n",
+                encoding="utf-8",
+            )
             job_path = root / "job.json"
             job_path.write_text(
                 json.dumps({
@@ -185,6 +339,9 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             config.asc_key_id = "MUD2T6SH8G"
             config.asc_issuer_id = "6b2330c7-0203-4e58-9924-ba5c1f42e1a8"
             config.asc_key_path = "/Users/leemosupreemo/.private_keys/AuthKey_MUD2T6SH8G.p8"
+            config.firebase_testers = None
+            config.firebase_groups = None
+            config.runtime_dir = root / ".orchestrator"
 
             with (
                 patch("builtins.print") as mock_print,
@@ -217,7 +374,10 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             (root / "SampleApp.xcodeproj").mkdir()
             (root / "scripts").mkdir()
             script = root / "scripts" / "distribute_ios.sh"
-            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            script.write_text(
+                "case $1 in --project|--release-notes|--testers|--groups) ;; esac\n",
+                encoding="utf-8",
+            )
             job_path = root / "job.json"
             job_path.write_text(
                 json.dumps({
@@ -256,6 +416,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             config.asc_key_path = "/Users/leemosupreemo/.private_keys/AuthKey_MUD2T6SH8G.p8"
             config.firebase_testers = None
             config.firebase_groups = None
+            config.runtime_dir = root / ".orchestrator"
 
             with (
                 patch("builtins.print") as mock_print,

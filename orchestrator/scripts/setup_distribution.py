@@ -62,10 +62,6 @@ if [ -z "$PROJECT_PATH" ] && [ -z "$WORKSPACE_PATH" ]; then
     exit 1
 fi
 
-if [ -z "$BUILD_NUMBER" ]; then
-    BUILD_NUMBER="$(date +%Y%m%d%H%M%S)"
-fi
-
 if [ -z "$SCHEME" ]; then
     if [ -n "$PROJECT_PATH" ]; then
         SCHEME=$(basename "$PROJECT_PATH" .xcodeproj)
@@ -73,9 +69,26 @@ if [ -z "$SCHEME" ]; then
         SCHEME=$(basename "$WORKSPACE_PATH" .xcworkspace)
     fi
 fi
-ARCHIVE_PATH="/tmp/${SCHEME}.xcarchive"
-EXPORT_PATH="/tmp/${SCHEME}_export"
+
+if [ -z "$BUILD_NUMBER" ]; then
+    if [ -n "$WORKSPACE_PATH" ]; then
+        CURRENT_BUILD=$(xcodebuild -workspace "$WORKSPACE_PATH" -scheme "$SCHEME" -configuration "$CONFIGURATION" -showBuildSettings 2>/dev/null | awk '/CURRENT_PROJECT_VERSION =/{print $3; exit}')
+    else
+        CURRENT_BUILD=$(xcodebuild -project "$PROJECT_PATH" -scheme "$SCHEME" -configuration "$CONFIGURATION" -showBuildSettings 2>/dev/null | awk '/CURRENT_PROJECT_VERSION =/{print $3; exit}')
+    fi
+    if [[ ! "$CURRENT_BUILD" =~ ^[0-9]+$ ]]; then
+        echo "Error: Could not determine a numeric CURRENT_PROJECT_VERSION. Pass --build-number explicitly."
+        exit 1
+    fi
+    BUILD_NUMBER=$((CURRENT_BUILD + 1))
+fi
+
+RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+OUTPUT_ROOT="${ORCHESTRATOR_DISTRIBUTION_DIR:-$PWD/build/distribution/$RUN_ID}"
+ARCHIVE_PATH="${OUTPUT_ROOT}/${SCHEME}.xcarchive"
+EXPORT_PATH="${OUTPUT_ROOT}/export"
 IPA_PATH="${EXPORT_PATH}/${SCHEME}.ipa"
+mkdir -p "$OUTPUT_ROOT"
 
 if [ -n "${KEYCHAIN_PASSWORD:-}" ]; then
     security unlock-keychain -p "$KEYCHAIN_PASSWORD" ~/Library/Keychains/login.keychain-db >/dev/null 2>&1 || true
@@ -87,14 +100,14 @@ echo "🚀 Starting Distribution for $SCHEME (Build: $BUILD_NUMBER)..."
 # 1. Archive
 echo "📦 Archiving project (setting CURRENT_PROJECT_VERSION=$BUILD_NUMBER)..."
 
-AUTH_FLAGS=""
+AUTH_FLAGS=()
 if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_PATH" ]; then
-    AUTH_FLAGS="-authenticationKeyID $ASC_KEY_ID -authenticationKeyIssuerID $ASC_ISSUER_ID -authenticationKeyPath $ASC_KEY_PATH"
+    AUTH_FLAGS=(-authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" -authenticationKeyPath "$ASC_KEY_PATH")
 fi
 
-DEVELOPMENT_TEAM_FLAG=""
+DEVELOPMENT_TEAM_FLAG=()
 if [ -n "$DEVELOPMENT_TEAM" ]; then
-    DEVELOPMENT_TEAM_FLAG="DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM"
+    DEVELOPMENT_TEAM_FLAG=("DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM")
 fi
 
 if [ -n "$WORKSPACE_PATH" ]; then
@@ -108,8 +121,8 @@ if [ -n "$WORKSPACE_PATH" ]; then
             CODE_SIGN_STYLE=Manual \
             PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_SPECIFIER" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            $DEVELOPMENT_TEAM_FLAG \
-            $AUTH_FLAGS \
+            "${DEVELOPMENT_TEAM_FLAG[@]}" \
+            "${AUTH_FLAGS[@]}" \
             -allowProvisioningUpdates
     else
         xcodebuild archive \
@@ -119,8 +132,8 @@ if [ -n "$WORKSPACE_PATH" ]; then
             -archivePath "$ARCHIVE_PATH" \
             -destination "generic/platform=iOS" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            $DEVELOPMENT_TEAM_FLAG \
-            $AUTH_FLAGS \
+            "${DEVELOPMENT_TEAM_FLAG[@]}" \
+            "${AUTH_FLAGS[@]}" \
             -allowProvisioningUpdates
     fi
 else
@@ -134,8 +147,8 @@ else
             CODE_SIGN_STYLE=Manual \
             PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_SPECIFIER" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            $DEVELOPMENT_TEAM_FLAG \
-            $AUTH_FLAGS \
+            "${DEVELOPMENT_TEAM_FLAG[@]}" \
+            "${AUTH_FLAGS[@]}" \
             -allowProvisioningUpdates
     else
         xcodebuild archive \
@@ -145,8 +158,8 @@ else
             -archivePath "$ARCHIVE_PATH" \
             -destination "generic/platform=iOS" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            $DEVELOPMENT_TEAM_FLAG \
-            $AUTH_FLAGS \
+            "${DEVELOPMENT_TEAM_FLAG[@]}" \
+            "${AUTH_FLAGS[@]}" \
             -allowProvisioningUpdates
     fi
 fi
@@ -162,8 +175,14 @@ xcodebuild -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
     -exportOptionsPlist "scripts/ExportOptions.plist" \
     -exportPath "$EXPORT_PATH" \
-    $AUTH_FLAGS \
+    "${AUTH_FLAGS[@]}" \
     -allowProvisioningUpdates
+
+IPA_PATH=$(find "$EXPORT_PATH" -maxdepth 1 -type f -name '*.ipa' -print -quit)
+if [ -z "$IPA_PATH" ]; then
+    echo "Error: Xcode export completed without producing an IPA in $EXPORT_PATH"
+    exit 1
+fi
 
 # 3. Firebase Upload
 echo "🔥 Uploading to Firebase App Distribution..."
@@ -183,11 +202,14 @@ fi
 if [ -f "$GS_INFO_PATH" ]; then
     APP_ID=$(/usr/libexec/PlistBuddy -c "Print :GOOGLE_APP_ID" "$GS_INFO_PATH")
     echo "      - App ID: $APP_ID"
+    if [ -z "$TESTERS" ] && [ -z "$DIST_GROUPS" ]; then DIST_GROUPS="internal-testers"; fi
+    RECIPIENT_FLAGS=()
+    if [ -n "$TESTERS" ]; then RECIPIENT_FLAGS+=(--testers "$TESTERS"); fi
+    if [ -n "$DIST_GROUPS" ]; then RECIPIENT_FLAGS+=(--groups "$DIST_GROUPS"); fi
     firebase appdistribution:distribute "$IPA_PATH" \
         --app "$APP_ID" \
         --release-notes "$RELEASE_NOTES" \
-        $( [ ! -z "$TESTERS" ] && echo "--testers $TESTERS" ) \
-        $( [ ! -z "$DIST_GROUPS" ] && echo "--groups $DIST_GROUPS" )
+        "${RECIPIENT_FLAGS[@]}"
 else
     echo "❌ Missing GoogleService-Info.plist: $GS_INFO_PATH"
     echo "      - You can specify the path with --firebase-plist"
@@ -195,6 +217,9 @@ else
 fi
 
 echo "✅ Distribution Complete!"
+echo "IPA: $IPA_PATH"
+echo "Build: $BUILD_NUMBER"
+echo "Recipients: testers=${TESTERS:-<none>} groups=${DIST_GROUPS:-<none>}"
 """
 
 EXPORT_OPTIONS_TEMPLATE = r"""<?xml version="1.0" encoding="UTF-8"?>
@@ -327,6 +352,8 @@ def setup_distribution(force=False, firebase_plist=None, provisioning_profile=No
             config["delivery_provider"] = "firebase"
             config["distribution_script_path"] = "scripts/distribute_ios.sh"
             config["delivery_method"] = method or config.get("delivery_method")
+            if not config.get("firebase_testers") and not config.get("firebase_groups"):
+                config["firebase_groups"] = "internal-testers"
 
             # App ID resolution
             firebase_plist_path = firebase_plist or config.get("firebase_plist_path")
@@ -411,23 +438,26 @@ def detect_provisioning_profile_specifier(root: Path) -> str | None:
 
 
 def installed_provisioning_profile_names() -> set[str]:
-    profiles_dir = Path.home() / "Library" / "MobileDevice" / "Provisioning Profiles"
-    if not profiles_dir.exists():
-        return set()
+    home = Path.home()
+    profile_dirs = [
+        home / "Library" / "Developer" / "Xcode" / "UserData" / "Provisioning Profiles",
+        home / "Library" / "MobileDevice" / "Provisioning Profiles",
+    ]
 
     names: set[str] = set()
-    for profile_path in profiles_dir.glob("*.mobileprovision"):
-        try:
-            xml = subprocess.check_output(
-                ["/usr/bin/security", "cms", "-D", "-i", str(profile_path)],
-                stderr=subprocess.DEVNULL,
-            )
-            plist = plistlib.loads(xml)
-            name = plist.get("Name")
-            if isinstance(name, str):
-                names.add(name)
-        except Exception:
-            continue
+    for profiles_dir in profile_dirs:
+        for profile_path in profiles_dir.glob("*.mobileprovision"):
+            try:
+                xml = subprocess.check_output(
+                    ["/usr/bin/security", "cms", "-D", "-i", str(profile_path)],
+                    stderr=subprocess.DEVNULL,
+                )
+                plist = plistlib.loads(xml)
+                name = plist.get("Name")
+                if isinstance(name, str):
+                    names.add(name)
+            except Exception:
+                continue
     return names
 
 

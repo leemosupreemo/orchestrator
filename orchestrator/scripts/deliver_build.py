@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import plistlib
 import re
 import sys
 import subprocess
 import threading
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +19,60 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
-from common import ROOT, read_json, format_markdown_for_terminal, ProgressIndicator, print_header, ensure_keychain_unlocked
+from common import ROOT, read_json, write_json, format_markdown_for_terminal, ProgressIndicator, print_header, ensure_keychain_unlocked
 from orchestrator.project_config import PROJECT_CONFIG
+
+
+def distribution_script_options(script_path: Path) -> set[str]:
+    """Return the long options declared by a project-local delivery script."""
+    try:
+        script_text = script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    return set(re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", script_text))
+
+
+def build_delivery_receipt(log_content: str, testers: str | None, groups: str | None) -> dict[str, Any]:
+    """Read the exported IPA named by the delivery script and return verified metadata."""
+    matches = re.findall(r"^IPA:\s*(.+?\.ipa)\s*$", log_content, flags=re.MULTILINE)
+    if not matches:
+        return {}
+
+    ipa_path = Path(matches[-1]).expanduser()
+    if not ipa_path.is_absolute():
+        ipa_path = ROOT / ipa_path
+    if not ipa_path.is_file():
+        return {}
+
+    version = None
+    build = None
+    try:
+        with zipfile.ZipFile(ipa_path) as ipa:
+            info_name = next(
+                name for name in ipa.namelist()
+                if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", name)
+            )
+            info = plistlib.loads(ipa.read(info_name))
+            version = info.get("CFBundleShortVersionString")
+            build = info.get("CFBundleVersion")
+    except (OSError, KeyError, StopIteration, plistlib.InvalidFileException, zipfile.BadZipFile):
+        pass
+
+    digest = hashlib.sha256()
+    with ipa_path.open("rb") as ipa_file:
+        for chunk in iter(lambda: ipa_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    return {
+        "status": "delivered",
+        "provider": "firebase",
+        "ipa_path": str(ipa_path),
+        "version": str(version) if version is not None else None,
+        "build": str(build) if build is not None else None,
+        "testers": testers,
+        "groups": groups,
+        "sha256": digest.hexdigest(),
+    }
 
 def send_final_notification(job: dict[str, Any], title: str, branch: str, success: bool):
     job_id = job.get("job_id", "unknown")
@@ -43,18 +98,11 @@ def deliver_build(job_path: Path):
     
     if not branch:
         print(f"\033[1;91m!!! Error: No active branch found for job {job_id}. Cannot create a build.\033[0m", flush=True)
-        return
+        sys.exit(1)
 
     print_header(f"DELIVERING BUILD TO DEVICE: {job_id}")
     print(f"   \033[1;36m• Target Branch:\033[0m \033[1;97m{branch}\033[0m", flush=True)
     print(f"   \033[1;36m• Feature/Bug:\033[0m   \033[97m{title}\033[0m", flush=True)
-    
-    # Pre-flight check: Auto unlock keychain upfront
-    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
-    if unlocked:
-        print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
-    else:
-        print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
     
     # 0. Pre-flight check: Ensure signing configuration is present
     dist_errors = PROJECT_CONFIG.validate_distribution_config()
@@ -66,24 +114,38 @@ def deliver_build(job_path: Path):
         print(f"\n\033[93mPlease run 'orchestrator wizard' or configure the following config file:\033[0m", flush=True)
         print(f"      \033[1;97m{config_file}\033[0m", flush=True)
         sys.exit(1)
+
+    # Pre-flight check: Auto unlock keychain after validating configuration.
+    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
+    if unlocked:
+        print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
+    else:
+        print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
     
     # 1. Ensure we are on the correct branch
     current_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
     if current_branch != branch:
-        print(f"\n   \033[93m🔄 Switching to branch:\033[0m \033[1;97m{branch}\033[0m...", flush=True)
-        subprocess.run(["git", "checkout", "-f", branch], cwd=str(ROOT), check=True)
+        print(
+            f"\n\033[1;91m!!! Error: Delivery job targets branch '{branch}', "
+            f"but the working tree is on '{current_branch}'.\033[0m",
+            flush=True,
+        )
+        print("Switch branches explicitly after saving or committing local changes, then retry.", flush=True)
+        sys.exit(1)
     else:
         print(f"\n   \033[1;92m✓ Branch Status:\033[0m \033[90mAlready on correct branch '{branch}'\033[0m", flush=True)
     
     # 2. Build Release Notes
-    build_number = job.get("build_number") or subprocess.check_output(['date', '+%Y%m%d%H%M%S']).decode('utf-8').strip()
+    build_number = job.get("build_number")
     built_at = subprocess.check_output(['date', '+%Y-%m-%d %H:%M:%S']).decode('utf-8').strip()
-    release_notes = f"""AI Job: {job_id}
-Title: {title}
+    release_heading = "Quick delivery" if job.get("delivery_kind") == "quick" else f"AI Job: {job_id}"
+    release_notes = f"""{release_heading}
+Title: {title or 'Build delivery'}
 Branch: {branch}
-Build: {build_number}
 Built: {built_at}
 """
+    if build_number:
+        release_notes += f"Build: {build_number}\n"
     
     # 3. Call the existing distribution script
     # We use subprocess.call to allow real-time streaming of Xcode and Firebase logs
@@ -91,13 +153,13 @@ Built: {built_at}
     
     if not dist_script.exists():
         print(f"\033[1;91m!!! Error: Distribution script not found at {dist_script}\033[0m", flush=True)
-        return
+        sys.exit(1)
 
     print(f"\n\033[1;94m🚀 Triggering Distribution Pipeline (Archiving, Exporting, Uploading)...\033[0m", flush=True)
     print("   \033[90mℹ️ Archiving & uploading may take 5-10 minutes. Please wait...\033[0m", flush=True)
     
-    log_dir = ROOT / "logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir = PROJECT_CONFIG.runtime_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     dist_log = log_dir / f"distribution_{job_id}.log"
     print(f"   \033[1;36m• Log File:\033[0m      \033[1;97m{dist_log.relative_to(ROOT)}\033[0m\n", flush=True)
     
@@ -115,50 +177,62 @@ Built: {built_at}
             
         if not project_path and not workspace_path:
             print("!!! Error: No Xcode project or workspace configured for distribution.")
-            return
-            
+            sys.exit(1)
+
+        supported_options = distribution_script_options(dist_script)
+        testers = job.get("testers") or getattr(PROJECT_CONFIG, "firebase_testers", None)
+        groups = job.get("groups") or getattr(PROJECT_CONFIG, "firebase_groups", None)
+        if not testers and not groups:
+            groups = "internal-testers"
+        if testers and "--testers" not in supported_options:
+            print(f"!!! Error: Distribution script does not accept --testers: {dist_script}")
+            sys.exit(1)
+        if groups and "--groups" not in supported_options:
+            print(f"!!! Error: Distribution script does not accept --groups: {dist_script}")
+            sys.exit(1)
+
         cmd = ["/bin/bash", str(dist_script)]
-        if project_path:
+        if project_path and "--project" in supported_options:
             cmd.extend(["--project", str(project_path)])
-        if workspace_path:
+        if workspace_path and "--workspace" in supported_options:
             cmd.extend(["--workspace", str(workspace_path)])
             
-        if PROJECT_CONFIG.scheme:
+        if PROJECT_CONFIG.scheme and "--scheme" in supported_options:
             cmd.extend(["--scheme", PROJECT_CONFIG.scheme])
             
-        cmd.extend(["--release-notes", release_notes])
-        cmd.extend(["--build-number", str(build_number)])
+        if "--release-notes" in supported_options:
+            cmd.extend(["--release-notes", release_notes])
+        if build_number and "--build-number" in supported_options:
+            cmd.extend(["--build-number", str(build_number)])
         
         provisioning_profile = getattr(PROJECT_CONFIG, "provisioning_profile_specifier", None)
-        if provisioning_profile:
+        if provisioning_profile and "--provisioning-profile" in supported_options:
             cmd.extend(["--provisioning-profile", provisioning_profile])
         
         team_id = getattr(PROJECT_CONFIG, "development_team", None)
-        if team_id:
+        if team_id and "--team-id" in supported_options:
             cmd.extend(["--team-id", team_id])
             
         method = getattr(PROJECT_CONFIG, "delivery_method", None)
-        if method:
+        if method and "--method" in supported_options:
             cmd.extend(["--method", method])
             
         asc_key_id = getattr(PROJECT_CONFIG, "asc_key_id", None)
-        if asc_key_id:
+        if asc_key_id and "--asc-key-id" in supported_options:
             cmd.extend(["--asc-key-id", asc_key_id])
             
         asc_issuer_id = getattr(PROJECT_CONFIG, "asc_issuer_id", None)
-        if asc_issuer_id:
+        if asc_issuer_id and "--asc-issuer-id" in supported_options:
             cmd.extend(["--asc-issuer-id", asc_issuer_id])
             
         asc_key_path = getattr(PROJECT_CONFIG, "asc_key_path", None)
-        if PROJECT_CONFIG.asc_key_path:
+        if PROJECT_CONFIG.asc_key_path and "--asc-key-path" in supported_options:
             key_path = ROOT / asc_key_path if not Path(asc_key_path).is_absolute() else Path(asc_key_path)
             cmd.extend(["--asc-key-path", str(key_path)])
-        if PROJECT_CONFIG.firebase_plist_path:
+        if PROJECT_CONFIG.firebase_plist_path and "--firebase-plist" in supported_options:
             cmd.extend(["--firebase-plist", PROJECT_CONFIG.firebase_plist_path])
-        testers = job.get("testers") or getattr(PROJECT_CONFIG, "firebase_testers", None)
         if testers:
             cmd.extend(["--testers", testers])
-        groups = job.get("groups") or getattr(PROJECT_CONFIG, "firebase_groups", None)
         if groups:
             cmd.extend(["--groups", groups])
         
@@ -208,7 +282,30 @@ Built: {built_at}
             indicator.clear()
         
         if res == 0:
-            print("\n✅ Build delivered to Firebase successfully!", flush=True)
+            log_content = dist_log.read_text(encoding="utf-8", errors="replace")
+            receipt = build_delivery_receipt(log_content, testers, groups)
+            if receipt:
+                receipt.update({
+                    "job_id": job_id,
+                    "title": title,
+                    "branch": branch,
+                    "built_at": built_at,
+                })
+                receipt_dir = PROJECT_CONFIG.runtime_dir / "output" / "delivery"
+                receipt_dir.mkdir(parents=True, exist_ok=True)
+                receipt_path = receipt_dir / f"{job_id}.json"
+                write_json(receipt_path, receipt)
+                print("\n✅ Build delivered to Firebase successfully!", flush=True)
+                print(f"      Version: {receipt.get('version') or 'unknown'} ({receipt.get('build') or 'unknown'})", flush=True)
+                print(f"      Recipients: {groups or testers}", flush=True)
+                print(f"      IPA: {receipt['ipa_path']}", flush=True)
+                print(f"      Receipt: {receipt_path}", flush=True)
+            else:
+                print("\n❌ Distribution could not be verified.", flush=True)
+                print("      The project script exited successfully but did not report a readable IPA path.", flush=True)
+                print("      Update it to print 'IPA: /absolute/path/to/App.ipa' after Firebase succeeds.", flush=True)
+                send_final_notification(job, title, branch, False)
+                sys.exit(1)
             print("      - Finalizing and sending notifications...", flush=True)
             send_final_notification(job, title, branch, True)
             print("\n✨ ALL DONE.", flush=True)

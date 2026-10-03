@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -24,6 +25,7 @@ except:
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
 from common import (
+    CONFIG_DIR,
     LOGS_DIR,
     OUTPUT_DIR,
     ROOT,
@@ -43,7 +45,7 @@ from common import (
     update_issue_status,
     write_json,
 )
-from open_or_update_pr import open_or_update_pr
+from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
 from orchestrator.project_config import PROJECT_CONFIG
 
@@ -74,9 +76,16 @@ def current_git_branch() -> str:
     ).decode("utf-8").strip()
 
 
-def prepare_git_branch(job: dict, issue_number: int) -> Tuple[str, str]:
+def job_branch_name(job: dict, issue_number: int | None) -> str:
+    """`ai/issue-<n>-<title>` for a GitHub job; plain git has no issue, so its local reference names the branch."""
+    if issue_number:
+        return f'ai/issue-{issue_number}-{slugify(job["title"])}'
+    return f'ai/job-{job.get("job_ref") or job["job_id"].rsplit("-", 1)[-1]}-{slugify(job["title"])}'
+
+
+def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
     base_branch = job.get("base_branch") or os.environ.get("BASE_BRANCH", PROJECT_CONFIG.base_branch)
-    generated_branch = f'ai/issue-{issue_number}-{slugify(job["title"])}'
+    generated_branch = job_branch_name(job, issue_number)
     branch_mode = normalize_branch_mode(job.get("branch_mode"))
 
     if branch_mode == "manual":
@@ -207,8 +216,10 @@ def print_status_report(job: dict, build_ok: bool, test_ok: bool, pr_number: Opt
             print(f"  1. Review PR changes on GitHub:\n     \033[4;96m{clickable_pr}\033[0m")
         elif pr_number:
             print(f"  1. Review PR changes on GitHub:\n     \033[1;96mgh pr view {pr_number} --web\033[0m")
+        elif job.get("merge_request_url"):
+            print(f"  1. Review the branch {job.get('branch')}, or open a merge request:\n     \033[4;96m{job['merge_request_url']}\033[0m")
         else:
-            print("  1. Review changes on GitHub.")
+            print(f"  1. Review the changes on branch {job.get('branch')}.")
         
         print("  2. Test and verify manually on device (via Firebase App Distribution) or simulator.")
         print("  3. Follow up based on your verification:")
@@ -336,6 +347,7 @@ def unpack_builder_result(result):
 
 
 def execute_job(job_path: Path, resume: bool = False) -> None:
+    remove_task_views(job_path)  # left over from a run that was stopped part way
     job = read_json(job_path)
 
     if resume and job.get("worker_pid"):
@@ -363,7 +375,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         print("      - RESUME MODE ENABLED")
     status_bar.render()
 
-    issue_number = job["issue_number"]
+    issue_number = job.get("issue_number")
+    job_label = f"Issue #{issue_number}" if issue_number else f"job {job['job_id']}"
+    job["code_host"] = PROJECT_CONFIG.code_host_mode
 
     try:
         print_phase("git_prep")
@@ -372,7 +386,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         print_phase("status_update")
         status_bar.render()
-        print(f"[2/4] Updating issue #{issue_number} status to 'executing'...")
+        print(f"[2/4] Updating {job_label} status to 'executing'...")
         is_debug = job.get("status") == "debugging"
 
         job["branch"] = branch
@@ -424,6 +438,11 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_job['plan']['summary'] = task['description'] # Use task description as summary
                 task_job['plan']['acceptance_criteria'] = task['acceptance_criteria']
                 task_job['plan']['likely_files'] = task['likely_files']
+                # Only this task's test cases (plus untasked ones); `task` is 1-based.
+                task_job['plan']['test_cases'] = [
+                    c for c in job.get('plan', {}).get('test_cases') or []
+                    if isinstance(c, dict) and c.get('task') in (i + 1, None)
+                ]
                 
                 # Write this temp view to a temporary path to pass to run_builder
                 temp_job_path = job_path.parent / f"{job_path.stem}_task_{i+1}.json"
@@ -457,7 +476,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                         send_notifications(
                             job,
                             "Job Paused: Clarification Needed",
-                            f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
+                            f"Builder needs clarification for {job_label}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
                         )
                         return
                     except Exception as e:
@@ -472,8 +491,6 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 
                 # IMPORTANT: Only mark task done if code was actually changed (patch)
                 # and validation passed. If AI only 'investigated', it's not done yet.
-                was_implemented = task_output.get("action") == "patch" or task_output.get("action") == "add_logging"
-                
                 # VERIFY: Did the AI actually touch the files it said it would?
                 # This prevents "phantom completion" where the AI runs old passing tests 
                 # but doesn't implement the current task.
@@ -481,6 +498,22 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_modified = [f for f in task_post_state["modified"] if f not in pre_state["modified"]]
                 task_untracked = [f for f in task_post_state["untracked"] if f not in pre_state["untracked"]]
                 files_touched = task_modified + task_untracked
+
+                # run_builder records which model it used on the per-task copy; keep that on the real job.
+                try:
+                    built = read_json(temp_job_path)
+                    if built.get("actual_builder_used"):
+                        job["actual_builder_used"] = built["actual_builder_used"]
+                    new_sessions = (built.get("llm_sessions") or [])[len(job.get("llm_sessions") or []):]
+                    if new_sessions:
+                        job["llm_sessions"] = (job.get("llm_sessions") or []) + new_sessions
+                except Exception:
+                    pass
+
+                # Only the debug prompts ask for an "action". A feature builder reports files and a summary, so with no action
+                # the files on disk decide; an explicit "investigate" still means nothing was changed.
+                action = task_output.get("action")
+                was_implemented = action in ("patch", "add_logging") or (not action and bool(files_touched))
                 
                 likely_files = task.get("likely_files", [])
                 actual_likely_touched = any(any(f.endswith(lf) for lf in likely_files) for f in files_touched)
@@ -489,7 +522,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 # If the builder overrode the test command to something unrelated to the task, flag it.
                 test_command_used = task_output.get("test_command", "")
                 expected_tests = task.get("tests", [])
-                test_command_ok = not expected_tests or any(et in test_command_used for et in expected_tests)
+                # Running the project's whole configured suite (or saying nothing, so the default runs) covers every planned test.
+                # Only a command that names something narrower, and not the planned tests, is a downgrade.
+                configured = " ".join((PROJECT_CONFIG.test_command or "").split())
+                used = " ".join((test_command_used or "").split())
+                runs_whole_suite = not used or (bool(configured) and used == configured)
+                test_command_ok = not expected_tests or runs_whole_suite or any(et in used for et in expected_tests)
                 
                 if build_ok and test_ok and was_implemented:
                     if likely_files and not actual_likely_touched:
@@ -513,6 +551,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                          break
 
                     job["completed_task_indices"].append(i)
+                    checkpoint_task(job, i, len(tasks), task['title'], files_touched)
                     write_json(job_path, job)
                 elif build_ok and test_ok and not was_implemented:
                     print(f"      - Task {i+1} investigation successful, but no code changed. Halting to prevent phantom completion.")
@@ -527,6 +566,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     all_ok = False
                     break # Exit the loop on first failure
             
+            remove_task_views(job_path)
             build_ok = all_ok
             test_ok = all_ok
         else:
@@ -556,7 +596,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     send_notifications(
                         job,
                         "Job Paused: Clarification Needed",
-                        f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
+                        f"Builder needs clarification for {job_label}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
                     )
                     return
 
@@ -576,8 +616,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             if task_output.get("hypothesis"):
                 job["builder_hypothesis"] = task_output["hypothesis"]
 
-        job["ai_modified_files"] = ai_modified
-        job["ai_untracked_files"] = ai_untracked
+        # Files already committed task by task (checkpoint_task) are still this job's changes.
+        job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(ai_modified))
+        job["ai_untracked_files"] = sorted(set(job.get("ai_untracked_files") or []) | set(ai_untracked))
         write_json(job_path, job)
 
         # Commit changes if any
@@ -679,7 +720,18 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         print_phase("pull_request")
         status_bar.render()
         print(f"[4/4] Implementation successful. Opening/updating Pull Request...")
-        pr_number, pr_url = open_or_update_pr(job_path)
+        if PROJECT_CONFIG.uses_github:
+            pr_number, pr_url = open_or_update_pr(job_path)
+        else:
+            print("      - Plain git (no GitHub): pushing the branch for review instead of opening a pull request.")
+            pr_number, pr_url = None, None
+            job["merge_request_url"] = push_branch_for_review(job)
+        if pr_url:
+            try:
+                from orchestrator.integrations_sync import notify_job_event
+                notify_job_event(job, "pr_opened", CONFIG_DIR / "settings.json", job_path, pr_url=pr_url, pr_number=pr_number)
+            except Exception as exc:  # linked-app updates are best effort
+                print(f"      - Note: couldn't update linked apps: {exc}")
 
         if is_debug:
             # Update history with success
@@ -720,15 +772,21 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         print_phase("review")
         status_bar.render()
-        print(f"\n[5/5] Triggering local AI review for PR #{pr_number}...")
         brief_file = OUTPUT_DIR / job["job_id"] / "brief.md"
+        if pr_number:
+            print(f"\n[5/5] Triggering local AI review for PR #{pr_number}...")
+            review_target = str(pr_number)
+        else:  # no pull request (plain git, or GitHub couldn't open one): review the branch's own diff
+            print(f"\n[5/5] Triggering local AI review for branch {branch}...")
+            review_target = f"--branch {shlex.quote(branch)} --base {shlex.quote(base_branch)}"
         run_shell(
-            f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "review_ready.py"))} {pr_number} --reviewer {shlex.quote(job["reviewer"])} --brief-file {shlex.quote(str(brief_file))} --job-file {shlex.quote(str(job_path))}',
+            f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "review_ready.py"))} {review_target} --reviewer {shlex.quote(job["reviewer"])} --brief-file {shlex.quote(str(brief_file))} --job-file {shlex.quote(str(job_path))}',
             cwd=ROOT,
             check=True,
             capture=False,
         )
 
+        update_product_requirements(job_path)
         print_status_report(job, True, True, pr_number=pr_number, pr_url=pr_url, distributed_status=distributed_status)
         
         # Determine if we should distribute
@@ -742,7 +800,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         send_notifications(
             job, 
             "Job Complete: SUCCESS", 
-            f"Implementation successful for Issue #{issue_number}.\nPR: #{pr_number}\nTitle: {job['title']}",
+            f"Implementation successful for {job_label}.\n" + (f"PR: #{pr_number}" if pr_number else f"Branch: {branch}") + f"\nTitle: {job['title']}",
             summary=job_summary
         )
 
@@ -800,7 +858,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         send_notifications(
             job,
             "Job Paused: Clarification Needed",
-            f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {e.question}\nTitle: {job['title']}",
+            f"Builder needs clarification for {job_label}.\nQuestion: {e.question}\nTitle: {job['title']}",
             summary=job_summary
         )
         return
@@ -832,13 +890,78 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         send_notifications(
             job, 
             "Job Complete: FAILED", 
-            f"Critical error during execution for Issue #{issue_number}.\nError: {e}\nTitle: {job['title']}",
+            f"Critical error during execution for {job_label}.\nError: {e}\nTitle: {job['title']}",
             summary=job_summary
         )
 
         # Re-raise so the user still gets the full traceback for debugging
         raise
 
+
+
+def update_product_requirements(job_path: Path) -> None:
+    """After a job finishes: see whether what it taught us changes the product requirements document, and keep it true.
+
+    The document is the person's, so this edits only when something clearly changed, keeps their words, records a version they
+    can restore, and tells them (see orchestrator/prd.py). It never stops a job: any failure is a printed note."""
+    try:
+        from orchestrator import prd
+        from llm import run_llm
+        from model_router import ModelRole
+        from common import ORCHESTRATOR_RUNTIME_DIR
+        job = read_json(job_path)
+        doc = prd.Prd(ROOT, ORCHESTRATOR_RUNTIME_DIR)
+        if not prd.should_check(job):
+            return
+        print("      - Checking whether the product requirements need updating...", flush=True)
+
+        def ask(prompt: str) -> str:
+            # An empty scratch folder, not the project: this is a question, and an agentic model must not be able to write the
+            # document itself (that would skip the history) or touch anything else.
+            with tempfile.TemporaryDirectory(prefix="orchestrator-model-") as scratch:
+                reply, _model, _sid = run_llm(job.get("reviewer") or job.get("planner"), prompt, cwd=Path(scratch), timeout=300,
+                                              allowed_models=job.get("allowed_models"), role=ModelRole.PLANNER)
+            return reply
+
+        result = prd.run_update(doc, job, ask)
+        if result["status"] in {"updated", "nochange", "rejected", "error"}:
+            fresh = read_json(job_path)  # the job may have changed while the model thought
+            fresh["prd_checked"] = True
+            write_json(job_path, fresh)
+        note = {"updated": f"Updated the product requirements: {result.get('summary', '')}", "nochange": "No change needed.",
+                "rejected": result.get("error", ""), "error": f"Couldn't check ({result.get('error', '')})."}.get(result["status"], "")
+        if note:
+            print(f"      - {note}")
+    except Exception as exc:  # never let a convenience stop a finished job
+        print(f"      - Note: couldn't check the product requirements: {exc}")
+
+
+def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[str]) -> None:
+    """Commits one finished task by itself and records the commit, so the task can be undone later."""
+    if not files:
+        return
+    try:
+        for f in files:
+            subprocess.run(["git", "add", "--", f], cwd=str(ROOT), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", f"feat: task {index + 1}/{total}: {title} (AI generated)"], cwd=str(ROOT), check=True, capture_output=True)
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT), check=True, capture_output=True, text=True).stdout.strip()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(f"      - Could not checkpoint task {index + 1} ({exc}); it will be committed with the rest.")
+        return
+    job.setdefault("task_commits", {})[str(index)] = sha
+    job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(files))
+    print(f"      - Task {index + 1} committed ({sha[:7]}).")
+
+
+def remove_task_views(job_path: Path) -> None:
+    """Deletes the per-task copies of a job (`<job>_task_N.json`) that execute_job writes for the builder.
+
+    They are scratch files; left behind they look like extra jobs with the same id in the job lists."""
+    for stale in job_path.parent.glob(f"{job_path.stem}_task_*.json"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 def main() -> None:

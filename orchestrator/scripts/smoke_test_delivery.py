@@ -4,9 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import subprocess
-import json
 from pathlib import Path
-from datetime import datetime
 
 # Add scripts dir to path
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -17,31 +15,11 @@ from common import ROOT, JOBS_DIR, write_json, timestamp, prompt_confirm, print_
 from orchestrator.project_config import PROJECT_CONFIG
 
 def run_smoke_delivery():
-    global PROJECT_CONFIG
-    print_header("SMOKE TEST: BUILD & DELIVERY PIPELINE")
+    print_header("LIVE BUILD & FIREBASE DELIVERY")
     
     # 0. Pre-flight check: Ensure signing configuration is present
     print("\033[1;36m[STEP 1/3]\033[0m \033[1;97mPre-flight Configuration Check\033[0m", flush=True)
-    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
-    if unlocked:
-        print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
-    else:
-        print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
-
     dist_errors = PROJECT_CONFIG.validate_distribution_config()
-    if dist_errors:
-        print("\n\033[1;93m⚠️  Distribution configuration is incomplete. Attempting automatic detection and setup...\033[0m", flush=True)
-        try:
-            from setup_distribution import setup_distribution
-            setup_distribution(force=False, root=ROOT)
-            
-            # Reload project configuration
-            from orchestrator.project_config import load_project_config
-            PROJECT_CONFIG = load_project_config()
-            dist_errors = PROJECT_CONFIG.validate_distribution_config()
-        except Exception as e:
-            print(f"      - Could not auto-detect configuration: {e}", flush=True)
-            
     if dist_errors:
         config_file = PROJECT_CONFIG.runtime_dir / "project.json"
         print("\n\033[1;91m!!! Error: Distribution configuration is incomplete:\033[0m", flush=True)
@@ -79,15 +57,21 @@ def run_smoke_delivery():
     else:
         print("   \033[1;92m✅ Distribution configuration is valid.\033[0m\n", flush=True)
 
+    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
+    if unlocked:
+        print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
+    else:
+        print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
+
     # 1. Setup metadata
-    test_id = f"smoke-delivery-{timestamp()}"
+    test_id = f"quick-delivery-{timestamp()}"
     # Just use current branch, don't change anything
     branch_output = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
     branch = branch_output
     job_file = JOBS_DIR / f"{test_id}.json"
     
-    print("\033[1;36m[STEP 2/3]\033[0m \033[1;97mPreparing Mock Delivery Job\033[0m", flush=True)
-    print(f"   \033[1;36m• Test ID:\033[0m        \033[1;97m{test_id}\033[0m", flush=True)
+    print("\033[1;36m[STEP 2/3]\033[0m \033[1;97mPreparing Delivery Metadata\033[0m", flush=True)
+    print(f"   \033[1;36m• Delivery ID:\033[0m    \033[1;97m{test_id}\033[0m", flush=True)
     print(f"   \033[1;36m• Current Branch:\033[0m \033[97m{branch}\033[0m", flush=True)
 
     try:
@@ -96,16 +80,16 @@ def run_smoke_delivery():
         job_data = {
             "job_id": test_id,
             "title": title,
+            "delivery_kind": "quick",
             "status": "review-needed",
             "branch": branch,
-            "issue_number": 9999,
             "builder": "console",
             "reviewer": "console",
             "testers": os.environ.get("FIREBASE_TESTERS", ""),
             "groups": os.environ.get("FIREBASE_GROUPS", "")
         }
         write_json(job_file, job_data)
-        print(f"   \033[1;36m• Created Mock:\033[0m   \033[90m{job_file.name}\033[0m\n", flush=True)
+        print(f"   \033[1;36m• Runtime Record:\033[0m \033[90m{job_file.name}\033[0m\n", flush=True)
 
         # 3. Trigger Actual Delivery
         print("\033[1;36m[STEP 3/3]\033[0m \033[1;93m🔥 Triggering Build & Delivery Pipeline\033[0m", flush=True)
@@ -116,25 +100,26 @@ def run_smoke_delivery():
         res = subprocess.call([sys.executable, str(deliver_script), str(job_file)], cwd=str(ROOT), stdout=sys.stdout, stderr=sys.stderr)
 
         if res == 0:
-            print_header("✨ Smoke Test Successful!")
+            print_header("✨ Delivery Successful!")
             print("   \033[97mBuild should be appearing on your registered device soon.\033[0m\n", flush=True)
         else:
-            print_header("❌ Smoke Delivery Failed")
+            print_header("❌ Delivery Failed")
             print("   \033[97mSee the diagnostic messages above for details and fix instructions.\033[0m\n", flush=True)
             
         # Auto-cleanup temporary mock job
         if job_file.exists():
             os.remove(job_file)
-            print(f"   \033[92m✓ Automatically cleaned up temporary mock job ({job_file.name}).\033[0m\n", flush=True)
+            print(f"   \033[92m✓ Cleaned up temporary delivery record ({job_file.name}).\033[0m\n", flush=True)
             
         if res != 0:
             sys.exit(res)
 
     except Exception as e:
-        print(f"\n\033[1;91m!!! Error during smoke test: {e}\033[0m", flush=True)
+        print(f"\n\033[1;91m!!! Error during delivery: {e}\033[0m", flush=True)
         if job_file.exists():
             os.remove(job_file)
-            print(f"   \033[92m✓ Automatically cleaned up temporary mock job ({job_file.name}).\033[0m\n", flush=True)
+            print(f"   \033[92m✓ Cleaned up temporary delivery record ({job_file.name}).\033[0m\n", flush=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     try:

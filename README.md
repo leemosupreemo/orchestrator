@@ -10,6 +10,7 @@ Orchestrator began with deep support for Swift and Xcode. It is now expanding ac
 
 ## 🚀 Key Features
 
+*   **Web UI**: `orchestrator ui` opens a local, phone-friendly web interface covering jobs, new jobs, device logs, builds and distribution. Each action runs in a live in-browser terminal, and the full console is one click away. See [Web UI](docs/user-guide.md#web-ui).
 *   **Interactive Dev Console**: A terminal-based UI designed for speed. Single-key shortcuts (`y/n`, `A`/`F`/`Q`) and real-time status bars make orchestration feel like a native tool.
 *   **Structured Multi-Agent Workflow**: Jobs pass through specialized agents, with feature work guided by a test-driven development (TDD) philosophy:
     *   **Planner**: Analyzes requirements and drafts a multi-step plan that defines tests before production code.
@@ -18,7 +19,7 @@ Orchestrator began with deep support for Swift and Xcode. It is now expanding ac
     *   **Reviewer**: Audits the implementation, test coverage, and regression risks before changes are finalized.
 *   **Fleet Orchestration**: Dispatch heavy builds or exhaustive test suites to remote machines via SSH. The Orchestrator handles branch synchronization, worker package installation, remote execution, and job output automatically.
 *   **Interactive Account Setup**: Detect installed AI and GitHub CLIs, then sign in or add API keys from the wizard without restarting.
-*   **Automated GitHub PR & Issue Workflow**: Integrates with GitHub through the `gh` CLI to create issues, open pull requests, and post automated status updates.
+*   **GitHub, GitLab, Bitbucket or plain git**: With GitHub, jobs become issues and finished work a pull request (through the `gh` CLI). With any other host, or none, jobs run on their own branches, which are pushed for a merge request or merged locally. See [Code hosts](docs/code-hosts.md).
 *   **Multi-Language Project Setup (Beta)**: Detect Rust, Python, Node.js/TypeScript, Go, Swift Package Manager, and Xcode projects, then configure the appropriate build and test commands.
 
 ---
@@ -113,9 +114,11 @@ orchestrator worker-check --machine worker1
 
 ## 📱 Mobile Delivery
 
-For iOS projects, Orchestrator can archive and sign an app, upload the IPA to Firebase App Distribution, and release it to configured tester emails or groups for installation on multiple devices.
+For iOS projects, Orchestrator can archive and sign an app, upload the IPA to Firebase App Distribution, and release it to configured tester emails or groups for installation on multiple devices. Successful deliveries include a receipt with the version, build number, artifact checksum, and recipients.
 
 For a phone-operated workflow, use [Secure ShellFish](https://secureshellfish.app/) on iPhone or iPad to connect over SSH to the machine running Orchestrator. From there, you can coordinate the job, run builds and tests, and distribute the resulting beta build through Firebase.
+
+Runtime logs from those device builds come back the same way: the app ships them to Sentry Logs, and `orchestrator logs pull --latest` (or **Link Logs → Pull Device Logs** in the console) downloads the newest launch and links it to the job. Run `orchestrator logs setup` once per project. See [Device Logs](docs/user-guide.md#device-logs).
 
 ---
 
@@ -143,6 +146,8 @@ orchestrator update --fleet   # Enabled remote machines
 
 - [Getting Started](docs/getting-started.md): What Orchestrator does and the first commands to run.
 - [User Guide](docs/user-guide.md): Comprehensive setup, commands, and troubleshooting.
+- [Code hosts](docs/code-hosts.md): GitHub, GitLab, Bitbucket, other hosts, or no remote.
+- [Product requirements](docs/product-requirements.md): The one living document every AI reads first: how to start it (write, draft from a project, import), how it keeps itself true, and how to undo it.
 
 ---
 
