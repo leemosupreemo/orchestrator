@@ -32,3 +32,13 @@ python3 -m unittest discover -s tests
 ```bash
 orchestrator check-config
 ```
+
+## macOS app
+
+```bash
+swift test --package-path desktop/macos
+python3 packaging/macos/build.py --arch arm64 --output dist/macos --build-number 1 --development
+python3 packaging/macos/smoke.py --bundle dist/macos/arm64/Orchestrator.app --state-dir "$(mktemp -d)" --control-dir "$(mktemp -d)"
+```
+
+Building, development images and releases are covered in `docs/macos-desktop.md`.
