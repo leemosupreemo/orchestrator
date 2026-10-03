@@ -747,6 +747,15 @@ let pollFailures = 0; // consecutive failed background polls
 let lastInbox = null; // previous inbox items, to spot new things waiting on you
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
+// The page is deployed on its own; the computer it opens has whatever version was installed. Say so when it's behind,
+// since the page may call things it doesn't have. (Only for a computer reached from elsewhere: a local page is served by it.)
+let runnerWarned = false;
+function checkRunnerVersion(runner) {
+  if (runnerWarned || !getBackendUrl() || !Account.outdated(runner?.api_version)) return;
+  runnerWarned = true;
+  notify("warning", `This computer runs an older Orchestrator${runner?.version ? ` (${runner.version})` : ""}, so some things may not work. ${Account.UPDATE_HINT.replace(/`/g, "")}`, { id: "runner-old", sticky: true });
+}
+
 async function refreshState() {
   if (signingIn) return;
   const backend = getBackendUrl();
@@ -765,6 +774,7 @@ async function refreshState() {
     lastRuns = newState.runs;
     lastInbox = newState.inbox || [];
     showPrdUpdate(newState.product_notice);
+    checkRunnerVersion(newState.runner);
     state = newState;
     consecutiveAuthFailures = 0;
     pollFailures = 0;

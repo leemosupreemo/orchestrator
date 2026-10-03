@@ -27,6 +27,10 @@ HOSTED_APP_URL = f"https://{FIREBASE_PROJECT_ID}.web.app"
 HOSTED_ORIGINS = (HOSTED_APP_URL, f"https://{FIREBASE_PROJECT_ID}.firebaseapp.com")
 CONTROL_URL_ENV = "ORCHESTRATOR_CONTROL_URL"
 HEARTBEAT_SECONDS = 60
+# What this computer's server can do for the hosted app. Bumped when the hosted page starts relying on something older
+# computers lack; the page compares it with the one it needs (REQUIRED_RUNNER_API in account.js) and says to update.
+API_VERSION = 2
+INSTALL_SPEC = "git+https://github.com/leemosupreemo/orchestrator.git"  # what the install command on the hosted app installs
 
 
 class AccountError(Exception):
@@ -152,7 +156,7 @@ def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0) -> dict[
     so if the computer disappears mid-run). Forgets the pairing if the account removed it."""
     try:
         return call("machine/heartbeat", {"endpoint": endpoint, "version": package_version(), "os": os_label(),
-                                          "running": running}, machine=machine)
+                                          "api_version": API_VERSION, "running": running}, machine=machine)
     except AccountError as exc:
         if exc.status == 410:
             forget_machine()

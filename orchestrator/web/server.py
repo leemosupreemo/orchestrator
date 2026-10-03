@@ -3282,6 +3282,7 @@ class UIHandler(BaseHTTPRequestHandler):
                                     for k, a in ACTIONS.items()},
                         # The caller's own credential (so a cookie sign-in can also authorize event streams), never the server's.
                         "token": self._principal["token"],
+                        "runner": {"version": account.package_version(), "api_version": account.API_VERSION},
                         "you": {"kind": self._principal["kind"], "email": self._principal.get("email")}})
         elif method == "POST" and parts == ["auth", "logout"]:
             if self._principal["kind"] == "sign_in":
@@ -3917,6 +3918,18 @@ def get_tailscale_info() -> tuple[str | None, str | None]:
         return None, None
 
 
+def _drain(proc: subprocess.Popen) -> None:
+    """cloudflared logs to the pipe we gave it. Once nobody reads it the pipe fills (about 64 KB) and cloudflared blocks,
+    so a tunnel left running for hours would stop carrying traffic. Read and discard it."""
+    def pump() -> None:
+        try:
+            for _ in proc.stdout or ():
+                pass
+        except (OSError, ValueError):
+            pass
+    threading.Thread(target=pump, daemon=True, name="cloudflared-output").start()
+
+
 def start_tunnel(port: int, token: str | None = None) -> tuple[subprocess.Popen | None, str | None]:
     cloudflared = shutil.which("cloudflared")
     if not cloudflared:
@@ -3930,6 +3943,7 @@ def start_tunnel(port: int, token: str | None = None) -> tuple[subprocess.Popen 
                 text=True,
                 bufsize=1,
             )
+            _drain(proc)
             return proc, None
         proc = subprocess.Popen(
             [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{port}", "--metrics", "127.0.0.1:0"],
@@ -3953,7 +3967,68 @@ def start_tunnel(port: int, token: str | None = None) -> tuple[subprocess.Popen 
         if m:
             tunnel_url = m.group(0)
             break
+    _drain(proc)
     return proc, tunnel_url
+
+
+class TunnelKeeper:
+    """Keeps a tunnel up for as long as the server runs: if cloudflared exits (a dropped connection, a laptop that slept)
+    it is started again, and the address it comes back with is reported. A quick tunnel gets a new address each time."""
+
+    def __init__(self, port: int, token: str | None = None, fixed_url: str = "",
+                 on_url: Callable[[str], None] = lambda url: None,
+                 starter: Callable[..., tuple[Any, str | None]] = start_tunnel, interval: float = 10.0, max_wait: float = 300.0):
+        self.port, self.token, self.fixed_url = port, token, fixed_url.rstrip("/")
+        self.on_url, self.starter, self.interval, self.max_wait = on_url, starter, interval, max_wait
+        self.proc: Any = None
+        self.url = ""
+        self._stop = threading.Event()
+
+    def _launch(self) -> bool:
+        self._end_process()
+        self.proc, found = self.starter(self.port, token=self.token) if self.token else self.starter(self.port)
+        self.url = self.fixed_url or (found or "")
+        return self._healthy()
+
+    def _healthy(self) -> bool:
+        # A quick tunnel that never printed an address isn't usable, even though cloudflared is running.
+        return self.proc is not None and self.proc.poll() is None and bool(self.url or self.token)
+
+    def start(self) -> str:
+        self._launch()
+        threading.Thread(target=self._watch, daemon=True, name="tunnel-keeper").start()
+        return self.url
+
+    def _watch(self) -> None:
+        failures = 0
+        while not self._stop.wait(min(self.interval * (2 ** failures), self.max_wait)):
+            if self._healthy():
+                failures = 0
+                continue
+            before = self.url
+            print("  The tunnel stopped. Starting it again…", flush=True)
+            if self._launch():
+                failures = 0
+                if self.url != before:
+                    self.on_url(self.url)
+            else:
+                failures = min(failures + 1, 6)  # back off: cloudflared missing, or no network
+
+    def _end_process(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._end_process()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -4017,46 +4092,41 @@ def main(argv: list[str] | None = None) -> int:
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"\033[93m  Listening on {args.host}: anyone who can reach it still needs the token above. "
               "Only bind to a private network (e.g. Tailscale).\033[0m")
-    tunnel_proc = None
-    reach_url = ""  # the https origin browsers reach this computer at, reported to the account
-    if tunnel_token:
-        print("  Starting Cloudflare Named Tunnel (stable persistent token)...")
-        tunnel_proc, _ = start_tunnel(args.port, token=tunnel_token)
-        if public_url:
-            reach_url = public_url
-            hosted_url = f"{HOSTED_APP_URL}/?backend={public_url}&token={server.token}"
-            PUBLIC_URL["url"] = hosted_url
-            print(f"  \033[92m✓ Stable Tunnel URL:\033[0m   {public_url}/?token={server.token}")
-            print(f"  \033[92m✓ Phone Web UI:\033[0m        {hosted_url}")
-        else:
-            print(f"  \033[92m✓ Cloudflare Named Tunnel started.\033[0m Specify --public-url to display your phone link.")
-    elif getattr(args, "tunnel", False):
-        print("  Starting Cloudflare tunnel for remote/phone access...")
-        tunnel_proc, tunnel_url = start_tunnel(args.port)
-        if tunnel_url:
-            effective_url = public_url or tunnel_url
-            reach_url = effective_url
-            hosted_url = f"{HOSTED_APP_URL}/?backend={effective_url}&token={server.token}"
-            PUBLIC_URL["url"] = hosted_url
-            print(f"  \033[92m✓ Tunnel URL:\033[0m   {effective_url}/?token={server.token}")
-            print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
-        else:
-            print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out).\033[0m")
-    elif public_url:
-        reach_url = public_url
-        hosted_url = f"{HOSTED_APP_URL}/?backend={public_url}&token={server.token}"
+    keeper: TunnelKeeper | None = None
+    reach = {"url": ""}  # the origin browsers reach this computer at, reported to the account; changes if a quick tunnel restarts
+
+    def reachable_url() -> str:
+        return reach["url"].rstrip("/") if reach["url"].startswith("https://") else ""
+
+    def announce(label: str, address: str) -> None:
+        reach["url"] = address
+        hosted_url = f"{HOSTED_APP_URL}/?backend={address}&token={server.token}"
         PUBLIC_URL["url"] = hosted_url
-        print(f"  \033[92m✓ Stable Remote URL:\033[0m {public_url}/?token={server.token}")
-        print(f"  \033[92m✓ Phone Web UI:\033[0m      {hosted_url}")
+        print(f"  \033[92m✓ {label}:\033[0m   {address}/?token={server.token}")
+        print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
+
+    if tunnel_token or getattr(args, "tunnel", False):
+        print("  Starting Cloudflare Named Tunnel (stable persistent token)..." if tunnel_token
+              else "  Starting Cloudflare tunnel for remote/phone access...")
+        keeper = TunnelKeeper(args.port, token=tunnel_token, fixed_url=public_url or "",
+                              on_url=lambda address: announce("Tunnel restarted at", address))
+        address = keeper.start()
+        if address:
+            announce("Stable Tunnel URL" if tunnel_token else "Tunnel URL", address)
+        elif tunnel_token:
+            print(f"  \033[92m✓ Cloudflare Named Tunnel started.\033[0m Specify --public-url to display your phone link.")
+        else:
+            print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out). Trying again in the background.\033[0m")
+    elif public_url:
+        announce("Stable Remote URL", public_url)
     machine = account.load_machine()
     if machine:
-        reachable = reach_url.rstrip("/") if reach_url.startswith("https://") else ""
-        if reachable:
+        if reachable_url():
             print(f"  \033[92m✓ Account:\033[0m {machine.get('owner_email')} can sign in at {HOSTED_APP_URL}")
         else:
             print(f"  Account: connected to {machine.get('owner_email')}, but not reachable from {HOSTED_APP_URL} "
                   "until it has an https address (--tunnel, or --public-url https://…).")
-        server.start_heartbeat(lambda: reachable)
+        server.start_heartbeat(reachable_url)
     else:
         print("  Tip: run `orchestrator connect` to sign in to this computer from anywhere with Google.")
     print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
@@ -4068,15 +4138,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
-        if tunnel_proc:
-            try:
-                tunnel_proc.terminate()
-                tunnel_proc.wait(timeout=2)
-            except Exception:
-                try:
-                    tunnel_proc.kill()
-                except Exception:
-                    pass
+        if keeper:
+            keeper.stop()
         server.sessions.stop_all()
         server.server_close()
     return 0

@@ -145,6 +145,11 @@ class SignInTests(ServerTestCase):
         _, data = self.request("GET", "/api/state")
         self.assertEqual(data["you"]["kind"], "owner")
 
+    def test_state_reports_the_runner_version(self):
+        _, data = self.request("GET", "/api/state")
+        self.assertEqual(data["runner"]["api_version"], ui.account.API_VERSION)
+        self.assertTrue(data["runner"]["version"])
+
     def test_sign_ins_survive_a_restart_and_only_hashes_are_stored(self):
         token = self.sign_in()
         stored = (Path(os.environ["ORCHESTRATOR_USER_STATE_DIR"]) / "ui_sign_ins.json").read_text()
@@ -344,6 +349,115 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
         self.assertIn('location.hash = "#/";', handler_code)
 
 
+class FakeTunnelProcess:
+    def __init__(self):
+        self.exit_code = None
+        self.terminated = False
+
+    def poll(self):
+        return self.exit_code
+
+    def terminate(self):
+        self.terminated = True
+        self.exit_code = -15
+
+    def wait(self, timeout=None):
+        return self.exit_code
+
+    def kill(self):
+        self.exit_code = -9
+
+
+class TunnelKeeperTests(unittest.TestCase):
+    def keeper(self, results, **kwargs):
+        """A keeper whose starter hands out `results` in order: (process, address) pairs."""
+        self.calls = []
+        queue = list(results)
+
+        def starter(port, token=None):
+            self.calls.append((port, token))
+            return queue.pop(0) if queue else (None, None)
+
+        self.changes = []
+        keeper = ui.TunnelKeeper(8765, starter=starter, on_url=self.changes.append, interval=0.01, max_wait=0.05, **kwargs)
+        self.addCleanup(keeper.stop)
+        return keeper
+
+    def wait_for(self, condition, seconds=3):
+        deadline = time.time() + seconds
+        while time.time() < deadline and not condition():
+            time.sleep(0.01)
+        return condition()
+
+    def test_a_healthy_tunnel_is_left_alone(self):
+        first = FakeTunnelProcess()
+        keeper = self.keeper([(first, "https://one.trycloudflare.com")])
+        self.assertEqual(keeper.start(), "https://one.trycloudflare.com")
+        time.sleep(0.15)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.changes, [])
+
+    def test_a_tunnel_that_exits_is_started_again_and_the_new_address_reported(self):
+        first, second = FakeTunnelProcess(), FakeTunnelProcess()
+        keeper = self.keeper([(first, "https://one.trycloudflare.com"), (second, "https://two.trycloudflare.com")])
+        keeper.start()
+        first.exit_code = 1
+        self.assertTrue(self.wait_for(lambda: self.changes))
+        self.assertEqual(self.changes, ["https://two.trycloudflare.com"])
+        self.assertEqual(keeper.url, "https://two.trycloudflare.com")
+
+    def test_a_fixed_address_is_kept_when_the_tunnel_restarts(self):
+        first, second = FakeTunnelProcess(), FakeTunnelProcess()
+        keeper = self.keeper([(first, "https://random.trycloudflare.com"), (second, "https://other.trycloudflare.com")],
+                             fixed_url="https://mac.example.com/")
+        self.assertEqual(keeper.start(), "https://mac.example.com")
+        first.exit_code = 1
+        self.assertTrue(self.wait_for(lambda: len(self.calls) == 2))
+        time.sleep(0.05)
+        self.assertEqual(self.changes, [])  # same address as before: nothing new to report
+        self.assertEqual(keeper.url, "https://mac.example.com")
+
+    def test_a_named_tunnel_needs_no_address_to_be_healthy(self):
+        proc = FakeTunnelProcess()
+        keeper = self.keeper([(proc, None)], fixed_url="")
+        keeper.token = "named-token"
+        keeper.start()
+        time.sleep(0.1)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0], (8765, "named-token"))
+
+    def test_it_keeps_trying_when_cloudflared_cannot_start(self):
+        late = FakeTunnelProcess()
+        keeper = self.keeper([(None, None), (None, None), (late, "https://late.trycloudflare.com")])
+        self.assertEqual(keeper.start(), "")
+        self.assertTrue(self.wait_for(lambda: self.changes))
+        self.assertEqual(self.changes, ["https://late.trycloudflare.com"])
+
+    def test_a_quick_tunnel_that_never_prints_an_address_is_restarted(self):
+        stuck, good = FakeTunnelProcess(), FakeTunnelProcess()
+        keeper = self.keeper([(stuck, None), (good, "https://ok.trycloudflare.com")])
+        keeper.start()
+        self.assertTrue(self.wait_for(lambda: self.changes))
+        self.assertTrue(stuck.terminated)
+
+    def test_stop_ends_the_process_and_the_watching(self):
+        proc = FakeTunnelProcess()
+        keeper = self.keeper([(proc, "https://one.trycloudflare.com")])
+        keeper.start()
+        keeper.stop()
+        self.assertTrue(proc.terminated)
+        count = len(self.calls)
+        time.sleep(0.1)
+        self.assertEqual(len(self.calls), count)
+
+    def test_cloudflared_output_is_read_so_it_can_never_fill_the_pipe(self):
+        # A child that writes far more than a pipe holds (about 64 KB) finishes only if somebody reads what it writes.
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdout.write('x' * 1_000_000)"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        ui._drain(proc)
+        self.assertEqual(proc.wait(timeout=10), 0)
+
+
 class AccountUiTests(unittest.TestCase):
     def run_account_script(self, source: str, preload: str = ""):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -450,6 +564,29 @@ process.stdout.write(JSON.stringify({ids, menu: globalThis.ConfigurationPages.re
         follow = js[js.index("function followAlertLink"):][:900]
         self.assertIn('params.get("machine")', follow)
         self.assertLess(js.index("function followAlertLink"), js.index("refreshState().then(() => { if (!signingIn) route(); });"))
+
+    def test_computers_behind_the_page_are_flagged(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const mk = (api, reachable = true) => ({id: "m", name: "Mac", version: "0.0.9", api_version: api, reachable, online: true, last_seen: 100});
+process.stdout.write(JSON.stringify({
+  old: A.renderMachines([mk(1)], {email: "a@x.com", now: 160}),
+  none: A.renderMachines([mk(undefined)], {email: "a@x.com", now: 160}),
+  current: A.renderMachines([mk(A.REQUIRED_RUNNER_API)], {email: "a@x.com", now: 160}),
+  newer: A.outdated(A.REQUIRED_RUNNER_API + 1),
+}));""")
+        self.assertIn("older Orchestrator (0.0.9)", result["old"])
+        self.assertIn("orchestrator update", result["old"])
+        self.assertIn("older Orchestrator", result["none"])  # a computer that never reported one is older than any that does
+        self.assertNotIn("older Orchestrator", result["current"])
+        self.assertFalse(result["newer"])
+
+    def test_the_pages_required_version_is_what_this_runner_provides(self):
+        # Bump both together: the page asks for exactly what the runner in this repo reports.
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "account.js").read_text()
+        import re
+        required = int(re.search(r"REQUIRED_RUNNER_API = (\d+);", js).group(1))
+        self.assertEqual(required, ui.account.API_VERSION)
 
     def test_app_loads_account_before_app(self):
         html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()

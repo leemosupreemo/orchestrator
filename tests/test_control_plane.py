@@ -124,6 +124,17 @@ class ControlPlaneTests(PlaneCase):
         _, listed = self.call("GET", "/cp/machines", user="alice-token")
         self.assertFalse(listed["machines"][0]["online"])
 
+    def test_heartbeat_records_the_api_version(self):
+        machine_id, secret = self.pair()
+        _, listed = self.call("GET", "/cp/machines", user="alice-token")
+        self.assertEqual(listed["machines"][0]["api_version"], 0)  # never reported one
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "", "api_version": 2}, machine_auth=f"Machine {machine_id}:{secret}")
+        _, listed = self.call("GET", "/cp/machines", user="alice-token")
+        self.assertEqual(listed["machines"][0]["api_version"], 2)
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "", "api_version": "junk"}, machine_auth=f"Machine {machine_id}:{secret}")
+        _, listed = self.call("GET", "/cp/machines", user="alice-token")
+        self.assertEqual(listed["machines"][0]["api_version"], 0)
+
     def test_heartbeat_refuses_bad_secrets_and_plain_http(self):
         machine_id, secret = self.pair()
         self.assertEqual(self.beat(machine_id, "wrong")[0], 401)

@@ -210,8 +210,13 @@ class ControlPlane:
             running = max(0, min(int(body.get("running") or 0), 999))
         except (TypeError, ValueError):
             running = 0
+        try:
+            api_version = max(0, min(int(body.get("api_version") or 0), 9999))
+        except (TypeError, ValueError):
+            api_version = 0
         fields: dict[str, Any] = {"last_seen": self.now(), "endpoint": _endpoint(body.get("endpoint")),
-                                  "running": running, "busy": running > 0, "offline_notified": False}
+                                  "running": running, "busy": running > 0, "offline_notified": False,
+                                  "api_version": api_version}
         for key, limit in (("version", 40), ("name", 80), ("os", 40)):
             if body.get(key):
                 fields[key] = _clean(body[key], limit)
@@ -228,6 +233,7 @@ class ControlPlane:
     def _view(self, machine_id: str, machine: dict[str, Any]) -> dict[str, Any]:
         online = self.now() - (machine.get("last_seen") or 0) < ONLINE_WINDOW
         return {"id": machine_id, "name": machine["name"], "os": machine.get("os", ""), "version": machine.get("version", ""),
+                "api_version": machine.get("api_version", 0),
                 "endpoint": machine.get("endpoint", ""), "last_seen": machine.get("last_seen") or 0, "online": online,
                 "reachable": online and bool(machine.get("endpoint"))}
 

@@ -2095,11 +2095,16 @@ def prune_projects_command() -> int:
     return list_projects_command()
 
 
+def installed_with_pipx() -> bool:
+    """True when this copy of orchestrator lives in a pipx-managed virtualenv (…/pipx/venvs/<name>/…)."""
+    return "pipx" in Path(sys.prefix).parts and "venvs" in Path(sys.prefix).parts
+
+
 def update_command(args: argparse.Namespace) -> int:
     from orchestrator.project_config import PACKAGE_ROOT
-    from orchestrator import __version__
+    from orchestrator import __version__, account
     from orchestrator.scripts.common import print_header, print_section
-    
+
     pkg_dir = PACKAGE_ROOT.parent
     is_git = (pkg_dir / ".git").exists()
     
@@ -2115,9 +2120,20 @@ def update_command(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"\n❌ Error during local update: {e}")
             return 1
+    elif installed_with_pipx():
+        # `pipx upgrade` compares version numbers, and this package's rarely changes, so it can decide there is nothing to do.
+        print_section("\n--- Update (pipx) ---", account.INSTALL_SPEC)
+        pipx = shutil.which("pipx")
+        if not pipx:
+            print("\n\033[1;91mCan't find pipx on PATH.\033[0m Run: \033[97mpipx install --force " + account.INSTALL_SPEC + "\033[0m")
+            return 1
+        if subprocess.run([pipx, "install", "--force", account.INSTALL_SPEC], check=False).returncode != 0:
+            print("\n❌ The update didn't finish. Run the command above to see why.")
+            return 1
+        print("\n✅ Updated. Restart `orchestrator ui` to use it.")
     else:
         print("\n\033[1;93mNote: Local source code not found in a Git repository.\033[0m")
-        print("If you installed via pipx, run: \033[97mpipx upgrade orchestrator\033[0m")
+        print("If you installed via pipx, run: \033[97mpipx install --force " + account.INSTALL_SPEC + "\033[0m")
         print("If you installed via pip, run:  \033[97mpip install --upgrade orchestrator\033[0m")
 
     if getattr(args, "fleet", False):
@@ -2197,6 +2213,28 @@ def connect_command(name: str | None, status_only: bool = False) -> int:
         return 1
     print(f"Connected to {machine['owner_email']}. Start `orchestrator ui` here, then sign in at {account.HOSTED_APP_URL}.")
     return 0
+
+
+def service_command(action: str, keep_awake: bool = False) -> int:
+    from orchestrator import account, service
+
+    try:
+        if action == "install":
+            for line in service.install(service.make_spec(keep_awake)):
+                print(line)
+            print("Installed. It starts at login and restarts if it stops.")
+            if account.load_machine() is None:
+                print("Next: run `orchestrator connect` to add this computer to your account.")
+            return 0
+        if action == "uninstall":
+            print("Stopped and removed." if service.uninstall() else "It wasn't installed.")
+            return 0
+        info = service.status()
+        print(info["detail"])
+        return 0 if info["running"] else 1
+    except service.ServiceError as exc:
+        print(exc)
+        return 1
 
 
 def disconnect_command() -> int:
@@ -2392,6 +2430,13 @@ def _main(argv: list[str] | None = None) -> int:
     connect_parser.add_argument("--status", action="store_true", help="Show which account this computer is connected to")
     subparsers.add_parser("disconnect", help="Remove this computer from your account")
 
+    service_parser = subparsers.add_parser("service", help="Keep Orchestrator running in the background, starting at login")
+    service_actions = service_parser.add_subparsers(dest="service_action", required=True)
+    service_install = service_actions.add_parser("install", help="Start `orchestrator ui --tunnel` at login and keep it running")
+    service_install.add_argument("--keep-awake", action="store_true", help="Also stop this computer sleeping from idleness (macOS)")
+    service_actions.add_parser("uninstall", help="Stop it and remove it from login")
+    service_actions.add_parser("status", help="Show whether it is running")
+
     logs_parser = subparsers.add_parser(
         "logs",
         help="App runtime logs from the central log store (setup | sessions | pull | tail)",
@@ -2477,6 +2522,8 @@ def _main(argv: list[str] | None = None) -> int:
         return connect_command(args.name, args.status)
     if args.command == "disconnect":
         return disconnect_command()
+    if args.command == "service":
+        return service_command(args.service_action, getattr(args, "keep_awake", False))
     if args.command == "logs":
         if args.project and apply_project_env(args.project):
             return 1

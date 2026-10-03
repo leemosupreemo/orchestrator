@@ -8,6 +8,10 @@
   const PAIR_KEY = "orchestrator_pair_code";
   const MACHINE_KEY = "orchestrator_machine";
   const CODE_LENGTH = 8;
+  // The oldest computer this page works well with: orchestrator/account.py's API_VERSION, which a computer reports in
+  // its state and its heartbeat. Raise it in the same change that makes the page rely on something newer.
+  const REQUIRED_RUNNER_API = 2;
+  const UPDATE_HINT = "Update it: run `orchestrator update` on it.";
 
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>'"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[c]);
@@ -60,7 +64,10 @@
     return `${Math.round(s / 86400)} days ago`;
   }
 
+  const outdated = (apiVersion) => (apiVersion || 0) < REQUIRED_RUNNER_API;
+
   function machineStatus(m, now) {
+    if (m.reachable && outdated(m.api_version)) return {tone: "warn", text: `Online, but running an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${UPDATE_HINT}`};
     if (m.reachable) return {tone: "good", text: "Online"};
     if (m.online) return {tone: "warn", text: "Online, but not reachable from the web yet. Restart it with `orchestrator ui --tunnel`."};
     if (m.last_seen) return {tone: "muted", text: `Offline · last seen ${ago(m.last_seen, now)}. Start \`orchestrator ui --tunnel\` on it.`};
@@ -141,7 +148,7 @@
   }
 
   root.Account = {
-    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH,
+    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, outdated,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
     renderMachines, renderPair,
   };
