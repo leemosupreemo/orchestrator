@@ -941,6 +941,38 @@ process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: pag
         self.assertIn("Drive &lt;web&gt; apps", html)
         self.assertEqual(result["entry"], "#/config/ai")  # members can use it too
 
+    def test_build_the_plan_views(self):
+        helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
+        source = """
+const P = globalThis.FeaturePlan;
+const form = P.renderStartForm([
+  {id: "chat", name: "Chat", status: "planned", jobs_total: 0, layer: 1},
+  {id: "play", name: "Play <a>", status: "planned", jobs_total: 0, layer: 0},
+  {id: "old", name: "Old", status: "in-progress", jobs_total: 2, layer: 0}]);
+const plan = {auto_approve: false, paused: false, stopped: false, finished: false, rows: [
+  {feature: "play", name: "Play", state: "done", job: "j1", detail: ""},
+  {feature: "chat", name: "Chat <b>", state: "waiting", job: null, detail: "Waiting on Play"}]};
+process.stdout.write(JSON.stringify({
+  form, chosen: P.chosenFeatures({f_play: "on", f_chat: "on", auto_approve: "on"}),
+  run: P.renderRun(plan), paused: P.renderRun({...plan, paused: true}), finished: P.renderRun({...plan, finished: true}),
+  stopped: P.renderRun({...plan, stopped: true}), none: P.renderRun(null)}));"""
+        result = subprocess.run(["node", "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertLess(out["form"].index("Play &lt;a&gt;"), out["form"].index(">Chat<"))  # build order
+        self.assertIn('name="f_play"\n        checked', out["form"])
+        self.assertIn("has 2 jobs", out["form"])
+        self.assertNotIn('name="f_old"\n        checked', out["form"])
+        self.assertEqual(out["chosen"], ["play", "chat"])
+        self.assertIn("1/2", out["run"])
+        self.assertIn('href="#/jobs/j1"', out["run"])
+        self.assertIn("Chat &lt;b&gt;", out["run"])
+        self.assertIn('data-plan-action="pause"', out["run"])
+        self.assertIn('data-plan-action="resume"', out["paused"])
+        self.assertIn("The plan is built", out["finished"])
+        self.assertEqual(out["stopped"], "")
+        self.assertEqual(out["none"], "")
+
     def test_feature_proposal_view_groups_by_build_order_and_escapes(self):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
         source = """
@@ -1345,6 +1377,121 @@ process.stdout.write(JSON.stringify({grouped, oneGroup, allHtml: pages.map((page
         self.assertNotIn("Project docs", result["oneGroup"]["html"])
         for terminal_handoff in ('data-action="config_menu"', "data-scroll-to", "Open Full CLI Menu"):
             self.assertNotIn(terminal_handoff, result["allHtml"])
+
+
+class PlanRunApiTests(ServerTestCase):
+    """Build the plan, through the API, with job runs replaced by recorders: nothing real is started."""
+
+    class FakeRun:
+        def __init__(self, n):
+            self.id, self.running, self.job_id = f"run-{n}", True, None
+
+    def setUp(self):
+        super().setUp()
+        self.started = []
+
+        def start(action, title, argv, cwd, env, transcript_dir, cols=110, rows=32):
+            run = self.FakeRun(len(self.started))
+            self.started.append({"action": action, "argv": argv, "run": run})
+            return run
+
+        self.start_patch = patch.object(self.server.sessions, "start", side_effect=start)
+        self.start_patch.start()
+        for name, deps in (("Play a round", ""), ("Chat", "play-a-round"), ("Lobby", "")):
+            self.request("POST", "/api/features", {"name": name, "depends_on": deps}, headers=UI_HEADERS)
+
+    def tearDown(self):
+        self.start_patch.stop()
+        super().tearDown()
+
+    def plan_argv(self):
+        return [entry["argv"] for entry in self.started if entry["action"] == "new_job"]
+
+    def write_job(self, job_id, feature, run_id, status, archived=False, **extra):
+        folder = ui.jobs_dir(self.root) / ("archive" if archived else "")
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{job_id}.json").write_text(json.dumps({"job_id": job_id, "title": feature, "type": "feature-plan", "status": status,
+                                                          "feature": feature, "plan_run": run_id, **extra}))
+
+    def wait_started(self, count):
+        for _ in range(100):
+            if len(self.plan_argv()) >= count:
+                return
+            time.sleep(0.02)
+
+    def test_first_layer_starts_planning_and_dependents_wait(self):
+        res, data = self.request("POST", "/api/plan-run", {}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 201, data)
+        self.wait_started(2)
+        self.server.plan_tick()
+        argvs = self.plan_argv()
+        machines = json.loads((ui.runtime_dir(self.root) / "config" / "machines.json").read_text())["machines"] \
+            if (ui.runtime_dir(self.root) / "config" / "machines.json").exists() else []
+        self.assertEqual(len(argvs), min(2, ui.plan_run.capacity(machines)))  # Play and Lobby are both ready; machines limit it
+        self.assertIn("--no-dispatch", argvs[0])
+        self.assertTrue(any(a.endswith(":play-a-round") for a in argvs[0]))
+        plan = self.request("GET", "/api/features")[1]["plan"]
+        rows = {r["feature"]: r for r in plan["rows"]}
+        self.assertEqual(rows["chat"]["state"], "waiting")
+        self.assertIn("Play a round", rows["chat"]["detail"])
+
+    def test_a_finished_feature_releases_its_dependents(self):
+        self.request("POST", "/api/plan-run", {"features": ["play-a-round", "chat"]}, headers=UI_HEADERS)
+        self.wait_started(1)
+        run_id = ui.plan_run.load(ui.runtime_dir(self.root))["id"]
+        self.write_job("j-play", "play-a-round", run_id, "completed", archived=True)
+        self.server.plan_tick()
+        self.assertTrue(any(a.endswith(":chat") for a in self.plan_argv()[-1]))
+        self.write_job("j-chat", "chat", run_id, "completed", archived=True)
+        self.server.plan_tick()
+        self.assertTrue(ui.plan_run.load(ui.runtime_dir(self.root))["finished"])
+
+    def test_pause_stops_new_starts_and_resume_carries_on(self):
+        self.request("POST", "/api/plan-run", {"features": ["play-a-round", "chat"]}, headers=UI_HEADERS)
+        self.wait_started(1)
+        run_id = ui.plan_run.load(ui.runtime_dir(self.root))["id"]
+        res, data = self.request("POST", "/api/plan-run/pause", {"paused": True}, headers=UI_HEADERS)
+        self.assertTrue(data["plan"]["paused"])
+        self.write_job("j-play", "play-a-round", run_id, "completed", archived=True)
+        self.server.plan_tick()
+        self.assertEqual(len(self.plan_argv()), 1)  # chat is ready but the run is paused
+        self.request("POST", "/api/plan-run/pause", {"paused": False}, headers=UI_HEADERS)
+        self.server.plan_tick()
+        self.assertEqual(len(self.plan_argv()), 2)
+
+    def test_stop_ends_new_starts_and_a_new_run_can_begin(self):
+        self.request("POST", "/api/plan-run", {"features": ["play-a-round"]}, headers=UI_HEADERS)
+        res, _ = self.request("POST", "/api/plan-run", {"features": ["lobby"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)  # one plan at a time
+        res, data = self.request("POST", "/api/plan-run/stop", {}, headers=UI_HEADERS)
+        self.assertTrue(data["plan"]["stopped"])
+        res, _ = self.request("POST", "/api/plan-run", {"features": ["lobby"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 201)
+
+    def test_planning_that_ends_without_a_job_is_reported_not_retried(self):
+        self.request("POST", "/api/plan-run", {"features": ["play-a-round"]}, headers=UI_HEADERS)
+        self.wait_started(1)
+        self.server.plan_tick()
+        self.started[0]["run"].running = False  # the planning run ended and no job appeared
+        self.server.plan_tick()
+        self.server.plan_tick()
+        self.assertEqual(len(self.plan_argv()), 1)
+        row = self.request("GET", "/api/features")[1]["plan"]["rows"][0]
+        self.assertEqual(row["state"], "failed_start")
+        self.request("POST", "/api/plan-run/pause", {"paused": False}, headers=UI_HEADERS)  # resume retries it
+        self.server.plan_tick()
+        self.assertEqual(len(self.plan_argv()), 2)
+
+    def test_auto_approve_uses_the_approve_action(self):
+        self.request("POST", "/api/plan-run", {"features": ["play-a-round"], "auto_approve": True}, headers=UI_HEADERS)
+        self.wait_started(1)
+        run_id = ui.plan_run.load(ui.runtime_dir(self.root))["id"]
+        self.write_job("j-play", "play-a-round", run_id, "planned")
+        self.server.plan_tick()
+        approvals = [e for e in self.started if e["action"] == "approve"]
+        self.assertEqual(len(approvals), 1)
+        self.assertIn("approve", approvals[0]["argv"])
+        self.assertEqual(approvals[0]["run"].job_id, "j-play")
 
 
 class ReadApiTests(ServerTestCase):

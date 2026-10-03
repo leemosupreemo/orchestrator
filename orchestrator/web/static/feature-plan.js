@@ -42,5 +42,44 @@
     return stories?.length ? `<details><summary>Stories (${stories.length})</summary><ul class="feature-stories">${stories.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul></details>` : "";
   }
 
-  root.FeaturePlan = {renderProposal, renderStories, layerTitle};
+  // "Build the plan": choose features (planned ones without jobs are ticked) and whether plans approve themselves.
+  function renderStartForm(features) {
+    const ordered = [...(features || [])].sort((a, b) => a.layer - b.layer);
+    return `<p class="muted">Features are built in dependency order: each starts once everything it builds on is done, and independent
+        ones run at the same time when your machines can take them. Running work is never stopped by pausing.</p>
+      <fieldset class="field stack">${ordered.map((f) => `<label class="check"><input type="checkbox" name="f_${escapeHtml(f.id)}"
+        ${f.status === "planned" && !f.jobs_total ? "checked" : ""}><span>${escapeHtml(f.name)}${f.jobs_total ? ` <span class="muted">(has ${f.jobs_total} job${f.jobs_total === 1 ? "" : "s"})</span>` : ""}</span></label>`).join("")}</fieldset>
+      <label class="check"><input type="checkbox" name="auto_approve"><span>Approve plans automatically
+        <small class="hint-text">Otherwise each feature's plan waits for you to approve it. Plans with an open question or the architect's concerns always wait.</small></span></label>`;
+  }
+
+  function chosenFeatures(values) {
+    return Object.keys(values || {}).filter((key) => key.startsWith("f_")).map((key) => key.slice(2));
+  }
+
+  const RUN_STATE = {done: ["Done", "done"], working: ["Working", "working"], planning: ["Planning", "working"],
+    attention: ["Needs you", "attention"], failed_start: ["Stuck", "failed"], waiting: ["Waiting", "muted"], ready: ["Ready", "muted"]};
+
+  // The plan being built: each feature's state, with Pause/Resume and Stop.
+  function renderRun(plan) {
+    if (!plan || plan.stopped) return "";
+    const done = plan.rows.filter((r) => r.state === "done").length;
+    const rows = plan.rows.map((r) => {
+      const [label, tone] = RUN_STATE[r.state] || [r.state, "muted"];
+      const name = r.job ? `<a href="#/jobs/${encodeURIComponent(r.job)}">${escapeHtml(r.name)}</a>` : escapeHtml(r.name);
+      return `<div class="item" data-plan-feature="${escapeHtml(r.feature)}"><div class="main-col"><div class="title">${name}</div>
+        ${r.detail ? `<div class="meta">${escapeHtml(r.detail)}</div>` : ""}</div><span class="pill ${tone}">${escapeHtml(label)}</span></div>`;
+    }).join("");
+    const controls = plan.finished ? `<button type="button" class="btn small" data-plan-action="stop">Dismiss</button>`
+      : `${plan.paused ? `<button type="button" class="btn small primary" data-plan-action="resume">Resume</button>`
+        : `<button type="button" class="btn small" data-plan-action="pause">Pause</button>`}
+        <button type="button" class="btn small ghost" data-plan-action="stop">Stop</button>`;
+    return `<section class="card mb-16" id="plan-run">
+      <div class="card-h"><h2>${plan.finished ? "The plan is built" : plan.paused ? "Building the plan (paused)" : "Building the plan"}</h2>
+        <span class="count">${done}/${plan.rows.length}</span><div class="row gap-10">${controls}</div></div>
+      <div class="card-b stack">${plan.auto_approve ? `<p class="muted">Plans are approved automatically unless they raise a question.</p>` : `<p class="muted">Each feature's plan waits for you to approve it.</p>`}
+        <div class="list">${rows}</div></div></section>`;
+  }
+
+  root.FeaturePlan = {renderProposal, renderStories, layerTitle, renderStartForm, chosenFeatures, renderRun};
 })(typeof globalThis !== "undefined" ? globalThis : window);

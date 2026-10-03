@@ -2294,7 +2294,8 @@ function combineLine(f) {
 
 pages.features = async (_, query) => {
   const view_ = query.get("view") === "map" ? "map" : "list";
-  const [{ features, overlaps, archived_jobs: archived }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
+  const [{ features, overlaps, archived_jobs: archived, plan }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
+  const building = plan && !plan.stopped && !plan.finished;
   const byId = new Map([...archived, ...jobs].map((j) => [j.id, j]));
   const names = new Map(features.map((f) => [f.id, f.name]));
   const loose = jobs.filter((j) => !j.feature && j.state.group !== "done");
@@ -2345,14 +2346,16 @@ pages.features = async (_, query) => {
   return {
     title: "Features",
     sub: "What the jobs add up to. Each feature owns its own slice of the code.",
-    actions: `<button class="btn" id="draft-features" title="AI proposes features, stories and an order from your product requirements">Draft from product requirements</button><button class="btn primary" id="new-feature">New feature</button>`,
+    actions: `<button class="btn" id="draft-features" title="AI proposes features, stories and an order from your product requirements">Draft from product requirements</button>${features.length && !building ? `<button class="btn" id="build-plan" title="Build every chosen feature in dependency order, in parallel where possible">Build the plan</button>` : ""}<button class="btn primary" id="new-feature">New feature</button>`,
     html: view_ === "map" && features.length ? `
       ${toggle}
+      ${FeaturePlan.renderRun(plan)}
       <div id="feature-proposal-slot"></div>
       ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
       ${mapHtml()}` : `
       ${features.length ? toggle : ""}
       ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
+      ${FeaturePlan.renderRun(plan)}
       <div id="feature-proposal-slot"></div>
       ${features.map(card).join("") || `<div class="empty">No features yet. A feature is something a user would name, like “Lobby seats”. <strong>Draft from product requirements</strong> proposes them for you, or create one yourself.</div>`}
       ${loose.length ? `<section class="card"><div class="card-h"><h2>Not in a feature</h2><span class="count">${loose.length}</span></div>
@@ -2371,6 +2374,26 @@ pages.features = async (_, query) => {
         el?.scrollIntoView({ block: "center" });
         el?.classList.add("highlight-flash");
       }
+      if (building) {  // keep the plan's progress current while it builds
+        const timer = setInterval(() => { if (!document.querySelector("dialog[open]")) route(); }, 10000);
+        cleanup.push(() => clearInterval(timer));
+      }
+      $("#build-plan")?.addEventListener("click", async () => {
+        const v = await formDialog("Build the plan", FeaturePlan.renderStartForm(features), "Start building");
+        if (!v) return;
+        const chosen = FeaturePlan.chosenFeatures(v);
+        if (!chosen.length) { toast("Tick at least one feature.", "warning"); return; }
+        try { await api("plan-run", { method: "POST", body: { features: chosen, auto_approve: v.auto_approve === "on" } }); toast("Building the plan"); route(); }
+        catch (e) { toast(e.message, true); }
+      });
+      view.querySelectorAll("[data-plan-action]").forEach((btn) => btn.addEventListener("click", async () => {
+        const action = btn.dataset.planAction;
+        try {
+          if (action === "stop") await api("plan-run/stop", { method: "POST", body: {} });
+          else await api("plan-run/pause", { method: "POST", body: { paused: action === "pause" } });
+          route();
+        } catch (e) { toast(e.message, true); }
+      }));
       $("#draft-features").addEventListener("click", async (event) => {
         const button = event.currentTarget;
         button.disabled = true;

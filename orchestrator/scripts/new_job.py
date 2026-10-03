@@ -364,6 +364,9 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--feedback", help="User feedback for design or plan revision")
     parser.add_argument("--update", help="Path to an existing job JSON to update/re-plan")
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
+    # Set by "Build the plan" (orchestrator/plan_run.py): RUN:FEATURE, recorded on the job as it's created, so features
+    # planned in parallel each find their own job.
+    parser.add_argument("--plan-run", help=argparse.SUPPRESS)
     parser.add_argument("--summary", help="Summary or area of focus for the job (skips interactive input prompt if provided)")
     parser.add_argument("--skip-verify", action="store_true", help="Skip the architect's plan verification (used when a person has already accepted the architect's suggestions)")
     args = parser.parse_args(args_override)
@@ -944,6 +947,8 @@ def main(args_override: list[str] | None = None) -> None:
             "interactive_investigations": existing_job.get("interactive_investigations", []) if existing_job else job.get("interactive_investigations", []),
             "investigation_notes": existing_job.get("investigation_notes", []) if existing_job else job.get("investigation_notes", []),
         })
+        if args.plan_run and ":" in args.plan_run:
+            job["plan_run"], job["feature"] = args.plan_run.split(":", 1)
         
         # Special override for design-to-feature transition
         if existing_job and args.job_type == "feature":

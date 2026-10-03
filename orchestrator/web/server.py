@@ -61,6 +61,7 @@ from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import feature_map
+from orchestrator import plan_run
 from orchestrator import inbox as inbox_view
 from orchestrator import task_revert
 from orchestrator import preflight
@@ -592,6 +593,7 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "approach": approach,
         "state": job_state(job),
         "feature": job.get("feature") or None,
+        "plan_run": job.get("plan_run") or None,
         "branch": job.get("branch"),
         "base_branch": job.get("base_branch") or "main",
         "issue_number": issue_num,
@@ -2807,11 +2809,13 @@ class UIServer(ThreadingHTTPServer):
         self.tasks = BackgroundTasks(gate=self.gate)
         self.allowed_hosts = self._allowed_hosts()
         self._stopping = threading.Event()
+        self._plan_lock = threading.Lock()   # one plan-run decision at a time (background loop and page requests)
+        self._plan_sessions: dict[str, Any] = {}  # feature id -> the planning run started for it
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled"):
+                         "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -2924,12 +2928,80 @@ class UIServer(ThreadingHTTPServer):
                     self.notify_once(tracker)
                 except Exception as exc:  # never let a bad webhook or odd job file kill the watcher
                     print(f"  Notifications: {exc}", flush=True)
+                try:
+                    self.plan_tick()
+                except Exception as exc:  # a bad job file mustn't stop the loop; the run shows what's stuck
+                    print(f"  Build the plan: {exc}", flush=True)
 
         thread = threading.Thread(target=loop, daemon=True, name="notifier")
         self._tracker = tracker
         self.notify_once(tracker)  # seed so existing items aren't announced
         thread.start()
         return thread
+
+    def _plan_inputs(self, root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        runtime = runtime_dir(root)
+        machines = [m for m in read_json_file(runtime / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
+        return feature_store.load(runtime), list_jobs(root) + archived_feature_jobs(root), plan_run.capacity(machines)
+
+    def plan_view(self, root: Path) -> dict[str, Any] | None:
+        """The plan run for the Features page: its settings and what each feature is doing. Changes nothing."""
+        run = plan_run.load(runtime_dir(root))
+        if not run:
+            return None
+        features, jobs, slots = self._plan_inputs(root)
+        alive = {fid: bool(self._plan_sessions.get(fid) and self._plan_sessions[fid].running) for fid in run.get("starting") or {}}
+        decision = plan_run.decide({**run, "paused": True}, features, jobs, slots, alive)  # a view never starts anything
+        rows = [{**row, "detail": "Ready" if row["detail"] == "Paused" and not run.get("paused") else row["detail"]} for row in decision["rows"]]
+        return {"id": run["id"], "auto_approve": run.get("auto_approve", False), "paused": run.get("paused", False),
+                "stopped": run.get("stopped", False), "finished": run.get("finished", False) or decision["finished"], "rows": rows}
+
+    def plan_tick(self) -> dict[str, Any] | None:
+        """Advance "Build the plan": start ready features, approve plans when asked to, and record what finished."""
+        root = self.root
+        if root is None:
+            return None
+        runtime = runtime_dir(root)
+        with self._plan_lock:
+            run = plan_run.load(runtime)
+            if not run or run.get("finished") or run.get("stopped"):
+                return None
+            features, jobs, slots = self._plan_inputs(root)
+            starting = run.setdefault("starting", {})
+            for fid in list(starting):  # the planning run made its job: from now on the job says how it's going
+                job = next((j for j in jobs if j.get("feature") == fid and j.get("plan_run") == run["id"]), None)
+                if job:
+                    starting.pop(fid)
+                    self._plan_sessions.pop(fid, None)
+                    try:
+                        feature_store.note_work_attached(runtime, fid, job["state"]["group"])
+                    except feature_store.FeatureError:
+                        pass
+            alive = {fid: bool(self._plan_sessions.get(fid) and self._plan_sessions[fid].running) for fid in starting}
+            decision = plan_run.decide(run, features, jobs, slots, alive)
+            for fid in [f for f, live in alive.items() if not live]:  # planning ended without a job, or the server restarted
+                run.setdefault("failed_start", {})[fid] = starting.pop(fid)
+            by_id = {f["id"]: f for f in features}
+            for fid in decision["start"]:
+                feature = by_id[fid]
+                params = {"type": "feature", "summary": f"{feature['name']}: {feature.get('summary') or feature['name']}"[:500],
+                          "feature": fid, "branch_mode": "new", "no_dispatch": True}
+                argv = build_new_job(params, root) + ["--plan-run", f"{run['id']}:{fid}"]
+                session = self.sessions.start("new_job", f"Build the plan · {feature['name']}", argv, root, self.child_env(),
+                                              runtime / "logs" / "ui")
+                self._plan_sessions[fid] = session
+                starting[fid] = {"at": time.time(), "session": session.id}
+                run.get("failed_start", {}).pop(fid, None)
+            running = self.sessions.running_job_ids()
+            for job_id in decision["approve"]:
+                if job_id in running:
+                    continue
+                session = self.sessions.start("approve", "Approve · plan run", ACTIONS["approve"].build({"job": job_id}, root),
+                                              root, self.child_env(), runtime / "logs" / "ui")
+                session.job_id = job_id
+            run["finished"] = decision["finished"]
+            plan_run.save(runtime, run)
+            return decision
 
     def notify_once(self, tracker: "notifier.Tracker") -> list[dict[str, Any]]:
         root = self.root
@@ -3582,7 +3654,39 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["inbox"]:
             self._json(inbox_overview(root, self.server.sessions, runs=self._sessions_view()))
         elif method == "GET" and parts == ["features"]:
-            self._json(features_overview(root))
+            self._json({**features_overview(root), "plan": self.server.plan_view(root)})
+        elif method == "POST" and parts == ["plan-run"]:
+            body = self._body()
+            overview = features_overview(root)
+            chosen = body.get("features")
+            if not isinstance(chosen, list):  # by default: every planned feature that has no jobs yet, in build order
+                chosen = [f["id"] for f in sorted(overview["features"], key=lambda f: f["layer"])
+                          if f["status"] == "planned" and not f["jobs_total"]]
+            try:
+                with self.server._plan_lock:
+                    plan_run.start(runtime_dir(root), [str(c) for c in chosen], feature_store.load(runtime_dir(root)),
+                                   body.get("auto_approve") is True)
+            except plan_run.PlanRunError as exc:
+                raise UIError(str(exc))
+            self._audit("plan_run_started", features=len(chosen))
+            threading.Thread(target=self.server.plan_tick, daemon=True).start()  # start the first layer now, not in 15 s
+            self._json({"plan": self.server.plan_view(root)}, HTTPStatus.CREATED)
+        elif method == "POST" and parts in (["plan-run", "pause"], ["plan-run", "stop"]):
+            body = self._body()
+            with self.server._plan_lock:
+                run = plan_run.load(runtime_dir(root))
+                if not run:
+                    raise UIError("No plan is being built.", HTTPStatus.NOT_FOUND)
+                if parts[1] == "stop":
+                    run["stopped"] = True  # nothing new starts; jobs already running carry on
+                else:
+                    run["paused"] = body.get("paused") is True
+                    if not run["paused"]:
+                        run["failed_start"] = {}  # resuming retries features whose planning didn't finish
+                plan_run.save(runtime_dir(root), run)
+            if parts[1] == "pause" and not run["paused"]:
+                threading.Thread(target=self.server.plan_tick, daemon=True).start()
+            self._json({"plan": self.server.plan_view(root)})
         elif method == "POST" and parts == ["features", "propose"]:
             # Draft a feature map from the product requirements in the background; the page polls /api/product/task/<id>.
             self._body()  # requires the UI header like every other change, so another site can't start (and bill) a model run
