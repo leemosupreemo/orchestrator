@@ -1226,6 +1226,7 @@ def git_state(root: Path) -> dict[str, Any]:
         "changes": [{"status": l[:2].strip() or "?", "path": l[3:]} for l in status[:100]],
         "changes_total": len(status),
         "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
+        "elsewhere": branches_elsewhere(root),
         "web_url": repo_web_url(root),
     }
 
@@ -1481,6 +1482,7 @@ def project_state(root: Path) -> dict[str, Any]:
         "root": str(root),
         "branch": git(root, "branch", "--show-current"),
         "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
+        "elsewhere": branches_elsewhere(root),
         "dirty_files": len([l for l in status.splitlines() if l.strip()]),
         "scheme": config.get("scheme"),
         "firebase_distribution": bool(config.get("firebase_distribution")),
@@ -1923,10 +1925,26 @@ def _name(params: dict[str, Any], key: str) -> str:
     return value
 
 
+def branches_elsewhere(root: Path) -> dict[str, str]:
+    """Branches checked out in another worktree of this repository, and the folder each is in. Git keeps a branch in
+    one place at a time, so these can't be switched to here."""
+    here, out, path = safe_resolve(root), {}, None
+    for line in git(root, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/") and path and safe_resolve(Path(path)) != here:
+            out[line[len("branch refs/heads/"):]] = path
+    return out
+
+
 def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
     branch = _text(params, "branch", required=True, limit=250)
     if branch not in git(root, "branch", "--format=%(refname:short)").splitlines():
         raise UIError("Not a local branch")
+    elsewhere = branches_elsewhere(root).get(branch)
+    if elsewhere:
+        raise UIError(f"{branch} is checked out in another folder ({elsewhere}), and git keeps a branch in one place at a time. "
+                      "Work on it in that folder, or choose another branch.")
     return ["git", "checkout", branch]
 
 

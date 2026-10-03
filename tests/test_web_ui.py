@@ -2018,6 +2018,43 @@ class ActionTests(unittest.TestCase):
             ui.ACTIONS["test_suite"].build({"name": "x; rm -rf /"}, self.root)
 
 
+class WorktreeBranchTests(unittest.TestCase):
+    """A branch checked out in another worktree can't be switched to here; say where it is instead of git's fatal."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root, self.other = base / "repo", base / "repo-other"
+        self.root.mkdir()
+        run = lambda *a, cwd=self.root: subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True)  # noqa: E731
+        run("init", "-q", "-b", "main")
+        run("-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "start")
+        run("branch", "cloud-logs")
+        run("branch", "feature")
+        run("worktree", "add", "-q", str(self.other), "cloud-logs")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_branches_in_other_folders_are_found(self):
+        self.assertEqual(ui.branches_elsewhere(self.root), {"cloud-logs": str(self.other)})
+        self.assertEqual(ui.branches_elsewhere(self.other), {"main": str(self.root)})
+
+    def test_switching_to_one_explains_instead_of_failing(self):
+        with self.assertRaises(ui.UIError) as refused:
+            ui.build_git_checkout({"branch": "cloud-logs"}, self.root)
+        self.assertIn(str(self.other), str(refused.exception))
+        self.assertIn("one place at a time", str(refused.exception))
+        self.assertEqual(ui.build_git_checkout({"branch": "feature"}, self.root), ["git", "checkout", "feature"])
+
+    def test_the_page_labels_them_and_explains(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        switch = js[js.index("async function switchBranch"):][:900]
+        self.assertLess(switch.index("state.project?.elsewhere?.[branch]"), switch.index("runAction"))  # explained, never run
+        self.assertIn('" (in another folder)"', js)
+        self.assertEqual(js.count("branchOption("), 3)  # defined once, used by the top bar and the Git page
+
+
 class JobStateTests(unittest.TestCase):
     def state(self, **job):
         return ui.job_state(job)

@@ -1494,7 +1494,7 @@ function statusLine(p) {
   const running = state.runs.filter((r) => r.running).length;
   const branches = p.branches || [];
   const branchPicker = branches.length
-    ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => `<option ${b === p.branch ? "selected" : ""}>${esc(b)}</option>`).join("")}</select>`
+    ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => branchOption(b, p.branch, p.elsewhere)).join("")}</select>`
     : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
   const langs = p.languages?.length
     ? `<span class="sep">·</span><span class="topbar-languages" title="${esc(p.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · "))}">${renderLanguagesBar(p.languages, { maxLabels: 3 })}</span>`
@@ -1504,8 +1504,21 @@ function statusLine(p) {
     <span class="status-stats"><span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : p.machine_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>` : p.model_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}${langs}</span></span>`;
 }
 
+// A branch checked out in another worktree folder is labelled: git won't switch to it here.
+function branchOption(b, current, elsewhere = {}) {
+  return `<option value="${esc(b)}" ${b === current ? "selected" : ""}>${esc(b)}${elsewhere?.[b] ? " (in another folder)" : ""}</option>`;
+}
+
 // git refuses to switch when uncommitted changes would be overwritten, so offer to set them aside.
 async function switchBranch(branch) {
+  const folder = state.project?.elsewhere?.[branch];
+  if (folder) {  // git keeps a branch in one place at a time: say where it is instead of failing
+    await formDialog(`${branch} is open in another folder`, `<p>It's checked out in <code>${esc(folder)}</code>, and git keeps a branch in one place at a time.
+      Work on it in that folder, or choose another branch here.</p>
+      <div class="setup-hint"><code>${esc(folder)}</code><button type="button" class="btn small ghost" data-setup-copy="${esc(folder)}">Copy</button></div>
+      <p class="muted">Looking for another project? Projects are listed under <a href="#/projects">Projects</a>; branches are versions of this one.</p>`, "OK");
+    return;
+  }
   const dirty = state.project?.dirty_files || 0;
   if (!dirty) return runAction("git_checkout", { branch });
   const ok = await formDialog(`Switch to ${branch}?`, `<p>You have ${dirty} uncommitted file${dirty > 1 ? "s" : ""}, which git may refuse to carry over.</p>
@@ -3204,7 +3217,7 @@ pages.git = async () => {
         <div>
           <div class="muted">Switch branch</div>
           <select id="git-branch-select" name="branch" class="mono" aria-label="Switch branch" style="margin-top: 4px; max-width: 320px;">
-            ${g.branches.map((b) => `<option value="${esc(b)}" ${b === g.branch ? "selected" : ""}>${esc(b)}</option>`).join("")}
+            ${g.branches.map((b) => branchOption(b, g.branch, g.elsewhere)).join("")}
           </select>
         </div>
       </div></section>
