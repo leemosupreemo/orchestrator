@@ -21,17 +21,12 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
 
     sections = f.get("prd_sections") or {}
     written = [k for k, v in sections.items() if v]
-    core = ["pitch", "who", "features"]
-    if not sections.get("pitch"):
-        items.append(_item("prd", "Product requirements", "todo", "Nothing says what this product is for, so every job guesses. Say it in a few sentences, or import a PRD you already have.",
-                           route="#/product", label="Write it"))
-    elif all(sections.get(k) for k in core):
-        items.append(_item("prd", "Product requirements", "ok", f"{len(written)} of 5 sections written. It updates itself as jobs finish."
-                           if f.get("prd_auto_update") else f"{len(written)} of 5 sections written. Automatic updates are off."))
+    if not written:
+        items.append(_item("prd", "Product requirements", "todo", "Optional, but nothing says what this product is for, so every job guesses. Describe it in a few sentences, draft it from the project, or import a PRD.",
+                           route="#/product", label="Add it"))
     else:
-        missing = [t for k, t in (("who", "who it's for"), ("features", "core features")) if not sections.get(k)]
-        items.append(_item("prd", "Product requirements", "todo", f"Still to write: {', '.join(missing)}. Don't know yet? Say so; the AI fills in blanks and it's refined as jobs run.",
-                           route="#/product", label="Add them"))
+        updates = "It updates itself as jobs finish." if f.get("prd_auto_update") else "Automatic updates are off."
+        items.append(_item("prd", "Product requirements", "ok", f"{len(written)} of 5 sections written. {updates}"))
 
     if f["recommend_pending"]:
         items.append(_item("platforms", "Platforms", "warn", "Platforms are still undecided. Ask for a recommendation in your next plan, then record the choice in the product requirements.",

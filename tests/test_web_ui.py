@@ -2011,18 +2011,56 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('st.type === "feature" || st.type === "design"', form)
         self.assertIn("Define the product first", form)
         self.assertIn("Skip for now", form)
-        self.assertIn('x.id === "pitch")?.filled', form)  # nothing says what the product is
+        self.assertIn("sections.some((x) => x.filled)", form)  # nothing at all is written yet (every section is optional, so any one counts)
 
     def test_the_product_page_is_one_document_with_five_sections_you_can_edit_import_and_restore(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        for part in ('product/draft', "Draft it from my project", "open.draft", 'data-prd-edit', 'api("product/settings"', 'api("product/revert"', 'product/history/', '"product/import"', '"product/design"', 'product/reference',
-                     'api("product/refine"', "Update this automatically when jobs finish", "Import a PRD", "Help me with this", "Nothing is saved until you accept"):
+        for part in ('data-prd-edit', 'api("product/settings"', 'api("product/revert"', 'product/history/', '"product/import"', '"product/design"', 'product/reference',
+                     'api("product/draft"', "Update this automatically when jobs finish", "Import PRD", "Nothing is saved until you accept"):
             self.assertIn(part, page, part)
+        self.assertNotIn("Help me with this", self.js)  # removed
+        self.assertNotIn("product/refine", self.js)
+        self.assertNotIn("Import a PRD", self.js)  # the button just says Import PRD
         self.assertNotIn("product/scaffold", self.js)  # no six documents to create
         self.assertNotIn("last-review", self.js)  # and no separate review job
-        self.assertIn("Optional", page)  # look and feel, and not-this, are optional
+        self.assertNotIn(">Optional<", page)  # every section is optional, so none is singled out
+        self.assertIn("Everything here is optional", page)
         # Look and feel takes uploads, a pasted link, and an item picked from a connected app (Figma).
         self.assertIn("linkPickerHtml({ prefer: [\"figma\"]", page)
+
+    def test_slow_model_work_is_started_and_polled_not_held_open(self):
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        self.assertEqual(page.count("waitForTask("), 2)  # draft and import
+        fn = self.js[self.js.index("async function waitForTask"):self.js.index("function productStripHtml")]
+        self.assertIn("product/task/", fn)
+        self.assertIn("e.status === 404 || ++misses >= 4", fn)  # a dropped connection is retried, a vanished task is not
+        self.assertIn("7 * 60 * 1000", fn)  # and it never spins for ever
+
+    def test_working_on_it_is_a_prominent_spinner_with_a_timer(self):
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        busy = page[page.index("const busy ="):][:900]
+        for part in ('class="prd-busy"', 'class="spinner"', 'role="status"', "data-elapsed", "Math.floor"):
+            self.assertIn(part, busy, part)
+        css = self.css[self.css.index(".prd-busy {"):][:400]
+        self.assertIn("var(--accent)", css)  # in the accent colour, on its soft tint
+        self.assertIn("var(--accent-soft)", css)
+
+    def test_import_takes_a_dropped_file_and_starts_reading_at_once(self):
+        page = self.js[self.js.index("const importPanel"):self.js.index("An existing project: read what is there")]
+        for part in ('id="prd-drop"', '"dragover"', '"drop"', "e.dataTransfer?.files?.[0]", "readPrd({ file: f })", "e.preventDefault()", 'zone.addEventListener("keydown"'):
+            self.assertIn(part, page, part)
+        read = self.js[self.js.index("const readPrd"):self.js.index("const importPanel")]
+        self.assertIn("NJ_UPLOAD_LIMIT", read)  # a dropped file is checked like a chosen one
+        self.assertIn("md|markdown|txt|docx|pdf", read)
+        self.assertIn(".prd-drop.over", self.css)
+        self.assertIn("pointer: coarse", self.css)  # phones have nothing to drag, so they are not told to
+
+    def test_home_shows_what_the_product_is_without_the_section_buttons(self):
+        card = self.js[self.js.index("function productStripHtml"):][:1500]
+        self.assertNotIn("doc-chip", card)
+        self.assertNotIn("p.sections.map", card)
+        self.assertIn("Import PRD", card)
+        self.assertNotIn("doc-chip", self.css)  # and the styles went with them
 
     def test_an_automatic_update_is_announced_with_undo_and_dismiss(self):
         for part in ("prdNoticeHtml", "data-prd-undo", "data-prd-dismiss", "Product requirements updated"):
@@ -2033,7 +2071,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("lastPrdNotice !== undefined", refresh)  # an update seen on first load is a banner, not a surprise toast
         home = self.js[self.js.index("function productStripHtml"):][:1700]
         self.assertIn("prdNoticeHtml(p.notice)", home)
-        self.assertIn("Import a PRD you have", home)
+        self.assertIn("Import PRD", home)
         self.assertIn("Draft it from my project", home)  # an existing project is offered a draft from Home too
         self.assertIn("p.can_draft", home)
 
@@ -2560,6 +2598,17 @@ class ProductEndpointTests(ServerTestCase):
         conn.close()
         return res, data
 
+    def finish(self, started):
+        """A model-backed request answers at once with a task; wait for it the way the page does. Returns (final task, task id)."""
+        res, data = started
+        self.assertEqual(res.status, 202, data)
+        for _ in range(100):
+            _, task = self.request("GET", f"/api/product/task/{data['task']}")
+            if task["status"] != "running":
+                return task
+            time.sleep(0.05)
+        self.fail("the task never finished")
+
     def doc(self):
         return prd_mod.Prd(self.root, self.root / ".orchestrator")
 
@@ -2583,6 +2632,14 @@ class ProductEndpointTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         for bad in ({"section": "nope", "body": "x"}, {"text": "x" * (prd_mod.MAX_DOC_CHARS + 1)}, {"section": "pitch", "body": "x", "source": "evil"}):
             self.assertEqual(self.post("/api/product", bad)[0].status, 400, bad)
+
+    def test_an_accepted_draft_or_import_is_recorded_as_such_and_other_sources_are_refused(self):
+        text = prd_mod.replace_section(prd_mod.template(), "pitch", self.PITCH)
+        _, d = self.post("/api/product", {"text": text, "source": "draft", "summary": "Drafted"})
+        self.assertEqual(d["history"][0]["source"], "draft")
+        _, d = self.post("/api/product", {"text": text + "\nmore", "source": "import"})
+        self.assertEqual(d["history"][0]["source"], "import")
+        self.assertEqual(self.post("/api/product", {"text": text, "source": "ai"})[0].status, 400)  # that was "Help me with this", now gone
 
     def test_saving_requires_the_ui_header(self):
         res, _ = self.request("POST", "/api/product", body={"section": "pitch", "body": "x"}, headers={"Content-Type": "application/json"})
@@ -2658,38 +2715,60 @@ class ProductEndpointTests(ServerTestCase):
         self.assertEqual(self.raw_post("/api/product/design?name=a.png", b"")[0].status, 400)
         self.assertEqual(self.raw_post("/api/product/design?name=a.png", b"x", headers={})[0].status, 403)
 
-    def test_ai_help_asks_questions_then_proposes_and_shows_a_diff_without_saving(self):
-        self.post("/api/product", {"section": "pitch", "body": self.PITCH})
-        before = (self.root / "docs" / "product" / "prd.md").read_text()
-        replies = ['{"questions": [{"question": "Who plays?", "why": "Shapes the tone"}]}',
-                   json.dumps({"summary": "Added who it is for", "markdown": prd_mod.replace_section(before, "who", "Two friends who have a minute.")})]
-        seen = []
+    def test_there_is_no_help_me_endpoint_any_more(self):
+        res, _ = self.post("/api/product/refine", {"mode": "propose", "instruction": "x"})
+        self.assertEqual(res.status, 404)
+
+    def test_a_slow_model_call_returns_at_once_and_is_followed_by_polling(self):
+        # A quick tunnel closes any request held open for ~100 s, so the answer must not depend on one long request.
+        release = threading.Event()
+        before = prd_mod.template()
+
+        def slow(self_, root, prompt, model="", timeout=150):
+            release.wait(5)
+            return json.dumps({"summary": "done", "markdown": prd_mod.replace_section(before, "pitch", "From the model")})
+
+        with patch.object(ui.UIHandler, "_model_call", slow):
+            started = time.time()
+            res, data = self.post("/api/product/import", {"text": "my old prd"})
+            self.assertEqual(res.status, 202)
+            self.assertLess(time.time() - started, 2)  # it did not wait for the model
+            _, running = self.request("GET", f"/api/product/task/{data['task']}")
+            self.assertEqual(running, {"status": "running"})
+            release.set()
+            task = self.finish((res, data))
+        self.assertEqual(task["status"], "done")
+        self.assertIn("+From the model", task["result"]["diff"])
+
+    def test_a_reply_in_the_wrong_format_is_asked_for_again_once(self):
+        calls = []
 
         def fake(self_, root, prompt, model="", timeout=150):
-            seen.append(prompt)
-            return replies.pop(0)
+            calls.append(prompt)
+            return "Sure! I wrote it to a file." if len(calls) == 1 else json.dumps({"summary": "ok", "markdown": prd_mod.replace_section(prd_mod.template(), "pitch", "Second try")})
 
         with patch.object(ui.UIHandler, "_model_call", fake):
-            res, q = self.post("/api/product/refine", {"mode": "questions", "instruction": "fill the gaps"})
-            self.assertEqual((res.status, q["questions"][0]["question"]), (200, "Who plays?"))
-            res, p = self.post("/api/product/refine", {"mode": "propose", "instruction": "fill the gaps", "answers": [{"question": "Who plays?", "answer": "Two friends"}]})
-        self.assertEqual((res.status, p["summary"]), (200, "Added who it is for"))
-        self.assertIn("+Two friends who have a minute.", p["diff"])
-        self.assertIn("Two friends", seen[1])
-        self.assertIn("A word game", seen[0])  # it sees the document
-        self.assertEqual((self.root / "docs" / "product" / "prd.md").read_text(), before)  # nothing is written until the person accepts
-        res, saved = self.post("/api/product", {"text": p["markdown"], "source": "ai", "summary": p["summary"]})
-        self.assertEqual(saved["history"][0]["source"], "ai")
+            task = self.finish(self.post("/api/product/import", {"text": "my old prd"}))
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("FORMAT CORRECTION", calls[1])
+        self.assertNotIn("FORMAT CORRECTION", calls[0])
 
-    def test_ai_help_reports_bad_replies_bad_modes_and_model_failures_cleanly(self):
+    def test_a_model_that_keeps_getting_the_format_wrong_ends_in_a_clear_error_not_a_hang(self):
         with patch.object(ui.UIHandler, "_model_call", lambda self_, root, prompt, model="", timeout=150: "not json"):
-            res, data = self.post("/api/product/refine", {"mode": "propose", "instruction": "x"})
-        self.assertEqual(res.status, 502)
-        self.assertIn("expected form", data["error"])
-        self.assertEqual(self.post("/api/product/refine", {"mode": "write-it-all"})[0].status, 400)
+            task = self.finish(self.post("/api/product/import", {"text": "my old prd"}))
+        self.assertEqual(task["status"], "error")
+        self.assertIn("expected form", task["error"])
+
+    def test_a_model_that_cannot_run_reports_why(self):
         with patch.object(ui.UIHandler, "_model_call", side_effect=ui.UIError("No model is available.", 502)):
-            res, data = self.post("/api/product/refine", {"mode": "questions"})
-        self.assertEqual((res.status, data["error"]), (502, "No model is available."))
+            task = self.finish(self.post("/api/product/import", {"text": "my old prd"}))
+        self.assertEqual((task["status"], task["error"]), ("error", "No model is available."))
+
+    def test_an_unknown_or_expired_task_says_so(self):
+        res, data = self.request("GET", "/api/product/task/nope")
+        self.assertEqual(res.status, 404)
+        self.assertIn("Start it again", data["error"])
 
     def test_an_existing_project_can_be_read_and_drafted_without_saving_or_inventing_not_this(self):
         # The fixture project has files, so first make it a project with nothing to read.
@@ -2712,8 +2791,9 @@ class ProductEndpointTests(ServerTestCase):
                 prd_mod.template(), "pitch", "A word game for two friends."), "not", "- Not an IDE")})
 
         with patch.object(ui.UIHandler, "_model_call", fake):
-            res, p = self.post("/api/product/draft", {})
-        self.assertEqual(res.status, 200, p)
+            task = self.finish(self.post("/api/product/draft", {}))
+        self.assertEqual(task["status"], "done", task)
+        p = task["result"]
         self.assertIn("A word game for two friends.", seen[0][0])  # the README was read
         self.assertIn("Add scoring", seen[0][0])  # and the history
         self.assertGreaterEqual(seen[0][1], 240)  # reading a project takes a while
@@ -2750,12 +2830,11 @@ class ProductEndpointTests(ServerTestCase):
             return proposal
 
         with patch.object(ui.UIHandler, "_model_call", fake):
-            res, p = self.post("/api/product/import", {"text": "OLD PRD: a word game"})
-            self.assertEqual((res.status, p["summary"]), (200, "Kept everything"))
+            p = self.finish(self.post("/api/product/import", {"text": "OLD PRD: a word game"}))["result"]
+            self.assertEqual(p["summary"], "Kept everything")
             self.assertIn("OLD PRD: a word game", seen[0][0])
             self.assertIn("+From my old PRD", p["diff"])
-            res, p = self.raw_post("/api/product/import?name=prd.md", b"# My PRD\n\nA word game from a file")
-            self.assertEqual(res.status, 200, p)
+            p = self.finish(self.raw_post("/api/product/import?name=prd.md", b"# My PRD\n\nA word game from a file"))["result"]
             self.assertIn("A word game from a file", seen[1][0])
         self.assertGreaterEqual(seen[0][1], 240)  # reading a long document takes a while
         self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())
@@ -3055,6 +3134,71 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("discard", ui.ACTIONS)
         self.assertTrue(ui.ACTIONS["discard"].confirm)
         self.assertNotIn('runAction("console")', self.source[self.source.index("discard_job(params)"):][:120])
+
+    def test_discard_job_option_removed_from_more_menu(self):
+        start = self.source.index("function jobHeaderActions")
+        end = self.source.index('document.addEventListener("click", async (e)', start)
+        header_actions_fn = self.source[start:end]
+        self.assertNotIn("Discard job and revert changes", header_actions_fn)
+        self.assertNotIn('act("discard_job"', header_actions_fn)
+
+    def test_delete_button_added_to_job_detail_top_right(self):
+        start = self.source.index("function jobHeaderActions")
+        end = self.source.index('document.addEventListener("click", async (e)', start)
+        header_actions_fn = self.source[start:end]
+        self.assertIn("btn danger", header_actions_fn)
+        self.assertIn('act("delete_job", j)', header_actions_fn)
+        self.assertIn(">Delete</button>", header_actions_fn)
+
+    def test_delete_job_dialog_flow_defined(self):
+        start = self.source.index("async delete_job(params)")
+        end = self.source.index("async splinter_job(params)", start)
+        dialog_code = self.source[start:end]
+        self.assertIn("Delete Job", dialog_code)
+        self.assertIn("Revert changes", dialog_code)
+        self.assertIn("Delete and keep changes", dialog_code)
+        self.assertIn("Confirm Deletion", dialog_code)
+        self.assertIn("api(`jobs/${encodeURIComponent(params.job)}/delete`", dialog_code)
+
+
+class JobDeleteEndpointTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def test_delete_job_with_keep_changes_archives_job(self):
+        job_file = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        archive_file = self.root / ".orchestrator" / "jobs" / "archive" / f"{self.JOB}.json"
+        self.assertTrue(job_file.is_file())
+
+        res, data = self.request("POST", f"/api/jobs/{self.JOB}/delete", body={"revert": False}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(data.get("deleted"), self.JOB)
+        self.assertFalse(data.get("reverted"))
+        self.assertFalse(job_file.exists())
+        self.assertTrue(archive_file.is_file())
+        saved = json.loads(archive_file.read_text())
+        self.assertEqual(saved.get("status"), "discarded")
+
+    def test_delete_job_with_revert_reverts_files_and_archives(self):
+        job_file = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        archive_file = self.root / ".orchestrator" / "jobs" / "archive" / f"{self.JOB}.json"
+        untracked = self.root / "tmp_job_file.txt"
+        untracked.write_text("hello")
+        job = json.loads(job_file.read_text())
+        job["ai_untracked_files"] = ["tmp_job_file.txt"]
+        job_file.write_text(json.dumps(job))
+
+        res, data = self.request("POST", f"/api/jobs/{self.JOB}/delete", body={"revert": True}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertTrue(data.get("reverted"))
+        self.assertFalse(untracked.exists())
+        self.assertFalse(job_file.exists())
+        self.assertTrue(archive_file.is_file())
+
+    def test_delete_action_registered(self):
+        self.assertIn("delete_job", ui.ACTIONS)
+        self.assertIn("keep_changes", ui.ACTIONS["delete_job"].fields)
 
 
 if __name__ == "__main__":

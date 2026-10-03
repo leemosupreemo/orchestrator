@@ -72,17 +72,16 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(by_id(H.evaluate({**HEALTHY, "features_needing_kpis": 1}))["kpis"]["status"], "todo")
         self.assertEqual(by_id(H.evaluate({**HEALTHY, "kpis_measured": 0}))["kpis"]["status"], "warn")
 
-    def test_the_product_requirements_item_follows_what_is_written(self):
+    def test_the_product_requirements_are_optional_so_anything_written_is_enough(self):
         written = lambda **kw: by_id(H.evaluate({**HEALTHY, "prd_sections": {"pitch": False, "who": False, "features": False, "look": False, "not": False, **kw}}))["prd"]
-        self.assertEqual(written()["status"], "todo")
-        part = written(pitch=True, who=True)
-        self.assertEqual((part["status"], part["route"]), ("todo", "#/product"))
-        self.assertIn("core features", part["detail"])
-        self.assertNotIn("who it's for", part["detail"])
-        done = written(pitch=True, who=True, features=True, look=True)
-        self.assertEqual(done["status"], "ok")
-        self.assertIn("4 of 5", done["detail"])
-        self.assertIn("updates itself", done["detail"])
+        nothing = written()
+        self.assertEqual((nothing["status"], nothing["route"]), ("todo", "#/product"))
+        self.assertIn("Optional", nothing["detail"])
+        self.assertIn("draft it from the project", nothing["detail"])
+        one = written(look=True)  # no pitch needed
+        self.assertEqual(one["status"], "ok")
+        self.assertIn("1 of 5", one["detail"])
+        self.assertIn("updates itself", written(pitch=True, who=True)["detail"])
 
     def test_it_says_when_automatic_updates_are_off(self):
         item = by_id(H.evaluate({**HEALTHY, "prd_auto_update": False}))["prd"]

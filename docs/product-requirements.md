@@ -6,13 +6,13 @@ This page describes how it works for the person using it, then what happens unde
 
 ## The document
 
-Five sections, in the person's own words wherever possible.
+Five sections, in the person's own words wherever possible. **Every section is optional**: write what you know and leave the rest.
 
 | Section | What goes in it | Optional |
 |---|---|---|
-| **Pitch** | What it is, said the way you'd explain it to a friend. Also a `Built for:` line (iOS app, web app, "not decided yet"…). | No |
-| **Who it's for** | An ideal user, or the situations it's for. "Not sure yet" is a fine answer. | No |
-| **Core features** | The things it has to do, one per line. User-story form ("As a …, I can … so that …") is encouraged, not required. | No |
+| **Pitch** | What it is, said the way you'd explain it to a friend. Also a `Built for:` line (iOS app, web app, "not decided yet"…). | Yes |
+| **Who it's for** | An ideal user, or the situations it's for. "Not sure yet" is a fine answer. | Yes |
+| **Core features** | The things it has to do, one per line. User-story form ("As a …, I can … so that …") is encouraged, not required. | Yes |
 | **Look and feel** | A description ("feels like Google Docs"), plus designs, sketches, links and items from a connected app such as Figma. | Yes |
 | **Not this** | What it should not be or include: features you don't want, competitors not to copy exactly. | Yes |
 
@@ -26,11 +26,11 @@ flowchart TD
     kind -->|New project wizard| wiz[PRD filled in from the wizard's answers]
     kind -->|Older project with a brief / use-case docs| mig[Folded into a PRD the first time it is opened]
     kind -->|Existing code, no PRD| draft[Draft it from my project]
-    kind -->|They already have a PRD| imp[Import a PRD]
-    kind -->|Nothing yet| write[Write the Pitch, or Help me with this]
+    kind -->|They already have a PRD| imp[Import PRD]
+    kind -->|Nothing yet| write[Write whichever sections you can]
     draft --> review{Read the proposal as a diff}
     imp --> review
-    write --> review
+    write --> doc
     review -->|Accept| doc[(docs/product/prd.md + a history version)]
     review -->|Discard| none[Nothing saved]
     wiz --> doc
@@ -52,13 +52,12 @@ flowchart TD
 
 The Product page (**Product** card on Home, then **Open**) offers these, most useful first for the situation:
 
-- **Write it.** Click **Write** on a section and type. The Pitch is the only thing that has to exist for the document to start doing its job.
+- **Write it.** Click **Write** on a section and type. Every section is optional: write what you know and leave the rest. Anything written is enough for the document to start doing its job.
 - **Draft it from my project.** For a project that already has code (a README, notes, a manifest or source files), the app reads a bounded summary of it: the README, `AGENTS.md`/`CLAUDE.md`, a few files in `docs/`, manifests (`package.json`, `pyproject.toml`, `Package.swift`, …), the top-level layout, source files by type and the last 30 commit subjects. A model proposes a first PRD from that. It describes what the product does today, says what it inferred and what it couldn't tell, and writes `TBD:` questions for the rest. **It never writes "Not this"**: only the person can say what the product shouldn't be, and builders and reviewers treat that section as law.
-- **Import a PRD.** A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. It is rearranged into the five sections keeping the person's wording; what doesn't fit is summarised in a line or left out, and the proposal says which.
-- **Help me with this.** The model asks up to six plain-language questions (skipping anything the document already answers), then proposes changes using the answers. "I don't know yet" is a fine answer to any of them.
+- **Import PRD.** Drag a file onto the drop zone (on a computer) or click to choose one. A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. It is rearranged into the five sections keeping the person's wording; what doesn't fit is summarised in a line or left out, and the proposal says which.
 - **New project wizard.** The answers to the wizard's questions (name, one-sentence pitch, audience, problem, day-one features, platforms, technology preferences, how you'll know v1 works) write the first version. "Not sure: recommend for me" becomes a note telling the first plan to recommend platforms, with reasons.
 
-Drafts, imports and Help proposals are always shown as a diff with **Accept and save** / **Discard**. Nothing is written until the person accepts.
+Drafts and imports are always shown as a diff with **Accept and save** / **Discard**. Nothing is written until the person accepts.
 
 **With no PRD at all** nothing breaks. Jobs run as before with no product context, the automatic update never runs (there is nothing to keep true) and never creates a document, and Home, Check-up and the New job form point at the Product page. Before the first feature or design in a project with no Pitch, New job suggests defining the product first (it can be skipped).
 
@@ -144,20 +143,21 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 | Request | Does |
 |---|---|
 | `GET /product` | The document, its five sections, history, settings, unseen notice and whether a draft is possible. Never creates a file. |
-| `POST /product` `{section, body}` or `{text, source, summary}` | Save one section, or the whole document. `source` is `you`, `import` or `ai`. |
+| `POST /product` `{section, body}` or `{text, source, summary}` | Save one section, or the whole document. `source` is `you`, `import` or `draft`. |
 | `POST /product/settings` `{auto_update}` | The automatic-update switch. |
 | `POST /product/dismiss` | Mark the update notice seen. |
 | `GET /product/history/<id>` | One version, with a diff against the one before. |
 | `POST /product/revert` `{id}` | Restore a version (recorded as a new version). |
-| `POST /product/refine` `{mode: questions \| propose, instruction, answers}` | Help me with this. Returns questions, or a proposal with a diff. Saves nothing. |
-| `POST /product/import` | A file (raw body, `?name=`) or `{text}`. Returns a proposal with a diff. Saves nothing. |
-| `POST /product/draft` | Draft from the project. Returns a proposal with a diff. Saves nothing. |
+| `POST /product/import` | A file (raw body, `?name=`) or `{text}`. Starts the work and returns `{task}` at once (202). |
+| `POST /product/draft` | Draft from the project. Starts the work and returns `{task}` at once (202). |
+| `GET /product/task/<id>` | How a started import or draft is getting on: `running`, `done` with the proposal and its diff (saves nothing), or `error` with why. 404 once it has expired (30 minutes). |
 | `POST /product/design?name=` | Upload a design (raw body, up to 25 MB). |
 | `GET /product/design/<name>` | A saved design: images inline, anything else as a download. |
 | `POST /product/reference` `{label, url}` or `{links}` | Add a link, or items picked from a connected app. |
 
   `GET /api/state` also carries `product_notice` (the latest unseen automatic update), which the page polls to announce it.
-- **Answer-only model calls** (Help me, Import, Draft, job chat) go through `_model_call` in `orchestrator/web/server.py`, which runs `job_chat_run.py` in an empty scratch folder.
+- **Slow model calls run in the background.** Import and Draft return a task id straight away and the page polls `GET /product/task/<id>` every 1.5 s, so no single request stays open (a quick tunnel closes one after about 100 s, which made a slow model look like a failure). If the model's reply isn't in the expected format it is asked once more, with the format restated, before an error is shown.
+- **Answer-only model calls** (Import, Draft, job chat) go through `_model_call` in `orchestrator/web/server.py`, which runs `job_chat_run.py` in an empty scratch folder.
 
 ## Tests
 

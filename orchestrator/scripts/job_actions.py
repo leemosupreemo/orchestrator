@@ -110,10 +110,16 @@ def complete(path: Path) -> int:
     return 0
 
 
-def discard(path: Path) -> int:
-    from dev_console import handle_discard_job
+def discard(path: Path, keep_changes: bool = False) -> int:
+    from dev_console import handle_discard_job, archive_job
 
-    handle_discard_job(load_job(path), confirmed=True)
+    job = load_job(path)
+    if keep_changes:
+        print(f"Deleting job {job.get('job_id')} and keeping changes...")
+        archive_job(job, status="discarded")
+        print("\n✅ Job deleted and code changes kept.")
+        return 0
+    handle_discard_job(job, confirmed=True)
     return 0
 
 
@@ -303,9 +309,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="action", required=True)
     for name, help_text in [("merge", "Merge the job's PR, clean up its branch and archive it"),
                             ("approve", "Accept architect suggestions, approve a design, or approve a plan"),
-                            ("complete", "Archive a reviewed job that has no PR to merge"),
-                            ("discard", "Revert the job's AI changes, delete its AI branch and archive it")]:
+                            ("complete", "Archive a reviewed job that has no PR to merge")]:
         sub.add_parser(name, help=help_text).add_argument("job_file")
+    for name, help_text in [("discard", "Revert the job's AI changes, delete its AI branch and archive it"),
+                            ("delete", "Delete a job, optionally keeping code changes and branch")]:
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("job_file")
+        p.add_argument("--keep-changes", action="store_true", help="Keep code changes instead of reverting")
     answer_p = sub.add_parser("answer", help="Answer the planner's clarification question and re-plan")
     answer_p.add_argument("job_file")
     answer_p.add_argument("--answer", required=True)
@@ -351,8 +361,8 @@ def main(argv: list[str] | None = None) -> int:
         return approve(path)
     if args.action == "complete":
         return complete(path)
-    if args.action == "discard":
-        return discard(path)
+    if args.action in ("discard", "delete"):
+        return discard(path, keep_changes=bool(getattr(args, "keep_changes", False)))
     if args.action == "revise":
         return revise(path, args.change.strip(), args.where.strip(), args.done_when.strip())
     return answer(path, args.answer.strip())

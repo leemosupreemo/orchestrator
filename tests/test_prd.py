@@ -27,7 +27,8 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in view], ["pitch", "who", "features", "look", "not"])
         self.assertFalse(any(s["filled"] for s in view))
         self.assertTrue(all(s["hint"] for s in view))
-        self.assertEqual([s["optional"] for s in view], [False, False, False, True, True])
+        self.assertTrue(all(s["optional"] for s in view))  # every section is optional
+        self.assertNotIn("Optional", " ".join(s["hint"] for s in view))  # and none says so as if the others weren't
 
     def test_guidance_lines_do_not_count_as_content(self):
         self.assertEqual(prd.split(prd.template())["pitch"], "")
@@ -220,20 +221,19 @@ class ImportTests(unittest.TestCase):
 
 
 class ModelReplyTests(unittest.TestCase):
-    def test_questions_and_proposals_parse_and_bad_replies_are_explained(self):
-        qs = prd.parse_questions('{"questions": [{"question": "Who plays?", "why": "tone"}]}')
-        self.assertEqual(qs[0]["question"], "Who plays?")
-        with self.assertRaises(prd.PrdError):
-            prd.parse_questions("no json")
-        with self.assertRaises(prd.PrdError):
-            prd.parse_questions('{"questions": []}')
+    def test_proposals_parse_and_bad_replies_are_explained(self):
         p = prd.parse_proposal(json.dumps({"summary": "s", "markdown": "## Pitch\n\nA game"}))
         self.assertIn("## Who it's for", p["markdown"])  # structure restored
         with self.assertRaises(prd.PrdError):
+            prd.parse_proposal("no json")
+        with self.assertRaises(prd.PrdError):
             prd.parse_proposal('{"markdown": ""}')
 
+    def test_a_reply_in_the_wrong_format_can_be_asked_for_again(self):
+        self.assertIn("ONLY the JSON object", prd.FORMAT_REMINDER)
+
     def test_prompts_say_to_keep_the_persons_words_and_not_to_invent(self):
-        for text in (prd.refine_prompt(FILLED, "tighten"), prd.update_prompt(FILLED, "job")):
+        for text in (prd.import_prompt("old prd"), prd.update_prompt(FILLED, "job")):
             self.assertIn("own words", text)
             self.assertIn("TBD", text)
 
@@ -373,6 +373,12 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertEqual(prd.run_update(self.prd, {**JOB, "prd_checked": True}, self.llm(self.updated()))["status"], "skipped")
         self.assertEqual(self.calls, [])
         self.assertEqual(prd.run_update(self.prd, {"type": "bug-fix", "job_id": "b", "clarification_history": [{"question": "q", "answer": "a"}]}, self.llm('{"changed": false}'))["status"], "nochange")
+
+    def test_a_document_with_anything_written_is_kept_true_but_an_empty_one_is_left_alone(self):
+        tmp, root, other = project()
+        self.addCleanup(tmp.cleanup)
+        other.write(prd.replace_section(prd.template(), "features", "- Score a word"), record=False)  # no pitch, and that is fine
+        self.assertEqual(prd.run_update(other, JOB, self.llm('{"changed": false}'))["status"], "nochange")
 
     def test_an_empty_document_is_left_alone(self):
         tmp, root, other = project()

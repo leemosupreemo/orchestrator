@@ -108,6 +108,46 @@ class UIError(Exception):
         self.status = status
 
 
+# --------------------------------------------------------------------------- background tasks
+
+
+class BackgroundTasks:
+    """Slow model calls run here, and the page asks how they are getting on.
+
+    One request held open for a minute or two is the wrong shape for a phone behind a tunnel (a quick tunnel closes any request after
+    about 100 seconds, so a slower model turn looked like a failure). The request that starts the work returns at once with an id."""
+    KEEP_SECONDS = 1800
+
+    def __init__(self) -> None:
+        self._items: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def start(self, work: Callable[[], Any]) -> str:
+        task_id = secrets.token_hex(6)
+        item: dict[str, Any] = {"status": "running", "at": time.time()}
+        with self._lock:
+            for old in [k for k, v in self._items.items() if time.time() - v["at"] > self.KEEP_SECONDS]:
+                del self._items[old]
+            self._items[task_id] = item
+
+        def run() -> None:
+            try:
+                result = work()
+                item.update(status="done", result=result)
+            except UIError as exc:
+                item.update(status="error", error=str(exc), code=int(exc.status))
+            except Exception as exc:  # whatever went wrong, the page gets a message rather than a task that never ends
+                item.update(status="error", error=str(exc)[:300] or "Something went wrong.", code=500)
+
+        threading.Thread(target=run, daemon=True).start()
+        return task_id
+
+    def get(self, task_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            item = self._items.get(task_id)
+        return None if item is None else {k: v for k, v in item.items() if k != "at"}
+
+
 # --------------------------------------------------------------------------- terminal sessions
 
 
@@ -694,6 +734,54 @@ def resolve_job_path(root: Path, job_id: str) -> Path:
     if not path.is_file():
         raise UIError("Job not found", HTTPStatus.NOT_FOUND)
     return path
+
+
+def delete_job(root: Path, job_id: str, revert: bool = False) -> None:
+    job_path = resolve_job_path(root, job_id)
+    job = read_json_file(job_path)
+
+    if revert:
+        ai_modified = job.get("ai_modified_files", [])
+        ai_untracked = job.get("ai_untracked_files", [])
+        for f in ai_modified:
+            subprocess.run(["git", "checkout", "--", f], cwd=str(root), capture_output=True)
+        for f in ai_untracked:
+            full = root / f
+            if full.exists():
+                if full.is_dir():
+                    shutil.rmtree(full, ignore_errors=True)
+                else:
+                    try:
+                        full.unlink()
+                    except OSError:
+                        pass
+        branch = job.get("branch")
+        if branch and branch.startswith("ai/issue-"):
+            try:
+                curr = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(root)).decode("utf-8").strip()
+            except Exception:
+                curr = ""
+            base_branch = job.get("base_branch")
+            if not base_branch:
+                try:
+                    from orchestrator.project_config import load_project_config
+                    base_branch = load_project_config(root).base_branch
+                except Exception:
+                    base_branch = "main"
+            if curr == branch:
+                subprocess.run(["git", "checkout", base_branch], cwd=str(root), capture_output=True)
+            subprocess.run(["git", "branch", "-D", branch], cwd=str(root), capture_output=True)
+
+    archive_dir = jobs_dir(root) / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / job_path.name
+    if archive_path.exists():
+        archive_path.unlink(missing_ok=True)
+    job["status"] = "discarded"
+    job["completed_at"] = datetime.now().isoformat()
+    job.pop("_path", None)
+    write_json_file(job_path, job)
+    shutil.move(str(job_path), str(archive_path))
 
 
 _TEST_SCAN_CACHE: dict[str, tuple[float, Any]] = {}
@@ -1810,6 +1898,14 @@ def build_splinter(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("script", "splinter_job.py", _job_path(params, root))
 
 
+def build_delete_job(params: dict[str, Any], root: Path) -> list[str]:
+    job_file = _job_path(params, root)
+    argv = orchestrator_argv("script", "job_actions.py", "delete", job_file)
+    if params.get("keep_changes") or params.get("revert") is False:
+        argv.append("--keep-changes")
+    return argv
+
+
 def build_export_job(params: dict[str, Any], root: Path) -> list[str]:
     argv = orchestrator_argv("script", "export_job.py", _job_path(params, root))
     dest = _choice(params, "destination", ["icloud", "gdrive", "downloads", "local"])
@@ -2466,6 +2562,7 @@ ACTIONS: dict[str, Action] = {
                     confirm="Merges the job's PR on GitHub, deletes its AI branch and archives the job.", fields=["job"]),
     "discard": Action("Discard job", lambda p, r: orchestrator_argv("script", "job_actions.py", "discard", _job_path(p, r)),
                       confirm="Reverts the files this job changed, deletes its AI branch and archives the job. This can't be undone.", fields=["job"]),
+    "delete_job": Action("Delete job", build_delete_job, fields=["job", "keep_changes"]),
     "complete": Action("Mark complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "complete", _job_path(p, r)),
                        confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from Configuration > Archived jobs.", fields=["job"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
@@ -2528,6 +2625,7 @@ class UIServer(ThreadingHTTPServer):
         self.root = root
         self.token = get_or_create_ui_token(token)
         self.sessions = SessionManager()
+        self.tasks = BackgroundTasks()
         self.allowed_hosts = self._allowed_hosts()
         self._stopping = threading.Event()
 
@@ -2746,7 +2844,7 @@ class UIHandler(BaseHTTPRequestHandler):
                             "diff": prd_doc.unified_diff(older[-1]["content"] if older else "", v["content"], "before", "this version")})
             elif method == "POST" and parts == ["product"]:
                 body = self._body()
-                source = _choice(body, "source", ["you", "import", "ai"]) if body.get("source") else "you"
+                source = _choice(body, "source", ["you", "import", "draft"]) if body.get("source") else "you"
                 summary = _text(body, "summary", limit=300)
                 if "section" in body:
                     doc.set_section(str(body["section"]), str(body.get("body") or ""), source, summary)
@@ -2788,25 +2886,18 @@ class UIHandler(BaseHTTPRequestHandler):
                     raise UIError("Add an image, PDF, Figma export or HTML file. Logs belong on a job.")
                 doc.add_reference(saved["name"], f"designs/{Path(saved['path']).name}")
                 self._json(doc.overview())
-            elif method == "POST" and parts == ["product", "refine"]:
-                body = self._body()
-                mode = _choice(body, "mode", ["questions", "propose"])
-                instruction = _text(body, "instruction", limit=4000)
-                current = doc.read() or prd_doc.template()
-                if mode == "questions":
-                    self._json({"questions": prd_doc.parse_questions(self._model_call(root, prd_doc.questions_prompt(current, instruction)))})
-                else:
-                    answers = [a for a in (body.get("answers") or []) if isinstance(a, dict)][:6]
-                    proposal = prd_doc.parse_proposal(self._model_call(root, prd_doc.refine_prompt(current, instruction, answers)))
-                    self._json({**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])})
+            elif method == "GET" and len(parts) == 3 and parts[1] == "task":
+                task = self.server.tasks.get(parts[2])
+                if task is None:
+                    raise UIError("That request is no longer around. Start it again.", HTTPStatus.NOT_FOUND)
+                self._json(task)
             elif method == "POST" and parts == ["product", "draft"]:
                 if not prd_doc.can_draft(root):
                     raise UIError("There's nothing in this project to read yet (no README, notes or code). Describe it in your own words instead.")
                 commits = git(root, "log", "--format=%s", "-n", "30").splitlines()
                 current = doc.read() or prd_doc.template()
                 digest = prd_doc.project_digest(root, commits)
-                proposal = prd_doc.parse_draft(self._model_call(root, prd_doc.draft_prompt(digest, current), timeout=270), current)
-                self._json({**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])})
+                self._start_proposal(root, current, prd_doc.draft_prompt(digest, current), lambda reply: prd_doc.parse_draft(reply, current), 270)
             elif method == "POST" and parts == ["product", "import"]:
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
                     body = self._body()
@@ -2817,12 +2908,23 @@ class UIHandler(BaseHTTPRequestHandler):
                 if not source.strip():
                     raise UIError("There was no text in that.")
                 current = doc.read() or prd_doc.template()
-                proposal = prd_doc.parse_proposal(self._model_call(root, prd_doc.import_prompt(source, name), timeout=240))
-                self._json({**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])})
+                self._start_proposal(root, current, prd_doc.import_prompt(source, name), prd_doc.parse_proposal, 240)
             else:
                 raise UIError("Not found", HTTPStatus.NOT_FOUND)
         except prd_doc.PrdError as exc:
             raise UIError(str(exc), HTTPStatus.BAD_GATEWAY if "model" in str(exc).lower() else HTTPStatus.BAD_REQUEST)
+
+    def _start_proposal(self, root: Path, current: str, prompt: str, parse: Callable[[str], dict[str, str]], timeout: int) -> None:
+        """Ask the model for a proposed document in the background; the page polls /api/product/task/<id> for the diff."""
+        def work() -> dict[str, Any]:
+            try:
+                proposal = parse(self._model_call(root, prompt, timeout=timeout))
+            except prd_doc.PrdError:
+                # Models sometimes answer in prose or break the JSON. Say what format is needed and ask once more before giving up.
+                proposal = parse(self._model_call(root, prompt + prd_doc.FORMAT_REMINDER, timeout=timeout))
+            return {**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])}
+
+        self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
 
     def _read_upload(self) -> bytes:
         """The raw request body as a file upload, refused (without reading it) when it is over the limit."""
@@ -3243,6 +3345,15 @@ class UIHandler(BaseHTTPRequestHandler):
             job["status"] = "completed"
             write_json_file(job_path, job)
             self._json({"ok": True, "closed": issue_num})
+        elif ((method == "DELETE" and len(parts) == 2 and parts[0] == "jobs") or
+              (method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "delete")):
+            job_id = parts[1]
+            if job_id in self.server.sessions.running_job_ids():
+                raise UIError("This job is running right now. Stop it before deleting.", HTTPStatus.CONFLICT)
+            body = self._body() if (method == "POST" or self.headers.get("Content-Length")) else {}
+            revert = bool(body.get("revert", False))
+            delete_job(root, job_id, revert=revert)
+            self._json({"ok": True, "deleted": job_id, "reverted": revert})
         elif method == "GET" and parts == ["file"]:
             target = resolve_runtime_file(root, (query.get("path") or [""])[0])
             if target.stat().st_size > MAX_FILE_BYTES:

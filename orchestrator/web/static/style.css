@@ -1316,12 +1316,6 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 [hidden] { display: none !important; }
 
 /* Product documents */
-.product-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.doc-chip { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-3); border-radius: var(--r-pill); border: 1px solid var(--border); background: var(--panel-2); color: var(--text); text-decoration: none; font-size: var(--text-sm); min-height: 32px; }
-.doc-chip:hover { border-color: var(--accent); }
-.doc-chip.ok span:first-child { color: var(--ok); }
-.doc-chip.draft span:first-child { color: var(--warn); }
-.doc-chip.missing { color: var(--muted); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .md { line-height: 1.6; overflow-wrap: anywhere; }
 .md h2, .md h3, .md h4 { margin: var(--space-5) 0 var(--space-2); }
@@ -1362,3 +1356,15 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .md li > ul { margin: var(--space-1) 0 var(--space-1); }
 #page-sub > a:first-child { display: inline-flex; align-items: center; min-height: 28px; }
 @media (max-width: 760px) { #page-sub > a:first-child { min-height: 36px; } }
+
+/* Working on it: prominent, with a spinner */
+.prd-busy { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); margin-bottom: var(--space-4); border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); color: var(--accent); }
+.prd-busy strong { display: block; font-size: var(--text-lg); font-weight: 650; }
+.prd-busy-sub { margin-top: var(--space-1); font-size: var(--text-sm); color: var(--text); opacity: .8; }
+.prd-busy .spinner { flex: 0 0 auto; border-color: var(--bg); border-top-color: var(--accent); width: 32px; height: 32px; border-width: 4px; }
+
+/* Drop zone for an existing PRD */
+.prd-drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-1); padding: var(--space-6) var(--space-4); border: 2px dashed var(--border); border-radius: var(--radius); background: var(--panel-2); text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+.prd-drop:hover, .prd-drop:focus-visible { border-color: var(--accent); }
+.prd-drop.over { border-color: var(--accent); background: var(--accent-soft); }
+@media (pointer: coarse) { .prd-drop .drop-hint { display: none; } }

@@ -3892,6 +3892,8 @@ def handle_discard_job(job: dict[str, Any], confirmed: bool = False):
 
     # 2. Branch Management
     branch = job.get("branch")
+    ai_modified = job.get("ai_modified_files", [])
+    ai_untracked = job.get("ai_untracked_files", [])
 
     if branch:
         try:

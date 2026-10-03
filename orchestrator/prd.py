@@ -6,7 +6,9 @@
   Who it's for     an ideal user, or the situations it is for; fine to not know yet
   Core features    the things it must do, as user stories if they like
   Look and feel    what it should feel like: a description, designs, sketches, Figma items
-  Not this         what it should not be or include; optional
+  Not this         what it should not be or include
+
+Every section is optional: write what you know, leave the rest, and it fills in as jobs teach us more.
 
 Everything that reads or judges work is handed this document (`context_block`). It is kept true: when a job finishes
 (`Prd.run_update`) a model checks whether what the job learned changes what the document says, and edits it only if
@@ -39,16 +41,16 @@ class PrdError(ValueError):
 
 
 SECTIONS: list[dict[str, Any]] = [
-    {"id": "pitch", "title": "Pitch", "optional": False,
+    {"id": "pitch", "title": "Pitch", "optional": True,
      "hint": "Say what you have in mind as briefly as you can, the way you'd explain it to a friend. Rough is fine."},
-    {"id": "who", "title": "Who it's for", "optional": False,
+    {"id": "who", "title": "Who it's for", "optional": True,
      "hint": "Do you have an ideal user in mind, or some situations it's for? If you don't know yet, say so; we'll fill in the blanks and refine as we go."},
-    {"id": "features", "title": "Core features", "optional": False,
-     "hint": "The things it has to do. One per line. If it helps, write each as a story: \"As a ..., I can ... so that ...\". Optional."},
+    {"id": "features", "title": "Core features", "optional": True,
+     "hint": "The things it has to do. One per line. If it helps, write each as a story: \"As a ..., I can ... so that ...\"."},
     {"id": "look", "title": "Look and feel", "optional": True,
-     "hint": "What should it look and feel like? Describe it (\"feels like Google Docs\"), or add designs, sketches or Figma items. Optional."},
+     "hint": "What should it look and feel like? Describe it (\"feels like Google Docs\"), or add designs, sketches or Figma items."},
     {"id": "not", "title": "Not this", "optional": True,
-     "hint": "Anything it should not be or include: features you don't want, competitors not to copy exactly. Optional."},
+     "hint": "Anything it should not be or include: features you don't want, competitors not to copy exactly."},
 ]
 BY_ID = {s["id"]: s for s in SECTIONS}
 HEADING = {s["id"]: f"## {s['title']}" for s in SECTIONS}
@@ -379,38 +381,13 @@ def _json_reply(text: str) -> dict[str, Any]:
     return data
 
 
+FORMAT_REMINDER = (
+    "\n\n### FORMAT CORRECTION ###\nYour previous reply could not be read. Reply again with ONLY the JSON object described above, as plain text: "
+    "no commentary before or after it, no code fence, and every quote inside the markdown escaped.")
+
 SHAPE = ("Keep exactly these five sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
          ". Keep the person's own words wherever you can: add and adjust, don't rewrite. Do not invent facts; where something is unknown write \"TBD:\" "
          "and the question that would settle it. Short lists, no marketing language.")
-
-
-def questions_prompt(current: str, instruction: str = "") -> str:
-    return f"""You are a product manager helping someone define what they are building. Find out what you need to know before anything is written.
-{('What the person wants: ' + instruction) if instruction.strip() else ''}
-
-Current document:
-{current}
-
-Ask at most 6 questions. Only ask what materially changes the product, and skip anything the document already answers. Prefer questions a person can answer in a sentence, in plain words (they may not be technical). For each, say why it matters.
-
-Reply with ONLY JSON: {{"questions": [{{"question": "...", "why": "..."}}]}}"""
-
-
-def refine_prompt(current: str, instruction: str, answers: list[dict[str, str]] | None = None) -> str:
-    qa = "\n".join(f"- Q: {a.get('question', '')}\n  A: {a.get('answer', '')}" for a in (answers or []) if str(a.get("answer", "")).strip())
-    return f"""You are a product manager keeping a product's one-page requirements document accurate and useful to the people and AIs who build from it.
-
-Current document:
-{current}
-
-Request: {instruction.strip() or 'Fill in the empty sections from what the document already says and tighten the rest.'}
-{('Answers from the person:' + chr(10) + qa) if qa else ''}
-
-Rules:
-- Return the COMPLETE updated document in Markdown. {SHAPE}
-- Keep version 1 small. Anything not clearly needed belongs under "Not this".
-
-Reply with ONLY JSON: {{"summary": "one or two sentences on what changed and why", "markdown": "the complete document"}}"""
 
 
 def import_prompt(source: str, name: str = "") -> str:
@@ -423,17 +400,6 @@ Their document:
 Put each part of their document under the closest section. Anything that doesn't fit (technical design, schedules) can be summarised in one line under "Core features" or left out; say what you left out in the summary.
 
 Reply with ONLY JSON: {{"summary": "what you kept, moved and left out", "markdown": "the complete document"}}"""
-
-
-def parse_questions(reply: str) -> list[dict[str, str]]:
-    items = _json_reply(reply).get("questions")
-    out = []
-    for q in items if isinstance(items, list) else []:
-        if isinstance(q, dict) and str(q.get("question", "")).strip():
-            out.append({"question": str(q["question"]).strip()[:400], "why": str(q.get("why", "")).strip()[:400]})
-    if not out:
-        raise PrdError("The model had no questions. Go ahead and describe what you want.")
-    return out[:6]
 
 
 def parse_proposal(reply: str) -> dict[str, str]:
@@ -667,7 +633,7 @@ def run_update(prd: Prd, job: dict[str, Any], llm: Callable[[str], str]) -> dict
         return {"status": "skipped"}
     prd.migrate_legacy()
     current = prd.read()
-    if current is None or not is_filled(split(current).get("pitch")):
+    if current is None or not any(is_filled(b) for b in split(current).values()):
         return {"status": "empty"}  # nothing written yet, so nothing to keep true
     try:
         update = parse_update(llm(update_prompt(current, job_digest(job))))
