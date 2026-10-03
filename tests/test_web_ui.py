@@ -119,16 +119,17 @@ class AuthTests(ServerTestCase):
 
 
 class SignInTests(ServerTestCase):
-    def sign_in(self, email="tester@example.com"):
+    def sign_in(self, email="tester@example.com", source="git"):
         with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": email}), \
-             patch("orchestrator.web.server.allowed_auth_sources", return_value={email: "git"}):
+             patch("orchestrator.web.server.allowed_auth_sources", return_value={email: source}):
             res, data = self.request("POST", "/api/auth", body={"id_token": "id"}, headers=UI_HEADERS, auth=False)
         self.assertEqual(res.status, 200, data)
         return data["token"]
 
-    def as_user(self, token, method, path, body=None, allowed=("tester@example.com",)):
+    def as_user(self, token, method, path, body=None, allowed=("tester@example.com",), sources=None):
         headers = {"Authorization": f"Bearer {token}", **(UI_HEADERS if body is not None else {})}
-        with patch("orchestrator.web.server.allowed_auth_sources", return_value={e: "git" for e in allowed}):
+        auth_sources = sources or {e: "git" for e in allowed}
+        with patch("orchestrator.web.server.allowed_auth_sources", return_value=auth_sources):
             self.server.forget_allowed_emails()
             return self.request(method, path, body=body, headers=headers, auth=False)
 
@@ -145,10 +146,135 @@ class SignInTests(ServerTestCase):
         _, data = self.request("GET", "/api/state")
         self.assertEqual(data["you"]["kind"], "owner")
 
+    def test_member_state_reports_member_and_keeps_safe_project_settings(self):
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+        res, state = self.as_user(token, "GET", "/api/state", sources=member)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(state["you"]["role"], "member")
+
+        res, _ = self.as_user(token, "POST", "/api/config/setup-seen", body={}, sources=member)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(ui.read_settings(self.root)["setup_seen"])
+
+    def test_member_cannot_change_secrets_or_start_owner_only_tools(self):
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+        res, data = self.as_user(token, "POST", "/api/config/keys", body={"id": "openai", "value": "secret"}, sources=member)
+        self.assertEqual(res.status, 403)
+        self.assertIn("Only the owner", data["error"])
+
+        res, data = self.as_user(token, "POST", "/api/runs", body={"action": "console"}, sources=member)
+        self.assertEqual(res.status, 403)
+        self.assertIn("Only the owner", data["error"])
+        denied = [entry for entry in self.server.audit.recent() if entry["event"] == "denied"]
+        self.assertEqual([entry["what"] for entry in denied], ["use interactive console", "change keys settings"])
+
+    def test_member_cannot_change_connected_app_credentials_or_create_projects(self):
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+        for path, body in (
+            ("/api/integrations/jira/connect", {"values": {}}),
+            ("/api/integrations/jira/options", {"options": {}}),
+            ("/api/integrations/jira/disconnect", {}),
+            ("/api/new-project/draft", {"name": "Private idea"}),
+        ):
+            with self.subTest(path=path):
+                res, data = self.as_user(token, "POST", path, body=body, sources=member)
+                self.assertEqual(res.status, 403)
+                self.assertIn("Only the owner", data["error"])
+
+    def test_member_cannot_scan_or_add_project_folders(self):
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+        for path, body in (("/api/projects/scan", {}), ("/api/projects/add", {"root": str(self.root)})):
+            with self.subTest(path=path):
+                res, data = self.as_user(token, "POST", path, body=body, sources=member)
+                self.assertEqual(res.status, 403)
+                self.assertIn("Only the owner", data["error"])
+
+    def test_member_sees_only_their_access_record_and_not_the_audit_log(self):
+        ui.config_update(self.root, "allowed-email", {"op": "add", "email": "other@example.com"})
+        self.server.audit.record("settings_changed", "access token", part="keys")
+        token = self.sign_in(source="settings")
+        res, config = self.as_user(token, "GET", "/api/config", sources={"tester@example.com": "settings", "other@example.com": "settings"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(config["viewer"], {"role": "member", "email": "tester@example.com"})
+        self.assertEqual(config["allowed_emails"], [{"email": "tester@example.com", "source": "settings"}])
+        self.assertNotIn("audit", config)
+
+    def test_member_config_omits_owner_only_machine_and_credential_metadata(self):
+        token = self.sign_in(source="settings")
+        res, config = self.as_user(
+            token, "GET", "/api/config", sources={"tester@example.com": "settings"},
+        )
+        self.assertEqual(res.status, 200)
+        for field in ("keys", "ollama_host", "email", "analytics", "webhook", "instructions", "machines", "firebase", "role_prompts", "menus"):
+            self.assertNotIn(field, config)
+        for field in ("base_branch", "branches", "archived", "docs", "models", "xcode_cloud"):
+            self.assertIn(field, config)
+
+    def test_member_cannot_read_runtime_configuration_files_but_can_read_job_output(self):
+        ui.write_settings(self.root, {"openai_api_key": "do-not-leak"})
+        output = self.root / ".orchestrator" / "output" / "report.txt"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("safe report")
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+
+        res, data = self.as_user(token, "GET", "/api/file?path=config/settings.json", sources=member)
+        self.assertEqual(res.status, 403)
+        self.assertNotIn("do-not-leak", json.dumps(data))
+        res, data = self.as_user(token, "GET", "/api/file?path=output/report.txt", sources=member)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["text"], "safe report")
+
+    def test_member_cannot_see_or_control_an_owner_only_run(self):
+        session = self.server.sessions.start(
+            "console", "Interactive console", [sys.executable, "-c", "import time; time.sleep(30)"],
+            self.root, dict(os.environ), None,
+        )
+        with session._cond:
+            session._buffer.extend(b"PRIVATE owner prompt?")
+            session.last_output = time.time() - ui.IDLE_PROMPT_SECONDS - 1
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+
+        _, state = self.as_user(token, "GET", "/api/state", sources=member)
+        self.assertNotIn(session.id, [run["id"] for run in state["runs"]])
+        self.assertNotIn("PRIVATE owner prompt", json.dumps(state["inbox"]))
+        _, inbox = self.as_user(token, "GET", "/api/inbox", sources=member)
+        self.assertNotIn("PRIVATE owner prompt", json.dumps(inbox))
+        _, runs = self.as_user(token, "GET", "/api/runs", sources=member)
+        self.assertNotIn(session.id, [run["id"] for run in runs["runs"]])
+        for method, endpoint, body in (
+            ("GET", "output?offset=0", None),
+            ("POST", "input", {"data": "echo arbitrary-command\r"}),
+            ("POST", "stop", {}),
+        ):
+            with self.subTest(endpoint=endpoint):
+                res, data = self.as_user(token, method, f"/api/runs/{session.id}/{endpoint}", body=body, sources=member)
+                self.assertEqual(res.status, 403)
+                self.assertIn("Only the owner", data["error"])
+
+    def test_owner_config_includes_recent_audit_events(self):
+        self.server.audit.record("settings_changed", "access token", part="keys")
+        res, config = self.request("GET", "/api/config")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(config["viewer"]["role"], "owner")
+        self.assertEqual(config["audit"][0]["event"], "settings_changed")
+
     def test_state_reports_the_runner_version(self):
         _, data = self.request("GET", "/api/state")
         self.assertEqual(data["runner"]["api_version"], ui.account.API_VERSION)
         self.assertTrue(data["runner"]["version"])
+
+    def test_state_identifies_owner_only_actions_for_the_ui(self):
+        _, data = self.request("GET", "/api/state")
+        self.assertTrue(data["actions"]["console"]["owner_only"])
+        self.assertTrue(data["actions"]["wizard"]["owner_only"])
+        self.assertTrue(data["actions"]["logs_setup"]["owner_only"])
+        self.assertFalse(data["actions"]["test"]["owner_only"])
 
     def test_sign_ins_survive_a_restart_and_only_hashes_are_stored(self):
         token = self.sign_in()
@@ -643,6 +769,49 @@ process.stdout.write(JSON.stringify({active, menu: globalThis.ConfigurationPages
         self.assertNotIn('data-config-route="null"', result["menu"])
         self.assertNotIn("Coming next", result["menu"])
 
+    def test_member_registry_omits_owner_only_configuration(self):
+        result = self.run_configuration_script("""
+const pages = globalThis.ConfigurationPages;
+const ids = pages.groups('member').flatMap((group) => group.entries.map((entry) => entry.id));
+process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), access: pages.resolve('access', 'member')}));
+""")
+        for entry_id in ("api-keys", "ai-instructions", "fleet", "access", "email", "chat", "firebase", "updates"):
+            self.assertNotIn(entry_id, result["ids"])
+        for entry_id in ("models", "base-branch", "archived-jobs", "documentation", "audit", "self-tests"):
+            self.assertIn(entry_id, result["ids"])
+        self.assertNotIn("Who can sign in", result["menu"])
+        self.assertIsNone(result["access"])
+
+    def test_member_configuration_chooser_uses_the_filtered_registry(self):
+        html = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render(undefined, {viewer: {role: 'member'}});
+process.stdout.write(JSON.stringify(page.html));
+""")
+        self.assertNotIn("API Keys", html)
+        self.assertNotIn("Who can sign in", html)
+        self.assertIn("Base Branch", html)
+        self.assertIn("Documentation", html)
+
+    def test_role_ui_hides_owner_controls_and_can_restore_them(self):
+        result = self.run_configuration_script("""
+const elements = [{hidden: false}, {hidden: false}];
+const document = {querySelectorAll: (selector) => selector === '[data-owner-only]' ? elements : []};
+globalThis.ConfigurationPages.applyRole('member', document);
+const hidden = elements.map((element) => element.hidden);
+globalThis.ConfigurationPages.applyRole('owner', document);
+process.stdout.write(JSON.stringify({hidden, restored: elements.map((element) => element.hidden)}));
+""")
+        self.assertEqual(result["hidden"], [True, True])
+        self.assertEqual(result["restored"], [False, False])
+
+    def test_action_permissions_follow_server_metadata(self):
+        result = self.run_configuration_script("""
+const state = {you: {role: 'member'}, actions: {wizard: {owner_only: true}, test: {owner_only: false}}};
+const allowed = globalThis.ConfigurationPages.canRunAction;
+process.stdout.write(JSON.stringify({wizard: allowed('wizard', state), test: allowed('test', state), unknown: allowed('unknown', state)}));
+""")
+        self.assertEqual(result, {"wizard": False, "test": True, "unknown": True})
+
     def test_access_page_lists_emails_and_sign_ins(self):
         html = self.run_configuration_script("""
 const page = globalThis.ConfigurationPages.render('access', {
@@ -660,6 +829,24 @@ process.stdout.write(JSON.stringify(page.html));
         self.assertIn("This browser", html)
         empty = self.run_configuration_script("process.stdout.write(JSON.stringify(globalThis.ConfigurationPages.render('access', {}).html));")
         self.assertIn("sign-in is closed", empty)
+
+    def test_access_page_shows_recent_security_activity_without_sensitive_values(self):
+        html = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('access', {
+  allowed_emails: [], sign_ins: [], viewer: {role: 'owner'},
+  audit: [
+    {at: 1760000000, event: 'sign_in', who: 'owner@x.com', ip: '127.0.0.1', how: 'Google'},
+    {at: 1760000001, event: 'settings_changed', who: 'owner@x.com', part: 'keys'},
+    {at: 1760000002, event: 'denied', who: 'friend@x.com', what: 'use full console'},
+  ],
+});
+process.stdout.write(JSON.stringify(page.html));
+""")
+        self.assertIn("Recent security activity", html)
+        self.assertIn("owner@x.com signed in", html)
+        self.assertIn("owner@x.com changed keys settings", html)
+        self.assertIn("friend@x.com was denied permission to use full console", html)
+        self.assertNotIn("secret", html.lower())
 
     def test_resolver_accepts_only_enabled_native_configuration_pages(self):
         result = self.run_configuration_script("""

@@ -7,8 +7,8 @@
       label: "Models & instructions",
       entries: [
         {id: "models", label: "Models", description: "Choose the AI models available to jobs.", route: "#/config/models", enabled: true, status: null},
-        {id: "api-keys", label: "API Keys", description: "Connect AI providers without displaying saved secrets.", route: "#/config/api-keys", enabled: true, status: null},
-        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about your project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, status: null},
+        {id: "api-keys", label: "API Keys", description: "Connect AI providers without displaying saved secrets.", route: "#/config/api-keys", enabled: true, ownerOnly: true, status: null},
+        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about your project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
       ],
     },
     {
@@ -18,18 +18,18 @@
         {id: "base-branch", label: "Base Branch", description: "Choose the branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
         {id: "archived-jobs", label: "Archived Jobs", description: "Review and restore completed work.", route: "#/config/archived-jobs", enabled: true, status: null},
-        {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, status: null},
+        {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, ownerOnly: true, status: null},
         {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, status: null, hostedOnly: true},
-        {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, status: null},
+        {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
       ],
     },
     {
       id: "delivery-notifications",
       label: "Delivery & notifications",
       entries: [
-        {id: "email", label: "Email Notifications", description: "Choose recipients and configure the sender.", route: "#/config/email", enabled: true, status: null},
-        {id: "chat", label: "Slack & chat alerts", description: "Get pinged when something needs you, even with the tab closed.", route: "#/config/chat", enabled: true, status: null},
-        {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, status: null},
+        {id: "email", label: "Email Notifications", description: "Choose recipients and configure the sender.", route: "#/config/email", enabled: true, ownerOnly: true, status: null},
+        {id: "chat", label: "Slack & chat alerts", description: "Get pinged when something needs you, even with the tab closed.", route: "#/config/chat", enabled: true, ownerOnly: true, status: null},
+        {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
         {id: "xcode-cloud", label: "Xcode Cloud", description: "Configure cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
       ],
     },
@@ -38,10 +38,10 @@
       label: "Help & health",
       entries: [
         {id: "documentation", label: "Documentation", description: "Read Orchestrator and project guides.", route: "#/config/documentation", enabled: true, status: null},
-        {id: "setup-wizard", label: "Setup Wizard", description: "Walk through initial project setup.", route: "#/config/setup-wizard", enabled: true, status: null},
+        {id: "setup-wizard", label: "Setup Wizard", description: "Walk through initial project setup.", route: "#/config/setup-wizard", enabled: true, ownerOnly: true, status: null},
         {id: "audit", label: "Tool check", description: "Check the tools and machines jobs need are ready (prerequisite audit).", route: "#/config/audit", enabled: true, status: null},
         {id: "self-tests", label: "Orchestrator health check", description: "Run Orchestrator's own self-tests to confirm it works on this machine.", route: "#/config/self-tests", enabled: true, status: null},
-        {id: "updates", label: "Updates", description: "Update Orchestrator on local and remote machines.", route: "#/config/updates", enabled: true, status: null},
+        {id: "updates", label: "Updates", description: "Update Orchestrator on local and remote machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
       ],
     },
   ];
@@ -65,12 +65,12 @@
     return !entry.hostedOnly || Boolean(root.Account && root.Account.active());
   }
 
-  function groups() {
+  function groups(role = "owner") {
     return registry.map((group) => ({
       id: group.id,
       label: group.label,
-      entries: group.entries.filter(shown).map(copyEntry),
-    }));
+      entries: group.entries.filter((entry) => shown(entry) && (role !== "member" || !entry.ownerOnly)).map(copyEntry),
+    })).filter((group) => group.entries.length);
   }
 
   function find(id) {
@@ -81,8 +81,8 @@
     return null;
   }
 
-  function renderMenu() {
-    return groups().map((group) => `
+  function renderMenu(role = "owner") {
+    return groups(role).map((group) => `
       <div class="configuration-menu-group" role="group" aria-labelledby="configuration-menu-${escapeHtml(group.id)}">
         <div class="configuration-menu-heading" id="configuration-menu-${escapeHtml(group.id)}">${escapeHtml(group.label)}</div>
         ${group.entries.map((entry) => entry.enabled
@@ -93,9 +93,9 @@
     `).join("");
   }
 
-  function resolve(section) {
+  function resolve(section, role = "owner") {
     const entry = find(section);
-    return entry && entry.enabled && entry.route && entry.route.startsWith("#/config/") ? entry : null;
+    return entry && entry.enabled && !(role === "member" && entry.ownerOnly) && entry.route && entry.route.startsWith("#/config/") ? entry : null;
   }
 
   function createMenuController({trigger, menu, document, navigate}) {
@@ -162,8 +162,8 @@
     return "Not set";
   }
 
-  function renderChooser() {
-    const html = groups().map((group) => `
+  function renderChooser(state = {}) {
+    const html = groups(state.viewer?.role || "owner").map((group) => `
       <section class="configuration-chooser-group" aria-labelledby="configuration-chooser-${escapeHtml(group.id)}">
         <h2 id="configuration-chooser-${escapeHtml(group.id)}">${escapeHtml(group.label)}</h2>
         <div class="configuration-chooser-list">
@@ -342,6 +342,23 @@
         <span class="muted">Signed in ${escapeHtml(shortDate(s.created))} · last used ${escapeHtml(shortDate(s.last_seen))}</span></span>
       <button type="button" class="btn small danger" data-config-action="access-revoke" data-id="${escapeHtml(s.id)}"${s.current ? " data-current" : ""}>${s.current ? "Sign out" : "End"}</button>
     </div>`).join("");
+    const events = Array.isArray(state.audit) ? state.audit : [];
+    const eventText = (entry) => {
+      const who = escapeHtml(entry.who || "Someone");
+      if (entry.event === "sign_in") return `${who} signed in`;
+      if (entry.event === "sign_in_refused") return `${who} was refused sign-in`;
+      if (entry.event === "sign_out") return `${who} signed out`;
+      if (entry.event === "sign_in_ended") return `${who} ended a sign-in`;
+      if (entry.event === "email_allowed") return `${who} allowed ${escapeHtml(entry.email || "an email")}`;
+      if (entry.event === "email_removed") return `${who} removed ${escapeHtml(entry.email || "an email")}`;
+      if (entry.event === "settings_changed") return `${who} changed ${escapeHtml(entry.part || "configuration")} settings`;
+      if (entry.event === "run_started") return `${who} started ${escapeHtml(entry.action || "a run")}`;
+      if (entry.event === "denied") return `${who} was denied permission to ${escapeHtml(entry.what || "perform an owner action")}`;
+      return `${who}: ${escapeHtml(String(entry.event || "activity").replaceAll("_", " "))}`;
+    };
+    const auditRows = events.map((entry) => `<div class="configuration-setting-row">
+      <span>${eventText(entry)}<span class="muted">${entry.ip ? `${escapeHtml(entry.ip)} · ` : ""}${escapeHtml(shortDate(entry.at))}</span></span>
+    </div>`).join("");
     return {
       title: "Who can sign in",
       sub: "People with these emails can sign in with Google and use this computer from anywhere. Each sign-in lasts 30 days.",
@@ -354,6 +371,10 @@
         <section class="card configuration-card">
           <div class="card-h"><h2>Signed in now</h2><span class="count">${signIns.length}</span></div>
           <div class="configuration-setting-list">${signInRows || `<div class="empty">No one is signed in with an email. The owner's access token isn't listed here.</div>`}</div>
+        </section>
+        <section class="card configuration-card">
+          <div class="card-h"><h2>Recent security activity</h2><span class="count">${events.length}</span></div>
+          <div class="configuration-setting-list">${auditRows || `<div class="empty">No security activity recorded yet.</div>`}</div>
         </section>
       </div>`,
     };
@@ -618,7 +639,17 @@
     if (section === "audit") return renderAudit(state);
     if (section === "self-tests") return renderSelfTests(state);
     if (section === "setup-wizard") return renderSetupWizard(state);
-    return renderChooser();
+    return renderChooser(state);
+  }
+
+  function applyRole(role, document) {
+    document.querySelectorAll("[data-owner-only]").forEach((element) => {
+      element.hidden = role === "member";
+    });
+  }
+
+  function canRunAction(action, state = {}) {
+    return state.you?.role !== "member" || !state.actions?.[action]?.owner_only;
   }
 
   function createMutationGuard(send) {
@@ -648,5 +679,7 @@
     render,
     createMutationGuard,
     routeMatches,
+    applyRole,
+    canRunAction,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

@@ -776,6 +776,9 @@ async function refreshState() {
     showPrdUpdate(newState.product_notice);
     checkRunnerVersion(newState.runner);
     state = newState;
+    const viewerRole = state.you?.role || "owner";
+    ConfigurationPages.applyRole(viewerRole, document);
+    if (configurationMenu) configurationMenu.innerHTML = ConfigurationPages.renderMenu(viewerRole);
     consecutiveAuthFailures = 0;
     pollFailures = 0;
     if (connectionLost) { connectionLost = false; clearMessage("connection"); notify("success", "Back online.", { id: "connection-restored", timeout: 2500 }); }
@@ -871,7 +874,7 @@ function renderProjectSelect(select) {
       return `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${tag}</option>`;
     }).join("");
   }
-  html += `<option value="__manage__" class="manage-projects-option" style="background-color: var(--manage-option-bg, #323947); color: var(--text);">📁 Manage all projects...</option>`;
+  if (state.you?.role !== "member") html += `<option value="__manage__" class="manage-projects-option" style="background-color: var(--manage-option-bg, #323947); color: var(--text);">📁 Manage all projects...</option>`;
   if (select.dataset.html !== html) {
     select.innerHTML = html;
     select.dataset.html = html;
@@ -1482,7 +1485,8 @@ async function loadSetup(force = false) {
 
 function setupItem(i) {
   const icon = i.done ? `<span class="setup-icon done" aria-label="done">✓</span>` : `<span class="setup-icon ${i.required ? "todo" : ""}" aria-label="to do"></span>`;
-  const go = i.action ? (i.done ? "Open" : i.action.type === "run" ? "Set up" : "Go") : "";
+  const actionAllowed = !i.action || i.action.type !== "run" || ConfigurationPages.canRunAction(i.action.action, state);
+  const go = i.action && actionAllowed ? (i.done ? "Open" : i.action.type === "run" ? "Set up" : "Go") : "";
   return `<div class="setup-item ${i.done ? "is-done" : ""}">
     ${icon}
     <div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div>
@@ -1643,7 +1647,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     if (next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)) items.push(["Run fix", act("debug", j), "Another automated fix attempt"]);
     if (["review-needed", "completed"].includes(s.status)) items.push(["Still broken?", act("fix", j), "Reopen with what you saw"]);
     if (s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume") items.push(["Resume next task", act("resume", j)]);
-    if (s.branch && ["review-needed", "debugging"].includes(s.status)) items.push(["Deliver to testers", act("deliver", j), `Builds ${s.branch}`]);
+    if (state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)) items.push(["Deliver to testers", act("deliver", j), `Builds ${s.branch}`]);
     if (s.status === "scheduled" && next !== "execute") items.push(["Run now", act("execute", j)]);
     if (["planned", "designing", "human-needed", "review-needed", "debugging"].includes(s.status)) items.push(["Revise plan", act("revise", j), "Re-plan with what should change"]);
     if (ctx.canSplinter) items.push(["Split into sub-jobs", act("splinter_job", j), "Parallel child jobs and GitHub sub-issues"]);
@@ -1659,7 +1663,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   items.push("---");
   for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, "On GitHub"]);
   if (s.issue_number) items.push(["Close GitHub issue", `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`]);
-  items.push(["Open in console", act("console")]);
+  if (state.you?.role !== "member") items.push(["Open in console", act("console")]);
   return `${moreMenu(items)}<button type="button" class="btn danger" ${act("delete_job", j)}${s.active_run ? ' disabled title="Stop the running task before deleting"' : ""}>Delete</button>`;
 }
 
@@ -2377,7 +2381,7 @@ pages.delivery = async () => {
         </div></div></section>`
     : `<section class="card mb-16"><div class="card-h"><h2>Live</h2></div><div class="empty">The base branch isn't in this repository yet, so there's nothing live to show.</div></section>`;
   const testersCard = `<section class="card mb-16"><div class="card-h"><h2>With testers</h2>
-      ${testers.configured ? `<button class="btn small primary" ${act("distribute")}>Send current branch</button>` : `<a class="btn small" href="#/config/firebase">Set up Firebase</a>`}</div>
+      <span data-owner-only>${testers.configured ? `<button class="btn small primary" ${act("distribute")}>Send current branch</button>` : `<a class="btn small" href="#/config/firebase">Set up Firebase</a>`}</span></div>
       <div class="card-b stack">
         ${latest ? `<div><strong>${esc(latest.version || "Unknown version")}${latest.build ? ` (${esc(latest.build)})` : ""}</strong>
             <span class="muted">· ${esc(ago(latest.delivered))} · ${esc(latest.branch)}${latest.recipients ? ` · to ${esc(latest.recipients)}` : ""}</span>
@@ -2386,13 +2390,13 @@ pages.delivery = async () => {
         ${testers.groups.length ? `<div class="row" style="gap:6px"><span class="muted">Tester groups</span>${testers.groups.map((g) => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
         ${testers.configured && !testers.cli_installed ? `<div class="notice bad">The Firebase CLI isn't installed on this machine, so sending will fail. Install it with <code>npm i -g firebase-tools</code>.</div>` : ""}
         ${testers.configured ? (testers.invite_url
-          ? `<div class="row gap-10"><span class="muted">Invite link</span><a class="mono" href="${esc(testers.invite_url)}" target="_blank" rel="noopener">${esc(testers.invite_url.replace(/^https:\/\//, "").slice(0, 48))}</a><button class="btn small" data-setup-copy="${esc(testers.invite_url)}">Copy</button><a class="btn small ghost" href="#/config/firebase">Change</a></div>`
-          : `<div class="muted">Want people to join without you adding them? <a href="#/config/firebase">Add the group's invite link</a> and share it from here.</div>`) : ""}
+          ? `<div class="row gap-10"><span class="muted">Invite link</span><a class="mono" href="${esc(testers.invite_url)}" target="_blank" rel="noopener">${esc(testers.invite_url.replace(/^https:\/\//, "").slice(0, 48))}</a><button class="btn small" data-setup-copy="${esc(testers.invite_url)}">Copy</button><a class="btn small ghost" href="#/config/firebase" data-owner-only>Change</a></div>`
+          : `<div class="muted">Want people to join without you adding them? <a href="#/config/firebase" data-owner-only>Add the group's invite link</a> and share it from here.</div>`) : ""}
         ${testers.configured ? `<div class="muted">Add or remove testers and devices in the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener">Firebase console</a>.</div>` : ""}
       </div></section>`;
   const readyCard = ready.length ? `<section class="card mb-16"><div class="card-h"><h2>Ready to ship</h2><span class="count">${ready.length}</span></div>
       <div class="list">${ready.map((j) => `<div class="item"><a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(j.title)}</div><div class="meta mono">${esc(j.branch)}${j.pr_number ? ` · PR #${esc(j.pr_number)}` : ""}</div></a>
-        <div class="side">${testers.configured ? `<button class="btn small" ${act("deliver", { job: j.id })}>Send to testers</button>` : ""}
+        <div class="side">${testers.configured ? `<button class="btn small" data-owner-only ${act("deliver", { job: j.id })}>Send to testers</button>` : ""}
         ${j.next ? `<button class="btn small primary" ${act(j.next.action, { job: j.id })}>${esc(j.next.label)}</button>` : ""}</div></div>`).join("")}</div></section>` : "";
   const pipelineCard = `<section class="card mb-16"><div class="card-h"><h2>Pipeline</h2>${d.xcode_cloud ? `<span class="count">Xcode Cloud configured</span>` : ""}</div>
       ${pipeline.available ? `<div class="list">${pipeline.runs.map((r) => `<div class="item"><a class="main-col" href="${esc(r.url || "#")}" target="_blank" rel="noopener"><div class="title">${esc(r.title || r.name)}</div>
@@ -2461,7 +2465,7 @@ pages.measure = async () => {
     actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
     html: `
       <section class="card mb-16"><div class="card-h"><h2>Analytics</h2>
-        <div class="row"><button class="btn small ${connected ? "" : "primary"}" id="analytics-set">${data.provider ? "Change" : "Connect"}</button>
+        <div class="row" data-owner-only><button class="btn small ${connected ? "" : "primary"}" id="analytics-set">${data.provider ? "Change" : "Connect"}</button>
         ${connected ? `<button class="btn small" id="analytics-test">Send test event</button><button class="btn small danger" id="analytics-clear">Disconnect</button>` : ""}</div></div>
         <div class="card-b stack"><strong>${connected ? `${esc(data.provider_name)} (${esc(data.region.toUpperCase())})` : data.provider ? `${esc(data.provider_name)}: key missing` : "Not connected"}</strong>
           <span class="muted">${connected ? "New work for a feature is told to send its KPI events here. The key is stored, never shown." : "Optional. Mixpanel, Amplitude or PostHog. Connect one so new work knows where events go, and verify it with a test event."}</span></div></section>
@@ -2531,7 +2535,7 @@ pages.checkup = async () => {
       <section class="card mt-16"><div class="card-h"><h2>Will this computer build it?</h2><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
         <div class="list" id="preflight-list"><div class="item"><div class="main-col muted">Checking this computer…</div></div></div></section>
       <section class="card mt-16"><div class="card-h"><h2>Setup tools</h2></div>
-        <div class="list">${[["check", "Tools and logins", "CLIs, sign-ins and keys"], ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"], ["wizard", "Setup wizard", "Walk through project, tools and delivery setup"]].map(([a, title, hint]) =>
+        <div class="list">${[["check", "Tools and logins", "CLIs, sign-ins and keys"], ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"], ["wizard", "Setup wizard", "Walk through project, tools and delivery setup"]].filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
           `<div class="item"><div class="main-col"><div class="title">${title}</div><div class="meta">${hint}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>`,
     after: () => {
       const paint = async (refresh) => {
@@ -2942,7 +2946,7 @@ pages.devlogs = async () => {
         ${reason ? `<div class="notice bad">${esc(reason)}</div>` : ""}
         <p>${sessions.configured ? "Finish setup to read logs." : "Not set up for this project yet."} Setup finds the Sentry project in your repo,
         asks for a read-only token (scopes <code>org:read</code>, <code>project:read</code>, <code>event:read</code>), and checks it works.</p>
-        <div><button class="btn primary" ${act("logs_setup")}>Set up device logs</button></div>
+        ${ConfigurationPages.canRunAction("logs_setup", state) ? `<div><button class="btn primary" ${act("logs_setup")}>Set up device logs</button></div>` : ""}
       </section>` };
   }
   const ok = !sessions.error;
@@ -2951,7 +2955,7 @@ pages.devlogs = async () => {
     actions: `<button class="btn primary" ${act("logs_pull")} ${ok ? "" : "disabled"}>Pull newest launch</button>
               <button class="btn" ${act("logs_tail")} ${ok ? "" : "disabled"}>Follow live</button>`,
     html: `
-      ${sessions.error ? `<div class="notice bad">${esc(sessions.error)}<div class="row"><button class="btn small" ${act("logs_setup")}>Re-run setup</button></div></div>` : ""}
+      ${sessions.error ? `<div class="notice bad">${esc(sessions.error)}${ConfigurationPages.canRunAction("logs_setup", state) ? `<div class="row"><button class="btn small" ${act("logs_setup")}>Re-run setup</button></div>` : ""}</div>` : ""}
       <section class="card"><div class="card-h"><h2>App launches, last 24h</h2></div>
         <div class="list">${sessions.items.map((s) => `
           <div class="item">
@@ -3153,6 +3157,9 @@ pages.config = async (args = []) => {
   }
   if (!ConfigurationPages.routeMatches(current, section)) {
     return {title: "Configuration", sub: "", html: ""};
+  }
+  if (section && !ConfigurationPages.resolve(section, config.viewer?.role || state.you?.role || "owner")) {
+    return {title: "Configuration", sub: "", html: `<div class="notice">Only the owner of this computer can open that setting.</div>`};
   }
   const result = ConfigurationPages.render(section, config);
   if (section === "base-branch") {
@@ -3559,20 +3566,21 @@ pages.connections = async () => {
           <div class="row"><strong class="conn-name">${esc(p.name)}</strong>${p.connected ? pill("done", "Connected") : pill("", "Not connected")}</div>
           <div class="muted">${esc(p.blurb)}</div>
           ${p.connected && p.summary ? `<div class="mono conn-summary">${esc(p.summary)}</div>` : ""}
-          ${p.connected && p.can_write ? `<div class="conn-options stack" data-conn-options="${esc(p.id)}">
+          ${p.connected && p.can_write ? `<div class="conn-options stack" data-conn-options="${esc(p.id)}" data-owner-only>
             <div class="muted conn-options-h">Keep it updated</div>
             <label class="check"><input type="checkbox" data-opt="comment_pr" ${p.options.comment_pr ? "checked" : ""}><span>Comment when a pull request opens</span></label>
             <label class="check"><input type="checkbox" data-opt="comment_merge" ${p.options.comment_merge ? "checked" : ""}><span>Comment when it's merged</span></label>
             <label class="check"><input type="checkbox" data-opt="move_on_merge" ${p.options.move_on_merge ? "checked" : ""}><span>${esc(p.move_label)}</span></label>
             ${p.move_default ? `<input type="text" data-opt="target" value="${esc(p.options.target)}" placeholder="${esc(p.move_default)}" aria-label="Target" ${p.options.move_on_merge ? "" : "disabled"}>` : ""}
           </div>` : ""}
-          <div class="row">
+          <div class="row" data-owner-only>
             <button class="btn small ${p.connected ? "" : "primary"}" data-conn-connect="${esc(p.id)}">${p.connected ? "Update" : "Connect"}</button>
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
         </div></section>`).join("")}</div>
-      <p class="muted mt-12">Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>`,
+      <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>`,
     after: () => {
+      ConfigurationPages.applyRole(state.you?.role || "owner", view);
       const onClick = async (ev) => {
         const connect = ev.target.closest("[data-conn-connect]"), disc = ev.target.closest("[data-conn-disconnect]");
         if (disc) {
@@ -3858,7 +3866,9 @@ pages.projects = async () => {
   else for (const p of fresh) if (!projectCardOrder.includes(p.root)) projectCardOrder.push(p.root);
   const pList = [...fresh].sort((x, y) => projectCardOrder.indexOf(x.root) - projectCardOrder.indexOf(y.root));
   let unfinished = null;
-  try { unfinished = (await api("new-project")).draft; } catch { /* older server */ }
+  if (state.you?.role !== "member") {
+    try { unfinished = (await api("new-project")).draft; } catch { /* older server */ }
+  }
 
   const githubCount = pList.filter((p) => p.source_type === "github").length;
   const localCount = pList.filter((p) => p.source_type !== "github").length;
@@ -3896,7 +3906,7 @@ pages.projects = async () => {
         ${p.active ? `
           <a class="btn small primary" href="#/">Open Dashboard</a>
         ` : `
-          <button class="btn small ghost" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>
+          ${state.you?.role !== "member" ? `<button class="btn small ghost" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>` : ""}
         `}
       </div>
     </div>
@@ -3905,7 +3915,7 @@ pages.projects = async () => {
   return {
     title: "Projects",
     sub: "Manage and switch between codebases on this machine.",
-    actions: `<a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg>Start a new project</a><button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg>Add an existing project</button>`,
+    actions: state.you?.role !== "member" ? `<a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg>Start a new project</a><button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg>Add an existing project</button>` : "",
     html: `
       <div class="projects-container">
         ${unfinished ? `<div class="banner attention mb-16"><p><strong>Unfinished new project${unfinished.answers?.name ? `: ${esc(unfinished.answers.name)}` : ""}.</strong>${unfinished.waiting_on_github ? " Waiting on GitHub." : ""}</p><a class="btn small primary" href="#/new-project">Continue</a></div>` : ""}
@@ -4149,6 +4159,7 @@ const signatureOf = (r) => `${r.title}|${r.sub}|${r.actions}|${r.html}`;
 function apply(result) {
   setHeader(result);
   view.innerHTML = result.html;
+  ConfigurationPages.applyRole(state.you?.role || "owner", document);
   current.rendered = signatureOf(result);
   if (result.after) result.after();
 }
@@ -4231,7 +4242,7 @@ const palette = { open: false, entries: [], shown: [], active: 0, opener: null }
 
 function paletteBase() {
   const go = (hash) => () => { location.hash = hash; };
-  const entries = PALETTE_PAGES.filter(([, hash]) => !(hash === "#/devlogs" && state.project?.mobile_app === false)).map(([label, hash, hint]) => ({ label, hint, group: "Pages", order: 1, run: go(hash) }));
+  const entries = PALETTE_PAGES.filter(([, hash]) => !(hash === "#/devlogs" && state.project?.mobile_app === false) && !(hash === "#/new-project" && state.you?.role === "member")).map(([label, hash, hint]) => ({ label, hint, group: "Pages", order: 1, run: go(hash) }));
   const act_ = (label, hint, fn) => entries.push({ label, hint, group: "Actions", order: 0, run: fn });
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
   act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());

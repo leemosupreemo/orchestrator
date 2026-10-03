@@ -599,7 +599,11 @@ def archived_feature_jobs(root: Path) -> list[dict[str, Any]]:
     return sorted(out, key=lambda j: j["updated"], reverse=True)
 
 
-def inbox_overview(root: Path, sessions: Any, with_others: bool = True) -> dict[str, Any]:
+def inbox_overview(root: Path, sessions: Any, with_others: bool = True,
+                   runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    visible_runs = sessions.list() if runs is None else runs
+    # A privileged delivery can still make a job busy even when its terminal is hidden from a member.
+    # Keep the manager's authoritative running-job set; only terminal-derived inbox entries use visible_runs.
     running = sessions.running_job_ids()
     jobs = list_jobs(root)
     for job in jobs:
@@ -615,12 +619,12 @@ def inbox_overview(root: Path, sessions: Any, with_others: bool = True) -> dict[
             if str(other) == active["root"] or not jobs_dir(other).is_dir():
                 continue
             others.append({"name": p.get("name") or project_display_name(other), "root": str(other), "jobs": list_jobs(other)})
-    return inbox_view.build(active, jobs, sessions.list(), others)
+    return inbox_view.build(active, jobs, visible_runs, others)
 
 
-def inbox_state(root: Path, sessions: Any) -> dict[str, Any]:
+def inbox_state(root: Path, sessions: Any, runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """What the browser polls: the count for the badge and the items it can notify about."""
-    here = inbox_overview(root, sessions, with_others=False)["here"]
+    here = inbox_overview(root, sessions, with_others=False, runs=runs)["here"]
     return {"inbox_count": len(here),
             "inbox": [{"id": i["id"], "title": i["title"], "label": i["label"], "reason": i["reason"],
                        "hash": i.get("href") or (f"#/runs/{i['run_id']}" if i["kind"] == "run" else f"#/jobs/{i['job_id']}")} for i in here]}
@@ -3321,11 +3325,13 @@ class UIHandler(BaseHTTPRequestHandler):
         parts = [p for p in path.split("/") if p][1:]  # drop "api"
 
         if method == "GET" and parts == ["state"]:
-            self._json({"project": project_state(root), "runs": self.server.sessions.list(),
-                        **inbox_state(root, self.server.sessions),
+            visible_runs = self._sessions_view()
+            self._json({"project": project_state(root), "runs": visible_runs,
+                        **inbox_state(root, self.server.sessions, runs=visible_runs),
                         "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
                         "alerts": {"webhook": bool(read_settings(root).get("notification_webhook"))},
-                        "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
+                        "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields,
+                                        "owner_only": k in OWNER_ONLY_ACTIONS}
                                     for k, a in ACTIONS.items()},
                         # The caller's own credential (so a cookie sign-in can also authorize event streams), never the server's.
                         "token": self._principal["token"],
@@ -3455,7 +3461,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["test-cases"]:
             self._json(test_case_view(root, test_case_lib.load_library(root)))
         elif method == "GET" and parts == ["inbox"]:
-            self._json(inbox_overview(root, self.server.sessions))
+            self._json(inbox_overview(root, self.server.sessions, runs=self._sessions_view()))
         elif method == "GET" and parts == ["features"]:
             self._json(features_overview(root))
         elif method == "POST" and parts == ["features"]:
@@ -3574,7 +3580,7 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(job_file_diff(root, job, (query.get("path") or [""])[0]))
         elif method == "GET" and len(parts) == 2 and parts[0] == "jobs":
             detail = job_detail(root, parts[1])
-            detail["runs"] = self.server.sessions.list(job_id=parts[1])
+            detail["runs"] = self._sessions_view(job_id=parts[1])
             self._json(detail)
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reference":
             job_path = resolve_job_path(root, parts[1])
@@ -3636,6 +3642,9 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "deleted": job_id, "reverted": revert})
         elif method == "GET" and parts == ["file"]:
             target = resolve_runtime_file(root, (query.get("path") or [""])[0])
+            relative = target.relative_to(safe_resolve(runtime_dir(root)))
+            if not self._is_owner() and (not relative.parts or relative.parts[0] not in {"jobs", "output"}):
+                self._require_owner("read private Orchestrator files")
             if target.stat().st_size > MAX_FILE_BYTES:
                 with target.open("rb") as fh:
                     fh.seek(-MAX_FILE_BYTES, os.SEEK_END)
@@ -3644,28 +3653,39 @@ class UIHandler(BaseHTTPRequestHandler):
                 text = target.read_text(encoding="utf-8", errors="replace")
             self._json({"path": str(target.relative_to(safe_resolve(runtime_dir(root)))), "text": text})
         elif method == "GET" and parts == ["new-project"]:
+            self._require_owner("create a project")
             self._json(new_project_state())
         elif method == "POST" and parts == ["new-project", "draft"]:
+            self._require_owner("create a project")
             self._json({"draft": new_project.save_draft(self._body())})
         elif method == "POST" and parts == ["new-project", "discard"]:
+            self._require_owner("create a project")
             self._body()
             new_project.clear_draft()
             self._json({"ok": True})
         elif method == "POST" and parts == ["new-project", "create"]:
+            self._require_owner("create a project")
             self._body()
             self._json(create_new_project(self.server))
         elif method == "POST" and parts == ["new-project", "publish"]:
+            self._require_owner("publish a project")
             body = self._body()
             self._json({"step": publish_known_project(str(body.get("root") or ""), str(body.get("visibility") or "private"))})
         elif method == "GET" and parts == ["integrations"]:
             self._json({"integrations": integrations.public_catalog(saved_integrations(root), read_settings(root).get("integration_options"))})
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "options":
+            self._require_owner("change connected app settings")
             self._json({"options": save_integration_options(root, parts[1], self._body().get("options"))})
+            self._audit("settings_changed", part="integrations")
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "connect":
+            self._require_owner("change connected app credentials")
             self._json(connect_integration(root, parts[1], self._body().get("values") or {}))
+            self._audit("settings_changed", part="integrations")
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "disconnect":
+            self._require_owner("change connected app credentials")
             self._body()
             disconnect_integration(root, parts[1])
+            self._audit("settings_changed", part="integrations")
             self._json({"ok": True})
         elif method == "GET" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "search":
             self._json({"items": search_integration(root, parts[1], (query.get("q") or [""])[0])})
@@ -3681,6 +3701,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 state["audit"] = self.server.audit.recent(30)
             else:  # who else can sign in is the owner's business
                 state["allowed_emails"] = [e for e in state["allowed_emails"] if e["email"] == self._principal.get("email")]
+                for owner_field in ("keys", "ollama_host", "email", "analytics", "webhook", "instructions",
+                                    "machines", "firebase", "role_prompts", "menus"):
+                    state.pop(owner_field, None)
             state["viewer"] = {"role": self._principal["role"], "email": self._principal.get("email")}
             self._json(state)
         elif method == "POST" and parts == ["sign-ins", "revoke"]:
@@ -3754,7 +3777,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["project"]:
             self._switch_project(self._body())
         elif method == "GET" and parts == ["runs"]:
-            self._json({"runs": self.server.sessions.list()})
+            self._json({"runs": self._sessions_view()})
         elif method == "POST" and parts == ["runs"]:
             self._start_run(self._body(), root)
         elif len(parts) == 3 and parts[0] == "runs":
@@ -3912,6 +3935,8 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _run_op(self, method: str, sid: str, op: str, query: dict[str, list[str]]) -> None:
         session = self.server.sessions.get(sid)
+        if session.action in OWNER_ONLY_ACTIONS:
+            self._require_owner(f"access {ACTIONS[session.action].title.lower()} output")
         if method == "GET" and op == "stream":
             self._stream(session, int((query.get("offset") or ["0"])[0] or 0))
         elif method == "GET" and op == "output":
@@ -3939,6 +3964,12 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         else:
             self._error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def _sessions_view(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        sessions = self.server.sessions.list(job_id=job_id)
+        if self._is_owner():
+            return sessions
+        return [session for session in sessions if session.get("action") not in OWNER_ONLY_ACTIONS]
 
     def _stream(self, session: PtySession, offset: int) -> None:
         """Server-sent events: `data` carries base64 terminal bytes, `end` the exit code."""
