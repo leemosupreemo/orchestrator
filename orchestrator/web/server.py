@@ -3447,6 +3447,11 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.UNAUTHORIZED, "Sign in again, or open the URL printed by 'orchestrator ui' (it carries the access token).")
                 return
             if method in ("POST", "DELETE"):
+                # Every change needs the page's own header, checked once here rather than wherever a body happens to be
+                # read: another site can't set it, so it can't make a signed-in browser change things or start (and bill)
+                # model runs. Requests with no body are covered too.
+                if self.headers.get("X-Orchestrator-UI") != "1":
+                    raise UIError("Missing UI headers", HTTPStatus.FORBIDDEN)
                 with self.server.gate.admit():
                     self._api(method, url.path, query)
             else:
@@ -3689,7 +3694,6 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"plan": self.server.plan_view(root)})
         elif method == "POST" and parts == ["features", "propose"]:
             # Draft a feature map from the product requirements in the background; the page polls /api/product/task/<id>.
-            self._body()  # requires the UI header like every other change, so another site can't start (and bill) a model run
             prd_text = prd_doc.Prd(root, runtime_dir(root)).read() or ""
             if not prd_doc.is_filled_doc(prd_text):
                 raise UIError("Write the product requirements first (Product), so there's something to plan features from.")

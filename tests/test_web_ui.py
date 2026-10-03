@@ -87,6 +87,18 @@ class AuthTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         self.assertEqual(data["project"]["name"], "Demo")
 
+    def test_changes_without_the_page_header_are_refused_even_with_no_body(self):
+        # These routes never read a body, so a check made only when reading one used to miss them.
+        for method, path in (("POST", "/api/product/draft"), ("POST", "/api/product/dismiss"), ("POST", "/api/features/propose"),
+                             ("POST", "/api/auth/logout"), ("DELETE", "/api/jobs/20260922-bug-1")):
+            with self.subTest(path=path):
+                res, data = self.request(method, path)
+                self.assertEqual(res.status, 403)
+                self.assertEqual(data["error"], "Missing UI headers")
+        self.assertTrue((ui.jobs_dir(self.root) / "20260922-bug-1.json").exists())  # nothing was deleted
+        res, _ = self.request("GET", "/api/state")
+        self.assertEqual(res.status, 200)  # reading needs no header
+
     def test_query_token_authenticates(self):
         res, data = self.request("GET", "/api/state?token=test-token", auth=False)
         self.assertEqual(res.status, 200)
