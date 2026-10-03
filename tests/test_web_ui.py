@@ -121,14 +121,14 @@ class AuthTests(ServerTestCase):
 class SignInTests(ServerTestCase):
     def sign_in(self, email="tester@example.com"):
         with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": email}), \
-             patch("orchestrator.web.server.allowed_auth_emails", return_value={email}):
+             patch("orchestrator.web.server.allowed_auth_sources", return_value={email: "git"}):
             res, data = self.request("POST", "/api/auth", body={"id_token": "id"}, headers=UI_HEADERS, auth=False)
         self.assertEqual(res.status, 200, data)
         return data["token"]
 
     def as_user(self, token, method, path, body=None, allowed=("tester@example.com",)):
         headers = {"Authorization": f"Bearer {token}", **(UI_HEADERS if body is not None else {})}
-        with patch("orchestrator.web.server.allowed_auth_emails", return_value=set(allowed)):
+        with patch("orchestrator.web.server.allowed_auth_sources", return_value={e: "git" for e in allowed}):
             self.server.forget_allowed_emails()
             return self.request(method, path, body=body, headers=headers, auth=False)
 
@@ -138,7 +138,7 @@ class SignInTests(ServerTestCase):
         res, data = self.as_user(token, "GET", "/api/state")
         self.assertEqual(res.status, 200)
         self.assertEqual(data["token"], token)  # state echoes the caller's credential, not the access token
-        self.assertEqual(data["you"], {"kind": "sign_in", "email": "tester@example.com"})
+        self.assertEqual(data["you"], {"kind": "sign_in", "email": "tester@example.com", "role": "owner"})
         self.assertNotIn("test-token", json.dumps(data))
 
     def test_owner_state_reports_the_owner(self):
@@ -1639,7 +1639,7 @@ class RunApiTests(ServerTestCase):
 
     def test_auth_endpoint_valid_id_token(self):
         with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": "tester@example.com"}), \
-             patch("orchestrator.web.server.allowed_auth_emails", return_value={"tester@example.com"}):
+             patch("orchestrator.web.server.allowed_auth_sources", return_value={"tester@example.com": "git"}):
             res, data = self.request("POST", "/api/auth", body={"id_token": "valid-id-token"}, headers=UI_HEADERS, auth=False)
             self.assertEqual(res.status, 200)
             self.assertTrue(data["ok"])
@@ -1650,7 +1650,7 @@ class RunApiTests(ServerTestCase):
 
     def test_auth_endpoint_unauthorized_email(self):
         with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": "intruder@example.com"}), \
-             patch("orchestrator.web.server.allowed_auth_emails", return_value={"owner@example.com"}):
+             patch("orchestrator.web.server.allowed_auth_sources", return_value={"owner@example.com": "git"}):
             res, data = self.request("POST", "/api/auth", body={"id_token": "some-id-token"}, headers=UI_HEADERS, auth=False)
             self.assertEqual(res.status, 403)
             self.assertIn("not authorized", data["error"])
@@ -1660,14 +1660,14 @@ class RunApiTests(ServerTestCase):
         for info, expected in (({"email": ""}, "didn't share an email"),
                                ({"email": "tester@example.com", "emailVerified": False}, "isn't verified")):
             with patch("orchestrator.web.server.verify_firebase_id_token", return_value=info), \
-                 patch("orchestrator.web.server.allowed_auth_emails", return_value={"tester@example.com"}):
+                 patch("orchestrator.web.server.allowed_auth_sources", return_value={"tester@example.com": "git"}):
                 res, data = self.request("POST", "/api/auth", body={"id_token": "t"}, headers=UI_HEADERS, auth=False)
                 self.assertEqual(res.status, 403, info)
                 self.assertIn(expected, data["error"])
 
     def test_auth_is_closed_when_no_emails_are_allowed(self):
         with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": "anyone@example.com"}), \
-             patch("orchestrator.web.server.allowed_auth_emails", return_value=set()):
+             patch("orchestrator.web.server.allowed_auth_sources", return_value={}):
             res, data = self.request("POST", "/api/auth", body={"id_token": "t"}, headers=UI_HEADERS, auth=False)
             self.assertEqual(res.status, 403)
             self.assertIn("sign-in is closed", data["error"])

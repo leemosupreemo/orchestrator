@@ -53,6 +53,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator import account
+from orchestrator import audit
 from orchestrator import integrations
 from orchestrator import analytics
 from orchestrator import delivery as delivery_view
@@ -92,6 +93,13 @@ FIREBASE_API_KEY = "AIzaSyBg8h8yiC8OCoezFLEq6mQLhlc260b8CcI"
 FIREBASE_PROJECT_ID = account.FIREBASE_PROJECT_ID
 HOSTED_APP_URL = account.HOSTED_APP_URL
 HOSTED_ORIGINS = account.HOSTED_ORIGINS
+# Who may do what. The owner is whoever set this computer up (the paired account, the git email, the environment
+# variable); an email added under Configuration is a member. Members run jobs, approve, build, test and merge; they can't
+# change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
+OWNER_SOURCES = ("git", "account", "environment")
+OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "allowed-email", "firebase", "fleet", "role-prompts"}
+OWNER_ONLY_ACTIONS = {"console", "wizard", "config_menu", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
+                      "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 ALLOWED_EMAILS_CACHE_SECONDS = 60
 MAX_BUFFER_BYTES = 4 * 1024 * 1024
@@ -2722,7 +2730,8 @@ class UIServer(ThreadingHTTPServer):
         # ORCHESTRATOR_ALLOWED_ORIGINS (comma-separated, e.g. a custom domain in front of the hosted app).
         self.allowed_origins = set(HOSTED_ORIGINS) | {
             o.strip().rstrip("/") for o in os.environ.get("ORCHESTRATOR_ALLOWED_ORIGINS", "").split(",") if o.strip()}
-        self._allowed_emails: tuple[float, Path, set[str]] | None = None
+        self.audit = audit.AuditLog(user_state_dir() / "audit.jsonl")
+        self._email_sources: tuple[float, Path, dict[str, str]] | None = None
         self._used_tickets: dict[str, float] = {}
         self._ticket_lock = threading.Lock()
         self.sessions = SessionManager()
@@ -2752,19 +2761,25 @@ class UIServer(ThreadingHTTPServer):
 
     def set_root(self, root: Path) -> None:
         self.root = root
-        self._allowed_emails = None
+        self._email_sources = None
 
-    def allowed_emails(self) -> set[str]:
-        """allowed_auth_emails, cached briefly: it is checked on every signed-in request and asks git."""
-        cached = self._allowed_emails
+    def email_sources(self) -> dict[str, str]:
+        """allowed_auth_sources, cached briefly: it is checked on every signed-in request and asks git."""
+        cached = self._email_sources
         if cached and cached[1] == self.root and time.time() - cached[0] < ALLOWED_EMAILS_CACHE_SECONDS:
             return cached[2]
-        emails = allowed_auth_emails(self.root)
-        self._allowed_emails = (time.time(), self.root, emails)
-        return emails
+        sources = allowed_auth_sources(self.root)
+        self._email_sources = (time.time(), self.root, sources)
+        return sources
+
+    def allowed_emails(self) -> set[str]:
+        return set(self.email_sources())
+
+    def role_of(self, email: str) -> str:
+        return "owner" if self.email_sources().get(email) in OWNER_SOURCES else "member"
 
     def forget_allowed_emails(self) -> None:
-        self._allowed_emails = None
+        self._email_sources = None
 
     def use_ticket_nonce(self, nonce: str, expires: float) -> bool:
         """True the first time a ticket is presented; False on any replay while it is still valid."""
@@ -2917,16 +2932,37 @@ class UIHandler(BaseHTTPRequestHandler):
         if not supplied:
             return None
         if hmac.compare_digest(supplied, self.server.token):
-            return {"kind": "owner", "token": supplied}
+            return {"kind": "owner", "role": "owner", "token": supplied}
         sign_in = self.server.sign_ins.lookup(supplied)
         if sign_in is None or sign_in["email"] not in self.server.allowed_emails():
             return None
-        return {"kind": "sign_in", "token": supplied, **sign_in}
+        return {"kind": "sign_in", "role": self.server.role_of(sign_in["email"]), "token": supplied, **sign_in}
+
+    def _is_owner(self) -> bool:
+        return self._principal["role"] == "owner"
+
+    def _client_ip(self) -> str:
+        # Behind a tunnel the connection comes from the tunnel, so prefer what it says it saw. This is a note for the
+        # owner, not something anything relies on, so a forged header only misleads the log.
+        forwarded = self.headers.get("CF-Connecting-IP") or (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        return forwarded or self.client_address[0]
+
+    def _audit(self, event: str, who: str | None = None, **detail: Any) -> None:
+        if who is None:
+            who = (self._principal or {}).get("email") or "access token"
+        self.server.audit.record(event, who, ip=self._client_ip(), **detail)
+
+    def _require_owner(self, what: str) -> None:
+        if not self._is_owner():
+            self._audit("denied", what=what)
+            raise UIError(f"Only the owner of this computer can {what}.", HTTPStatus.FORBIDDEN)
 
     def _sign_ins_view(self) -> list[dict[str, Any]]:
         mine = self._principal.get("id") if self._principal.get("kind") == "sign_in" else None
+        # The owner sees everyone; a member sees only their own sign-ins.
         return [{"id": s["id"], "email": s["email"], "created": s["created"], "last_seen": s["last_seen"],
-                 "expires": s["expires"], "current": s["id"] == mine} for s in self.server.sign_ins.list()]
+                 "expires": s["expires"], "current": s["id"] == mine}
+                for s in self.server.sign_ins.list() if self._is_owner() or s["email"] == self._principal.get("email")]
 
     def _supplied_token(self) -> str:
         supplied = ""
@@ -3139,6 +3175,64 @@ class UIHandler(BaseHTTPRequestHandler):
         self._body_read = True
         return self.rfile.read(length) if length > 0 else b""
 
+    _attempted = ""
+    _attempted_how = ""
+
+    def _sign_in(self, body: dict[str, Any]) -> tuple[str, str | None, str]:
+        """Who is signing in, how, and the token they get: (token, email, how). Raises UIError when they may not."""
+        self._attempted, self._attempted_how = "", ""
+        token = str(body.get("token") or "").strip()
+        id_token = str(body.get("id_token") or body.get("idToken") or "").strip()
+        ticket = str(body.get("ticket") or "").strip()
+        if ticket:
+            # From the hosted app: the control plane vouches for who this is, for this computer only, once.
+            self._attempted_how = "hosted app"
+            machine = account.load_machine()
+            if machine is None:
+                raise UIError("This computer isn't connected to an account. Run `orchestrator connect` on it.", HTTPStatus.CONFLICT)
+            try:
+                claims = account.verify_ticket(ticket, machine)
+            except account.AccountError as exc:
+                raise UIError(str(exc), HTTPStatus.UNAUTHORIZED)
+            email = str(claims["email"]).lower()
+            self._attempted = email
+            if not self.server.use_ticket_nonce(claims["nonce"], float(claims["exp"])):
+                raise UIError("That sign-in link was already used. Sign in again.", HTTPStatus.UNAUTHORIZED)
+            self.server.forget_allowed_emails()
+            if email not in self.server.allowed_emails():
+                raise UIError(f"Email {email} is not authorized for this computer.", HTTPStatus.FORBIDDEN)
+            return self.server.sign_ins.create(email), email, "hosted app"
+        if id_token:
+            self._attempted_how = "Google, Apple or GitHub"
+            user_info = verify_firebase_id_token(id_token)
+            email = (user_info.get("email") or "").strip().lower()
+            self._attempted = email
+            if not email:
+                raise UIError("This account didn't share an email address. With GitHub, add a verified "
+                              "primary email to your profile (it can stay private).", HTTPStatus.FORBIDDEN)
+            if user_info.get("emailVerified") is False:
+                raise UIError(f"The email {email} isn't verified with that provider.", HTTPStatus.FORBIDDEN)
+            self.server.forget_allowed_emails()  # just added under Configuration? Count it now.
+            allowed = self.server.allowed_emails()
+            if not allowed:
+                raise UIError(
+                    "No sign-in emails are allowed yet, so sign-in is closed. On the computer running Orchestrator, "
+                    "set ORCHESTRATOR_ALLOWED_EMAILS, set git config user.email, or add your email under "
+                    "Configuration (the access-token sign-in still works).",
+                    HTTPStatus.FORBIDDEN)
+            if email not in allowed:
+                # Not the list of who is allowed: anyone with a Google account can reach this far.
+                raise UIError(f"Email {email} is not authorized for this computer. Ask its owner to add it "
+                              "under Configuration, Who can sign in.", HTTPStatus.FORBIDDEN)
+            # Their own token, not the server's: it expires, and it can be revoked without locking anyone else out.
+            return self.server.sign_ins.create(email), email, "Google, Apple or GitHub"
+        if token:
+            self._attempted_how = "access token"
+            if not hmac.compare_digest(token, self.server.token):
+                raise UIError("Invalid access token", HTTPStatus.UNAUTHORIZED)
+            return token, None, "access token"
+        raise UIError("Access token or ID token required", HTTPStatus.BAD_REQUEST)
+
     def _dispatch_inner(self, method: str) -> None:
         if not self._host_ok():
             self._error(HTTPStatus.FORBIDDEN, "Unexpected Host header")
@@ -3151,60 +3245,13 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if method == "POST" and url.path == "/api/auth":
                 body = self._body()
-                token = str(body.get("token") or "").strip()
-                id_token = str(body.get("id_token") or body.get("idToken") or "").strip()
-
-                ticket = str(body.get("ticket") or "").strip()
-
-                authed_email = None
-                if ticket:
-                    # From the hosted app: the control plane vouches for who this is, for this computer only, once.
-                    machine = account.load_machine()
-                    if machine is None:
-                        raise UIError("This computer isn't connected to an account. Run `orchestrator connect` on it.", HTTPStatus.CONFLICT)
-                    try:
-                        claims = account.verify_ticket(ticket, machine)
-                    except account.AccountError as exc:
-                        raise UIError(str(exc), HTTPStatus.UNAUTHORIZED)
-                    if not self.server.use_ticket_nonce(claims["nonce"], float(claims["exp"])):
-                        raise UIError("That sign-in link was already used. Sign in again.", HTTPStatus.UNAUTHORIZED)
-                    authed_email = str(claims["email"]).lower()
-                    self.server.forget_allowed_emails()
-                    if authed_email not in self.server.allowed_emails():
-                        raise UIError(f"Email {authed_email} is not authorized for this computer.", HTTPStatus.FORBIDDEN)
-                    issued = self.server.sign_ins.create(authed_email)
-                elif id_token:
-                    user_info = verify_firebase_id_token(id_token)
-                    user_email = (user_info.get("email") or "").strip().lower()
-                    if not user_email:
-                        raise UIError("This account didn't share an email address. With GitHub, add a verified "
-                                      "primary email to your profile (it can stay private).", HTTPStatus.FORBIDDEN)
-                    if user_info.get("emailVerified") is False:
-                        raise UIError(f"The email {user_email} isn't verified with that provider.", HTTPStatus.FORBIDDEN)
-                    self.server.forget_allowed_emails()  # just added under Configuration? Count it now.
-                    allowed = self.server.allowed_emails()
-                    if not allowed:
-                        raise UIError(
-                            "No sign-in emails are allowed yet, so sign-in is closed. On the computer running Orchestrator, "
-                            "set ORCHESTRATOR_ALLOWED_EMAILS, set git config user.email, or add your email under "
-                            "Configuration (the access-token sign-in still works).",
-                            HTTPStatus.FORBIDDEN)
-                    if user_email not in allowed:
-                        raise UIError(
-                            f"Email {user_email} is not authorized for this computer. "
-                            f"Authorized: {', '.join(sorted(allowed))}",
-                            HTTPStatus.FORBIDDEN
-                        )
-                    authed_email = user_email
-                    # Their own token, not the server's: it expires, and it can be revoked without locking anyone else out.
-                    issued = self.server.sign_ins.create(user_email)
-                elif token:
-                    if not hmac.compare_digest(token, self.server.token):
-                        raise UIError("Invalid access token", HTTPStatus.UNAUTHORIZED)
-                    issued = token
-                else:
-                    raise UIError("Access token or ID token required", HTTPStatus.BAD_REQUEST)
-
+                try:
+                    issued, authed_email, how = self._sign_in(body)
+                except UIError as exc:
+                    if exc.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.CONFLICT):
+                        self._audit("sign_in_refused", who=self._attempted or "unknown", how=self._attempted_how, reason=str(exc))
+                    raise
+                self._audit("sign_in", who=authed_email or "access token", how=how)
                 self._json({"ok": True, "token": issued, "email": authed_email}, extra={
                     "Set-Cookie": f"{COOKIE_NAME}={issued}; HttpOnly; SameSite=Strict; Path=/"
                 })
@@ -3283,21 +3330,24 @@ class UIHandler(BaseHTTPRequestHandler):
                         # The caller's own credential (so a cookie sign-in can also authorize event streams), never the server's.
                         "token": self._principal["token"],
                         "runner": {"version": account.package_version(), "api_version": account.API_VERSION},
-                        "you": {"kind": self._principal["kind"], "email": self._principal.get("email")}})
+                        "you": {"kind": self._principal["kind"], "email": self._principal.get("email"), "role": self._principal["role"]}})
         elif method == "POST" and parts == ["auth", "logout"]:
             if self._principal["kind"] == "sign_in":
                 self.server.sign_ins.revoke_token(self._principal["token"])
+                self._audit("sign_out")
             self._json({"ok": True}, extra={
                 "Set-Cookie": f"{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
             })
         elif method == "GET" and parts == ["projects"]:
             self._json({"projects": all_projects_info(root), "active": str(safe_resolve(root))})
         elif method == "POST" and parts == ["projects", "scan"]:
+            self._require_owner("look for projects on this computer")
             body = self._body()
             paths_input = body.get("paths")
             custom_paths = [Path(p).expanduser() for p in paths_input] if isinstance(paths_input, list) else None
             self._json({"discovered": scan_for_projects(custom_paths)})
         elif method == "POST" and parts == ["projects", "add"]:
+            self._require_owner("add a project folder")
             body = self._body()
             target_str = str(body.get("root") or "").strip()
             if not target_str:
@@ -3307,10 +3357,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(f"Directory not found: {p}")
             name = str(body.get("name") or "").strip() or project_display_name(p)
             remember_project(p, name, active=bool(body.get("active", False)))
+            self._audit("project_added", project=name, path=str(p))
             if body.get("active"):
                 self.server.set_root(p)
             self._json({"ok": True, "project": {"name": name, "root": str(p), "active": bool(body.get("active", False))}})
         elif method == "DELETE" and parts == ["projects"]:
+            self._require_owner("remove a project")
             body = self._body()
             target_str = str(body.get("root") or "").strip()
             if not target_str:
@@ -3319,6 +3371,7 @@ class UIHandler(BaseHTTPRequestHandler):
             if p == safe_resolve(root):
                 raise UIError("Cannot remove the active project")
             forget_project(p)
+            self._audit("project_removed", path=str(p))
             self._json({"ok": True, "projects": all_projects_info(root)})
         elif method == "GET" and parts == ["jobs"]:
             running = self.server.sessions.running_job_ids()
@@ -3623,17 +3676,29 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["setup"]:
             self._json(setup_checklist(root, runtime_dir(root)))
         elif method == "GET" and parts == ["config"]:
-            self._json({**config_state(root), "sign_ins": self._sign_ins_view()})
+            state = {**config_state(root), "sign_ins": self._sign_ins_view()}
+            if self._is_owner():
+                state["audit"] = self.server.audit.recent(30)
+            else:  # who else can sign in is the owner's business
+                state["allowed_emails"] = [e for e in state["allowed_emails"] if e["email"] == self._principal.get("email")]
+            state["viewer"] = {"role": self._principal["role"], "email": self._principal.get("email")}
+            self._json(state)
         elif method == "POST" and parts == ["sign-ins", "revoke"]:
-            if not self.server.sign_ins.revoke(_text(self._body(), "id", required=True, limit=40)):
+            target = _text(self._body(), "id", required=True, limit=40)
+            if not self._is_owner() and not any(x["id"] == target for x in self._sign_ins_view()):
+                self._require_owner("end someone else's sign-in")
+            if not self.server.sign_ins.revoke(target):
                 raise UIError("That sign-in has already ended.", HTTPStatus.NOT_FOUND)
+            self._audit("sign_in_ended", sign_in=target)
             self._json({"sign_ins": self._sign_ins_view()})
         elif method == "POST" and parts == ["config", "allowed-email"]:
+            self._require_owner("change who can sign in")
             body = self._body()
             result = config_update(root, "allowed-email", body)
             self.server.forget_allowed_emails()
             if body.get("op") == "remove":
                 self.server.sign_ins.revoke_email(str(body.get("email") or ""))
+            self._audit("email_allowed" if body.get("op") == "add" else "email_removed", email=str(body.get("email") or "").lower())
             self._json(result)
         elif method == "GET" and parts == ["config", "doc"]:
             wanted = (query.get("id") or [""])[0]
@@ -3642,7 +3707,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError("Document not found", HTTPStatus.NOT_FOUND)
             self._json({"name": entry["name"], "text": Path(entry["path"]).read_text(encoding="utf-8", errors="replace")[:MAX_FILE_BYTES]})
         elif method == "POST" and len(parts) == 2 and parts[0] == "config":
+            if parts[1] in OWNER_ONLY_CONFIG:
+                self._require_owner(f"change {parts[1].replace('-', ' ')} settings")
             self._json(config_update(root, parts[1], self._body()))
+            self._audit("settings_changed", part=parts[1])  # the section only, never what it was set to
         elif method == "GET" and parts == ["git"]:
             self._json(git_state(root))
         elif method == "GET" and parts == ["tests"]:
@@ -3747,6 +3815,8 @@ class UIHandler(BaseHTTPRequestHandler):
         action = ACTIONS.get(key)
         if not action:
             raise UIError(f"Unknown action '{key}'")
+        if key in OWNER_ONLY_ACTIONS:
+            self._require_owner(f"use {action.title.lower()}")
         params = body.get("params") or {}
         if not isinstance(params, dict):
             raise UIError("params must be an object")
@@ -3765,6 +3835,7 @@ class UIHandler(BaseHTTPRequestHandler):
         session = self.server.sessions.start(key, title, argv, root, self.server.child_env(),
                                              runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
         session.job_id = job_id
+        self._audit("run_started", action=key, job=job_id)
         if key in ("new_job", "fix"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
                                         params.get("_feature") if key == "new_job" else None,
