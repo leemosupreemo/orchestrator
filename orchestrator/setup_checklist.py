@@ -138,8 +138,8 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
                            hint=None if origin else "git remote add origin <url>", group="Git"))
     items += [
         _item("llm", "An AI provider is ready", True, bool(providers),
-              ", ".join(providers[:4]) if providers else "No logged-in AI CLI or API key found",
-              action={"type": "route", "to": "#/config"}, group="AI"),
+              ", ".join(providers[:4]) if providers else "No AI is set up yet. Free options are available.",
+              action={"type": "route", "to": "#/config/ai"}, group="AI"),
         _item("machines", "A machine to run jobs on", True, bool(machines),
               f"{len(machines)} configured" if machines else "machines.json is missing or empty",
               action=wizard, group="AI"),

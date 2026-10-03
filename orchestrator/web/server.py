@@ -2097,6 +2097,17 @@ def settings_path(root: Path) -> Path:
     return runtime_dir(root) / "config" / "settings.json"
 
 
+def ai_providers_state(root: Path) -> dict[str, Any]:
+    """The Add an AI page: every provider, free first, with what's installed and signed in here."""
+    from orchestrator import ai_providers
+    from orchestrator import setup_checklist as checklist
+    search = os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
+    ready = set(checklist.ready_llm_providers({}))  # cached briefly: signing-in checks run the tools
+    settings = read_settings(root)
+    saved = {key for key, env in checklist.API_KEY_ENV.items() if settings.get(key) or os.environ.get(env)}
+    return ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready, saved)
+
+
 def read_settings(root: Path) -> dict[str, Any]:
     return read_json_file(settings_path(root))
 
@@ -3800,6 +3811,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"links": attach_links_to_job(root, parts[1], _clean_links(self._body().get("links")))})
         elif method == "GET" and parts == ["setup"]:
             self._json(setup_checklist(root, runtime_dir(root)))
+        elif method == "GET" and parts == ["ai-providers"]:
+            self._json(ai_providers_state(root))
         elif method == "GET" and parts == ["config"]:
             state = {**config_state(root), "sign_ins": self._sign_ins_view()}
             if self._is_owner():

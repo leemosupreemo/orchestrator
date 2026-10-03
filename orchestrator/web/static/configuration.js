@@ -6,6 +6,7 @@
       id: "models-instructions",
       label: "Models & instructions",
       entries: [
+        {id: "ai", label: "Add an AI", description: "Get an AI to do the work: free options first, with install and sign-in steps.", route: "#/config/ai", enabled: true, status: null},
         {id: "models", label: "Models", description: "Choose the AI models available to jobs.", route: "#/config/models", enabled: true, status: null},
         {id: "api-keys", label: "API Keys", description: "Connect AI providers without displaying saved secrets.", route: "#/config/api-keys", enabled: true, ownerOnly: true, status: null},
         {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about your project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
@@ -206,6 +207,38 @@
         <section class="card configuration-card">
           <div class="card-h"><h2>Provider keys</h2><span class="count">${keys.length}</span></div>
           <div class="configuration-setting-list">${rows || `<div class="empty">No providers are available.</div>`}</div>
+        </section>
+      </div>`,
+    };
+  }
+
+  // Add an AI: each provider with its cost, whether it's ready here, and the exact install and sign-in steps.
+  function renderAi(state) {
+    const ai = state.ai || {providers: [], plugins: []};
+    const copyable = (command) => command && !/^(Or |Download)/.test(command)
+      ? `<div class="setup-hint"><code>${escapeHtml(command)}</code><button type="button" class="btn small ghost" data-setup-copy="${escapeHtml(command)}">Copy</button></div>`
+      : command ? `<small>${escapeHtml(command)}</small>` : "";
+    const badge = (p) => p.ready ? `<span class="pill done">Ready</span>`
+      : p.installed ? `<span class="pill">Installed, not signed in</span>` : `<span class="pill">Not installed</span>`;
+    const cards = ai.providers.map((p) => `<section class="card configuration-card ai-provider" data-provider="${escapeHtml(p.id)}">
+        <div class="card-h"><h2>${escapeHtml(p.name)}</h2>${badge(p)}</div>
+        <p><strong>${escapeHtml(p.cost_label)}.</strong> ${escapeHtml(p.what)}</p>
+        ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}`}
+          <p class="muted">${p.installed ? "Then" : "2."} ${escapeHtml(p.sign_in)}</p>`}
+        <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key ? ` · <a href="#/config/api-keys">Add an API key instead</a>` : ""}</p>
+      </section>`).join("");
+    const plugins = ai.plugins.map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
+    return {
+      title: "Add an AI",
+      sub: ai.any_ready ? "You have at least one AI ready. Add more to choose between them per job." : "Orchestrator needs at least one AI to plan, build and review. Free options are first.",
+      html: `<div class="configuration-page">
+        <a class="configuration-back" href="#/config">← All configuration</a>
+        <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
+        ${cards || `<div class="empty">Couldn't check the AI tools on this computer.</div>`}
+        <section class="card configuration-card">
+          <div class="card-h"><h2>Helpful plugins for your AI tools</h2></div>
+          <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
+          <ul>${plugins}</ul>
         </section>
       </div>`,
     };
@@ -623,6 +656,7 @@
   }
 
   function render(section, state = {}) {
+    if (section === "ai") return renderAi(state);
     if (section === "api-keys") return renderApiKeys(state);
     if (section === "base-branch") return renderBaseBranch(state);
     if (section === "archived-jobs") return renderArchivedJobs(state);

@@ -3215,6 +3215,9 @@ pages.config = async (args = []) => {
   if (section && !ConfigurationPages.resolve(section, config.viewer?.role || state.you?.role || "owner")) {
     return {title: "Configuration", sub: "", html: `<div class="notice">Only the owner of this computer can open that setting.</div>`};
   }
+  if (section === "ai") {
+    try { config.ai = await api("ai-providers"); } catch { config.ai = null; }
+  }
   const result = ConfigurationPages.render(section, config);
   if (section === "base-branch") {
     return {

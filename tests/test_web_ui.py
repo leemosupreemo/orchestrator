@@ -911,6 +911,36 @@ class ConfigurationPagesUiTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def test_add_an_ai_page_shows_steps_only_for_what_is_missing(self):
+        result = self.run_configuration_script("""
+const P = globalThis.ConfigurationPages;
+const ai = {checked: "October 2026", any_ready: false, plugins: [{name: "Playwright MCP", why: "Drive <web> apps"}], providers: [
+  {id: "opencode", name: "OpenCode", cost_label: "Free", what: "Free models", install: "curl -fsSL https://opencode.ai/install | bash",
+   install_alt: "brew install opencode", sign_in: "Nothing to sign in to", link: "https://opencode.ai/docs", installed: false, ready: false},
+  {id: "codex", name: "Codex <OpenAI>", cost_label: "Subscription", what: "Plans", install: "x", install_alt: "", sign_in: "Run codex once",
+   link: "https://developers.openai.com/codex/cli", key: "openai_api_key", installed: true, ready: false},
+  {id: "claude", name: "Claude Code", cost_label: "Subscription", what: "Plans", install: "y", install_alt: "", sign_in: "z",
+   link: "https://docs.claude.com", installed: true, ready: true},
+]};
+const page = P.render("ai", {ai});
+process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: page.html, entry: P.resolve("ai", "member")?.route || null}));
+""")
+        html = result["html"]
+        self.assertEqual(result["title"], "Add an AI")
+        self.assertIn("Free options are first", result["sub"])
+        self.assertIn('data-setup-copy="curl -fsSL https://opencode.ai/install | bash"', html)
+        self.assertLess(html.index('data-provider="opencode"'), html.index('data-provider="codex"'))
+        codex = html[html.index('data-provider="codex"'):html.index('data-provider="claude"')]
+        self.assertIn("Installed, not signed in", codex)
+        self.assertNotIn("Install it", codex)  # already installed: only the sign-in step
+        self.assertIn("Add an API key instead", codex)
+        claude = html[html.index('data-provider="claude"'):]
+        self.assertIn("Ready", claude)
+        self.assertNotIn("Run", claude.split("</section>")[0])
+        self.assertIn("Codex &lt;OpenAI&gt;", html)
+        self.assertIn("Drive &lt;web&gt; apps", html)
+        self.assertEqual(result["entry"], "#/config/ai")  # members can use it too
+
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
 const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
@@ -1297,6 +1327,17 @@ process.stdout.write(JSON.stringify({grouped, oneGroup, allHtml: pages.map((page
 
 
 class ReadApiTests(ServerTestCase):
+    def test_ai_providers_lists_free_first_with_status_here(self):
+        with patch("orchestrator.setup_checklist.ready_llm_providers", return_value=["claude"]), \
+                patch("orchestrator.web.server.shutil.which", side_effect=lambda cli, path=None: "/bin/x" if cli == "claude" else None):
+            res, data = self.request("GET", "/api/ai-providers")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["providers"][0]["cost"], "free")
+        claude = next(p for p in data["providers"] if p["id"] == "claude")
+        self.assertTrue(claude["installed"] and claude["ready"])
+        self.assertTrue(data["any_ready"])
+        self.assertTrue(data["plugins"])
+
     def test_jobs_list_and_detail(self):
         _, data = self.request("GET", "/api/jobs")
         job = data["jobs"][0]
