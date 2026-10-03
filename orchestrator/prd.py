@@ -368,7 +368,7 @@ def _one_line(text: str) -> str:
 # --------------------------------------------------------------------------- asking a model
 
 
-def _json_reply(text: str) -> dict[str, Any]:
+def json_reply(text: str) -> dict[str, Any]:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         raise PrdError("The model didn't answer in the expected form. Try again.")
@@ -403,7 +403,7 @@ Reply with ONLY JSON: {{"summary": "what you kept, moved and left out", "markdow
 
 
 def parse_proposal(reply: str) -> dict[str, str]:
-    data = _json_reply(reply)
+    data = json_reply(reply)
     markdown = data.get("markdown")
     if not isinstance(markdown, str) or not markdown.strip():
         raise PrdError("The model returned no document. Try again.")
@@ -605,7 +605,7 @@ Reply with ONLY JSON: {{"changed": true or false, "summary": "one sentence on wh
 
 
 def parse_update(reply: str) -> dict[str, Any]:
-    data = _json_reply(reply)
+    data = json_reply(reply)
     changed = data.get("changed") is True
     markdown = data.get("markdown") if isinstance(data.get("markdown"), str) else ""
     return {"changed": bool(changed and markdown.strip()), "summary": str(data.get("summary", "")).strip()[:300], "markdown": markdown}

@@ -20,7 +20,7 @@ PROVIDERS: list[dict[str, str]] = [
      "link": "https://opencode.ai/docs"},
     {"id": "ollama", "name": "Ollama", "cli": "ollama", "cost": "free",
      "what": "Runs open models on this computer: free and private, but it needs a well-equipped Mac (16 GB of memory or more for coding models).",
-     "install": "brew install ollama", "install_alt": "Or download it from ollama.com/download",
+     "install": "brew install ollama", "install_alt": "", "install_note": "Or download the app from ollama.com/download.",
      "sign_in": "Download a model with `ollama pull <model>`; ollama.com/library lists them.",
      "link": "https://ollama.com/download", "key": "ollama_api_key"},
     {"id": "agy", "name": "Antigravity CLI (Google)", "cli": "agy", "cost": "free-limited",
@@ -58,7 +58,7 @@ def with_status(installed: Callable[[str], bool], ready: Callable[[str], bool], 
     out = []
     for provider in sorted(PROVIDERS, key=lambda p: COST_ORDER[p["cost"]]):
         has_cli = installed(provider["cli"])
-        key_saved = bool(provider.get("key")) and provider["key"] in saved_keys
+        key_saved = provider.get("key") in saved_keys
         out.append({**provider, "cost_label": COST_LABELS[provider["cost"]], "installed": has_cli,
                     "ready": (has_cli and ready(provider["cli"])) or key_saved, "key_saved": key_saved})
     return {"providers": out, "any_ready": any(p["ready"] for p in out), "plugins": PLUGINS, "checked": CHECKED}

@@ -901,7 +901,7 @@ def preflight_overview(root: Path, refresh: bool = False) -> list[dict[str, str]
     hit = _PREFLIGHT_CACHE.get(key)
     if hit and not refresh and time.time() - hit[0] < PREFLIGHT_TTL:
         return hit[1]
-    search_path = os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
+    search_path = tool_search_path()
 
     def run(argv: list[str]) -> tuple[int, str]:
         exe = shutil.which(argv[0], path=search_path)
@@ -2102,15 +2102,20 @@ def settings_path(root: Path) -> Path:
     return runtime_dir(root) / "config" / "settings.json"
 
 
+def tool_search_path() -> str:
+    """Where to look for command-line tools: this process's PATH plus where installers usually put them, which a server
+    started from the Dock or launchd doesn't have on its PATH."""
+    return os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
+
+
 def ai_providers_state(root: Path) -> dict[str, Any]:
     """The Add an AI page: every provider, free first, with what's installed and signed in here."""
     from orchestrator import ai_providers
     from orchestrator import setup_checklist as checklist
-    search = os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
+    search = tool_search_path()
     ready = set(checklist.ready_llm_providers({}))  # cached briefly: signing-in checks run the tools
-    settings = read_settings(root)
-    saved = {key for key, env in checklist.API_KEY_ENV.items() if settings.get(key) or os.environ.get(env)}
-    return ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready, saved)
+    return ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready,
+                                    checklist.saved_api_keys(read_settings(root)))
 
 
 def read_settings(root: Path) -> dict[str, Any]:
@@ -2944,17 +2949,19 @@ class UIServer(ThreadingHTTPServer):
         machines = [m for m in read_json_file(runtime / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
         return feature_store.load(runtime), list_jobs(root) + archived_feature_jobs(root), plan_run.capacity(machines)
 
+    def _planning_alive(self, feature_ids: Any) -> dict[str, bool]:
+        """For features whose job is still being planned: is that planning run still going?"""
+        return {fid: getattr(self._plan_sessions.get(fid), "running", False) for fid in feature_ids}
+
     def plan_view(self, root: Path) -> dict[str, Any] | None:
         """The plan run for the Features page: its settings and what each feature is doing. Changes nothing."""
         run = plan_run.load(runtime_dir(root))
         if not run:
             return None
         features, jobs, slots = self._plan_inputs(root)
-        alive = {fid: bool(self._plan_sessions.get(fid) and self._plan_sessions[fid].running) for fid in run.get("starting") or {}}
-        decision = plan_run.decide({**run, "paused": True}, features, jobs, slots, alive)  # a view never starts anything
-        rows = [{**row, "detail": "Ready" if row["detail"] == "Paused" and not run.get("paused") else row["detail"]} for row in decision["rows"]]
+        decision = plan_run.decide(run, features, jobs, slots, self._planning_alive(run.get("starting") or {}), can_start=False)
         return {"id": run["id"], "auto_approve": run.get("auto_approve", False), "paused": run.get("paused", False),
-                "stopped": run.get("stopped", False), "finished": run.get("finished", False) or decision["finished"], "rows": rows}
+                "finished": decision["finished"], "rows": decision["rows"]}
 
     def plan_tick(self) -> dict[str, Any] | None:
         """Advance "Build the plan": start ready features, approve plans when asked to, and record what finished."""
@@ -2964,12 +2971,12 @@ class UIServer(ThreadingHTTPServer):
         runtime = runtime_dir(root)
         with self._plan_lock:
             run = plan_run.load(runtime)
-            if not run or run.get("finished") or run.get("stopped"):
+            if not run or run.get("finished"):
                 return None
             features, jobs, slots = self._plan_inputs(root)
             starting = run.setdefault("starting", {})
             for fid in list(starting):  # the planning run made its job: from now on the job says how it's going
-                job = next((j for j in jobs if j.get("feature") == fid and j.get("plan_run") == run["id"]), None)
+                job = plan_run.job_for(fid, run, jobs)
                 if job:
                     starting.pop(fid)
                     self._plan_sessions.pop(fid, None)
@@ -2977,10 +2984,7 @@ class UIServer(ThreadingHTTPServer):
                         feature_store.note_work_attached(runtime, fid, job["state"]["group"])
                     except feature_store.FeatureError:
                         pass
-            alive = {fid: bool(self._plan_sessions.get(fid) and self._plan_sessions[fid].running) for fid in starting}
-            decision = plan_run.decide(run, features, jobs, slots, alive)
-            for fid in [f for f, live in alive.items() if not live]:  # planning ended without a job, or the server restarted
-                run.setdefault("failed_start", {})[fid] = starting.pop(fid)
+            decision = plan_run.decide(run, features, jobs, slots, self._planning_alive(starting))
             by_id = {f["id"]: f for f in features}
             for fid in decision["start"]:
                 feature = by_id[fid]
@@ -2990,8 +2994,7 @@ class UIServer(ThreadingHTTPServer):
                 session = self.sessions.start("new_job", f"Build the plan · {feature['name']}", argv, root, self.child_env(),
                                               runtime / "logs" / "ui")
                 self._plan_sessions[fid] = session
-                starting[fid] = {"at": time.time(), "session": session.id}
-                run.get("failed_start", {}).pop(fid, None)
+                starting[fid] = {"at": time.time()}
             running = self.sessions.running_job_ids()
             for job_id in decision["approve"]:
                 if job_id in running:
@@ -3660,13 +3663,14 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(inbox_overview(root, self.server.sessions, runs=self._sessions_view()))
         elif method == "GET" and parts == ["features"]:
             self._json({**features_overview(root), "plan": self.server.plan_view(root)})
+        elif method == "GET" and parts == ["plan-run"]:  # the Features page's light poll while a plan builds
+            self._json({"plan": self.server.plan_view(root)})
         elif method == "POST" and parts == ["plan-run"]:
             body = self._body()
-            overview = features_overview(root)
             chosen = body.get("features")
             if not isinstance(chosen, list):  # by default: every planned feature that has no jobs yet, in build order
-                chosen = [f["id"] for f in sorted(overview["features"], key=lambda f: f["layer"])
-                          if f["status"] == "planned" and not f["jobs_total"]]
+                rolled = feature_store.rollup(feature_store.load(runtime_dir(root)), list_jobs(root) + archived_feature_jobs(root))
+                chosen = [f["id"] for f in sorted(rolled, key=lambda f: f["layer"]) if f["status"] == "planned" and not f["jobs_total"]]
             try:
                 with self.server._plan_lock:
                     plan_run.start(runtime_dir(root), [str(c) for c in chosen], feature_store.load(runtime_dir(root)),
@@ -3683,12 +3687,14 @@ class UIHandler(BaseHTTPRequestHandler):
                 if not run:
                     raise UIError("No plan is being built.", HTTPStatus.NOT_FOUND)
                 if parts[1] == "stop":
-                    run["stopped"] = True  # nothing new starts; jobs already running carry on
+                    plan_run.clear(runtime_dir(root))  # nothing new starts; jobs already running carry on
                 else:
                     run["paused"] = body.get("paused") is True
-                    if not run["paused"]:
-                        run["failed_start"] = {}  # resuming retries features whose planning didn't finish
-                plan_run.save(runtime_dir(root), run)
+                    if not run["paused"]:  # resuming retries features whose planning didn't finish
+                        alive = self.server._planning_alive(run.get("starting") or {})
+                        run["starting"] = {fid: entry for fid, entry in (run.get("starting") or {}).items()
+                                           if alive[fid] and time.time() - float(entry.get("at", 0)) < plan_run.STARTING_TIMEOUT}
+                    plan_run.save(runtime_dir(root), run)
             if parts[1] == "pause" and not run["paused"]:
                 threading.Thread(target=self.server.plan_tick, daemon=True).start()
             self._json({"plan": self.server.plan_view(root)})
@@ -3711,7 +3717,7 @@ class UIHandler(BaseHTTPRequestHandler):
             body = self._body()
             existing = feature_store.load(runtime_dir(root))
             try:  # what comes back from the page is checked again, never trusted
-                proposal = feature_map.parse(json.dumps({"features": body.get("features") if isinstance(body.get("features"), list) else []}), existing)
+                proposal = feature_map.validate(body.get("features"), existing)
                 feature_map.accept(runtime_dir(root), proposal["features"], [str(c) for c in body.get("chosen") or [] if isinstance(c, str)])
             except (feature_map.FeatureMapError, feature_store.FeatureError) as exc:
                 raise UIError(str(exc))

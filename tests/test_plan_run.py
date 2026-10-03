@@ -4,8 +4,7 @@ from pathlib import Path
 
 from orchestrator import plan_run
 
-RUN = {"id": "r1", "features": ["play", "chat", "lobby", "stats"], "auto_approve": False, "paused": False, "stopped": False,
-       "starting": {}, "failed_start": {}}
+RUN = {"id": "r1", "features": ["play", "chat", "lobby", "stats"], "auto_approve": False, "paused": False, "starting": {}}
 FEATURES = [
     {"id": "play", "name": "Play a round", "depends_on": [], "status": "planned"},
     {"id": "lobby", "name": "Lobby", "depends_on": [], "status": "planned"},
@@ -20,7 +19,7 @@ def job(fid, group, label="Working", action=None, run="r1", jid=None):
 
 
 def run_with(**changes):
-    return {**RUN, **changes, "starting": changes.get("starting", {}), "failed_start": changes.get("failed_start", {})}
+    return {**RUN, **changes, "starting": changes.get("starting", {})}
 
 
 class DecideTests(unittest.TestCase):
@@ -76,11 +75,19 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(self.decide(jobs=jobs)["approve"], [])
         self.assertEqual(self.decide(run=run_with(auto_approve=True), jobs=jobs)["approve"], ["job-play"])
 
-    def test_paused_or_stopped_starts_nothing(self):
-        for run in (run_with(paused=True), run_with(stopped=True)):
-            result = self.decide(run=run)
-            self.assertEqual(result["start"], [])
-        self.assertEqual(self.rows(self.decide(run=run_with(paused=True)))["play"]["detail"], "Paused")
+    def test_paused_starts_nothing(self):
+        result = self.decide(run=run_with(paused=True))
+        self.assertEqual(result["start"], [])
+        self.assertEqual(self.rows(result)["play"]["detail"], "Paused")
+
+    def test_a_view_starts_and_approves_nothing_but_shows_the_same_rows(self):
+        run = run_with(auto_approve=True)
+        jobs = [job("lobby", "needs_you", "Approve plan", "approve")]
+        view = self.decide(run=run, jobs=jobs, can_start=False)
+        self.assertEqual((view["start"], view["approve"]), ([], []))
+        self.assertEqual(self.rows(view)["play"]["state"], "ready")
+        self.assertEqual(self.rows(view)["play"]["detail"], "Ready")
+        self.assertEqual(self.rows(view)["lobby"]["detail"], "Approve plan")
 
     def test_jobs_from_another_run_or_unrelated_do_not_count(self):
         result = self.decide(jobs=[job("play", "done", run="old"), {"id": "x", "feature": "play", "state": {"group": "done"}}])
@@ -108,15 +115,17 @@ class StorageTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_start_keeps_known_features_and_refuses_a_second_run(self):
-        run = plan_run.start(self.runtime, ["play", "nope", "play"], FEATURES, auto_approve=True, now=5)
+        run = plan_run.start(self.runtime, ["play", "nope", "play"], FEATURES, auto_approve=True)
         self.assertEqual(run["features"], ["play"])
         self.assertEqual(plan_run.load(self.runtime)["id"], run["id"])
         with self.assertRaises(plan_run.PlanRunError):
             plan_run.start(self.runtime, ["lobby"], FEATURES, auto_approve=False)
         with self.assertRaises(plan_run.PlanRunError):
             plan_run.start(Path(self.tmp.name) / "other", ["nope"], FEATURES, auto_approve=False)
-        plan_run.save(self.runtime, {**run, "stopped": True})
+        plan_run.save(self.runtime, {**run, "finished": True})  # a finished run can be replaced
         self.assertEqual(plan_run.start(self.runtime, ["lobby"], FEATURES, auto_approve=False)["features"], ["lobby"])
+        plan_run.clear(self.runtime)  # Stop
+        self.assertIsNone(plan_run.load(self.runtime))
 
     def test_capacity_counts_enabled_machines(self):
         self.assertEqual(plan_run.capacity([]), 1)

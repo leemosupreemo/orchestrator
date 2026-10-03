@@ -967,7 +967,7 @@ const plan = {auto_approve: false, paused: false, stopped: false, finished: fals
 process.stdout.write(JSON.stringify({
   form, chosen: P.chosenFeatures({f_play: "on", f_chat: "on", auto_approve: "on"}),
   run: P.renderRun(plan), paused: P.renderRun({...plan, paused: true}), finished: P.renderRun({...plan, finished: true}),
-  stopped: P.renderRun({...plan, stopped: true}), none: P.renderRun(null)}));"""
+  none: P.renderRun(null)}));"""
         result = subprocess.run(["node", "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
@@ -982,7 +982,6 @@ process.stdout.write(JSON.stringify({
         self.assertIn('data-plan-action="pause"', out["run"])
         self.assertIn('data-plan-action="resume"', out["paused"])
         self.assertIn("The plan is built", out["finished"])
-        self.assertEqual(out["stopped"], "")
         self.assertEqual(out["none"], "")
 
     def test_feature_proposal_view_groups_by_build_order_and_escapes(self):
@@ -1447,6 +1446,16 @@ class PlanRunApiTests(ServerTestCase):
         self.assertEqual(rows["chat"]["state"], "waiting")
         self.assertIn("Play a round", rows["chat"]["detail"])
 
+    def test_light_poll_reports_the_run_without_starting_anything(self):
+        res, data = self.request("GET", "/api/plan-run")
+        self.assertEqual((res.status, data["plan"]), (200, None))
+        self.request("POST", "/api/plan-run", {"features": ["play-a-round", "chat"]}, headers=UI_HEADERS)
+        self.wait_started(1)
+        before = len(self.started)
+        _, data = self.request("GET", "/api/plan-run")
+        self.assertEqual([r["feature"] for r in data["plan"]["rows"]], ["play-a-round", "chat"])
+        self.assertEqual(len(self.started), before)  # looking never starts work
+
     def test_a_finished_feature_releases_its_dependents(self):
         self.request("POST", "/api/plan-run", {"features": ["play-a-round", "chat"]}, headers=UI_HEADERS)
         self.wait_started(1)
@@ -1476,7 +1485,7 @@ class PlanRunApiTests(ServerTestCase):
         res, _ = self.request("POST", "/api/plan-run", {"features": ["lobby"]}, headers=UI_HEADERS)
         self.assertEqual(res.status, 400)  # one plan at a time
         res, data = self.request("POST", "/api/plan-run/stop", {}, headers=UI_HEADERS)
-        self.assertTrue(data["plan"]["stopped"])
+        self.assertIsNone(data["plan"])  # stopping removes the run; running work carries on
         res, _ = self.request("POST", "/api/plan-run", {"features": ["lobby"]}, headers=UI_HEADERS)
         self.assertEqual(res.status, 201)
 

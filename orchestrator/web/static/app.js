@@ -1043,9 +1043,11 @@ function showAccountScreen(machines, message = "") {
         toast(`${button.dataset.name} will update once no work is running on it.`);
         openAccount({ list: true });
       } catch (err) { toast(err.message, true); button.disabled = false; }
-    } else if (action === "idea-existing" || action === "idea-change") {
-      if (action === "idea-existing") Account.saveIdea({ existing: true });
-      else Account.clearIdea();
+    } else if (action === "idea-existing") {
+      Account.saveIdea({ existing: true });
+      openAccount({ list: true });
+    } else if (action === "idea-change") {
+      Account.clearIdea();
       openAccount({ list: true });
     } else if (action === "copy-enroll") {
       const command = view.querySelector("[data-enroll-command]")?.textContent || "";
@@ -2343,20 +2345,19 @@ pages.features = async (_, query) => {
         <div class="list">${f.job_ids.map((id) => byId.get(id)).filter(Boolean).map((j) => jobItem(j)).join("") || `<div class="empty">No jobs yet. <a href="#/new?feature=${encodeURIComponent(f.id)}">Start one</a>, or move an existing job here from its menu.</div>`}</div>
       </div></section>`;
   };
+  // Shown above both views: the plan being built, a drafted proposal, and any overlaps.
+  const top = `${FeaturePlan.renderRun(plan)}<div id="feature-proposal-slot"></div>
+      ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}`;
   return {
     title: "Features",
     sub: "What the jobs add up to. Each feature owns its own slice of the code.",
     actions: `<button class="btn" id="draft-features" title="AI proposes features, stories and an order from your product requirements">Draft from product requirements</button>${features.length && !building ? `<button class="btn" id="build-plan" title="Build every chosen feature in dependency order, in parallel where possible">Build the plan</button>` : ""}<button class="btn primary" id="new-feature">New feature</button>`,
     html: view_ === "map" && features.length ? `
       ${toggle}
-      ${FeaturePlan.renderRun(plan)}
-      <div id="feature-proposal-slot"></div>
-      ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
+      ${top}
       ${mapHtml()}` : `
       ${features.length ? toggle : ""}
-      ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}
-      ${FeaturePlan.renderRun(plan)}
-      <div id="feature-proposal-slot"></div>
+      ${top}
       ${features.map(card).join("") || `<div class="empty">No features yet. A feature is something a user would name, like “Lobby seats”. <strong>Draft from product requirements</strong> proposes them for you, or create one yourself.</div>`}
       ${loose.length ? `<section class="card"><div class="card-h"><h2>Not in a feature</h2><span class="count">${loose.length}</span></div>
         <div class="list">${loose.map((j) => jobItem(j)).join("")}</div></section>` : ""}`,
@@ -2374,8 +2375,18 @@ pages.features = async (_, query) => {
         el?.scrollIntoView({ block: "center" });
         el?.classList.add("highlight-flash");
       }
-      if (building) {  // keep the plan's progress current while it builds
-        const timer = setInterval(() => { if (!document.querySelector("dialog[open]")) route(); }, 10000);
+      if (building) {  // keep the plan's progress current while it builds: redraw the card, reload the page only on a change
+        const states = (p) => JSON.stringify((p?.rows || []).map((r) => [r.feature, r.state, r.job]));
+        let shown = states(plan);
+        const timer = setInterval(async () => {
+          if (document.querySelector("dialog[open]")) return;
+          let latest;
+          try { latest = (await api("plan-run")).plan; } catch { return; }
+          if (states(latest) !== shown || !latest || latest.finished) { route(); return; }
+          const card = $("#plan-run");
+          if (card) card.outerHTML = FeaturePlan.renderRun(latest);
+          shown = states(latest);
+        }, 10000);
         cleanup.push(() => clearInterval(timer));
       }
       $("#build-plan")?.addEventListener("click", async () => {
@@ -2386,14 +2397,18 @@ pages.features = async (_, query) => {
         try { await api("plan-run", { method: "POST", body: { features: chosen, auto_approve: v.auto_approve === "on" } }); toast("Building the plan"); route(); }
         catch (e) { toast(e.message, true); }
       });
-      view.querySelectorAll("[data-plan-action]").forEach((btn) => btn.addEventListener("click", async () => {
+      const onPlanAction = async (event) => {  // delegated: the progress card is redrawn in place while it builds
+        const btn = event.target.closest("[data-plan-action]");
+        if (!btn) return;
         const action = btn.dataset.planAction;
         try {
           if (action === "stop") await api("plan-run/stop", { method: "POST", body: {} });
           else await api("plan-run/pause", { method: "POST", body: { paused: action === "pause" } });
           route();
         } catch (e) { toast(e.message, true); }
-      }));
+      };
+      view.addEventListener("click", onPlanAction);
+      cleanup.push(() => view.removeEventListener("click", onPlanAction));
       $("#draft-features").addEventListener("click", async (event) => {
         const button = event.currentTarget;
         button.disabled = true;

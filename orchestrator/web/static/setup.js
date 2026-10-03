@@ -39,7 +39,7 @@ window.DesktopSetup = {
         document.querySelector("#desktop-idea")?.addEventListener("submit", (event) => {
           event.preventDefault();
           const pitch = String(new FormData(event.target).get("pitch") || "").trim();
-          if (pitch) location.hash = `#/new-project?pitch=${encodeURIComponent(pitch)}`;
+          if (pitch) location.hash = Account.ideaRoute({pitch});
         });
         const error = document.querySelector("#desktop-setup-error");
         const showError = (message) => { error.hidden = false; error.textContent = message; };

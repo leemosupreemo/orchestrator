@@ -7,11 +7,11 @@ all of it, and accepting creates the features in dependency order through the no
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from orchestrator import features as store
+from orchestrator import prd
 
 MAX_FEATURES = 15
 MAX_STORIES = 8
@@ -48,15 +48,14 @@ Reply with ONLY this JSON, no commentary:
 """
 
 
-def _json(text: str) -> dict[str, Any]:
-    start, end = text.find("{"), text.rfind("}")
+def _features_from(reply: str) -> list[Any]:
     try:
-        data = json.loads(text[start:end + 1]) if start != -1 and end > start else None
-    except json.JSONDecodeError:
-        data = None
-    if not isinstance(data, dict) or not isinstance(data.get("features"), list) or not data["features"]:
+        data = prd.json_reply(reply)
+    except prd.PrdError:
+        data = {}
+    if not isinstance(data.get("features"), list) or not data["features"]:
         raise FeatureMapError("The model didn't answer with a list of features. Try again.")
-    return data
+    return data["features"]
 
 
 def _text(value: Any, limit: int) -> str:
@@ -64,85 +63,66 @@ def _text(value: Any, limit: int) -> str:
 
 
 def _strings(value: Any, limit: int, each: int) -> list[str]:
-    items = value if isinstance(value, list) else []
-    out = []
-    for item in items:
+    out: list[str] = []
+    for item in value if isinstance(value, list) else []:
         text = _text(item, each)
         if text and text not in out:
             out.append(text)
     return out[:limit]
 
 
-def _layers(names: list[str], deps: dict[str, list[str]], existing_depth: dict[str, int]) -> dict[str, int]:
-    depth: dict[str, int] = {}
-
-    def visit(name: str, trail: tuple[str, ...]) -> int:
-        if name in depth:
-            return depth[name]
-        if name in trail:
-            raise FeatureMapError(f"The proposed features depend on each other in a circle ({' → '.join(trail + (name,))}). Try again.")
-        below = [visit(d, trail + (name,)) if d in deps else existing_depth.get(d, 0) for d in deps[name]]
-        depth[name] = 1 + max(below, default=-1)
-        return depth[name]
-
-    for name in names:
-        visit(name, ())
-    return depth
-
-
 def parse(reply: str, existing: list[dict[str, Any]]) -> dict[str, Any]:
-    """The checked proposal: features in build order, each with a `layer`, plus warnings to show the person."""
-    raw = _json(reply)["features"]
+    """A model's reply, checked: see `validate`."""
+    return validate(_features_from(reply), existing)
+
+
+def validate(raw: list[Any], existing: list[dict[str, Any]]) -> dict[str, Any]:
+    """Proposed features, checked and in build order (each with a `layer`), plus warnings to show the person.
+    Used on the model's reply and again on what the page sends back to accept."""
     existing_by_name = {f["name"].strip().lower(): f for f in existing}
     warnings: list[str] = []
     proposed: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for entry in raw:
-        if not isinstance(entry, dict):
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict) or not _text(entry.get("name"), 80):
             continue
         name = _text(entry.get("name"), 80)
-        key = name.lower()
-        if not name:
-            continue
-        if key in existing_by_name:
+        if name.lower() in existing_by_name:
             warnings.append(f"\"{name}\" already exists, so it isn't proposed again.")
             continue
-        if key in seen:
-            raise FeatureMapError(f"The model proposed \"{name}\" twice. Try again.")
-        seen.add(key)
+        if any(f["name"].lower() == name.lower() for f in proposed):
+            raise FeatureMapError(f"\"{name}\" is listed twice. Try again.")
         proposed.append({"name": name, "summary": _text(entry.get("summary"), 500),
-                         "stories": _strings(entry.get("stories"), MAX_STORIES, 400),
+                         "stories": store.clean_stories(entry.get("stories"), MAX_STORIES),
                          "paths": _strings(entry.get("paths"), 12, 200), "serves": _text(entry.get("serves"), 300),
                          "depends_on": _strings(entry.get("depends_on"), 10, 80)})
         if len(proposed) == MAX_FEATURES:
             break
     if not proposed:
-        raise FeatureMapError("Every feature the model proposed already exists.")
-    proposed_names = {f["name"].lower(): f["name"] for f in proposed}
-    deps: dict[str, list[str]] = {}
+        raise FeatureMapError("Every proposed feature already exists.")
+    # Everything below works on one graph keyed by name: existing features plus proposed ones.
+    names = {f["name"].lower(): f["name"] for f in existing} | {f["name"].lower(): f["name"] for f in proposed}
     for feature in proposed:
         kept = []
         for dep in feature["depends_on"]:
-            if dep.lower() in proposed_names and dep.lower() != feature["name"].lower():
-                kept.append(proposed_names[dep.lower()])
-            elif dep.lower() in existing_by_name:
-                kept.append(existing_by_name[dep.lower()]["name"])
+            if dep.lower() in names and dep.lower() != feature["name"].lower():
+                kept.append(names[dep.lower()])
             else:
                 warnings.append(f"\"{feature['name']}\" depended on \"{dep}\", which isn't a feature; that was dropped.")
         feature["depends_on"] = list(dict.fromkeys(kept))
-        deps[feature["name"]] = feature["depends_on"]
-    existing_layers = store.layers(existing) if existing else {}
-    existing_depth = {f["name"]: existing_layers.get(f["id"], 0) for f in existing}
-    depth = _layers([f["name"] for f in proposed], deps, existing_depth)
+    by_id = {f["id"]: f["name"] for f in existing}
+    graph = [{"id": f["name"], "name": f["name"], "paths": f.get("paths") or [],
+              "depends_on": [by_id.get(d, d) for d in f.get("depends_on") or []]} for f in existing]
+    graph += [{"id": f["name"], "name": f["name"], "paths": f["paths"], "depends_on": f["depends_on"]} for f in proposed]
+    for feature in proposed:
+        if store.would_cycle(graph, feature["name"], feature["depends_on"]):
+            raise FeatureMapError(f"The proposed features depend on each other in a circle (through \"{feature['name']}\"). Try again.")
+    depth = store.layers(graph)
     for feature in proposed:
         feature["layer"] = depth[feature["name"]]
-    claims = [(f["name"], p) for f in existing for p in f.get("paths") or []] + [(f["name"], p) for f in proposed for p in f["paths"]]
-    flagged = set()
-    for i, (a, pa) in enumerate(claims):
-        for b, pb in claims[i + 1:]:
-            if a != b and store._covers(pa, pb) and (a, b) not in flagged:
-                flagged.add((a, b))
-                warnings.append(f"\"{a}\" and \"{b}\" would both own {pa if pa == pb else f'{pa} and {pb}'}.")
+    proposed_names = {f["name"] for f in proposed}
+    for overlap in store.overlaps(graph, []):
+        if proposed_names & set(overlap["features"]):  # clashes only among existing features aren't this draft's business
+            warnings.append(f"{' and '.join(overlap['names'])} would overlap: {'; '.join(overlap['reasons'])}.")
     position = {f["name"]: i for i, f in enumerate(proposed)}
     proposed.sort(key=lambda f: (f["layer"], position[f["name"]]))
     return {"features": proposed, "warnings": list(dict.fromkeys(warnings))}
@@ -160,8 +140,7 @@ def accept(runtime: Path, proposed: list[dict[str, Any]], chosen: list[str]) -> 
     created: list[dict[str, Any]] = []
     for feature in sorted(picked, key=lambda f: f["layer"]):
         ids = {f["name"].lower(): f["id"] for f in store.load(runtime)}
-        made = store.create(runtime, feature["name"], feature["summary"], feature["paths"],
-                            [ids[d.lower()] for d in feature["depends_on"] if d.lower() in ids], feature["serves"],
-                            stories=feature["stories"])
-        created.append(made)
+        created.append(store.create(runtime, feature["name"], feature["summary"], feature["paths"],
+                                    [ids[d.lower()] for d in feature["depends_on"] if d.lower() in ids], feature["serves"],
+                                    stories=feature["stories"]))
     return created

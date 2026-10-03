@@ -215,15 +215,14 @@
   // Add an AI: each provider with its cost, whether it's ready here, and the exact install and sign-in steps.
   function renderAi(state) {
     const ai = state.ai || {providers: [], plugins: []};
-    const copyable = (command) => command && !/^(Or |Download)/.test(command)
-      ? `<div class="setup-hint"><code>${escapeHtml(command)}</code><button type="button" class="btn small ghost" data-setup-copy="${escapeHtml(command)}">Copy</button></div>`
-      : command ? `<small>${escapeHtml(command)}</small>` : "";
+    const copyable = (command) => command
+      ? `<div class="setup-hint"><code>${escapeHtml(command)}</code><button type="button" class="btn small ghost" data-setup-copy="${escapeHtml(command)}">Copy</button></div>` : "";
     const badge = (p) => p.ready ? `<span class="pill done">Ready</span>`
       : p.installed ? `<span class="pill">Installed, not signed in</span>` : `<span class="pill">Not installed</span>`;
     const cards = ai.providers.map((p) => `<section class="card configuration-card ai-provider" data-provider="${escapeHtml(p.id)}">
         <div class="card-h"><h2>${escapeHtml(p.name)}</h2>${badge(p)}</div>
         <p><strong>${escapeHtml(p.cost_label)}.</strong> ${escapeHtml(p.what)}</p>
-        ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}`}
+        ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}${p.install_note ? `<small>${escapeHtml(p.install_note)}</small>` : ""}`}
           <p class="muted">${p.installed ? "Then" : "2."} ${escapeHtml(p.sign_in)}</p>`}
         <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key ? ` · <a href="#/config/api-keys">Add an API key instead</a>` : ""}</p>
       </section>`).join("");

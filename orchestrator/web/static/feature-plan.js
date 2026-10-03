@@ -12,6 +12,10 @@
     return layer === 0 ? "Start with these (they don't depend on anything new)" : `Then these (layer ${layer + 1})`;
   }
 
+  function storiesList(stories) {
+    return stories?.length ? `<ul class="feature-stories">${stories.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>` : "";
+  }
+
   // A proposal from /api/features/propose: features in build order, each with a layer, plus warnings.
   function renderProposal(proposal) {
     const features = proposal?.features || [];
@@ -21,7 +25,7 @@
         <span class="stack">
           <strong>${escapeHtml(f.name)}</strong>
           ${f.summary ? `<span>${escapeHtml(f.summary)}</span>` : ""}
-          ${f.stories?.length ? `<ul class="feature-stories">${f.stories.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>` : ""}
+          ${storiesList(f.stories)}
           ${f.depends_on?.length ? `<span class="muted">Builds on ${f.depends_on.map(escapeHtml).join(", ")}</span>` : ""}
           ${f.paths?.length ? `<span class="muted mono">${f.paths.map(escapeHtml).join(" · ")}</span>` : ""}
         </span></label>`;
@@ -39,7 +43,7 @@
   }
 
   function renderStories(stories) {
-    return stories?.length ? `<details><summary>Stories (${stories.length})</summary><ul class="feature-stories">${stories.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul></details>` : "";
+    return stories?.length ? `<details><summary>Stories (${stories.length})</summary>${storiesList(stories)}</details>` : "";
   }
 
   // "Build the plan": choose features (planned ones without jobs are ticked) and whether plans approve themselves.
@@ -62,7 +66,7 @@
 
   // The plan being built: each feature's state, with Pause/Resume and Stop.
   function renderRun(plan) {
-    if (!plan || plan.stopped) return "";
+    if (!plan) return "";
     const done = plan.rows.filter((r) => r.state === "done").length;
     const rows = plan.rows.map((r) => {
       const [label, tone] = RUN_STATE[r.state] || [r.state, "muted"];
@@ -81,5 +85,5 @@
         <div class="list">${rows}</div></div></section>`;
   }
 
-  root.FeaturePlan = {renderProposal, renderStories, layerTitle, renderStartForm, chosenFeatures, renderRun};
+  root.FeaturePlan = {renderProposal, renderStories, renderStartForm, chosenFeatures, renderRun};
 })(typeof globalThis !== "undefined" ? globalThis : window);

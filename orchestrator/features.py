@@ -78,7 +78,7 @@ def _deps(raw: Any, features: list[dict[str, Any]], self_id: str | None) -> list
     return out
 
 
-def _would_cycle(features: list[dict[str, Any]], feature_id: str, deps: list[str]) -> bool:
+def would_cycle(features: list[dict[str, Any]], feature_id: str, deps: list[str]) -> bool:
     """True if making `feature_id` depend on `deps` lets a dependency lead back to it."""
     graph = {f["id"]: list(f.get("depends_on") or []) for f in features}
     graph[feature_id] = deps
@@ -118,15 +118,15 @@ def get(features: list[dict[str, Any]], feature_id: str) -> dict[str, Any]:
     raise FeatureError("Feature not found")
 
 
-def _stories(raw: Any) -> list[str]:
-    """User stories ("As a …, I can …"): one per line or a list, trimmed, at most 12."""
+def clean_stories(raw: Any, limit: int = 12) -> list[str]:
+    """User stories ("As a …, I can …"): one per line or a list, trimmed, at most `limit`."""
     items = raw.splitlines() if isinstance(raw, str) else raw if isinstance(raw, list) else []
     out = []
     for item in items:
         story = " ".join(str(item).split()).lstrip("-• ").strip()[:400]
         if story and story not in out:
             out.append(story)
-    return out[:12]
+    return out[:limit]
 
 
 def create(runtime: Path, name: str, summary: str = "", paths: Any = None, depends_on: Any = None, serves: str = "",
@@ -143,7 +143,7 @@ def create(runtime: Path, name: str, summary: str = "", paths: Any = None, depen
     while fid in taken:
         fid, n = f"{base}-{n}", n + 1
     feature = {"id": fid, "name": name, "summary": (summary or "").strip()[:500], "paths": _paths(paths),
-               "depends_on": _deps(depends_on, features, None), "serves": (serves or "").strip()[:300], "stories": _stories(stories),
+               "depends_on": _deps(depends_on, features, None), "serves": (serves or "").strip()[:300], "stories": clean_stories(stories),
                "status": "planned", "created": time.time(), "completed_at": None, "reopened": False}
     save(runtime, features + [feature])
     return feature
@@ -164,10 +164,10 @@ def update(runtime: Path, feature_id: str, **fields: Any) -> dict[str, Any]:
     if "serves" in fields:
         feature["serves"] = str(fields["serves"] or "").strip()[:300]
     if "stories" in fields:
-        feature["stories"] = _stories(fields["stories"])
+        feature["stories"] = clean_stories(fields["stories"])
     if "depends_on" in fields:
         deps = _deps(fields["depends_on"], features, feature_id)
-        if _would_cycle(features, feature_id, deps):
+        if would_cycle(features, feature_id, deps):
             raise FeatureError("That would make features depend on each other in a circle")
         feature["depends_on"] = deps
     save(runtime, features)
@@ -221,7 +221,7 @@ def restore(runtime: Path, record: dict[str, Any]) -> dict[str, Any]:
         cleaned["measurements"] = _clean_measurements(k.get("measurements"))
         kpis.append(cleaned)
     status = record.get("status") if record.get("status") in STATUSES else "planned"
-    feature = {"id": record["id"], "name": name, "summary": str(record.get("summary", "")).strip()[:500], "serves": str(record.get("serves", "")).strip()[:300], "stories": _stories(record.get("stories")), "paths": _paths(record.get("paths")),
+    feature = {"id": record["id"], "name": name, "summary": str(record.get("summary", "")).strip()[:500], "serves": str(record.get("serves", "")).strip()[:300], "stories": clean_stories(record.get("stories")), "paths": _paths(record.get("paths")),
                "depends_on": [d for d in _paths(record.get("depends_on")) if d in known and d != record["id"]], "kpis": kpis, "status": status,
                "created": float(record["created"]) if isinstance(record.get("created"), (int, float)) else time.time(),
                "completed_at": float(record["completed_at"]) if isinstance(record.get("completed_at"), (int, float)) else None,
