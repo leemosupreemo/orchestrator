@@ -22,6 +22,7 @@ import argparse
 import base64
 import errno
 import fcntl
+import hashlib
 import hmac
 import io
 import json
@@ -79,6 +80,7 @@ from orchestrator.project_config import (
     project_display_name,
     remember_project,
     safe_resolve,
+    user_state_dir,
 )
 
 PUBLIC_URL: dict[str, str] = {}  # {"url": ...} once the server knows where people reach it
@@ -87,6 +89,10 @@ PACKAGE_PARENT = Path(__file__).resolve().parents[2]  # folder holding the `orch
 COOKIE_NAME = "orchestrator_ui"
 FIREBASE_API_KEY = "AIzaSyBg8h8yiC8OCoezFLEq6mQLhlc260b8CcI"
 FIREBASE_PROJECT_ID = "swift-orch-web-20260923"
+HOSTED_APP_URL = f"https://{FIREBASE_PROJECT_ID}.web.app"
+HOSTED_ORIGINS = (HOSTED_APP_URL, f"https://{FIREBASE_PROJECT_ID}.firebaseapp.com")
+SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
+ALLOWED_EMAILS_CACHE_SECONDS = 60
 MAX_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSIONS_KEPT = 50
@@ -2594,6 +2600,90 @@ ACTIONS: dict[str, Action] = {
 # --------------------------------------------------------------------------- HTTP
 
 
+class SignInStore:
+    """People who signed in with Google (or another provider): each gets their own token that expires and can be
+    revoked, never the server's access token. Only a hash of each token is kept on disk, so a restart doesn't sign
+    everyone out and the file is no use to someone who reads it."""
+
+    TOUCH_SAVE_SECONDS = 600  # how stale "last seen" may get on disk before a request writes it
+
+    def __init__(self, path: Path, ttl: int = SIGN_IN_TTL_SECONDS):
+        self.path = path
+        self.ttl = ttl
+        self._lock = threading.Lock()
+        raw = read_json_file(path).get("sign_ins")
+        now = time.time()
+        self._items: dict[str, dict[str, Any]] = {
+            h: s for h, s in (raw.items() if isinstance(raw, dict) else [])
+            if isinstance(s, dict) and s.get("expires", 0) > now and s.get("email")}
+
+    @staticmethod
+    def _hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _save(self) -> None:  # caller holds the lock
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(json.dumps({"sign_ins": self._items}))
+            tmp.chmod(0o600)
+            tmp.replace(self.path)
+        except OSError as exc:
+            print(f"  Couldn't save sign-ins: {exc}", flush=True)
+
+    def create(self, email: str) -> str:
+        token = "si_" + secrets.token_urlsafe(32)
+        now = time.time()
+        with self._lock:
+            self._items[self._hash(token)] = {"id": secrets.token_hex(6), "email": email, "created": now,
+                                              "expires": now + self.ttl, "last_seen": now}
+            self._save()
+        return token
+
+    def lookup(self, token: str) -> dict[str, Any] | None:
+        h = self._hash(token)
+        now = time.time()
+        with self._lock:
+            item = self._items.get(h)
+            if item is None:
+                return None
+            if item["expires"] <= now:
+                del self._items[h]
+                self._save()
+                return None
+            if now - item.get("last_seen", 0) > self.TOUCH_SAVE_SECONDS:
+                item["last_seen"] = now
+                self._save()
+            return dict(item)
+
+    def list(self) -> list[dict[str, Any]]:
+        now = time.time()
+        with self._lock:
+            live = [dict(s) for s in self._items.values() if s["expires"] > now]
+        return sorted(live, key=lambda s: s.get("last_seen", 0), reverse=True)
+
+    def _drop(self, keep: Callable[[dict[str, Any]], bool]) -> int:
+        with self._lock:
+            gone = [h for h, s in self._items.items() if not keep(s)]
+            for h in gone:
+                del self._items[h]
+            if gone:
+                self._save()
+        return len(gone)
+
+    def revoke(self, sign_in_id: str) -> bool:
+        return self._drop(lambda s: s["id"] != sign_in_id) > 0
+
+    def revoke_token(self, token: str) -> None:
+        with self._lock:
+            if self._items.pop(self._hash(token), None) is not None:
+                self._save()
+
+    def revoke_email(self, email: str) -> int:
+        email = email.strip().lower()
+        return self._drop(lambda s: s["email"] != email)
+
+
 def get_or_create_ui_token(supplied: str | None = None) -> str:
     """Return the supplied token or read/persist a stable token in ~/.orchestrator/ui_token."""
     if supplied and supplied.strip():
@@ -2624,6 +2714,12 @@ class UIServer(ThreadingHTTPServer):
         super().__init__(address, UIHandler)
         self.root = root
         self.token = get_or_create_ui_token(token)
+        self.sign_ins = SignInStore(user_state_dir() / "ui_sign_ins.json")
+        # Pages other than the server's own that may call it from a browser: the hosted app, plus any listed in
+        # ORCHESTRATOR_ALLOWED_ORIGINS (comma-separated, e.g. a custom domain in front of the hosted app).
+        self.allowed_origins = set(HOSTED_ORIGINS) | {
+            o.strip().rstrip("/") for o in os.environ.get("ORCHESTRATOR_ALLOWED_ORIGINS", "").split(",") if o.strip()}
+        self._allowed_emails: tuple[float, Path, set[str]] | None = None
         self.sessions = SessionManager()
         self.tasks = BackgroundTasks()
         self.allowed_hosts = self._allowed_hosts()
@@ -2651,6 +2747,19 @@ class UIServer(ThreadingHTTPServer):
 
     def set_root(self, root: Path) -> None:
         self.root = root
+        self._allowed_emails = None
+
+    def allowed_emails(self) -> set[str]:
+        """allowed_auth_emails, cached briefly: it is checked on every signed-in request and asks git."""
+        cached = self._allowed_emails
+        if cached and cached[1] == self.root and time.time() - cached[0] < ALLOWED_EMAILS_CACHE_SECONDS:
+            return cached[2]
+        emails = allowed_auth_emails(self.root)
+        self._allowed_emails = (time.time(), self.root, emails)
+        return emails
+
+    def forget_allowed_emails(self) -> None:
+        self._allowed_emails = None
 
     def start_notifier(self, interval: float = 15.0) -> threading.Thread:
         """Push new inbox items and finished runs to the configured webhook, tab open or not."""
@@ -2709,10 +2818,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        origin = self.headers.get("Origin")
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Access-Control-Allow-Credentials", "true")
+        self._cors_headers()
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -2736,7 +2842,43 @@ class UIHandler(BaseHTTPRequestHandler):
             return True
         return False
 
-    def _authed(self) -> bool:
+    def _origin_allowed(self, origin: str) -> bool:
+        """The hosted app, the server's own pages (whatever name they were reached by), and pages on this computer."""
+        if origin.rstrip("/") in self.server.allowed_origins:
+            return True
+        parsed = urlparse(origin)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+            return True
+        return parsed.netloc.lower() == (self.headers.get("Host") or "").lower()
+
+    def _cors_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        self.send_header("Vary", "Origin")
+        if origin and self._origin_allowed(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+
+    def _authenticate(self) -> dict[str, Any] | None:
+        """Who is asking: the owner (the server's access token) or someone signed in, or None.
+        A sign-in stops working as soon as its email is no longer allowed, wherever the allowance came from."""
+        supplied = self._supplied_token()
+        if not supplied:
+            return None
+        if hmac.compare_digest(supplied, self.server.token):
+            return {"kind": "owner", "token": supplied}
+        sign_in = self.server.sign_ins.lookup(supplied)
+        if sign_in is None or sign_in["email"] not in self.server.allowed_emails():
+            return None
+        return {"kind": "sign_in", "token": supplied, **sign_in}
+
+    def _sign_ins_view(self) -> list[dict[str, Any]]:
+        mine = self._principal.get("id") if self._principal.get("kind") == "sign_in" else None
+        return [{"id": s["id"], "email": s["email"], "created": s["created"], "last_seen": s["last_seen"],
+                 "expires": s["expires"], "current": s["id"] == mine} for s in self.server.sign_ins.list()]
+
+    def _supplied_token(self) -> str:
         supplied = ""
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
@@ -2750,7 +2892,7 @@ class UIHandler(BaseHTTPRequestHandler):
             query = parse_qs(url.query)
             if "token" in query and query["token"]:
                 supplied = query["token"][0]
-        return bool(supplied) and hmac.compare_digest(supplied, self.server.token)
+        return supplied
 
     def _body(self) -> dict[str, Any]:
         if self.headers.get("X-Orchestrator-UI") != "1" or "application/json" not in self.headers.get("Content-Type", ""):
@@ -2770,13 +2912,19 @@ class UIHandler(BaseHTTPRequestHandler):
     # -- routing
 
     def do_OPTIONS(self) -> None:
-        origin = self.headers.get("Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if not origin or not self._origin_allowed(origin):
+            self.send_response(HTTPStatus.FORBIDDEN)
+            self.send_header("Vary", "Origin")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", origin)
+        self._cors_headers()
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD, DELETE")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Orchestrator-UI")
-        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -2793,6 +2941,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         self._body_read = False
+        self._principal: dict[str, Any] | None = None  # set per request: a kept-alive connection reuses this handler
         try:
             self._dispatch_inner(method)
         finally:
@@ -2964,7 +3113,8 @@ class UIHandler(BaseHTTPRequestHandler):
                                       "primary email to your profile (it can stay private).", HTTPStatus.FORBIDDEN)
                     if user_info.get("emailVerified") is False:
                         raise UIError(f"The email {user_email} isn't verified with that provider.", HTTPStatus.FORBIDDEN)
-                    allowed = allowed_auth_emails(self.server.root)
+                    self.server.forget_allowed_emails()  # just added under Configuration? Count it now.
+                    allowed = self.server.allowed_emails()
                     if not allowed:
                         raise UIError(
                             "No sign-in emails are allowed yet, so sign-in is closed. On the computer running Orchestrator, "
@@ -2978,18 +3128,22 @@ class UIHandler(BaseHTTPRequestHandler):
                             HTTPStatus.FORBIDDEN
                         )
                     authed_email = user_email
+                    # Their own token, not the server's: it expires, and it can be revoked without locking anyone else out.
+                    issued = self.server.sign_ins.create(user_email)
                 elif token:
                     if not hmac.compare_digest(token, self.server.token):
                         raise UIError("Invalid access token", HTTPStatus.UNAUTHORIZED)
+                    issued = token
                 else:
                     raise UIError("Access token or ID token required", HTTPStatus.BAD_REQUEST)
 
-                self._json({"ok": True, "token": self.server.token, "email": authed_email}, extra={
-                    "Set-Cookie": f"{COOKIE_NAME}={self.server.token}; HttpOnly; SameSite=Strict; Path=/"
+                self._json({"ok": True, "token": issued, "email": authed_email}, extra={
+                    "Set-Cookie": f"{COOKIE_NAME}={issued}; HttpOnly; SameSite=Strict; Path=/"
                 })
                 return
-            if not self._authed():
-                self._error(HTTPStatus.UNAUTHORIZED, "Open the URL printed by 'orchestrator ui' (it carries the access token).")
+            self._principal = self._authenticate()
+            if self._principal is None:
+                self._error(HTTPStatus.UNAUTHORIZED, "Sign in again, or open the URL printed by 'orchestrator ui' (it carries the access token).")
                 return
             self._api(method, url.path, query)
         except UIError as exc:
@@ -3058,8 +3212,12 @@ class UIHandler(BaseHTTPRequestHandler):
                         "alerts": {"webhook": bool(read_settings(root).get("notification_webhook"))},
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields}
                                     for k, a in ACTIONS.items()},
-                        "token": self.server.token})
+                        # The caller's own credential (so a cookie sign-in can also authorize event streams), never the server's.
+                        "token": self._principal["token"],
+                        "you": {"kind": self._principal["kind"], "email": self._principal.get("email")}})
         elif method == "POST" and parts == ["auth", "logout"]:
+            if self._principal["kind"] == "sign_in":
+                self.server.sign_ins.revoke_token(self._principal["token"])
             self._json({"ok": True}, extra={
                 "Set-Cookie": f"{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
             })
@@ -3396,7 +3554,18 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["setup"]:
             self._json(setup_checklist(root, runtime_dir(root)))
         elif method == "GET" and parts == ["config"]:
-            self._json(config_state(root))
+            self._json({**config_state(root), "sign_ins": self._sign_ins_view()})
+        elif method == "POST" and parts == ["sign-ins", "revoke"]:
+            if not self.server.sign_ins.revoke(_text(self._body(), "id", required=True, limit=40)):
+                raise UIError("That sign-in has already ended.", HTTPStatus.NOT_FOUND)
+            self._json({"sign_ins": self._sign_ins_view()})
+        elif method == "POST" and parts == ["config", "allowed-email"]:
+            body = self._body()
+            result = config_update(root, "allowed-email", body)
+            self.server.forget_allowed_emails()
+            if body.get("op") == "remove":
+                self.server.sign_ins.revoke_email(str(body.get("email") or ""))
+            self._json(result)
         elif method == "GET" and parts == ["config", "doc"]:
             wanted = (query.get("id") or [""])[0]
             entry = next((d for d in doc_entries(root) if d["id"] == wanted), None)
@@ -3626,10 +3795,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
-        origin = self.headers.get("Origin")
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Access-Control-Allow-Credentials", "true")
+        self._cors_headers()
         self.end_headers()
         self.close_connection = True
         while True:
@@ -3777,7 +3943,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  Starting Cloudflare Named Tunnel (stable persistent token)...")
         tunnel_proc, _ = start_tunnel(args.port, token=tunnel_token)
         if public_url:
-            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}&token={server.token}"
+            hosted_url = f"{HOSTED_APP_URL}/?backend={public_url}&token={server.token}"
             PUBLIC_URL["url"] = hosted_url
             print(f"  \033[92m✓ Stable Tunnel URL:\033[0m   {public_url}/?token={server.token}")
             print(f"  \033[92m✓ Phone Web UI:\033[0m        {hosted_url}")
@@ -3788,14 +3954,14 @@ def main(argv: list[str] | None = None) -> int:
         tunnel_proc, tunnel_url = start_tunnel(args.port)
         if tunnel_url:
             effective_url = public_url or tunnel_url
-            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={effective_url}&token={server.token}"
+            hosted_url = f"{HOSTED_APP_URL}/?backend={effective_url}&token={server.token}"
             PUBLIC_URL["url"] = hosted_url
             print(f"  \033[92m✓ Tunnel URL:\033[0m   {effective_url}/?token={server.token}")
             print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
         else:
             print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out).\033[0m")
     elif public_url:
-        hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}&token={server.token}"
+        hosted_url = f"{HOSTED_APP_URL}/?backend={public_url}&token={server.token}"
         PUBLIC_URL["url"] = hosted_url
         print(f"  \033[92m✓ Stable Remote URL:\033[0m {public_url}/?token={server.token}")
         print(f"  \033[92m✓ Phone Web UI:\033[0m      {hosted_url}")

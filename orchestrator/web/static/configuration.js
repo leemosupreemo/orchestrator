@@ -19,6 +19,7 @@
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
         {id: "archived-jobs", label: "Archived Jobs", description: "Review and restore completed work.", route: "#/config/archived-jobs", enabled: true, status: null},
         {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, status: null},
+        {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, status: null},
       ],
     },
     {
@@ -312,6 +313,46 @@
     };
   }
 
+  const EMAIL_SOURCES = {
+    git: "from git config",
+    environment: "from ORCHESTRATOR_ALLOWED_EMAILS",
+    project: "from project.json",
+    settings: "added here",
+  };
+
+  function shortDate(seconds) {
+    return new Date(seconds * 1000).toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+  }
+
+  function renderAccess(state) {
+    const emails = Array.isArray(state.allowed_emails) ? state.allowed_emails : [];
+    const signIns = Array.isArray(state.sign_ins) ? state.sign_ins : [];
+    const emailRows = emails.map(({email, source}) => `<div class="configuration-setting-row">
+      <span><span class="mono">${escapeHtml(email)}</span> <span class="muted">${escapeHtml(EMAIL_SOURCES[source] || source)}</span></span>
+      ${source === "settings" ? `<button type="button" class="btn small danger" data-config-action="access-remove" data-email="${escapeHtml(email)}">Remove</button>` : ""}
+    </div>`).join("");
+    const signInRows = signIns.map((s) => `<div class="configuration-setting-row">
+      <span><span class="mono">${escapeHtml(s.email)}</span>${s.current ? ` <span class="pill">This browser</span>` : ""}
+        <span class="muted">Signed in ${escapeHtml(shortDate(s.created))} · last used ${escapeHtml(shortDate(s.last_seen))}</span></span>
+      <button type="button" class="btn small danger" data-config-action="access-revoke" data-id="${escapeHtml(s.id)}"${s.current ? " data-current" : ""}>${s.current ? "Sign out" : "End"}</button>
+    </div>`).join("");
+    return {
+      title: "Who can sign in",
+      sub: "People with these emails can sign in with Google and use this computer from anywhere. Each sign-in lasts 30 days.",
+      html: `<div class="configuration-page">
+        <a class="configuration-back" href="#/config">← All configuration</a>
+        <section class="card configuration-card">
+          <div class="card-h"><h2>Allowed emails</h2><button type="button" class="btn small" data-config-action="access-add">Add email</button></div>
+          <div class="configuration-setting-list">${emailRows || `<div class="empty">No one yet, so sign-in is closed. The access token still works.</div>`}</div>
+        </section>
+        <section class="card configuration-card">
+          <div class="card-h"><h2>Signed in now</h2><span class="count">${signIns.length}</span></div>
+          <div class="configuration-setting-list">${signInRows || `<div class="empty">No one is signed in with an email. The owner's access token isn't listed here.</div>`}</div>
+        </section>
+      </div>`,
+    };
+  }
+
   function renderDocumentation(state) {
     const docs = Array.isArray(state.docs) ? state.docs : [];
     const sections = ["Orchestrator docs", "Project docs"].map((section) => {
@@ -560,6 +601,7 @@
     if (section === "archived-jobs") return renderArchivedJobs(state);
     if (section === "email") return renderEmail(state);
     if (section === "chat") return renderChat(state);
+    if (section === "access") return renderAccess(state);
     if (section === "documentation") return renderDocumentation(state);
     if (section === "models") return renderModels(state);
     if (section === "ai-instructions") return renderAiInstructions(state);

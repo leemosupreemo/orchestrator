@@ -3093,6 +3093,44 @@ pages.config = async (args = []) => {
       },
     };
   }
+  if (section === "access") {
+    return {
+      ...result,
+      after: () => {
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button || button.disabled) return;
+          const action = button.dataset.configAction;
+          if (action === "access-add") {
+            showConfigMutationDialog(
+              "Allow an email",
+              `<label class="field"><span>Email address</span><input type="email" name="email" required autocapitalize="off"></label>
+               <small class="hint-text">They can then sign in with Google and use everything on this computer.</small>`,
+              "Allow",
+              (values) => ({part: "allowed-email", body: {op: "add", email: values.email}}),
+              "Email allowed",
+            );
+          } else if (action === "access-remove") {
+            await runConfigMutation(button, {part: "allowed-email", body: {op: "remove", email: button.dataset.email}}, "Email removed and signed out");
+          } else if (action === "access-revoke") {
+            if (button.hasAttribute("data-current")) { await lockSession(); return; }
+            button.disabled = true;
+            try {
+              await api("sign-ins/revoke", {method: "POST", body: {id: button.dataset.id}});
+              toast("Sign-in ended");
+              if (ConfigurationPages.routeMatches(current, section)) await route();
+            } catch (error) {
+              toast(error.message, true);
+            } finally {
+              if (button.isConnected) button.disabled = false;
+            }
+          }
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
   if (section === "documentation") {
     return {
       ...result,

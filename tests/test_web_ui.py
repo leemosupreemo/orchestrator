@@ -92,10 +92,107 @@ class AuthTests(ServerTestCase):
         self.assertEqual(data["project"]["name"], "Demo")
 
     def test_options_cors_preflight(self):
-        res, _ = self.request("OPTIONS", "/api/state", auth=False, headers={"Origin": "https://example.com"})
+        res, _ = self.request("OPTIONS", "/api/state", auth=False, headers={"Origin": ui.HOSTED_APP_URL})
         self.assertEqual(res.status, 204)
-        self.assertEqual(res.getheader("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertEqual(res.getheader("Access-Control-Allow-Origin"), ui.HOSTED_APP_URL)
         self.assertIn("Authorization", res.getheader("Access-Control-Allow-Headers", ""))
+
+    def test_cors_refuses_other_sites(self):
+        res, _ = self.request("OPTIONS", "/api/state", auth=False, headers={"Origin": "https://example.com"})
+        self.assertEqual(res.status, 403)
+        self.assertIsNone(res.getheader("Access-Control-Allow-Origin"))
+        res, _ = self.request("GET", "/api/state", headers={"Origin": "https://example.com"})
+        self.assertIsNone(res.getheader("Access-Control-Allow-Origin"))
+
+    def test_cors_allows_the_servers_own_name_and_this_computer(self):
+        for origin, host in ((f"http://127.0.0.1:{self.port}", None), ("http://localhost:5000", None),
+                             ("https://mac.example.ts.net", "mac.example.ts.net")):
+            res, _ = self.request("GET", "/api/state", headers={"Origin": origin}, host=host)
+            self.assertEqual(res.getheader("Access-Control-Allow-Origin"), origin, origin)
+
+    def test_extra_origins_come_from_the_environment(self):
+        with patch.dict(os.environ, {"ORCHESTRATOR_ALLOWED_ORIGINS": "https://app.example.com/, https://b.example.com"}):
+            server = ui.UIServer(("127.0.0.1", 0), self.root, token="t2")
+        self.addCleanup(server.server_close)
+        self.assertIn("https://app.example.com", server.allowed_origins)
+        self.assertIn("https://b.example.com", server.allowed_origins)
+
+
+class SignInTests(ServerTestCase):
+    def sign_in(self, email="tester@example.com"):
+        with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": email}), \
+             patch("orchestrator.web.server.allowed_auth_emails", return_value={email}):
+            res, data = self.request("POST", "/api/auth", body={"id_token": "id"}, headers=UI_HEADERS, auth=False)
+        self.assertEqual(res.status, 200, data)
+        return data["token"]
+
+    def as_user(self, token, method, path, body=None, allowed=("tester@example.com",)):
+        headers = {"Authorization": f"Bearer {token}", **(UI_HEADERS if body is not None else {})}
+        with patch("orchestrator.web.server.allowed_auth_emails", return_value=set(allowed)):
+            self.server.forget_allowed_emails()
+            return self.request(method, path, body=body, headers=headers, auth=False)
+
+    def test_sign_in_gets_its_own_token_never_the_servers(self):
+        token = self.sign_in()
+        self.assertNotEqual(token, "test-token")
+        res, data = self.as_user(token, "GET", "/api/state")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["token"], token)  # state echoes the caller's credential, not the access token
+        self.assertEqual(data["you"], {"kind": "sign_in", "email": "tester@example.com"})
+        self.assertNotIn("test-token", json.dumps(data))
+
+    def test_owner_state_reports_the_owner(self):
+        _, data = self.request("GET", "/api/state")
+        self.assertEqual(data["you"]["kind"], "owner")
+
+    def test_sign_ins_survive_a_restart_and_only_hashes_are_stored(self):
+        token = self.sign_in()
+        stored = (Path(os.environ["ORCHESTRATOR_USER_STATE_DIR"]) / "ui_sign_ins.json").read_text()
+        self.assertNotIn(token, stored)
+        again = ui.SignInStore(self.server.sign_ins.path)
+        self.assertEqual(again.lookup(token)["email"], "tester@example.com")
+
+    def test_logout_ends_the_sign_in(self):
+        token = self.sign_in()
+        res, _ = self.as_user(token, "POST", "/api/auth/logout", body={})
+        self.assertEqual(res.status, 200)
+        res, _ = self.as_user(token, "GET", "/api/state")
+        self.assertEqual(res.status, 401)
+
+    def test_owner_logout_leaves_the_access_token_working(self):
+        self.request("POST", "/api/auth/logout", body={}, headers=UI_HEADERS)
+        res, _ = self.request("GET", "/api/state")
+        self.assertEqual(res.status, 200)
+
+    def test_sign_ins_are_listed_and_can_be_revoked(self):
+        mine, other = self.sign_in(), self.sign_in()
+        _, config = self.as_user(mine, "GET", "/api/config")
+        self.assertEqual(len(config["sign_ins"]), 2)
+        self.assertEqual(sum(s["current"] for s in config["sign_ins"]), 1)
+        other_id = next(s["id"] for s in config["sign_ins"] if not s["current"])
+        res, data = self.as_user(mine, "POST", "/api/sign-ins/revoke", body={"id": other_id})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(len(data["sign_ins"]), 1)
+        self.assertEqual(self.as_user(other, "GET", "/api/state")[0].status, 401)
+        self.assertEqual(self.as_user(mine, "GET", "/api/state")[0].status, 200)
+        res, _ = self.as_user(mine, "POST", "/api/sign-ins/revoke", body={"id": other_id})
+        self.assertEqual(res.status, 404)
+
+    def test_a_sign_in_stops_working_once_its_email_is_no_longer_allowed(self):
+        token = self.sign_in()
+        res, _ = self.as_user(token, "GET", "/api/state", allowed=("someone-else@example.com",))
+        self.assertEqual(res.status, 401)
+
+    def test_removing_an_allowed_email_ends_its_sign_ins(self):
+        ui.config_update(self.root, "allowed-email", {"op": "add", "email": "tester@example.com"})
+        token = self.sign_in()
+        res, _ = self.request("POST", "/api/config/allowed-email", body={"op": "remove", "email": "tester@example.com"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertIsNone(self.server.sign_ins.lookup(token))
+
+    def test_expired_sign_ins_are_refused(self):
+        store = ui.SignInStore(Path(self.tmp.name) / "s.json", ttl=-1)
+        self.assertIsNone(store.lookup(store.create("tester@example.com")))
 
     def test_url_token_is_exchanged_for_http_only_cookie(self):
         res, _ = self.request("GET", "/?token=test-token", auth=False)
@@ -293,6 +390,24 @@ process.stdout.write(JSON.stringify({active, menu: globalThis.ConfigurationPages
         self.assertEqual(result["menu"].count(" disabled"), 0)
         self.assertNotIn('data-config-route="null"', result["menu"])
         self.assertNotIn("Coming next", result["menu"])
+
+    def test_access_page_lists_emails_and_sign_ins(self):
+        html = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('access', {
+  allowed_emails: [{email: 'owner@x.com', source: 'git'}, {email: 'friend@x.com', source: 'settings'}],
+  sign_ins: [{id: 'a1', email: 'friend@x.com', created: 1, last_seen: 2, expires: 3, current: false},
+             {id: 'b2', email: 'owner@x.com', created: 1, last_seen: 2, expires: 3, current: true}],
+});
+process.stdout.write(JSON.stringify(page.html));
+""")
+        self.assertIn("from git config", html)
+        self.assertEqual(html.count('data-config-action="access-remove"'), 1)  # only emails added here can be removed here
+        self.assertIn('data-email="friend@x.com"', html)
+        self.assertEqual(html.count('data-config-action="access-revoke"'), 2)
+        self.assertEqual(html.count("data-current"), 1)
+        self.assertIn("This browser", html)
+        empty = self.run_configuration_script("process.stdout.write(JSON.stringify(globalThis.ConfigurationPages.render('access', {}).html));")
+        self.assertIn("sign-in is closed", empty)
 
     def test_resolver_accepts_only_enabled_native_configuration_pages(self):
         result = self.run_configuration_script("""
@@ -1232,7 +1347,8 @@ class RunApiTests(ServerTestCase):
             self.assertTrue(data["ok"])
             self.assertEqual(data["email"], "tester@example.com")
             cookie = res.getheader("Set-Cookie")
-            self.assertIn("orchestrator_ui=test-token", cookie)
+            self.assertIn(f"orchestrator_ui={data['token']}", cookie)
+            self.assertNotIn("test-token", cookie)
 
     def test_auth_endpoint_unauthorized_email(self):
         with patch("orchestrator.web.server.verify_firebase_id_token", return_value={"email": "intruder@example.com"}), \
