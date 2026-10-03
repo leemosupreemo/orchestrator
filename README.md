@@ -146,6 +146,7 @@ orchestrator update --fleet   # Enabled remote machines
 
 - [Getting Started](docs/getting-started.md): What Orchestrator does and the first commands to run.
 - [User Guide](docs/user-guide.md): Comprehensive setup, commands, and troubleshooting.
+- [Product requirements](docs/product-requirements.md): The one living document every AI reads first: how to start it (write, draft from a project, import), how it keeps itself true, and how to undo it.
 
 ---
 

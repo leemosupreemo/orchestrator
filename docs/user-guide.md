@@ -429,6 +429,8 @@ For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://s
 
 ## Web UI
 
+> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have, or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. See [Product requirements](product-requirements.md).
+
 `orchestrator ui` starts a local web interface for the current project and opens it in your browser:
 
 ```bash
