@@ -2545,7 +2545,10 @@ def create_new_project(server: "UIServer") -> dict[str, Any]:
         result = new_project.create_project(draft)
     except new_project.NewProjectError as exc:
         raise UIError(str(exc))
-    server.set_root(Path(result["root"]))
+    if server.bootstrap_enabled:
+        server.selected_root = Path(result["root"])
+    else:
+        server.set_root(Path(result["root"]))
     # The draft stays until GitHub is done, so a failed publish can be retried from where they were.
     if result["github_ok"]:
         new_project.clear_draft()
@@ -2740,9 +2743,12 @@ class UIServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], root: Path, token: str | None = None):
+    def __init__(self, address: tuple[str, int], root: Path | None, token: str | None = None,
+                 bootstrap_mode: bool = False):
         super().__init__(address, UIHandler)
         self.root = root
+        self.selected_root = root
+        self.bootstrap_enabled = bootstrap_mode or root is None
         self.token = get_or_create_ui_token(token)
         self.sign_ins = SignInStore(user_state_dir() / "ui_sign_ins.json")
         # Pages other than the server's own that may call it from a browser: the hosted app, plus any listed in
@@ -2781,10 +2787,13 @@ class UIServer(ThreadingHTTPServer):
 
     def set_root(self, root: Path) -> None:
         self.root = root
+        self.selected_root = root
         self._email_sources = None
 
     def email_sources(self) -> dict[str, str]:
         """allowed_auth_sources, cached briefly: it is checked on every signed-in request and asks git."""
+        if self.root is None:
+            return {}
         cached = self._email_sources
         if cached and cached[1] == self.root and time.time() - cached[0] < ALLOWED_EMAILS_CACHE_SECONDS:
             return cached[2]
@@ -3260,6 +3269,9 @@ class UIHandler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         query = parse_qs(url.query)
         try:
+            origin = self.headers.get("Origin")
+            if method in ("POST", "DELETE") and origin and not self._origin_allowed(origin):
+                raise UIError("Unexpected request origin", HTTPStatus.FORBIDDEN)
             if method == "GET" and not url.path.startswith("/api/"):
                 self._static(url.path, query)
                 return
@@ -3343,8 +3355,11 @@ class UIHandler(BaseHTTPRequestHandler):
         })
 
     def _api(self, method: str, path: str, query: dict[str, list[str]]) -> None:
-        root = self.server.root
         parts = [p for p in path.split("/") if p][1:]  # drop "api"
+        from orchestrator.web.bootstrap import dispatch_bootstrap
+        if dispatch_bootstrap(self, method, parts):
+            return
+        root = self.server.root
 
         if method == "GET" and parts == ["state"]:
             visible_runs = self._sessions_view()

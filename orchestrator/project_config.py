@@ -364,16 +364,17 @@ class ProjectConfig:
         return project_prompts if project_prompts.exists() else self.package_prompts_dir
 
 
-def load_project_config() -> ProjectConfig:
-    root = find_project_root()
-    config_path = os.environ.get("ORCHESTRATOR_CONFIG")
+def load_project_config(root: Path | None = None) -> ProjectConfig:
+    explicit_root = root is not None
+    root = safe_resolve(root) if explicit_root else find_project_root()
+    config_path = None if explicit_root else os.environ.get("ORCHESTRATOR_CONFIG")
     if config_path:
         config_file = safe_resolve(Path(config_path).expanduser())
     else:
         config_file = root / DEFAULT_RUNTIME_DIRNAME / "project.json"
 
     data = _load_json(config_file)
-    runtime_dir = Path(
+    runtime_dir = root / DEFAULT_RUNTIME_DIRNAME if explicit_root else Path(
         os.environ.get(
             "ORCHESTRATOR_RUNTIME_DIR",
             os.environ.get("AI_RUNTIME_DIR", str(root / DEFAULT_RUNTIME_DIRNAME)),

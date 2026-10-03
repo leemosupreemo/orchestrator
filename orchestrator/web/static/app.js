@@ -4174,6 +4174,8 @@ async function route() {
   if (dlg.open) dlg.close("cancel");
 
   const r = resolveRoute();
+  if (state.setup?.needs_project && !["connect", "computers", "new-project"].includes(r.page)) r.page = "setup";
+  if (parseHash().parts[0] === "setup") r.page = "setup";
   if (r.page === "connect" || r.page === "computers") { // the hosted app's account screens
     if (!Account.active()) { location.hash = "#/"; return; }
     if (r.page === "connect") Account.pendingCode();
@@ -4186,14 +4188,18 @@ async function route() {
   const floatingBtn = $("#floating-new-btn");
   if (floatingBtn) floatingBtn.hidden = (r.page === "new");
   try {
-    if (!state.project) {
+    if (!state.project && !["setup", "new-project"].includes(r.page)) {
       await refreshState();
       if (!state.project) return;
     }
     // A page that takes a moment (first load runs setup checks) shouldn't leave a blank screen.
     const slow = setTimeout(() => { if (current.page === r.page && !view.innerHTML.trim()) view.innerHTML = `<div class="empty" role="status">Loading…</div>`; }, 400);
     let result;
-    try { result = await pages[r.page](r.args, r.query); } finally { clearTimeout(slow); }
+    try {
+      result = r.page === "setup" ? await DesktopSetup.render({api, esc, root: r.query.get("root"),
+        onReady: async () => { await refreshState(); location.hash = "#/"; await route(); }})
+        : await pages[r.page](r.args, r.query);
+    } finally { clearTimeout(slow); }
     if (current.page === r.page && current.args.join() === r.args.join()) {
       apply(result);
       if (r.page !== "run") $("#page-title")?.focus({ preventScroll: true }); // so screen readers announce the new page
@@ -4209,6 +4215,7 @@ async function route() {
 async function tick() {
   await refreshState(); // also while the tab is hidden, so notifications can fire
   if (document.hidden) return;
+  if (!state.project) return;
   loadSetup();
   if (current.page === "run") {
     const run = state.runs.find((r) => r.id === current.args[0]);

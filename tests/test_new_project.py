@@ -154,6 +154,7 @@ class CreateTests(Isolated):
 
 class ServerFlowTests(Isolated):
     class FakeServer:
+        bootstrap_enabled = False
         root = None
 
         def set_root(self, root):

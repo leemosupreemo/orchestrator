@@ -1412,3 +1412,5 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .account-add summary { cursor: pointer; color: var(--muted); margin-bottom: var(--space-3); }
 .account-foot { margin: 0; font-size: var(--text-sm); }
 .account-card code { white-space: nowrap; } /* keep `orchestrator ui --tunnel` on one line */
+.desktop-setup label { display: block; margin: 1rem 0; }
+.desktop-setup input { display: block; width: 100%; margin-top: .35rem; }
