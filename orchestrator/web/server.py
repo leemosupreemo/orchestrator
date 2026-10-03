@@ -98,6 +98,7 @@ MAX_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSIONS_KEPT = 50
 IDLE_PROMPT_SECONDS = 20
+OUTPUT_MAX_WAIT_SECONDS = 20  # a long-poll answers within this, well inside the 100 s proxies such as Cloudflare allow
 JOB_TYPES = ["bug", "feature", "design", "coverage", "quick"]
 BRANCH_MODES = ["new", "current", "manual"]
 # Runs a child as the leader of a new session with the pty as its controlling
@@ -3841,6 +3842,17 @@ class UIHandler(BaseHTTPRequestHandler):
         session = self.server.sessions.get(sid)
         if method == "GET" and op == "stream":
             self._stream(session, int((query.get("offset") or ["0"])[0] or 0))
+        elif method == "GET" and op == "output":
+            # The same output as the stream, as one ordinary request: it answers when there is something new (or the wait
+            # is up), so it works through proxies and tunnels that hold back an open event stream.
+            try:
+                offset = max(0, int((query.get("offset") or ["0"])[0] or 0))
+                wait = min(max(float((query.get("wait") or ["0"])[0] or 0), 0.0), OUTPUT_MAX_WAIT_SECONDS)
+            except ValueError:
+                raise UIError("offset and wait must be numbers")
+            end, data, finished = session.read(offset, timeout=wait)
+            self._json({"offset": end, "data": base64.b64encode(data).decode("ascii"), "finished": finished,
+                        "exit_code": session.exit_code if finished else None})
         elif method == "POST" and op == "input":
             data = str(self._body().get("data") or "")
             session.write(data.encode("utf-8"))

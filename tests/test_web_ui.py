@@ -1391,6 +1391,52 @@ class RunApiTests(ServerTestCase):
         transcript = list((self.root / ".orchestrator" / "logs" / "ui").glob(f"{sid}-echo.log"))
         self.assertEqual(len(transcript), 1)
 
+    def test_output_endpoint_follows_a_run_with_plain_requests(self):
+        # Tunnels that hold back event streams (Cloudflare's free ones) still carry ordinary requests.
+        slow = ui.Action("Slow", lambda p, r: [sys.executable, "-u", "-c",
+                                               "import time; print('first'); time.sleep(1.5); print('second')"])
+        with patch.dict(ui.ACTIONS, {"slow": slow}):
+            _, data = self.request("POST", "/api/runs", body={"action": "slow"}, headers=UI_HEADERS)
+        sid, offset, output, started, finished, exit_code = data["run"]["id"], 0, b"", time.time(), False, None
+        arrivals = []
+        while not finished and time.time() - started < 20:
+            res, out = self.request("GET", f"/api/runs/{sid}/output?offset={offset}&wait=5")
+            self.assertEqual(res.status, 200)
+            offset, finished, exit_code = out["offset"], out["finished"], out["exit_code"]
+            chunk = base64.b64decode(out["data"])
+            if chunk:
+                arrivals.append((time.time() - started, chunk))
+            output += chunk
+        self.assertTrue(finished)
+        self.assertEqual(exit_code, 0)
+        self.assertIn(b"first", output)
+        self.assertIn(b"second", output)
+        # "first" arrived on its own, before "second" was printed: the wait ends when there is something new
+        self.assertIn(b"first", arrivals[0][1])
+        self.assertNotIn(b"second", arrivals[0][1])
+        self.assertLess(arrivals[0][0], 1.2)
+
+    def test_output_endpoint_rules(self):
+        res, _ = self.request("GET", "/api/runs/nope/output?offset=0", auth=False)
+        self.assertEqual(res.status, 401)
+        quick = ui.Action("Quick", lambda p, r: [sys.executable, "-c", "print('x')"])
+        with patch.dict(ui.ACTIONS, {"quick": quick}):
+            _, data = self.request("POST", "/api/runs", body={"action": "quick"}, headers=UI_HEADERS)
+        sid = data["run"]["id"]
+        res, out = self.request("GET", f"/api/runs/{sid}/output?offset=abc")
+        self.assertEqual(res.status, 400)
+        res, out = self.request("GET", f"/api/runs/{sid}/output?offset=0&wait=9999")  # capped, and returns as soon as it finishes
+        self.assertEqual(res.status, 200)
+        self.assertTrue(out["finished"] or out["data"])
+
+    def test_run_page_uses_polling_through_a_tunnel_and_the_stream_locally(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn("backend ? followByPolling(", js)
+        self.assertIn("followByStream(", js)
+        polling = js[js.index("function followByPolling"):][:1400]
+        self.assertIn("runs/${id}/output?offset=${offset}&wait=", polling)
+        self.assertNotIn("EventSource", polling)
+
     def test_run_starts_at_requested_terminal_size(self):
         probe = ui.Action("Size", lambda p, r: [sys.executable, "-c",
                                                 "import os; s = os.get_terminal_size(); print('size', s.columns, s.lines)"])

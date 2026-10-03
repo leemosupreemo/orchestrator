@@ -4048,16 +4048,16 @@ function attachTerminal(id) {
 
   const backend = getBackendUrl();
   const token = getToken();
-  const streamUrl = `${backend ?? ""}/api/runs/${id}/stream?offset=0${token ? `&token=${encodeURIComponent(token)}` : ""}`;
-  const es = new EventSource(streamUrl);
-  es.addEventListener("data", (e) => {
-    const bin = atob(JSON.parse(e.data).data);
+  const toBytes = (b64) => {
+    const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    write(bytes);
-  });
-  es.addEventListener("end", async () => {
-    es.close();
+    return bytes;
+  };
+  // On this computer an open event stream is the quickest. Through a tunnel it isn't: some (Cloudflare's free ones) hold
+  // the stream back until it ends, so the terminal would stay blank. There each wait for output is a plain request.
+  const follow = backend ? followByPolling(id, toBytes, write) : followByStream(id, token, toBytes, write);
+  follow.onEnd(async () => {
     await refreshState();
     // new_job/fix may take a moment to report the job they created.
     let run = state.runs.find((r) => r.id === id);
@@ -4073,7 +4073,38 @@ function attachTerminal(id) {
     $("#keybar").hidden = true;
     $("#term-input").hidden = true;
   });
-  cleanup.push(() => es.close());
+  cleanup.push(follow.stop);
+}
+
+// Both return { onEnd(fn), stop() }: fn runs once, when the run is over.
+function followByStream(id, token, toBytes, write) {
+  const es = new EventSource(`/api/runs/${id}/stream?offset=0${token ? `&token=${encodeURIComponent(token)}` : ""}`);
+  es.addEventListener("data", (e) => write(toBytes(JSON.parse(e.data).data)));
+  return {
+    onEnd: (fn) => es.addEventListener("end", () => { es.close(); fn(); }),
+    stop: () => es.close(),
+  };
+}
+
+function followByPolling(id, toBytes, write) {
+  let stopped = false, ended = () => {};
+  (async () => {
+    let offset = 0, failures = 0;
+    while (!stopped) {
+      try {
+        const out = await api(`runs/${id}/output?offset=${offset}&wait=15`);
+        failures = 0;
+        offset = out.offset;
+        if (out.data && !stopped) write(toBytes(out.data));
+        if (out.finished) { if (!stopped) ended(); return; }
+      } catch (err) {
+        if (err.status === 401 || err.status === 404) return; // signed out, or the run is gone: nothing more to show
+        failures += 1;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * failures, 5000))); // a dropped connection: keep trying
+      }
+    }
+  })();
+  return { onEnd: (fn) => { ended = fn; }, stop: () => { stopped = true; } };
 }
 
 // ---------------------------------------------------------------- router
