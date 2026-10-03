@@ -73,6 +73,7 @@ from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
 from orchestrator import new_project
+from orchestrator.runtime_control import ActivityGate, BusyError
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
@@ -134,15 +135,17 @@ class BackgroundTasks:
     about 100 seconds, so a slower model turn looked like a failure). The request that starts the work returns at once with an id."""
     KEEP_SECONDS = 1800
 
-    def __init__(self) -> None:
+    def __init__(self, gate: ActivityGate | None = None) -> None:
+        self.gate = gate or ActivityGate()
         self._items: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def start(self, work: Callable[[], Any]) -> str:
+        release = self.gate.hold()
         task_id = secrets.token_hex(6)
         item: dict[str, Any] = {"status": "running", "at": time.time()}
         with self._lock:
-            for old in [k for k, v in self._items.items() if time.time() - v["at"] > self.KEEP_SECONDS]:
+            for old in [k for k, v in self._items.items() if v["status"] != "running" and time.time() - v["at"] > self.KEEP_SECONDS]:
                 del self._items[old]
             self._items[task_id] = item
 
@@ -154,6 +157,8 @@ class BackgroundTasks:
                 item.update(status="error", error=str(exc), code=int(exc.status))
             except Exception as exc:  # whatever went wrong, the page gets a message rather than a task that never ends
                 item.update(status="error", error=str(exc)[:300] or "Something went wrong.", code=500)
+            finally:
+                release()
 
         threading.Thread(target=run, daemon=True).start()
         return task_id
@@ -172,7 +177,9 @@ class PtySession:
     number of browser tabs can attach, detach and catch up from an offset."""
 
     def __init__(self, sid: str, action: str, title: str, argv: list[str], cwd: Path,
-                 env: dict[str, str], transcript: Path | None = None, cols: int = 110, rows: int = 32):
+                 env: dict[str, str], transcript: Path | None = None, cols: int = 110, rows: int = 32,
+                 on_exit: Callable[[], None] | None = None):
+        self._on_exit = on_exit
         self.id = sid
         self.action = action
         self.title = title
@@ -227,12 +234,14 @@ class PtySession:
             pass
         status = "exited" if code == 0 else f"exited with code {code}"
         self._append(f"\r\n\x1b[90m[{status}]\x1b[0m\r\n".encode())
+        if self._transcript:
+            self._transcript.close()
+        if self._on_exit:
+            self._on_exit()
         with self._cond:
             self.exit_code = code
             self.ended = time.time()
             self._cond.notify_all()
-        if self._transcript:
-            self._transcript.close()
 
     def _append(self, chunk: bytes) -> None:
         with self._cond:
@@ -333,7 +342,8 @@ def _display_argv(argv: list[str]) -> list[str]:
 
 
 class SessionManager:
-    def __init__(self) -> None:
+    def __init__(self, gate: ActivityGate | None = None) -> None:
+        self.gate = gate or ActivityGate()
         self._sessions: dict[str, PtySession] = {}
         self._lock = threading.Lock()
 
@@ -344,7 +354,12 @@ class SessionManager:
         if transcript_dir:
             transcript_dir.mkdir(parents=True, exist_ok=True)
             transcript = transcript_dir / f"{sid}-{action}.log"
-        session = PtySession(sid, action, title, argv, cwd, env, transcript, cols=cols, rows=rows)
+        release = self.gate.hold()
+        try:
+            session = PtySession(sid, action, title, argv, cwd, env, transcript, cols=cols, rows=rows, on_exit=release)
+        except BaseException:
+            release()
+            raise
         with self._lock:
             self._sessions[sid] = session
             finished = [s for s in self._sessions.values() if not s.running]
@@ -2738,8 +2753,9 @@ class UIServer(ThreadingHTTPServer):
         self._email_sources: tuple[float, Path, dict[str, str]] | None = None
         self._used_tickets: dict[str, float] = {}
         self._ticket_lock = threading.Lock()
-        self.sessions = SessionManager()
-        self.tasks = BackgroundTasks()
+        self.gate = ActivityGate()
+        self.sessions = SessionManager(gate=self.gate)
+        self.tasks = BackgroundTasks(gate=self.gate)
         self.allowed_hosts = self._allowed_hosts()
         self._stopping = threading.Event()
 
@@ -3264,7 +3280,13 @@ class UIHandler(BaseHTTPRequestHandler):
             if self._principal is None:
                 self._error(HTTPStatus.UNAUTHORIZED, "Sign in again, or open the URL printed by 'orchestrator ui' (it carries the access token).")
                 return
-            self._api(method, url.path, query)
+            if method in ("POST", "DELETE"):
+                with self.server.gate.admit():
+                    self._api(method, url.path, query)
+            else:
+                self._api(method, url.path, query)
+        except BusyError as exc:
+            self._error(HTTPStatus.CONFLICT, str(exc))
         except UIError as exc:
             self._error(exc.status, str(exc))
         except (BrokenPipeError, ConnectionResetError):
