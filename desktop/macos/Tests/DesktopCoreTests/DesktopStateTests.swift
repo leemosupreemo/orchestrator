@@ -10,6 +10,24 @@ import XCTest
         XCTAssertEqual(state.statusText, "Available locally · Remote access off")
         XCTAssertTrue(state.canStop)
     }
+    func testRunningLegacyServicePausesRemoteAndCannotBeMigrated() async {
+        let state = DesktopState(request: { _, _ in AgentReply(result: .object([
+            "local_interface": .string("ready"), "remote_access": .string("waiting_for_legacy"), "legacy": .string("running")])) })
+        await state.refresh()
+        XCTAssertEqual(state.statusText, "Available locally · Remote access paused")
+        XCTAssertTrue(state.legacyText?.contains("orchestrator service uninstall") == true)
+        XCTAssertFalse(state.canMigrateLegacy)
+    }
+    func testStoppedLegacyServiceOffersMigrationAndNoneIsQuiet() async {
+        var legacy = "stopped"
+        let state = DesktopState(request: { _, _ in AgentReply(result: .object(["legacy": .string(legacy)])) })
+        await state.refresh()
+        XCTAssertTrue(state.canMigrateLegacy)
+        legacy = "none"
+        await state.refresh()
+        XCTAssertNil(state.legacyText)
+        XCTAssertFalse(state.canMigrateLegacy)
+    }
     func testUnknownActivityDisablesStop() async {
         let state = DesktopState(request: { _, _ in AgentReply(result: .object(["agent": .string("running")])) })
         await state.refresh()

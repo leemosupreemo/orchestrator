@@ -75,7 +75,7 @@ from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
 from orchestrator import new_project
-from orchestrator.runtime_control import ActivityGate, BusyError
+from orchestrator.runtime_control import ActivityGate, BusyError, InstanceLease
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
@@ -4254,6 +4254,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No orchestrator project at {root}. Run 'orchestrator wizard' there first, "
               "or pass --project to 'orchestrator ui'.")
         return 1
+    # One Orchestrator per Mac user: the desktop app and this command share state and the account's address for it.
+    try:
+        lease = InstanceLease.acquire(user_state_dir() / "ui-instance.lock", kind="cli")
+    except BusyError:
+        print("Orchestrator is already running on this computer (the Orchestrator app, the background service, "
+              "or another `orchestrator ui`). Open that one, or stop it first.")
+        return 1
+    try:
+        return _serve(args, root)
+    finally:
+        lease.close()
+
+
+def _serve(args: argparse.Namespace, root: Path) -> int:
     remember_project(root)
 
     settings_file = runtime_dir(root) / "config" / "settings.json"

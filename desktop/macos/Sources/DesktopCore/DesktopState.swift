@@ -15,8 +15,19 @@ import Combine
     public var statusText: String {
         guard let status else { return "Agent unavailable" }
         let local = status["local_interface"]?.string == "ready" ? "Available locally" : "Local interface starting"
-        return "\(local) · Remote access \(status["remote_access"]?.string ?? "unavailable")"
+        let remote = status["remote_access"]?.string ?? "unavailable"
+        return "\(local) · Remote access \(remote == "waiting_for_legacy" ? "paused" : remote)"
     }
+    /// What to tell the person about an Orchestrator installed earlier with `orchestrator service install`.
+    public var legacyText: String? {
+        switch status?["legacy"]?.string {
+        case "running": return "An older Orchestrator background service is running, so remote access is paused here. When its work finishes, run `orchestrator service uninstall` in Terminal, then choose Check Again."
+        case "stopped": return "An older Orchestrator background service is installed but not running. Move to the app to remove it; your projects and account connection stay as they are."
+        case "foreign": return "A background service named com.orchestrator.ui exists but doesn't look like Orchestrator's. It was left untouched."
+        default: return nil
+        }
+    }
+    public var canMigrateLegacy: Bool { status?["legacy"]?.string == "stopped" }
     public var activityText: String {
         guard let runs = status?["activity"]?["runs"]?.int, let tasks = status?["activity"]?["tasks"]?.int else { return "Activity unknown" }
         return runs + tasks == 0 ? "No work in progress" : "\(runs) runs · \(tasks) tasks in progress"

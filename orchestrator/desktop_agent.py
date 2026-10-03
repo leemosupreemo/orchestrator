@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import socket
 import socketserver
@@ -16,6 +17,8 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from orchestrator import account
+from orchestrator.desktop_diagnostics import CHECK_NAMES, diagnostics_snapshot
+from orchestrator.desktop_migration import inspect_legacy, migrate_legacy
 from orchestrator.desktop_protocol import MAX_MESSAGE, ProtocolError, peer_uid, validate_request
 from orchestrator.project_config import active_project_root, user_state_dir
 from orchestrator.project_setup import _atomic_json
@@ -41,6 +44,8 @@ class AgentDependencies:
     heartbeat: Callable = account.heartbeat
     tunnel_start: Callable = start_tunnel
     tunnel_stop: Callable = _stop_tunnel
+    legacy_inspect: Callable = inspect_legacy
+    legacy_migrate: Callable = migrate_legacy
 
 
 def control_socket_path(control_dir: Path) -> Path:
@@ -101,6 +106,8 @@ class DesktopAgent:
         self._beat_thread = None
         self._last_error = ""
         self._update = "current"
+        self._legacy = {"state": "none", "manual_server": False}
+        self._legacy_at = 0.0
         try:
             preferences = json.loads((state_dir / "desktop.json").read_text())
             self.remote_enabled = preferences.get("remote_enabled") is not False
@@ -191,9 +198,11 @@ class DesktopAgent:
                 pairing = {"state": "connected", "owner_email": machine.get("owner_email", "")}
             runs = sum(bool(run["running"]) for run in self.local.sessions.list()) if self.local else 0
             active = self.local.gate.snapshot()["active"] if self.local else 0
+            legacy_running = self._legacy["state"] == "running"
             return {"agent": "running" if self.local else "starting", "setup": "needs_project" if not root else "ready" if machine else "needs_pairing",
                     "local_interface": "ready" if self.local else "starting", "local_origin": self.local.base_url.rstrip("/") if self.local else "",
-                    "remote_access": self._remote_state if self.remote_enabled else "off", "remote_enabled": self.remote_enabled,
+                    "remote_access": "off" if not self.remote_enabled else "waiting_for_legacy" if legacy_running else self._remote_state,
+                    "remote_enabled": self.remote_enabled, "legacy": self._legacy["state"], "manual_server": self._legacy["manual_server"],
                     "activity": {"runs": runs, "tasks": max(0, active - runs)},
                     "project": {"name": root.name, "root": str(root)} if root else None, "pairing": pairing,
                     "runner": {"version": account.package_version(), "api_version": account.API_VERSION}, "update": self._update}
@@ -203,8 +212,16 @@ class DesktopAgent:
         if command == "status":
             return self.status()
         if command == "diagnostics":
-            return {"agent": self.status()["agent"], "last_error": self._last_error,
-                    "runner": self.status()["runner"], "remote_access": self.status()["remote_access"]}
+            path = os.environ.get("PATH", "")
+            checks = [{"name": name, "state": "found" if shutil.which(name, path=path) else "missing"} for name in sorted(CHECK_NAMES)]
+            return diagnostics_snapshot({**self.status(), "last_error": self._last_error}, checks)
+        if command == "legacy_status":
+            self._check_legacy()
+            return dict(self._legacy)
+        if command == "legacy_migrate":
+            result = self.dependencies.legacy_migrate(self.state_dir, params["consent"])
+            self._check_legacy()
+            return {**result, "manual_server": self._legacy["manual_server"]}
         if command in ("prepare_update", "stop_if_idle"):
             accepted = self.local.gate.prepare("update" if command == "prepare_update" else "stop")
             if accepted:
@@ -322,14 +339,28 @@ class DesktopAgent:
             self._retry_at = time.monotonic() + 30
             self._last_error = "tunnel_failed"
 
+    def _check_legacy(self):
+        try:
+            found = self.dependencies.legacy_inspect(self.state_dir)
+            found = {"state": found["state"], "manual_server": bool(found["manual_server"])}
+        except Exception:
+            found = {"state": "none", "manual_server": False}
+        with self._lock:
+            self._legacy = found
+            self._legacy_at = time.monotonic() + 30
+
     def _reconcile(self):
+        if time.monotonic() >= self._legacy_at:
+            self._check_legacy()
         with self._lock:
             machine = account.load_machine()
+            # An older `orchestrator service` still running owns this computer's address; two would overwrite each other.
+            legacy_running = self._legacy["state"] == "running"
             if self.local.root and not project_ready(self.local.root):
                 self.local.selected_root = self.local.root
                 self.local.root = None
                 self._remote_generation += 1
-            if not self.remote_enabled or not self.local.root or not machine:
+            if not self.remote_enabled or not self.local.root or not machine or legacy_running:
                 if self._tunnel_proc or self._endpoint:
                     self._remote_generation += 1
                     self._stop_remote()
@@ -341,7 +372,7 @@ class DesktopAgent:
                     self._remote_state = "connecting"
                     self._remote_thread = threading.Thread(target=self._start_remote, args=(self._remote_generation,), daemon=True)
                     self._remote_thread.start()
-            if machine and time.monotonic() >= self._beat_at and (not self._beat_thread or not self._beat_thread.is_alive()):
+            if machine and not legacy_running and time.monotonic() >= self._beat_at and (not self._beat_thread or not self._beat_thread.is_alive()):
                 self._beat_at = time.monotonic() + account.HEARTBEAT_SECONDS
                 endpoint = self._endpoint if self.remote_enabled else ""
                 runs = sum(bool(run["running"]) for run in self.local.sessions.list())

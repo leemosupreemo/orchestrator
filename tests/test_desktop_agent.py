@@ -21,6 +21,8 @@ class DesktopAgentTests(unittest.TestCase):
         self.env.start()
         self.gate = threading.Event()
         self.beats = []
+        self.legacy = {"state": "none", "manual_server": False}
+        self.migrations = []
 
         def start(port):
             self.gate.wait(3)
@@ -29,7 +31,8 @@ class DesktopAgentTests(unittest.TestCase):
         self.dependencies = AgentDependencies(
             pair_start=lambda name=None: {"name": name or "Mac", "code": "12345678", "poll_secret": "private-poll", "expires_in": 600},
             pair_poll=lambda pairing: {"status": "pending"}, heartbeat=lambda machine, endpoint, running=0: self.beats.append(endpoint),
-            tunnel_start=start, tunnel_stop=lambda proc: None)
+            tunnel_start=start, tunnel_stop=lambda proc: None, legacy_inspect=lambda state_dir: dict(self.legacy),
+            legacy_migrate=lambda state_dir, consent: self.migrations.append(consent) or {"migrated": consent, "state": "none"})
         self.agent = DesktopAgent(self.base / "state", self.base / "ctl", {}, self.dependencies)
         self.thread = None
 
@@ -114,6 +117,38 @@ class DesktopAgentTests(unittest.TestCase):
                 pass
         finally:
             work.set()
+
+    def test_running_legacy_service_pauses_remote_access_and_heartbeats(self):
+        self.project()
+        self.legacy = {"state": "running", "manual_server": False}
+        self.start()
+        time.sleep(.4)
+        result = self.request("status")["result"]
+        self.assertEqual(result["remote_access"], "waiting_for_legacy")
+        self.assertEqual(result["legacy"], "running")
+        self.assertEqual(self.beats, [])
+        self.legacy = {"state": "none", "manual_server": False}
+        self.assertEqual(self.request("legacy_status")["result"]["state"], "none")
+        self.wait(lambda: self.beats)
+
+    def test_legacy_migration_needs_explicit_consent(self):
+        self.start()
+        refused = self.request("legacy_migrate")
+        self.assertFalse(refused["ok"])
+        self.assertEqual(self.request("legacy_migrate", {"consent": "yes"})["ok"], False)
+        self.assertEqual(self.migrations, [])
+        self.assertTrue(self.request("legacy_migrate", {"consent": True})["result"]["migrated"])
+        self.assertEqual(self.migrations, [True])
+
+    def test_diagnostics_exclude_paths_accounts_and_secrets(self):
+        root = self.project()
+        self.start()
+        report = self.request("diagnostics")["result"]
+        text = json.dumps(report)
+        for private in (str(root), "owner@example.com", "private-machine", self.agent.local.token):
+            self.assertNotIn(private, text)
+        self.assertTrue(report["project_selected"])
+        self.assertGreaterEqual({check["name"] for check in report["checks"]}, {"git", "cloudflared"})
 
     def test_remote_off_leaves_running_session_alive(self):
         self.project()

@@ -12,7 +12,7 @@ MAX_MESSAGE = 65536
 COMMAND_PARAMS = {
     "status": (), "pair_start": ("name",), "pair_cancel": (), "browser_grant": ("route",),
     "remote_access": ("enabled",), "diagnostics": (), "stop_if_idle": (),
-    "prepare_update": (), "cancel_update": (),
+    "prepare_update": (), "cancel_update": (), "legacy_status": (), "legacy_migrate": ("consent",),
 }
 
 
@@ -54,6 +54,8 @@ def validate_request(raw: bytes) -> dict:
         raise ProtocolError("Unknown command parameter.")
     if command == "remote_access" and type(params.get("enabled")) is not bool:
         raise ProtocolError("Remote access needs a boolean preference.")
+    if command == "legacy_migrate" and type(params.get("consent")) is not bool:
+        raise ProtocolError("Moving an older service needs an explicit yes or no.")
     if "name" in params and (not isinstance(params["name"], str) or len(params["name"]) > 100):
         raise ProtocolError("Invalid computer name.")
     if "route" in params and (not isinstance(params["route"], str) or len(params["route"]) > 8192):

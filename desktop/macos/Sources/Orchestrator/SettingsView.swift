@@ -19,6 +19,13 @@ struct SettingsView: View {
             if services.registration == .requiresApproval { Button("Open Login Items Settings…") { services.openApprovalSettings() } }
             Button("Stop Orchestrator on this Mac") { controller.stop() }.disabled(!state.canStop)
             Text(state.canStop ? "Stopping leaves your settings and projects intact." : "Stop is unavailable while work is running or activity is unknown.").font(.caption).foregroundStyle(.secondary)
+            if let legacy = state.legacyText {
+                Text(legacy).font(.callout).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    if state.canMigrateLegacy { Button("Move to the app…") { controller.migrateLegacy() } }
+                    Button("Check Again") { state.perform("legacy_status") }
+                }
+            }
             Text("Version: \(state.status?["runner"]?["version"]?.string ?? "Unknown")")
             Button("Remove background components…") { controller.removeBackgroundComponents() }.disabled(!state.canStop)
             if !state.operation.isEmpty { Text(state.operation).font(.callout) }

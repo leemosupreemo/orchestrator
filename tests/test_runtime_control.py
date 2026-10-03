@@ -113,6 +113,29 @@ class InstanceLeaseTests(unittest.TestCase):
             lease.close()
             self.assertTrue(path.is_file())
 
+    def test_cli_ui_refuses_while_another_instance_holds_the_lease(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from orchestrator.project_setup import apply_project_setup
+        from orchestrator.web import server
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder).resolve()
+            root = base / "project"
+            root.mkdir()
+            with mock.patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(base / "state")}):
+                apply_project_setup(root, {"build_command": "true", "test_command": "true", "models": ["codex"]})
+                lease = InstanceLease.acquire(base / "state/ui-instance.lock")
+                output = io.StringIO()
+                try:
+                    with mock.patch.object(server, "find_project_root", return_value=root), \
+                            mock.patch.object(server, "UIServer", side_effect=AssertionError("must not listen")), \
+                            contextlib.redirect_stdout(output):
+                        self.assertEqual(server.main(["--no-open"]), 1)
+                finally:
+                    lease.close()
+                self.assertIn("already running", output.getvalue())
+
     def test_symlink_lock_does_not_overwrite_target(self):
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / "private"

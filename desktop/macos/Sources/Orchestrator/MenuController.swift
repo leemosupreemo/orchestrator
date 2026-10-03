@@ -164,6 +164,24 @@ import Darwin
             catch { state.error = error.localizedDescription }
         }
     }
+    func migrateLegacy() {
+        let alert = NSAlert()
+        alert.messageText = "Move to the Orchestrator app?"
+        alert.informativeText = "This removes the older background service set up with `orchestrator service install`. It isn't running, so no work is stopped. A copy of its definition is kept, and your projects, settings and account connection stay as they are."
+        alert.addButton(withTitle: "Move to the app"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            do {
+                let result = try await state.command("legacy_migrate", params: ["consent": .bool(true)])
+                if result["migrated"]?.bool == true {
+                    state.operation = "The older service was removed. A copy is saved at \(result["backup"]?.string ?? "your Orchestrator folder")."
+                } else {
+                    state.error = "The older service changed while you were deciding, so nothing was removed. Choose Check Again."
+                }
+                await state.refresh()
+            } catch { state.error = error.localizedDescription }
+        }
+    }
     func removeBackgroundComponents() {
         let alert = NSAlert()
         alert.messageText = "Remove Orchestrator's background components?"
