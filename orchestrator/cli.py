@@ -2348,6 +2348,9 @@ def _main(argv: list[str] | None = None) -> int:
     ui_parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
     ui_parser.add_argument("--token", help="Fixed access token for the web interface")
     ui_parser.add_argument("--tunnel", action="store_true", help="Start a Cloudflare tunnel for remote access from phone")
+    ui_parser.add_argument("--tunnel-token", help="Cloudflare Named Tunnel token for a permanent stable domain")
+    ui_parser.add_argument("--public-url", help="Stable public or tunnel URL for remote access")
+    ui_parser.add_argument("--tailscale", action="store_true", help="Bind to Tailscale interface with stable MagicDNS URL")
 
     logs_parser = subparsers.add_parser(
         "logs",
@@ -2420,7 +2423,15 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         from orchestrator.web.server import main as ui_main
-        ui_args = ["--host", args.host, "--port", str(args.port)] + (["--no-open"] if args.no_open else []) + (["--token", args.token] if getattr(args, "token", None) else []) + (["--tunnel"] if getattr(args, "tunnel", False) else [])
+        ui_args = (
+            ["--host", args.host, "--port", str(args.port)]
+            + (["--no-open"] if args.no_open else [])
+            + (["--token", args.token] if getattr(args, "token", None) else [])
+            + (["--tunnel"] if getattr(args, "tunnel", False) else [])
+            + (["--tunnel-token", args.tunnel_token] if getattr(args, "tunnel_token", None) else [])
+            + (["--public-url", args.public_url] if getattr(args, "public_url", None) else [])
+            + (["--tailscale"] if getattr(args, "tailscale", False) else [])
+        )
         return ui_main(ui_args)
     if args.command == "logs":
         if args.project and apply_project_env(args.project):

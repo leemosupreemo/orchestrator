@@ -3655,11 +3655,37 @@ def open_browser(url: str) -> None:
         subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def start_tunnel(port: int) -> tuple[subprocess.Popen | None, str | None]:
+def get_tailscale_info() -> tuple[str | None, str | None]:
+    """Return (ip, dns_name) for local machine if Tailscale is running."""
+    tailscale = shutil.which("tailscale")
+    if not tailscale:
+        return None, None
+    try:
+        raw = subprocess.check_output([tailscale, "status", "--json"], timeout=3, stderr=subprocess.DEVNULL).decode("utf-8")
+        data = json.loads(raw)
+        self_info = data.get("Self", {})
+        dns_name = self_info.get("DNSName", "").rstrip(".")
+        tailscale_ips = self_info.get("TailscaleIPs", [])
+        ip = tailscale_ips[0] if tailscale_ips else None
+        return ip, dns_name
+    except Exception:
+        return None, None
+
+
+def start_tunnel(port: int, token: str | None = None) -> tuple[subprocess.Popen | None, str | None]:
     cloudflared = shutil.which("cloudflared")
     if not cloudflared:
         return None, None
     try:
+        if token:
+            proc = subprocess.Popen(
+                [cloudflared, "tunnel", "run", "--token", token],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            return proc, None
         proc = subprocess.Popen(
             [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{port}", "--metrics", "127.0.0.1:0"],
             stdout=subprocess.PIPE,
@@ -3693,6 +3719,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
     parser.add_argument("--token", default=None, help="Fixed access token for this session")
     parser.add_argument("--tunnel", action="store_true", help="Start a Cloudflare tunnel for remote access from phone")
+    parser.add_argument("--tunnel-token", default=None, help="Cloudflare Named Tunnel token for a permanent stable domain")
+    parser.add_argument("--public-url", default=None, help="Stable public or tunnel URL for remote access")
+    parser.add_argument("--tailscale", action="store_true", help="Bind to Tailscale interface with stable MagicDNS URL")
     args = parser.parse_args(argv)
 
     root = find_project_root()
@@ -3702,11 +3731,39 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     remember_project(root)
 
+    settings_file = runtime_dir(root) / "config" / "settings.json"
+    settings = {}
+    if settings_file.is_file():
+        try:
+            settings = read_json_file(settings_file)
+        except Exception:
+            pass
+
+    tunnel_token = args.tunnel_token or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN") or settings.get("tunnel_token")
+    public_url = args.public_url or os.environ.get("ORCHESTRATOR_PUBLIC_URL") or settings.get("public_url")
+
+    if getattr(args, "tailscale", False):
+        ts_ip, ts_dns = get_tailscale_info()
+        if ts_ip:
+            args.host = ts_ip
+            if not public_url:
+                public_url = f"http://{ts_dns or ts_ip}:{args.port}"
+        else:
+            print("  \033[93mWarning: Tailscale not active or not installed.\033[0m")
+
     try:
         server = UIServer((args.host, args.port), root, token=args.token)
     except OSError as exc:
         print(f"Could not listen on {args.host}:{args.port}: {exc.strerror}. Try --port.")
         return 1
+
+    if public_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(public_url)
+        if parsed.netloc and server.allowed_hosts is not None:
+            server.allowed_hosts.add(parsed.netloc)
+            if parsed.hostname:
+                server.allowed_hosts.add(parsed.hostname)
 
     url = f"{server.base_url}?token={server.token}"
     print(f"Orchestrator UI for {project_display_name(root)} ({root})")
@@ -3715,16 +3772,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\033[93m  Listening on {args.host}: anyone who can reach it still needs the token above. "
               "Only bind to a private network (e.g. Tailscale).\033[0m")
     tunnel_proc = None
-    if getattr(args, "tunnel", False):
+    if tunnel_token:
+        print("  Starting Cloudflare Named Tunnel (stable persistent token)...")
+        tunnel_proc, _ = start_tunnel(args.port, token=tunnel_token)
+        if public_url:
+            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}"
+            PUBLIC_URL["url"] = hosted_url
+            print(f"  \033[92m✓ Stable Tunnel URL:\033[0m   {public_url}/?token={server.token}")
+            print(f"  \033[92m✓ Phone Web UI:\033[0m        {hosted_url}")
+        else:
+            print(f"  \033[92m✓ Cloudflare Named Tunnel started.\033[0m Specify --public-url to display your phone link.")
+    elif getattr(args, "tunnel", False):
         print("  Starting Cloudflare tunnel for remote/phone access...")
         tunnel_proc, tunnel_url = start_tunnel(args.port)
         if tunnel_url:
-            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={tunnel_url}"
+            effective_url = public_url or tunnel_url
+            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={effective_url}"
             PUBLIC_URL["url"] = hosted_url
-            print(f"  \033[92m✓ Tunnel URL:\033[0m   {tunnel_url}/?token={server.token}")
+            print(f"  \033[92m✓ Tunnel URL:\033[0m   {effective_url}/?token={server.token}")
             print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
         else:
             print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out).\033[0m")
+    elif public_url:
+        hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}"
+        PUBLIC_URL["url"] = hosted_url
+        print(f"  \033[92m✓ Stable Remote URL:\033[0m {public_url}/?token={server.token}")
+        print(f"  \033[92m✓ Phone Web UI:\033[0m      {hosted_url}")
     print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
     if not args.no_open:
         open_browser(url)

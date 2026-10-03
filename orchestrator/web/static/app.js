@@ -882,6 +882,7 @@ document.addEventListener("change", async (e) => {
     await api("project", { method: "POST", body: { root: val } });
     await refreshState();
     toast(`Switched to ${state.project.name}`);
+    location.hash = "#/";
     route();
   } catch (err) {
     toast(err.message, true);

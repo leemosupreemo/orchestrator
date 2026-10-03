@@ -239,6 +239,13 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
             "completed": ["first", "second"],
         })
 
+    def test_project_select_change_navigates_to_home(self):
+        app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        start = app_js.index('matches("#project-select, .project-select-inline")')
+        end = app_js.index("showSigningIn", start)
+        handler_code = app_js[start:end]
+        self.assertIn('location.hash = "#/";', handler_code)
+
 
 class ConfigurationPagesUiTests(unittest.TestCase):
     def run_configuration_script(self, source: str):
@@ -3199,6 +3206,79 @@ class JobDeleteEndpointTests(ServerTestCase):
     def test_delete_action_registered(self):
         self.assertIn("delete_job", ui.ACTIONS)
         self.assertIn("keep_changes", ui.ACTIONS["delete_job"].fields)
+
+
+class StableUrlAndTunnelTests(unittest.TestCase):
+    @patch("shutil.which", return_value="/usr/local/bin/tailscale")
+    @patch("subprocess.check_output")
+    def test_get_tailscale_info_success(self, mock_subp, mock_which):
+        mock_subp.return_value = json.dumps({
+            "Self": {
+                "DNSName": "leemos-macbook-pro.tail50c55a.ts.net.",
+                "TailscaleIPs": ["100.94.186.73", "fd7a:115c:a1e0::49"]
+            }
+        }).encode("utf-8")
+        ip, dns = ui.get_tailscale_info()
+        self.assertEqual(ip, "100.94.186.73")
+        self.assertEqual(dns, "leemos-macbook-pro.tail50c55a.ts.net")
+
+    @patch("shutil.which", return_value=None)
+    def test_get_tailscale_info_not_found(self, mock_which):
+        ip, dns = ui.get_tailscale_info()
+        self.assertIsNone(ip)
+        self.assertIsNone(dns)
+
+    @patch("shutil.which", return_value="/usr/local/bin/tailscale")
+    @patch("subprocess.check_output", side_effect=subprocess.CalledProcessError(1, "tailscale"))
+    def test_get_tailscale_info_error(self, mock_subp, mock_which):
+        ip, dns = ui.get_tailscale_info()
+        self.assertIsNone(ip)
+        self.assertIsNone(dns)
+
+    @patch("shutil.which", return_value="/usr/local/bin/cloudflared")
+    @patch("subprocess.Popen")
+    def test_start_tunnel_named_token(self, mock_popen, mock_which):
+        mock_proc = unittest.mock.MagicMock()
+        mock_popen.return_value = mock_proc
+        proc, url = ui.start_tunnel(8765, token="token-12345")
+        self.assertEqual(proc, mock_proc)
+        self.assertIsNone(url)
+        mock_popen.assert_called_once_with(
+            ["/usr/local/bin/cloudflared", "tunnel", "run", "--token", "token-12345"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+    @patch("shutil.which", return_value="/usr/local/bin/cloudflared")
+    @patch("subprocess.Popen")
+    def test_start_tunnel_ephemeral(self, mock_popen, mock_which):
+        mock_proc = unittest.mock.MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.stdout.readline.side_effect = [
+            "2026-10-02 INF Starting tunnel...\n",
+            "2026-10-02 INF Your quick Tunnel has been created! Visit it at https://abc-def.trycloudflare.com\n",
+        ]
+        mock_popen.return_value = mock_proc
+        proc, url = ui.start_tunnel(8765)
+        self.assertEqual(proc, mock_proc)
+        self.assertEqual(url, "https://abc-def.trycloudflare.com")
+
+    def test_public_url_host_allowed(self):
+        tmp = tempfile.TemporaryDirectory()
+        base = Path(tmp.name)
+        root = base / "project"
+        make_project(root)
+        server = ui.UIServer(("127.0.0.1", 0), root, token="test-token")
+        from urllib.parse import urlparse
+        parsed = urlparse("https://my-domain.example.com:8765")
+        server.allowed_hosts.add(parsed.netloc)
+        server.allowed_hosts.add(parsed.hostname)
+        self.assertIn("my-domain.example.com:8765", server.allowed_hosts)
+        self.assertIn("my-domain.example.com", server.allowed_hosts)
+        server.server_close()
+        tmp.cleanup()
 
 
 if __name__ == "__main__":
