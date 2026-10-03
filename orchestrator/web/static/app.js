@@ -3833,15 +3833,42 @@ pages["new-project"] = async (_, query) => {
     return { title: "Start a new project", html: `<div class="notice">Starting a new project isn't available yet. It's part of an update that hasn't reached your Orchestrator. You can still add a project you already have.</div>` };
   }
   const draft = data.draft || { answers: {}, step: "describe", host: null, visibility: "private", parent: data.default_parent, waiting_on_github: false, created_root: "" };
-  if (!data.draft) {  // an idea told before setup (Mac app, or the hosted app's first screen) starts the form
-    const idea = query.get("pitch") ? { pitch: query.get("pitch"), name: query.get("name") || "" } : Account.pendingIdea();
-    if (idea?.pitch) draft.answers = { ...draft.answers, pitch: idea.pitch.slice(0, 200), name: (idea.name || "").slice(0, 200) };
+  // An idea told before setup (Mac app, the hosted app's first screen, the no-project screen) is saved as the draft
+  // straight away, so it can't be lost, and never silently swapped for a different draft already in progress.
+  const idea = query.get("pitch") ? { pitch: query.get("pitch"), name: query.get("name") || "" } : Account.pendingIdea();
+  const ideaAnswers = idea?.pitch ? { pitch: idea.pitch.trim().slice(0, 200), name: (idea.name || "").trim().slice(0, 200) } : null;
+  const forgetIdea = () => { Account.clearIdea(); if (query.get("pitch")) history.replaceState(null, "", "#/new-project"); };
+  let ideaChoice = "";
+  if (ideaAnswers) {
+    const current = (data.draft?.answers?.pitch || "").trim();
+    if (!data.draft) {
+      draft.answers = { ...draft.answers, ...ideaAnswers };
+      try { await npSave(draft); forgetIdea(); } catch { /* kept in the form and in this browser; saved on Next */ }
+    } else if (current === ideaAnswers.pitch) {
+      forgetIdea();
+    } else {
+      ideaChoice = `<div class="banner attention np-idea-choice"><p>You were already starting <strong>“${esc(current || draft.answers.name || "a project")}”</strong>.
+        Continue that, or start over with your new idea, <strong>“${esc(ideaAnswers.pitch)}”</strong>?</p>
+        <div class="row gap-10"><button type="button" class="btn small" id="np-keep-draft">Continue what I started</button>
+          <button type="button" class="btn small primary" id="np-use-idea">Start with the new idea</button></div></div>`;
+    }
   }
+  const wireIdeaChoice = () => {
+    $("#np-keep-draft")?.addEventListener("click", () => { forgetIdea(); route(); });
+    $("#np-use-idea")?.addEventListener("click", async () => {
+      try {
+        await api("new-project/discard", { method: "POST", body: {} });
+        await npSave({ answers: ideaAnswers, step: "describe" });
+        forgetIdea();
+        route();
+      } catch (err) { toast(err.message, true); }
+    });
+  };
   draft.parent = draft.parent || data.default_parent;
   const gh = data.github;
   const step = draft.created_root ? "create" : (query.get("step") || draft.step || "describe");
   const answersFrom = (form) => Object.fromEntries(data.questions.map((q) => [q.key, q.kind === "multi" ? new FormData(form).getAll(q.key).join(", ") : (new FormData(form).get(q.key) || "").toString().trim()]));
-  const resume = data.draft && !query.get("step") && draft.step !== "describe"
+  const resume = ideaChoice ? ideaChoice : data.draft && !query.get("step") && draft.step !== "describe"
     ? `<div class="banner attention np-resume"><p><strong>Picking up where you left off</strong>${draft.answers.name ? ` on “${esc(draft.answers.name)}”` : ""}.${draft.waiting_on_github ? " You were finishing GitHub." : ""}</p></div>` : "";
   const discard = data.draft ? `<button type="button" class="btn ghost" id="np-discard">Start over</button>` : "";
 
@@ -3862,11 +3889,12 @@ pages["new-project"] = async (_, query) => {
         ${data.questions.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}
         <div class="row"><span class="spacer"></span>${discard}<button class="btn primary big" type="submit">Next: where it lives</button></div></form>`,
       after: () => {
+        wireIdeaChoice();
         $("#np-describe").addEventListener("submit", async (e) => {
           e.preventDefault();
           const picked = answersFrom(e.target);
           if (!picked.platform) { toast("Pick at least one platform, or choose “Not sure”.", "warning"); return; }
-          try { await npSave({ ...draft, answers: picked, step: "where" }); Account.clearIdea(); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
+          try { await npSave({ ...draft, answers: picked, step: "where" }); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
         });
         $("#np-discard")?.addEventListener("click", async () => { await api("new-project/discard", { method: "POST", body: {} }); route(); });
       },
@@ -3896,6 +3924,7 @@ pages["new-project"] = async (_, query) => {
           <button class="btn primary big" type="submit" ${ready ? "" : "disabled"}>Create project</button></div>
         ${host === "github" && !ready ? `<small class="hint-text">Create is available once GitHub is signed in.</small>` : ""}</form>`,
       after: () => {
+        wireIdeaChoice();
         const form = $("#np-where");
         const collect = (extra = {}) => ({ ...draft, host: form.host.value, visibility: form.visibility?.value || draft.visibility, parent: form.parent.value.trim(), ...extra });
         form.querySelectorAll('input[name="host"]').forEach((r) => r.addEventListener("change", async () => { await npSave(collect({ step: "where" })); route(); }));

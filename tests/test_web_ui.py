@@ -869,10 +869,16 @@ process.stdout.write(JSON.stringify({
 
     def test_new_project_form_starts_from_a_pending_idea_without_overwriting_a_draft(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        page = js[js.index('pages["new-project"]'):][:2500]
-        self.assertIn("if (!data.draft)", page)
+        page = js[js.index('pages["new-project"]'):][:5000]
         self.assertIn('query.get("pitch")', page)
         self.assertIn("Account.pendingIdea()", page)
+        arrive = page[page.index("if (!data.draft) {"):page.index("} else if (current === ideaAnswers.pitch)")]
+        self.assertIn("await npSave(draft)", arrive)  # saved as the draft on arrival, not only on Next
+        self.assertIn("forgetIdea()", arrive)
+        self.assertIn("You were already starting", page)  # a different draft in progress: ask, don't drop the idea
+        choice = page[page.index("const wireIdeaChoice"):][:600]
+        self.assertLess(choice.index("new-project/discard"), choice.index("npSave({ answers: ideaAnswers"))
+        self.assertEqual(js.count("wireIdeaChoice();"), 2)  # describe and where steps both show the choice
         enter = js[js.index("async function enterMachine"):][:1500]
         self.assertLess(enter.index("Account.ideaRoute(idea)"), enter.index("await unlockWith"))  # routed before the page renders
 
