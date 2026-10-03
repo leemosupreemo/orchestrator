@@ -48,6 +48,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 import urllib.error
 import urllib.request
@@ -2721,7 +2722,7 @@ def get_or_create_ui_token(supplied: str | None = None) -> str:
     """Return the supplied token or read/persist a stable token in ~/.orchestrator/ui_token."""
     if supplied and supplied.strip():
         return supplied.strip()
-    token_file = Path.home() / ".orchestrator" / "ui_token"
+    token_file = user_state_dir() / "ui_token"
     if token_file.is_file():
         try:
             existing = token_file.read_text().strip()
@@ -2732,8 +2733,14 @@ def get_or_create_ui_token(supplied: str | None = None) -> str:
     token = secrets.token_urlsafe(24)
     try:
         token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(token)
-        token_file.chmod(0o600)
+        fd, temporary = tempfile.mkstemp(dir=token_file.parent, prefix=".ui-token-")
+        try:
+            with os.fdopen(fd, "w") as stream:
+                stream.write(token)
+            os.replace(temporary, token_file)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     except Exception:
         pass
     return token
@@ -2744,8 +2751,13 @@ class UIServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], root: Path | None, token: str | None = None,
-                 bootstrap_mode: bool = False):
+                 bootstrap_mode: bool = False, desktop_listener: bool = False, shared: UIServer | None = None):
         super().__init__(address, UIHandler)
+        if desktop_listener and address[0] not in ("127.0.0.1", "::1"):
+            self.server_close()
+            raise ValueError("Desktop handoff requires loopback")
+        self.desktop_listener = desktop_listener
+        self._context = shared._context if shared else SimpleNamespace(root=root, selected_root=root)
         self.root = root
         self.selected_root = root
         self.bootstrap_enabled = bootstrap_mode or root is None
@@ -2764,6 +2776,28 @@ class UIServer(ThreadingHTTPServer):
         self.tasks = BackgroundTasks(gate=self.gate)
         self.allowed_hosts = self._allowed_hosts()
         self._stopping = threading.Event()
+        from orchestrator.web.browser_grants import BrowserGrantStore
+        self.browser_grants = BrowserGrantStore()
+        if shared:
+            for name in ("token", "sign_ins", "audit", "gate", "sessions", "tasks", "_used_tickets",
+                         "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled"):
+                setattr(self, name, getattr(shared, name))
+
+    @property
+    def root(self) -> Path | None:
+        return self._context.root
+
+    @root.setter
+    def root(self, root: Path | None) -> None:
+        self._context.root = root
+
+    @property
+    def selected_root(self) -> Path | None:
+        return self._context.selected_root
+
+    @selected_root.setter
+    def selected_root(self, root: Path | None) -> None:
+        self._context.selected_root = root
 
     def _allowed_hosts(self) -> set[str] | None:
         """Host headers accepted, or None when bound to every interface: the
@@ -3269,6 +3303,18 @@ class UIHandler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         query = parse_qs(url.query)
         try:
+            if url.path == "/desktop/open":
+                if not self.server.desktop_listener or method != "GET":
+                    self._error(HTTPStatus.NOT_FOUND, "Not found")
+                    return
+                route = self.server.browser_grants.consume((query.get("grant") or [""])[0])
+                if route is None:
+                    self._error(HTTPStatus.UNAUTHORIZED, "Open Orchestrator again from the Mac menu.")
+                    return
+                self._send(HTTPStatus.SEE_OTHER, b"", "text/plain", {
+                    "Location": "/" + route,
+                    "Set-Cookie": f"{COOKIE_NAME}={self.server.token}; HttpOnly; SameSite=Strict; Path=/"})
+                return
             origin = self.headers.get("Origin")
             if method in ("POST", "DELETE") and origin and not self._origin_allowed(origin):
                 raise UIError("Unexpected request origin", HTTPStatus.FORBIDDEN)
