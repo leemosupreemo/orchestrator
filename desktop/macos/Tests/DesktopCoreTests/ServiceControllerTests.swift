@@ -4,12 +4,12 @@ import XCTest
 @MainActor final class ServiceControllerTests: XCTestCase {
     @MainActor final class Fixture {
         var registration: RegistrationState = .notRegistered
-        var busy = false
+        var busy = false, needsApproval = false
         var events: [String] = []
         var store: [String: Bool] = [:]
         func controller(bundle: URL = URL(fileURLWithPath: "/Applications/Orchestrator.app")) -> ServiceController {
             let adapter = ServiceAdapter(state: { self.registration },
-                register: { self.events.append("register"); self.registration = .enabled },
+                register: { self.events.append("register"); self.registration = self.needsApproval ? .requiresApproval : .enabled },
                 unregister: { self.events.append("unregister"); self.registration = .notRegistered },
                 prepare: { self.events.append("prepare"); return !self.busy },
                 cancel: { self.events.append("cancel") },
@@ -19,6 +19,47 @@ import XCTest
                 load: { self.store[$0] ?? false }, save: { self.store[$0] = $1 })
             return ServiceController(bundle: bundle, adapter: adapter)
         }
+    }
+    func testBackgroundRegistrationStartsAgentThenRegistersWithoutWindows() async throws {
+        let fixture = Fixture(), controller = fixture.controller()
+        let state = try await controller.registerInBackground(ensureRunning: { fixture.events.append("ensure") })
+        XCTAssertEqual(state, .enabled)
+        XCTAssertEqual(fixture.events, ["ensure", "prepare", "unregister", "stop", "wait", "register"])
+        XCTAssertTrue(controller.desired)
+    }
+    func testBackgroundRegistrationIsANoOpWhenAlreadyRegistered() async throws {
+        let fixture = Fixture(); fixture.registration = .enabled; fixture.store["startAtLogin"] = true
+        let controller = fixture.controller()
+        let state = try await controller.registerInBackground(ensureRunning: { fixture.events.append("ensure") })
+        XCTAssertEqual(state, .enabled)
+        XCTAssertEqual(fixture.events, ["ensure"])
+    }
+    func testBackgroundRegistrationReportsApprovalAndBusyDistinctly() async throws {
+        let fixture = Fixture(); fixture.busy = true
+        let controller = fixture.controller()
+        let state = try await controller.registerInBackground(ensureRunning: {})
+        XCTAssertEqual(state, .notRegistered)
+        XCTAssertTrue(controller.pending)
+        let approval = Fixture(); approval.needsApproval = true
+        let approvalState = try await approval.controller().registerInBackground(ensureRunning: {})
+        XCTAssertEqual(approvalState, .requiresApproval)
+    }
+    func testBackgroundRegistrationOutsideApplicationsIsRefused() async {
+        let fixture = Fixture(), controller = fixture.controller(bundle: URL(fileURLWithPath: "/Volumes/Orchestrator/Orchestrator.app"))
+        do { _ = try await controller.registerInBackground(ensureRunning: {}); XCTFail("registered from a disk image") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "install_required") }
+        catch { XCTFail("\(error)") }
+    }
+    func testRegistrationRecordIsPrivateAndTyped() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("orch-reg-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        ServiceController.recordRegistration(.requiresApproval, pending: false, in: directory.path, now: Date(timeIntervalSince1970: 100))
+        let url = directory.appendingPathComponent("background.json")
+        let record = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        XCTAssertEqual(record?["registration"] as? String, "requiresApproval")
+        XCTAssertEqual(record?["at"] as? Double, 100)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
     func testRegistrationIsIndependentOfHealth() {
         let fixture = Fixture(), controller = Fixture().controller()

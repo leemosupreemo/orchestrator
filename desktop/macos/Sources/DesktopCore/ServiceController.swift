@@ -147,5 +147,21 @@ public enum RegistrationState: String { case enabled, requiresApproval, notRegis
         if startAtLogin { try await adapter.register() } else { try await adapter.start() }
         registration = adapter.state()
     }
+    /// For a Mac set up over SSH (`--register-background`): make sure the agent runs, then register the menu and agent
+    /// login items without showing a window. Busy work makes the change wait, as from Settings.
+    public func registerInBackground(ensureRunning: () async throws -> Void) async throws -> RegistrationState {
+        try await ensureRunning()
+        registration = adapter.state()
+        if !(desired && registration == .enabled) { try await setStartAtLogin(true) }
+        return registration
+    }
+    /// The login-item state, for `orchestrator enroll` and the agent's readiness checks, which can't ask macOS themselves.
+    public static func recordRegistration(_ state: RegistrationState, pending: Bool, in directory: String, now: Date = Date()) {
+        let record: [String: Any] = ["registration": state.rawValue, "pending": pending, "at": now.timeIntervalSince1970]
+        guard let data = try? JSONSerialization.data(withJSONObject: record) else { return }
+        let url = URL(fileURLWithPath: directory).appendingPathComponent("background.json")
+        try? data.write(to: url, options: .atomic)
+        _ = chmod(url.path, 0o600)
+    }
     public func openApprovalSettings() { SMAppService.openSystemSettingsLoginItems() }
 }

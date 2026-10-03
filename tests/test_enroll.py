@@ -20,11 +20,13 @@ class Fake:
         self.base, self.user = base, user
         self.calls, self.redeemed = [], []
         self.ready = True
+        self.login_item = "enabled"
         self.app = base / "Applications/Orchestrator.app"
 
     def system(self, **overrides):
         values = dict(console_user=lambda: self.user, current_user=lambda: "builder", is_root=lambda: False,
                       run=self.run, redeem=self.redeem, agent_ready=lambda timeout: self.ready, app=self.app,
+                      registration=lambda since, timeout: self.login_item,
                       projects_dir=self.base / "Projects")
         values.update(overrides)
         return enroll.System(**values)
@@ -146,6 +148,21 @@ class EnrollTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Login Items", text)
         self.assertIsNotNone(account.load_machine())
+
+    def test_login_item_needing_approval_is_reported_not_claimed(self):
+        self.fake.login_item = "requiresApproval"
+        code, text = self.enroll()
+        self.assertEqual(code, 1)
+        self.assertIn("won't start again after a restart", text)
+        self.assertNotIn("starting at login", text)
+        self.fake.login_item = ""
+        self.assertEqual(self.enroll()[0], 1)
+
+    def test_login_item_waiting_for_work_is_explained(self):
+        self.fake.login_item = "pending"
+        code, text = self.enroll()
+        self.assertEqual(code, 0, text)
+        self.assertIn("once its current work finishes", text)
 
     def test_outside_the_app_it_pairs_and_explains_the_service(self):
         code, text = self.enroll(system=self.fake.system(app=None))

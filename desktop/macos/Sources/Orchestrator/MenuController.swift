@@ -25,6 +25,10 @@ import Darwin
     private var lease: Int32 = -1
     private var openedPairing: String?
     private var refreshPending = false
+    private var recordedRegistration = ""
+    /// Set by `orchestrator enroll` over SSH: register login items and start the agent without showing a window.
+    private let registerBackground = CommandLine.arguments.contains("--register-background")
+    private var registerName: Notification.Name { Notification.Name(activationName.rawValue + ".register") }
     private var activationName: Notification.Name {
         Notification.Name((Bundle.main.bundleIdentifier ?? "com.orchestrator.desktop") + ".show")
     }
@@ -44,13 +48,14 @@ import Darwin
                 throw AgentError(code: "unsafe_lock", message: "The menu lock is unsafe. Open Diagnostics before retrying.")
             }
             guard flock(lease, LOCK_EX | LOCK_NB) == 0 else {
-                DistributedNotificationCenter.default().postNotificationName(activationName, object: Bundle.main.bundlePath, userInfo: nil, deliverImmediately: true)
+                DistributedNotificationCenter.default().postNotificationName(registerBackground ? registerName : activationName, object: Bundle.main.bundlePath, userInfo: nil, deliverImmediately: true)
                 NSApplication.shared.terminate(nil)
                 return
             }
             _ = fchmod(lease, 0o600)
         } catch { showStartupError(error.localizedDescription); return }
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopen), name: activationName, object: Bundle.main.bundlePath)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(registerFromCommand), name: registerName, object: Bundle.main.bundlePath)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.poweringOff = true }
         }
@@ -63,15 +68,31 @@ import Darwin
         Task {
             do {
                 try await updateCoordinator.recoverAfterRelaunch()
-                try await LifecycleCoordinator(client: client, services: services, start: { [weak self] in try self?.launchAgent() }).ensureRunning()
+                if registerBackground { await registerInBackground() }
+                else { try await lifecycle.ensureRunning() }
             } catch { state.error = error.localizedDescription }
             await refresh()
-            if state.status?["setup"]?.string != "ready" { showWelcome() }
+            if state.status?["setup"]?.string != "ready" && !registerBackground { showWelcome() }
             if CommandLine.arguments.contains("--smoke-menu") {
                 print("Menu smoke: \(state.statusText)")
                 NSApplication.shared.terminate(nil)
             }
         }
+    }
+    private var lifecycle: LifecycleCoordinator {
+        LifecycleCoordinator(client: client, services: services, start: { [weak self] in try self?.launchAgent() })
+    }
+    @objc func registerFromCommand() { Task { await registerInBackground() } }
+    func registerInBackground() async {
+        do { _ = try await services.registerInBackground(ensureRunning: { try await lifecycle.ensureRunning() }) }
+        catch { state.error = error.localizedDescription }
+        recordRegistration(force: true)
+    }
+    private func recordRegistration(force: Bool = false) {
+        let current = services.registrationState().rawValue + (services.pending ? "+pending" : "")
+        guard force || current != recordedRegistration else { return }
+        recordedRegistration = current
+        ServiceController.recordRegistration(services.registrationState(), pending: services.pending, in: DesktopPaths.controlDirectory)
     }
     func launchAgent() throws {
         let launcher = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/OrchestratorAgentLauncher")
@@ -91,6 +112,7 @@ import Darwin
         refreshPending = true
         defer { refreshPending = false }
         await state.refresh()
+        recordRegistration()
         if services.pending, state.canStop {
             do { try await services.reconcile() }
             catch { state.error = error.localizedDescription }

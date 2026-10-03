@@ -61,6 +61,20 @@ def _agent_ready(timeout: float) -> bool:
     return False
 
 
+def _registration(since: float, timeout: float) -> str:
+    """The login-item state the menu app recorded after `since` ("enabled", "requiresApproval", ...), or ""."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            record = json.loads((CONTROL_SOCKET.parent / "background.json").read_text())
+            if float(record["at"]) >= since:
+                return "pending" if record.get("pending") else str(record["registration"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        time.sleep(1)
+    return ""
+
+
 @dataclass
 class System:
     """What enrolling touches outside Python; tests replace all of it."""
@@ -70,6 +84,7 @@ class System:
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run
     redeem: Callable[[dict], dict] = lambda body: account.call("enroll/redeem", body)
     agent_ready: Callable[[float], bool] = _agent_ready
+    registration: Callable[[float, float], str] = _registration
     app: Path | None = field(default_factory=lambda: containing_app(Path(sys.executable).resolve()))
     projects_dir: Path = field(default_factory=lambda: Path.home() / "Projects")
 
@@ -153,13 +168,21 @@ def enroll(token: str, project: str, system: System | None = None, models: list[
             say("  Orchestrator isn't installed as the app here, so start it in the background with "
                 "`orchestrator service install`.")
             return 0
+        started = time.time()
         system.run(["/usr/bin/open", "-g", "-j", "-a", str(system.app), "--args", "--register-background"],
                    capture_output=True, text=True)
+        approval = ("connect once with Screen Sharing and allow Orchestrator in System Settings › General › Login Items, "
+                    "then run this again.")
         if not system.agent_ready(60):
-            raise EnrollError("The app didn't start its background agent. macOS may be asking for approval: connect once "
-                              "with Screen Sharing and allow Orchestrator in System Settings › General › Login Items, "
-                              "then run this again.")
-        say("  ✓ Running in the background, and starting at login")
+            raise EnrollError("The app didn't start its background agent. macOS may be asking for approval: " + approval)
+        registration = system.registration(started, 30)
+        if registration == "pending":
+            say("  ✓ Running in the background. Starting at login is turned on once its current work finishes.")
+        elif registration != "enabled":
+            raise EnrollError("Orchestrator is running now, but it won't start again after a restart until macOS "
+                              "approves it: " + approval)
+        else:
+            say("  ✓ Running in the background, and starting at login")
         say(f"  Open it from {account.HOSTED_APP_URL}")
         return 0
     except EnrollError as exc:
