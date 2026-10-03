@@ -19,17 +19,26 @@ from typing import Any
 from orchestrator import prd
 from orchestrator.project_config import remember_project, safe_resolve, user_state_dir
 
-# (key, label, help, kind, required, options)
+# (key, label, help, kind, required, options, section)
 QUESTIONS: list[dict[str, Any]] = [
-    {"key": "name", "label": "What's it called?", "help": "A working name is fine. It becomes the folder name.", "kind": "text", "required": True},
-    {"key": "pitch", "label": "What is it, in one sentence?", "help": "e.g. A turn-based word game you can play with friends.", "kind": "text", "required": True},
-    {"key": "audience", "label": "Who is it for?", "help": "The people who'll use it.", "kind": "text", "required": True},
-    {"key": "problem", "label": "What problem does it solve for them?", "help": "Why would they want it?", "kind": "area", "required": True},
-    {"key": "features", "label": "What must it do on day one?", "help": "Up to five things, one per line. Keep it to the essentials.", "kind": "area", "required": True},
+    {"key": "name", "label": "What's it called?", "help": "A working name is fine. It becomes the folder name.", "kind": "text", "required": True, "section": "project"},
+    {"key": "pitch", "label": "What is it, in one sentence?", "help": "e.g. A turn-based word game you can play with friends.", "kind": "text", "required": True, "section": "pitch"},
+    {"key": "audience", "label": "Who is it for?", "help": "The people who'll use it.", "kind": "text", "required": True, "section": "who"},
+    {"key": "problem", "label": "What problem does it solve for them?", "help": "Why would they want it?", "kind": "area", "required": True, "section": "pitch"},
+    {"key": "features", "label": "What must it do on day one?", "help": "Up to five things, one per line. Keep it to the essentials.", "kind": "area", "required": True, "section": "features"},
     {"key": "platform", "label": "What are you building it for?", "help": "Pick every platform you want, or let the AI recommend.", "kind": "multi", "required": True,
-     "options": ["iOS app", "Android app", "macOS app", "Windows or Linux app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"]},
-    {"key": "stack", "label": "Any technology you want, or want to avoid?", "help": "Optional. e.g. SwiftUI, no third-party UI kits.", "kind": "area", "required": False},
-    {"key": "done", "label": "How will you know version 1 works?", "help": "Optional. The test you'd run to say \"yes, that's it\".", "kind": "area", "required": False},
+     "options": ["iOS app", "Android app", "macOS app", "Windows or Linux app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"], "section": "project"},
+    {"key": "stack", "label": "Any technology you want, or want to avoid?", "help": "Optional. e.g. SwiftUI, no third-party UI kits.", "kind": "area", "required": False, "section": "pitch"},
+    {"key": "done", "label": "How will you know version 1 works?", "help": "Optional. The test you'd run to say \"yes, that's it\".", "kind": "area", "required": False, "section": "features"},
+    {"key": "look", "label": "What should it look and feel like?", "help": "Optional. Visual style, design references, or sketch notes.", "kind": "area", "required": False, "section": "look"},
+    {"key": "not", "label": "What should it NOT be or include?", "help": "Optional. Features to avoid, competitors not to copy, or anti-patterns.", "kind": "area", "required": False, "section": "not"},
+]
+PRD_SECTIONS: list[dict[str, Any]] = [
+    {"id": "pitch", "title": "Pitch", "keys": ["pitch", "problem", "stack"], "description": "What this product is, the problem it solves, and technical preferences."},
+    {"id": "who", "title": "Who it's for", "keys": ["audience"], "description": "The ideal user, target audience, or context of use."},
+    {"id": "features", "title": "Core features", "keys": ["features", "done"], "description": "What it must do on day one, and completion criteria for version 1."},
+    {"id": "look", "title": "Look and feel", "keys": ["look"], "description": "Visual style, design language, or reference apps."},
+    {"id": "not", "title": "Not this", "keys": ["not"], "description": "What it should NOT be or do: features or anti-patterns to avoid."},
 ]
 REQUIRED = [q["key"] for q in QUESTIONS if q["required"]]
 PLATFORMS = next(q["options"] for q in QUESTIONS if q["key"] == "platform")
@@ -156,6 +165,10 @@ def render_prd(a: dict[str, str]) -> str:
         if a.get("done", "").strip():
             body += f"\n\nVersion 1 is done when: {a['done'].strip()}"
         text = prd.replace_section(text, "features", body)
+    if a.get("look", "").strip():
+        text = prd.replace_section(text, "look", a["look"].strip())
+    if a.get("not", "").strip():
+        text = prd.replace_section(text, "not", a["not"].strip())
     return text
 
 

@@ -996,7 +996,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "job": job,
         "outputs": outputs,
         "logs": [resolve_linked_log(root, ref) for ref in linked_logs(job)],
-        "docs": job_documents(out_dir),
+        "docs": job_documents(out_dir, root=root, job=job),
         "changes": job_changes(root, job),
         "links": github_links(root, job),
         "test_summary": test_summary,
@@ -1019,13 +1019,51 @@ def read_limited(path: Path, limit: int = 200_000) -> str | None:
     return text if len(text) <= limit else text[:limit] + "\n…[truncated]"
 
 
-def job_documents(out_dir: Path) -> list[dict[str, str]]:
+def generate_job_brief(job: dict[str, Any]) -> str:
+    try:
+        import sys
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from run_builder import make_brief
+        return make_brief(job)
+    except Exception:
+        title = job.get("title") or job.get("job_id") or "Untitled Job"
+        desc = job.get("description") or job.get("prompt") or "No description provided."
+        return f"# Brief: {title}\n\n{desc}\n"
+
+
+def job_documents(out_dir: Path, root: Path | None = None, job: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """The console's "View Brief / Summary": brief, builder summary, investigations."""
+    brief_path = out_dir / "brief.md"
+    if not brief_path.is_file() and job is not None:
+        try:
+            brief_text = generate_job_brief(job)
+            if brief_text and brief_text.strip():
+                out_dir.mkdir(parents=True, exist_ok=True)
+                brief_path.write_text(brief_text, encoding="utf-8")
+        except Exception:
+            pass
+
     docs = []
     for name, title in (("brief.md", "Brief"), ("builder_summary.md", "Builder summary"), ("investigations.md", "Investigations")):
-        text = read_limited(out_dir / name)
+        p = out_dir / name
+        text = read_limited(p)
         if text and text.strip():
-            docs.append({"title": title, "text": text})
+            doc: dict[str, Any] = {"title": title, "name": name, "text": text}
+            if root is not None:
+                try:
+                    doc["path"] = str(p.relative_to(root))
+                except ValueError:
+                    doc["path"] = str(p)
+                try:
+                    doc["runtime_path"] = str(p.relative_to(runtime_dir(root)))
+                except ValueError:
+                    doc["runtime_path"] = str(p)
+            else:
+                doc["path"] = str(p)
+                doc["runtime_path"] = name
+            docs.append(doc)
     return docs
 
 
@@ -2584,7 +2622,8 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
 def new_project_state() -> dict[str, Any]:
     from orchestrator.setup_checklist import github_cli_state
     return {"platform_needs": new_project.PLATFORM_NEEDS, "questions": new_project.QUESTIONS, "draft": new_project.load_draft(),
-            "github": github_cli_state(fresh=True), "default_parent": new_project.default_parent()}
+            "github": github_cli_state(fresh=True), "default_parent": new_project.default_parent(),
+            "prd_sections": new_project.PRD_SECTIONS}
 
 
 def create_new_project(server: "UIServer") -> dict[str, Any]:
@@ -3680,6 +3719,20 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         elif method == "GET" and parts == ["test-cases"]:
             self._json(test_case_view(root, test_case_lib.load_library(root)))
+        elif method == "POST" and parts == ["test-cases"]:
+            body = self._body()
+            op = _choice(body, "op", ["create", "edit", "delete"])
+            try:
+                if op == "delete":
+                    case_id = str(body.get("id") or "").strip()
+                    if not case_id:
+                        raise UIError("Which test case?")
+                    test_case_lib.delete_library_case(root, case_id)
+                else:
+                    test_case_lib.create_or_update_library_case(root, body.get("case") if isinstance(body.get("case"), dict) else body, is_new=(op == "create"))
+            except (test_case_lib.TestCaseError, ValueError) as exc:
+                raise UIError(str(exc))
+            self._json({"ok": True, **test_case_view(root, test_case_lib.load_library(root))})
         elif method == "GET" and parts == ["inbox"]:
             self._json(inbox_overview(root, self.server.sessions, runs=self._sessions_view()))
         elif method == "GET" and parts == ["features"]:
@@ -3793,12 +3846,20 @@ class UIHandler(BaseHTTPRequestHandler):
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
             body = self._body()
-            op = _choice(body, "op", ["accept", "reset"])
+            op = _choice(body, "op", ["accept", "reset", "adopt"])
             if op == "accept":
                 raw = body.get("paths")
                 if not isinstance(raw, list) or not raw or len(raw) > 200:
                     raise UIError("Choose the files to accept")
                 job["scope_accepted"] = sorted(set(job.get("scope_accepted") or []) | {str(p)[:300] for p in raw})
+            elif op == "adopt":
+                raw = body.get("paths")
+                if not isinstance(raw, list) or len(raw) > 200:
+                    raise UIError("Choose the files to adopt")
+                if "plan" not in job or not isinstance(job["plan"], dict):
+                    job["plan"] = {}
+                existing = set(job["plan"].get("likely_files") or [])
+                job["plan"]["likely_files"] = sorted(existing | {str(p)[:300] for p in raw if str(p).strip()})
             else:
                 job.pop("scope_accepted", None)
             write_json_file(job_path, job)
@@ -3823,6 +3884,61 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(str(exc))
             write_json_file(job_path, job)
             self._json({"ok": True, "tasks": job["plan"]["tasks"], "completed": job.get("completed_task_indices", [])})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "plan-test-cases":
+            job_path = resolve_job_path(root, parts[1])
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("A worker is running this job. Pause it before changing its test cases.", HTTPStatus.CONFLICT)
+            job = read_json_file(job_path)
+            body = self._body()
+            op = _choice(body, "op", ["add", "edit", "remove"])
+            issue_num = job.get("issue_number")
+            if not issue_num:
+                m = re.search(r"issue-(\d+)", str(job.get("branch") or ""))
+                if m:
+                    issue_num = int(m.group(1))
+                else:
+                    m2 = re.search(r"-(\d+)$", parts[1])
+                    issue_num = int(m2.group(1)) if m2 else parts[1]
+            try:
+                if op == "add":
+                    plan_edit.add_case(job, body, issue_number=issue_num)
+                elif op == "edit":
+                    plan_edit.edit_case(job, str(body.get("id") or ""), body)
+                else:
+                    plan_edit.remove_case(job, str(body.get("id") or ""))
+            except plan_edit.PlanEditError as exc:
+                raise UIError(str(exc))
+            write_json_file(job_path, job)
+            self._json({"ok": True, "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)})})
+        elif method in ("GET", "POST") and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "brief":
+            job_path = resolve_job_path(root, parts[1])
+            job = read_json_file(job_path)
+            out_dir = runtime_dir(root) / "output" / parts[1]
+            brief_file = out_dir / "brief.md"
+            if method == "POST":
+                if parts[1] in self.server.sessions.running_job_ids():
+                    raise UIError("A worker is running this job. Pause it before editing its brief.", HTTPStatus.CONFLICT)
+                body = self._body()
+                text = body.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    raise UIError("Brief text cannot be empty.")
+                out_dir.mkdir(parents=True, exist_ok=True)
+                brief_file.write_text(text, encoding="utf-8")
+                job["updated_at"] = datetime.now().isoformat()
+                write_json_file(job_path, job)
+            else:
+                text = read_limited(brief_file) if brief_file.is_file() else None
+                if text is None:
+                    text = generate_job_brief(job)
+            try:
+                rel_path = str(brief_file.relative_to(root))
+            except ValueError:
+                rel_path = f".orchestrator/output/{parts[1]}/brief.md"
+            try:
+                runtime_path = str(brief_file.relative_to(runtime_dir(root)))
+            except ValueError:
+                runtime_path = f"output/{parts[1]}/brief.md"
+            self._json({"ok": True, "text": text, "path": rel_path, "runtime_path": runtime_path})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "revert-task":
             job_path = resolve_job_path(root, parts[1])
             if parts[1] in self.server.sessions.running_job_ids():

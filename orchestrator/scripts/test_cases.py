@@ -57,7 +57,7 @@ def _text(value: Any) -> str:
 
 def _list(value: Any) -> list[str]:
     if isinstance(value, str):
-        value = [value]
+        value = [v.strip() for v in value.splitlines() if v.strip()]
     return [_text(v) for v in (value or []) if _text(v)]
 
 
@@ -231,6 +231,63 @@ def write_cases(root: Path, cases: list[dict[str, Any]]) -> list[Path]:
         readme.write_text(LIBRARY_README, encoding="utf-8")
         written.append(readme)
     return written
+
+
+def create_or_update_library_case(root: Path, case_data: dict[str, Any], is_new: bool = False) -> dict[str, Any]:
+    existing = load_library(root)
+    title = _text(case_data.get("title"))
+    expected = _text(case_data.get("expected"))
+    if not title or not expected:
+        raise TestCaseError("Each test case needs a title and an expected result.")
+    area = _text(case_data.get("area")) or "General"
+    case_type = _text(case_data.get("type")).lower() or "unit"
+    if case_type not in CASE_TYPES:
+        case_type = "unit"
+    priority = _text(case_data.get("priority")).lower()
+    priority = priority if priority in PRIORITIES else "medium"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    case_id = _text(case_data.get("id"))
+    if is_new or not case_id:
+        taken = [c["id"] for c in existing if c.get("id", "").startswith("TC-")]
+        nums = [int(i.rsplit("-", 1)[1]) for i in taken if i.rsplit("-", 1)[1].isdigit()]
+        next_num = max(nums, default=0) + 1
+        case_id = f"TC-0-{next_num:02d}"
+
+    old_case = next((c for c in existing if c.get("id") == case_id), None)
+    created = (old_case or {}).get("created") or now
+
+    cleaned = {
+        "id": case_id,
+        "area": area,
+        "title": title,
+        "type": case_type,
+        "priority": priority,
+        "preconditions": _list(case_data.get("preconditions")),
+        "steps": _list(case_data.get("steps")),
+        "expected": expected,
+        "covers": _list(case_data.get("covers")),
+        "tests": _list(case_data.get("tests")) if case_type != "manual" else [],
+        "created": created,
+        "updated": now,
+    }
+    write_cases(root, [cleaned])
+    return cleaned
+
+
+def delete_library_case(root: Path, case_id: str) -> bool:
+    base = library_dir(root)
+    if not base.is_dir():
+        return False
+    for path in base.rglob(f"{case_id}.json"):
+        path.unlink()
+        try:
+            if path.parent != base and not any(path.parent.iterdir()):
+                path.parent.rmdir()
+        except OSError:
+            pass
+        return True
+    return False
 
 
 LIBRARY_README = """# Test case library

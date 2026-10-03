@@ -45,7 +45,6 @@
       <a class="btn primary new-job-btn" href="#/new"><svg class="icon"><use href="#i-plus"/></svg>New job</a>
       <nav class="nav" id="nav" aria-label="Main">
         <a href="#/" data-route="home"><svg class="icon"><use href="#i-home"/></svg><span>Home</span><span class="badge" id="inbox-badge" hidden></span></a>
-        <a href="#/features" data-route="features"><svg class="icon"><use href="#i-jobs"/></svg><span>Features</span></a>
         <a href="#/projects" data-route="projects"><svg class="icon"><use href="#i-folder"/></svg><span>Projects</span></a>
         <a href="#/devlogs" data-route="devlogs"><svg class="icon"><use href="#i-phone"/></svg><span>Device logs</span></a>
         <a href="#/activity" data-route="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span><span class="badge" id="running-badge" hidden></span></a>
@@ -54,6 +53,7 @@
       <nav class="nav nav-secondary" aria-label="Tools">
         <span class="label">Build &amp; ship</span>
         <a href="#/tests" data-route="tests"><span>Tests</span></a>
+        <a href="#/test-cases" data-route="test-cases"><span>Test cases</span></a>
         <a href="#/git" data-route="git"><span>Git</span></a>
         <a href="#/delivery" data-route="delivery"><span>Delivery</span></a>
         <span class="label">Learn &amp; improve</span>
@@ -101,7 +101,10 @@
 
   <dialog id="dialog">
     <form method="dialog" id="dialog-form">
-      <h2 id="dialog-title"></h2>
+      <div class="dialog-header">
+        <h2 id="dialog-title"></h2>
+        <button type="button" class="dialog-close-btn" id="dialog-close" aria-label="Close dialog">✕</button>
+      </div>
       <div id="dialog-body" class="stack"></div>
       <div class="dialog-actions">
         <button value="cancel" class="btn ghost" id="dialog-cancel" formnovalidate>Cancel</button>

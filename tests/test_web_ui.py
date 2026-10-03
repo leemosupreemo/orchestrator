@@ -2787,6 +2787,56 @@ class TestCaseViewTests(ServerTestCase):
             self.request("GET", "/api/test-cases")
         self.assertEqual(scan.call_count, 1)
 
+    def test_library_post_create_edit_and_delete(self):
+        # Create
+        res, data = self.request("POST", "/api/test-cases", body={
+            "op": "create",
+            "area": "Auth",
+            "title": "Validate JWT token",
+            "type": "unit",
+            "priority": "high",
+            "expected": "Returns active user payload",
+            "tests": ["test_jwt_validation"],
+        }, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(any(c["id"] == "TC-0-01" and c["title"] == "Validate JWT token" for c in data["cases"]))
+        auth_file = self.root / "docs" / "test-cases" / "auth" / "TC-0-01.json"
+        self.assertTrue(auth_file.exists())
+        saved = json.loads(auth_file.read_text())
+        self.assertEqual(saved["title"], "Validate JWT token")
+        self.assertEqual(saved["priority"], "high")
+
+        # Edit
+        res, data = self.request("POST", "/api/test-cases", body={
+            "op": "edit",
+            "id": "TC-0-01",
+            "area": "Security",
+            "title": "Validate JWT and expiry",
+            "expected": "Returns active user or error",
+        }, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertFalse(auth_file.exists())
+        sec_file = self.root / "docs" / "test-cases" / "security" / "TC-0-01.json"
+        self.assertTrue(sec_file.exists())
+        saved_sec = json.loads(sec_file.read_text())
+        self.assertEqual(saved_sec["title"], "Validate JWT and expiry")
+        self.assertEqual(saved_sec["area"], "Security")
+
+        # Delete
+        res, data = self.request("POST", "/api/test-cases", body={"op": "delete", "id": "TC-0-01"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertFalse(sec_file.exists())
+        self.assertFalse(any(c["id"] == "TC-0-01" for c in data["cases"]))
+
+    def test_library_post_validation_errors(self):
+        res, data = self.request("POST", "/api/test-cases", body={"op": "create", "title": ""}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn("title and an expected result", data["error"])
+
+        res, data = self.request("POST", "/api/test-cases", body={"op": "delete", "id": ""}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn("Which test case?", data["error"])
+
 
 class DeliveryEndpointTests(ServerTestCase):
     def setUp(self):
@@ -3079,7 +3129,7 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_help_covers_every_page_it_names_and_the_undo_window(self):
         start = self.js.index("pages.help = async")
         help_page = self.js[start:self.js.index("pages.devlogs = async")]
-        for route in ("#/features", "#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config", "#/config/documentation"):
+        for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config", "#/config/documentation"):
             self.assertIn(f'"{route}"' if route != "#/config/documentation" else route, help_page, route)
         self.assertIn("10 seconds", help_page)
         for page in ("features", "tests", "delivery", "measure", "checkup"):
@@ -3146,6 +3196,36 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('{ key: "status", dir: "asc" }', self.js)  # needs-you jobs sort first by default
         self.assertNotIn("pages.jobs", self.js)  # one jobs list, on Home
         self.assertNotIn("moreActionsMenu", self.js)  # nothing hidden in a Home menu that a page already has
+
+    def test_home_job_table_shows_type_column_and_mobile_layout_keeps_date_sole_column(self):
+        row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
+        self.assertIn('class="col-type"', row)
+        self.assertIn('class="job-mobile-info"', row)
+        self.assertIn('class="job-type-tag"', row)
+        self.assertIn('class="col-status"', row)
+        self.assertIn('class="col-date"', row)
+
+        home = self.js[self.js.index("pages.home = async"):self.js.index("function jobHeaderActions")]
+        self.assertIn('class="col-type sort-head"', home)
+        self.assertIn('data-sort="type"', home)
+
+        sort_fn = self.js[self.js.index("function sortJobs"):self.js.index("const sortArrow")]
+        self.assertIn('key === "type"', sort_fn)
+
+        css = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".job-table-header .col-type", css)
+        self.assertIn(".job-table-row .col-type", css)
+        self.assertIn(".job-table-row .job-mobile-info", css)
+
+    def test_projects_page_start_and_add_project_buttons_share_row_equally(self):
+        projects = self.js[self.js.index('pages.projects = async'):self.js.index('pages.run = async')]
+        self.assertIn('class="projects-actions"', projects)
+        self.assertIn('href="#/new-project"', projects)
+        self.assertIn('id="add-project-btn"', projects)
+
+        css = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".projects-actions", css)
+        self.assertIn("grid-template-columns: 1fr 1fr", css)
 
     def test_signing_in_shows_a_loading_screen_and_background_refreshes_leave_it_alone(self):
         js = self.js
@@ -3282,6 +3362,13 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_visible_keyboard_focus_for_all_controls(self):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
+    def test_job_hero_and_containers_use_design_tokens(self):
+        self.assertIn(".job-hero-title { margin: 0; font-size: var(--text-lg); font-weight: 650;", self.css)
+        self.assertIn(".job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1);", self.css)
+        self.assertIn(".job-hero.tone-attention { border-color: var(--warn); background: var(--warn-soft); }", self.css)
+        self.assertIn(".banner { display: flex; align-items: center; gap: var(--space-3) var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--border);", self.css)
+        self.assertIn(".notice { padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--warn);", self.css)
+
 
 class ScopeEndpointTests(ServerTestCase):
     JOB = "20260922-bug-1"
@@ -3331,6 +3418,13 @@ class ScopeEndpointTests(ServerTestCase):
         self.assertEqual(self.scope()["accepted"], 2)
         _, data = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "reset"}, headers=UI_HEADERS)
         self.assertEqual(len(data["scope"]["findings"]), 3)
+
+    def test_adopt_files_adds_them_to_plan_likely_files(self):
+        res, data = self.request("POST", f"/api/jobs/{self.JOB}/scope", body={"op": "adopt", "paths": ["src/other.py", "src/helpers.py"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        job_data = json.loads((self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json").read_text())
+        self.assertIn("src/other.py", job_data["plan"]["likely_files"])
+        self.assertIn("src/helpers.py", job_data["plan"]["likely_files"])
 
     def test_a_files_diff_is_available_inline(self):
         res, data = self.request("GET", f"/api/jobs/{self.JOB}/diff?path=src/seat.py")
@@ -3757,6 +3851,134 @@ class PlanTaskEditEndpointTests(ServerTestCase):
         res, _ = self.request("POST", f"/api/jobs/{self.JOB}/plan-tasks", body={"op": "add", "title": "x"}, headers={"Content-Type": "application/json"})
         self.assertIn(res.status, (400, 403))
         res, _ = self.request("POST", "/api/jobs/nope/plan-tasks", body={"op": "add", "title": "x"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 404)
+
+
+class PlanTestCaseEditEndpointTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def setUp(self):
+        super().setUp()
+        path = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        job = json.loads(path.read_text())
+        job["plan"] = {
+            "tasks": [{"title": "Repro"}, {"title": "Fix"}],
+            "test_cases": [
+                {"id": "TC-1-01", "area": "Lobby", "title": "Seat kept", "type": "unit", "expected": "Seat stays", "tests": ["test_keeps_seat"]},
+            ],
+        }
+        path.write_text(json.dumps(job))
+
+    def post(self, body):
+        return self.request("POST", f"/api/jobs/{self.JOB}/plan-test-cases", body=body, headers=UI_HEADERS)
+
+    def saved_cases(self):
+        job = json.loads((self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json").read_text())
+        return job.get("plan", {}).get("test_cases", [])
+
+    def test_add_edit_and_remove_test_cases_on_job(self):
+        # Add
+        res, data = self.post({
+            "op": "add",
+            "title": "Rejoin timeout",
+            "area": "Network",
+            "type": "integration",
+            "priority": "high",
+            "expected": "Reconnects within 5s",
+            "task": "2",
+        })
+        self.assertEqual(res.status, 200)
+        cases = self.saved_cases()
+        self.assertEqual(len(cases), 2)
+        added = next(c for c in cases if c["id"] == "TC-1-02")
+        self.assertEqual(added["title"], "Rejoin timeout")
+        self.assertEqual(added["task"], 2)
+        self.assertEqual(added["area"], "Network")
+
+        # Edit
+        res, data = self.post({
+            "op": "edit",
+            "id": "TC-1-02",
+            "title": "Rejoin timeout with retry",
+            "expected": "Reconnects with exponential backoff",
+        })
+        self.assertEqual(res.status, 200)
+        cases = self.saved_cases()
+        edited = next(c for c in cases if c["id"] == "TC-1-02")
+        self.assertEqual(edited["title"], "Rejoin timeout with retry")
+        self.assertEqual(edited["expected"], "Reconnects with exponential backoff")
+
+        # Remove
+        res, data = self.post({"op": "remove", "id": "TC-1-02"})
+        self.assertEqual(res.status, 200)
+        cases = self.saved_cases()
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]["id"], "TC-1-01")
+
+    def test_plan_test_cases_validation_and_concurrency(self):
+        res, data = self.post({"op": "add", "title": ""})
+        self.assertEqual(res.status, 400)
+
+        res, data = self.post({"op": "edit", "id": "TC-99-99", "title": "Nope"})
+        self.assertEqual(res.status, 400)
+
+        res, data = self.post({"op": "remove", "id": "TC-99-99"})
+        self.assertEqual(res.status, 400)
+
+        with patch.object(ui.SessionManager, "running_job_ids", return_value={self.JOB}):
+            res, data = self.post({"op": "add", "title": "Cannot edit", "expected": "Fails"})
+        self.assertEqual(res.status, 409)
+        self.assertIn("Pause it", data["error"])
+
+    def test_requires_the_ui_header_and_real_job(self):
+        res, _ = self.request("POST", f"/api/jobs/{self.JOB}/plan-test-cases", body={"op": "add", "title": "x", "expected": "y"}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+        res, _ = self.request("POST", "/api/jobs/nope/plan-test-cases", body={"op": "add", "title": "x", "expected": "y"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 404)
+
+
+class JobBriefTests(ServerTestCase):
+    JOB = "20260922-bug-1"
+
+    def test_get_and_post_job_brief(self):
+        res, data = self.request("GET", f"/api/jobs/{self.JOB}/brief")
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["text"], "# Brief\n")
+        self.assertEqual(data["path"], f".orchestrator/output/{self.JOB}/brief.md")
+        self.assertEqual(data["runtime_path"], f"output/{self.JOB}/brief.md")
+
+        new_text = "# Updated Bug Brief\n\nFix the seat presence bug."
+        res, data = self.request("POST", f"/api/jobs/{self.JOB}/brief", body={"text": new_text}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["text"], new_text)
+
+        brief_on_disk = (self.root / ".orchestrator" / "output" / self.JOB / "brief.md").read_text()
+        self.assertEqual(brief_on_disk, new_text)
+
+        res, data = self.request("GET", f"/api/jobs/{self.JOB}/brief")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["text"], new_text)
+
+        res, detail = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertEqual(res.status, 200)
+        brief_doc = next(d for d in detail["docs"] if d["name"] == "brief.md")
+        self.assertEqual(brief_doc["text"], new_text)
+        self.assertEqual(brief_doc["path"], f".orchestrator/output/{self.JOB}/brief.md")
+        self.assertEqual(brief_doc["runtime_path"], f"output/{self.JOB}/brief.md")
+
+    def test_post_brief_validations(self):
+        res, data = self.request("POST", f"/api/jobs/{self.JOB}/brief", body={"text": "   "}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn("Brief text cannot be empty", data["error"])
+
+        with patch.object(ui.SessionManager, "running_job_ids", return_value={self.JOB}):
+            res, data = self.request("POST", f"/api/jobs/{self.JOB}/brief", body={"text": "Hello"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 409)
+        self.assertIn("Pause it before editing its brief", data["error"])
+
+        res, _ = self.request("POST", "/api/jobs/missing-job-xyz/brief", body={"text": "Hello"}, headers=UI_HEADERS)
         self.assertEqual(res.status, 404)
 
 
@@ -4296,10 +4518,17 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertNotIn("orchestrator_home_version", self.source)
         self.assertNotIn("(debug)", self.source)
 
-    def test_features_page_is_routed_and_in_the_nav(self):
+    def test_job_hero_proportions_and_standardized_button(self):
+        self.assertIn('<h2 class="job-hero-title">', self.job_page)
+        self.assertNotIn('job-hero-main">\n          <span class="pill', self.job_page)
+        self.assertNotIn('btn primary big', self.job_page)
+        self.assertIn('btn primary', self.job_page)
+
+    def test_features_page_removed_from_nav_and_redirects_home(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
-        self.assertIn('data-route="features"', (static / "index.html").read_text())
+        self.assertNotIn('data-route="features"', (static / "index.html").read_text())
         self.assertIn("pages.features = async", self.source)
+        self.assertIn('location.hash = "#/"', self.source)
         self.assertEqual(self.source.count("data-job-feature="), 1)  # rendered once, in the job menu
         self.assertIn('closest("[data-job-feature]")', self.source)
         self.assertIn("drawFeatureLinks", self.source)
@@ -4311,12 +4540,15 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn('href="#/help"', (static / "index.html").read_text())
         self.assertIn('label: "Undo"', self.source)
         self.assertIn("data-scope-accept", self.job_page)
+        self.assertIn("data-scope-adopt", self.job_page)
+        self.assertIn("Adopt current files as plan scope", self.job_page)
+        self.assertIn("scope-notice-clean", self.job_page)
         self.assertIn('data-scroll-to="#scope-section"', self.job_page)
         self.assertIn('data-route="checkup"', (static / "index.html").read_text())
         self.assertIn('query.get("summary")', self.source)
         self.assertIn('data-route="measure"', (static / "index.html").read_text())
         self.assertIn("testCaseRowsHtml(testCases.cases)", self.job_page)
-        self.assertIn('view=map', self.source)
+        self.assertNotIn('view=map', self.source)
 
     def test_discard_is_a_confirmed_server_action(self):
         self.assertIn("discard", ui.ACTIONS)
@@ -4347,6 +4579,80 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("Delete and keep changes", dialog_code)
         self.assertIn("Confirm Deletion", dialog_code)
         self.assertIn("api(`jobs/${encodeURIComponent(params.job)}/delete`", dialog_code)
+
+    def test_test_cases_page_is_routed_and_in_nav_and_palette(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        html = (static / "index.html").read_text()
+        css = (static / "style.css").read_text()
+        self.assertIn('href="#/test-cases" data-route="test-cases"', html)
+        self.assertIn('pages["test-cases"] = async', self.source)
+        self.assertIn('function testCaseForm(', self.source)
+        self.assertIn('["Test cases", "#/test-cases"', self.source)
+        self.assertIn('data-job-tc-op="add"', self.job_page)
+        self.assertIn('plan-test-cases', self.job_page)
+        self.assertIn('.tc-actions { display: flex; gap: var(--space-2);', css)
+        self.assertIn('href="#/test-cases"', self.source)  # Linked from pages.tests
+
+    def test_lifecycle_stepper_and_clarified_hero_in_job_page(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        self.assertIn('<nav class="job-stepper"', self.job_page)
+        self.assertIn(".job-stepper {", css)
+        self.assertIn(".job-step-dot {", css)
+        self.assertIn('<div class="job-hero-badge-row">', self.job_page)
+        self.assertIn(".job-hero-badge-row {", css)
+        self.assertIn(".job-hero-next-preview {", css)
+        self.assertIn('job-hero-next-preview', self.job_page)
+        self.assertIn('job-hero-phase-label', self.job_page)
+        self.assertIn('currentPhaseLabel', self.job_page)
+
+    def test_brief_section_positioned_near_top_and_editable(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        self.assertIn('id="brief-section"', self.job_page)
+        self.assertLess(self.job_page.index('id="brief-section"'), self.job_page.index('<h2>Test cases</h2>'))
+        self.assertIn('data-brief-edit', self.job_page)
+        self.assertIn('brief-path-chip', self.job_page)
+        self.assertIn('.brief-path-chip {', css)
+        self.assertIn('brief-content', self.job_page)
+        self.assertIn('.brief-content {', css)
+        self.assertIn('Raw file ↗', self.job_page)
+
+    def test_add_existing_project_modal_is_tabbed_with_mobile_exit_controls(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        html = (static / "index.html").read_text()
+        css = (static / "style.css").read_text()
+        app_js = (static / "app.js").read_text()
+
+        # HTML dialog structure
+        self.assertIn('<dialog id="dialog">', html)
+        self.assertIn('class="dialog-header"', html)
+        self.assertIn('id="dialog-close"', html)
+        self.assertIn('aria-label="Close dialog"', html)
+
+        # Tabbed structure in app.js
+        self.assertIn('$("#dialog-title").textContent = "Add Existing Project"', app_js)
+        self.assertIn('class="dialog-tabs"', app_js)
+        self.assertIn('data-project-tab="discovered"', app_js)
+        self.assertIn('data-project-tab="custom"', app_js)
+        self.assertIn('id="panel-discovered"', app_js)
+        self.assertIn('id="panel-custom"', app_js)
+
+        # Clear exit mechanisms
+        self.assertIn('cancel.hidden = false', app_js)
+        self.assertIn('cancel.textContent = "Close"', app_js)
+        self.assertIn('cancel.textContent = "Cancel"', app_js)
+        self.assertIn('$("#dialog-close")?.addEventListener("click"', app_js)
+        self.assertIn('globalDialog?.addEventListener("click"', app_js)
+
+        # Responsive and tabbed CSS styles
+        self.assertIn(".dialog-header {", css)
+        self.assertIn(".dialog-close-btn {", css)
+        self.assertIn(".dialog-tabs {", css)
+        self.assertIn(".dialog-tab-btn {", css)
+        self.assertIn(".dialog-tab-panel {", css)
+        self.assertIn("max-height: calc(100dvh - 24px);", css)
+        self.assertIn("flex-direction: column-reverse;", css)
 
 
 class JobDeleteEndpointTests(ServerTestCase):

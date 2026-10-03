@@ -50,9 +50,9 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
         items.append(_item("repo", "Git and GitHub", "todo", "This folder isn't a git repository.", hint="git init"))
 
     if f["features"] == 0:
-        items.append(_item("features", "Features", "todo", "Group the work into features so you can see progress and overlap.", route="#/features", label="Add features"))
+        items.append(_item("features", "Features", "todo", "Group the work into features in product requirements.", route="#/product", label="Product requirements"))
     elif f["jobs_unassigned"]:
-        items.append(_item("features", "Features", "warn", f"{f['features']} feature(s); {f['jobs_unassigned']} open job(s) aren't in one.", route="#/features", label="Assign jobs"))
+        items.append(_item("features", "Features", "warn", f"{f['features']} feature(s); {f['jobs_unassigned']} open job(s) aren't in one.", route="#/product", label="Product requirements"))
     else:
         items.append(_item("features", "Features", "ok", f"{f['features']} feature(s), every open job assigned."))
 

@@ -8,6 +8,7 @@ orphans a test case. Finished tasks can't be changed.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 MAX_TITLE = 200
@@ -133,3 +134,113 @@ def move(job: dict[str, Any], index: Any, direction: str) -> None:
     tasks[i], tasks[j] = tasks[j], tasks[i]
     a, b = i + 1, j + 1
     _renumber_cases(job, lambda t: b if t == a else (a if t == b else t))
+
+
+def _cases(job: dict[str, Any]) -> list[dict[str, Any]]:
+    plan = job.setdefault("plan", {})
+    if not isinstance(plan.get("test_cases"), list):
+        plan["test_cases"] = []
+    return plan["test_cases"]
+
+
+def add_case(job: dict[str, Any], fields: dict[str, Any], issue_number: Any = 0) -> dict[str, Any]:
+    _check_open(job)
+    cases = _cases(job)
+    title = str(fields.get("title") or "").strip()
+    expected = str(fields.get("expected") or "").strip()
+    if not title or not expected:
+        raise PlanEditError("Each test case needs a title and an expected result.")
+    case_type = str(fields.get("type") or "unit").lower()
+    if case_type not in ("unit", "integration", "ui", "manual"):
+        case_type = "unit"
+    priority = str(fields.get("priority") or "medium").lower()
+    if priority not in ("high", "medium", "low"):
+        priority = "medium"
+    prefix = f"TC-{issue_number}-"
+    taken = [str(c.get("id", "")) for c in cases if str(c.get("id", "")).startswith(prefix)]
+    if not taken and cases:
+        first_id = str(cases[0].get("id", ""))
+        if first_id.startswith("TC-") and first_id.count("-") >= 2:
+            prefix = first_id.rsplit("-", 1)[0] + "-"
+            taken = [str(c.get("id", "")) for c in cases if str(c.get("id", "")).startswith(prefix)]
+    nums = [int(i.rsplit("-", 1)[1]) for i in taken if i.rsplit("-", 1)[1].isdigit()]
+    counter = (max(nums, default=0) + 1)
+    case_id = f"{prefix}{counter:02d}"
+
+    task = fields.get("task")
+    if isinstance(task, str) and task.isdigit():
+        task = int(task)
+    elif not isinstance(task, int) or task <= 0:
+        task = None
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    case = {
+        "id": case_id,
+        "area": str(fields.get("area") or "General").strip() or "General",
+        "title": title,
+        "type": case_type,
+        "priority": priority,
+        "preconditions": _lines(fields.get("preconditions")),
+        "steps": _lines(fields.get("steps")),
+        "expected": expected,
+        "covers": _lines(fields.get("covers")),
+        "tests": _lines(fields.get("tests")) if case_type != "manual" else [],
+        "task": task,
+        "created": now,
+        "updated": now,
+    }
+    cases.append(case)
+    return case
+
+
+def edit_case(job: dict[str, Any], case_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    _check_open(job)
+    cases = _cases(job)
+    case = next((c for c in cases if c.get("id") == case_id), None)
+    if not case:
+        raise PlanEditError(f"Test case '{case_id}' doesn't exist.")
+    if "title" in fields:
+        title = str(fields["title"] or "").strip()
+        if not title:
+            raise PlanEditError("A test case needs a title.")
+        case["title"] = title
+    if "expected" in fields:
+        exp = str(fields["expected"] or "").strip()
+        if not exp:
+            raise PlanEditError("A test case needs an expected result.")
+        case["expected"] = exp
+    if "area" in fields:
+        case["area"] = str(fields["area"] or "General").strip() or "General"
+    if "type" in fields:
+        t = str(fields["type"]).lower()
+        if t in ("unit", "integration", "ui", "manual"):
+            case["type"] = t
+    if "priority" in fields:
+        p = str(fields["priority"]).lower()
+        if p in ("high", "medium", "low"):
+            case["priority"] = p
+    if "task" in fields:
+        task = fields["task"]
+        if isinstance(task, str) and task.isdigit():
+            case["task"] = int(task)
+        elif isinstance(task, int) and task > 0:
+            case["task"] = task
+        else:
+            case["task"] = None
+    for key in ("preconditions", "steps", "covers", "tests"):
+        if key in fields:
+            case[key] = _lines(fields[key])
+    if case.get("type") == "manual":
+        case["tests"] = []
+    case["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return case
+
+
+def remove_case(job: dict[str, Any], case_id: str) -> dict[str, Any]:
+    _check_open(job)
+    cases = _cases(job)
+    for i, c in enumerate(cases):
+        if c.get("id") == case_id:
+            return cases.pop(i)
+    raise PlanEditError(f"Test case '{case_id}' doesn't exist.")
+

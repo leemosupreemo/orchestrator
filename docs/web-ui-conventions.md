@@ -60,6 +60,29 @@ Rules checked on every page at 360, 430 and 1440 px, light and dark:
 - Long model-written text (an architect's concerns, a failure reason) is shown with `clamped()` ("Show more"); rows clamp it to two lines. The same text is not shown twice on one page.
 - A list that can grow past about five items is capped with "Show all N".
 
+## Containers, heroes and callouts
+
+Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable status, warnings and next steps:
+- **Tone pairing**: Tinted containers pair tone borders with matching soft backgrounds (`--warn` + `--warn-soft`, `--accent` + `--accent-soft`, `--ok` + `--ok-soft`, `--bad` + `--bad-soft`). Text uses `--text` or high-contrast ink tokens.
+- **Visual hierarchy**:
+  - The hero title (`.job-hero-title`) is an `h2` styled with `--text-lg` (16px), `font-weight: 650`, and line-height 1.3. It never uses a tiny pill badge for the container's title.
+  - The description (`.job-hero-reason` or banner body) uses `--text-md` (14px). Spacing between title and description is `--space-1` (4px) to keep them grouped.
+- **Button sizing & proportions**:
+  - Hero action buttons use standard `.btn.primary` (`min-height: 38px`, padding `--space-2` `--space-4`), not bloated 48px `.big` buttons. On phones (`<= 760px`), primary actions stretch to full width with `min-height: 44px`.
+  - Banners use `.btn.small` (`min-height: 32px`).
+- **Container geometry**:
+  - Border radius uses `--radius` (`--r-lg`, 12px).
+  - Padding uses `--space-4` `--space-5` on desktop for heroes, `--space-4` on phones, and `--space-3` `--space-4` for banners/notices.
+- **Job lifecycle stepper & next step clarity**:
+  - Every job detail page presents a 4-phase lifecycle stepper (`.job-stepper`): `1. Plan` → `2. Build` → `3. Verify` → `4. Review`.
+  - Active steps use `var(--accent)` (or `var(--warn)`/`var(--bad)` when attention/fix is needed), completed steps use `var(--ok)` with `✓`, upcoming steps are muted.
+  - The hero card clarifies **who has the ball** (`.job-hero-badge-row`: e.g. "Your action needed" vs "AI Worker active") and previews the exact automated builder task that will run upon taking the primary action (`.job-hero-next-preview`).
+  - The **Progress** card clearly separates task completion count, active/next builder task, remaining tasks, and verification status.
+- **Job Brief**:
+  - Positioned near the top of the Job Detail page immediately following Progress (before Test Cases and technical changes).
+  - Displays the canonical relative file location (`.brief-path-chip`: `.orchestrator/output/<job_id>/brief.md`) with click-to-select and a direct link to the raw file viewer (`Raw file ↗`).
+  - Directly editable via "Edit brief", which opens an in-page modal dialog with full markdown editing and saves to the canonical `.orchestrator/output/<job_id>/brief.md` file.
+
 ## Home
 
 - One list of jobs. A job that needs you is a job in an earlier status: it sorts first and its status says what it needs ("Approve plan"). The whole row is one link to the job, where the next step is the primary action; rows carry no buttons. There is no second "waiting" list; "Needs you" is a filter.

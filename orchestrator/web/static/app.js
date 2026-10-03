@@ -237,6 +237,7 @@ async function runAction(action, params = {}, { skipConfirm = false } = {}) {
 function formDialog(title, bodyHtml, okLabel = "Run", { danger = false } = {}) {
   const dlg = $("#dialog");
   $("#dialog-cancel").hidden = false;
+  $("#dialog-cancel").textContent = "Cancel";
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = bodyHtml;
   $("#dialog-ok").textContent = okLabel;
@@ -254,6 +255,34 @@ function formDialog(title, bodyHtml, okLabel = "Run", { danger = false } = {}) {
   });
 }
 
+const globalDialog = $("#dialog");
+$("#dialog-close")?.addEventListener("click", () => {
+  if (!globalDialog?.open) return;
+  const cancelEvent = new Event("cancel", { cancelable: true });
+  globalDialog.dispatchEvent(cancelEvent);
+  if (!cancelEvent.defaultPrevented) {
+    globalDialog.close("cancel");
+  }
+});
+globalDialog?.addEventListener("click", (event) => {
+  if (event.target === globalDialog) {
+    const rect = globalDialog.getBoundingClientRect();
+    const inside = (
+      rect.top <= event.clientY &&
+      event.clientY <= rect.bottom &&
+      rect.left <= event.clientX &&
+      event.clientX <= rect.right
+    );
+    if (!inside) {
+      const cancelEvent = new Event("cancel", { cancelable: true });
+      globalDialog.dispatchEvent(cancelEvent);
+      if (!cancelEvent.defaultPrevented) {
+        globalDialog.close("cancel");
+      }
+    }
+  }
+});
+
 function addProjectsDialog(trackedProjects) {
   const dlg = $("#dialog");
   const body = $("#dialog-body");
@@ -263,45 +292,78 @@ function addProjectsDialog(trackedProjects) {
   let switched = false;
   let pendingAdds = 0;
 
-  $("#dialog-title").textContent = "Add Projects";
+  $("#dialog-title").textContent = "Add Existing Project";
   done.textContent = "Done";
   done.disabled = false;
-  cancel.hidden = true;
+  cancel.hidden = false;
+  cancel.textContent = "Close";
+  cancel.disabled = false;
   body.innerHTML = `
-    <section class="project-discovery">
-      <div>
+    <nav class="dialog-tabs" role="tablist" aria-label="Add project modes">
+      <button type="button" class="dialog-tab-btn active" role="tab" id="tab-discovered" aria-selected="true" aria-controls="panel-discovered" data-project-tab="discovered">
+        <svg class="icon"><use href="#i-search"/></svg>Discovered
+      </button>
+      <button type="button" class="dialog-tab-btn" role="tab" id="tab-custom" aria-selected="false" aria-controls="panel-custom" data-project-tab="custom">
+        <svg class="icon"><use href="#i-folder"/></svg>Custom Path
+      </button>
+    </nav>
+    <div id="panel-discovered" role="tabpanel" aria-labelledby="tab-discovered" class="dialog-tab-panel">
+      <div class="project-discovery-head">
         <h3>Projects on this computer</h3>
         <small class="muted">Add any discovered codebases to your tracked projects.</small>
       </div>
       <div id="project-discovery-list" class="project-discovery-list" aria-live="polite">
         <div class="project-discovery-status"><span class="pill working"><span class="dot"></span>Scanning for projects...</span></div>
       </div>
-    </section>
-    <div class="dialog-divider"><span>Or add a directory</span></div>
-    <label class="field"><span>Project Directory Path</span>
-      <input type="text" name="root" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" autocomplete="off" spellcheck="false">
-      <small>Path to the folder containing your Xcode project, Package.swift, or Git repository.</small>
-    </label>
-    <label class="field"><span>Display Name <span class="muted">(optional)</span></span>
-      <input type="text" name="name" placeholder="Leave blank to use folder name">
-    </label>
-    <label class="check">
-      <input type="checkbox" name="active">
-      <span>Switch to this project immediately</span>
-    </label>
-    <div class="row end"><button type="button" class="btn" id="manual-add-project">Add directory</button></div>
+    </div>
+    <div id="panel-custom" role="tabpanel" aria-labelledby="tab-custom" class="dialog-tab-panel stack" hidden>
+      <label class="field"><span>Project Directory Path</span>
+        <input type="text" name="root" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" autocomplete="off" spellcheck="false">
+        <small>Path to the folder containing your Xcode project, Package.swift, or Git repository.</small>
+      </label>
+      <label class="field"><span>Display Name <span class="muted">(optional)</span></span>
+        <input type="text" name="name" placeholder="Leave blank to use folder name">
+      </label>
+      <label class="check">
+        <input type="checkbox" name="active">
+        <span>Switch to this project immediately</span>
+      </label>
+      <div class="row end"><button type="button" class="btn primary" id="manual-add-project">Add directory</button></div>
+    </div>
   `;
 
   const list = $("#project-discovery-list");
   const form = $("#dialog-form");
   const manualButton = $("#manual-add-project");
+  const tabDiscoveredBtn = $("#tab-discovered");
+  const tabCustomBtn = $("#tab-custom");
+  const panelDiscovered = $("#panel-discovered");
+  const panelCustom = $("#panel-custom");
+
+  const switchTab = (tabName) => {
+    const isDiscovered = tabName === "discovered";
+    tabDiscoveredBtn.classList.toggle("active", isDiscovered);
+    tabDiscoveredBtn.setAttribute("aria-selected", String(isDiscovered));
+    panelDiscovered.hidden = !isDiscovered;
+
+    tabCustomBtn.classList.toggle("active", !isDiscovered);
+    tabCustomBtn.setAttribute("aria-selected", String(!isDiscovered));
+    panelCustom.hidden = isDiscovered;
+
+    if (!isDiscovered) {
+      panelCustom.querySelector('input[name="root"]')?.focus();
+    }
+  };
+
   const sendAdd = ProjectPicker.createAddQueue((request) => api(request.path, request.options));
   const enqueueAdd = (request) => {
     pendingAdds += 1;
     done.disabled = true;
+    cancel.disabled = true;
     return sendAdd(request).finally(() => {
       pendingAdds -= 1;
       done.disabled = pendingAdds > 0;
+      cancel.disabled = pendingAdds > 0;
     });
   };
   const showScanResults = async () => {
@@ -317,6 +379,12 @@ function addProjectsDialog(trackedProjects) {
   };
 
   const onClick = async (event) => {
+    const tabBtn = event.target.closest("[data-project-tab]");
+    if (tabBtn) {
+      switchTab(tabBtn.dataset.projectTab);
+      return;
+    }
+
     const discoveredButton = event.target.closest("[data-add-project-path]");
     if (discoveredButton) {
       event.preventDefault();
@@ -397,6 +465,8 @@ function addProjectsDialog(trackedProjects) {
       body.removeEventListener("keydown", onKeydown);
       dlg.removeEventListener("cancel", onCancel);
       cancel.hidden = false;
+      cancel.textContent = "Cancel";
+      cancel.disabled = false;
       done.disabled = false;
       resolve({ changed, switched });
     }, { once: true });
@@ -1419,7 +1489,9 @@ function sortJobs(jobs) {
   const { key, dir } = jobSort;
   const val = (j) => key === "status"
     ? [j.active_run ? 1 : (GROUP_ORDER[j.state?.group] ?? 3), j.state?.label || ""]
-    : [j.updated || 0];
+    : key === "type"
+      ? [j.kind || j.type || ""]
+      : [j.updated || 0];
   const sign = dir === "asc" ? 1 : -1;
   return [...jobs].sort((a, b) => {
     const [x, y] = [val(a), val(b)];
@@ -1440,7 +1512,6 @@ document.addEventListener("click", (e) => {
 
 function jobTableRow(j, { hidden = false } = {}) {
   const parts = [
-    j.kind,
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
   ].filter(Boolean);
@@ -1449,12 +1520,20 @@ function jobTableRow(j, { hidden = false } = {}) {
     ? `<span class="job-reason">${esc(j.state.reason)}</span>`
     : "";
   const metaHtml = [reason, parts.join(" · ")].filter(Boolean).join(" · ");
+  const typeLabel = esc(j.kind || j.type || "Job");
 
   return `
     <a class="job-table-row"${hidden ? " hidden" : ""} href="#/jobs/${encodeURIComponent(j.id)}">
       <div class="col-job">
         <div class="job-title">${esc(j.title)}</div>
-        <div class="job-meta">${metaHtml}</div>
+        <div class="job-mobile-info">
+          <span class="job-type-tag">${typeLabel}</span>
+          ${jobPill(j)}
+        </div>
+        ${metaHtml ? `<div class="job-meta">${metaHtml}</div>` : ""}
+      </div>
+      <div class="col-type">
+        <span class="job-type-tag">${typeLabel}</span>
       </div>
       <div class="col-status">
         ${jobPill(j)}
@@ -1705,8 +1784,9 @@ pages.home = async (_, query) => {
           <div class="job-table">
             <div class="job-table-header">
               <div class="col-job">Job</div>
+              <button type="button" class="col-type sort-head" data-sort="type" aria-label="Sort by type">Type${sortArrow("type")}</button>
               <button type="button" class="col-status sort-head" data-sort="status" aria-label="Sort by status">Status${sortArrow("status")}</button>
-              <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified">Last modified${sortArrow("updated")}</button>
+              <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified"><span class="date-header-long">Last modified</span><span class="date-header-short">Date</span>${sortArrow("updated")}</button>
             </div>
             <div class="job-table-body" id="job-list">
               ${filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
@@ -1756,7 +1836,7 @@ document.addEventListener("click", async (e) => {
   const jobId = mv.dataset.jobFeature;
   try {
     const [{ features }, { job }] = [await api("features"), await api(`jobs/${encodeURIComponent(jobId)}`)];
-    if (!features.length) { toast("Create a feature first.", "warning"); location.hash = "#/features"; return; }
+    if (!features.length) { toast("Create a feature first.", "warning"); return; }
     const v = await formDialog("Move to feature", `<label class="field"><span>Feature</span><select name="feature">
       <option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${f.id === job.feature ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>`, "Move");
     if (!v) return;
@@ -1808,16 +1888,26 @@ pages.job = async ([id]) => {
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
   const scope = data.scope || null;
+  const actionableFindings = (scope?.findings || []).filter((f) => f.id !== "no_plan_files");
+  const hasNoPlanFiles = (scope?.findings || []).some((f) => f.id === "no_plan_files");
   const phone = matchMedia("(max-width: 760px)").matches;
   const canEditPlan = Array.isArray(job.plan?.tasks) && !activeRun && !["completed", "archived", "discarded", "decomposed"].includes(s.status) && s.status !== "executing";
   const fold = (title, count, body) => `<section class="card mb-16"><details class="fold" ${phone ? "" : "open"}><summary class="card-h"><h2>${title}</h2>${count === "" ? "" : `<span class="count">${count}</span>`}</summary>${body}</details></section>`;
-  const scopeWarning = scope && ["merge", "complete"].includes(s.state.next?.action) ? scope.findings.filter((f) => f.severity !== "low").reduce((n, f) => n + Math.max(f.files.length, 1), 0) : 0;
+  const scopeWarning = scope && ["merge", "complete"].includes(s.state.next?.action) ? actionableFindings.reduce((n, f) => n + Math.max(f.files.length, 1), 0) : 0;
   const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
   const missingTests = testCases.cases.filter((c) => c.due && (c.status === "unassigned" || c.status === "planned")).length;
   let featureName = "";
   if (s.feature) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
   const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
   const conversation = Array.isArray(job.conversation) ? job.conversation.filter((m) => m && m.text) : [];
+  const briefDoc = (docs || []).find((d) => d.name === "brief.md" || (d.title && d.title.toLowerCase() === "brief")) || {
+    title: "Brief",
+    name: "brief.md",
+    text: (job.plan?.summary || job.description || job.prompt || "No brief created yet."),
+    path: `.orchestrator/output/${s.id}/brief.md`,
+    runtime_path: `output/${s.id}/brief.md`,
+  };
+  const otherDocs = (docs || []).filter((d) => d !== briefDoc && d.name !== "brief.md" && (d.title || "").toLowerCase() !== "brief");
 
   let visualChecks = [];
   try { visualChecks = ((await api("visual-checks")).checks || []).filter((c) => c.job === id); } catch {}
@@ -1846,25 +1936,122 @@ pages.job = async ([id]) => {
   const next = s.state.next;
   const heroAction = activeRun
     ? `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`
-    : next ? `<button class="btn primary big" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : "";
+    : next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : "";
 
   const logFiles = logs.flatMap((l) => l.files.length
     ? l.files.map((f) => ({ label: l.files.length > 1 ? `${l.label} / ${f.split("/").pop()}` : l.label, path: f }))
     : [{ label: l.label }]);
 
+  // 4-Phase Lifecycle determination
+  const status = s.status || "";
+  let currentPhase = "plan";
+  if (status === "completed" || status === "archived") {
+    currentPhase = "review";
+  } else if (status === "review-needed") {
+    currentPhase = "review";
+  } else if (status === "debugging" || (tasksTotal > 0 && tasksDone >= tasksTotal && !["planned", "designing", "human-needed"].includes(status))) {
+    currentPhase = "verify";
+  } else if (status === "scheduled" || status === "executing" || status === "running" || status === "in-progress" || (tasksDone > 0 && tasksDone < tasksTotal)) {
+    currentPhase = "build";
+  } else {
+    currentPhase = "plan";
+  }
+
+  const phaseOrder = ["plan", "build", "verify", "review"];
+  const currentPhaseIndex = phaseOrder.indexOf(currentPhase);
+  const isJobComplete = status === "completed" || status === "archived";
+
+  const getStepState = (idx) => {
+    if (isJobComplete || idx < currentPhaseIndex) return { state: "done", icon: "✓" };
+    if (idx === currentPhaseIndex) {
+      const tone = s.state.tone === "failed" ? "failed" : s.state.group === "needs_you" ? "attention" : "active";
+      const icon = s.state.tone === "failed" ? "!" : String(idx + 1);
+      return { state: `active ${tone}`, icon };
+    }
+    return { state: "upcoming", icon: String(idx + 1) };
+  };
+
+  const planStep = {
+    title: "1. Plan",
+    subtitle: isJobComplete || currentPhaseIndex > 0 ? "Approved" : s.state.next?.action === "approve" ? "Needs approval" : status === "human-needed" ? "Clarification" : "Planning",
+    ...getStepState(0),
+  };
+
+  const buildStep = {
+    title: "2. Build",
+    subtitle: isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
+    ...getStepState(1),
+  };
+
+  const verifyStep = {
+    title: "3. Verify",
+    subtitle: isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : status === "debugging" || s.state.tone === "failed" ? "Tests failing" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
+    ...getStepState(2),
+  };
+
+  const reviewStep = {
+    title: "4. Review",
+    subtitle: isJobComplete ? "Merged" : status === "review-needed" ? "Ready to merge" : "PR & merge",
+    ...getStepState(3),
+  };
+
+  const phasesInfo = [planStep, buildStep, verifyStep, reviewStep];
+  const currentPhaseLabel = ["Planning & Spec", "Implementation", "Verification", "Review & Ship"][currentPhaseIndex];
+
+  // Actor label for hero badge
+  const actorLabel = s.state.group === "needs_you"
+    ? "Your action needed"
+    : s.state.group === "working"
+      ? (activeRun ? "AI Worker active" : "Queued")
+      : "Complete";
+
+  // Contextual consequence preview for hero
+  let nextExecutionPreview = "";
+  if (activeRun) {
+    nextExecutionPreview = `<span class="job-hero-next-label">Active worker:</span> Currently executing <strong>${esc(nextTask || "tasks")}</strong>`;
+  } else if (s.state.next?.action === "approve") {
+    nextExecutionPreview = `<span class="job-hero-next-label">Next execution:</span> Approving will queue builder on <strong>${esc(nextTask || "Task 1")}</strong>`;
+  } else if (s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
+    nextExecutionPreview = `<span class="job-hero-next-label">Next execution:</span> Builder will begin <strong>${esc(nextTask || "Task 1")}</strong>`;
+  } else if (s.state.next?.action === "resume") {
+    nextExecutionPreview = `<span class="job-hero-next-label">Next execution:</span> Resumes with <strong>${esc(nextTask || "next task")}</strong> (${tasksTotal - tasksDone} tasks left)`;
+  } else if (s.state.next?.action === "merge") {
+    nextExecutionPreview = `<span class="job-hero-next-label">Next step:</span> Merge branch into ${esc(job.base_branch || "main")} and complete job`;
+  } else if (s.state.next?.action === "debug") {
+    nextExecutionPreview = `<span class="job-hero-next-label">Next step:</span> Run AI fix attempt to investigate and resolve failing tests`;
+  }
+
   return {
     title: s.title,
-    sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.feature ? `<span class="sep">·</span><a href="#/features">${esc(featureName || s.feature)}</a>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
+    sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.feature ? `<span class="sep">·</span><span>${esc(featureName || s.feature)}</span>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter }),
     html: `
       ${runs.filter((r) => r.running).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
       ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
         <p class="question">${clamped(s.question, 320)}</p><div><button class="btn primary" ${act("answer", { job: s.id })}>Answer</button></div></div></section>` : ""}
 
+      <nav class="job-stepper" aria-label="Job lifecycle progress">
+        ${phasesInfo.map((p, idx) => `
+          <div class="job-step ${p.state}">
+            <div class="job-step-dot" aria-hidden="true">${p.icon}</div>
+            <div class="job-step-meta">
+              <span class="job-step-title">${esc(p.title)}</span>
+              <span class="job-step-sub">${esc(p.subtitle)}</span>
+            </div>
+          </div>
+          ${idx < phasesInfo.length - 1 ? `<div class="job-step-arrow" aria-hidden="true">→</div>` : ""}
+        `).join("")}
+      </nav>
+
       <section class="job-hero tone-${esc(s.state.tone || "")}">
         <div class="job-hero-main">
-          <span class="pill ${esc(s.state.tone || "")}">${esc(s.state.label || s.status)}</span>
+          <div class="job-hero-badge-row">
+            <span class="pill ${s.state.tone || "muted"}">${esc(actorLabel)}</span>
+            <span class="job-hero-phase-label">Phase: ${esc(currentPhaseLabel)}</span>
+          </div>
+          <h2 class="job-hero-title">${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${s.question && /architect/i.test(s.question) && /architect/i.test(s.state.reason || "") ? "The architect raised concerns (see the question above). Answer them, or accept its suggestions and re-plan." : clamped(s.state.reason || "", 320)}</p>
+          ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${scopeWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#scope-section">Scope check: ${scopeWarning} beyond the plan. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
@@ -1878,21 +2065,50 @@ pages.job = async ([id]) => {
         <div class="muted">It was already sent back once. Use Revise plan in the More menu and ask for working slices.</div></div></section>` : ""}
 
       <section class="card mb-16">
-        <div class="card-h"><h2>Progress</h2><span class="count">${tasksDone}/${tasksTotal}</span></div>
+        <div class="card-h"><h2>Progress</h2><span class="count">${tasksDone}/${tasksTotal} tasks</span></div>
         <div class="card-b stack">
           <div class="tasks-progress-wrap">
             <div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div>
             <span class="progress-text">${tasksPct}%</span>
           </div>
-          ${nextTask ? `<div>Next: <strong>${esc(nextTask)}</strong></div>` : ""}
-          <div class="muted">${esc(testsDisplay)}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}` : ""}</div>
+          <div class="row gap-12" style="justify-content: space-between; align-items: baseline; flex-wrap: wrap;">
+            <div>
+              ${activeRun
+                ? `<span class="pill working">Building now</span> <strong>${esc(nextTask || "Active task")}</strong>`
+                : nextTask
+                  ? `<span class="muted">Next:</span> <strong>${esc(nextTask)}</strong>`
+                  : tasksTotal > 0 && tasksDone === tasksTotal
+                    ? `<span class="pill done">All tasks built</span> <span class="muted">Ready for verification &amp; review</span>`
+                    : `<span class="muted">No tasks defined yet</span>`}
+            </div>
+            ${tasksTotal > tasksDone ? `<span class="muted" style="font-size: var(--text-xs);">${tasksTotal - tasksDone} task${tasksTotal - tasksDone === 1 ? "" : "s"} remaining</span>` : ""}
+          </div>
+          <div class="muted" style="font-size: var(--text-xs); border-top: 1px solid var(--border); padding-top: var(--space-2);">
+            ${esc(testsDisplay)}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}` : ""}
+          </div>
         </div>
+      </section>
+
+      <!-- Brief Section: Prominently displayed near the top, editable, with file location -->
+      <section class="card mb-16" id="brief-section">
+        <div class="card-h">
+          <div class="row gap-8 align-center" style="flex-wrap: wrap;">
+            <h2>Brief</h2>
+            <span class="mono muted brief-path-chip" title="File location: click to select">${esc(briefDoc.path || `.orchestrator/output/${s.id}/brief.md`)}</span>
+          </div>
+          <div class="row gap-8 align-center">
+            <a class="btn small ghost" href="#/file?path=${encodeURIComponent(briefDoc.runtime_path || `output/${s.id}/brief.md`)}" title="View raw brief file">Raw file ↗</a>
+            <button class="btn small" data-brief-edit ${activeRun ? 'disabled title="Pause worker to edit brief"' : ""}>Edit brief</button>
+          </div>
+        </div>
+        <pre class="doc brief-content">${esc(briefDoc.text || "No brief content.")}</pre>
       </section>
 
       <section class="card mb-16"><div class="card-h"><h2>Test cases</h2>${testCases.cases.length ? `<span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</div>
         ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad" style="margin-top:10px">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}</div>
-        <div class="list">${testCaseRowsHtml(testCases.cases)}</div>`
-          : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}</section>
+        <div class="list">${canEditPlan ? testCaseRowsHtml(testCases.cases, { editable: true, actionPrefix: "job-tc" }) : testCaseRowsHtml(testCases.cases)}</div>`
+          : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}
+        ${canEditPlan ? `<div class="card-b" style="border-top:1px solid var(--border)"><button class="btn small" data-job-tc-op="add">Add test case</button></div>` : ""}</section>
 
       ${assumptions.length ? `<section class="card mb-16"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
@@ -1908,15 +2124,28 @@ pages.job = async ([id]) => {
         ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
 
-      ${scope ? `<section class="card mb-16" id="scope-section"><div class="card-h"><h2>Scope check</h2><span class="count">${scope.flagged ? `${scope.flagged} beyond the plan` : "Within the plan"}</span></div>
+      ${scope ? `<section class="card mb-16" id="scope-section">
+        <div class="card-h">
+          <h2>Scope check</h2>
+          <span class="count">${scope.flagged ? `${scope.flagged} beyond the plan` : (actionableFindings.length ? `${actionableFindings.length} to review` : "Within the plan")}</span>
+        </div>
         <div class="card-b stack">
-          <div class="muted">${scope.files} file${scope.files === 1 ? "" : "s"} changed, +${scope.added} lines${scope.accepted ? ` · ${scope.accepted} accepted as in scope` : ""}.${scope.clear ? " Everything changed is something the plan called for." : ""}</div>
-          ${scope.findings.map((f) => `<div class="scope-finding"><div class="row gap-10"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
+          <div class="muted">${scope.files} file${scope.files === 1 ? "" : "s"} changed, +${scope.added} lines${scope.accepted ? ` · ${scope.accepted} accepted as in scope` : ""}.${scope.clear ? " Everything changed is something the plan called for." : (hasNoPlanFiles && !actionableFindings.length ? " Open scope · diff size monitored." : "")}</div>
+          ${hasNoPlanFiles && !actionableFindings.length ? `
+            <div class="scope-notice-clean">
+              <div class="row gap-8 align-center">
+                <svg class="icon muted"><use href="#i-activity"/></svg>
+                <span>No files were pre-specified in the plan. All changes stay within the size budget with no dependency or build setting changes.</span>
+              </div>
+              ${allFiles.length ? `<button type="button" class="btn small" data-scope-adopt='${esc(JSON.stringify(allFiles))}'>Adopt current files as plan scope</button>` : ""}
+            </div>
+          ` : ""}
+          ${actionableFindings.map((f) => `<div class="scope-finding"><div class="row gap-10"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
             <div class="muted">${esc(f.detail)}</div>
             ${f.files.length ? `<ul class="scope-files mono">${f.files.slice(0, 12).map((p) => `<li>${esc(p)}</li>`).join("")}${f.files.length > 12 ? `<li class="muted">+${f.files.length - 12} more</li>` : ""}</ul>
               <div><button class="btn small" data-scope-accept='${esc(JSON.stringify(f.files))}'>Accept as in scope</button></div>` : ""}</div>`).join("")}
-          ${scope.findings.some((f) => f.files.length) || scope.accepted ? `<div class="row gap-10">
-            ${scope.findings.some((f) => f.files.length) ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(scope.trim.summary)}&spec=${encodeURIComponent(scope.trim.spec)}">Create a job to trim it</a>` : ""}
+          ${actionableFindings.some((f) => f.files.length) || scope.accepted ? `<div class="row gap-10">
+            ${actionableFindings.some((f) => f.files.length) ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(scope.trim.summary)}&spec=${encodeURIComponent(scope.trim.spec)}">Create a job to trim it</a>` : ""}
             ${scope.accepted ? `<button class="btn small ghost" data-scope-reset>Reset accepted</button>` : ""}</div>` : ""}
         </div></section>` : ""}
 
@@ -1965,10 +2194,12 @@ pages.job = async ([id]) => {
         </div>
       </section>
 
-      <!-- Docs Section (Brief / Summary / Investigations) -->
-      <div id="docs-section">
-        ${docs.map((d, i) => `<section class="card mb-16"><details class="raw" ${i === 0 ? "open" : ""}><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
-      </div>
+      <!-- Additional Docs (Builder summary / Investigations) -->
+      ${otherDocs.length ? `
+        <div id="docs-section">
+          ${otherDocs.map((d) => `<section class="card mb-16"><details class="raw" open><summary><strong>${esc(d.title)}</strong></summary><pre class="doc">${esc(d.text)}</pre></details></section>`).join("")}
+        </div>
+      ` : ""}
 
       <!-- Linked from connected apps -->
       <section class="card mb-16">
@@ -2030,6 +2261,31 @@ pages.job = async ([id]) => {
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
     `,
     after: () => {
+      view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
+        const bodyHtml = `
+          <div class="stack gap-12">
+            <div class="muted" style="font-size: var(--text-xs);">
+              File location: <span class="mono">${esc(briefDoc.path || `.orchestrator/output/${id}/brief.md`)}</span>
+            </div>
+            <label class="field">
+              <span>Brief Markdown</span>
+              <textarea name="text" rows="18" class="mono" style="font-size: var(--text-xs); line-height: 1.5; resize: vertical;" required>${esc(briefDoc.text || "")}</textarea>
+            </label>
+          </div>
+        `;
+        const values = await formDialog("Edit Brief", bodyHtml, "Save brief");
+        if (!values || !values.text || !values.text.trim()) return;
+        try {
+          await api(`jobs/${encodeURIComponent(id)}/brief`, {
+            method: "POST",
+            body: { text: values.text },
+          });
+          toast("Brief updated");
+          route();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      }));
       view.querySelectorAll("[data-task-op]").forEach((btn) => btn.addEventListener("click", async () => {
         const op = btn.dataset.taskOp, i = btn.dataset.i === undefined ? null : Number(btn.dataset.i);
         const call = async (body, ok) => { try { await api(`jobs/${encodeURIComponent(id)}/plan-tasks`, { method: "POST", body }); if (ok) toast(ok); route(); } catch (e) { toast(e.message, true); } };
@@ -2041,6 +2297,35 @@ pages.job = async ([id]) => {
         else if (op === "edit") { const v = await formDialog("Edit task", form(tasks[i]), "Save"); if (v) call({ op: "edit", index: i, ...v }, "Task saved"); }
         else if (op === "remove") { call({ op: "remove", index: i }, "Task removed"); }
         else call({ op: "move", index: i, direction: op });
+      }));
+      view.querySelectorAll("[data-job-tc-op]").forEach((btn) => btn.addEventListener("click", async () => {
+        const op = btn.dataset.jobTcOp;
+        const caseId = btn.dataset.id;
+        const call = async (body, ok) => {
+          try {
+            await api(`jobs/${encodeURIComponent(id)}/plan-test-cases`, { method: "POST", body });
+            if (ok) toast(ok);
+            route();
+          } catch (e) {
+            toast(e.message, true);
+          }
+        };
+        const taskOptions = tasks.map((t, idx) => {
+          const num = idx + 1;
+          const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${num}`);
+          return { value: num, label: `Task ${num}: ${title}` };
+        });
+        if (op === "add") {
+          const v = await formDialog("Add test case", testCaseForm({}, taskOptions), "Add test case");
+          if (v) call({ op: "add", ...v }, "Test case added");
+        } else if (op === "edit") {
+          const rawCase = (job.plan?.test_cases || []).find((c) => String(c.id) === String(caseId)) || testCases.cases.find((c) => String(c.id) === String(caseId)) || {};
+          const v = await formDialog(`Edit test case (${caseId})`, testCaseForm(rawCase, taskOptions), "Save changes");
+          if (v) call({ op: "edit", id: caseId, ...v }, "Test case saved");
+        } else if (op === "remove") {
+          const ok = await formDialog(`Delete test case ${caseId}?`, `<p>Are you sure you want to remove <strong>${esc(caseId)}</strong> from this job's plan?</p>`, "Delete", { danger: true });
+          if (ok) call({ op: "remove", id: caseId }, "Test case removed");
+        }
       }));
       view.querySelectorAll("[data-undo-task]").forEach((btn) => btn.addEventListener("click", async () => {
         const i = Number(btn.dataset.undoTask);
@@ -2062,6 +2347,18 @@ pages.job = async ([id]) => {
       }));
       view.querySelectorAll("[data-scope-accept]").forEach((btn) => btn.addEventListener("click", async () => {
         try { await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "accept", paths: JSON.parse(btn.dataset.scopeAccept) } }); toast("Accepted as in scope"); route(); } catch (e) { toast(e.message, true); }
+      }));
+      view.querySelectorAll("[data-scope-adopt]").forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          btn.disabled = true;
+          const paths = JSON.parse(btn.dataset.scopeAdopt || "[]");
+          await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "adopt", paths } });
+          toast(`Adopted ${paths.length} file${paths.length === 1 ? "" : "s"} as plan scope`);
+          route();
+        } catch (e) {
+          toast(e.message, true);
+          btn.disabled = false;
+        }
       }));
       $("[data-scope-reset]")?.addEventListener("click", async () => {
         try { await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "reset" } }); route(); } catch (e) { toast(e.message, true); }
@@ -2321,167 +2618,8 @@ function combineLine(f) {
   return `<div class="row gap-10">${say}${stale}<button type="button" class="btn small" ${act("verify_feature", { feature: f.id })}>${r ? "Check again" : "Check together"}</button></div>`;
 }
 
-pages.features = async (_, query) => {
-  const view_ = query.get("view") === "map" ? "map" : "list";
-  const [{ features, overlaps, archived_jobs: archived, plan }, { jobs }] = await Promise.all([api("features"), api("jobs")]);
-  const building = plan && !plan.stopped && !plan.finished;
-  const byId = new Map([...archived, ...jobs].map((j) => [j.id, j]));
-  const names = new Map(features.map((f) => [f.id, f.name]));
-  const loose = jobs.filter((j) => !j.feature && j.state.group !== "done");
-  const overlapping = new Set(overlaps.flatMap((o) => o.features));
-  const toggle = `<div class="filters"><a class="btn small ${view_ === "list" ? "on" : ""}" href="#/features">List</a><a class="btn small ${view_ === "map" ? "on" : ""}" href="#/features?view=map">Map</a></div>`;
-  const mapHtml = () => {
-    const depth = Math.max(...features.map((f) => f.layer));
-    const cols = Array.from({ length: depth + 1 }, (_, layer) => features.filter((f) => f.layer === layer));
-    return `<div class="fmap" id="fmap"><svg class="fmap-links" aria-hidden="true"></svg>
-      ${cols.map((col, layer) => `<div class="fmap-col"><div class="fmap-col-h">${layer === 0 ? "Foundations" : `Builds on layer ${layer}`}</div>
-        ${col.map((f) => {
-          const [label, tone] = FEATURE_STATUS[f.status] || FEATURE_STATUS.planned;
-          return `<a class="fmap-node tone-${tone}" href="#/features?focus=${encodeURIComponent(f.id)}" data-id="${esc(f.id)}" data-deps="${esc(f.depends_on.join(","))}">
-            <strong>${overlapping.has(f.id) ? "⚠ " : ""}${esc(f.name)}</strong>
-            <span class="pill ${tone}">${esc(label)}</span>
-            <span class="muted">${f.jobs_done}/${f.jobs_total} jobs${f.jobs_need_you ? ` · ${f.jobs_need_you} need you` : ""}</span>
-            ${f.depends_on.length ? `<span class="muted">Builds on ${f.depends_on.map((d) => esc(names.get(d) || d)).join(", ")}</span>` : ""}
-            ${f.waiting_on.length ? `<span class="fmap-wait">Waiting on ${f.waiting_on.map((d) => esc(names.get(d) || d)).join(", ")}</span>` : ""}
-          </a>`;
-        }).join("")}</div>`).join("")}</div>
-      ${loose.length ? `<div class="muted mt-12">${loose.length} open job${loose.length === 1 ? "" : "s"} not in any feature.</div>` : ""}`;
-  };
-  const card = (f) => {
-    const [label, tone] = FEATURE_STATUS[f.status] || FEATURE_STATUS.planned;
-    const pct = f.jobs_total ? Math.round((f.jobs_done / f.jobs_total) * 100) : 0;
-    const complete = f.status === "complete";
-    return `<section class="card mb-16" data-feature="${esc(f.id)}">
-      <div class="card-h"><div class="row gap-10"><h2>${esc(f.name)}</h2><span class="pill ${tone}">${esc(label)}</span></div>
-        ${moreMenu([
-          ["Documentation", `data-href="#/docs/feature/${encodeURIComponent(f.id)}"`, "This feature's page in Docs"],
-          [complete ? "Reopen" : "Mark complete", `data-feature-action="${complete ? "reopen" : "complete"}" data-id="${esc(f.id)}"`, complete ? "More work is coming" : "Done for now. New work reopens it"],
-          ["Edit", `data-feature-action="edit" data-id="${esc(f.id)}"`],
-          ["Delete", `data-feature-action="delete" data-id="${esc(f.id)}"`, "Its jobs stay, unassigned", "danger"],
-        ])}</div>
-      <div class="card-b stack">
-        ${f.summary ? `<div>${esc(f.summary)}</div>` : ""}
-        ${FeaturePlan.renderStories(f.stories)}
-        ${f.reopened ? `<div class="muted">Reopened: new work was added after it was marked complete.</div>` : ""}
-        ${combineLine(f)}
-        ${f.kpis.length ? `<div><a href="#/measure">KPIs</a>: ${["on-track", "behind", "no-data", "no-target"].map((k) => [k, f.kpis.filter((x) => x.status.state === k).length]).filter(([, n]) => n).map(([k, n]) => `${n} ${KPI_STATE[k][0].toLowerCase()}`).join(" · ")}</div>` : ""}
-        ${f.paths.length ? `<div class="muted mono">${f.paths.map(esc).join(" · ")}</div>` : ""}
-        <div class="tasks-progress-wrap"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${pct}%"></div></div>
-          <span class="progress-text">${f.jobs_done}/${f.jobs_total} jobs</span></div>
-        ${f.jobs_need_you ? `<div><span class="pill attention">${f.jobs_need_you} need${f.jobs_need_you === 1 ? "s" : ""} you</span></div>` : ""}
-        <div class="list">${f.job_ids.map((id) => byId.get(id)).filter(Boolean).map((j) => jobItem(j)).join("") || `<div class="empty">No jobs yet. <a href="#/new?feature=${encodeURIComponent(f.id)}">Start one</a>, or move an existing job here from its menu.</div>`}</div>
-      </div></section>`;
-  };
-  // Shown above both views: the plan being built, a drafted proposal, and any overlaps.
-  const top = `${FeaturePlan.renderRun(plan)}<div id="feature-proposal-slot"></div>
-      ${overlaps.map((o) => `<div class="banner attention"><p><strong>${esc(o.names.join(" and "))} overlap.</strong> ${esc(o.reasons.join("; "))}.</p></div>`).join("")}`;
-  return {
-    title: "Features",
-    sub: "What the jobs add up to. Each feature owns its own slice of the code.",
-    actions: `<button class="btn" id="draft-features" title="AI proposes features, stories and an order from your product requirements">Draft from product requirements</button>${features.length && !building ? `<button class="btn" id="build-plan" title="Build every chosen feature in dependency order, in parallel where possible">Build the plan</button>` : ""}<button class="btn primary" id="new-feature">New feature</button>`,
-    html: view_ === "map" && features.length ? `
-      ${toggle}
-      ${top}
-      ${mapHtml()}` : `
-      ${features.length ? toggle : ""}
-      ${top}
-      ${features.map(card).join("") || `<div class="empty">No features yet. A feature is something a user would name, like “Lobby seats”. <strong>Draft from product requirements</strong> proposes them for you, or create one yourself.</div>`}
-      ${loose.length ? `<section class="card"><div class="card-h"><h2>Not in a feature</h2><span class="count">${loose.length}</span></div>
-        <div class="list">${loose.map((j) => jobItem(j)).join("")}</div></section>` : ""}`,
-    after: () => {
-      const map = $("#fmap");
-      if (map) {
-        const redraw = () => drawFeatureLinks(map);
-        redraw();
-        window.addEventListener("resize", redraw);
-        cleanup.push(() => window.removeEventListener("resize", redraw));
-      }
-      const focus = query.get("focus");
-      if (focus) {
-        const el = view.querySelector(`[data-feature="${CSS.escape(focus)}"]`);
-        el?.scrollIntoView({ block: "center" });
-        el?.classList.add("highlight-flash");
-      }
-      if (building) {  // keep the plan's progress current while it builds: redraw the card, reload the page only on a change
-        const states = (p) => JSON.stringify((p?.rows || []).map((r) => [r.feature, r.state, r.job]));
-        let shown = states(plan);
-        const timer = setInterval(async () => {
-          if (document.querySelector("dialog[open]")) return;
-          let latest;
-          try { latest = (await api("plan-run")).plan; } catch { return; }
-          if (states(latest) !== shown || !latest || latest.finished) { route(); return; }
-          const card = $("#plan-run");
-          if (card) card.outerHTML = FeaturePlan.renderRun(latest);
-          shown = states(latest);
-        }, 10000);
-        cleanup.push(() => clearInterval(timer));
-      }
-      $("#build-plan")?.addEventListener("click", async () => {
-        const v = await formDialog("Build the plan", FeaturePlan.renderStartForm(features), "Start building");
-        if (!v) return;
-        const chosen = FeaturePlan.chosenFeatures(v);
-        if (!chosen.length) { toast("Tick at least one feature.", "warning"); return; }
-        try { await api("plan-run", { method: "POST", body: { features: chosen, auto_approve: v.auto_approve === "on" } }); toast("Building the plan"); route(); }
-        catch (e) { toast(e.message, true); }
-      });
-      const onPlanAction = async (event) => {  // delegated: the progress card is redrawn in place while it builds
-        const btn = event.target.closest("[data-plan-action]");
-        if (!btn) return;
-        const action = btn.dataset.planAction;
-        try {
-          if (action === "stop") await api("plan-run/stop", { method: "POST", body: {} });
-          else await api("plan-run/pause", { method: "POST", body: { paused: action === "pause" } });
-          route();
-        } catch (e) { toast(e.message, true); }
-      };
-      view.addEventListener("click", onPlanAction);
-      cleanup.push(() => view.removeEventListener("click", onPlanAction));
-      $("#draft-features").addEventListener("click", async (event) => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        const slot = $("#feature-proposal-slot");
-        slot.innerHTML = `<div class="banner"><p>Reading your product requirements and drafting features. This takes a minute or two.</p></div>`;
-        try {
-          const proposal = await waitForTask(await api("features/propose", { method: "POST", body: {} }));
-          slot.innerHTML = FeaturePlan.renderProposal(proposal);
-          slot.scrollIntoView({ block: "start" });
-          $("#feature-proposal-discard").addEventListener("click", () => { slot.innerHTML = ""; });
-          $("#feature-proposal-form").addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const chosen = new FormData(e.target).getAll("chosen");
-            if (!chosen.length) { toast("Tick at least one feature, or discard the draft.", "warning"); return; }
-            try {
-              await api("features/accept", { method: "POST", body: { features: proposal.features, chosen } });
-              toast(`Added ${chosen.length} feature${chosen.length === 1 ? "" : "s"}`);
-              route();
-            } catch (err) { toast(err.message, true); }
-          });
-        } catch (err) { slot.innerHTML = ""; toast(err.message, true); }
-        finally { button.disabled = false; }
-      });
-      $("#new-feature").addEventListener("click", async () => {
-        const v = await formDialog("New feature", featureFormBody({}, features), "Create");
-        if (!v) return;
-        try { await api("features", { method: "POST", body: featureValues(v) }); toast("Feature created"); route(); } catch (e) { toast(e.message, true); }
-      });
-      view.querySelectorAll("[data-feature-action]").forEach((btn) => btn.addEventListener("click", async () => {
-        const id = btn.dataset.id, f = features.find((x) => x.id === id);
-        try {
-          if (btn.dataset.featureAction === "edit") {
-            const v = await formDialog("Edit feature", featureFormBody(f, features.filter((o) => o.id !== id)), "Save");
-            if (v) await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: featureValues(v) });
-            else return;
-          } else if (btn.dataset.featureAction === "delete") {
-            const { undo } = await api(`features/${encodeURIComponent(id)}`, { method: "DELETE", body: {} });
-            toast(`Deleted “${f.name}”`, false, { label: "Undo", run: async () => { await api("features/restore", { method: "POST", body: { feature: undo.feature, jobs: undo.jobs } }); route(); } });
-          } else {
-            await api(`features/${encodeURIComponent(id)}`, { method: "POST", body: { status: btn.dataset.featureAction === "complete" ? "complete" : "in-progress" } });
-          }
-          route();
-        } catch (e) { toast(e.message, true); }
-      }));
-    },
-  };
+pages.features = async () => {
+  location.hash = "#/";
 };
 
 // Long model-written text (an architect's concerns, a failure reason) is shown short with "Show more".
@@ -2614,7 +2752,7 @@ pages.measure = async () => {
         ${connected ? `<button class="btn small" id="analytics-test">Send test event</button><button class="btn small danger" id="analytics-clear">Disconnect</button>` : ""}</div></div>
         <div class="card-b stack"><strong>${connected ? `${esc(data.provider_name)} (${esc(data.region.toUpperCase())})` : data.provider ? `${esc(data.provider_name)}: key missing` : "Not connected"}</strong>
           <span class="muted">${connected ? "New work for a feature is told to send its KPI events here. The key is stored, never shown." : "Optional. Mixpanel, Amplitude or PostHog. Connect one so new work knows where events go, and verify it with a test event."}</span></div></section>
-      ${features.map(card).join("") || `<div class="empty">KPIs belong to features. <a href="#/features">Create a feature</a> first.</div>`}`,
+      ${features.map(card).join("") || `<div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div>`}`,
     after: () => {
       const reload = () => route();
       const call = async (path, body, ok) => { try { await api(path, { method: "POST", body }); if (ok) toast(ok); reload(); } catch (e) { toast(e.message, true); } };
@@ -2711,7 +2849,7 @@ pages.help = async () => ({
         <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
-      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads. Edit it, import a PRD, see its history."], ["Features", "#/features", "What the jobs add up to: list, map, overlap warnings."],
+      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads. Edit it, import a PRD, see its history."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
          ["Check-up", "#/checkup", "What's in place and what's missing for this project."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
@@ -2754,7 +2892,7 @@ pages.docs = async (args, query) => {
     try { doc = await api(path); } catch (e) {
       return { title: "Docs", html: `<div class="notice">${esc(e.message)} <a href="#/docs">Back to all docs</a></div>` };
     }
-    const open = kind === "job" ? `<a class="btn" href="#/jobs/${encodeURIComponent(id)}">Open the job</a>` : kind === "feature" ? `<a class="btn" href="#/features">Open in Features</a>` : "";
+    const open = kind === "job" ? `<a class="btn" href="#/jobs/${encodeURIComponent(id)}">Open the job</a>` : "";
     return {
       title: doc.title,
       sub: `<a href="#/docs">← All docs</a>${kind === "file" ? ` · <span class="mono">${esc(doc.path)}</span>` : ""}`,
@@ -2783,7 +2921,7 @@ pages.docs = async (args, query) => {
         <div class="card-b">${pr.exists && pr.pitch ? `<p class="product-pitch">${esc(prdSnippet(pr.pitch, 220))}</p><div class="muted">${pr.written} of ${pr.total} sections written · <span class="mono">${esc(pr.path)}</span></div>`
           : `<div class="muted">Nothing says what this product is yet. <a href="#/product">Write the pitch</a>, import a PRD, or draft one from the project.</div>`}</div></section>
       <section class="card mb-16"><div class="card-h"><h2>Features</h2><span class="count">${d.features.length}</span></div>
-        <div class="list" id="docs-features">${d.features.length ? d.features.map(featureRow).join("") : `<div class="empty">No features yet. <a href="#/features">Group your jobs into features</a> and each gets a page here.</div>`}</div></section>
+        <div class="list" id="docs-features">${d.features.length ? d.features.map(featureRow).join("") : `<div class="empty">No features yet. Group your jobs into features in <a href="#/product">product requirements</a> and each gets a page here.</div>`}</div></section>
       <section class="card mb-16"><div class="card-h"><h2>Jobs</h2><span class="count">${d.jobs.length}</span>
         <div class="filters"><button type="button" class="btn small on" data-docs-group="">All</button><button type="button" class="btn small" data-docs-group="done">Done</button><button type="button" class="btn small" data-docs-group="open">Not done</button></div></div>
         <div class="list" id="docs-jobs">${d.jobs.length ? d.jobs.map(jobRow).join("") : `<div class="empty">No jobs yet.</div>`}</div>
@@ -3132,20 +3270,61 @@ function testCaseSummaryHtml(summary) {
     <div class="muted">${esc(kinds)}${summary.manual ? ` (${summary.manual} checked by hand)` : ""}</div></div>`;
 }
 
-function testCaseRowsHtml(cases) {
-  const sorted = [...cases].sort((a, b) => TC_STATUS[a.status][2] - TC_STATUS[b.status][2] || a.id.localeCompare(b.id));
+function testCaseForm(c = {}, taskOptions = null) {
+  return `
+    <label class="field"><span>Title</span><input type="text" name="title" required maxlength="200" value="${esc(c.title || "")}" placeholder="e.g. Reject expired auth tokens"></label>
+    <div class="row gap-12">
+      <label class="field" style="flex:1"><span>Area</span><input type="text" name="area" maxlength="100" value="${esc(c.area || "General")}" placeholder="e.g. Auth, UI, Engine"></label>
+      <label class="field" style="flex:1"><span>Type</span>
+        <select name="type">
+          ${["unit", "integration", "ui", "manual"].map((t) => `<option value="${t}" ${(c.type || "unit") === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field" style="flex:1"><span>Priority</span>
+        <select name="priority">
+          ${["high", "medium", "low"].map((p) => `<option value="${p}" ${(c.priority || "medium") === p ? "selected" : ""}>${esc(p)}</option>`).join("")}
+        </select>
+      </label>
+    </div>
+    ${taskOptions ? `
+      <label class="field"><span>Associated task <span class="muted">(which plan step implements this)</span></span>
+        <select name="task">
+          <option value="">None (all tasks / project-wide)</option>
+          ${taskOptions.map((opt) => `<option value="${opt.value}" ${String(c.task ?? "") === String(opt.value) ? "selected" : ""}>${esc(opt.label)}</option>`).join("")}
+        </select>
+      </label>` : ""}
+    <label class="field"><span>Expected result</span><textarea name="expected" rows="2" required maxlength="1000" placeholder="e.g. Return 401 with TokenExpired error code">${esc(c.expected || "")}</textarea></label>
+    <label class="field"><span>Preconditions <span class="muted">(Given - one per line)</span></span><textarea name="preconditions" rows="2">${esc((c.preconditions || []).join("\n"))}</textarea></label>
+    <label class="field"><span>Steps <span class="muted">(When - one per line)</span></span><textarea name="steps" rows="3">${esc((c.steps || []).join("\n"))}</textarea></label>
+    <label class="field"><span>What it covers <span class="muted">(requirements or criteria - one per line)</span></span><textarea name="covers" rows="2">${esc((c.covers || []).join("\n"))}</textarea></label>
+    <label class="field"><span>Assigned test names or paths <span class="muted">(for automated tests - one per line)</span></span><textarea name="tests" rows="2" placeholder="e.g. testExpiredToken">${esc((c.tests || []).join("\n"))}</textarea></label>
+  `;
+}
+
+function testCaseRowsHtml(cases, { editable = false, actionPrefix = "tc" } = {}) {
+  const sorted = [...cases].sort((a, b) => {
+    const sa = TC_STATUS[a.status]?.[2] ?? 99;
+    const sb = TC_STATUS[b.status]?.[2] ?? 99;
+    return sa - sb || a.id.localeCompare(b.id);
+  });
   return sorted.map((c) => {
-    const [label, tone] = TC_STATUS[c.status];
-    const where = c.found_in.length ? c.found_in : c.assigned;
-    return `<details class="item tc-row"><summary><span class="pill ${tone}">${esc(label)}</span>
-      <span class="mono tc-id">${esc(c.id)}</span><span class="tc-title">${esc(c.title)}</span><span class="muted tc-type">${esc(c.type)}${c.due ? "" : " · later task"}</span></summary>
+    const [label, tone] = TC_STATUS[c.status] || [c.status || "Unknown", "muted"];
+    const where = (c.found_in && c.found_in.length) ? c.found_in : (c.assigned || []);
+    const actions = editable ? `
+      <div class="tc-actions">
+        <button class="btn small ghost" data-${actionPrefix}-op="edit" data-id="${esc(c.id)}" aria-label="Edit test case ${esc(c.id)}">Edit</button>
+        <button class="btn small ghost danger" data-${actionPrefix}-op="remove" data-id="${esc(c.id)}" aria-label="Delete test case ${esc(c.id)}">Delete</button>
+      </div>` : "";
+    return `<details class="item tc-row" data-id="${esc(c.id)}"><summary><span class="pill ${tone}">${esc(label)}</span>
+      <span class="mono tc-id">${esc(c.id)}</span><span class="tc-title">${esc(c.title)}</span><span class="muted tc-type">${esc(c.type || "unit")}${c.due ? "" : " · later task"}</span></summary>
       <div class="tc-body stack">
-        ${c.preconditions.length ? `<div><strong>Given</strong><ul>${c.preconditions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
-        ${c.steps.length ? `<div><strong>Steps</strong><ol>${c.steps.map((t) => `<li>${esc(t)}</li>`).join("")}</ol></div>` : ""}
-        <div><strong>Expected</strong> ${esc(c.expected)}</div>
-        ${c.covers.length ? `<div class="muted">Covers: ${c.covers.map(esc).join("; ")}</div>` : ""}
+        ${c.preconditions?.length ? `<div><strong>Given</strong><ul>${c.preconditions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
+        ${c.steps?.length ? `<div><strong>Steps</strong><ol>${c.steps.map((t) => `<li>${esc(t)}</li>`).join("")}</ol></div>` : ""}
+        <div><strong>Expected</strong> ${esc(c.expected || "")}</div>
+        ${c.covers?.length ? `<div class="muted">Covers: ${c.covers.map(esc).join("; ")}</div>` : ""}
         ${where.length ? `<div class="muted mono">${c.status === "covered" ? "Found in" : "Assigned"}: ${where.map(esc).join(", ")}</div>`
           : c.status === "manual" ? "" : `<div class="muted">No test is assigned yet. The builder writes it, and it's checked after every build.</div>`}
+        ${actions}
       </div></details>`;
   }).join("");
 }
@@ -3170,8 +3349,11 @@ pages.tests = async (_, query) => {
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
       ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>
-        <div class="filters">${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
-          `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div></div>
+        <div class="row gap-10" style="align-items:center;">
+          <div class="filters">${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
+            `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div>
+          <a class="btn small ghost" href="#/test-cases">Manage cases ↗</a>
+        </div></div>
         <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
         ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
       ${data.frameworks && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `
@@ -3207,6 +3389,189 @@ pages.tests = async (_, query) => {
       e.preventDefault();
       location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
     }),
+  };
+};
+
+pages["test-cases"] = async (_, query) => {
+  view.innerHTML = `<div class="empty">Loading test cases…</div>`;
+  const caseView = await api("test-cases").catch(() => ({ cases: [], summary: { total: 0, covered: 0, automated: 0, manual: 0, by_type: {}, covered_pct: null } }));
+  const caseFilter = TC_STATUS[query.get("status")] ? query.get("status") : "all";
+  const typeFilter = query.get("type") || "all";
+  const areaFilter = query.get("area") || "all";
+  const q = (query.get("q") || "").toLowerCase().trim();
+
+  const allAreas = Array.from(new Set(caseView.cases.map((c) => c.area).filter(Boolean))).sort();
+  const allTypes = ["unit", "integration", "ui", "manual"];
+
+  const filtered = caseView.cases.filter((c) => {
+    if (caseFilter !== "all" && c.status !== caseFilter) return false;
+    if (typeFilter !== "all" && c.type !== typeFilter) return false;
+    if (areaFilter !== "all" && c.area !== areaFilter) return false;
+    if (q) {
+      const match = (c.id && c.id.toLowerCase().includes(q))
+        || (c.title && c.title.toLowerCase().includes(q))
+        || (c.expected && c.expected.toLowerCase().includes(q))
+        || (c.area && c.area.toLowerCase().includes(q))
+        || (c.covers && c.covers.some((cv) => cv.toLowerCase().includes(q)));
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  const byArea = new Map();
+  for (const c of filtered) {
+    const a = c.area || "General";
+    byArea.set(a, [...(byArea.get(a) || []), c]);
+  }
+
+  const queryUrl = (overrides) => {
+    const params = new URLSearchParams(query);
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v === null || v === undefined || v === "all" || v === "") {
+        params.delete(k);
+      } else {
+        params.set(k, v);
+      }
+    }
+    const qs = params.toString();
+    return `#/test-cases${qs ? `?${qs}` : ""}`;
+  };
+
+  const totalCases = caseView.cases.length;
+  const covPct = caseView.summary?.covered_pct != null ? `${caseView.summary.covered_pct}%` : "0%";
+  const sub = `${totalCases} case${totalCases === 1 ? "" : "s"} in library · ${caseView.summary?.covered || 0}/${caseView.summary?.automated || 0} automated covered (${covPct})`;
+
+  return {
+    title: "Test cases",
+    sub,
+    actions: `<button class="btn primary" id="btn-create-tc">New test case</button><a class="btn" href="#/tests">Run tests</a>`,
+    html: `
+      <section class="card mb-16">
+        <div class="card-h">
+          <h2>Summary</h2>
+          <span class="count">${caseView.summary?.covered || 0}/${caseView.summary?.automated || 0} covered</span>
+        </div>
+        <div class="card-b">
+          ${testCaseSummaryHtml(caseView.summary || {})}
+        </div>
+      </section>
+
+      <section class="card mb-16">
+        <div class="card-h">
+          <h2>Filter &amp; Search</h2>
+        </div>
+        <div class="card-b stack">
+          <form id="tc-search-form" class="row gap-10">
+            <input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Search test cases by ID, title, expected, covers…" aria-label="Search test cases" style="flex:1">
+            <button class="btn small" type="submit">Search</button>
+            ${q ? `<a class="btn small ghost" href="${queryUrl({ q: "" })}">Clear search</a>` : ""}
+          </form>
+          <div class="row gap-10" style="flex-wrap:wrap; align-items:center;">
+            <div class="filters">
+              ${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
+                `<a class="btn small ${k === caseFilter ? "on" : ""}" href="${queryUrl({ status: k })}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary?.[k] ?? 0})`}</a>`).join("")}
+            </div>
+            ${allAreas.length > 1 ? `
+              <div class="row gap-8" style="align-items:center;">
+                <span class="muted" style="font-size:12px;">Area:</span>
+                <select id="tc-area-select" class="btn small">
+                  <option value="all" ${areaFilter === "all" ? "selected" : ""}>All areas</option>
+                  ${allAreas.map((a) => `<option value="${esc(a)}" ${areaFilter === a ? "selected" : ""}>${esc(a)}</option>`).join("")}
+                </select>
+              </div>` : ""}
+            <div class="row gap-8" style="align-items:center;">
+              <span class="muted" style="font-size:12px;">Type:</span>
+              <select id="tc-type-select" class="btn small">
+                <option value="all" ${typeFilter === "all" ? "selected" : ""}>All types</option>
+                ${allTypes.map((t) => `<option value="${t}" ${typeFilter === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      ${filtered.length ? `
+        <section class="card mb-16">
+          <div class="card-h">
+            <h2>Test cases</h2>
+            <span class="count">${filtered.length} of ${caseView.cases.length}</span>
+          </div>
+          ${[...byArea].map(([area, rows]) => `
+            <div class="tc-area">
+              <div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div>
+              <div class="list">${testCaseRowsHtml(rows, { editable: true, actionPrefix: "tc" })}</div>
+            </div>`).join("")}
+        </section>
+      ` : `
+        <section class="card mb-16">
+          <div class="card-b">
+            <div class="empty">
+              ${caseView.cases.length ? "No test cases match the current filter." : "No test cases in library yet."}
+              <div style="margin-top:12px;">
+                <button class="btn small primary" id="btn-create-tc-empty">Create your first test case</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      `}
+    `,
+    after: () => {
+      const handleCreate = async () => {
+        const v = await formDialog("Create test case", testCaseForm(), "Create test case");
+        if (!v) return;
+        try {
+          await api("test-cases", { method: "POST", body: { op: "create", ...v } });
+          toast("Test case created");
+          route();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      };
+      $("#btn-create-tc")?.addEventListener("click", handleCreate);
+      $("#btn-create-tc-empty")?.addEventListener("click", handleCreate);
+
+      $("#tc-search-form")?.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const text = new FormData(e.target).get("q");
+        location.hash = queryUrl({ q: text || "" });
+      });
+
+      $("#tc-area-select")?.addEventListener("change", (e) => {
+        location.hash = queryUrl({ area: e.target.value });
+      });
+
+      $("#tc-type-select")?.addEventListener("change", (e) => {
+        location.hash = queryUrl({ type: e.target.value });
+      });
+
+      view.querySelectorAll("[data-tc-op]").forEach((btn) => btn.addEventListener("click", async () => {
+        const op = btn.dataset.tcOp;
+        const caseId = btn.dataset.id;
+        const currentCase = caseView.cases.find((c) => String(c.id) === String(caseId)) || {};
+
+        if (op === "edit") {
+          const v = await formDialog(`Edit test case (${caseId})`, testCaseForm(currentCase), "Save changes");
+          if (!v) return;
+          try {
+            await api("test-cases", { method: "POST", body: { op: "edit", id: caseId, ...v } });
+            toast("Test case updated");
+            route();
+          } catch (e) {
+            toast(e.message, true);
+          }
+        } else if (op === "remove") {
+          const ok = await formDialog(`Delete test case ${caseId}?`, `<p>Permanently remove test case <strong>${esc(caseId)}</strong> from the project library?</p>`, "Delete", { danger: true });
+          if (!ok) return;
+          try {
+            await api("test-cases", { method: "POST", body: { op: "delete", id: caseId } });
+            toast("Test case deleted");
+            route();
+          } catch (e) {
+            toast(e.message, true);
+          }
+        }
+      }));
+    },
   };
 };
 
@@ -3910,11 +4275,30 @@ pages["new-project"] = async (_, query) => {
   };
 
   if (step === "describe") {
+    const qMap = new Map(data.questions.map((q) => [q.key, q]));
+    const projectKeys = data.questions.filter((q) => q.section === "project").map((q) => q.key);
+    const sections = [
+      { id: "project", title: "Project Setup", description: "The working name and target platforms.", keys: projectKeys },
+      ...(data.prd_sections || []).map((s) => ({ ...s, title: `PRD · ${s.title}` })),
+    ];
+    const renderedKeys = new Set(sections.flatMap((s) => s.keys));
+    const extraQuestions = data.questions.filter((q) => !renderedKeys.has(q.key));
+    const renderSection = (s) => {
+      const qs = s.keys.map((k) => qMap.get(k)).filter(Boolean);
+      if (!qs.length) return "";
+      return `<fieldset class="np-section-card stack">
+        <legend class="np-section-legend">${esc(s.title)}</legend>
+        ${s.description ? `<p class="np-section-desc">${esc(s.description)}</p>` : ""}
+        ${qs.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}
+      </fieldset>`;
+    };
+    const sectionsHtml = sections.map(renderSection).join("") + (extraQuestions.length ? extraQuestions.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("") : "");
+
     return {
       title: "Start a new project", sub: npStepper("describe"),
       html: `${resume}<form class="card card-b stack np-form" id="np-describe">
-        <p class="muted">A few quick questions. They become the product requirements that you and the AI can both read. Keep the answers short; you can edit it any time.</p>
-        ${data.questions.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}
+        <p class="muted">These questions directly shape your product requirements doc (PRD). Keep answers short; you and the AI can refine them anytime.</p>
+        ${sectionsHtml}
         <div class="row"><span class="spacer"></span>${discard}<button class="btn primary big" type="submit">Next: where it lives</button></div></form>`,
       after: () => {
         wireIdeaChoice();
@@ -3988,8 +4372,8 @@ pages["new-project"] = async (_, query) => {
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
       ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
       ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
-      <section class="card mt-16"><div class="card-h"><h2>Next: define the product</h2></div><div class="card-b stack">
-        <div>Your product requirements are written. Before the first job, read them over and add what's missing: how it should look and feel, and what it should <strong>not</strong> be.</div>
+      <section class="card mt-16"><div class="card-h"><h2>Product requirements ready</h2></div><div class="card-b stack">
+        <div>Your product requirements document is saved with all five PRD sections. You can review or refine it anytime as the project evolves.</div>
         <div><a class="btn" href="#/product">Open the product requirements</a></div></div></section>
       <div class="row mt-16"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
       <p class="muted">“Set up this project” runs the setup wizard, which asks how it's built and tested so jobs can run.</p>`,
@@ -4097,7 +4481,11 @@ pages.projects = async () => {
   return {
     title: "Projects",
     sub: "Manage and switch between codebases on this machine.",
-    actions: state.you?.role !== "member" ? `<a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg>Start a new project</a><button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg>Add an existing project</button>` : "",
+    actions: state.you?.role !== "member" ? `
+      <div class="projects-actions">
+        <a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg><span>Start a new project</span></a>
+        <button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg><span>Add existing project</span></button>
+      </div>` : "",
     html: `
       <div class="projects-container">
         ${unfinished ? `<div class="banner attention mb-16"><p><strong>Unfinished new project${unfinished.answers?.name ? `: ${esc(unfinished.answers.name)}` : ""}.</strong>${unfinished.waiting_on_github ? " Waiting on GitHub." : ""}</p><a class="btn small primary" href="#/new-project">Continue</a></div>` : ""}
@@ -4422,8 +4810,9 @@ if (connBtn) {
 $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
 
 // ---------------------------------------------------------------- command palette
-const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Docs", "#/docs", "Every feature, job and project file in one place"], ["Features", "#/features", "Groups of work, map"], ["Feature map", "#/features?view=map", "How features depend on each other"],
+const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
+  ["Test cases", "#/test-cases", "Manage test cases library, coverage and definitions"],
   ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
@@ -4450,13 +4839,12 @@ async function openPalette() {
   input.value = "";
   renderPalette();
   input.focus();
-  // Jobs and features load after it opens, so it is usable straight away.
+  // Jobs load after it opens, so it is usable straight away.
   try {
-    const [{ jobs }, { features }] = await Promise.all([api("jobs"), api("features")]);
+    const [{ jobs }] = await Promise.all([api("jobs")]);
     if (!palette.open) return;
     const go = (hash) => () => { location.hash = hash; };
-    palette.entries.push(...jobs.map((j) => ({ label: j.title, hint: `${j.state.label} · ${j.kind}`, group: "Jobs", order: 2, run: go(`#/jobs/${encodeURIComponent(j.id)}`) })),
-      ...features.map((f) => ({ label: f.name, hint: "Feature", group: "Features", order: 3, run: go(`#/features?focus=${encodeURIComponent(f.id)}`) })));
+    palette.entries.push(...jobs.map((j) => ({ label: j.title, hint: `${j.state.label} · ${j.kind}`, group: "Jobs", order: 2, run: go(`#/jobs/${encodeURIComponent(j.id)}`) })));
     renderPalette();
   } catch { /* pages and actions still work */ }
 }
@@ -4509,7 +4897,7 @@ window.addEventListener("hashchange", closePalette);
 
 // Phone layout: the bottom bar holds the everyday pages; everything else lives behind "More".
 const moreBtn = $("#nav-more"), moreSheet = $("#more-sheet");
-const MORE_LINKS = [["Help", "#/help"], ["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Docs", "#/docs"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
+const MORE_LINKS = [["Help", "#/help"], ["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Test cases", "#/test-cases"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Docs", "#/docs"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
 function closeMore() { if (moreSheet.hidden) return; moreSheet.hidden = true; moreBtn.setAttribute("aria-expanded", "false"); }
 moreBtn?.addEventListener("click", () => {
   if (!moreSheet.hidden) return closeMore();

@@ -52,6 +52,14 @@ class PrdTests(unittest.TestCase):
         self.assertNotIn("Version 1 is done when", parts["features"])
         self.assertIn("## Look and feel", np.render_prd(ANSWERS))  # the section is there to fill in later
 
+    def test_look_and_not_sections_populated_when_provided(self):
+        answers = {**ANSWERS, "look": "Minimal, typography-driven style.", "not": "No social login, no ads."}
+        parts = prd.split(np.render_prd(answers))
+        self.assertTrue(prd.is_filled(parts["look"]))
+        self.assertEqual(parts["look"], "Minimal, typography-driven style.")
+        self.assertTrue(prd.is_filled(parts["not"]))
+        self.assertEqual(parts["not"], "No social login, no ads.")
+
     def test_only_the_lean_questions_are_required(self):
         self.assertEqual(len(np.REQUIRED), 6)
         self.assertEqual(np.missing_answers({"name": "x"}), [q["label"] for q in np.QUESTIONS if q["required"] and q["key"] != "name"])
@@ -160,6 +168,11 @@ class ServerFlowTests(Isolated):
         def set_root(self, root):
             self.root = root
 
+    def test_new_project_state_includes_prd_sections(self):
+        state = ui.new_project_state()
+        self.assertIn("prd_sections", state)
+        self.assertEqual([s["id"] for s in state["prd_sections"]], ["pitch", "who", "features", "look", "not"])
+
     def test_success_switches_project_and_clears_the_draft(self):
         np.save_draft({"answers": ANSWERS, "parent": str(self.home), "host": "local"})
         srv = self.FakeServer()
@@ -223,8 +236,8 @@ class CliFlowTests(Isolated):
         return result, asked, said
 
     def local_answers(self):
-        # name, pitch, audience, problem(area: 2 lines + blank), features(area: 2 lines + blank), stack(blank), done(blank), parent
-        return ["Pocket Notes", "A tiny notes app.", "Busy people", "Notes apps are heavy.", "", "Write a note", "Search notes", "", "", "", str(self.home)]
+        # name, pitch, audience, problem(area: 2 lines + blank), features(area: 2 lines + blank), stack(blank), done(blank), look(blank), not(blank), parent
+        return ["Pocket Notes", "A tiny notes app.", "Busy people", "Notes apps are heavy.", "", "Write a note", "Search notes", "", "", "", "", "", str(self.home)]
 
     def test_local_only_flow_creates_the_project_and_returns_it_for_the_wizard(self):
         (code, root), asked, said = self.drive(self.local_answers(), ["Local only"], [{"installed": False, "user": None}])
