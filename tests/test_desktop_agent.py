@@ -25,10 +25,12 @@ class DesktopAgentTests(unittest.TestCase):
         self.migrations = []
         self.reply = {"ok": True}
         self.reported = []
+        self.readiness_sent = []
         self.opened = []
 
-        def beat(machine, endpoint, running=0, update_state=None):
+        def beat(machine, endpoint, running=0, update_state=None, readiness=None):
             self.beats.append(endpoint)
+            self.readiness_sent.append(readiness)
             self.reported.append(update_state)
             reply, self.reply = self.reply, {"ok": True}
             return reply
@@ -40,6 +42,7 @@ class DesktopAgentTests(unittest.TestCase):
         self.dependencies = AgentDependencies(
             pair_start=lambda name=None: {"name": name or "Mac", "code": "12345678", "poll_secret": "private-poll", "expires_in": 600},
             pair_poll=lambda pairing: {"status": "pending"}, heartbeat=beat, open_app=lambda: self.opened.append(True),
+            readiness=lambda control_dir: {"auto_login": "off", "sleep": "ok", "bogus": "ok", "power_restart": "<x>"},
             tunnel_start=start, tunnel_stop=lambda proc: None, legacy_inspect=lambda state_dir: dict(self.legacy),
             legacy_migrate=lambda state_dir, consent: self.migrations.append(consent) or {"migrated": consent, "state": "none"})
         self.agent = DesktopAgent(self.base / "state", self.base / "ctl", {}, self.dependencies)
@@ -160,6 +163,14 @@ class DesktopAgentTests(unittest.TestCase):
         self.wait(lambda: self.opened)
         time.sleep(.3)
         self.assertEqual(self.opened, [True])
+
+    def test_readiness_is_checked_cleaned_and_reported(self):
+        self.project()
+        self.start()
+        self.wait(lambda: self.request("status")["result"]["readiness"])
+        self.assertEqual(self.request("status")["result"]["readiness"], {"auto_login": "off", "sleep": "ok"})
+        self.wait(lambda: {"auto_login": "off", "sleep": "ok"} in self.readiness_sent)
+        self.assertEqual(self.request("diagnostics")["result"]["readiness"], {"auto_login": "off", "sleep": "ok"})
 
     def test_legacy_migration_needs_explicit_consent(self):
         self.start()

@@ -730,6 +730,22 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("<img", result["hostile"])
         self.assertIn("Added with a command", result["added"])
 
+    def test_readiness_warnings_show_their_fixes_and_match_the_mac(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const mk = (readiness) => ({id: "m1", name: "Closet mini", api_version: A.REQUIRED_RUNNER_API, reachable: true, online: true,
+                            last_seen: 100, readiness});
+process.stdout.write(JSON.stringify({
+  two: A.renderMachines([mk({auto_login: "off", power_restart: "off", sleep: "ok"})], {email: "a@x.com", now: 160}),
+  none: A.renderMachines([mk({auto_login: "ok", power_restart: "unknown"})], {email: "a@x.com", now: 160}),
+  keys: Object.keys(A.READINESS_FIXES),
+}));""")
+        self.assertIn("2 settings need changing", result["two"])
+        self.assertIn("<code>sudo pmset -a autorestart 1</code>", result["two"])
+        self.assertNotIn("account-readiness", result["none"])
+        from orchestrator import mac_readiness
+        self.assertEqual(sorted(result["keys"]), sorted(f"{check}:{state}" for check, state in mac_readiness.FIXES))
+
     def test_the_pages_required_version_is_what_this_runner_provides(self):
         # Bump both together: the page asks for exactly what the runner in this repo reports.
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "account.js").read_text()

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
-from orchestrator import account
+from orchestrator import account, mac_readiness
 from orchestrator.desktop_diagnostics import CHECK_NAMES, diagnostics_snapshot
 from orchestrator.desktop_migration import inspect_legacy, migrate_legacy
 from orchestrator.desktop_protocol import MAX_MESSAGE, ProtocolError, peer_uid, validate_request
@@ -55,6 +55,7 @@ class AgentDependencies:
     legacy_inspect: Callable = inspect_legacy
     legacy_migrate: Callable = migrate_legacy
     open_app: Callable = _open_app
+    readiness: Callable = lambda control_dir: mac_readiness.check(control_dir=control_dir)
 
 
 def control_socket_path(control_dir: Path) -> Path:
@@ -121,6 +122,9 @@ class DesktopAgent:
         self._update_state = ""         # what the menu app last reported, sent with the heartbeat
         self._status_at = 0.0           # when a client (normally the menu app) last asked for status
         self._open_app_at = 0.0
+        self._readiness = {}
+        self._readiness_at = 0.0
+        self._readiness_thread = None
         try:
             preferences = json.loads((state_dir / "desktop.json").read_text())
             self.remote_enabled = preferences.get("remote_enabled") is not False
@@ -197,7 +201,7 @@ class DesktopAgent:
                     path.unlink()
                 if not servers:
                     control.server_close()
-            for worker in (self._pair_thread, self._remote_thread, self._beat_thread):
+            for worker in (self._pair_thread, self._remote_thread, self._beat_thread, self._readiness_thread):
                 if worker:
                     worker.join(20)
             lease.close()
@@ -219,7 +223,7 @@ class DesktopAgent:
                     "activity": {"runs": runs, "tasks": max(0, active - runs)},
                     "project": {"name": root.name, "root": str(root)} if root else None, "pairing": pairing,
                     "runner": {"version": account.package_version(), "api_version": account.API_VERSION}, "update": self._update,
-                    "update_request": self._update_request}
+                    "update_request": self._update_request, "readiness": dict(self._readiness)}
 
     def handle(self, command: str, params: dict) -> dict:
         validate_request(json.dumps({"version": 1, "request_id": "internal", "command": command, "params": params}).encode())
@@ -235,7 +239,8 @@ class DesktopAgent:
         if command == "diagnostics":
             path = os.environ.get("PATH", "")
             checks = [{"name": name, "state": "found" if shutil.which(name, path=path) else "missing"} for name in sorted(CHECK_NAMES)]
-            return diagnostics_snapshot({**self.status(), "last_error": self._last_error}, checks)
+            return {**diagnostics_snapshot({**self.status(), "last_error": self._last_error}, checks),
+                    "readiness": mac_readiness.clean(self._readiness)}
         if command == "legacy_status":
             self._check_legacy()
             return dict(self._legacy)
@@ -370,9 +375,22 @@ class DesktopAgent:
             self._legacy = found
             self._legacy_at = time.monotonic() + 30
 
+    def _check_readiness(self):
+        try:
+            found = mac_readiness.clean(self.dependencies.readiness(self.control_dir))
+        except Exception:
+            found = {}
+        with self._lock:
+            self._readiness = found
+            self._beat_at = 0
+
     def _reconcile(self):
         if time.monotonic() >= self._legacy_at:
             self._check_legacy()
+        if time.monotonic() >= self._readiness_at and not (self._readiness_thread and self._readiness_thread.is_alive()):
+            self._readiness_at = time.monotonic() + 3600  # settings change rarely; xcodebuild is slow to ask
+            self._readiness_thread = threading.Thread(target=self._check_readiness, daemon=True)
+            self._readiness_thread.start()
         with self._lock:
             machine = account.load_machine()
             # An older `orchestrator service` still running owns this computer's address; two would overwrite each other.
@@ -397,7 +415,7 @@ class DesktopAgent:
                 self._beat_at = time.monotonic() + account.HEARTBEAT_SECONDS
                 endpoint = self._endpoint if self.remote_enabled else ""
                 runs = sum(bool(run["running"]) for run in self.local.sessions.list())
-                self._beat_thread = threading.Thread(target=self._heartbeat, args=(machine, endpoint, runs, self._update_state), daemon=True)
+                self._beat_thread = threading.Thread(target=self._heartbeat, args=(machine, endpoint, runs, self._update_state, dict(self._readiness)), daemon=True)
                 self._beat_thread.start()
             # An update was asked for but no menu app has checked in for a minute (someone quit it): start it hidden.
             now = time.monotonic()
@@ -405,9 +423,10 @@ class DesktopAgent:
                 self._open_app_at = now + 300
                 threading.Thread(target=self._start_menu, daemon=True).start()
 
-    def _heartbeat(self, machine, endpoint, runs, update_state):
+    def _heartbeat(self, machine, endpoint, runs, update_state, readiness):
         try:
-            reply = self.dependencies.heartbeat(machine, endpoint, running=runs, update_state=update_state or None)
+            reply = self.dependencies.heartbeat(machine, endpoint, running=runs, update_state=update_state or None,
+                                                readiness=readiness or None)
         except Exception:
             self._last_error = "heartbeat_failed"
             return

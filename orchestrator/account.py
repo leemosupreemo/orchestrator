@@ -166,7 +166,8 @@ def connect(name: str | None = None, out: Callable[[str], None] = print, sleep: 
     raise AccountError("The pairing code expired. Run `orchestrator connect` again.", 410)
 
 
-def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0, update_state: str | None = None) -> dict[str, Any]:
+def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0, update_state: str | None = None,
+              readiness: dict[str, str] | None = None) -> dict[str, Any]:
     """Tell the control plane this computer is up, where browsers reach it, and how many runs are going (so it can say
     so if the computer disappears mid-run). The app also reports its update progress, and the reply may ask it to update.
     Forgets the pairing if the account removed it."""
@@ -174,6 +175,8 @@ def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0, update_s
             "running": running, "packaged": bool(os.environ.get("ORCHESTRATOR_PACKAGED_APP"))}
     if update_state:
         body["update_state"] = update_state
+    if readiness:
+        body["readiness"] = readiness
     try:
         return call("machine/heartbeat", body, machine=machine)
     except AccountError as exc:

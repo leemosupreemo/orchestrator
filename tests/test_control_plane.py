@@ -288,6 +288,21 @@ class RemoteUpdateTests(PlaneCase):
             self.assertEqual(view["update_state"], shown)
 
 
+class ReadinessTests(PlaneCase):
+    def test_reported_readiness_is_kept_to_known_checks_and_states(self):
+        machine_id, secret = self.pair()
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "", "readiness": {
+            "auto_login": "off", "sleep": "<script>", "secret_thing": "ok", "power_restart": "ok"}},
+            machine_auth=f"Machine {machine_id}:{secret}")
+        view = self.call("GET", "/cp/machines", user="alice-token")[1]["machines"][0]
+        self.assertEqual(view["readiness"], {"auto_login": "off", "power_restart": "ok"})
+
+    def test_control_plane_and_mac_agree_on_readiness_names(self):
+        from orchestrator import mac_readiness
+        self.assertEqual(cp.READINESS_CHECKS, mac_readiness.CHECKS)
+        self.assertEqual(cp.READINESS_STATES, mac_readiness.STATES)
+
+
 class FakePusher:
     def __init__(self):
         self.sent: list[tuple[list[str], dict]] = []

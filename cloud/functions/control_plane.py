@@ -46,6 +46,9 @@ from typing import Any, Callable, Protocol
 PAIRING_TTL = 600         # seconds a pairing code stays valid
 ENROLLMENT_TTL = 900      # seconds an enrollment token stays valid
 ADDED_MARK_SECONDS = 86400  # how long a computer added with a token is marked so in the list
+# A Mac's readiness to run unattended (orchestrator/mac_readiness.py keeps the same names; a test checks they agree).
+READINESS_CHECKS = ("auto_login", "sleep", "power_restart", "xcode_license", "login_item")
+READINESS_STATES = {"ok", "off", "on", "not_accepted", "needs_approval", "not_installed", "unknown"}
 UPDATE_STATES = {"requested", "checking", "waiting_for_work", "updating", "current", "failed", "unavailable"}
 TICKET_TTL = 120          # seconds a sign-in ticket stays valid
 ONLINE_WINDOW = 180       # a computer is online if it reported within this many seconds
@@ -263,6 +266,9 @@ class ControlPlane:
         for key, limit in (("version", 40), ("name", 80), ("os", 40)):
             if body.get(key):
                 fields[key] = _clean(body[key], limit)
+        if isinstance(body.get("readiness"), dict):
+            fields["readiness"] = {name: body["readiness"][name] for name in READINESS_CHECKS
+                                   if body["readiness"].get(name) in READINESS_STATES}
         update_requested = bool(machine.get("update_requested"))
         if update_requested:
             fields["update_requested"] = False  # delivered with this reply; the Mac reports progress from now on
@@ -293,7 +299,8 @@ class ControlPlane:
                 "endpoint": machine.get("endpoint", ""), "last_seen": machine.get("last_seen") or 0, "online": online,
                 "reachable": online and bool(machine.get("endpoint")),
                 "added_with_command": self.now() - (machine.get("enrolled") or -ADDED_MARK_SECONDS) < ADDED_MARK_SECONDS,
-                "updatable": bool(machine.get("updatable")), "update_state": machine.get("update_state", "")}
+                "updatable": bool(machine.get("updatable")), "update_state": machine.get("update_state", ""),
+                "readiness": machine.get("readiness") or {}}
 
     def _owned(self, user: dict[str, Any], machine_id: Any) -> tuple[str, dict[str, Any]]:
         machine_id = str(machine_id or "")

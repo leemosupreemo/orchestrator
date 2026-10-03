@@ -24,6 +24,17 @@
     unavailable: "This Mac can't update itself yet: its app has no update feed.",
   };
   const UPDATE_BUSY = ["requested", "checking", "waiting_for_work", "updating"];
+  // A Mac that should run unattended (a Mac mini in a closet) reports these; orchestrator/mac_readiness.py has the same.
+  const READINESS_FIXES = {
+    "auto_login:off": "Turn on automatic login for this user (System Settings › Users & Groups). FileVault must be off.",
+    "sleep:on": "Stop it sleeping: `sudo pmset -a sleep 0 disksleep 0`",
+    "power_restart:off": "Restart after a power cut: `sudo pmset -a autorestart 1`",
+    "xcode_license:not_accepted": "Accept Xcode's license: `sudo xcodebuild -license accept`",
+    "login_item:needs_approval": "Allow Orchestrator in System Settings › General › Login Items (once, over Screen Sharing).",
+  };
+  function readinessFixes(readiness) {
+    return Object.entries(readiness || {}).map(([check, state]) => READINESS_FIXES[`${check}:${state}`]).filter(Boolean);
+  }
 
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>'"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[c]);
@@ -120,6 +131,8 @@
           <span class="muted">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</span>
           <span class="account-status ${s.tone}">${code(s.text)}</span>
           ${progress && m.update_state !== "current" ? `<span class="muted account-update">${escapeHtml(progress)}</span>` : ""}
+          ${readinessFixes(m.readiness).length ? `<details class="account-readiness"><summary>To run unattended, ${readinessFixes(m.readiness).length === 1 ? "one setting needs" : `${readinessFixes(m.readiness).length} settings need`} changing</summary>
+            <ul>${readinessFixes(m.readiness).map((fix) => `<li>${code(fix)}</li>`).join("")}</ul></details>` : ""}
         </div>
         <div class="row gap-10">
           ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : ""}
@@ -164,7 +177,7 @@
   }
 
   root.Account = {
-    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, outdated,
+    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, outdated,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
     renderMachines, renderPair,
   };
