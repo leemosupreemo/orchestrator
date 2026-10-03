@@ -17,6 +17,11 @@ Firebase Auth. Routes (all JSON, under /cp on the hosted app):
   POST /cp/push/register   signed-in user {token, label}             -> {ok}
   POST /cp/push/unregister signed-in user {token}                    -> {ok}
   POST /cp/push/test       signed-in user                            -> {sent}
+  POST /cp/enroll/create   signed-in user                            -> {token, expires_in}
+  POST /cp/enroll/redeem   computer       {token, name, os, version} -> {machine_id, machine_secret, owner_email}
+
+Enrollment is pairing for a computer nobody is sitting at: the owner makes a one-time token in the hosted app and runs
+`orchestrator enroll` with it over SSH. Only the token's hash is stored, it works once, and the owner is told.
 
 Notifications: a computer forwards what its UI server noticed (something needs you, a run ended) and the control plane
 pushes it to every browser and phone the owner turned alerts on in. The scheduled sweep() adds what only the control
@@ -38,6 +43,8 @@ import time
 from typing import Any, Callable, Protocol
 
 PAIRING_TTL = 600         # seconds a pairing code stays valid
+ENROLLMENT_TTL = 900      # seconds an enrollment token stays valid
+ADDED_MARK_SECONDS = 86400  # how long a computer added with a token is marked so in the list
 TICKET_TTL = 120          # seconds a sign-in ticket stays valid
 ONLINE_WINDOW = 180       # a computer is online if it reported within this many seconds
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
@@ -179,15 +186,49 @@ class ControlPlane:
     def claim_pairing(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         email = _require_email(user)
         code, pairing = self._waiting_pairing(body.get("code"))
-        if len(self.store.where("machines", "owner_uid", user["uid"])) >= MAX_MACHINES_PER_USER:
-            raise ControlError(f"An account can have up to {MAX_MACHINES_PER_USER} computers. Remove one first.", 409)
-        machine_id, secret, now = pairing["machine_id"], secrets.token_urlsafe(32), self.now()
-        machine = {"owner_uid": user["uid"], "owner_email": email, "name": pairing["name"], "os": pairing["os"],
-                   "version": pairing["version"], "endpoint": "", "created": now, "last_seen": 0}
-        self.store.set("machines", machine_id, machine)
-        self.store.set("machine_secrets", machine_id, {"secret": secret, "created": now})
+        machine_id, machine, secret = self._create_machine(user["uid"], email, pairing, pairing["machine_id"])
         self.store.update("pairings", code, {"status": "claimed", "owner_email": email, "machine_secret": secret})
         return {"machine": self._view(machine_id, machine)}
+
+    def _create_machine(self, uid: str, email: str, details: dict[str, Any], machine_id: str,
+                        enrolled: bool = False) -> tuple[str, dict[str, Any], str]:
+        if len(self.store.where("machines", "owner_uid", uid)) >= MAX_MACHINES_PER_USER:
+            raise ControlError(f"An account can have up to {MAX_MACHINES_PER_USER} computers. Remove one first.", 409)
+        secret, now = secrets.token_urlsafe(32), self.now()
+        machine = {"owner_uid": uid, "owner_email": email, "name": details["name"], "os": details["os"],
+                   "version": details["version"], "endpoint": "", "created": now, "last_seen": 0}
+        if enrolled:
+            machine["enrolled"] = now
+        self.store.set("machines", machine_id, machine)
+        self.store.set("machine_secrets", machine_id, {"secret": secret, "created": now})
+        return machine_id, machine, secret
+
+    # -- enrollment: pairing for a computer nobody is sitting at
+
+    def create_enrollment(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        email = _require_email(user)
+        token = "enroll_" + secrets.token_urlsafe(24)
+        now = self.now()
+        self.store.set("enrollments", _hash(token), {"owner_uid": user["uid"], "owner_email": email,
+                                                     "created": now, "expires": now + ENROLLMENT_TTL})
+        return {"token": token, "expires_in": ENROLLMENT_TTL}
+
+    def redeem_enrollment(self, body: dict[str, Any]) -> dict[str, Any]:
+        token = str(body.get("token") or "")
+        doc_id = _hash(token)
+        enrollment = self.store.get("enrollments", doc_id) if token.startswith("enroll_") else None
+        if enrollment is None or enrollment["expires"] <= self.now():
+            raise ControlError("That enrollment command isn't valid or has expired. Make a new one with Add a Mac.", 404)
+        details = {"name": _clean(body.get("name"), 80) or "My Mac", "os": _clean(body.get("os"), 40),
+                   "version": _clean(body.get("version"), 40)}
+        machine_id, machine, secret = self._create_machine(enrollment["owner_uid"], enrollment["owner_email"], details,
+                                                           "m_" + secrets.token_hex(8), enrolled=True)
+        self.store.delete("enrollments", doc_id)  # works once
+        self._push(enrollment["owner_uid"], [_message(
+            f"enrolled:{machine_id}", f"{machine['name']} was added to your account",
+            "It was added with an Add a Mac command. If that wasn't you, remove it from your computers.",
+            _link(machine_id, "#/"))])
+        return {"machine_id": machine_id, "machine_secret": secret, "owner_email": enrollment["owner_email"]}
 
     # -- the computer, once paired
 
@@ -235,7 +276,8 @@ class ControlPlane:
         return {"id": machine_id, "name": machine["name"], "os": machine.get("os", ""), "version": machine.get("version", ""),
                 "api_version": machine.get("api_version", 0),
                 "endpoint": machine.get("endpoint", ""), "last_seen": machine.get("last_seen") or 0, "online": online,
-                "reachable": online and bool(machine.get("endpoint"))}
+                "reachable": online and bool(machine.get("endpoint")),
+                "added_with_command": self.now() - (machine.get("enrolled") or -ADDED_MARK_SECONDS) < ADDED_MARK_SECONDS}
 
     def _owned(self, user: dict[str, Any], machine_id: Any) -> tuple[str, dict[str, Any]]:
         machine_id = str(machine_id or "")
@@ -355,6 +397,7 @@ class ControlPlane:
                 ("POST", "/machine/heartbeat"): lambda: self.heartbeat(headers.get("authorization", ""), body),
                 ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
                 ("POST", "/machine/events"): lambda: self.machine_events(headers.get("authorization", ""), body),
+                ("POST", "/enroll/redeem"): lambda: self.redeem_enrollment(body),
             }.get((method, route))
             if computer:
                 return 200, computer()
@@ -367,6 +410,7 @@ class ControlPlane:
                 ("POST", "/push/register"): self.register_device,
                 ("POST", "/push/unregister"): self.unregister_device,
                 ("POST", "/push/test"): self.test_push,
+                ("POST", "/enroll/create"): self.create_enrollment,
             }.get((method, route))
             if person is None:
                 raise ControlError("Not found", 404)

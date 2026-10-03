@@ -186,6 +186,76 @@ class ControlPlaneTests(PlaneCase):
         self.assertEqual(self.call("GET", "/cp/nope")[0], 404)
 
 
+class EnrollmentTests(PlaneCase):
+    def setUp(self):
+        super().setUp()
+        self.pusher = FakePusher()
+        self.plane = cp.ControlPlane(self.store, now=self.clock, pusher=self.pusher)
+
+    def create(self, user="alice-token"):
+        return self.call("POST", "/cp/enroll/create", {}, user=user)
+
+    def redeem(self, token, name="Closet mini"):
+        return self.call("POST", "/cp/enroll/redeem", {"token": token, "name": name, "os": "macOS 26", "version": "0.1.0"})
+
+    def test_create_needs_a_signed_in_owner(self):
+        self.assertEqual(self.call("POST", "/cp/enroll/create", {})[0], 401)
+        status, created = self.create()
+        self.assertEqual(status, 200)
+        self.assertTrue(created["token"].startswith("enroll_"))
+        self.assertGreaterEqual(len(created["token"]), len("enroll_") + 22)
+        self.assertEqual(created["expires_in"], cp.ENROLLMENT_TTL)
+
+    def test_only_the_hash_is_stored(self):
+        _, created = self.create()
+        stored = json.dumps(self.store.data.get("enrollments", {}))
+        self.assertNotIn(created["token"], stored)
+        self.assertNotIn(created["token"][len("enroll_"):], stored)
+
+    def test_redeem_creates_a_machine_like_pairing_and_works_once(self):
+        _, created = self.create()
+        status, redeemed = self.redeem(created["token"])
+        self.assertEqual(status, 200)
+        self.assertEqual(redeemed["owner_email"], "alice@example.com")
+        self.assertRegex(redeemed["machine_id"], r"^m_[0-9a-f]{16}$")
+        status, _ = self.beat(redeemed["machine_id"], redeemed["machine_secret"])
+        self.assertEqual(status, 200)
+        _, listed = self.call("GET", "/cp/machines", user="alice-token")
+        self.assertEqual([m["name"] for m in listed["machines"]], ["Closet mini"])
+        self.assertTrue(listed["machines"][0]["added_with_command"])
+        self.assertEqual(self.redeem(created["token"])[0], 404)
+
+    def test_expired_and_unknown_tokens_are_refused(self):
+        _, created = self.create()
+        self.clock.t += cp.ENROLLMENT_TTL
+        self.assertEqual(self.redeem(created["token"])[0], 404)
+        self.assertEqual(self.redeem("enroll_" + "x" * 32)[0], 404)
+        self.assertEqual(self.redeem("")[0], 404)
+        self.assertEqual(self.call("GET", "/cp/machines", user="alice-token")[1]["machines"], [])
+
+    def test_account_limit_applies(self):
+        for index in range(cp.MAX_MACHINES_PER_USER):
+            self.pair(name=f"Mac {index}")
+        _, created = self.create()
+        self.assertEqual(self.redeem(created["token"])[0], 409)
+
+    def test_owner_is_told_when_a_mac_is_added(self):
+        self.call("POST", "/cp/push/register", {"token": "a" * 40, "label": "phone"}, user="alice-token")
+        _, created = self.create()
+        self.redeem(created["token"])
+        self.assertEqual(len(self.pusher.sent), 1)
+        self.assertIn("Closet mini", self.pusher.sent[0][1]["title"] + self.pusher.sent[0][1]["body"])
+
+    def test_added_with_command_mark_fades_after_a_day(self):
+        _, created = self.create()
+        self.redeem(created["token"])
+        self.clock.t += 86400
+        self.assertFalse(self.call("GET", "/cp/machines", user="alice-token")[1]["machines"][0]["added_with_command"])
+        self.assertFalse(self.pair(name="Desk Mac") is None)
+        names = {m["name"]: m["added_with_command"] for m in self.call("GET", "/cp/machines", user="alice-token")[1]["machines"]}
+        self.assertFalse(names["Desk Mac"])
+
+
 class FakePusher:
     def __init__(self):
         self.sent: list[tuple[list[str], dict]] = []

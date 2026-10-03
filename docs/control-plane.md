@@ -67,7 +67,7 @@ The Python venv must be built with Python 3.12 (the function's runtime): the CLI
 firebase functions:artifacts:setpolicy --location us-central1 --days 1 --force
 ```
 
-Optional: a Firestore TTL policy on the `pairings` collection's `expire_at` field sweeps old codes. Expired codes are refused either way.
+Optional: Firestore TTL policies on the `pairings` and `enrollments` collections' `expire_at` field sweep old codes and enrollment tokens. Expired ones are refused either way.
 
 ## Not yet
 
