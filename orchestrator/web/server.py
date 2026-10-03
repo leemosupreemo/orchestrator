@@ -2870,11 +2870,12 @@ class UIServer(ThreadingHTTPServer):
         self._stopping = threading.Event()
         self._plan_lock = threading.Lock()   # one plan-run decision at a time (background loop and page requests)
         self._plan_sessions: dict[str, Any] = {}  # feature id -> the planning run started for it
+        self.on_reset_tunnel: Callable[[], bool] | None = None
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions"):
+                         "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -2961,7 +2962,13 @@ class UIServer(ThreadingHTTPServer):
             if machine is None:
                 return False
             try:
-                account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")))
+                reply = account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")))
+                if isinstance(reply, dict) and reply.get("reset_tunnel") and self.on_reset_tunnel:
+                    if self.on_reset_tunnel():
+                        try:
+                            account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")))
+                        except Exception:
+                            pass
             except account.AccountError as exc:
                 if exc.status == 410:
                     print("  This computer was removed from its account. Run `orchestrator connect` to add it again.", flush=True)
@@ -4517,6 +4524,16 @@ class TunnelKeeper:
                 except Exception:
                     pass
 
+    def recycle(self) -> bool:
+        """Force a fresh tunnel connection."""
+        before = self.url
+        print("  Resetting Cloudflare tunnel per request…", flush=True)
+        if self._launch():
+            if self.url != before:
+                self.on_url(self.url)
+            return True
+        return False
+
     def stop(self) -> None:
         self._stop.set()
         self._end_process()
@@ -4615,6 +4632,7 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
               else "  Starting Cloudflare tunnel for remote/phone access...")
         keeper = TunnelKeeper(args.port, token=tunnel_token, fixed_url=public_url or "",
                               on_url=lambda address: announce("Tunnel restarted at", address))
+        server.on_reset_tunnel = getattr(keeper, "recycle", None)
         address = keeper.start()
         if address:
             announce("Stable Tunnel URL" if tunnel_token else "Tunnel URL", address)

@@ -272,6 +272,18 @@ class RemoteUpdateTests(PlaneCase):
         _, second = self.beat(machine_id, secret)
         self.assertFalse(second["update_requested"])
 
+    def test_owner_requests_tunnel_reset_and_next_heartbeat_carries_it_once(self):
+        machine_id, secret = self.pair()
+        self.beat(machine_id, secret)
+        self.assertEqual(self.call("POST", "/cp/machines/reset-tunnel", {"machine_id": machine_id}, user="bob-token")[0], 404)
+        self.assertEqual(self.call("POST", "/cp/machines/reset-tunnel", {"machine_id": machine_id})[0], 401)
+        status, _ = self.call("POST", "/cp/machines/reset-tunnel", {"machine_id": machine_id}, user="alice-token")
+        self.assertEqual(status, 200)
+        _, first = self.beat(machine_id, secret)
+        self.assertTrue(first["reset_tunnel"])
+        _, second = self.beat(machine_id, secret)
+        self.assertFalse(second["reset_tunnel"])
+
     def test_only_app_installs_can_be_asked_to_update(self):
         machine_id, secret = self.pair()
         self.beat(machine_id, secret)

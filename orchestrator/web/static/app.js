@@ -1030,7 +1030,7 @@ let accountPoll = null;
 function stopAccountPoll() { clearInterval(accountPoll); accountPoll = null; }
 
 // Your computers: open the one you used last (or the only one), otherwise list them. A code from a link is handled first.
-async function openAccount({ list = false, message = "" } = {}) {
+async function openAccount({ list = false, message = "", troubleshoot = null } = {}) {
   stopAccountPoll();
   signingIn = true; // keep background refreshes off these screens
   const code = Account.pendingCode();
@@ -1041,26 +1041,26 @@ async function openAccount({ list = false, message = "" } = {}) {
     ({ machines } = await cpApi("machines"));
   } catch (err) {
     if (err.status === 401) { endSigningIn(); return showSignInGate("Your sign-in expired. Sign in again."); }
-    return showAccountScreen([], err.message);
+    return showAccountScreen([], err.message, troubleshoot);
   }
   let remembered = null;
   try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
-  const pick = !list && !message && Account.pickMachine(machines, remembered);
+  const pick = !list && !message && !troubleshoot && Account.pickMachine(machines, remembered);
   if (pick) return enterMachine(pick);
-  showAccountScreen(machines, message);
+  showAccountScreen(machines, message, troubleshoot);
 }
 
-function showAccountScreen(machines, message = "") {
+function showAccountScreen(machines, message = "", troubleshoot = null) {
   stopAccountPoll();
   signingIn = true;
   setHeader({ title: "Your computers", sub: "", actions: "" });
   document.querySelector(".app")?.classList.add("session-locked");
   const email = window.firebase?.auth?.().currentUser?.email || "";
-  const render = (list, msg) => {
+  const render = (list, msg, tb) => {
     if (view.contains(document.activeElement) && document.activeElement.matches("input")) return; // not while typing a code
-    view.innerHTML = Account.renderMachines(list, { email, message: msg });
+    view.innerHTML = Account.renderMachines(list, { email, message: msg, troubleshoot: tb });
   };
-  render(machines, message);
+  render(machines, message, troubleshoot);
   // Watch for a computer coming online (someone just ran `orchestrator ui` on it).
   let last = JSON.stringify(machines);
   accountPoll = setInterval(async () => {
@@ -1068,7 +1068,7 @@ function showAccountScreen(machines, message = "") {
     try {
       const { machines: fresh } = await cpApi("machines");
       const now = JSON.stringify(fresh);
-      if (now !== last) { last = now; machines = fresh; render(fresh, message); }
+      if (now !== last) { last = now; machines = fresh; render(fresh, message, troubleshoot); }
     } catch { /* keep the last list */ }
   }, 5000);
 
@@ -1106,6 +1106,16 @@ function showAccountScreen(machines, message = "") {
         toast(`Removed ${button.dataset.name}`);
         openAccount({ list: true });
       } catch (err) { toast(err.message, true); button.disabled = false; }
+    } else if (action === "reset-tunnel") {
+      button.disabled = true;
+      try {
+        await cpApi("machines/reset-tunnel", { method: "POST", body: { machine_id: button.dataset.id } });
+        toast(`Tunnel reset requested for ${button.dataset.name}. It will restart on its next heartbeat.`);
+        openAccount({ list: true });
+      } catch (err) { toast(err.message, true); button.disabled = false; }
+    } else if (action === "copy-cmd") {
+      const cmd = button.dataset.cmd || "orchestrator ui --tunnel";
+      try { await navigator.clipboard.writeText(cmd); toast("Copied command"); } catch { toast(cmd, "info"); }
     } else if (action === "update") {
       button.disabled = true;
       try {
@@ -1190,8 +1200,11 @@ async function enterMachine(machine) {
   stopAccountPoll();
   signingIn = true;
   showSigningIn(`Opening ${machine.name}…`);
+  let endpoint = "";
   try {
-    const { ticket, endpoint } = await cpApi("machine/ticket", { method: "POST", body: { machine_id: machine.id } });
+    const resTicket = await cpApi("machine/ticket", { method: "POST", body: { machine_id: machine.id } });
+    endpoint = resTicket.endpoint;
+    const ticket = resTicket.ticket;
     localStorage.setItem("orchestrator_backend", endpoint);
     localStorage.setItem(Account.MACHINE_KEY, machine.id);
     localStorage.removeItem("orchestrator_token");
@@ -1209,7 +1222,7 @@ async function enterMachine(machine) {
     }
     await unlockWith(res.token, `Opened ${machine.name}`);
   } catch (err) {
-    openAccount({ list: true, message: err.message });
+    openAccount({ list: true, message: err.message, troubleshoot: { machine, endpoint, error: err.message } });
   }
 }
 

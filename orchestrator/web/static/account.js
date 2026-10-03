@@ -202,7 +202,37 @@
       <button type="button" class="btn small ghost" data-account-action="copy-enroll">Copy</button>`;
   }
 
-  function renderMachines(machines, {email = "", message = "", now, macAppReleased = MAC_APP_RELEASED, idea} = {}) {
+  function renderTroubleshoot(t) {
+    if (!t) return "";
+    const isLoadFailed = (t.error || "").includes("Load failed");
+    const endpoint = t.endpoint || t.machine?.endpoint || "";
+    const machineId = t.machine?.id || "";
+    const machineName = t.machine?.name || "your computer";
+    return `<div class="account-troubleshoot card-b stack">
+      <div class="account-troubleshoot-header row">
+        <strong>⚠️ Couldn't connect to ${escapeHtml(machineName)}</strong>
+        <span class="spacer"></span>
+        <span class="pill fail">${escapeHtml(isLoadFailed ? "Load failed" : "Unreachable")}</span>
+      </div>
+      <p class="muted">Your browser could not reach <code>${escapeHtml(endpoint || "tunnel endpoint")}</code>.</p>
+      <div class="row gap-10">
+        ${machineId ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(machineId)}">Retry</button>` : ""}
+        ${endpoint ? `<a class="btn small" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open tunnel URL ↗</a>` : ""}
+        ${machineId ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(machineId)}" data-name="${escapeHtml(machineName)}">Reset tunnel</button>` : ""}
+        <button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy restart command</button>
+      </div>
+      <details class="account-troubleshoot-details">
+        <summary>Why did this happen? (Troubleshooting tips)</summary>
+        <ul>
+          <li><strong>Mac asleep or lid closed:</strong> Cloudflare quick tunnels pause when a Mac sleeps. Wake the Mac, wait a few seconds, and click Retry.</li>
+          <li><strong>Ad Blocker / Privacy DNS:</strong> Safari Content Blockers, AdGuard, NextDNS, or Brave often block <code>*.trycloudflare.com</code>. Try opening the tunnel URL directly or disabling content blockers for this site.</li>
+          <li><strong>Stale tunnel session:</strong> Click <em>Reset tunnel</em> above or restart <code>orchestrator ui --tunnel</code> in your terminal.</li>
+        </ul>
+      </details>
+    </div>`;
+  }
+
+  function renderMachines(machines, {email = "", message = "", troubleshoot = null, now, macAppReleased = MAC_APP_RELEASED, idea} = {}) {
     const list = machines || [];
     if (idea === undefined) idea = list.length ? null : pendingIdea();
     const askIdea = !list.length && !idea;
@@ -224,6 +254,7 @@
         </div>
         <div class="row gap-10">
           ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : ""}
+          ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}" title="Restart tunnel if connection is stale">Reset tunnel</button>` : ""}
           ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update</button>` : ""}
           <button type="button" class="btn small ghost" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove</button>
         </div>
@@ -237,7 +268,7 @@
           ? "Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
           : askIdea ? "Say it in a sentence. It becomes the start of your product's plan, and you can change it any time."
           : "Orchestrator does the work on your own computer, so your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
-        ${message ? `<p class="account-message" role="alert">${code(message)}</p>` : ""}
+        ${troubleshoot ? renderTroubleshoot(troubleshoot) : (message ? `<p class="account-message" role="alert">${code(message)}</p>` : "")}
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
         <details class="account-add"><summary>Add another computer</summary>${addSteps()}</details>` : askIdea ? ideaStep() : ideaRecap + addSteps()}

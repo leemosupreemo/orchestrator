@@ -1852,6 +1852,43 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .account-title { margin: 0; font-size: var(--text-xl); font-weight: 700; }
 .account-sub { margin: var(--space-2) 0 0; }
 .account-message { margin: var(--space-3) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
+.account-troubleshoot {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.account-troubleshoot-header {
+  font-size: var(--text-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.account-troubleshoot-details {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.account-troubleshoot-details summary {
+  cursor: pointer;
+  font-weight: 550;
+  color: var(--text);
+  margin-bottom: var(--space-2);
+}
+.account-troubleshoot-details ul {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+}
+.account-troubleshoot-details li {
+  margin-bottom: var(--space-2);
+  line-height: 1.4;
+}
 .account-machines { display: flex; flex-direction: column; gap: var(--space-2); }
 .account-machine { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;
   padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }

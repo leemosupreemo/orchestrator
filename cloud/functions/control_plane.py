@@ -275,8 +275,17 @@ class ControlPlane:
         elif "update_state" in body:
             reported = body["update_state"]
             fields["update_state"] = reported if reported in UPDATE_STATES - {"requested"} else ""
+        reset_tunnel_requested = bool(machine.get("reset_tunnel_requested"))
+        if reset_tunnel_requested:
+            fields["reset_tunnel_requested"] = False
         self.store.update("machines", machine_id, fields)
-        return {"ok": True, "owner_email": machine["owner_email"], "update_requested": update_requested}
+        return {"ok": True, "owner_email": machine["owner_email"], "update_requested": update_requested,
+                "reset_tunnel": reset_tunnel_requested}
+
+    def request_reset_tunnel(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        self.store.update("machines", machine_id, {"reset_tunnel_requested": True})
+        return {"ok": True}
 
     def request_update(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         machine_id, machine = self._owned(user, body.get("machine_id"))
@@ -435,6 +444,7 @@ class ControlPlane:
                 ("POST", "/push/test"): self.test_push,
                 ("POST", "/enroll/create"): self.create_enrollment,
                 ("POST", "/machines/update"): self.request_update,
+                ("POST", "/machines/reset-tunnel"): self.request_reset_tunnel,
             }.get((method, route))
             if person is None:
                 raise ControlError("Not found", 404)
