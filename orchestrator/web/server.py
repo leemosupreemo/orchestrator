@@ -52,6 +52,7 @@ from urllib.parse import parse_qs, urlparse
 import urllib.error
 import urllib.request
 
+from orchestrator import account
 from orchestrator import integrations
 from orchestrator import analytics
 from orchestrator import delivery as delivery_view
@@ -88,9 +89,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 PACKAGE_PARENT = Path(__file__).resolve().parents[2]  # folder holding the `orchestrator` package serving this UI
 COOKIE_NAME = "orchestrator_ui"
 FIREBASE_API_KEY = "AIzaSyBg8h8yiC8OCoezFLEq6mQLhlc260b8CcI"
-FIREBASE_PROJECT_ID = "swift-orch-web-20260923"
-HOSTED_APP_URL = f"https://{FIREBASE_PROJECT_ID}.web.app"
-HOSTED_ORIGINS = (HOSTED_APP_URL, f"https://{FIREBASE_PROJECT_ID}.firebaseapp.com")
+FIREBASE_PROJECT_ID = account.FIREBASE_PROJECT_ID
+HOSTED_APP_URL = account.HOSTED_APP_URL
+HOSTED_ORIGINS = account.HOSTED_ORIGINS
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 ALLOWED_EMAILS_CACHE_SECONDS = 60
 MAX_BUFFER_BYTES = 4 * 1024 * 1024
@@ -450,6 +451,7 @@ def allowed_auth_sources(root: Path) -> dict[str, str]:
         except Exception:
             git_email = ""
     add(git_email, "git")
+    add((account.load_machine() or {}).get("owner_email"), "account")
     for e in os.environ.get("ORCHESTRATOR_ALLOWED_EMAILS", "").split(","):
         add(e, "environment")
     for e in read_json_file(runtime_dir(root) / "project.json").get("allowed_emails", []):
@@ -2720,6 +2722,8 @@ class UIServer(ThreadingHTTPServer):
         self.allowed_origins = set(HOSTED_ORIGINS) | {
             o.strip().rstrip("/") for o in os.environ.get("ORCHESTRATOR_ALLOWED_ORIGINS", "").split(",") if o.strip()}
         self._allowed_emails: tuple[float, Path, set[str]] | None = None
+        self._used_tickets: dict[str, float] = {}
+        self._ticket_lock = threading.Lock()
         self.sessions = SessionManager()
         self.tasks = BackgroundTasks()
         self.allowed_hosts = self._allowed_hosts()
@@ -2760,6 +2764,44 @@ class UIServer(ThreadingHTTPServer):
 
     def forget_allowed_emails(self) -> None:
         self._allowed_emails = None
+
+    def use_ticket_nonce(self, nonce: str, expires: float) -> bool:
+        """True the first time a ticket is presented; False on any replay while it is still valid."""
+        now = time.time()
+        with self._ticket_lock:
+            for seen, until in list(self._used_tickets.items()):
+                if until < now:
+                    del self._used_tickets[seen]
+            if nonce in self._used_tickets:
+                return False
+            self._used_tickets[nonce] = expires
+            return True
+
+    def start_heartbeat(self, endpoint: Callable[[], str], interval: float = account.HEARTBEAT_SECONDS) -> threading.Thread | None:
+        """While this computer is paired, tell the control plane it is up and where to reach it."""
+        if account.load_machine() is None:
+            return None
+
+        def beat() -> bool:
+            machine = account.load_machine()
+            if machine is None:
+                return False
+            try:
+                account.heartbeat(machine, endpoint())
+            except account.AccountError as exc:
+                if exc.status == 410:
+                    print("  This computer was removed from its account. Run `orchestrator connect` to add it again.", flush=True)
+                    return False
+                print(f"  Account heartbeat: {exc}", flush=True)
+            return True
+
+        def loop() -> None:
+            while beat() and not self._stopping.wait(interval):
+                pass
+
+        thread = threading.Thread(target=loop, daemon=True, name="heartbeat")
+        thread.start()
+        return thread
 
     def start_notifier(self, interval: float = 15.0) -> threading.Thread:
         """Push new inbox items and finished runs to the configured webhook, tab open or not."""
@@ -3104,8 +3146,26 @@ class UIHandler(BaseHTTPRequestHandler):
                 token = str(body.get("token") or "").strip()
                 id_token = str(body.get("id_token") or body.get("idToken") or "").strip()
 
+                ticket = str(body.get("ticket") or "").strip()
+
                 authed_email = None
-                if id_token:
+                if ticket:
+                    # From the hosted app: the control plane vouches for who this is, for this computer only, once.
+                    machine = account.load_machine()
+                    if machine is None:
+                        raise UIError("This computer isn't connected to an account. Run `orchestrator connect` on it.", HTTPStatus.CONFLICT)
+                    try:
+                        claims = account.verify_ticket(ticket, machine)
+                    except account.AccountError as exc:
+                        raise UIError(str(exc), HTTPStatus.UNAUTHORIZED)
+                    if not self.server.use_ticket_nonce(claims["nonce"], float(claims["exp"])):
+                        raise UIError("That sign-in link was already used. Sign in again.", HTTPStatus.UNAUTHORIZED)
+                    authed_email = str(claims["email"]).lower()
+                    self.server.forget_allowed_emails()
+                    if authed_email not in self.server.allowed_emails():
+                        raise UIError(f"Email {authed_email} is not authorized for this computer.", HTTPStatus.FORBIDDEN)
+                    issued = self.server.sign_ins.create(authed_email)
+                elif id_token:
                     user_info = verify_firebase_id_token(id_token)
                     user_email = (user_info.get("email") or "").strip().lower()
                     if not user_email:
@@ -3939,10 +3999,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\033[93m  Listening on {args.host}: anyone who can reach it still needs the token above. "
               "Only bind to a private network (e.g. Tailscale).\033[0m")
     tunnel_proc = None
+    reach_url = ""  # the https origin browsers reach this computer at, reported to the account
     if tunnel_token:
         print("  Starting Cloudflare Named Tunnel (stable persistent token)...")
         tunnel_proc, _ = start_tunnel(args.port, token=tunnel_token)
         if public_url:
+            reach_url = public_url
             hosted_url = f"{HOSTED_APP_URL}/?backend={public_url}&token={server.token}"
             PUBLIC_URL["url"] = hosted_url
             print(f"  \033[92m✓ Stable Tunnel URL:\033[0m   {public_url}/?token={server.token}")
@@ -3954,6 +4016,7 @@ def main(argv: list[str] | None = None) -> int:
         tunnel_proc, tunnel_url = start_tunnel(args.port)
         if tunnel_url:
             effective_url = public_url or tunnel_url
+            reach_url = effective_url
             hosted_url = f"{HOSTED_APP_URL}/?backend={effective_url}&token={server.token}"
             PUBLIC_URL["url"] = hosted_url
             print(f"  \033[92m✓ Tunnel URL:\033[0m   {effective_url}/?token={server.token}")
@@ -3961,10 +4024,22 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out).\033[0m")
     elif public_url:
+        reach_url = public_url
         hosted_url = f"{HOSTED_APP_URL}/?backend={public_url}&token={server.token}"
         PUBLIC_URL["url"] = hosted_url
         print(f"  \033[92m✓ Stable Remote URL:\033[0m {public_url}/?token={server.token}")
         print(f"  \033[92m✓ Phone Web UI:\033[0m      {hosted_url}")
+    machine = account.load_machine()
+    if machine:
+        reachable = reach_url.rstrip("/") if reach_url.startswith("https://") else ""
+        if reachable:
+            print(f"  \033[92m✓ Account:\033[0m {machine.get('owner_email')} can sign in at {HOSTED_APP_URL}")
+        else:
+            print(f"  Account: connected to {machine.get('owner_email')}, but not reachable from {HOSTED_APP_URL} "
+                  "until it has an https address (--tunnel, or --public-url https://…).")
+        server.start_heartbeat(lambda: reachable)
+    else:
+        print("  Tip: run `orchestrator connect` to sign in to this computer from anywhere with Google.")
     print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
     if not args.no_open:
         open_browser(url)

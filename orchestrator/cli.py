@@ -2176,6 +2176,41 @@ def fix_command(args: argparse.Namespace) -> int:
         return run_script("new_job.py", script_args)
 
 
+def connect_command(name: str | None, status_only: bool = False) -> int:
+    from orchestrator import account
+
+    machine = account.load_machine()
+    if status_only or machine:
+        if machine:
+            print(f"Connected to {machine.get('owner_email')} as \"{machine.get('name')}\".")
+            print(f"Sign in at {account.HOSTED_APP_URL} while `orchestrator ui` runs here. `orchestrator disconnect` removes it.")
+            return 0
+        print("Not connected. Run `orchestrator connect` to add this computer to your account.")
+        return 1
+    try:
+        machine = account.connect(name)
+    except account.AccountError as exc:
+        print(f"Couldn't connect: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped. Nothing was connected.")
+        return 1
+    print(f"Connected to {machine['owner_email']}. Start `orchestrator ui` here, then sign in at {account.HOSTED_APP_URL}.")
+    return 0
+
+
+def disconnect_command() -> int:
+    from orchestrator import account
+
+    try:
+        removed = account.disconnect()
+    except account.AccountError as exc:
+        print(exc)
+        return 1
+    print("Removed this computer from its account." if removed else "This computer isn't connected to an account.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
@@ -2352,6 +2387,11 @@ def _main(argv: list[str] | None = None) -> int:
     ui_parser.add_argument("--public-url", help="Stable public or tunnel URL for remote access")
     ui_parser.add_argument("--tailscale", action="store_true", help="Bind to Tailscale interface with stable MagicDNS URL")
 
+    connect_parser = subparsers.add_parser("connect", help="Add this computer to your account, to use it from the web app")
+    connect_parser.add_argument("--name", help="What to call this computer in the web app (default: its hostname)")
+    connect_parser.add_argument("--status", action="store_true", help="Show which account this computer is connected to")
+    subparsers.add_parser("disconnect", help="Remove this computer from your account")
+
     logs_parser = subparsers.add_parser(
         "logs",
         help="App runtime logs from the central log store (setup | sessions | pull | tail)",
@@ -2433,6 +2473,10 @@ def _main(argv: list[str] | None = None) -> int:
             + (["--tailscale"] if getattr(args, "tailscale", False) else [])
         )
         return ui_main(ui_args)
+    if args.command == "connect":
+        return connect_command(args.name, args.status)
+    if args.command == "disconnect":
+        return disconnect_command()
     if args.command == "logs":
         if args.project and apply_project_env(args.project):
             return 1

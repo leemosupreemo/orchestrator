@@ -344,6 +344,100 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
         self.assertIn('location.hash = "#/";', handler_code)
 
 
+class AccountUiTests(unittest.TestCase):
+    def run_account_script(self, source: str, preload: str = ""):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        result = subprocess.run(
+            ["node", "-e", f"{preload}\nrequire(process.argv[1]);\nrequire(process.argv[2]);\n{source}",
+             str(static / "account.js"), str(static / "configuration.js")],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_account_mode_is_the_hosted_app_without_an_explicit_backend(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const hosted = A.HOSTED_ORIGINS[0];
+process.stdout.write(JSON.stringify([
+  A.active({origin: hosted, search: ""}),
+  A.active({origin: hosted, search: "?backend=https://x.example.com"}),
+  A.active({origin: "http://127.0.0.1:8765", search: ""}),
+  A.active({origin: "https://abc.trycloudflare.com", search: ""}),
+]));""")
+        self.assertEqual(result, [True, False, False, False])
+
+    def test_codes_from_links_are_kept_for_the_visit(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const store = {}; const storage = {setItem: (k, v) => { store[k] = v; }, getItem: (k) => store[k] ?? null, removeItem: (k) => { delete store[k]; }};
+const fromLink = A.pendingCode(storage, "#/connect?code=abcd-2345");
+const later = A.pendingCode(storage, "#/");
+A.clearPendingCode(storage);
+const cleared = A.pendingCode(storage, "#/");
+const tooShort = A.pendingCode(storage, "#/connect?code=AB");
+process.stdout.write(JSON.stringify({fromLink, later, cleared, tooShort, formatted: A.formatCode("ABCD2345")}));""")
+        self.assertEqual(result, {"fromLink": "ABCD2345", "later": "ABCD2345", "cleared": "", "tooShort": "", "formatted": "ABCD-2345"})
+
+    def test_pick_machine_opens_the_last_used_or_the_only_reachable_one(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const a = {id: "a", reachable: true}, b = {id: "b", reachable: true}, off = {id: "c", reachable: false};
+process.stdout.write(JSON.stringify([
+  A.pickMachine([a, b], "b")?.id ?? null,
+  A.pickMachine([a, b], null)?.id ?? null,
+  A.pickMachine([a, off], null)?.id ?? null,
+  A.pickMachine([off], "c")?.id ?? null,
+  A.pickMachine([], null)?.id ?? null,
+]));""")
+        self.assertEqual(result, ["b", None, "a", None, None])
+
+    def test_machine_list_and_add_steps(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const machines = [
+  {id: "m1", name: "<Studio>", os: "macOS 26", version: "0.1.0", reachable: true, online: true, last_seen: 100},
+  {id: "m2", name: "Laptop", reachable: false, online: true, last_seen: 100},
+  {id: "m3", name: "Old", reachable: false, online: false, last_seen: 0},
+];
+process.stdout.write(JSON.stringify({
+  list: A.renderMachines(machines, {email: "a@x.com", now: 160}),
+  empty: A.renderMachines([], {email: "a@x.com", message: "Run `orchestrator connect`"}),
+  pair: A.renderPair({name: "<Mac>", os: "macOS", version: "1"}, "ABCD2345", {email: "a@x.com"}),
+}));""")
+        self.assertEqual(result["list"].count('data-account-action="open"'), 1)  # only the reachable one opens
+        self.assertEqual(result["list"].count('data-account-action="remove"'), 3)
+        self.assertIn("&lt;Studio&gt;", result["list"])
+        self.assertNotIn("<Studio>", result["list"])
+        self.assertIn("not reachable from the web", result["list"])
+        self.assertIn("<code>orchestrator ui --tunnel</code>", result["list"])
+        self.assertIn("Add your computer", result["empty"])
+        self.assertIn("pipx install", result["empty"])
+        self.assertIn('data-account-form="code"', result["empty"])
+        self.assertIn("<code>orchestrator connect</code>", result["empty"])  # the message's `code` is shown as code
+        self.assertIn("ABCD-2345", result["pair"])
+        self.assertIn("&lt;Mac&gt;", result["pair"])
+        self.assertIn('data-account-action="claim"', result["pair"])
+
+    def test_your_computers_is_listed_only_on_the_hosted_app(self):
+        source = """
+const ids = globalThis.ConfigurationPages.groups().flatMap((g) => g.entries.map((e) => e.id));
+process.stdout.write(JSON.stringify({ids, menu: globalThis.ConfigurationPages.renderMenu().includes("#/computers")}));"""
+        local = self.run_account_script(source)
+        self.assertNotIn("computers", local["ids"])
+        self.assertFalse(local["menu"])
+        hosted = self.run_account_script(source, preload='globalThis.location = {origin: "https://swift-orch-web-20260923.web.app", search: ""};')
+        self.assertIn("computers", hosted["ids"])
+        self.assertTrue(hosted["menu"])
+
+    def test_app_loads_account_before_app(self):
+        html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
+        self.assertLess(html.index('src="account.js"'), html.index('src="app.js"'))
+        hosted = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "account.js").read_text()
+        for origin in ui.HOSTED_ORIGINS:  # the page and the server agree on where the hosted app lives
+            self.assertIn(origin, hosted)
+
+
 class ConfigurationPagesUiTests(unittest.TestCase):
     def run_configuration_script(self, source: str):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "configuration.js"
@@ -2118,8 +2212,13 @@ class AccessibilityStaticTests(unittest.TestCase):
         sso = js[js.index("const wireSso"):js.index("$(\"#redirect-fallback\")")]  # the provider buttons
         fallback = js[js.index("$(\"#redirect-fallback\")"):js.index("wireSso(\"#google-signin-btn\"")]
         self.assertLess(sso.index("signingIn = true"), sso.index("signInWithPopup"))  # set before the provider window opens
-        self.assertLess(sso.index("showSigningIn("), sso.index("api(\"auth\""))  # loading screen before the token exchange
-        self.assertEqual(sso.count("endSigningIn()"), 2)  # on success and on failure, so it can never spin forever
+        self.assertLess(sso.index("showSigningIn("), sso.index("afterProviderSignIn("))  # loading screen before the token exchange
+        self.assertEqual(sso.count("endSigningIn()"), 1)  # on failure here; on success in unlockWith, so it can never spin forever
+        unlock = js[js.index("async function unlockWith"):][:400]
+        self.assertIn("endSigningIn()", unlock)
+        after = js[js.index("async function afterProviderSignIn"):js.index("async function unlockWith")]
+        self.assertIn("api(\"auth\"", after)
+        self.assertIn("unlockWith(", after)
         # A blocked pop-up is explained, not turned into a full-page redirect: that flow dies with "missing initial state" in
         # browsers that partition storage between the site and Firebase's auth domain. It is offered, opt-in, instead.
         self.assertNotIn("signInWithRedirect", sso)

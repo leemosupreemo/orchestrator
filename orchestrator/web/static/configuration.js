@@ -19,6 +19,7 @@
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
         {id: "archived-jobs", label: "Archived Jobs", description: "Review and restore completed work.", route: "#/config/archived-jobs", enabled: true, status: null},
         {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, status: null},
+        {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, status: null, hostedOnly: true},
         {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, status: null},
       ],
     },
@@ -59,11 +60,16 @@
     return {...entry};
   }
 
+  // "Your computers" only means something on the hosted app, where you sign in to an account.
+  function shown(entry) {
+    return !entry.hostedOnly || Boolean(root.Account && root.Account.active());
+  }
+
   function groups() {
     return registry.map((group) => ({
       id: group.id,
       label: group.label,
-      entries: group.entries.map(copyEntry),
+      entries: group.entries.filter(shown).map(copyEntry),
     }));
   }
 
@@ -76,7 +82,7 @@
   }
 
   function renderMenu() {
-    return registry.map((group) => `
+    return groups().map((group) => `
       <div class="configuration-menu-group" role="group" aria-labelledby="configuration-menu-${escapeHtml(group.id)}">
         <div class="configuration-menu-heading" id="configuration-menu-${escapeHtml(group.id)}">${escapeHtml(group.label)}</div>
         ${group.entries.map((entry) => entry.enabled
@@ -157,7 +163,7 @@
   }
 
   function renderChooser() {
-    const html = registry.map((group) => `
+    const html = groups().map((group) => `
       <section class="configuration-chooser-group" aria-labelledby="configuration-chooser-${escapeHtml(group.id)}">
         <h2 id="configuration-chooser-${escapeHtml(group.id)}">${escapeHtml(group.label)}</h2>
         <div class="configuration-chooser-list">

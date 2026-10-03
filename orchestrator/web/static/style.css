@@ -1391,3 +1391,23 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .msg-new { animation: msg-in .18s ease-out; }
 @keyframes msg-in { from { opacity: 0; transform: translateY(calc(-1 * var(--space-2))); } }
 @media (prefers-reduced-motion: reduce) { .msg-new { animation: none; } }
+
+/* account (hosted app): your computers and adding one */
+.account-card { max-width: 560px; }
+.account-title { margin: 0; font-size: var(--text-xl); font-weight: 700; }
+.account-sub { margin: var(--space-2) 0 0; }
+.account-message { margin: var(--space-3) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
+.account-machines { display: flex; flex-direction: column; gap: var(--space-2); }
+.account-machine { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;
+  padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+.account-machine-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.account-status { font-size: var(--text-sm); color: var(--muted); }
+.account-status.good { color: var(--ok); }
+.account-status.warn { color: var(--warn); }
+.account-steps { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: var(--space-3); }
+.account-steps pre { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--r-md); white-space: pre-wrap; word-break: break-all; font-size: var(--text-sm); user-select: all; }
+.account-code-form { margin-top: var(--space-2); flex-wrap: wrap; }
+.account-code-form input { flex: 1 1 140px; min-width: 0; text-transform: uppercase; letter-spacing: 0.08em; }
+.account-add summary { cursor: pointer; color: var(--muted); margin-bottom: var(--space-3); }
+.account-foot { margin: 0; font-size: var(--text-sm); }

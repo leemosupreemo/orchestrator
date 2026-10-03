@@ -32,26 +32,11 @@ if (typeof window !== "undefined" && window.firebase?.auth) {
   try {
     window.firebase.auth().getRedirectResult().then(async (cred) => {
       if (!(cred && cred.user)) { if (signingIn) endSigningIn(true); return; } // no redirect was pending after all
-      if (cred && cred.user) {
-        try {
-          const idToken = await cred.user.getIdToken();
-          const currentBackend = getBackendUrl();
-          if (!currentBackend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
-            endSigningIn();
-            showSignInGate("Signed in as " + (cred.user.email || "user") + ", but Backend URL is required. Enter your Mac's backend URL below.");
-            return;
-          }
-          const res = await api("auth", { method: "POST", body: { id_token: idToken } });
-          if (res.token) localStorage.setItem("orchestrator_token", res.token);
-          toast(`Signed in as ${cred.user.email || "user"}`);
-          document.querySelector(".app")?.classList.remove("session-locked");
-          endSigningIn();
-          await refreshState();
-          route();
-        } catch (apiErr) {
-          endSigningIn();
-          showSignInGate(`Signed in as ${cred.user.email || "user"}, but could not reach backend: ${apiErr.message}`);
-        }
+      try {
+        await afterProviderSignIn(cred.user, "your account");
+      } catch (err) {
+        endSigningIn();
+        showSignInGate(err.message);
       }
     }).catch((err) => {
       if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { if (signingIn) endSigningIn(true); return; }
@@ -770,6 +755,10 @@ async function refreshState() {
     showSignInGate("Sign in with your access token to continue.");
     return;
   }
+  if (Account.active() && !backend) { // the hosted app, before a computer is chosen: just the sign-in screen
+    showSignInGate();
+    return;
+  }
   try {
     const newState = await api("state");
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
@@ -909,12 +898,196 @@ function showSigningIn(label = "Signing you in…") {
       <p class="muted">Connecting to your computer and loading your projects.</p></div></div>`;
 }
 
+// ---------------------------------------------------------------- account (hosted app)
+
+// The control plane, served by the hosted app at /cp: your computers and the one-time tickets that open them.
+async function cpApi(path, { method = "GET", body } = {}) {
+  const user = window.firebase?.auth?.().currentUser;
+  if (!user) throw Object.assign(new Error("Sign in first."), { status: 401 });
+  const res = await fetch(`/cp/${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${await user.getIdToken()}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || `${res.status} ${res.statusText}`), { status: res.status });
+  return data;
+}
+
+// After Google (or another provider): on the hosted app, find your computers; elsewhere, sign in to this server directly.
+async function afterProviderSignIn(user, name) {
+  if (Account.active()) return openAccount();
+  const backend = getBackendUrl();
+  if (!backend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
+    throw new Error(`Signed in as ${user.email || name}, but there's no computer address yet. Enter it under "Connect by address" below.`);
+  }
+  let res;
+  try {
+    res = await api("auth", { method: "POST", body: { id_token: await user.getIdToken() } });
+  } catch (apiErr) {
+    throw new Error(`Signed in as ${user.email || name}, but couldn't reach ${backend || "Orchestrator"} (${apiErr.message}). Make sure Orchestrator is running on your computer.`);
+  }
+  await unlockWith(res.token, `Signed in as ${user.email || name}`);
+}
+
+async function unlockWith(token, message) {
+  view.onclick = view.onsubmit = null; // the account screens' handlers
+  if (token) localStorage.setItem("orchestrator_token", token);
+  toast(message);
+  document.querySelector(".app")?.classList.remove("session-locked");
+  endSigningIn();
+  await refreshState();
+  route();
+}
+
+let accountPoll = null;
+function stopAccountPoll() { clearInterval(accountPoll); accountPoll = null; }
+
+// Your computers: open the one you used last (or the only one), otherwise list them. A code from a link is handled first.
+async function openAccount({ list = false, message = "" } = {}) {
+  stopAccountPoll();
+  signingIn = true; // keep background refreshes off these screens
+  const code = Account.pendingCode();
+  if (code) return showPairScreen(code);
+  showSigningIn("Finding your computers…");
+  let machines;
+  try {
+    ({ machines } = await cpApi("machines"));
+  } catch (err) {
+    if (err.status === 401) { endSigningIn(); return showSignInGate("Your sign-in expired. Sign in again."); }
+    return showAccountScreen([], err.message);
+  }
+  let remembered = null;
+  try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
+  const pick = !list && !message && Account.pickMachine(machines, remembered);
+  if (pick) return enterMachine(pick);
+  showAccountScreen(machines, message);
+}
+
+function showAccountScreen(machines, message = "") {
+  stopAccountPoll();
+  signingIn = true;
+  setHeader({ title: "Your computers", sub: "", actions: "" });
+  document.querySelector(".app")?.classList.add("session-locked");
+  const email = window.firebase?.auth?.().currentUser?.email || "";
+  const render = (list, msg) => {
+    if (view.contains(document.activeElement) && document.activeElement.matches("input")) return; // not while typing a code
+    view.innerHTML = Account.renderMachines(list, { email, message: msg });
+  };
+  render(machines, message);
+  // Watch for a computer coming online (someone just ran `orchestrator ui` on it).
+  let last = JSON.stringify(machines);
+  accountPoll = setInterval(async () => {
+    if (!document.querySelector(".account-card")) return stopAccountPoll();
+    try {
+      const { machines: fresh } = await cpApi("machines");
+      const now = JSON.stringify(fresh);
+      if (now !== last) { last = now; machines = fresh; render(fresh, message); }
+    } catch { /* keep the last list */ }
+  }, 5000);
+
+  view.onsubmit = async (event) => {
+    const form = event.target.closest("[data-account-form=code]");
+    if (!form) return;
+    event.preventDefault();
+    const code = Account.normalizeCode(form.code.value);
+    if (code.length !== Account.CODE_LENGTH) return toast(`The code has ${Account.CODE_LENGTH} letters and numbers, like ABCD-2345.`, "warning");
+    showPairScreen(code);
+  };
+  view.onclick = async (event) => {
+    const button = event.target.closest("[data-account-action]");
+    if (!button || button.disabled) return;
+    const action = button.dataset.accountAction;
+    if (action === "open") {
+      const machine = machines.find((m) => m.id === button.dataset.id);
+      if (machine) enterMachine(machine);
+    } else if (action === "remove") {
+      if (!confirm(`Remove ${button.dataset.name} from your account? You can add it again with \`orchestrator connect\`.`)) return;
+      button.disabled = true;
+      try {
+        await cpApi("machines/remove", { method: "POST", body: { machine_id: button.dataset.id } });
+        toast(`Removed ${button.dataset.name}`);
+        openAccount({ list: true });
+      } catch (err) { toast(err.message, true); button.disabled = false; }
+    } else if (action === "refresh") {
+      openAccount({ list: true });
+    } else if (action === "sign-out") {
+      stopAccountPoll();
+      endSigningIn();
+      lockSession();
+    }
+  };
+}
+
+async function showPairScreen(code) {
+  stopAccountPoll();
+  signingIn = true;
+  setHeader({ title: "Add a computer", sub: "", actions: "" });
+  document.querySelector(".app")?.classList.add("session-locked");
+  const done = (message) => { Account.clearPendingCode(); if (location.hash.startsWith("#/connect")) history.replaceState(null, "", "#/"); openAccount({ list: true, message }); };
+  let preview;
+  try {
+    preview = await cpApi("pair/preview", { method: "POST", body: { code } });
+  } catch (err) {
+    if (err.status === 401) { endSigningIn(); return showSignInGate("Sign in to add your computer to your account."); }
+    return done(err.message);
+  }
+  const email = window.firebase?.auth?.().currentUser?.email || "";
+  view.innerHTML = Account.renderPair(preview, code, { email });
+  view.onsubmit = null;
+  view.onclick = async (event) => {
+    const button = event.target.closest("[data-account-action]");
+    if (!button || button.disabled) return;
+    if (button.dataset.accountAction === "cancel-pair") return done("");
+    if (button.dataset.accountAction !== "claim") return;
+    button.disabled = true;
+    try {
+      const { machine } = await cpApi("pair/claim", { method: "POST", body: { code } });
+      toast(`Added ${machine.name}`);
+      done(`${machine.name} is on your account. Start \`orchestrator ui --tunnel\` on it and it will show as online here.`);
+    } catch (err) { done(err.message); }
+  };
+}
+
+// Open one computer: the control plane signs a ticket only it accepts, and it trades that for a sign-in of its own.
+async function enterMachine(machine) {
+  stopAccountPoll();
+  signingIn = true;
+  showSigningIn(`Opening ${machine.name}…`);
+  try {
+    const { ticket, endpoint } = await cpApi("machine/ticket", { method: "POST", body: { machine_id: machine.id } });
+    localStorage.setItem("orchestrator_backend", endpoint);
+    localStorage.setItem(Account.MACHINE_KEY, machine.id);
+    localStorage.removeItem("orchestrator_token");
+    let res;
+    try {
+      res = await api("auth", { method: "POST", body: { ticket } });
+    } catch (err) {
+      throw new Error(`Couldn't reach ${machine.name} at ${endpoint} (${err.message}). Check that \`orchestrator ui --tunnel\` is still running on it.`);
+    }
+    await unlockWith(res.token, `Opened ${machine.name}`);
+  } catch (err) {
+    openAccount({ list: true, message: err.message });
+  }
+}
+
+// The hosted app remembers your Google sign-in, so coming back opens your computer without the sign-in screen.
+if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) {
+  try {
+    window.firebase.auth().onAuthStateChanged((user) => {
+      if (user && !signingIn && document.querySelector(".app")?.classList.contains("session-locked") && $("#google-signin-btn")) openAccount();
+    });
+  } catch { /* auth unavailable: the sign-in screen still works */ }
+}
+
 function showSignInGate(message) {
   setHeader({ title: "Sign In", sub: "", actions: "" });
   document.querySelector(".app")?.classList.add("session-locked");
   const backend = getBackendUrl() || "";
   const token = getToken() || "";
   const isRemote = window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost";
+  const hosted = Account.active();
+  const hostedUser = hosted ? window.firebase?.auth?.().currentUser : null;
   view.innerHTML = `
     <div class="signin-wrap">
       <div class="signin-card">
@@ -942,7 +1115,8 @@ function showSignInGate(message) {
             <span>Continue with GitHub</span>
           </button>
         </div>
-        ${isRemote ? `
+        ${hostedUser ? `<button type="button" class="btn primary" id="account-continue-btn" style="width: 100%; justify-content: center;">Continue as ${esc(hostedUser.email || "you")}</button>` : ""}
+        ${isRemote && !hosted ? `
         <div class="backend-config-card" style="margin-top: 0.75rem; padding: 0.65rem 0.85rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.82rem; text-align: left;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
             <span style="font-weight: 600; color: var(--text);">Mac Backend URL:</span>
@@ -953,14 +1127,14 @@ function showSignInGate(message) {
         </div>
         ` : ""}
         ${blockedProvider ? `<p class="muted signin-fallback">Pop-ups still blocked? <button type="button" class="linklike" id="redirect-fallback">Try full-page ${esc(blockedProvider.name)} sign-in</button>. Some browsers can't finish this way; the access token below always works.</p>` : ""}
-        <details class="manual-token-details" open style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
-          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center; font-weight: 500;">Sign in with CLI access token</summary>
+        <details class="manual-token-details" ${hosted ? "" : "open"} style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center; font-weight: 500;">${hosted ? "Connect by address and access token" : "Sign in with CLI access token"}</summary>
           <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
             <label class="field">
               <span>CLI Access Token</span>
               <input type="password" id="signin-token" name="token" value="${esc(token)}" placeholder="Paste access token from terminal" autocomplete="current-password" style="font-family: var(--mono); font-size: 0.9rem;">
             </label>
-            ${!isRemote ? `
+            ${!isRemote || hosted ? `
             <label class="field">
               <span>Backend URL</span>
               <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(backend)}" style="font-size: 0.85rem;">
@@ -972,6 +1146,8 @@ function showSignInGate(message) {
       </div>
     </div>
   `;
+
+  $("#account-continue-btn")?.addEventListener("click", () => openAccount());
 
   const syncBackend = () => {
     const el = $("#signin-backend");
@@ -1013,24 +1189,7 @@ function showSignInGate(message) {
           throw popupErr;
         }
         showSigningIn(`Signed in with ${name}. Connecting…`);
-        const idToken = await cred.user.getIdToken();
-        const currentBackend = getBackendUrl();
-        if (!currentBackend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
-          throw new Error("Signed in with " + name + ", but your Mac Backend URL is not set. Enter your Backend URL below to connect.");
-        }
-        let res;
-        try {
-          res = await api("auth", { method: "POST", body: { id_token: idToken } });
-        } catch (apiErr) {
-          const target = currentBackend || "local backend";
-          throw new Error(`Signed in as ${cred.user.email || name + " user"}, but could not reach ${target} (${apiErr.message}). Make sure Orchestrator is running on your Mac.`);
-        }
-        if (res.token) localStorage.setItem("orchestrator_token", res.token);
-        toast(`Signed in as ${cred.user.email || `${name} user`}`);
-        document.querySelector(".app")?.classList.remove("session-locked");
-        endSigningIn();
-        await refreshState();
-        route();
+        await afterProviderSignIn(cred.user, name);
       } catch (err) {
         endSigningIn();
         if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { btn.disabled = false; btn.innerHTML = originalHtml; return; }
@@ -3932,6 +4091,7 @@ function resolveRoute() {
     const section = ConfigurationPages.resolve(parts[1]);
     return { page: "config", args: section ? [section.id] : [], nav: "config", query };
   }
+  if (parts[0] === "connect" || parts[0] === "computers") return { page: parts[0], args: [], nav: null, query };
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "projects", query };
   if (parts[0] === "product") return { page: "product", args: [], nav: "home", query };
   if (parts[0] === "docs") return { page: "docs", args: parts.slice(1), nav: "docs", query };
@@ -3958,6 +4118,12 @@ async function route() {
   if (dlg.open) dlg.close("cancel");
 
   const r = resolveRoute();
+  if (r.page === "connect" || r.page === "computers") { // the hosted app's account screens
+    if (!Account.active()) { location.hash = "#/"; return; }
+    if (r.page === "connect") Account.pendingCode();
+    if (!window.firebase?.auth?.().currentUser) return showSignInGate(r.page === "connect" ? "Sign in to add your computer to your account." : "");
+    return openAccount({ list: r.page === "computers" });
+  }
   current = { page: r.page, args: r.args, query: r.query, rendered: "" };
   document.querySelectorAll(".nav [data-route]").forEach((item) => item.classList.toggle("active", item.dataset.route === r.nav));
   renderSetupFab();
