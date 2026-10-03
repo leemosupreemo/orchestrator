@@ -746,6 +746,38 @@ process.stdout.write(JSON.stringify({
         from orchestrator import mac_readiness
         self.assertEqual(sorted(result["keys"]), sorted(f"{check}:{state}" for check, state in mac_readiness.FIXES))
 
+    def test_add_a_mac_stays_hidden_until_releases_are_published_with_it(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        result = self.run_account_script("""
+const A = globalThis.Account;
+process.stdout.write(JSON.stringify({
+  released: A.MAC_APP_RELEASED,
+  hidden: A.renderMachines([], {email: "a@x.com", now: 1}),
+  shown: A.renderMachines([], {email: "a@x.com", now: 1, macAppReleased: true}),
+}));""")
+        published = (static / "install-mac.sh").exists() and (static / "releases" / "macos.json").exists()
+        self.assertEqual(result["released"], published)  # turn Add a Mac on only together with what it points at
+        self.assertNotIn('data-account-form="enroll"', result["hidden"])
+        self.assertIn('data-account-form="enroll"', result["shown"])
+
+    def test_enroll_command_quotes_what_people_type(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+process.stdout.write(JSON.stringify({
+  url: A.enrollCommand("enroll_abc-_1", "git@github.com:me/app.git", "https://host.example"),
+  folder: A.enrollCommand("enroll_abc", "~/My Projects/it's here; rm -rf ~", "https://host.example"),
+  empty: A.enrollCommand("enroll_abc", "", "https://host.example"),
+  live: A.renderEnroll("cmd <b>", 125),
+  expired: A.renderEnroll("cmd", 0),
+}));""")
+        self.assertEqual(result["url"], "curl -fsSL https://host.example/install-mac.sh | sh -s -- --token enroll_abc-_1 --project git@github.com:me/app.git")
+        self.assertTrue(result["folder"].endswith("""--project '~/My Projects/it'"'"'s here; rm -rf ~'"""))
+        self.assertIn("--project PROJECT", result["empty"])
+        self.assertIn("3 more minutes", result["live"])
+        self.assertIn("cmd &lt;b&gt;", result["live"])
+        self.assertIn("expired", result["expired"])
+        self.assertNotIn("cmd", result["expired"])
+
     def test_the_pages_required_version_is_what_this_runner_provides(self):
         # Bump both together: the page asks for exactly what the runner in this repo reports.
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "account.js").read_text()

@@ -20,7 +20,17 @@ Git, the GitHub CLI, Xcode and the AI tools' CLIs are still installed separately
 
 ## Updates
 
-Updates are checked only when someone chooses **Check for Updates**. Sparkle verifies each update's signature. The app is replaced only after the agent confirms that no work is running. If work is running, the update waits. If an update is ready to install when the menu quits, quitting is refused until the work finishes. Logout and shutdown are never blocked.
+Sparkle verifies each update's signature. The app is replaced only after the agent confirms that no work is running; if work is running, the update waits.
+
+- **Install updates automatically** (Settings, on by default) checks every six hours, downloads in the background and installs after ten minutes with no work running. The app relaunches by itself.
+- **Check for Updates** in the menu checks right away.
+- **Update** next to a Mac in the hosted app asks that Mac to update as soon as no work is running, even with automatic updates off. Only Macs running the app show it.
+
+If an update is ready to install when the menu quits, quitting is refused until the work finishes. Logout and shutdown are never blocked. An update keeps the menu's login item, so Orchestrator comes back at the next login even if it installed while quitting.
+
+## Macs nobody sits at
+
+A Mac mini in a closet is set up over SSH with a one-time command from **Add a Mac nobody sits at** in the hosted app. See `docs/mac-mini.md`.
 
 ## Moving from `orchestrator service install`
 
@@ -59,4 +69,12 @@ Signed mode runs in the protected `macos-release` environment and needs:
 
 `release.py` refuses to start without each of these, and refuses Apple Development and Apple Distribution certificates, because only Developer ID can be notarized for direct download.
 
-Publishing comes after that and is deliberate: a GitHub release with both images, the Sparkle appcast (signed with the private EdDSA key, which never goes into the repository), and **Download for Mac** links on the hosted page. Keep the hosted links off until both architectures have passed clean-machine checks on macOS 13 and on a current macOS: install, pairing, setup, tunnel, port conflict, menu quit, update while busy, and migration.
+Publishing comes after that and is deliberate. For **Add a Mac**, also copy `packaging/macos/install-mac.sh` and a release record to the hosted folder (`orchestrator/web/static/install-mac.sh` and `releases/macos.json`) and set `MAC_APP_RELEASED = true` in `account.js`; a test requires all three together. The record is:
+
+```json
+{"version": "0.2.0",
+ "arm64": {"url": "https://…/Orchestrator-0.2.0-arm64.dmg", "sha256": "…"},
+ "x86_64": {"url": "https://…/Orchestrator-0.2.0-x86_64.dmg", "sha256": "…"}}
+```
+
+The digests come from the `.json` file `release.py` writes beside each image. Then publish a GitHub release with both images, the Sparkle appcast (signed with the private EdDSA key, which never goes into the repository), and **Download for Mac** links on the hosted page. Keep the hosted links off until both architectures have passed clean-machine checks on macOS 13 and on a current macOS: install, pairing, setup, tunnel, port conflict, menu quit, update while busy, and migration.

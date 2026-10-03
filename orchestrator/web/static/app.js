@@ -1003,6 +1003,11 @@ function showAccountScreen(machines, message = "") {
   }, 5000);
 
   view.onsubmit = async (event) => {
+    const enroll = event.target.closest("[data-account-form=enroll]");
+    if (enroll) {
+      event.preventDefault();
+      return makeEnrollCommand(enroll);
+    }
     const form = event.target.closest("[data-account-form=code]");
     if (!form) return;
     event.preventDefault();
@@ -1032,6 +1037,9 @@ function showAccountScreen(machines, message = "") {
         toast(`${button.dataset.name} will update once no work is running on it.`);
         openAccount({ list: true });
       } catch (err) { toast(err.message, true); button.disabled = false; }
+    } else if (action === "copy-enroll") {
+      const command = view.querySelector("[data-enroll-command]")?.textContent || "";
+      try { await navigator.clipboard.writeText(command); toast("Copied"); } catch { toast("Select the command and copy it.", "warning"); }
     } else if (action === "refresh") {
       openAccount({ list: true });
     } else if (action === "sign-out") {
@@ -1040,6 +1048,29 @@ function showAccountScreen(machines, message = "") {
       lockSession();
     }
   };
+}
+
+// The token is shown once and kept only in the page; a new visit makes a new one.
+let enrollTimer = null;
+async function makeEnrollCommand(form) {
+  const button = form.querySelector("button[type=submit]");
+  const result = form.parentElement.querySelector("[data-enroll-result]");
+  button.disabled = true;
+  try {
+    const created = await cpApi("enroll/create", { method: "POST", body: {} });
+    const command = Account.enrollCommand(created.token, form.project.value.trim(), location.origin);
+    const deadline = Date.now() + created.expires_in * 1000;
+    clearInterval(enrollTimer);
+    const draw = () => {
+      const left = Math.round((deadline - Date.now()) / 1000);
+      if (!result.isConnected) return clearInterval(enrollTimer);
+      result.innerHTML = Account.renderEnroll(command, left);
+      if (left <= 0) clearInterval(enrollTimer);
+    };
+    draw();
+    enrollTimer = setInterval(draw, 30000);
+  } catch (err) { toast(err.message, true); }
+  button.disabled = false;
 }
 
 async function showPairScreen(code) {

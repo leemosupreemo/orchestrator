@@ -5,6 +5,10 @@
 
   const HOSTED_ORIGINS = ["https://swift-orch-web-20260923.web.app", "https://swift-orch-web-20260923.firebaseapp.com"];
   const INSTALL_COMMAND = 'pipx install "git+https://github.com/leemosupreemo/orchestrator.git"';
+  // Add a Mac (over SSH) stays hidden until signed app releases are published: install-mac.sh and releases/macos.json
+  // must be in this folder first (a test holds the two together). See docs/macos-desktop.md.
+  const MAC_APP_RELEASED = false;
+  const ENROLL_SCRIPT = "install-mac.sh";
   const PAIR_KEY = "orchestrator_pair_code";
   const MACHINE_KEY = "orchestrator_machine";
   const CODE_LENGTH = 8;
@@ -119,7 +123,36 @@
       </ol>`;
   }
 
-  function renderMachines(machines, {email = "", message = "", now} = {}) {
+  function shellQuote(value) {
+    return /^[A-Za-z0-9_@%+=:,./~-]+$/.test(value) ? value : `'${String(value).replace(/'/g, `'"'"'`)}'`;
+  }
+
+  // The one-line command Add a Mac shows; `origin` is the hosted app serving the install script.
+  function enrollCommand(token, project, origin) {
+    return `curl -fsSL ${origin}/${ENROLL_SCRIPT} | sh -s -- --token ${shellQuote(token)} --project ${shellQuote(project || "PROJECT")}`;
+  }
+
+  function addMacSteps() {
+    return `<div class="account-steps">
+        <p class="muted">For a Mac you reach over SSH, like a Mac mini in a closet. It needs automatic login for the user Orchestrator runs as.</p>
+        <form class="row gap-10" data-account-form="enroll">
+          <input name="project" autocomplete="off" spellcheck="false" class="mono" aria-label="Project: a git URL or a folder on that Mac"
+                 placeholder="git@github.com:you/app.git or ~/Projects/app">
+          <button type="submit" class="btn primary">Make a command</button>
+        </form>
+        <div data-enroll-result></div>
+      </div>`;
+  }
+
+  function renderEnroll(command, secondsLeft) {
+    if (secondsLeft <= 0) return `<p class="muted">That command expired. Make a new one.</p>`;
+    const minutes = Math.ceil(secondsLeft / 60);
+    return `<p>Run this on the Mac, over SSH, as the user Orchestrator should work as. It works once, for ${minutes} more minute${minutes === 1 ? "" : "s"}:</p>
+      <pre class="mono" data-enroll-command>${escapeHtml(command)}</pre>
+      <button type="button" class="btn small ghost" data-account-action="copy-enroll">Copy</button>`;
+  }
+
+  function renderMachines(machines, {email = "", message = "", now, macAppReleased = MAC_APP_RELEASED} = {}) {
     const list = machines || [];
     const rows = list.map((m) => {
       const s = machineStatus(m, now);
@@ -152,6 +185,7 @@
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
         <details class="account-add"><summary>Add another computer</summary>${addSteps()}</details>` : addSteps()}
+      ${macAppReleased ? `<details class="account-add"><summary>Add a Mac nobody sits at</summary>${addMacSteps()}</details>` : ""}
       <p class="muted account-foot">Signed in as ${escapeHtml(email)} · <button type="button" class="linklike" data-account-action="refresh">Refresh</button> · <button type="button" class="linklike" data-account-action="sign-out">Sign out</button></p>
     </div></div>`;
   }
@@ -177,7 +211,8 @@
   }
 
   root.Account = {
-    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, outdated,
+    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
+    enrollCommand, renderEnroll, outdated,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
     renderMachines, renderPair,
   };
