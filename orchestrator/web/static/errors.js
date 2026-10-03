@@ -2,8 +2,11 @@
   "use strict";
 
   // Pairs a raw error message with what to do about it. First match wins; unknown errors pass through unchanged.
+  // A browser's own wording for "the request never arrived" ("Failed to fetch") means nothing to a person, so it is replaced, not repeated.
+  const REPLACE = [
+    [/failed to fetch|networkerror|load failed|network request failed/i, "Can't reach Orchestrator. Check that it's running and that you're online."],
+  ];
   const HINTS = [
-    [/failed to fetch|networkerror|load failed|network request failed/i, "Can't reach Orchestrator. Check that it's still running and that you're online, then try again."],
     [/job not found|archived job not found/i, "It may have been archived or discarded. Archived jobs can be restored from Configuration > Archived Jobs."],
     [/rejected the key|didn't accept the token/i, "Check the key and the region on the Measure page."],
     [/webhook answered 40[134]/i, "The address may have been revoked or mistyped. Create a new incoming webhook and paste it again."],
@@ -17,6 +20,8 @@
   function explain(message) {
     const text = String(message || "").trim();
     if (!text) return "Something went wrong. Try again.";
+    const replaced = REPLACE.find(([pattern]) => pattern.test(text));
+    if (replaced) return replaced[1];
     const hit = HINTS.find(([pattern]) => pattern.test(text));
     if (!hit) return text;
     const base = /[.!?]$/.test(text) ? text : `${text}.`;

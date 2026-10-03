@@ -71,7 +71,6 @@
       <button class="btn ghost lock-btn" id="lock-btn" style="margin-top: 0.25rem;"><svg class="icon"><use href="#i-lock"/></svg>Lock session</button>
     </aside>
     <main class="main">
-      <div id="conn-banner" class="notice bad" role="status" hidden>Can't reach Orchestrator right now. You're seeing the last data it sent; retrying…</div>
       <header class="topbar">
         <div class="topbar-text">
           <h1 id="page-title" tabindex="-1">Home</h1>
@@ -105,7 +104,7 @@
       </div>
     </form>
   </dialog>
-  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="messages" class="messages" popover="manual" role="region" aria-label="Messages" hidden></div>
 
   <script src="project-picker.js"></script>
   <script src="configuration.js"></script>
@@ -113,6 +112,7 @@
   <script src="markdown.js"></script>
   <script src="palette.js"></script>
   <script src="errors.js"></script>
+  <script src="messages.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"
           integrity="sha384-J4qzUjBl1FxyLsl/kQPQIOeINsmp17OHYXDOMpMxlKX53ZfYsL+aWHpgArvOuof9" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"

@@ -136,19 +136,27 @@ async function api(path, { method = "GET", body } = {}) {
   return data;
 }
 
-function toast(message, bad = false, action = null) {
-  const el = $("#toast");
-  el.textContent = bad ? Errors.explain(message) : message;
-  if (action) { // e.g. { label: "Undo", run: async () => … }: stays long enough to be noticed
-    const btn = document.createElement("button");
-    btn.type = "button"; btn.className = "toast-action"; btn.textContent = action.label;
-    btn.addEventListener("click", async () => { el.hidden = true; try { await action.run(); } catch (e) { toast(e.message, true); } });
-    el.append(" ", btn);
-  }
-  el.className = `toast${bad ? " bad" : ""}`;
-  el.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.hidden = true; }, action ? 10000 : 3500);
+// Messages: one overlay for everything the app tells you (see messages.js). `toast` is the short form used everywhere:
+//   toast("Saved")                      success
+//   toast(error.message, true)          error, with a hint about what to do (Errors.explain)
+//   toast("Pick a platform first", "warning")   or "info"
+//   toast("Deleted", false, { label: "Undo", run })   success with an action
+const messageStore = Messages.createStore();
+const messageUi = Messages.mount($("#messages"), messageStore, { onActionError: (e) => toast(e.message, true) });
+
+function notify(kind, text, options = {}) {
+  const id = messageStore.push({ kind, text, ...options });
+  messageUi.render();
+  return id;
+}
+
+function clearMessage(id) {
+  if (messageStore.dismiss(id)) messageUi.render();
+}
+
+function toast(message, kind = false, action = null) {
+  const level = kind === true ? "error" : typeof kind === "string" ? kind : "success";
+  return notify(level, level === "error" ? Errors.explain(message) : message, action ? { actions: [action] } : {});
 }
 
 function ago(ts) {
@@ -349,7 +357,7 @@ function addProjectsDialog(trackedProjects) {
     const values = Object.fromEntries(new FormData(form).entries());
     const root = String(values.root || "").trim();
     if (!root) {
-      toast("Enter a project directory path", true);
+      toast("Enter a project directory path", "warning");
       return;
     }
     const active = Boolean(values.active);
@@ -381,7 +389,7 @@ function addProjectsDialog(trackedProjects) {
   const onCancel = (event) => {
     if (!pendingAdds) return;
     event.preventDefault();
-    toast("Wait for the project to finish adding");
+    toast("Wait for the project to finish adding", "info");
   };
   const onKeydown = (event) => {
     if (event.key !== "Enter" || !event.target.matches('input[name="root"], input[name="name"]')) return;
@@ -468,7 +476,7 @@ const dialogs = {
     if (values) {
       const logs = values.pull_device ? "cloud:latest" : (values.log_text || "");
       if (logs) runAction("debug", { job: params.job, logs });
-      else toast("No logs specified");
+      else toast("No logs specified", "warning");
     }
   },
   async attach_mockup(params) {
@@ -633,7 +641,7 @@ const dialogs = {
     if (values) {
       if (values.destination === "direct") {
         window.open(`/api/jobs/${encodeURIComponent(params.job)}/export-zip`, "_blank");
-        toast("Download started");
+        toast("Download started", "info");
       } else {
         await runAction("export_job", { job: params.job, destination: values.destination });
       }
@@ -747,9 +755,9 @@ if (configurationTrigger && configurationMenu) {
 
 let consecutiveAuthFailures = 0;
 
+let connectionLost = false;
 let pollFailures = 0; // consecutive failed background polls
 let lastInbox = null; // previous inbox items, to spot new things waiting on you
-let lastPrdNotice; // undefined until the first poll, so an update that happened while away isn't announced twice
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
 async function refreshState() {
@@ -765,15 +773,11 @@ async function refreshState() {
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
     lastRuns = newState.runs;
     lastInbox = newState.inbox || [];
-    const note = newState.product_notice;
-    if (note && note.id !== lastPrdNotice) { // the AI updated the product requirements by itself: say so once
-      if (lastPrdNotice !== undefined) { toast(`Product requirements updated: ${note.summary}`); Notifications.show({ title: "Product requirements updated", body: note.summary, key: `prd:${note.id}`, hash: "#/product?history=" + encodeURIComponent(note.id) }); }
-      lastPrdNotice = note.id;
-    } else if (!note && lastPrdNotice === undefined) lastPrdNotice = null;
+    showPrdUpdate(newState.product_notice);
     state = newState;
     consecutiveAuthFailures = 0;
     pollFailures = 0;
-    $("#conn-banner").hidden = true;
+    if (connectionLost) { connectionLost = false; clearMessage("connection"); notify("success", "Back online.", { id: "connection-restored", timeout: 2500 }); }
     if (newState.token) {
       localStorage.setItem("orchestrator_token", newState.token);
     }
@@ -791,7 +795,10 @@ async function refreshState() {
     // Transient network errors, tunnel drops, or 502/504 errors should NEVER lock the user out!
     console.warn("Background state refresh notice (will retry):", e.message);
     pollFailures += 1;
-    if (pollFailures >= 2) $("#conn-banner").hidden = false; // two misses in a row: say so, rather than showing stale data silently
+    if (pollFailures >= 2 && !connectionLost) { // two misses in a row: say so, rather than showing stale data silently
+      connectionLost = true;
+      notify("warning", "Can't reach Orchestrator. Showing the last data it sent. Retrying…", { id: "connection", sticky: true });
+    }
     if (!state.project) {
       showSignInGate(`Unable to reach Orchestrator on your Mac: ${e.message}`);
     }
@@ -984,7 +991,7 @@ function showSignInGate(message) {
     if (!btn) return;
     btn.addEventListener("click", async () => {
       if (!window.firebase?.auth) {
-        toast("Firebase Auth is loading or unavailable", true);
+        toast("Firebase Auth is loading or unavailable", "warning");
         return;
       }
       syncBackend();
@@ -1113,7 +1120,7 @@ async function lockSession() {
   state = { project: null, runs: [], actions: {} };
   const badge = $("#running-badge");
   if (badge) badge.hidden = true;
-  toast("Session locked");
+  toast("Session locked", "info");
   showSignInGate("Session locked. Please sign in again.");
 }
 
@@ -1355,7 +1362,7 @@ function renderSetupPanel() {
 async function openSetupPanel() {
   const panel = $("#setup-panel");
   await loadSetup(true);
-  if (!setupState) return toast("The setup checklist isn't available yet. It will appear after your next Orchestrator update.", true);
+  if (!setupState) return toast("The setup checklist isn't available yet. It will appear after your next Orchestrator update.", "info");
   renderSetupPanel();
   panel.hidden = false;
 }
@@ -1487,7 +1494,7 @@ document.addEventListener("click", async (e) => {
   const jobId = mv.dataset.jobFeature;
   try {
     const [{ features }, { job }] = [await api("features"), await api(`jobs/${encodeURIComponent(jobId)}`)];
-    if (!features.length) { toast("Create a feature first.", true); location.hash = "#/features"; return; }
+    if (!features.length) { toast("Create a feature first.", "warning"); location.hash = "#/features"; return; }
     const v = await formDialog("Move to feature", `<label class="field"><span>Feature</span><select name="feature">
       <option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${f.id === job.feature ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>`, "Move");
     if (!v) return;
@@ -1937,7 +1944,7 @@ pages.new = async (_, query) => {
     $("#nj-fields input, #nj-fields textarea")?.focus({ preventScroll: true });
     $("#nj-files")?.addEventListener("change", async (e) => {
       for (const file of [...e.target.files]) {
-        if (file.size > NJ_UPLOAD_LIMIT) { toast(`${file.name} is over ${NJ_UPLOAD_LIMIT / 1048576} MB`, true); continue; }
+        if (file.size > NJ_UPLOAD_LIMIT) { toast(`${file.name} is over ${NJ_UPLOAD_LIMIT / 1048576} MB`, "warning"); continue; }
         st.uploading += 1; chips();
         try { const type = st.type; const saved = await uploadFile(file); (st.uploads[type] ||= []).push(saved); } catch (err) { toast(`${file.name}: ${err.message}`, true); }
         st.uploading -= 1; chips();
@@ -1987,7 +1994,7 @@ pages.new = async (_, query) => {
       await render();
       form().addEventListener("submit", (e) => {
         e.preventDefault();
-        if (st.uploading) { toast("Wait for the upload to finish.", true); return; }
+        if (st.uploading) { toast("Wait for the upload to finish.", "warning"); return; }
         capture();
         let links = [];
         try { links = JSON.parse(form().elements.links?.value || "[]"); } catch { /* none */ }
@@ -2505,31 +2512,31 @@ function prdSnippet(md, n = 180) {
   return text.length > n ? `${text.slice(0, n).replace(/\s+\S*$/, "")}…` : text;
 }
 
-// The banner shown on Home and on the Product page after the AI updated the document by itself.
-function prdNoticeHtml(n) {
-  return `<div class="banner attention prd-notice" role="status"><p><strong>The product requirements were updated${n.job_title ? ` after “${esc(n.job_title)}”` : ""}.</strong> ${esc(n.summary)}</p>
-    <div class="row gap-10"><a class="btn small" href="#/product?history=${encodeURIComponent(n.id)}">See what changed</a>
-      <button type="button" class="btn small" data-prd-undo="${esc(n.id)}">Undo</button>
-      <button type="button" class="btn small ghost" data-prd-dismiss>Dismiss</button></div></div>`;
+// The AI updated the product requirements by itself: say so once, over the page, with ways to look at it or take it back.
+let lastPrdNotice; // undefined until the first poll, so an update that happened while you were away is shown but doesn't also fire an alert
+function showPrdUpdate(note) {
+  if (!note) { if (lastPrdNotice) clearMessage(`prd:${lastPrdNotice}`); lastPrdNotice = null; return; }
+  if (note.id === lastPrdNotice) return;
+  const first = lastPrdNotice === undefined;
+  if (lastPrdNotice) clearMessage(`prd:${lastPrdNotice}`);
+  lastPrdNotice = note.id;
+  const seen = () => api("product/dismiss", { method: "POST", body: {} }).catch(() => {});
+  notify("info", `Product requirements updated${note.job_title ? ` after “${note.job_title}”` : ""}: ${note.summary}`, {
+    id: `prd:${note.id}`, sticky: true, onDismiss: seen,
+    actions: [{ label: "See what changed", href: `#/product?history=${encodeURIComponent(note.id)}`, after: seen }, { label: "Undo", run: () => undoPrdUpdate(note.id) }],
+  });
+  if (!first) Notifications.show({ title: "Product requirements updated", body: note.summary, key: `prd:${note.id}`, hash: `#/product?history=${encodeURIComponent(note.id)}` });
 }
 
-document.addEventListener("click", async (e) => {
-  const dismiss = e.target.closest("[data-prd-dismiss]");
-  const undo = e.target.closest("[data-prd-undo]");
-  if (!dismiss && !undo) return;
-  try {
-    if (undo) {
-      const { history } = await api("product");
-      const i = history.findIndex((h) => h.id === undo.dataset.prdUndo);
-      if (i === -1 || !history[i + 1]) throw new Error("There's no earlier version to go back to.");
-      await api("product/revert", { method: "POST", body: { id: history[i + 1].id } });
-      toast("Went back to the version before that update");
-    }
-    await api("product/dismiss", { method: "POST", body: {} });
-    state.product_notice = null;
-    route();
-  } catch (err) { toast(err.message, true); }
-});
+async function undoPrdUpdate(noteId) {
+  const { history } = await api("product");
+  const i = history.findIndex((h) => h.id === noteId);
+  if (i === -1 || !history[i + 1]) throw new Error("There's no earlier version to go back to.");
+  await api("product/revert", { method: "POST", body: { id: history[i + 1].id } });
+  await api("product/dismiss", { method: "POST", body: {} });
+  toast("Went back to the version before that update");
+  route();
+}
 
 // Slow model work runs on the server in the background: start it, then ask how it is getting on. (A tunnel closes any single
 // request held open for about 100 seconds, so waiting on one long request made slower models look like failures.)
@@ -2552,7 +2559,6 @@ function productStripHtml(p) {
   const lead = p.sections.find((x) => x.id === "pitch" && x.filled) || p.sections.find((x) => x.filled);
   return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2>Product</h2><a href="#/product">Open</a></div>
     <div class="card-b stack">
-      ${p.notice ? prdNoticeHtml(p.notice) : ""}
       ${lead ? `<p class="product-pitch">${esc(prdSnippet(lead.body))}</p>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build. All of it is optional.</p>
            <div class="row gap-10">${p.can_draft ? `<a class="btn small primary" href="#/product?draft=1">Draft it from my project</a><a class="btn small" href="#/product">Write it</a>` : `<a class="btn small primary" href="#/product">Write it</a>`}<a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
@@ -2579,7 +2585,6 @@ pages.product = async (_, query) => {
       <div class="meta">${esc(ago(v.at))}${v.summary ? ` · ${esc(v.summary)}` : ""}</div><div class="prd-diff" hidden></div></div>
       <div class="side"><button type="button" class="btn small ghost" data-prd-diff="${esc(v.id)}">See changes</button>${i === 0 ? "" : `<button type="button" class="btn small" data-prd-restore="${esc(v.id)}">Restore</button>`}</div></div>`).join("");
   const render = () => `
-      ${p.notice ? prdNoticeHtml(p.notice) : ""}
       <div id="prd-panel"></div>
       ${p.sections.map(sectionCard).join("")}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
@@ -2631,7 +2636,7 @@ pages.product = async (_, query) => {
         $("#prd-add-file")?.addEventListener("click", () => file.click());
         file?.addEventListener("change", async () => {
           for (const f of file.files) {
-            if (f.size > NJ_UPLOAD_LIMIT) { toast(`${f.name} is over 25 MB`, true); continue; }
+            if (f.size > NJ_UPLOAD_LIMIT) { toast(`${f.name} is over 25 MB`, "warning"); continue; }
             try { p = await uploadFile(f, "product/design"); toast(`Added ${f.name}`); } catch (e) { toast(e.message, true); }
           }
           file.value = ""; await reload();
@@ -2682,8 +2687,8 @@ pages.product = async (_, query) => {
       };
 
       const readPrd = async ({ file, text }) => {
-        if (file && file.size > NJ_UPLOAD_LIMIT) { toast("That file is over 25 MB.", true); return importPanel(); }
-        if (file && !/\.(md|markdown|txt|docx|pdf)$/i.test(file.name)) { toast("Use a markdown, text, Word or PDF file, or paste the text.", true); return importPanel(); }
+        if (file && file.size > NJ_UPLOAD_LIMIT) { toast("That file is over 25 MB.", "warning"); return importPanel(); }
+        if (file && !/\.(md|markdown|txt|docx|pdf)$/i.test(file.name)) { toast("Use a markdown, text, Word or PDF file, or paste the text.", "warning"); return importPanel(); }
         busy(file ? `Reading ${file.name}…` : "Reading it…");
         try {
           const started = file ? await uploadFile(file, "product/import") : await api("product/import", { method: "POST", body: { text } });
@@ -2709,7 +2714,7 @@ pages.product = async (_, query) => {
         $("#prd-import-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
         $("#prd-import-go").addEventListener("click", () => {
           const text = $("#prd-import-text").value.trim();
-          if (!text) return toast("Paste some text, or choose a file.", true);
+          if (!text) return toast("Paste some text, or choose a file.", "warning");
           readPrd({ text });
         });
       };
@@ -3514,7 +3519,7 @@ pages["new-project"] = async (_, query) => {
         $("#np-describe").addEventListener("submit", async (e) => {
           e.preventDefault();
           const picked = answersFrom(e.target);
-          if (!picked.platform) { toast("Pick at least one platform, or choose “Not sure”.", true); return; }
+          if (!picked.platform) { toast("Pick at least one platform, or choose “Not sure”.", "warning"); return; }
           try { await npSave({ ...draft, answers: picked, step: "where" }); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
         });
         $("#np-discard")?.addEventListener("click", async () => { await api("new-project/discard", { method: "POST", body: {} }); route(); });
@@ -4086,7 +4091,7 @@ function renderNotifyBtn() {
 notifyBtn?.addEventListener("click", async () => {
   if (Notifications.enabled()) { Notifications.disable(); renderNotifyBtn(); return; }
   const result = await Notifications.enable();
-  if (result !== "granted") toast("Allow notifications in your browser to turn this on.", true);
+  if (result !== "granted") toast("Allow notifications in your browser to turn this on.", "warning");
   renderNotifyBtn();
 });
 renderNotifyBtn();

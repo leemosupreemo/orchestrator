@@ -75,3 +75,19 @@ Rules checked on every page at 360, 430 and 1440 px, light and dark:
 
 - One document, five sections, shown in full on the Product page; Home shows a short card. Guidance text is written for people who are not technical and may not know yet: "say so" is always an acceptable answer.
 - Anything the AI changes on its own is announced, shown as a diff in the history, and undoable. Never edit the document silently; never take a section's text away.
+
+## Messages
+
+Everything the app tells you appears the same way: a short message over the top of the page (`messages.js`; `toast(...)` and `notify(...)` in `app.js`). It sits 16 px from the top, centred, at most 560 px wide, with 8 px between messages, above open dialogs, and never blocks the page behind it.
+
+| Kind | Use for | Stays |
+|---|---|---|
+| success | something you did worked ("Saved", "Copied") | 4 s |
+| info | something you should know ("Product requirements updated…") | 6 s |
+| warning | needs your attention but nothing failed ("Pick at least one platform") | 10 s |
+| error | something failed | 10 s |
+
+- `sticky` for something that lasts as long as its cause (can't reach Orchestrator; an update waiting for you). Give it an `id` so it updates or clears instead of repeating.
+- A message with actions (Undo, See what changed) stays at least 10 s. Hovering or focusing a message holds it open. Every message has a close button. At most three show at once.
+- Wording: one or two short sentences, in plain words. Say what happened, then what to do if there is something to do. No raw browser or server text ("Failed to fetch"): add it to `errors.js`. Success is past tense and tiny ("Saved"). Use "…" only for something still in progress ("Retrying…").
+- Not messages: what describes the page you are looking at (a job that can't start yet, features that overlap, a page that couldn't load) stays on the page next to its content.

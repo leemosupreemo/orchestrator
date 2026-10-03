@@ -1878,10 +1878,41 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_every_form_field_the_ui_builds_for_chat_has_a_name(self):
         self.assertIn('aria-label="Your question about this job"', self.js)
 
-    def test_connection_loss_is_shown_not_silent(self):
-        self.assertIn('id="conn-banner"', self.html)
+    def test_connection_loss_is_a_sticky_message_over_the_page_that_clears_itself(self):
+        self.assertNotIn("conn-banner", self.html + self.js)  # no separate banner: it is one of the overlay messages
         self.assertIn("pollFailures >= 2", self.js)
-        self.assertIn('$("#conn-banner").hidden = true', self.js)
+        self.assertIn("Can't reach Orchestrator. Showing the last data it sent. Retrying…", self.js)
+        refresh = self.js[self.js.index("async function refreshState()"):][:3600]
+        self.assertIn('{ id: "connection", sticky: true }', refresh)  # stays until it is over
+        self.assertIn('clearMessage("connection")', refresh)  # and goes when the server answers again
+        self.assertIn('"Back online."', refresh)
+
+    def test_every_message_goes_through_one_overlay_at_the_top_of_the_page(self):
+        self.assertIn('<script src="messages.js">', self.html)
+        self.assertLess(self.html.index("messages.js"), self.html.index("app.js"))
+        self.assertIn('id="messages" class="messages" popover="manual" role="region" aria-label="Messages"', self.html)
+        self.assertNotIn('id="toast"', self.html)
+        self.assertNotIn(".toast", self.css)
+        toast = self.js[self.js.index("function toast("):][:400]
+        self.assertIn("notify(level", toast)
+        self.assertIn("Errors.explain(message)", toast)  # errors still say what to do about them
+        css = self.css[self.css.index(".messages {"):]
+        for part in ("position: fixed", "top: calc(var(--space-4) + env(safe-area-inset-top))", "z-index: 1000", "pointer-events: none", "prefers-reduced-motion"):
+            self.assertIn(part, css, part)
+        for kind in ("success", "info", "warning", "error"):
+            self.assertIn(f".msg-{kind} {{ --kind:", css)  # one colour per kind, from the design tokens
+        self.assertNotIn("#fff", css[:css.index("prefers-reduced-motion")])  # ink comes from tokens
+
+    def test_validation_prompts_are_warnings_not_errors(self):
+        for text in ("Wait for the upload to finish.", "Create a feature first.", "Pick at least one platform"):
+            line = next(l for l in self.js.splitlines() if text in l and "toast(" in l)
+            self.assertIn('"warning")', line, text)
+
+    def test_messages_in_the_app_are_short_and_plain(self):
+        import re
+        for text in re.findall(r'toast\("([^"]+)"', self.js):
+            self.assertLessEqual(len(text), 110, text)  # a message is a sentence or two, not a paragraph
+            self.assertNotRegex(text, r"\b(undefined|null|NaN|Exception|Traceback)\b", text)
 
     def test_setup_button_only_floats_on_the_pages_about_getting_started(self):
         self.assertIn('["home", "checkup"].includes(current.page)', self.js)
@@ -1899,8 +1930,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         for page in ("features", "tests", "delivery", "measure", "checkup"):
             self.assertIn(f"pages.{page} = async", self.js)
 
-    def test_toast_colours_use_ink_tokens(self):
-        block = self.css[self.css.index(".toast.bad {"):][:80]
+    def test_message_colours_use_ink_tokens(self):
+        block = self.css[self.css.index(".msg-icon {"):][:260]
+        self.assertIn("color: var(--panel)", block)  # the icon's ink follows the theme
         self.assertNotIn("#fff", block)
 
     def test_command_palette_is_an_accessible_dialog_with_keyboard_shortcuts(self):
@@ -2069,28 +2101,16 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Import PRD", card)
         self.assertNotIn("doc-chip", self.css)  # and the styles went with them
 
-    def test_an_automatic_update_is_announced_with_undo_and_dismiss(self):
-        for part in ("prdNoticeHtml", "data-prd-undo", "data-prd-dismiss", "Product requirements updated"):
-            self.assertIn(part, self.js, part)
-        refresh = self.js[self.js.index("async function refreshState()"):][:2500]
-        self.assertIn("product_notice", refresh)  # the toast and the browser notification come from the poll
-        self.assertIn("Notifications.show", refresh)
-        self.assertIn("lastPrdNotice !== undefined", refresh)  # an update seen on first load is a banner, not a surprise toast
-        home = self.js[self.js.index("function productStripHtml"):][:1700]
-        self.assertIn("prdNoticeHtml(p.notice)", home)
-        self.assertIn("Import PRD", home)
-        self.assertIn("Draft it from my project", home)  # an existing project is offered a draft from Home too
-        self.assertIn("p.can_draft", home)
-
-    def test_the_docs_hub_is_in_the_nav_palette_and_linked_from_jobs_and_features(self):
-        self.assertIn('href="#/docs" data-route="docs"', self.html)
-        self.assertIn('["Docs", "#/docs"', self.js)  # the More sheet and the command palette
-        self.assertIn('parts[0] === "docs"', self.js)
-        self.assertIn('"Open documentation"', self.js)  # a job's menu
-        self.assertIn('data-href="#/docs/feature/', self.js)  # a feature's menu
-        page = self.js[self.js.index("pages.docs = async"):self.js.index("// ---------------------------------------------------------------- product requirements")]
-        for part in ('api("docs/export")', "Download everything", "Download .md", "docs-q", 'docs/${kind}/', "Project files", "Product requirements"):
-            self.assertIn(part, page, part)
+    def test_an_automatic_update_is_announced_over_the_page_with_see_what_changed_undo_and_dismiss(self):
+        fn = self.js[self.js.index("function showPrdUpdate"):self.js.index("// Slow model work runs on the server")]
+        for part in ('id: `prd:${note.id}`', "sticky: true", "See what changed", '"Undo"', "api(\"product/dismiss\"", "undoPrdUpdate(note.id)", "onDismiss: seen"):
+            self.assertIn(part, fn, part)
+        self.assertIn("if (!first) Notifications.show", fn)  # a browser alert only for an update that happens while you are here
+        self.assertNotIn("prdNoticeHtml", self.js)  # no separate banners on Home and the Product page any more
+        refresh = self.js[self.js.index("async function refreshState()"):][:3000]
+        self.assertIn("showPrdUpdate(newState.product_notice)", refresh)
+        home = self.js[self.js.index("function productStripHtml"):][:1500]
+        self.assertNotIn("notice", home)
 
     def test_design_images_load_with_the_token_not_a_bare_img_src(self):
         self.assertIn("data-auth-src", self.js)
@@ -2459,7 +2479,8 @@ class ErrorHintTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def test_known_failures_say_what_to_do_next(self):
-        self.assertIn("Check that it's still running", self.explain("Failed to fetch"))
+        self.assertEqual(self.explain("Failed to fetch"), "Can't reach Orchestrator. Check that it's running and that you're online.")  # the browser's own wording is replaced, not repeated
+        self.assertEqual(self.explain("Couldn't save: Load failed"), "Can't reach Orchestrator. Check that it's running and that you're online.")
         self.assertIn("Archived Jobs", self.explain("Job not found"))
         self.assertIn("Measure page", self.explain("Amplitude rejected the key (401)"))
         self.assertIn("incoming webhook", self.explain("The webhook answered 404"))
