@@ -1411,3 +1411,4 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .account-code-form input { flex: 1 1 140px; min-width: 0; text-transform: uppercase; letter-spacing: 0.08em; }
 .account-add summary { cursor: pointer; color: var(--muted); margin-bottom: var(--space-3); }
 .account-foot { margin: 0; font-size: var(--text-sm); }
+.account-card code { white-space: nowrap; } /* keep `orchestrator ui --tunnel` on one line */
