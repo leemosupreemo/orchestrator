@@ -121,7 +121,8 @@ def validate_macho(bundle: Path, architecture: str) -> None:
         arch = subprocess.check_output(["/usr/bin/lipo", "-archs", str(path)], text=True).split()
         if architecture not in arch:
             raise ValueError(f"Wrong executable architecture: {path.name}")
-        linked = subprocess.check_output(["/usr/bin/otool", "-L", str(path)], text=True).splitlines()[1:]
+        # Inspect only the target slice: a universal binary prints a header line per slice.
+        linked = subprocess.check_output(["/usr/bin/otool", "-arch", architecture, "-L", str(path)], text=True).splitlines()[1:]
         for line in linked:
             dependency = line.strip().split(" (", 1)[0]
             if dependency.startswith("/") and not dependency.startswith(("/usr/lib/", "/System/Library/")):
@@ -182,6 +183,16 @@ def build_bundle(architecture: str, output_dir: Path, manifest: Path, version: s
         binary_dir = Path(subprocess.check_output(list(map(str, swift + ["--show-bin-path"])), text=True).strip())
         for name in ("Orchestrator", "OrchestratorAgentLauncher"):
             shutil.copy2(binary_dir / name, macos / name)
+        sparkle = list((stage / "swift/artifacts").glob("sparkle/Sparkle/Sparkle.xcframework/macos*/Sparkle.framework"))
+        if len(sparkle) != 1:
+            raise ValueError("The pinned Sparkle framework is missing.")
+        frameworks = bundle / "Contents/Frameworks"
+        frameworks.mkdir()
+        shutil.copytree(sparkle[0], frameworks / "Sparkle.framework", symlinks=True)
+        shutil.copy2(sparkle[0].parents[2] / "LICENSE", resources / "Sparkle-LICENSE.txt")
+        load_commands = subprocess.check_output(["/usr/bin/otool", "-l", str(macos / "Orchestrator")], text=True)
+        if "@executable_path/../Frameworks" not in load_commands:
+            run(["/usr/bin/install_name_tool", "-add_rpath", "@executable_path/../Frameworks", macos / "Orchestrator"])
         info, agent = service_identity(integration)
         info.update(CFBundleShortVersionString=version, CFBundleVersion=str(build_number), OrchestratorArchitecture=architecture, OrchestratorDevelopmentBuild=True)
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info))

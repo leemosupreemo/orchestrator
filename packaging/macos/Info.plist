@@ -9,6 +9,9 @@
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>SUEnableAutomaticChecks</key><false/>
+<key>SUAllowsAutomaticUpdates</key><false/>
+<key>SUAutomaticallyUpdate</key><false/>
 <key>NSHumanReadableCopyright</key><string>Orchestrator contributors</string>
 <key>OrchestratorHostedOrigin</key><string>https://swift-orch-web-20260923.web.app</string>
 </dict></plist>

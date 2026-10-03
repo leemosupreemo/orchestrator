@@ -91,6 +91,30 @@ class DesktopAgentTests(unittest.TestCase):
         self.thread.join(5)
         self.assertFalse(self.thread.is_alive())
 
+    def test_update_gate_refuses_new_authenticated_http_mutation(self):
+        import urllib.error
+        import urllib.request
+        self.start()
+        self.assertTrue(self.request("prepare_update")["result"]["accepted"])
+        request = urllib.request.Request(self.agent.local.base_url + "api/setup/inspect", data=json.dumps({"root": str(self.base)}).encode(),
+            headers={"Authorization": "Bearer " + self.agent.local.token, "Content-Type": "application/json", "X-Orchestrator-UI": "1"})
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(request)
+        self.assertEqual(refused.exception.code, 409)
+        self.assertTrue(self.request("cancel_update")["result"]["accepted"])
+
+    def test_background_project_work_prevents_update_preparation(self):
+        self.start()
+        work = threading.Event()
+        task = self.agent.local.tasks.start(lambda: work.wait(3))
+        try:
+            self.assertFalse(self.request("prepare_update")["result"]["accepted"])
+            self.assertEqual(self.agent.local.tasks.get(task)["status"], "running")
+            with self.agent.local.gate.admit():
+                pass
+        finally:
+            work.set()
+
     def test_remote_off_leaves_running_session_alive(self):
         self.project()
         self.start()

@@ -47,10 +47,12 @@ public enum RegistrationState: String { case enabled, requiresApproval, notRegis
                 // Unregister may already have stopped launchd's instance. waitStopped verifies disappearance.
             }
         }, waitStopped: {
-            let deadline = Date().addingTimeInterval(6)
+            let deadline = Date().addingTimeInterval(30)
             while Date() < deadline {
                 do { _ = try await client.request(command: "status") }
-                catch let error as AgentError where error.code == "unavailable" { return }
+                catch let error as AgentError where error.code == "unavailable" {
+                    if AgentInstanceLease.isAvailable(stateDirectory: DesktopPaths.stateDirectory) { return }
+                }
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
             throw AgentError(code: "stop_timeout", message: "The old agent is still running. No replacement was started.")
@@ -131,6 +133,19 @@ public enum RegistrationState: String { case enabled, requiresApproval, notRegis
     public func removeBackgroundComponents() async throws {
         try await stopIfIdle()
         desired = false; adapter.save("startAtLogin", false)
+    }
+    public func stopPreparedForUpdate() async throws {
+        guard !changing else { throw AgentError(code: "busy", message: "A background mode change is in progress.") }
+        changing = true
+        defer { changing = false; registration = adapter.state() }
+        try await adapter.unregister(); try await adapter.stop(); try await adapter.waitStopped()
+        suspended = true; pending = false; adapter.save("suspended", true)
+    }
+    public func restoreAfterUpdate(startAtLogin: Bool) async throws {
+        desired = startAtLogin; adapter.save("startAtLogin", startAtLogin)
+        suspended = false; adapter.save("suspended", false)
+        if startAtLogin { try await adapter.register() } else { try await adapter.start() }
+        registration = adapter.state()
     }
     public func openApprovalSettings() { SMAppService.openSystemSettingsLoginItems() }
 }

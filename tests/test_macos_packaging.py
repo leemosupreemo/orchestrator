@@ -1,6 +1,8 @@
 import hashlib
 import importlib.util
 import io
+import shutil
+import subprocess
 import json
 import tarfile
 import tempfile
@@ -90,3 +92,20 @@ class MacOSPackagingTests(unittest.TestCase):
             build.install_wheel(wheel, runtime)
             self.assertTrue((runtime / "lib/python3.12/site-packages/orchestrator/__init__.py").is_file())
             self.assertIn('python3', (runtime / "bin/orchestrator").read_text())
+
+    @unittest.skipUnless(shutil.which("clang") and shutil.which("lipo"), "needs Apple build tools")
+    def test_universal_helper_passes_but_foreign_dependency_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = Path(folder) / "App.app/Contents"
+            bundle.mkdir(parents=True)
+            source = Path(folder) / "main.c"
+            source.write_text("int main(void) { return 0; }\n")
+            helper = bundle / "Autoupdate"
+            subprocess.run(["clang", "-arch", "arm64", "-arch", "x86_64", "-o", str(helper), str(source)], check=True)
+            build.validate_macho(bundle, "arm64")
+            build.validate_macho(bundle, "x86_64")
+            library = Path(folder) / "libforeign.dylib"
+            subprocess.run(["clang", "-dynamiclib", "-arch", "arm64", "-arch", "x86_64", "-o", str(library), str(source)], check=True)
+            subprocess.run(["clang", "-arch", "arm64", "-arch", "x86_64", "-o", str(bundle / "Linked"), str(source), str(library)], check=True)
+            with self.assertRaisesRegex(ValueError, "Nonportable runtime dependency: Linked"):
+                build.validate_macho(bundle, "arm64")

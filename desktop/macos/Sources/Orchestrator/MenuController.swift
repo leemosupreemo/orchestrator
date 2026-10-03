@@ -10,9 +10,16 @@ import Darwin
         guard let self else { return }
         try self.launchAgent()
     }))
+    lazy var updateCoordinator = UpdateCoordinator(adapter: .live(client: client, services: services))
+    lazy var updater: SparkleAdapter = {
+        let value = SparkleAdapter(coordinator: updateCoordinator)
+        value.displayError = { [weak self] message in self?.state.operation = message; self?.showSettings() }
+        return value
+    }()
     let opener = BrowserOpener(open: { NSWorkspace.shared.open($0) })
     let hostedOrigin = URL(string: "https://swift-orch-web-20260923.web.app")!
     private var item: NSStatusItem!
+    private var poweringOff = false
     private var windows: [String: NSWindow] = [:]
     private var timer: Timer?
     private var lease: Int32 = -1
@@ -44,6 +51,9 @@ import Darwin
             _ = fchmod(lease, 0o600)
         } catch { showStartupError(error.localizedDescription); return }
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopen), name: activationName, object: Bundle.main.bundlePath)
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poweringOff = true }
+        }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Orchestrator")
         item.button?.image?.isTemplate = true
@@ -52,6 +62,7 @@ import Darwin
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in Task { @MainActor in await self?.refresh() } }
         Task {
             do {
+                try await updateCoordinator.recoverAfterRelaunch()
                 try await LifecycleCoordinator(client: client, services: services, start: { [weak self] in try self?.launchAgent() }).ensureRunning()
             } catch { state.error = error.localizedDescription }
             await refresh()
@@ -177,11 +188,23 @@ import Darwin
     @objc func showWelcome() { window("welcome", title: "Welcome to Orchestrator", view: WelcomeView(controller: self, state: state, services: services)) }
     @objc func showSettings() { window("settings", title: "Orchestrator Settings", view: SettingsView(controller: self, state: state, services: services)) }
     @objc func showDiagnostics() { window("diagnostics", title: "Orchestrator Diagnostics", view: DiagnosticsView(state: state)) }
-    @objc func checkUpdates() { state.operation = "App updates are not configured for this development build."; showSettings() }
+    @objc func checkUpdates() { updater.check() }
     @objc func openWorkspace() { openBrowser("#/") }
     @objc func openProjects() { openBrowser("#/projects") }
     @objc func toggleRemote() { state.perform("remote_access", params: ["enabled": .bool(!(state.status?["remote_enabled"]?.bool ?? false))]) }
     @objc func quitMenu() { NSApplication.shared.terminate(nil) }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Logout and shutdown end the agent's work anyway; never block them.
+        guard updater.installationPending, !updateCoordinator.mayTerminateForInstallation, !poweringOff else { return .terminateNow }
+        Task {
+            do { try await updateCoordinator.prepareInstallation(); sender.reply(toApplicationShouldTerminate: true) }
+            catch {
+                state.operation = "Orchestrator can't quit yet: an update installs when it quits, and work is still running. Your work has not been stopped."
+                showSettings(); sender.reply(toApplicationShouldTerminate: false)
+            }
+        }
+        return .terminateLater
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWelcome(); return true }
     func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); if lease >= 0 { Darwin.close(lease) }; DistributedNotificationCenter.default().removeObserver(self) }
 }
