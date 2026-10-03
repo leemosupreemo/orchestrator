@@ -3777,7 +3777,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  Starting Cloudflare Named Tunnel (stable persistent token)...")
         tunnel_proc, _ = start_tunnel(args.port, token=tunnel_token)
         if public_url:
-            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}"
+            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}&token={server.token}"
             PUBLIC_URL["url"] = hosted_url
             print(f"  \033[92m✓ Stable Tunnel URL:\033[0m   {public_url}/?token={server.token}")
             print(f"  \033[92m✓ Phone Web UI:\033[0m        {hosted_url}")
@@ -3788,14 +3788,14 @@ def main(argv: list[str] | None = None) -> int:
         tunnel_proc, tunnel_url = start_tunnel(args.port)
         if tunnel_url:
             effective_url = public_url or tunnel_url
-            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={effective_url}"
+            hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={effective_url}&token={server.token}"
             PUBLIC_URL["url"] = hosted_url
             print(f"  \033[92m✓ Tunnel URL:\033[0m   {effective_url}/?token={server.token}")
             print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
         else:
             print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out).\033[0m")
     elif public_url:
-        hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}"
+        hosted_url = f"https://swift-orch-web-20260923.web.app/?backend={public_url}&token={server.token}"
         PUBLIC_URL["url"] = hosted_url
         print(f"  \033[92m✓ Stable Remote URL:\033[0m {public_url}/?token={server.token}")
         print(f"  \033[92m✓ Phone Web UI:\033[0m      {hosted_url}")

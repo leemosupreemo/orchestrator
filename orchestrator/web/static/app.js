@@ -944,8 +944,8 @@ function showSignInGate(message) {
         </div>
         ` : ""}
         ${blockedProvider ? `<p class="muted signin-fallback">Pop-ups still blocked? <button type="button" class="linklike" id="redirect-fallback">Try full-page ${esc(blockedProvider.name)} sign-in</button>. Some browsers can't finish this way; the access token below always works.</p>` : ""}
-        <details class="manual-token-details" style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
-          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center;">Advanced: Sign in with CLI access token</summary>
+        <details class="manual-token-details" open style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center; font-weight: 500;">Sign in with CLI access token</summary>
           <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
             <label class="field">
               <span>CLI Access Token</span>
