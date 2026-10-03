@@ -625,12 +625,12 @@ def archived_feature_jobs(root: Path) -> list[dict[str, Any]]:
 
 
 def inbox_overview(root: Path, sessions: Any, with_others: bool = True,
-                   runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                   runs: list[dict[str, Any]] | None = None, jobs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     visible_runs = sessions.list() if runs is None else runs
     # A privileged delivery can still make a job busy even when its terminal is hidden from a member.
     # Keep the manager's authoritative running-job set; only terminal-derived inbox entries use visible_runs.
     running = sessions.running_job_ids()
-    jobs = list_jobs(root)
+    jobs = list_jobs(root) if jobs is None else jobs
     for job in jobs:
         job["active_run"] = job["id"] in running
     active = {"name": project_display_name(root), "root": str(safe_resolve(root))}
@@ -2926,12 +2926,16 @@ class UIServer(ThreadingHTTPServer):
 
         def loop() -> None:
             while not self._stopping.wait(interval):
+                try:  # one read of the job list per round, shared by notifications and the plan
+                    jobs = list_jobs(self.root) if self.root is not None else []
+                except Exception:
+                    jobs = None
                 try:
-                    self.notify_once(tracker)
+                    self.notify_once(tracker, jobs)
                 except Exception as exc:  # never let a bad webhook or odd job file kill the watcher
                     print(f"  Notifications: {exc}", flush=True)
                 try:
-                    self.plan_tick()
+                    self.plan_tick(jobs)
                 except Exception as exc:  # a bad job file mustn't stop the loop; the run shows what's stuck
                     print(f"  Build the plan: {exc}", flush=True)
 
@@ -2941,10 +2945,16 @@ class UIServer(ThreadingHTTPServer):
         thread.start()
         return thread
 
-    def _plan_inputs(self, root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    def _plan_inputs(self, root: Path, jobs: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
         runtime = runtime_dir(root)
         machines = [m for m in read_json_file(runtime / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
-        return feature_store.load(runtime), list_jobs(root) + archived_feature_jobs(root), plan_run.capacity(machines)
+        active = list_jobs(root) if jobs is None else jobs
+        return feature_store.load(runtime), active + archived_feature_jobs(root), plan_run.capacity(machines)
+
+    @staticmethod
+    def _plan_payload(run: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+        return {"id": run["id"], "auto_approve": run.get("auto_approve", False), "paused": run.get("paused", False),
+                "finished": decision["finished"], "rows": decision["rows"]}
 
     def _planning_alive(self, feature_ids: Any) -> dict[str, bool]:
         """For features whose job is still being planned: is that planning run still going?"""
@@ -2957,11 +2967,11 @@ class UIServer(ThreadingHTTPServer):
             return None
         features, jobs, slots = self._plan_inputs(root)
         decision = plan_run.decide(run, features, jobs, slots, self._planning_alive(run.get("starting") or {}), can_start=False)
-        return {"id": run["id"], "auto_approve": run.get("auto_approve", False), "paused": run.get("paused", False),
-                "finished": decision["finished"], "rows": decision["rows"]}
+        return self._plan_payload(run, decision)
 
-    def plan_tick(self) -> dict[str, Any] | None:
-        """Advance "Build the plan": start ready features, approve plans when asked to, and record what finished."""
+    def plan_tick(self, jobs: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+        """Advance "Build the plan": start ready features, approve plans when asked to, and record what finished.
+        Returns the run as the page shows it, or None when no plan is being built."""
         root = self.root
         if root is None:
             return None
@@ -2970,7 +2980,7 @@ class UIServer(ThreadingHTTPServer):
             run = plan_run.load(runtime)
             if not run or run.get("finished"):
                 return None
-            features, jobs, slots = self._plan_inputs(root)
+            features, jobs, slots = self._plan_inputs(root, jobs)
             starting = run.setdefault("starting", {})
             for fid in list(starting):  # the planning run made its job: from now on the job says how it's going
                 job = plan_run.job_for(fid, run, jobs)
@@ -2997,13 +3007,13 @@ class UIServer(ThreadingHTTPServer):
                 session.job_id = job_id
             run["finished"] = decision["finished"]
             plan_run.save(runtime, run)
-            return decision
+            return self._plan_payload(run, decision)
 
-    def notify_once(self, tracker: "notifier.Tracker") -> list[dict[str, Any]]:
+    def notify_once(self, tracker: "notifier.Tracker", jobs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         root = self.root
         if root is None:
             return []
-        events = tracker.update(inbox_overview(root, self.sessions, with_others=False)["here"], self.sessions.list())
+        events = tracker.update(inbox_overview(root, self.sessions, with_others=False, jobs=jobs)["here"], self.sessions.list())
         machine = account.load_machine()
         if machine and events:  # phones and browsers on the account, even with no tab open
             try:
@@ -3671,8 +3681,7 @@ class UIHandler(BaseHTTPRequestHandler):
             except plan_run.PlanRunError as exc:
                 raise UIError(str(exc))
             self._audit("plan_run_started", features=len(chosen))
-            threading.Thread(target=self.server.plan_tick, daemon=True).start()  # start the first layer now, not in 15 s
-            self._json({"plan": self.server.plan_view(root)}, HTTPStatus.CREATED)
+            self._json({"plan": self.server.plan_tick() or self.server.plan_view(root)}, HTTPStatus.CREATED)  # first layer now, not in 15 s
         elif method == "POST" and parts in (["plan-run", "pause"], ["plan-run", "stop"]):
             body = self._body()
             with self.server._plan_lock:
@@ -3688,9 +3697,8 @@ class UIHandler(BaseHTTPRequestHandler):
                         run["starting"] = {fid: entry for fid, entry in (run.get("starting") or {}).items()
                                            if alive[fid] and time.time() - float(entry.get("at", 0)) < plan_run.STARTING_TIMEOUT}
                     plan_run.save(runtime_dir(root), run)
-            if parts[1] == "pause" and not run["paused"]:
-                threading.Thread(target=self.server.plan_tick, daemon=True).start()
-            self._json({"plan": self.server.plan_view(root)})
+            stopped = parts[1] == "stop"
+            self._json({"plan": None if stopped else (self.server.plan_tick() if not run["paused"] else None) or self.server.plan_view(root)})
         elif method == "POST" and parts == ["features", "propose"]:
             # Draft a feature map from the product requirements in the background; the page polls /api/product/task/<id>.
             prd_text = prd_doc.Prd(root, runtime_dir(root)).read() or ""
