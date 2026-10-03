@@ -77,6 +77,52 @@
     try { storage.removeItem(PAIR_KEY); } catch { /* nothing kept */ }
   }
 
+  // What someone wants to build, asked before any setup so they start from their idea, not from chores. Kept in this
+  // browser until a computer turns it into a project: {pitch, name, existing} (existing: they already have code).
+  const IDEA_KEY = "orchestrator_idea";
+
+  function cleanIdea(value) {
+    if (!value || typeof value !== "object") return null;
+    const idea = {pitch: String(value.pitch || "").trim().slice(0, 300), name: String(value.name || "").trim().slice(0, 80),
+                  existing: value.existing === true};
+    return idea.pitch || idea.existing ? idea : null;
+  }
+
+  function pendingIdea(storage = root.localStorage) {
+    try { return cleanIdea(JSON.parse(storage.getItem(IDEA_KEY) || "null")); } catch { return null; }
+  }
+
+  function saveIdea(value, storage = root.localStorage) {
+    const idea = cleanIdea(value);
+    try { if (idea) storage.setItem(IDEA_KEY, JSON.stringify(idea)); } catch { /* storage blocked: it's asked again */ }
+    return idea;
+  }
+
+  function clearIdea(storage = root.localStorage) {
+    try { storage.removeItem(IDEA_KEY); } catch { /* nothing kept */ }
+  }
+
+  // Where opening a computer goes with an idea waiting: the new-project form, filled in, or adding existing code.
+  function ideaRoute(idea) {
+    if (!idea) return "";
+    if (idea.existing) return "#/projects";
+    const query = new URLSearchParams();
+    if (idea.pitch) query.set("pitch", idea.pitch);
+    if (idea.name) query.set("name", idea.name);
+    return `#/new-project?${query}`;
+  }
+
+  function ideaStep() {
+    return `<form class="stack account-idea-form" data-account-form="idea">
+        <label class="field"><span>What do you want to build?</span>
+          <input name="pitch" required maxlength="300" autocomplete="off" placeholder="e.g. A turn-based word game to play with friends"></label>
+        <label class="field"><span>Name it <span class="muted">(optional, a working name is fine)</span></span>
+          <input name="name" maxlength="80" autocomplete="off"></label>
+        <div class="row gap-10"><button type="submit" class="btn primary">Next: where it runs</button>
+          <button type="button" class="btn ghost" data-account-action="idea-existing">I already have code</button></div>
+      </form>`;
+  }
+
   // Which computer to open without asking: the one used last, or the only one that can be opened.
   function pickMachine(machines, rememberedId) {
     const reachable = (machines || []).filter((m) => m.reachable);
@@ -152,8 +198,13 @@
       <button type="button" class="btn small ghost" data-account-action="copy-enroll">Copy</button>`;
   }
 
-  function renderMachines(machines, {email = "", message = "", now, macAppReleased = MAC_APP_RELEASED} = {}) {
+  function renderMachines(machines, {email = "", message = "", now, macAppReleased = MAC_APP_RELEASED, idea} = {}) {
     const list = machines || [];
+    if (idea === undefined) idea = list.length ? null : pendingIdea();
+    const askIdea = !list.length && !idea;
+    const ideaRecap = !list.length && idea ? `<p class="account-idea">${idea.existing ? "You're bringing code you already have." : `Your idea: <strong>${escapeHtml(idea.pitch)}</strong>`}
+        <button type="button" class="linklike" data-account-action="idea-change">Change</button></p>
+        <p class="muted">Next, set up the computer it runs on. Your code and the AI work stay on that computer.</p>` : "";
     const rows = list.map((m) => {
       const s = machineStatus(m, now);
       const progress = UPDATE_PROGRESS[m.update_state] || "";
@@ -177,14 +228,15 @@
     return `<div class="signin-wrap"><div class="signin-card account-card">
       ${brand()}
       <div>
-        <h2 class="account-title">${list.length ? "Your computers" : "Add your computer"}</h2>
+        <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
         <p class="muted account-sub">${list.length
           ? "Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
+          : askIdea ? "Say it in a sentence. It becomes the start of your product's plan, and you can change it any time."
           : "Orchestrator does the work on your own computer, so your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
         ${message ? `<p class="account-message" role="alert">${code(message)}</p>` : ""}
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
-        <details class="account-add"><summary>Add another computer</summary>${addSteps()}</details>` : addSteps()}
+        <details class="account-add"><summary>Add another computer</summary>${addSteps()}</details>` : askIdea ? ideaStep() : ideaRecap + addSteps()}
       ${macAppReleased ? `<details class="account-add"><summary>Add a Mac nobody sits at</summary>${addMacSteps()}</details>` : ""}
       <p class="muted account-foot">Signed in as ${escapeHtml(email)} · <button type="button" class="linklike" data-account-action="refresh">Refresh</button> · <button type="button" class="linklike" data-account-action="sign-out">Sign out</button></p>
     </div></div>`;
@@ -214,6 +266,6 @@
     HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
     enrollCommand, renderEnroll, outdated,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
-    renderMachines, renderPair,
+    renderMachines, renderPair, pendingIdea, saveIdea, clearIdea, ideaRoute,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

@@ -1003,6 +1003,12 @@ function showAccountScreen(machines, message = "") {
   }, 5000);
 
   view.onsubmit = async (event) => {
+    const idea = event.target.closest("[data-account-form=idea]");
+    if (idea) {
+      event.preventDefault();
+      Account.saveIdea({ pitch: idea.pitch.value, name: idea.name.value });
+      return openAccount({ list: true });
+    }
     const enroll = event.target.closest("[data-account-form=enroll]");
     if (enroll) {
       event.preventDefault();
@@ -1037,6 +1043,10 @@ function showAccountScreen(machines, message = "") {
         toast(`${button.dataset.name} will update once no work is running on it.`);
         openAccount({ list: true });
       } catch (err) { toast(err.message, true); button.disabled = false; }
+    } else if (action === "idea-existing" || action === "idea-change") {
+      if (action === "idea-existing") Account.saveIdea({ existing: true });
+      else Account.clearIdea();
+      openAccount({ list: true });
     } else if (action === "copy-enroll") {
       const command = view.querySelector("[data-enroll-command]")?.textContent || "";
       try { await navigator.clipboard.writeText(command); toast("Copied"); } catch { toast("Select the command and copy it.", "warning"); }
@@ -1118,6 +1128,12 @@ async function enterMachine(machine) {
       res = await api("auth", { method: "POST", body: { ticket } });
     } catch (err) {
       throw new Error(`Couldn't reach ${machine.name} at ${endpoint} (${err.message}). Check that \`orchestrator ui --tunnel\` is still running on it.`);
+    }
+    // An idea from before this computer was set up: go and start it (or add the code they already have).
+    const idea = Account.pendingIdea();
+    if (idea) {
+      location.hash = Account.ideaRoute(idea);
+      if (idea.existing) Account.clearIdea();
     }
     await unlockWith(res.token, `Opened ${machine.name}`);
   } catch (err) {
@@ -3750,6 +3766,10 @@ pages["new-project"] = async (_, query) => {
     return { title: "Start a new project", html: `<div class="notice">Starting a new project isn't available yet. It's part of an update that hasn't reached your Orchestrator. You can still add a project you already have.</div>` };
   }
   const draft = data.draft || { answers: {}, step: "describe", host: null, visibility: "private", parent: data.default_parent, waiting_on_github: false, created_root: "" };
+  if (!data.draft) {  // an idea told before setup (Mac app, or the hosted app's first screen) starts the form
+    const idea = query.get("pitch") ? { pitch: query.get("pitch"), name: query.get("name") || "" } : Account.pendingIdea();
+    if (idea?.pitch) draft.answers = { ...draft.answers, pitch: idea.pitch.slice(0, 200), name: (idea.name || "").slice(0, 200) };
+  }
   draft.parent = draft.parent || data.default_parent;
   const gh = data.github;
   const step = draft.created_root ? "create" : (query.get("step") || draft.step || "describe");
@@ -3779,7 +3799,7 @@ pages["new-project"] = async (_, query) => {
           e.preventDefault();
           const picked = answersFrom(e.target);
           if (!picked.platform) { toast("Pick at least one platform, or choose “Not sure”.", "warning"); return; }
-          try { await npSave({ ...draft, answers: picked, step: "where" }); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
+          try { await npSave({ ...draft, answers: picked, step: "where" }); Account.clearIdea(); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
         });
         $("#np-discard")?.addEventListener("click", async () => { await api("new-project/discard", { method: "POST", body: {} }); route(); });
       },

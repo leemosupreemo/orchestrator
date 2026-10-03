@@ -14,12 +14,18 @@ window.DesktopSetup = {
     ];
     const values = inspection?.inferred || {};
     return {
-      title: "Set up your project", sub: "Choose a folder, review its settings, then apply them.", actions: "",
-      html: `<section class="card desktop-setup">
-        <p>You can also choose a folder from the Orchestrator menu on your Mac.</p>
+      title: inspection ? "Set up your project" : "What do you want to build?",
+      sub: inspection ? "Review its settings, then apply them." : "Start from your idea, or from code you already have.", actions: "",
+      html: `${inspection ? "" : `<section class="card desktop-idea">
+        <form id="desktop-idea"><label>What do you want to build?<input name="pitch" required maxlength="300" autocomplete="off"
+          placeholder="e.g. A turn-based word game to play with friends"></label>
+          <button class="btn primary" type="submit">Start</button></form>
+        <p class="muted">It becomes the start of your product's plan. You can change everything later.</p>
+      </section>`}
+      <section class="card desktop-setup">
+        <p>${inspection ? "" : "<strong>Already have code?</strong> "}Choose its folder here, or from the Orchestrator menu on your Mac.</p>
         <form id="desktop-folder"><label>Project folder<input name="root" value="${esc(selected)}" required placeholder="/Users/you/Projects/MyApp"></label>
           <button class="btn" type="submit">Review folder</button></form>
-        <p><a href="#/new-project">Create a new project instead</a></p>
         ${inspection ? `<form id="desktop-apply">
           <p>${esc(inspection.stack)} · Settings are saved only when you press Apply.</p>
           ${fields.map(([key,label]) => `<label>${label}<input name="${key}" value="${esc(values[key] || "")}" ${key === "project_name" ? "required" : ""}></label>`).join("")}
@@ -30,6 +36,11 @@ window.DesktopSetup = {
         <div id="desktop-setup-error" class="notice bad" role="alert" hidden></div>
       </section>`,
       after() {
+        document.querySelector("#desktop-idea")?.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const pitch = String(new FormData(event.target).get("pitch") || "").trim();
+          if (pitch) location.hash = `#/new-project?pitch=${encodeURIComponent(pitch)}`;
+        });
         const error = document.querySelector("#desktop-setup-error");
         const showError = (message) => { error.hidden = false; error.textContent = message; };
         document.querySelector("#desktop-folder").addEventListener("submit", async (event) => {

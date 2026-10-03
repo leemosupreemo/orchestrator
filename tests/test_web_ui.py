@@ -688,7 +688,7 @@ const machines = [
 ];
 process.stdout.write(JSON.stringify({
   list: A.renderMachines(machines, {email: "a@x.com", now: 160}),
-  empty: A.renderMachines([], {email: "a@x.com", message: "Run `orchestrator connect`"}),
+  empty: A.renderMachines([], {email: "a@x.com", message: "Run `orchestrator connect`", idea: {pitch: "A word game", name: "", existing: false}}),
   pair: A.renderPair({name: "<Mac>", os: "macOS", version: "1"}, "ABCD2345", {email: "a@x.com"}),
 }));""")
         self.assertEqual(result["list"].count('data-account-action="open"'), 1)  # only the reachable one opens
@@ -697,7 +697,7 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("<Studio>", result["list"])
         self.assertIn("not reachable from the web", result["list"])
         self.assertIn("<code>orchestrator ui --tunnel</code>", result["list"])
-        self.assertIn("Add your computer", result["empty"])
+        self.assertIn("Set up where it runs", result["empty"])  # once they've said what they're building
         self.assertIn("pipx install", result["empty"])
         self.assertIn('data-account-form="code"', result["empty"])
         self.assertIn("<code>orchestrator connect</code>", result["empty"])  # the message's `code` is shown as code
@@ -823,6 +823,66 @@ process.stdout.write(JSON.stringify({
         self.assertIn("cmd &lt;b&gt;", result["live"])
         self.assertIn("expired", result["expired"])
         self.assertNotIn("cmd", result["expired"])
+
+    def test_first_screen_asks_what_to_build_before_any_setup(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const store = () => { const m = {}; return {getItem: (k) => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = String(v); }, removeItem: (k) => { delete m[k]; }}; };
+const s = store();
+const saved = A.saveIdea({pitch: "  A word game <script>x</script>  ", name: "Word Duel"}, s);
+process.stdout.write(JSON.stringify({
+  ask: A.renderMachines([], {email: "a@x.com", now: 1, idea: null}),
+  recap: A.renderMachines([], {email: "a@x.com", now: 1, idea: saved}),
+  existing: A.renderMachines([], {email: "a@x.com", now: 1, idea: {existing: true, pitch: "", name: ""}}),
+  withComputers: A.renderMachines([{id: "m", name: "Mac", online: true, reachable: true, last_seen: 1, api_version: A.REQUIRED_RUNNER_API}], {email: "a@x.com", now: 1}),
+  roundTrip: A.pendingIdea(s),
+  empty: A.saveIdea({pitch: "   "}, store()),
+  route: A.ideaRoute(saved),
+  existingRoute: A.ideaRoute({existing: true}),
+  cleared: (A.clearIdea(s), A.pendingIdea(s)),
+}));""")
+        self.assertIn('data-account-form="idea"', result["ask"])
+        self.assertIn("What do you want to build?", result["ask"])
+        self.assertNotIn("pipx install", result["ask"])  # no setup chores before the idea
+        self.assertIn("A word game &lt;script&gt;", result["recap"])
+        self.assertIn("pipx install", result["recap"])  # then the computer steps
+        self.assertNotIn('data-account-form="idea"', result["recap"])
+        self.assertIn("bringing code you already have", result["existing"])
+        self.assertNotIn('data-account-form="idea"', result["withComputers"])
+        self.assertEqual(result["roundTrip"], {"pitch": "A word game <script>x</script>", "name": "Word Duel", "existing": False})
+        self.assertIsNone(result["empty"])
+        self.assertEqual(result["route"], "#/new-project?pitch=A+word+game+%3Cscript%3Ex%3C%2Fscript%3E&name=Word+Duel")
+        self.assertEqual(result["existingRoute"], "#/projects")
+        self.assertIsNone(result["cleared"])
+
+    def test_new_project_form_starts_from_a_pending_idea_without_overwriting_a_draft(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        page = js[js.index('pages["new-project"]'):][:2500]
+        self.assertIn("if (!data.draft)", page)
+        self.assertIn('query.get("pitch")', page)
+        self.assertIn("Account.pendingIdea()", page)
+        enter = js[js.index("async function enterMachine"):][:1500]
+        self.assertLess(enter.index("Account.ideaRoute(idea)"), enter.index("await unlockWith"))  # routed before the page renders
+
+    def test_projectless_setup_leads_with_the_idea(self):
+        script = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "setup.js"
+        source = """
+globalThis.window = globalThis;
+require(process.argv[1]);
+const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const api = async (path) => path === "bootstrap" ? {selected_root: ""} : {stack: "Python", inferred: {project_name: "App"}};
+(async () => {
+  const fresh = await window.DesktopSetup.render({api, esc, root: "", onReady: () => {}});
+  const folder = await window.DesktopSetup.render({api, esc, root: "/tmp/app", onReady: () => {}});
+  process.stdout.write(JSON.stringify({fresh: fresh.title + fresh.html, folder: folder.title + folder.html}));
+})();"""
+        result = subprocess.run(["node", "-e", source, str(script)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pages = json.loads(result.stdout)
+        self.assertIn('id="desktop-idea"', pages["fresh"])
+        self.assertLess(pages["fresh"].index('id="desktop-idea"'), pages["fresh"].index('id="desktop-folder"'))
+        self.assertNotIn('id="desktop-idea"', pages["folder"])
+        self.assertIn("Set up your project", pages["folder"])
 
     def test_the_pages_required_version_is_what_this_runner_provides(self):
         # Bump both together: the page asks for exactly what the runner in this repo reports.

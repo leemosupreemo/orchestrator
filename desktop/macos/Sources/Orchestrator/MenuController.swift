@@ -188,9 +188,9 @@ import Darwin
         panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.allowsMultipleSelection = false; panel.prompt = "Choose project"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-        openBrowser("#/setup?root=" + (url.path.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""))
+        openBrowser(DesktopRoutes.setup(folder: url.path))
     }
+    func startIdea(_ pitch: String) { openBrowser(DesktopRoutes.newProject(pitch: pitch)) }
     func pair() { openedPairing = nil; state.perform("pair_start", params: ["name": .string(Host.current().localizedName ?? "Mac")]) }
     func stop() {
         Task {
