@@ -55,7 +55,7 @@ if (typeof window !== "undefined" && window.firebase?.auth) {
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const view = $("#view");
-const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const esc = Html.escape;  // html.js
 const attrJSON = (o) => esc(JSON.stringify(o));
 
 let state = { project: null, runs: [], actions: {} };

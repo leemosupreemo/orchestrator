@@ -4,9 +4,7 @@
   // The Features page's planning views: a drafted feature map to review, and (later) a plan being built.
   // Pure string rendering, so it can be tested without a browser.
 
-  function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-  }
+  const escapeHtml = root.Html.escape;
 
   function layerTitle(layer) {
     return layer === 0 ? "Start with these (they don't depend on anything new)" : `Then these (layer ${layer + 1})`;

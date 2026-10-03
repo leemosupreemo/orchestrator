@@ -25,6 +25,8 @@ from orchestrator import prd as prd_mod
 from orchestrator.web import server as ui  # noqa: E402
 
 UI_HEADERS = {"Content-Type": "application/json", "X-Orchestrator-UI": "1"}
+# Page scripts escape through html.js (loaded first on the page), so node loads it first too.
+HTML_JS = str(PACKAGE_ROOT / "orchestrator" / "web" / "static" / "html.js")
 
 
 def make_project(root: Path) -> None:
@@ -368,6 +370,13 @@ class SignInTests(ServerTestCase):
         self.assertIn("frame-ancestors 'none'", res.getheader("Content-Security-Policy"))
         self.assertIn("img-src 'self' data: blob:", res.getheader("Content-Security-Policy"))  # fetched design images are shown from blob: URLs
 
+    def test_html_helper_is_served_and_loaded_before_the_scripts_that_use_it(self):
+        res, body = self.request("GET", "/html.js", auth=False)
+        self.assertEqual(res.status, 200)
+        html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
+        for script in ("project-picker.js", "configuration.js", "feature-plan.js", "account.js", "app.js"):
+            self.assertLess(html.index('src="html.js"'), html.index(f'src="{script}"'), script)
+
     def test_static_traversal_blocked(self):
         res, _ = self.request("GET", "/../server.py", auth=False)
         self.assertEqual(res.status, 404)
@@ -385,7 +394,7 @@ try {
 process.stdout.write(JSON.stringify(request));
 """
         result = subprocess.run(
-            ["node", "-e", script, str(picker)],
+            ["node", "--require", HTML_JS, "-e", script, str(picker)],
             check=True,
             capture_output=True,
             text=True,
@@ -412,7 +421,7 @@ const rows = globalThis.ProjectPicker.availableProjects(
 process.stdout.write(JSON.stringify(rows));
 """
         result = subprocess.run(
-            ["node", "-e", script, str(picker)],
+            ["node", "--require", HTML_JS, "-e", script, str(picker)],
             check=False,
             capture_output=True,
             text=True,
@@ -437,7 +446,7 @@ process.stdout.write(JSON.stringify({
 }));
 """
         result = subprocess.run(
-            ["node", "-e", script, str(picker)],
+            ["node", "--require", HTML_JS, "-e", script, str(picker)],
             check=False,
             capture_output=True,
             text=True,
@@ -469,7 +478,7 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
 });
 """
         result = subprocess.run(
-            ["node", "-e", script, str(picker)],
+            ["node", "--require", HTML_JS, "-e", script, str(picker)],
             check=False,
             capture_output=True,
             text=True,
@@ -646,7 +655,7 @@ class AccountUiTests(unittest.TestCase):
     def run_account_script(self, source: str, preload: str = ""):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         result = subprocess.run(
-            ["node", "-e", f"{preload}\nrequire(process.argv[1]);\nrequire(process.argv[2]);\n{source}",
+            ["node", "--require", HTML_JS, "-e", f"{preload}\nrequire(process.argv[1]);\nrequire(process.argv[2]);\n{source}",
              str(static / "account.js"), str(static / "configuration.js")],
             check=False, capture_output=True, text=True,
         )
@@ -894,7 +903,7 @@ const api = async (path) => path === "bootstrap" ? {selected_root: ""} : {stack:
   const folder = await window.DesktopSetup.render({api, esc, root: "/tmp/app", onReady: () => {}});
   process.stdout.write(JSON.stringify({fresh: fresh.title + fresh.html, folder: folder.title + folder.html}));
 })();"""
-        result = subprocess.run(["node", "-e", source, str(script)], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", source, str(script)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         pages = json.loads(result.stdout)
         self.assertIn('id="desktop-idea"', pages["fresh"])
@@ -921,7 +930,7 @@ class ConfigurationPagesUiTests(unittest.TestCase):
     def run_configuration_script(self, source: str):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "configuration.js"
         result = subprocess.run(
-            ["node", "-e", f"require(process.argv[1]);\n{source}", str(helper)],
+            ["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)],
             check=False,
             capture_output=True,
             text=True,
@@ -974,7 +983,7 @@ process.stdout.write(JSON.stringify({
   form, chosen: P.chosenFeatures({f_play: "on", f_chat: "on", auto_approve: "on"}),
   run: P.renderRun(plan), paused: P.renderRun({...plan, paused: true}), finished: P.renderRun({...plan, finished: true}),
   none: P.renderRun(null)}));"""
-        result = subprocess.run(["node", "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         self.assertLess(out["form"].index("Play &lt;a&gt;"), out["form"].index(">Chat<"))  # build order
@@ -998,7 +1007,7 @@ const html = P.renderProposal({warnings: ["\\"<b>\\" overlaps"], features: [
   {name: "Play a round", summary: "One game", stories: ["As a player I can play."], depends_on: [], paths: ["app/game/"], layer: 0},
   {name: "Chat <script>", summary: "", stories: [], depends_on: ["Play a round"], paths: [], layer: 1}]});
 process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]), none: P.renderStories([])}));"""
-        result = subprocess.run(["node", "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         html = out["html"]
@@ -3452,7 +3461,7 @@ class MarkdownRenderTests(unittest.TestCase):
     def render(self, text):
         module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "markdown.js"
         script = "const m = require(process.argv[1]); process.stdout.write(m.render(JSON.parse(process.argv[2])));"
-        result = subprocess.run(["node", "-e", script, str(module), json.dumps(text)], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", script, str(module), json.dumps(text)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -3514,7 +3523,7 @@ class PaletteLogicTests(unittest.TestCase):
     def ranked(self, query, entries=None):
         module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "palette.js"
         script = "const p = require(process.argv[1]); const [e, q] = JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify(p.rank(e, q).map((x) => x.label)));"
-        result = subprocess.run(["node", "-e", script, str(module), json.dumps([entries or self.ENTRIES, query])], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", script, str(module), json.dumps([entries or self.ENTRIES, query])], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -3548,7 +3557,7 @@ class ErrorHintTests(unittest.TestCase):
     def explain(self, message):
         module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "errors.js"
         script = "const e = require(process.argv[1]); process.stdout.write(JSON.stringify(e.explain(JSON.parse(process.argv[2]))));"
-        result = subprocess.run(["node", "-e", script, str(module), json.dumps(message)], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", script, str(module), json.dumps(message)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -4141,7 +4150,7 @@ class NotificationLogicTests(unittest.TestCase):
     def events(self, prev, nxt):
         module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "notifications.js"
         script = "const n = require(process.argv[1]); const [p, x] = JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify(n.events(p, x)));"
-        result = subprocess.run(["node", "-e", script, str(module), json.dumps([prev, nxt])], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", script, str(module), json.dumps([prev, nxt])], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -4167,7 +4176,7 @@ class NotificationLogicTests(unittest.TestCase):
     def inbox_events(self, prev, nxt):
         module = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "notifications.js"
         script = "const n = require(process.argv[1]); const [p, x] = JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify(n.inboxEvents(p, x)));"
-        result = subprocess.run(["node", "-e", script, str(module), json.dumps([prev, nxt])], capture_output=True, text=True)
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", script, str(module), json.dumps([prev, nxt])], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 

@@ -40,9 +40,7 @@
     return Object.entries(readiness || {}).map(([check, state]) => READINESS_FIXES[`${check}:${state}`]).filter(Boolean);
   }
 
-  function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>'"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[c]);
-  }
+  const escapeHtml = root.Html.escape;
 
   function isHosted(origin = root.location?.origin) {
     return HOSTED_ORIGINS.includes(origin);
