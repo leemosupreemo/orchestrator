@@ -202,6 +202,11 @@
       <button type="button" class="btn small ghost" data-account-action="copy-enroll">Copy</button>`;
   }
 
+  // The host is what identifies a tunnel; the full URL (with any path) stays in the tooltip.
+  function hostOf(url) {
+    try { return new URL(url).host; } catch { return url || ""; }
+  }
+
   function renderTroubleshoot(t) {
     if (!t) return "";
     const isLoadFailed = (t.error || "").includes("Load failed");
@@ -214,7 +219,7 @@
         <span class="spacer"></span>
         <span class="pill fail">${escapeHtml(isLoadFailed ? "Load failed" : "Unreachable")}</span>
       </div>
-      <p class="muted">Your browser could not reach <code>${escapeHtml(endpoint || "tunnel endpoint")}</code>.</p>
+      <p class="muted">Your browser could not reach <code class="account-address" title="${escapeHtml(endpoint)}">${escapeHtml(hostOf(endpoint) || "the tunnel")}</code>.</p>
       <div class="row gap-10">
         ${machineId ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(machineId)}">Retry</button>` : ""}
         ${endpoint ? `<a class="btn small" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open tunnel URL ↗</a>` : ""}

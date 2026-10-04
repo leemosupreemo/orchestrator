@@ -773,6 +773,16 @@ process.stdout.write(JSON.stringify({
         self.assertIn("&lt;Mac&gt;", result["pair"])
         self.assertIn('data-account-action="claim"', result["pair"])
 
+    def test_an_unreachable_computer_names_its_host_in_a_wrapping_address(self):
+        endpoint = "https://very-long-generated-name-for-a-quick-tunnel.trycloudflare.com/x?token=secret"
+        result = self.run_account_script(f"""
+const html = globalThis.Account.renderMachines([], {{troubleshoot: {{error: "Load failed", endpoint: "{endpoint}", machine: {{id: "m1", name: "Mac"}}}}}});
+process.stdout.write(JSON.stringify({{html}}));""")
+        self.assertIn('<code class="account-address" title="', result["html"])
+        self.assertIn(">very-long-generated-name-for-a-quick-tunnel.trycloudflare.com</code>", result["html"])  # the host, not the token
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".account-card code.account-address { white-space: normal; overflow-wrap: anywhere; }", css)
+
     def test_your_computers_is_listed_only_on_the_hosted_app(self):
         source = """
 const ids = globalThis.ConfigurationPages.groups().flatMap((g) => g.entries.map((e) => e.id));

@@ -344,14 +344,14 @@ input:focus, textarea:focus, select:focus, .btn:focus-visible, summary:focus-vis
 details.advanced { border: 1px solid var(--border); border-radius: var(--r-md); }
 details.advanced > summary { cursor: pointer; padding: var(--space-3) var(--space-3); color: var(--muted); font-weight: 550; }
 /* Every fold uses the same chevron (see .fold), not the browser's triangle. */
-details.advanced > summary, details.raw > summary { display: flex; align-items: center; gap: var(--space-2); list-style: none; }
-details.advanced > summary::-webkit-details-marker, details.raw > summary::-webkit-details-marker { display: none; }
-details.advanced > summary::before, details.raw > summary::before {
+details.advanced > summary, details.raw > summary, .account-card details > summary { display: flex; align-items: center; gap: var(--space-2); list-style: none; }
+details.advanced > summary::-webkit-details-marker, details.raw > summary::-webkit-details-marker, .account-card details > summary::-webkit-details-marker { display: none; }
+details.advanced > summary::before, details.raw > summary::before, .account-card details > summary::before {
   content: ""; flex: none; width: 7px; height: 7px; margin: 0 var(--space-1) 0 var(--space-0);
   border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform .15s ease;
 }
-details.advanced[open] > summary::before, details.raw[open] > summary::before { transform: rotate(45deg); }
-@media (prefers-reduced-motion: reduce) { details.advanced > summary::before, details.raw > summary::before { transition: none; } }
+details.advanced[open] > summary::before, details.raw[open] > summary::before, .account-card details[open] > summary::before { transform: rotate(45deg); }
+@media (prefers-reduced-motion: reduce) { details.advanced > summary::before, details.raw > summary::before, .account-card details > summary::before { transition: none; } }
 .upload-drop { flex-direction: row; gap: var(--space-2); padding: var(--space-4); border-width: 1px; }
 #nj-files:focus-visible + .upload-drop { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 2px; }
 details.advanced > .stack { padding: var(--space-1) var(--space-3) var(--space-3); }
@@ -1928,8 +1928,13 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
   font-size: var(--text-md);
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
+/* Addresses, commands and error text are long unbroken strings: wrap them inside the card, never past its edge. */
+.account-card, .account-troubleshoot { min-width: 0; }
+.account-card code, .account-card pre, .account-message, .account-troubleshoot p, .account-troubleshoot-header strong { overflow-wrap: anywhere; }
+.account-card pre { white-space: pre-wrap; }
 .account-troubleshoot-details {
   margin-top: var(--space-2);
   font-size: var(--text-sm);
@@ -1966,6 +1971,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .account-add summary { cursor: pointer; color: var(--muted); margin-bottom: var(--space-3); }
 .account-foot { margin: 0; font-size: var(--text-sm); }
 .account-card code { white-space: nowrap; } /* keep `orchestrator ui --tunnel` on one line */
+.account-card code.account-address { white-space: normal; overflow-wrap: anywhere; } /* an address can be longer than the card */
 .desktop-setup label { display: block; margin: 1rem 0; }
 .desktop-setup input { display: block; width: 100%; margin-top: .35rem; }
 
