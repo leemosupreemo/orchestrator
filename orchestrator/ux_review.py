@@ -30,7 +30,7 @@ from typing import Any
 
 CHECKLIST = {
     "ux": ["ux.status", "ux.words", "ux.consistent-names", "ux.one-primary", "ux.no-duplicate-actions", "ux.disclosure",
-           "ux.grouping", "ux.one-home", "ux.wayfinding", "ux.back", "ux.mobile-nav", "ux.empty-states", "ux.errors", "ux.decision-context", "ux.destructive",
+           "ux.grouping", "ux.one-home", "ux.wayfinding", "ux.back", "ux.mobile-nav", "ux.empty-states", "ux.errors", "ux.decision-context", "ux.menus", "ux.destructive",
            "ux.forms", "ux.recognition", "ux.say-once", "ux.action-labels", "ux.long-content", "ux.counts"],
     "design": ["design.hierarchy", "design.tokens", "design.spacing", "design.alignment", "design.sizing",
                "design.consistency", "design.section-headers", "design.header-anatomy", "design.fields",

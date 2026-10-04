@@ -46,6 +46,11 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   hero as "The plan to approve": summary, assumptions and risks, and each task with what "done" means and the files it
   touches, editable in place, with **Revise…** beside it. Once approved it folds back to Tasks.
 
+- A More menu groups its items under headings (on a job: This job, Share, Open, Settings), one line each with the
+  description in the tooltip (`moreMenu(items, { compact: true })`), only what fits the current stage, and ending
+  actions (close, archive, delete) last below a divider. It fits without scrolling; on phones it opens as a sheet over
+  a dimmed page.
+
 ## Navigation and fields
 
 - A page one level down (a job, a run, a document, a setting, a form) shows **Back** above its title. It returns to

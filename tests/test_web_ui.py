@@ -5108,7 +5108,15 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn('["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"]', header_actions_fn)
         self.assertLess(header_actions_fn.index('["Archive"'), header_actions_fn.index('["Delete…"'))
         self.assertNotIn(">Delete</button>", header_actions_fn)
-        self.assertIn("return moreMenu(items);", header_actions_fn)
+        self.assertIn('items.push("---", ...ending)', header_actions_fn)  # ending the job: last and apart
+        self.assertIn("return moreMenu(items, { compact: true });", header_actions_fn)
+
+    def test_job_menu_is_grouped_one_line_each_with_one_fix_item(self):
+        fn = self.source[self.source.index("function jobHeaderActions"):self.source.index('document.addEventListener("click", async (e)', self.source.index("function jobHeaderActions"))]
+        for title in ('["This job", [', '["Share", [', '["Open", [', '["Settings", [', 'items.push(["header", title]'):
+            self.assertIn(title, fn)
+        self.assertNotIn("Still broken?", fn)  # one way to ask for a fix
+        self.assertIn('["Run a fix…", act("debug", j)', fn)
 
     def test_delete_job_dialog_flow_defined(self):
         start = self.source.index("async delete_job(params)")

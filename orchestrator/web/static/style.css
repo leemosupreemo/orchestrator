@@ -262,6 +262,8 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 .more-menu .btn:hover { background: var(--panel-2); }
 .more-menu .hint { font-size: var(--text-xs); color: var(--muted); padding: 0 var(--space-4) var(--space-2); white-space: normal; margin-top: -4px; }
 .more-menu-header { font-size: var(--text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: var(--space-2) var(--space-3) var(--space-1); }
+.more-menu-header:not(:first-child) { margin-top: var(--space-1); border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.more-menu .btn { min-height: var(--control-sm); font-weight: 500; }
 .more-menu hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-1) 0; }
 .more.left .more-menu { left: 0; right: auto; }
 
@@ -635,7 +637,9 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   .job-hero { padding: var(--space-4) var(--space-4); gap: var(--space-3); }
   .job-hero-action { width: 100%; }
   .job-hero-action .btn { width: 100%; min-height: var(--control-lg); }
-  .more-menu { position: fixed; left: 12px; right: 12px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .more-menu { position: fixed; left: 12px; right: 12px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: var(--z-menu); }
+  /* On phones an open menu is a sheet: the page dims behind it, and tapping the dimmed page closes it. */
+  details.more[open] > summary::before { content: ""; position: fixed; inset: 0; z-index: calc(var(--z-menu) - 1); background: var(--backdrop); cursor: default; }
   .term-input { display: flex; }
   dialog {
     width: calc(100vw - 20px);

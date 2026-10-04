@@ -66,7 +66,7 @@ class PromptAndResultTests(unittest.TestCase):
         self.assertEqual(asked, ux.CHECK_IDS)  # an item only in the prompt would be dropped from every result
 
     def test_the_card_navigation_and_content_principles_are_on_the_checklist(self):
-        for item in ("ux.grouping", "ux.decision-context", "ux.back", "ux.action-labels", "ux.long-content", "design.section-headers",
+        for item in ("ux.grouping", "ux.decision-context", "ux.menus", "ux.back", "ux.action-labels", "ux.long-content", "design.section-headers",
                      "design.header-anatomy", "design.fields", "design.native-controls"):
             self.assertIn(item, ux.CHECK_IDS)
 

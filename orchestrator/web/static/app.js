@@ -249,13 +249,16 @@ function renderLanguagesBar(languages, { className = "", maxLabels = 3 } = {}) {
 }
 
 // A <details> dropdown: `items` are [label, attrs, hint?] or "---" or ["header", title].
-function moreMenu(items, { label = "More", left = false } = {}) {
+// items: [label, attributes, description?, "danger"?], "---", or ["header", text]. `compact` (long menus) keeps each
+// item to one line and moves its description into the tooltip, so the whole menu fits without scrolling.
+function moreMenu(items, { label = "More", left = false, compact = false } = {}) {
   const body = items.map((it) => {
     if (it === "---") return "<hr>";
     if (Array.isArray(it) && it[0] === "header") {
       return `<div class="more-menu-header">${esc(it[1])}</div>`;
     }
-    return `<button class="btn${it[3] === "danger" ? " danger" : ""}" ${it[1]}>${esc(it[0])}</button>${it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
+    const tip = compact && it[2] ? ` title="${esc(it[2])}"` : "";
+    return `<button class="btn${it[3] === "danger" ? " danger" : ""}" ${it[1]}${tip}>${esc(it[0])}</button>${!compact && it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
   }).join("");
   return `<details class="more${left ? " left" : ""}"><summary class="btn">${esc(label)} ▾</summary><div class="more-menu">${body}</div></details>`;
 }
@@ -1878,35 +1881,51 @@ pages.home = async (_, query) => {
 };
 
 function jobHeaderActions(s, links = [], ctx = {}) {
+  // Grouped by what the person wants (change the job, share it, open something, adjust settings), only what fits the
+  // job's stage, one line each; ending the job comes last and apart. The hero's primary action is never repeated here.
   const j = { job: s.id };
   const next = s.state.next?.action;
+  const idle = !s.active_run;
+  const reviewed = ["review-needed", "completed"].includes(s.status);
+  const groups = [
+    ["This job", [
+      idle && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
+        && ["Run a fix…", act("debug", j), "Describe what you saw, or leave it blank for another automatic attempt"],
+      idle && !reviewed && s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume" && ["Resume", act("resume", j), "Continue from the next task"],
+      idle && s.status === "scheduled" && next !== "execute" && ["Run now", act("execute", j)],
+      idle && !ctx.planShown && ["planned", "designing", "human-needed", "debugging"].includes(s.status)
+        && ["Revise plan…", act("revise", j), "Ask the AI to re-plan with what should change"],
+      idle && !reviewed && ctx.canSplinter && ["Split into jobs…", act("splinter_job", j), "Each task becomes its own job, with a GitHub sub-issue"],
+      idle && state.project?.mobile_app !== false && ["Check on simulator", act("run_visual_check", j), "Boot the simulator and capture screenshots"],
+    ]],
+    ["Share", [
+      idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)
+        && ["Send to testers…", act("deliver", j), `Builds ${s.branch} and sends it to your testers`],
+      ["Export…", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"],
+    ]],
+    ["Open", [
+      ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page in Docs"],
+      ...links.map((link) => [`${link.where ? `Open a ${link.label}` : link.label} ↗`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]),
+      state.you?.role !== "member" && ["Console", act("console"), "The terminal console"],
+    ]],
+    ["Settings", [
+      ["Move to feature…", `data-job-feature="${esc(s.id)}"`, "Group this job under a feature"],
+      ["Choose models…", act("select_models", j), "Planner, builder and reviewer"],
+    ]],
+  ];
   const items = [];
-  if (!s.active_run) {
-    if (next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)) items.push(["Run fix", act("debug", j), "Another automated fix attempt"]);
-    if (["review-needed", "completed"].includes(s.status)) items.push(["Still broken?", act("fix", j), "Reopen with what you saw"]);
-    if (s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume") items.push(["Resume next task", act("resume", j)]);
-    if (state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)) items.push(["Deliver to testers", act("deliver", j), `Builds ${s.branch}`]);
-    if (s.status === "scheduled" && next !== "execute") items.push(["Run now", act("execute", j)]);
-    if (!ctx.planShown && ["planned", "designing", "human-needed", "review-needed", "debugging"].includes(s.status)) items.push(["Revise plan", act("revise", j), "Re-plan with what should change"]);
-    if (ctx.canSplinter) items.push(["Split into sub-jobs", act("splinter_job", j), "Parallel child jobs and GitHub sub-issues"]);
+  for (const [title, entries] of groups) {
+    const shown = entries.filter(Boolean);
+    if (shown.length) items.push(["header", title], ...shown);
   }
-  items.push("---");
-  items.push(["Open documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page in Docs"]);
-  items.push(["Move to feature…", `data-job-feature="${esc(s.id)}"`, "Group this job under a feature"]);
-  items.push(["Override models", act("select_models", j), "Planner, builder and reviewer"]);
-  if (state.project?.mobile_app !== false) items.push(["Simulator visual check", act("run_visual_check", j), "Boot the simulator and capture screenshots"]);
-  items.push(["Export bundle", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"]);
-  items.push("---");
-  for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]);
-  if (s.issue_number) items.push(["Close GitHub issue", `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`]);
-  if (state.you?.role !== "member") items.push(["Open in console", act("console")]);
-  // Putting a job away lives last in the menu, the way GitHub keeps deletion out of the everyday controls.
-  if (!s.active_run) {
-    items.push("---");
-    items.push(["Archive", `data-archive-jobs='${attrJSON([s.id])}'`, "Hide it from Home; branch and files stay. Restore from Configuration."]);
-    items.push(["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"]);
-  }
-  return moreMenu(items);
+  // Ending the job: last, apart, and only when nothing is running.
+  const ending = [
+    s.issue_number && ["Close issue #" + s.issue_number, `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`, "Close it on GitHub and mark this job complete"],
+    idle && ["Archive", `data-archive-jobs='${attrJSON([s.id])}'`, "Hide it from Home; branch and files stay. Restore from Configuration."],
+    idle && ["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"],
+  ].filter(Boolean);
+  if (ending.length) items.push("---", ...ending);
+  return moreMenu(items, { compact: true });
 }
 
 document.addEventListener("click", async (e) => {

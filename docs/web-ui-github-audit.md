@@ -227,3 +227,7 @@ reads as this project's conventions.
   and assumptions were elsewhere. The plan now sits right under the decision while it waits (summary, assumptions and
   risks, each task with what "done" means and its files, editable), the hero points to it, and Revise sits beside it.
   The review checks for this as `ux.decision-context`.
+- [x] The job's More menu had up to 16 two-line items in one scrolling list, mixing workflow steps, links, settings,
+  tools and deletion, with two items for "fix it" and steps that didn't fit the stage. Now grouped (This job, Share,
+  Open, Settings), one line each with descriptions in tooltips, stage-aware, one "Run a fix…", ending actions last and
+  apart, a sheet with a dimmed backdrop on phones. The review checks for this as `ux.menus`.
