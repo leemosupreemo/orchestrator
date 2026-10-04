@@ -130,5 +130,33 @@ class SetupChecklistStaysInTheAppTests(unittest.TestCase):
             self.assertNotIn(action.get("action"), ui.TERMINAL_ACTIONS, item["id"])
 
 
+class JobsNeverSendYouToTheConsoleTests(unittest.TestCase):
+    def test_no_job_state_offers_the_console(self):
+        base = {"type": "feature-plan", "plan": {"tasks": [{"title": "a"}, {"title": "b"}]}, "completed_tasks": [0]}
+        for status in ("planned", "designing", "human-needed", "scheduled", "executing", "review-needed", "debugging",
+                       "failed", "completed", "something-new"):
+            for extra in ({}, {"last_error": "boom"}, {"human_clarification_question": "Which one?"}):
+                st = ui.job_state({**base, "status": status, **extra})
+                self.assertNotEqual((st["next"] or {}).get("action"), "console", (status, extra))
+
+    def test_a_job_that_stopped_with_an_error_says_so_and_offers_to_try_again(self):
+        st = ui.job_state({"type": "feature-plan", "status": "human-needed", "last_error": "No module named 'x'",
+                           "plan": {"tasks": [{"title": "a"}]}})
+        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Stopped", "resume", "Try again"))
+        self.assertIn("No module named 'x'", st["reason"])
+
+
+class OrchestratorsOwnFolderTests(unittest.TestCase):
+    def test_jobs_cant_switch_branches_in_the_folder_orchestrator_runs_from(self):
+        from orchestrator import run_check
+        self.assertTrue(run_check.runs_from(PACKAGE_ROOT))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(run_check.runs_from(tmp))
+        self.assertTrue(run_check.switches_branches({"branch_mode": "new"}))
+        self.assertFalse(run_check.switches_branches({"branch_mode": "manual"}))  # no git changes: allowed
+        blockers = ui.job_blockers(PACKAGE_ROOT, {"status": "planned", "branch_mode": "new"})
+        self.assertEqual(blockers[0]["id"], "self_checkout")
+
+
 if __name__ == "__main__":
     unittest.main()

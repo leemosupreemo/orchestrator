@@ -558,7 +558,11 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
     if status == "human-needed":
         if job.get("human_clarification_question"):
             return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
-        return state("needs_you", "attention", "Action required", "Waiting on a decision in the console.", "console", "Open in console")
+        error = str(job.get("last_error") or "").strip()
+        reason = f"It stopped with an error: {error}" if error else "It stopped before finishing."
+        if remaining:
+            return state("needs_you", "failed" if error else "attention", "Stopped", reason, "resume", "Try again")
+        return state("needs_you", "failed" if error else "attention", "Stopped", reason, "debug", "Run a fix")
     if status == "designing":
         return state("needs_you", "attention", "Design ready", "Approve the design to plan its implementation, or ask for changes.", "approve", "Approve design")
     if status == "planned":
@@ -1014,6 +1018,8 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
         free = None
     machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
     found = run_check.blockers(job, machines, free, run_check.MIN_DISK_GB, run_check.model_names_overlap)
+    if job.get("status") in run_check.CHECKED_STATUSES and run_check.switches_branches(job) and run_check.runs_from(root):
+        found.insert(0, {"id": "self_checkout", "text": run_check.SELF_CHECKOUT_TEXT, "fix": "", "route": ""})
     if job.get("status") in run_check.CHECKED_STATUSES:
         have = {b["id"] for b in found}
         for item in preflight.failures(preflight_overview(root)):

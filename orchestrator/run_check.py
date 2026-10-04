@@ -23,6 +23,25 @@ def model_names_overlap(left: str, right: str) -> bool:
     """Two model names that mean the same model (an id and its alias)."""
     return bool(equivalent_model_names(left) & equivalent_model_names(right))
 
+SELF_CHECKOUT_TEXT = ("This project is the folder Orchestrator itself runs from. A job here would switch its branch and "
+                      "change Orchestrator's own code while it runs. Run jobs on Orchestrator from a separate copy "
+                      "(`git worktree add ../orchestrator-jobs`), or set the job to make no git changes.")
+
+
+def runs_from(root: Any) -> bool:
+    """Is `root` the checkout this Orchestrator package is running from? Jobs there would rewrite its own code."""
+    from pathlib import Path
+    import orchestrator
+    try:
+        return Path(orchestrator.__file__).resolve().parents[1] == Path(root).resolve()
+    except (OSError, IndexError):
+        return False
+
+
+def switches_branches(job: dict[str, Any]) -> bool:
+    return str(job.get("branch_mode") or "new") != "manual"
+
+
 # Statuses where the job is about to be (or waiting to be) scheduled.
 CHECKED_STATUSES = {"planned", "scheduled"}
 

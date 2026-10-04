@@ -382,6 +382,17 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
     job_label = f"Issue #{issue_number}" if issue_number else f"job {job['job_id']}"
     job["code_host"] = PROJECT_CONFIG.code_host_mode
 
+    from orchestrator import run_check
+    if run_check.switches_branches(job) and run_check.runs_from(ROOT):
+        # Switching branches here would replace the code this worker is running (and the web app's files).
+        print(f"\n❌ {run_check.SELF_CHECKOUT_TEXT}")
+        job["status"] = "human-needed"
+        job["last_error"] = "This project is the folder Orchestrator runs from; jobs here can't switch branches."
+        job["worker_pid"] = None
+        job["updated_at"] = now_iso()
+        write_json(job_path, job)
+        return
+
     try:
         print_phase("git_prep")
         status_bar.render()

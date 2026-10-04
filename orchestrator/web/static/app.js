@@ -4920,18 +4920,19 @@ const KEYS = [
 ];
 
 function runHeader(r) {
-  const back = r.job ? `<a class="btn" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "";
+  // The top-left Back returns to the job (or wherever you came from); opened directly, it falls back to the job.
+  if (r.job && current.page === "run") current.parent = `#/jobs/${encodeURIComponent(r.job)}`;
   return {
     title: r.title,
     sub: `<span class="status-line">${runPill(r)}<span class="mono">${esc(r.command)}</span></span>`,
-    actions: `${back}${r.running ? `<button class="btn danger" data-stop="${esc(r.id)}">Stop</button>` : ""}`,
+    actions: r.running ? `<button class="btn danger" data-stop="${esc(r.id)}">Stop</button>` : "",
   };
 }
 
 function nextStep(r) {
   const failed = r.exit_code !== 0;
   const target = r.result_job || r.job;
-  const open = target ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(target)}">${r.result_job && !r.job ? "Open job" : "Back to job"}</a>` : "";
+  const open = r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>` : ""; // Back covers returning to the job
   const text = failed ? "This run failed. The output below shows why."
     : r.result_job && !r.job ? "Job created."
     : target ? "Done. The job page shows where it stands now."
