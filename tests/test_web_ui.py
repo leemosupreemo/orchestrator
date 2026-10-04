@@ -7,6 +7,7 @@ import io
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -545,10 +546,10 @@ class ProjectTitleTests(unittest.TestCase):
         home = js[js.index("  return {\n    title: p.name,"):][:700]
         self.assertIn('<div class="project-select-container">', home)
         self.assertIn('.project-select-container {', css)
-        self.assertIn('max-width: min(100%, 14rem);', css)
-        self.assertIn('.status-line .branch-select { min-height: var(--control-sm); width: auto; max-width: min(100%, 11rem);', css)
-        self.assertIn('.project-select-container,\n  .title-project-select { max-width: min(100%, 12rem); }', css)
-        self.assertIn('.status-line .branch-select { min-height: var(--control-md); max-width: min(100%, 10rem); }', css)
+        self.assertIn('width: 16rem;', css)  # a fixed, comfortable field width on wider screens
+        self.assertIn('.status-line .branch-select { min-height: var(--control-md); width: 16rem; max-width: 100%;', css)
+        self.assertIn('.title-switch, .status-branch { display: inline-flex; flex-direction: column;', css)  # label above, both
+        self.assertIn('.topbar-text:has(.title-switch) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);', css)  # side by side on phones
 
 
 class ProductStripTests(unittest.TestCase):
@@ -2124,8 +2125,9 @@ class JobStateTests(unittest.TestCase):
             "executing": ("working", "working", None),
             "completed": ("done", "done", None),
         }
+        alive = {"worker_pid": os.getpid(), "worker_host": socket.gethostname()}  # "executing" means building only while a worker runs
         for status, (group, tone, action) in cases.items():
-            st = self.state(status=status)
+            st = self.state(status=status, **(alive if status == "executing" else {}))
             self.assertEqual((st["group"], st["tone"], st["next"] and st["next"]["action"]), (group, tone, action), status)
 
     def test_review_needed_offers_merge_with_a_pr_and_mark_complete_without(self):
@@ -3980,6 +3982,90 @@ class PageLoadBacklogTests(unittest.TestCase):
         # doesn't reproduce it, so this checks the setting itself.
         self.assertGreaterEqual(ui.UIServer.request_queue_size, 64)
 
+class JobContextTests(ServerTestCase):
+    """A job's attachments are grouped by what they are to the job (ticket, designs, what went wrong), not by source."""
+    JOB = "20260922-bug-1"
+
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def set_job(self, **fields):
+        path = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        job = json.loads(path.read_text())
+        job.update(fields)
+        path.write_text(json.dumps(job))
+
+    def test_items_are_grouped_by_role_whatever_their_source(self):
+        uploads = self.root / ".orchestrator" / "ui" / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "20260101-000000-abcdef-mock.png").write_bytes(b"\x89PNG")
+        self.set_job(type="feature-plan", external_links=[
+            {"provider": "jira", "ref": "ABC-1", "title": "Lobby seats", "url": "https://x.atlassian.net/browse/ABC-1"},
+            {"provider": "figma", "ref": "f1", "title": "Lobby screen"},
+            {"provider": "sentry", "ref": "S-9", "title": "Crash on rejoin"}],
+            reference_artifacts=[{"path": ".orchestrator/ui/uploads/20260101-000000-abcdef-mock.png", "type": "image_reference"},
+                                 {"url": "https://www.figma.com/file/x", "type": "figma_url"}])
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        ctx = data["context"]
+        self.assertEqual([t["ref"] for t in ctx["ticket"]], ["ABC-1"])
+        self.assertEqual([d["source"] for d in ctx["designs"]], ["Figma", "Upload", "Link"])  # one place for designs
+        self.assertEqual(ctx["designs"][1]["image"], ".orchestrator/ui/uploads/20260101-000000-abcdef-mock.png")
+        self.assertEqual([p["title"] for p in ctx["problem"]], ["Crash on rejoin"])
+        self.assertFalse(ctx["problem_first"])
+
+    def test_on_a_bug_job_a_screenshot_is_evidence_and_comes_first(self):
+        self.set_job(type="bug", reference_artifacts=[{"path": ".orchestrator/ui/uploads/x-shot.png", "type": "image_reference"}])
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertEqual((len(data["context"]["problem"]), len(data["context"]["designs"]), data["context"]["problem_first"]), (1, 0, True))
+
+    def test_attaching_only_attaches_and_is_read_back_by_role(self):
+        res, data = self.post(f"/api/jobs/{self.JOB}/attach", {"role": "problem", "text": "Fatal: seat index out of range", "note": "From TestFlight"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["context"]["problem"][0]["title"], "From TestFlight")
+        res, data = self.post(f"/api/jobs/{self.JOB}/attach", {"role": "design", "url": "https://www.figma.com/file/abc"})
+        self.assertEqual(data["context"]["designs"][0]["url"], "https://www.figma.com/file/abc")
+        job = json.loads((self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json").read_text())
+        pasted = self.root / job["reference_artifacts"][0]["path"]
+        self.assertEqual(pasted.read_text(), "Fatal: seat index out of range")  # the AI reads it on its next step
+        self.assertEqual(self.server.sessions.list(), [])  # nothing ran
+        for body in ({"role": "other", "url": "https://x"}, {"role": "design"}, {"role": "design", "url": "ftp://x"},
+                     {"role": "design", "upload": "../../etc/passwd"}):
+            self.assertEqual(self.post(f"/api/jobs/{self.JOB}/attach", body)[0].status, 400, body)
+
+    def test_thumbnails_are_served_only_for_attached_images(self):
+        uploads = self.root / ".orchestrator" / "ui" / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "a.png").write_bytes(b"\x89PNG")
+        (self.root / "secret.png").write_bytes(b"\x89PNG")
+        self.assertEqual(self.request("GET", "/api/job-image?path=.orchestrator/ui/uploads/a.png")[0].status, 200)
+        for bad in ("secret.png", ".orchestrator/project.json", ".orchestrator/ui/uploads/../../secret.png"):
+            self.assertEqual(self.request("GET", f"/api/job-image?path={bad}")[0].status, 404, bad)
+
+
+class BuildingMeansActiveTests(unittest.TestCase):
+    """"Building" is said only while a worker is actually running; a stopped build is Paused, with Resume."""
+    PLAN = {"tasks": [{"title": "a"}, {"title": "b"}, {"title": "c"}]}
+
+    def state(self, **job):
+        return ui.job_state({"status": "executing", "type": "feature-plan", "plan": self.PLAN, "completed_tasks": [0], **job})
+
+    def test_a_stopped_build_is_paused_with_resume(self):
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        st = self.state(worker_pid=dead.pid, worker_host=socket.gethostname())
+        self.assertEqual((st["label"], st["group"], st["next"]["action"]), ("Paused", "needs_you", "resume"))
+        self.assertIn("1 of 3 tasks done", st["reason"])
+
+    def test_no_worker_recorded_is_not_building(self):
+        self.assertEqual(self.state()["label"], "Paused")
+
+    def test_a_running_worker_is_building(self):
+        self.assertEqual(self.state(worker_pid=os.getpid(), worker_host=socket.gethostname())["label"], "Building")
+
+    def test_a_worker_on_another_machine_is_trusted(self):
+        self.assertEqual(self.state(worker_pid=1, worker_host="some-other-mac")["label"], "Building")
+
+
 class KeepAliveBodyTests(ServerTestCase):
     """A request body no route reads must not leak into the next request on the same connection."""
 
@@ -4944,6 +5030,25 @@ class JobDetailPrinciplesTests(unittest.TestCase):
     def test_no_action_tile_grid(self):
         self.assertNotIn("action-tile", self.job_page)
 
+    def test_context_is_grouped_by_role_with_one_way_to_attach(self):
+        self.assertNotIn("Linked tickets, errors", self.source)  # no by-source junk drawer
+        self.assertNotIn("Attached References", self.source)
+        self.assertIn('group("Designs"', self.source)
+        self.assertIn('group("What went wrong"', self.source)
+        self.assertIn('class="ticket-chip"', self.job_page)  # the ticket is in the header
+        self.assertNotIn('act("link_logs"', self.source)  # attaching never starts a fix run
+        self.assertNotIn('act("attach_mockup"', self.source)
+        attach = self.source[self.source.index("async function attachToJob"):self.source.index("// ---------------------------------------------------------------- start a new project")]
+        self.assertIn('api(`jobs/${encodeURIComponent(jobId)}/attach`', attach)
+        self.assertNotIn("runAction", attach)
+
+    def test_a_plan_waiting_for_approval_is_shown_under_the_decision(self):
+        self.assertIn('id="plan-section"', self.source)
+        self.assertIn("${reviewingPlan ? planCardHtml : \"\"}", self.job_page)  # in the top section, by the hero
+        self.assertIn('data-scroll-to="#plan-section">the plan below</button>', self.job_page)
+        self.assertIn("!ctx.planShown &&", self.source)  # no second Revise plan in More while the card offers it
+        self.assertIn("tasks.length && !reviewingPlan ? fold(\"Tasks\"", self.job_page)  # one task list, not two
+
     def test_each_secondary_action_appears_once(self):
         for action in ("revise", "select_models", "ask_ai", "link_logs", "attach_mockup", "discard_job"):
             self.assertLessEqual(self.source.count(f'act("{action}", j)') + self.job_page.count(f'data-action="{action}"'), 1, action)
@@ -4968,7 +5073,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("drawFeatureLinks", self.source)
         self.assertIn("job.plan?.slice_warnings", self.job_page)
         self.assertIn('matchMedia("(max-width: 760px)")', self.job_page)
-        for title in ("Tasks", "Activity & Runs", "Logs", "Output files"):
+        for title in ("Tasks", "Activity & Runs", "Output files"):  # logs live under "What went wrong" now
             self.assertIn(f'fold("{title}"', self.job_page, title)
         self.assertIn("pages.help = async", self.source)
         self.assertIn('href="#/help"', (static / "index.html").read_text())
@@ -5045,13 +5150,14 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         css = (static / "style.css").read_text()
         self.assertIn('id="brief-section"', self.job_page)
-        self.assertLess(self.job_page.index('id="brief-section"'), self.job_page.index('<h2>Test cases</h2>'))
+        self.assertLess(self.job_page.index('id="brief-section"'), self.job_page.index('<h2>Test cases'))
         self.assertIn('data-brief-edit', self.job_page)
         self.assertIn('brief-path-chip', self.job_page)
         self.assertIn('.brief-path-chip {', css)
         self.assertIn('brief-content', self.job_page)
         self.assertIn('.brief-content {', css)
-        self.assertIn('Raw file ↗', self.job_page)
+        self.assertIn('>Raw</a>', self.job_page)
+        self.assertIn('data-expandable="320"', self.job_page)  # long briefs fold behind Show more, not a scroll box
 
     def test_add_existing_project_modal_is_tabbed_with_mobile_exit_controls(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"

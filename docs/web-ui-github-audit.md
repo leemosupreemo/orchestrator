@@ -198,3 +198,32 @@ The method used here is now part of the product. UX review (sidebar, under Learn
 screenshots at phone and desktop widths, light and dark, then a UX pass and a design pass against the checklist in
 `orchestrator/prompts/ux_reviewer.md`, which encodes this audit's principles. Every job that changes interface files
 gets the same checklist on its own changes after the code review, shown on the job page. See the user guide.
+
+## Follow-ups from review (2026-10-04)
+
+- [x] Detail pages had no way back: a shared **Back** above the title (previous page, or the parent when opened
+  directly); the 17 "← All configuration" links, Docs' "← All docs" and the file page's Back button are gone.
+- [x] Project and branch pickers were placed inconsistently (one label above, one beside, cramped): both label-above,
+  same size, side by side on phones.
+- [x] Card titles didn't read as titles: card headers are tinted title bars with a larger heading.
+- [x] Brief header: "Raw file ↗" and "Edit brief" stacked awkwardly with the path floating beside the title. Now
+  **Raw** and **Edit** as a pair on the right, the path in a caption under the header, and the card-header rules in
+  `docs/web-ui-conventions.md` (Cards). Test cases' Add moved to its header as **Add**.
+- [x] The brief scrolled inside a fixed box: long content now fades into a centred **Show more** that grows the card
+  (brief, other job documents, Product sections).
+
+The UX and design review checks for these too: `ux.back`, `ux.action-labels`, `ux.long-content`,
+`design.section-headers`, `design.header-anatomy`, `design.fields` and `design.native-controls` are on the checklist in
+`orchestrator/prompts/ux_reviewer.md`, and the rules themselves are in `docs/web-ui-conventions.md`, which the review
+reads as this project's conventions.
+
+- [x] The job page grouped tickets, errors and designs in one card by source ("Linked tickets, errors & designs"), while
+  uploaded mockups and logs sat in two other cards, with three ways to attach (one of which started a fix run). Now:
+  the ticket is a chip in the header; **Designs** and **What went wrong** gather items whatever their source (Figma or
+  upload; Sentry, logs or screenshots on a bug job), in a context rail beside the job on wide screens and under its
+  top section on narrow ones; empty groups don't show; one **Attach…** asks what it is, then where from, and only
+  attaches. The update log to linked apps folds at the bottom. The review checks for this as `ux.grouping`.
+- [x] "Approve plan" didn't show what was being approved: the tasks were folded near the bottom and the plan's summary
+  and assumptions were elsewhere. The plan now sits right under the decision while it waits (summary, assumptions and
+  risks, each task with what "done" means and its files, editable), the hero points to it, and Revise sits beside it.
+  The review checks for this as `ux.decision-context`.

@@ -44,6 +44,7 @@
   --r-lg: 12px;
   --r-pill: 999px;
   --radius: var(--r-lg);
+  --clamp: 320px;      /* how much of long content shows before "Show more" (set per element) */
   /* Layers, lowest to highest. A backdrop sits one below its layer, e.g. calc(drawer - 1). */
   --z-raised: 2;      /* a hovered row */
   --z-inner: 10;      /* something inside a component */
@@ -150,22 +151,8 @@ code, pre, .mono { font-family: var(--mono); font-size: var(--text-sm); }
 .nav-secondary a { padding: var(--space-2) var(--space-3); font-size: var(--text-md); color: var(--muted); }
 .big-number { font-size: var(--text-3xl); font-weight: 680; }
 pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: var(--text-md); }
-.brief-path-chip {
-  font-size: var(--text-xs);
-  padding: 2px 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  color: var(--muted);
-  user-select: all;
-  word-break: break-all;
-}
-.brief-content {
-  padding: var(--space-3) var(--space-4) var(--space-4);
-  line-height: 1.6;
-  max-height: 480px;
-  overflow-y: auto;
-}
+.brief-path-chip { font-size: var(--text-xs); color: var(--muted); user-select: all; overflow-wrap: anywhere; }
+.brief-content { padding: var(--space-3) var(--space-4) var(--space-4); line-height: 1.6; }
 
 /* main */
 .main { min-width: 0; padding: var(--space-6) var(--space-7) var(--space-8); }
@@ -226,7 +213,20 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 /* One card header everywhere: title left, count beside it, actions right, the same height with or without buttons. */
 .card-h { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: calc(var(--control-sm) + 2 * var(--space-3)); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
-.card-h h2 { font-size: var(--text-base); font-weight: 620; }
+/* A card's header is a title bar: tinted, with a heading that reads as one (Primer's Box header). */
+.card-h { background: var(--panel-2); }
+.card > .card-h:first-child, .card > details:first-child > summary.card-h { border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+.card > details:only-child:not([open]) > summary.card-h { border-radius: calc(var(--radius) - 1px); border-bottom: 0; }
+.card-h h2 { font-size: var(--text-lg); font-weight: 650; }
+.card-h h2 .count { font-weight: 500; font-size: var(--text-md); margin-left: var(--space-1); }
+.card-actions { display: flex; align-items: center; gap: var(--space-2); flex: none; }
+/* Facts about the card's content (where a file lives, when it changed) sit in a caption under the header. */
+.card-caption { padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); }
+/* "Show more" for long content (wireExpandables in app.js) */
+.expandable.is-clamped { max-height: var(--clamp); overflow: hidden; position: relative; }
+.expandable.is-clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 72px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--panel)); }
+.expandable-bar { display: flex; justify-content: center; padding: var(--space-2) var(--space-4) var(--space-4); }
 .card-h .count { color: var(--muted); font-weight: 500; }
 .card-b { padding: var(--space-4); }
 .muted { color: var(--muted); }
@@ -295,7 +295,7 @@ a.item:hover { background: var(--panel-2); }
 .status-line .sep { opacity: .5; }
 .status-stats a, .card-h a { display: inline-flex; align-items: center; min-height: var(--control-xs); }
 .topbar-text, .status-line, .status-branch { min-width: 0; max-width: 100%; }
-.status-line .branch-select { min-height: var(--control-sm); width: auto; max-width: min(100%, 11rem); text-overflow: ellipsis; padding: var(--space-0) var(--space-2); font-size: var(--text-md); }
+.status-line .branch-select { min-height: var(--control-md); width: 16rem; max-width: 100%; text-overflow: ellipsis; padding: var(--space-1) var(--space-6) var(--space-1) var(--space-3); font-family: inherit; font-size: var(--text-md); font-weight: 600; }
 
 .hero-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
 
@@ -517,7 +517,8 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 /* Home only needs a project switcher when the sidebar's picker is hidden. */
 #page-title:has(.title-switch) { display: none; }
 .topbar-text:has(.title-switch) .sub { margin-top: 0; }
-.title-switch { display: inline-flex; flex-direction: column; gap: var(--space-1); max-width: 100%; min-width: 0; }
+/* Home's context fields (project, branch): label above, same size, side by side on phones. */
+.title-switch, .status-branch { display: inline-flex; flex-direction: column; align-items: stretch; gap: var(--space-1); max-width: 100%; min-width: 0; }
 .project-select-container {
   display: inline-flex;
   align-items: center;
@@ -525,9 +526,8 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow);
-  max-width: min(100%, 14rem);
-  width: auto;
+  max-width: 100%;
+  width: 16rem;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 .project-select-container:hover {
@@ -542,21 +542,20 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 /* A select is as wide as its longest option ("Manage all projects…" in heading type), so cap it to a compact width. */
 .title-project-select {
   font: inherit;
-  font-size: var(--text-lg);
-  font-weight: 650;
+  font-size: var(--text-md);
+  font-weight: 600;
   color: var(--text);
   background: transparent;
   border: 0;
   border-radius: var(--r-md);
-  padding: var(--space-1) var(--space-4) var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-6) var(--space-1) var(--space-3);
   min-height: var(--control-md);
   width: 100%;
-  max-width: min(100%, 14rem);
+  max-width: 100%;
   text-overflow: ellipsis;
   cursor: pointer;
   outline: none;
 }
-.status-branch { display: inline-flex; align-items: center; gap: var(--space-2); }
 
 /* phones */
 @media (max-width: 760px) {
@@ -620,9 +619,13 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   .projects-actions > .btn { min-height: var(--control-lg); padding: var(--space-2) var(--space-2); font-size: var(--text-xs); gap: var(--space-1); }
   .term { height: calc(100vh - 380px); min-height: 240px; }
   .keybar .btn { min-height: var(--control-lg); }
-  .project-select-container,
-  .title-project-select { max-width: min(100%, 12rem); }
-  .status-line .branch-select { min-height: var(--control-md); max-width: min(100%, 10rem); }
+  /* Project and branch share a row: two equal columns, the stats under them. */
+  .topbar-text:has(.title-switch) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); align-items: end; }
+  .topbar-text:has(.title-switch) > .back-link { grid-column: 1 / -1; }
+  .topbar-text:has(.title-switch) #page-sub, .topbar-text:has(.title-switch) .status-line { display: contents; }
+  #page-title:has(.title-switch) { margin: 0; }
+  .project-select-container, .status-line .branch-select { width: 100%; }
+  .topbar-text:has(.title-switch) .status-stats { grid-column: 1 / -1; }
   .status-stats a, .card-h a { min-height: var(--control-md); }
   .item .meta { white-space: normal; }
   .item .meta .reason-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -1517,7 +1520,6 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 }
 
 .configuration-page { display: flex; flex-direction: column; gap: var(--space-3); }
-.configuration-back { align-self: flex-start; font-weight: 600; }
 .configuration-card { overflow: hidden; }
 .configuration-setting-list { display: flex; flex-direction: column; }
 .configuration-setting-row {
@@ -1713,7 +1715,6 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 .skip-link { position: fixed; left: 8px; top: -48px; z-index: var(--z-menu); padding: var(--space-2) var(--space-4); border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); border: 0; font: inherit; }
 .skip-link:focus { top: 8px; }
 .tc-row > summary, .kpi-log summary { min-height: var(--control-sm); padding-block: var(--space-2); }
-.configuration-back { display: inline-flex; align-items: center; min-height: var(--control-sm); }
 @media (max-width: 760px) { .fmap-node { width: 100%; } }
 
 /* spacing utilities (replacing repeated inline styles) */
@@ -2029,3 +2030,42 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
   .topbar:has(> .topbar-actions > details.more:only-child) { flex-direction: row; align-items: flex-start; }
   .topbar-actions:has(> details.more:only-child) { width: auto; flex: none; }
 }
+
+/* "Back" above a detail page's title: returns to where you came from (see routeParent in app.js). */
+.back-link { display: inline-flex; align-items: center; gap: var(--space-1); min-height: var(--control-xs); margin: 0 0 var(--space-1) calc(-1 * var(--space-1));
+  padding: 0 var(--space-2) 0 var(--space-1); border-radius: var(--r-md); color: var(--muted); font-size: var(--text-sm); font-weight: 550; text-decoration: none; }
+.back-link:hover { color: var(--text); background: var(--panel-2); }
+.back-link .icon { width: 16px; height: 16px; transform: rotate(180deg); }
+.back-link[hidden] { display: none; }
+@media (max-width: 760px) { .back-link { min-height: var(--control-md); } }
+
+/* Job page: the context rail beside the job on wide screens, under its top section on narrow ones */
+.job-layout { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "rail" "body"; }
+.job-top { grid-area: top; min-width: 0; }
+.job-body { grid-area: body; min-width: 0; }
+.job-rail { grid-area: rail; min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-4); }
+@media (min-width: 1100px) {
+  .job-layout { grid-template-columns: minmax(0, 1fr) 300px; grid-template-areas: "top rail" "body rail"; column-gap: var(--space-5); align-items: start; }
+  .job-rail { position: sticky; top: var(--space-4); }
+}
+.rail-h { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: var(--control-sm); }
+.rail-empty { margin: 0; padding: var(--space-3) var(--space-4); border: 1px dashed var(--border); border-radius: var(--radius); font-size: var(--text-sm); }
+.rail-card .card-h h2 { font-size: var(--text-md); }
+.context-item { align-items: flex-start; }
+.context-item .main-col { white-space: normal; overflow-wrap: anywhere; }
+.context-thumb { width: 56px; height: 56px; object-fit: cover; flex: none; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
+.ticket-chip { display: inline-flex; align-items: center; min-height: var(--control-xs); padding: 0 var(--space-2); border: 1px solid var(--border);
+  border-radius: var(--r-pill); background: var(--panel); color: var(--text); font-size: var(--text-sm); font-weight: 550; text-decoration: none; }
+a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
+.job-top .banner { margin-bottom: var(--space-4); }
+
+/* The plan, shown under the decision while it waits for approval */
+.plan-review { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.plan-summary { font-size: var(--text-base); border-bottom: 1px solid var(--border); }
+.task-row { align-items: flex-start; }
+.task-number { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-top: 1px;
+  border-radius: var(--r-pill); background: var(--panel-2); border: 1px solid var(--border); font-size: var(--text-xs); font-weight: 650; color: var(--muted); }
+.task-row .main-col { white-space: normal; display: flex; flex-direction: column; gap: var(--space-1); }
+.task-done-when ul { margin: var(--space-1) 0 0; padding-left: var(--space-5); color: var(--text); font-size: var(--text-sm); }
+.task-files { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.task-files code { padding: 0 var(--space-2); border-radius: var(--r-sm); background: var(--panel-2); font-size: var(--text-xs); overflow-wrap: anywhere; }

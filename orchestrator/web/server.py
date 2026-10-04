@@ -31,6 +31,7 @@ import os
 import queue
 import re
 import secrets
+import socket
 import shutil
 import zipfile
 import signal
@@ -511,6 +512,29 @@ def job_task_list(job: dict[str, Any]) -> list[Any]:
     return job["tasks"] if isinstance(job.get("tasks"), list) else []
 
 
+def worker_alive(job: dict[str, Any]) -> bool | None:
+    """Is the job's worker running? True or False when it can be checked here; None when it runs on another machine.
+    A job that says it's building but whose worker is gone (stopped, killed, crashed) isn't building."""
+    host = job.get("worker_host")
+    if host and host != socket.gethostname():
+        return None
+    try:
+        pid = int(job.get("worker_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # alive, run by another user
+    except OSError:
+        return False
+    return True
+
+
 def job_state(job: dict[str, Any]) -> dict[str, Any]:
     """What the job is waiting on, in plain words, and the one action that moves
     it forward. `group` is needs_you | working | done; `tone` drives colour:
@@ -556,6 +580,10 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
+    if status in {"executing", "running", "in-progress"} and worker_alive(job) is False:
+        done = len(tasks) - remaining if tasks else 0
+        progress = f": {done} of {len(tasks)} tasks done" if tasks else ""
+        return state("needs_you", "attention", "Paused", f"Stopped before it finished{progress}.", "resume", "Resume")  # the page says where Resume picks up
     if status in {"executing", "running", "in-progress", "decomposed"}:
         return state("working", "working", "Building", "A worker is implementing this.")
     if status == "completed":
@@ -994,6 +1022,98 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
+TICKET_APPS, DESIGN_APPS, PROBLEM_APPS = {"jira", "trello"}, {"figma"}, {"sentry"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def is_bug_job(job: dict[str, Any]) -> bool:
+    return str(job.get("type") or "").startswith(("bug", "debug"))
+
+
+def reference_role(ref: dict[str, Any], bug: bool) -> str:
+    """What a reference is to the job: design (what it should look like) or problem (evidence of what's wrong).
+    Newer references say so; older ones are inferred from the file, and on a bug job a screenshot is evidence."""
+    if ref.get("role") in ("design", "problem", "ticket"):
+        return ref["role"]
+    target = str(ref.get("path") or ref.get("url") or "").lower()
+    suffix = PurePosixPath(target.split("?")[0]).suffix
+    if suffix in (".log", ".txt", ".crash", ".ips", ".json") or ref.get("type") == "text_reference":
+        return "problem"
+    if suffix in IMAGE_SUFFIXES:
+        return "problem" if bug else "design"
+    return "design"
+
+
+def job_context(root: Path, job: dict[str, Any]) -> dict[str, Any]:
+    """Everything attached to a job, grouped by what it is to the job rather than where it came from: the ticket
+    (why the work exists), designs (what it should look like) and what went wrong (errors, logs, screenshots of the
+    problem). A design is a design whether it came from Figma or an upload."""
+    bug = is_bug_job(job)
+    out: dict[str, list[dict[str, Any]]] = {"ticket": [], "designs": [], "problem": []}
+    for link in job.get("external_links") or []:
+        provider = str(link.get("provider") or "")
+        item = {"title": link.get("title") or link.get("ref") or "", "ref": link.get("ref") or "", "url": link.get("url") or "",
+                "source": provider.capitalize(), "detail": link.get("detail") or ""}
+        out["designs" if provider in DESIGN_APPS else "problem" if provider in PROBLEM_APPS else "ticket"].append(item)
+    for ref in job.get("reference_artifacts") or []:
+        path, url = str(ref.get("path") or ""), str(ref.get("url") or "")
+        name = ref.get("name") or (PurePosixPath(path).name if path else url)
+        source = "Link" if url else "Pasted" if name == "Pasted log" else "Upload"
+        item = {"title": ref.get("note") or name, "url": url, "source": source, "detail": name if ref.get("note") and source != "Pasted" else ""}
+        if path:
+            suffix = PurePosixPath(path).suffix.lower()
+            if suffix in IMAGE_SUFFIXES:
+                item["image"] = path
+            runtime_rel = PurePosixPath(path).relative_to(DEFAULT_RUNTIME_DIRNAME) if path.startswith(DEFAULT_RUNTIME_DIRNAME + "/") else None
+            if runtime_rel and suffix not in IMAGE_SUFFIXES:
+                item["file"] = str(runtime_rel)
+        role = reference_role(ref, bug)
+        out["designs" if role == "design" else "problem" if role == "problem" else "ticket"].append(item)
+    for ref in linked_logs(job):
+        entry = resolve_linked_log(root, ref)
+        out["problem"].append({"title": entry.get("label") or ref, "source": "Log", "files": entry.get("files") or [], "url": ""})
+    return {**out, "problem_first": bug, "updates": list(reversed(job.get("integration_log") or []))[:20]}
+
+
+def attach_to_job(root: Path, job_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Attach one thing to a job by what it is. It only attaches: nothing runs. The AI reads it on its next step."""
+    role = str(body.get("role") or "")
+    if role not in ("design", "problem", "ticket"):
+        raise UIError("Say what you're attaching: a ticket, a design, or a log or error.")
+    job_path = resolve_job_path(root, job_id)
+    job = read_json_file(job_path)
+    note = _text(body, "note", limit=1000)
+    url = _text(body, "url", limit=2000)
+    upload = _text(body, "upload", limit=500)
+    text = _text(body, "text", limit=200_000)
+    if url:
+        if not re.fullmatch(r"https?://\S+", url):
+            raise UIError("A link starts with http:// or https://")
+        ref = {"url": url, "name": url, "type": "figma_url" if "figma.com" in urlparse(url).netloc else "url_reference"}
+    elif upload:
+        path = runtime_file(root, upload)  # only files under the runtime folder (where uploads are saved)
+        ref = {"path": str(path.relative_to(safe_resolve(root))), "name": upload_display_name(path), "type": new_job_form.reference_type(upload)}
+    elif text and role == "problem":
+        saved = save_upload(root, "pasted.log", text.encode("utf-8"))
+        ref = {"path": saved["path"], "name": "Pasted log", "type": "text_reference"}
+    else:
+        raise UIError("Add a link, a file, or (for a log) paste the text.")
+    ref.update({"role": role, "added_at": datetime.now().isoformat(), **({"note": note} if note else {})})
+    job.setdefault("reference_artifacts", []).append(ref)
+    write_json_file(job_path, job)
+    return job_context(root, job)
+
+
+def job_image(root: Path, rel: str) -> Path | None:
+    """An image attached to a job, for its thumbnail: only uploads and job output under the runtime folder."""
+    if PurePosixPath(rel).suffix.lower() not in IMAGE_SUFFIXES:
+        return None
+    base = safe_resolve(runtime_dir(root))
+    target = safe_resolve(root / rel)
+    allowed = (base / "ui" / "uploads", base / "output")
+    return target if target.is_file() and any(a in target.parents for a in allowed) else None
+
+
 def job_ux_review(root: Path, job_id: str, job: dict[str, Any]) -> dict[str, Any] | None:
     """The job's UX and design check: the summary the worker recorded plus the full result, if there is one."""
     record = job.get("ux_review")
@@ -1125,6 +1245,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "test_summary": test_summary,
         "scope": job_scope(root, job),
         "ux_review": job_ux_review(root, job_id, job),
+        "context": job_context(root, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
@@ -4143,6 +4264,16 @@ class UIHandler(BaseHTTPRequestHandler):
             detail = job_detail(root, parts[1])
             detail["runs"] = self._sessions_view(job_id=parts[1])
             self._json(detail)
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "attach":
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("This job is running right now. Attach things once it stops.", HTTPStatus.CONFLICT)
+            self._json({"context": attach_to_job(root, parts[1], self._body())})
+        elif method == "GET" and parts == ["job-image"]:
+            target = job_image(root, (query.get("path") or [""])[0])
+            if not target:
+                self._error(HTTPStatus.NOT_FOUND, "Image not found")
+                return
+            self._send(HTTPStatus.OK, target.read_bytes(), mimetypes.guess_type(target.name)[0] or "image/png", {})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reference":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)

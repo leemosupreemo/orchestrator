@@ -408,8 +408,10 @@ If `visual_app_path` is omitted, the visual check flow searches the configured d
 ## UX And Design Review
 
 A checklist review of your product's screens, in two parts: **UX** (how it works: status, wording, one primary action,
-progressive disclosure, navigation, empty states, errors, forms) and **Design** (how it looks: hierarchy, tokens,
-spacing, alignment, sizes, overlap, responsiveness, contrast, dark mode, focus). The checklist is
+progressive disclosure, navigation and a way back from every detail page, empty states, errors, forms, short action
+labels, long content behind "Show more") and **Design** (how it looks: hierarchy, tokens, spacing, alignment, sizes,
+section headers that read as titles, one header layout, consistent field labels, no unstyled browser controls,
+overlap, responsiveness, contrast, dark mode, focus). The checklist is
 `orchestrator/prompts/ux_reviewer.md`; your own UI conventions file, if you have one, takes precedence over it.
 
 - **Product pass.** Web UI > UX review > Run a pass, or `orchestrator script ux_review_run.py pass`. It captures every

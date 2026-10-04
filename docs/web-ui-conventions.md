@@ -20,6 +20,40 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   confirmation dialog when the action can be reversed; keep the confirmation when it can't
   (Discard job deletes a branch).
 
+## Cards
+
+- The header is a title bar (tinted, `--text-lg` heading): the title on the left, a count may sit beside it, actions on
+  the right.
+- At most two visible actions, as small buttons, the secondary one first and the main one last; anything else goes in a
+  More menu.
+- Labels are one verb when the card names the object: **Edit**, **Raw**, **Add**, **Attach…**, **Run**. Name the object
+  only when it would be unclear next to the title ("Edit" on the Brief card, not "Edit brief"). The button's tooltip
+  can say it in full.
+- Facts about the content (where a file lives, when it changed) go in a `.card-caption` strip under the header, never
+  loose in the header.
+- In a folding card the header is the toggle, so its actions go at the bottom inside the fold.
+- Long content shows up to a height and then **Show more**, centred under it, grows the card to fit
+  (`data-expandable="<px>"`, wired by `wireExpandables`). No inner scroll boxes; diffs, logs and terminals are the
+  exception.
+
+- Group by what things are to the person, not where they came from. A job's context is its **ticket** (a chip in the
+  header), its **designs** and **what went wrong**, whatever app or upload each came from. Empty groups don't show. A
+  title joined with "&" usually means two groups.
+- One way to attach: **Attach…** asks what it is, then where it comes from (a connected app, a link, a file, pasted
+  text). Attaching never starts a run.
+
+- A decision shows what it decides. While a plan waits for approval (or to start), it sits right under the job's
+  hero as "The plan to approve": summary, assumptions and risks, and each task with what "done" means and the files it
+  touches, editable in place, with **Revise…** beside it. Once approved it folds back to Tasks.
+
+## Navigation and fields
+
+- A page one level down (a job, a run, a document, a setting, a form) shows **Back** above its title. It returns to
+  the previous page in the app, or to the page's parent when opened directly (`routeParent` in `app.js`). Pages don't
+  add their own back links.
+- A field's label sits above its control. Paired fields (Home's project and branch) are the same size and sit side by
+  side, with `--space-3` between them.
+
 ## Words
 
 - **Job**: one piece of work with a plan, a branch and a status. **Run**: one command that was

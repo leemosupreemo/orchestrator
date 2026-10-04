@@ -7,6 +7,7 @@ import os
 os.environ["AI_REQUEST_SOURCE"] = "orchestrator"
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -363,6 +364,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
     # Task 1: Update Job Schema and PID Tracking
     job["worker_pid"] = os.getpid()
+    job["worker_host"] = socket.gethostname()  # a process id only means something on the machine that wrote it
     job["updated_at"] = now_iso()
     if "completed_task_indices" not in job:
         job["completed_task_indices"] = []

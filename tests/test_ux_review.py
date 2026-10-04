@@ -59,6 +59,17 @@ class PromptAndResultTests(unittest.TestCase):
         for item in ux.CHECK_IDS:
             self.assertIn(f"`{item}`", prompt, item)
 
+    def test_every_item_the_prompt_asks_about_is_one_the_code_keeps(self):
+        import re
+        prompt = (PACKAGE_ROOT / "orchestrator" / "prompts" / "ux_reviewer.md").read_text()
+        asked = set(re.findall(r"^- `((?:ux|design)\.[a-z-]+)`", prompt, re.M))
+        self.assertEqual(asked, ux.CHECK_IDS)  # an item only in the prompt would be dropped from every result
+
+    def test_the_card_navigation_and_content_principles_are_on_the_checklist(self):
+        for item in ("ux.grouping", "ux.decision-context", "ux.back", "ux.action-labels", "ux.long-content", "design.section-headers",
+                     "design.header-anatomy", "design.fields", "design.native-controls"):
+            self.assertIn(item, ux.CHECK_IDS)
+
     def test_screens_and_conventions_reach_the_prompt(self):
         text = ux.build_prompt("CHECKLIST", scope="One change", ask="Add a filter", conventions=("docs/ui.md", "Rule"),
                                shots=[{"file": "home-390-light.png", "route": "/", "width": 390, "dark": False}],

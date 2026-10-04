@@ -206,7 +206,6 @@
       title: "API keys",
       sub: "Connect AI providers. Saved key values are never displayed.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Provider keys</h2><span class="count">${keys.length}</span></div>
           <div class="configuration-setting-list">${rows || `<div class="empty">No providers are available.</div>`}</div>
@@ -234,7 +233,6 @@
       title: "Add an AI",
       sub: ai.any_ready ? "You have at least one AI ready. Add more to choose between them per job." : "Orchestrator needs at least one AI to plan, build and review. Free options are first.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
         ${cards || `<div class="empty">Couldn't check the AI tools on this computer.</div>`}
         <section class="card configuration-card">
@@ -253,7 +251,6 @@
       title: "Base branch",
       sub: "Choose the branch jobs use as their comparison point.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Comparison branch</h2></div>
           <form class="card-b stack" id="config-base-branch-form">
@@ -283,7 +280,6 @@
       title: "Archived jobs",
       sub: "Restore completed work to the active jobs list.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Archived jobs</h2><span class="count">${archived.length}</span></div>
           <div class="configuration-setting-list">${rows || `<div class="empty">No archived jobs</div>`}</div>
@@ -310,7 +306,6 @@
       title: "Email alerts",
       sub: "Choose who receives updates and how Orchestrator sends them.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Sender</h2><button type="button" class="btn small" data-config-action="email-sender">Configure sender</button></div>
           <div class="card-b stack">
@@ -337,7 +332,6 @@
       title: "Slack & chat alerts",
       sub: "A message when a job needs you, and when a run finishes or fails. Works with any Slack-compatible incoming webhook.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Webhook</h2><div class="row">
             <button type="button" class="btn small" data-config-action="chat-set">${hook.set ? "Change" : "Add webhook"}</button>
@@ -398,7 +392,6 @@
       title: "Who can sign in",
       sub: "People with these emails can sign in with Google and use this computer from anywhere. Each sign-in lasts 30 days.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Allowed emails</h2><button type="button" class="btn small" data-config-action="access-add">Add email</button></div>
           <div class="configuration-setting-list">${emailRows || `<div class="empty">No one yet, so sign-in is closed. The access token still works.</div>`}</div>
@@ -432,7 +425,6 @@
       title: "Documentation",
       sub: "Read guides for Orchestrator and the active project.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         ${sections || `<div class="empty">No documentation is available.</div>`}
       </div>`,
     };
@@ -463,7 +455,6 @@
       title: "AI Model Team",
       sub: "Assign default AI models for each specialized role in the orchestrator team.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Team Role Assignments</h2></div>
           <form class="card-b stack" id="config-models-form">
@@ -496,7 +487,6 @@
       title: "Instructions for AI helpers",
       sub: "Customize system prompts and behavioral guidelines for each specialized agent role.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Specialized Agent Roles</h2><span class="count">${rolePrompts.length}</span></div>
           <div class="configuration-setting-list">${promptCards || `<div class="empty">No role prompts found.</div>`}</div>
@@ -525,7 +515,6 @@
       title: "Machines",
       sub: "Manage local and remote SSH machines for distributed builds, tests, and code generation.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h">
             <h2>Build & Test Machines</h2>
@@ -548,7 +537,6 @@
       title: "Tester builds (Firebase)",
       sub: "Configure automated beta releases and tester distribution.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Distribution Settings</h2><div class="row"><button type="button" class="btn small primary" data-config-action="distribute-now">Distribute current branch</button></div></div>
           <form class="card-b stack" id="config-firebase-form">
@@ -572,7 +560,6 @@
       title: "Xcode Cloud & CI",
       sub: "Configure continuous integration workflows with Xcode Cloud.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Xcode Cloud Integration</h2></div>
           <div class="card-b stack">
@@ -594,7 +581,6 @@
       title: "Updates",
       sub: "Keep Swift Orchestrator up to date across your local machine and fleet.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Orchestrator Software Updates</h2></div>
           <div class="card-b stack">
@@ -614,7 +600,6 @@
       title: "Tool check",
       sub: "Verify developer tools, git, python, and environment readiness.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Are the tools ready?</h2><button type="button" class="btn primary small" data-config-action="run-audit">Run tool check</button></div>
           <div class="card-b stack">
@@ -630,7 +615,6 @@
       title: "Orchestrator health check",
       sub: "Run validation suites to test Orchestrator functionality.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Self-tests</h2><button type="button" class="btn primary small" data-config-action="run-self-tests">Run All Self-Tests</button></div>
           <div class="card-b stack">
@@ -646,7 +630,6 @@
       title: "Setup wizard",
       sub: "Walk through project configuration and environment setup.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Setup wizard</h2><button type="button" class="btn primary small" data-config-action="launch-wizard">Start the wizard</button></div>
           <div class="card-b stack">
