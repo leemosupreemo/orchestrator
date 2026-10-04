@@ -42,6 +42,15 @@ def make_project(root: Path) -> None:
     (out / "brief.md").write_text("# Brief\n")
 
 
+def isolate_state(test: unittest.TestCase) -> None:
+    """Point ~/.orchestrator at a throwaway folder for this test."""
+    tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)  # a reader thread may still be writing its log
+    test.addCleanup(tmp.cleanup)
+    env = patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": tmp.name})
+    env.start()
+    test.addCleanup(env.stop)
+
+
 class ServerTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -530,6 +539,17 @@ class ProjectTitleTests(unittest.TestCase):
         self.assertIn('$("#page-title")?.dataset.title', js)
         self.assertNotIn('$("#page-title")?.textContent', js)
 
+    def test_home_project_selector_has_container_and_compact_widths(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        home = js[js.index("  return {\n    title: p.name,"):][:700]
+        self.assertIn('<div class="project-select-container">', home)
+        self.assertIn('.project-select-container {', css)
+        self.assertIn('max-width: min(100%, 14rem);', css)
+        self.assertIn('.status-line .branch-select { min-height: var(--control-sm); width: auto; max-width: min(100%, 11rem);', css)
+        self.assertIn('.project-select-container,\n  .title-project-select { max-width: min(100%, 12rem); }', css)
+        self.assertIn('.status-line .branch-select { min-height: var(--control-md); max-width: min(100%, 10rem); }', css)
+
 
 class ProductStripTests(unittest.TestCase):
     def test_the_card_itself_opens_the_product_requirements(self):
@@ -586,6 +606,9 @@ raise SystemExit(server.main(["--no-open", "--tunnel", "--port", "0"]))
 
 
 class TunnelKeeperTests(unittest.TestCase):
+    def setUp(self):
+        isolate_state(self)  # cloudflared's output is copied to the state folder's logs
+
     def keeper(self, results, **kwargs):
         """A keeper whose starter hands out `results` in order: (process, address) pairs."""
         self.calls = []
@@ -1062,8 +1085,9 @@ process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]),
 
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
-const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
-process.stdout.write(JSON.stringify(Object.fromEntries(entries.map((entry) => [entry.id, entry]))));
+const pages = globalThis.ConfigurationPages;
+const ids = ["api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"];
+process.stdout.write(JSON.stringify(Object.fromEntries(ids.map((id) => [id, pages.find(id)]))));
 """)
         self.assertEqual({key: entries[key]["route"] for key in (
             "api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"
@@ -1081,10 +1105,9 @@ process.stdout.write(JSON.stringify(Object.fromEntries(entries.map((entry) => [e
 
     def test_registry_exposes_all_configuration_entries_enabled(self):
         result = self.run_configuration_script("""
-const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
 const ids = ['models', 'ai-instructions', 'fleet', 'firebase', 'xcode-cloud',
   'setup-wizard', 'audit', 'self-tests', 'updates'];
-const active = Object.fromEntries(ids.map((id) => [id, entries.find((entry) => entry.id === id)]));
+const active = Object.fromEntries(ids.map((id) => [id, globalThis.ConfigurationPages.resolve(id)]));
 process.stdout.write(JSON.stringify({active, menu: globalThis.ConfigurationPages.renderMenu()}));
 """)
         for entry_id, entry in result["active"].items():
@@ -1103,8 +1126,9 @@ process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), acce
 """)
         for entry_id in ("api-keys", "ai-instructions", "fleet", "access", "email", "chat", "firebase", "updates"):
             self.assertNotIn(entry_id, result["ids"])
-        for entry_id in ("models", "base-branch", "archived-jobs", "documentation", "audit", "self-tests"):
+        for entry_id in ("models", "base-branch", "archived-jobs", "audit", "self-tests"):
             self.assertIn(entry_id, result["ids"])
+        self.assertNotIn("documentation", result["ids"])  # Docs and Help are one tap away; menus don't repeat them
         self.assertNotIn("Who can sign in", result["menu"])
         self.assertIsNone(result["access"])
 
@@ -1113,10 +1137,10 @@ process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), acce
 const page = globalThis.ConfigurationPages.render(undefined, {viewer: {role: 'member'}});
 process.stdout.write(JSON.stringify(page.html));
 """)
-        self.assertNotIn("API Keys", html)
+        self.assertNotIn("API keys", html)
         self.assertNotIn("Who can sign in", html)
-        self.assertIn("Base Branch", html)
-        self.assertIn("Documentation", html)
+        self.assertIn("Base branch", html)
+        self.assertIn("Tool check", html)
 
     def test_role_ui_hides_owner_controls_and_can_restore_them(self):
         result = self.run_configuration_script("""
@@ -1268,13 +1292,13 @@ const page = globalThis.ConfigurationPages.render(undefined, {});
 process.stdout.write(JSON.stringify(page));
 """)
         self.assertEqual(result["title"], "Configuration")
-        for group in ("Models &amp; instructions", "Projects &amp; machines",
-                      "Delivery &amp; notifications", "Help &amp; health"):
+        for group in ("This project", "AI models", "Computers &amp; access", "Alerts", "Troubleshooting"):
             self.assertIn(group, result["html"])
-        for route in ("#/config/api-keys", "#/config/base-branch", "#/projects",
-                      "#/config/archived-jobs", "#/config/email", "#/config/documentation",
+        for route in ("#/config/api-keys", "#/config/base-branch", "#/config/archived-jobs", "#/config/email",
                       "#/config/models", "#/config/fleet", "#/config/firebase"):
             self.assertIn(route, result["html"])
+        for route in ("#/projects", "#/config/documentation", "#/config/setup-wizard"):  # reachable elsewhere, not repeated
+            self.assertNotIn(route, result["html"])
         self.assertEqual(result["html"].count(" disabled"), 0)
         self.assertNotIn("Coming next", result["html"])
         self.assertNotIn('data-action="config_menu"', result["html"])
@@ -1291,7 +1315,7 @@ const page = globalThis.ConfigurationPages.render('api-keys', {
 });
 process.stdout.write(JSON.stringify(page));
 """)
-        self.assertEqual(result["title"], "API Keys")
+        self.assertEqual(result["title"], "API keys")
         for label in ("Anthropic", "OpenAI", "Ollama", "Saved", "From environment", "Not set"):
             self.assertIn(label, result["html"])
         self.assertNotIn("sk-do-not-render", result["html"])
@@ -1354,7 +1378,7 @@ const page = globalThis.ConfigurationPages.render('base-branch', {
 });
 process.stdout.write(JSON.stringify(page));
 """)
-        self.assertEqual(result["title"], "Base Branch")
+        self.assertEqual(result["title"], "Base branch")
         self.assertIn('<option value="feature/one" selected>', result["html"])
         self.assertIn('&quot;&gt;&lt;script&gt;bad()&lt;/script&gt;', result["html"])
         self.assertNotIn('<script>bad()</script>', result["html"])
@@ -1372,7 +1396,7 @@ const empty = globalThis.ConfigurationPages.render('archived-jobs', {archived: [
 process.stdout.write(JSON.stringify({populated, empty}));
 """)
         html = result["populated"]["html"]
-        self.assertEqual(result["populated"]["title"], "Archived Jobs")
+        self.assertEqual(result["populated"]["title"], "Archived jobs")
         for text in ("JOB-1", "Ready &lt;now&gt;", "completed", "BROKEN", "Corrupt"):
             self.assertIn(text, html)
         self.assertIn('data-config-action="archive-restore"', html)
@@ -1401,7 +1425,7 @@ process.stdout.write(JSON.stringify({gmail, resend, empty}));
         gmail = result["gmail"]["html"]
         resend = result["resend"]["html"]
         empty = result["empty"]["html"]
-        self.assertEqual(result["gmail"]["title"], "Email Notifications")
+        self.assertEqual(result["gmail"]["title"], "Email alerts")
         self.assertIn("Gmail is ready", gmail)
         self.assertIn("App password saved", gmail)
         self.assertIn("person&lt;one&gt;@example.com", gmail)
@@ -3048,6 +3072,248 @@ class HealthEndpointTests(ServerTestCase):
         self.assertEqual(self.items(data)["platforms"]["status"], "warn")
 
 
+class NavigationDrawerTests(unittest.TestCase):
+    def run_drawer(self, scenario):
+        script = """
+const assert = require('node:assert/strict');
+class Element {
+  constructor(name) {
+    this.name = name; this.listeners = {}; this.attrs = {}; this.inert = false;
+    this.hidden = false; this.disabled = false; this.style = {overflow: 'auto'};
+    const classes = new Set();
+    this.classList = {contains: c => classes.has(c), add: c => classes.add(c),
+      remove: c => classes.delete(c), toggle: (c, on) => on ? classes.add(c) : classes.delete(c)};
+  }
+  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  emit(type, event = {}) { for (const fn of this.listeners[type] || []) fn(event); }
+  setAttribute(k, v) { this.attrs[k] = v; }
+  removeAttribute(k) { delete this.attrs[k]; }
+  focus() { document.activeElement = this; }
+  getClientRects() { return this.hidden ? [] : [{}]; }
+  closest(selector) {
+    if (selector.includes('[data-action]') && this.attrs['data-action']) return this;
+    if (selector.includes('#lock-btn') && this.name === 'lock') return this;
+    if (selector.includes('#search-btn') && this.name === 'search') return this;
+    return null;
+  }
+}
+const app = new Element('app'), sidebar = new Element('sidebar');
+const toggle = new Element('toggle'), close = new Element('close'), backdrop = new Element('backdrop');
+const main = new Element('main'), plus = new Element('plus'), header = new Element('header');
+const link = new Element('link'), actionBtn = new Element('action');
+actionBtn.attrs['data-action'] = 'true';
+const lockBtn = new Element('lock'), searchBtn = new Element('search');
+const elements = {'.app': app, '#sidebar': sidebar, '#nav-toggle': toggle,
+  '#nav-close': close, '#sidebar-backdrop': backdrop, '#lock-btn': lockBtn, '#search-btn': searchBtn};
+const document = new Element('document');
+document.body = new Element('body');
+document.querySelector = selector => {
+  if (selector === 'dialog[open]') return document.dialogOpen || null;
+  return elements[selector] || null;
+};
+document.querySelectorAll = () => [main, plus, header];
+sidebar.items = [close, link];
+sidebar.querySelectorAll = () => sidebar.items;
+sidebar.contains = el => sidebar.items.includes(el);
+const media = new Element('media'); media.matches = true;
+class MutationObserver {
+  constructor(cb) { this.cb = cb; }
+  observe() {}
+  trigger() { this.cb(); }
+}
+const window = new Element('window'); window.matchMedia = () => media;
+window.MutationObserver = MutationObserver;
+require(process.argv[1]);
+const controller = globalThis.NavigationDrawer.mount({document, window});
+function key(key, shiftKey = false) {
+  const event = {key, shiftKey, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }};
+  document.emit('keydown', event);
+  return event;
+}
+""" + scenario
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/navigation.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_drawer_blocks_background_and_restores_focus_and_scroll_on_dismissal(self):
+        self.run_drawer("""
+assert.equal(sidebar.inert, true);
+toggle.emit('click');
+assert.equal(sidebar.inert, false);
+assert.equal(sidebar.attrs['aria-modal'], 'true');
+assert.equal(toggle.attrs['aria-expanded'], 'true');
+assert.equal(backdrop.hidden, false);
+assert.equal(main.inert, true);
+assert.equal(plus.inert, true);
+assert.equal(document.body.style.overflow, 'hidden');
+assert.equal(document.activeElement, close);
+assert.equal(key('Escape').defaultPrevented, true);
+assert.equal(sidebar.inert, true);
+assert.equal(backdrop.hidden, true);
+assert.equal(main.inert, false);
+assert.equal(plus.inert, false);
+assert.equal(document.body.style.overflow, 'auto');
+assert.equal(document.activeElement, toggle);
+toggle.emit('click'); backdrop.emit('click');
+assert.equal(toggle.attrs['aria-expanded'], 'false');
+""")
+
+    def test_drawer_keeps_keyboard_focus_inside_and_closes_after_navigation(self):
+        self.run_drawer("""
+toggle.emit('click');
+close.focus(); assert.equal(key('Tab', true).defaultPrevented, true);
+assert.equal(document.activeElement, link);
+assert.equal(key('Tab').defaultPrevented, true);
+assert.equal(document.activeElement, close);
+window.emit('hashchange');
+assert.equal(sidebar.inert, true);
+assert.equal(main.inert, false);
+toggle.emit('click');
+const target = {closest: selector => selector.includes('a[href]') ? link : null};
+sidebar.emit('click', {target});
+assert.equal(backdrop.hidden, true);
+""")
+
+    def test_resizing_to_desktop_clears_modal_state_and_locked_sessions_cannot_open(self):
+        self.run_drawer("""
+toggle.emit('click');
+media.matches = false; media.emit('change');
+assert.equal(sidebar.inert, false);
+assert.equal(main.inert, false);
+assert.equal(backdrop.hidden, true);
+assert.equal(sidebar.attrs['aria-modal'], undefined);
+assert.equal(document.body.style.overflow, 'auto');
+toggle.emit('click'); assert.equal(backdrop.hidden, true);
+media.matches = true; media.emit('change');
+assert.equal(sidebar.inert, true);
+app.classList.add('session-locked');
+toggle.emit('click'); assert.equal(backdrop.hidden, true);
+""")
+
+    def test_selecting_the_current_configuration_page_dismisses_the_drawer(self):
+        self.run_drawer("""
+toggle.emit('click');
+// Selecting the current route emits no hashchange; the click still dismisses navigation.
+const target = {closest: selector => selector.includes('[data-config-route]') ? link : null};
+sidebar.emit('click', {target});
+assert.equal(backdrop.hidden, true);
+assert.equal(main.inert, false);
+""")
+
+    def test_selecting_project_or_action_buttons_dismisses_the_drawer(self):
+        self.run_drawer("""
+sidebar.items = [close, link, actionBtn, lockBtn, searchBtn];
+toggle.emit('click');
+assert.equal(backdrop.hidden, false);
+sidebar.emit('click', {target: actionBtn});
+assert.equal(backdrop.hidden, true);
+
+toggle.emit('click');
+sidebar.emit('click', {target: lockBtn});
+assert.equal(backdrop.hidden, true);
+
+toggle.emit('click');
+sidebar.emit('click', {target: searchBtn});
+assert.equal(backdrop.hidden, true);
+
+toggle.emit('click');
+sidebar.emit('change', {target: {id: 'project-select'}});
+assert.equal(backdrop.hidden, true);
+""")
+
+    def test_open_dialog_prevents_escape_dismissal(self):
+        self.run_drawer("""
+toggle.emit('click');
+assert.equal(backdrop.hidden, false);
+document.dialogOpen = new Element('dialog');
+assert.equal(key('Escape').defaultPrevented, false);
+assert.equal(backdrop.hidden, false);
+document.dialogOpen = null;
+assert.equal(key('Escape').defaultPrevented, true);
+assert.equal(backdrop.hidden, true);
+""")
+
+
+class ConnectionLogFrontendTests(unittest.TestCase):
+    def run_node_test(self, scenario):
+        script = """
+const fs = require('fs');
+const assert = require('node:assert/strict');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+const match = code.match(/const ConnectionLog = \\(\\(\\) => \\{[\\s\\S]*?\\n\\}\\)\\(\\);/);
+assert(match, 'ConnectionLog not found in app.js');
+
+const storage = {};
+const localStorage = {
+  getItem: k => storage[k] || null,
+  setItem: (k, v) => { storage[k] = String(v); },
+  removeItem: k => { delete storage[k]; }
+};
+const navigator = { onLine: true, userAgent: 'test', connection: { effectiveType: '4g' } };
+const document = { visibilityState: 'visible', hidden: false, addEventListener: () => {} };
+const window = { addEventListener: () => {} };
+
+let apiCalls = [];
+let apiStatusToThrow = null;
+async function api(path, opts) {
+  apiCalls.push({ path, opts });
+  if (apiStatusToThrow) {
+    const err = new Error('HTTP error');
+    err.status = apiStatusToThrow;
+    throw err;
+  }
+  return { ok: true };
+}
+
+eval(match[0].replace('const ConnectionLog =', 'globalThis.ConnectionLog ='));
+""" + scenario
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_connection_log_adds_records_and_caps_at_max(self):
+        self.run_node_test("""
+ConnectionLog.add('test_event', { detail_key: 'val' });
+let stored = JSON.parse(storage['orchestrator_connection_log']);
+assert.equal(stored.length, 1);
+assert.equal(stored[0].kind, 'test_event');
+assert.equal(stored[0].online, true);
+assert.equal(stored[0].visible, 'visible');
+assert.equal(stored[0].connection, '4g');
+assert.equal(stored[0].detail_key, 'val');
+
+for (let i = 0; i < 250; i++) {
+  ConnectionLog.add(`event_${i}`);
+}
+stored = JSON.parse(storage['orchestrator_connection_log']);
+assert.equal(stored.length, 200);
+assert.equal(stored[0].kind, 'event_50');
+assert.equal(stored[199].kind, 'event_249');
+""")
+
+    def test_connection_log_flush_and_handles_404(self):
+        self.run_node_test("""
+(async () => {
+  for (let i = 0; i < 150; i++) ConnectionLog.add(`event_${i}`);
+  await ConnectionLog.flush();
+  assert.equal(apiCalls.length, 1);
+  assert.equal(apiCalls[0].path, 'client-log');
+  assert.equal(apiCalls[0].opts.body.events.length, 100);
+  let stored = JSON.parse(storage['orchestrator_connection_log']);
+  assert.equal(stored.length, 50);
+
+  apiStatusToThrow = 404;
+  await ConnectionLog.flush();
+  stored = JSON.parse(storage['orchestrator_connection_log']);
+  assert.equal(stored.length, 0);
+})();
+""")
+
+
 class AccessibilityStaticTests(unittest.TestCase):
     STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
 
@@ -3070,10 +3336,67 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_the_whole_view_is_not_a_live_region(self):
         self.assertNotIn('id="view" class="view" aria-live', self.html)
 
-    def test_phone_layout_keeps_every_page_reachable_through_more(self):
-        for href in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/git", "#/connections", "#/config", "#/devlogs"):
-            self.assertIn(f'"{href}"', self.js[self.js.index("const MORE_LINKS"):][:400], href)
-        self.assertIn('id="nav-more"', self.html)
+    def test_phone_drawer_reuses_the_full_sidebar(self):
+        from html.parser import HTMLParser
+
+        class SidebarParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.sidebar = False
+                self.links = []
+                self.controls = []
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "aside" and attrs.get("id") == "sidebar":
+                    self.sidebar = True
+                if self.sidebar:
+                    if tag == "a":
+                        self.links.append(attrs.get("href"))
+                    if attrs.get("id"):
+                        self.controls.append(attrs["id"])
+
+            def handle_endtag(self, tag):
+                if tag == "aside":
+                    self.sidebar = False
+
+        sidebar = SidebarParser()
+        sidebar.feed(self.html)
+        for href in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/git", "#/connections", "#/devlogs", "#/help"):
+            self.assertIn(href, sidebar.links)
+        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "lock-btn"):
+            self.assertIn(control, sidebar.controls)
+
+    def test_copy_stays_plain_and_consistent(self):
+        """Words casual users understand, one case style, real plurals (docs/web-ui-github-audit.md #21)."""
+        import re
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app = (static / "app.js").read_text()
+        config = (static / "configuration.js").read_text()
+        for jargon in ("Next execution", "Pending execution", "Decomposed", "Parallel subtask", "AI Worker active",
+                       "Your action needed", "Phase: ", "Tracked Projects", "Open Dashboard", "PRD · ", "Something went wrong"):
+            self.assertNotIn(jargon, app, jargon)
+        counted = r"\b(?:job|test|suite|file|feature|build|item|case|KPI|machine|model|run|task|change|project)\(s\)"
+        self.assertEqual(re.findall(counted, re.sub(r"//[^\n]*", "", app)), [], "write the plural, not (s)")
+        self.assertNotIn("confirm(", app, "use formDialog with a specific verb, not OK/Cancel")
+        labels = re.findall(r'label: "([^"]+)"', config)
+        title_case = [l for l in labels if re.search(r" [A-Z][a-z]", l) and not re.search(r"AI|Firebase|Xcode|Slack|Orchestrator|API", l)]
+        self.assertEqual(title_case, [], "Configuration labels use sentence case")
+
+    def test_design_tokens_hold(self):
+        """The design system's tokens are the only source of sizes, layers and colours (docs/web-ui-github-audit.md #20)."""
+        import re
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        scripts = "".join((static / name).read_text() for name in ("app.js", "configuration.js"))
+        defined = set(re.findall(r"(--[a-z0-9-]+):", css))
+        used = set(re.findall(r"var\((--[a-z0-9-]+)", css + scripts))
+        self.assertEqual(used - defined, set(), "every var(--x) must be defined")
+        self.assertEqual(re.findall(r"z-index: ?\d", css), [], "use the --z-* layers")
+        self.assertEqual(re.findall(r"min-height: ?(?:28|32|36|38|40|44|48)px", css), [], "use the --control-* heights")
+        self.assertLessEqual(len(set(re.findall(r"box-shadow:[^;]+", css))), 10, "use --shadow, --shadow-2, --shadow-3")
+        # A ratchet: inline styles in app.js may only go down. Lower this number when you remove one.
+        self.assertLessEqual((static / "app.js").read_text().count('style="'), 62)
 
     def test_badges_use_ink_tokens_not_hardcoded_white(self):
         for selector in (".badge {", ".pill-badge.needs-badge {", ".pill-badge.active-badge {"):
@@ -3102,7 +3425,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("notify(level", toast)
         self.assertIn("Errors.explain(message)", toast)  # errors still say what to do about them
         css = self.css[self.css.index(".messages {"):]
-        for part in ("position: fixed", "top: calc(var(--space-4) + env(safe-area-inset-top))", "z-index: 1000", "pointer-events: none", "prefers-reduced-motion"):
+        for part in ("position: fixed", "top: calc(var(--space-4) + env(safe-area-inset-top))", "z-index: var(--z-toast)", "pointer-events: none", "prefers-reduced-motion"):
             self.assertIn(part, css, part)
         for kind in ("success", "info", "warning", "error"):
             self.assertIn(f".msg-{kind} {{ --kind:", css)  # one colour per kind, from the design tokens
@@ -3545,6 +3868,107 @@ class UndoEndpointTests(ServerTestCase):
         self.assertNotIn("restore_status", restored)
         self.assertNotIn("completed_at", restored)
 
+    def test_archiving_jobs_hides_them_and_restore_brings_them_back_unchanged(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        before = json.loads((jobs / f"{self.JOB}.json").read_text())
+        res, data = self.post("/api/jobs/archive", {"ids": [self.JOB]})
+        self.assertEqual((res.status, data["archived"]), (200, [self.JOB]))
+        self.assertFalse((jobs / f"{self.JOB}.json").exists())
+        _, listed = self.request("GET", "/api/jobs")
+        self.assertNotIn(self.JOB, [j["id"] for j in listed["jobs"]])
+        self.post("/api/config/archived-restore", {"id": self.JOB})
+        self.assertEqual(json.loads((jobs / f"{self.JOB}.json").read_text())["status"], before.get("status"))
+
+    def test_archive_validates_and_skips_running_jobs(self):
+        for body in ({}, {"ids": []}, {"ids": "x"}, {"ids": ["../x"]}):
+            res, _ = self.post("/api/jobs/archive", body)
+            self.assertEqual(res.status, 400, body)
+        with patch.object(self.server.sessions, "running_job_ids", return_value=[self.JOB]):
+            res, data = self.post("/api/jobs/archive", {"ids": [self.JOB]})
+        self.assertEqual((res.status, data["archived"]), (200, []))
+
+
+class RunHistoryTests(ServerTestCase):
+    """Activity lists earlier runs from their saved logs, so the list survives a restart."""
+
+    def test_earlier_runs_are_read_from_saved_logs_newest_first(self):
+        logs = self.root / ".orchestrator" / "logs" / "ui"
+        logs.mkdir(parents=True)
+        (logs / "20260101-090000-abc123-test.log").write_text("ok")
+        (logs / "20260102-090000-def456-new_job.log").write_text("ok")
+        (logs / "notes.txt").write_text("not a run")
+        res, data = self.request("GET", "/api/runs/history")
+        self.assertEqual(res.status, 200)
+        self.assertEqual([r["id"] for r in data["runs"]], ["20260102-090000-def456", "20260101-090000-abc123"])
+        self.assertEqual(data["runs"][0]["title"], ui.ACTIONS["new_job"].title)
+        self.assertEqual(data["runs"][1]["log"], "logs/ui/20260101-090000-abc123-test.log")
+
+
+class UxReviewEndpointTests(ServerTestCase):
+    """The UX and design review: passes, their screenshots, the screens setting and a job's check."""
+    JOB = "20260922-bug-1"
+    PNG = b"\x89PNG\r\n\x1a\nfake"
+
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def test_passes_are_listed_newest_first_with_their_screens(self):
+        out = self.root / ".orchestrator" / "output" / "ux-pass"
+        for stamp, findings in (("20261001-090000", []), ("20261002-090000", [{"area": "ux", "severity": 3, "problem": "Two primaries"}])):
+            (out / stamp / "screens").mkdir(parents=True)
+            (out / stamp / "result.json").write_text(json.dumps({"at": "2026-10-02T09:00:00", "summary": "S", "findings": findings, "checklist": []}))
+        (out / "20261002-090000" / "screens" / "home-390-light.png").write_bytes(self.PNG)
+        (out / "notes").mkdir()
+        res, data = self.request("GET", "/api/ux-pass")
+        self.assertEqual(res.status, 200)
+        self.assertEqual([p["id"] for p in data["passes"]], ["20261002-090000", "20261001-090000"])
+        self.assertEqual(data["passes"][0]["counts"]["major"], 1)
+        _, detail = self.request("GET", "/api/ux-pass/20261002-090000")
+        self.assertIn("Two primaries", detail["fix_text"])
+        res, body = self.request("GET", "/api/ux-screens/pass/20261002-090000/home-390-light.png")
+        self.assertEqual((res.status, body), (200, self.PNG))
+        for bad in ("/api/ux-screens/pass/20261002-090000/..%2Fresult.json", "/api/ux-screens/pass/../x.png",
+                    "/api/ux-screens/other/20261002-090000/home-390-light.png", "/api/ux-pass/..%2Fjobs"):
+            self.assertEqual(self.request("GET", bad)[0].status, 404, bad)
+
+    def test_screens_to_review_are_saved_into_project_json_and_validated(self):
+        res, data = self.post("/api/ui-review", {"url": "http://localhost:3000", "routes": "/\n/settings\n", "widths": "390, 1440",
+                                                 "dark_mode": True, "review_changes": True})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["settings"]["routes"], ["/", "/settings"])
+        project = json.loads((self.root / ".orchestrator" / "project.json").read_text())
+        self.assertEqual((project["project_name"], project["ui_review"]["widths"]), ("Demo", [390, 1440]))  # nothing else changed
+        for body in ({"url": "localhost"}, {"widths": "wide"}, {"widths": "100"}):
+            self.assertEqual(self.post("/api/ui-review", body)[0].status, 400, body)
+
+    def test_a_jobs_check_comes_with_its_detail(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        job = json.loads((jobs / f"{self.JOB}.json").read_text())
+        job["ux_review"] = {"at": "2026-10-04T10:00:00", "counts": {"findings": 1, "major": 1}, "files": ["web/app.js"], "screens": 1}
+        (jobs / f"{self.JOB}.json").write_text(json.dumps(job))
+        review = self.root / ".orchestrator" / "output" / self.JOB / "ux-review"
+        (review / "screens").mkdir(parents=True)
+        (review / "screens" / "home-390-light.png").write_bytes(self.PNG)
+        (review / "result.json").write_text(json.dumps({"findings": [{"area": "ux", "severity": 3, "problem": "P"}], "checklist": [],
+                                                        "screens": [{"file": "home-390-light.png", "route": "/", "width": 390, "dark": False}]}))
+        _, detail = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertEqual((detail["ux_review"]["screens"], detail["ux_review"]["findings"][0]["problem"]), (1, "P"))
+        self.assertEqual(detail["ux_review"]["screen_list"][0]["file"], "home-390-light.png")
+        res, _ = self.request("GET", f"/api/ux-screens/job/{self.JOB}/home-390-light.png")
+        self.assertEqual(res.status, 200)
+
+    def test_both_reviews_are_runnable_actions(self):
+        self.assertIn("ux_review_run.py", " ".join(ui.ACTIONS["ux_pass"].build({}, self.root)))
+        argv = ui.ACTIONS["ux_review_job"].build({"job": self.JOB}, self.root)
+        self.assertEqual(argv[-2:][0], "job")
+
+
+class PageLoadBacklogTests(unittest.TestCase):
+    def test_the_listen_backlog_takes_a_whole_page_load(self):
+        # A first page load in Chrome reset connections for scripts (ERR_CONNECTION_RESET on messages.js, app.js…)
+        # with socketserver's default backlog of 5, leaving the app blank in about 1 load in 4. A local socket burst
+        # doesn't reproduce it, so this checks the setting itself.
+        self.assertGreaterEqual(ui.UIServer.request_queue_size, 64)
 
 class KeepAliveBodyTests(ServerTestCase):
     """A request body no route reads must not leak into the next request on the same connection."""
@@ -3735,7 +4159,7 @@ class ErrorHintTests(unittest.TestCase):
     def test_known_failures_say_what_to_do_next(self):
         self.assertEqual(self.explain("Failed to fetch"), "Can't reach Orchestrator. Check that it's running and that you're online.")  # the browser's own wording is replaced, not repeated
         self.assertEqual(self.explain("Couldn't save: Load failed"), "Can't reach Orchestrator. Check that it's running and that you're online.")
-        self.assertIn("Archived Jobs", self.explain("Job not found"))
+        self.assertIn("Archived jobs", self.explain("Job not found"))
         self.assertIn("Measure page", self.explain("Amplitude rejected the key (401)"))
         self.assertIn("incoming webhook", self.explain("The webhook answered 404"))
         self.assertIn("gh auth login", self.explain("Not signed in to GitHub yet."))
@@ -4534,7 +4958,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("drawFeatureLinks", self.source)
         self.assertIn("job.plan?.slice_warnings", self.job_page)
         self.assertIn('matchMedia("(max-width: 760px)")', self.job_page)
-        for title in ("Tasks Checklist", "Activity & Runs", "Logs", "Output files"):
+        for title in ("Tasks", "Activity & Runs", "Logs", "Output files"):
             self.assertIn(f'fold("{title}"', self.job_page, title)
         self.assertIn("pages.help = async", self.source)
         self.assertIn('href="#/help"', (static / "index.html").read_text())
@@ -4562,13 +4986,14 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertNotIn("Discard job and revert changes", header_actions_fn)
         self.assertNotIn('act("discard_job"', header_actions_fn)
 
-    def test_delete_button_added_to_job_detail_top_right(self):
+    def test_delete_is_last_in_the_job_menu_after_archive_not_a_top_level_button(self):
         start = self.source.index("function jobHeaderActions")
         end = self.source.index('document.addEventListener("click", async (e)', start)
         header_actions_fn = self.source[start:end]
-        self.assertIn("btn danger", header_actions_fn)
-        self.assertIn('act("delete_job", j)', header_actions_fn)
-        self.assertIn(">Delete</button>", header_actions_fn)
+        self.assertIn('["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"]', header_actions_fn)
+        self.assertLess(header_actions_fn.index('["Archive"'), header_actions_fn.index('["Delete…"'))
+        self.assertNotIn(">Delete</button>", header_actions_fn)
+        self.assertIn("return moreMenu(items);", header_actions_fn)
 
     def test_delete_job_dialog_flow_defined(self):
         start = self.source.index("async delete_job(params)")
@@ -4696,6 +5121,9 @@ class JobDeleteEndpointTests(ServerTestCase):
 
 
 class StableUrlAndTunnelTests(unittest.TestCase):
+    def setUp(self):
+        isolate_state(self)  # cloudflared's output is copied to the state folder's logs
+
     def test_silent_tunnel_discovery_has_a_real_deadline(self):
         import sys
         real_popen = subprocess.Popen
@@ -4782,6 +5210,34 @@ class StableUrlAndTunnelTests(unittest.TestCase):
         self.assertIn("my-domain.example.com", server.allowed_hosts)
         server.server_close()
         tmp.cleanup()
+
+
+class JobChangesTests(unittest.TestCase):
+    """A job's Changes card shows its own work: uncommitted edits count only while its branch is checked out."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=self.root, check=True, capture_output=True)
+        run("init", "-q", "-b", "main")
+        (self.root / "app.py").write_text("print(1)\n")
+        run("add", "app.py")
+        run("commit", "-q", "-m", "start")
+        run("branch", "ai/job-1")
+        (self.root / "app.py").write_text("print(2)\n")  # someone's own uncommitted edit, on main
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_uncommitted_edits_on_another_branch_are_not_the_jobs(self):
+        changes = ui.job_changes(self.root, {"branch": "ai/job-1", "base_branch": "main"})
+        self.assertEqual((changes["files"], changes["local_files"], changes["local_summary"]), ([], [], ""))
+
+    def test_uncommitted_edits_on_the_jobs_branch_are_its_own(self):
+        subprocess.run(["git", "checkout", "-q", "ai/job-1"], cwd=self.root, check=True)
+        changes = ui.job_changes(self.root, {"branch": "ai/job-1", "base_branch": "main"})
+        self.assertEqual(changes["local_files"], ["app.py"])
+        self.assertIn("app.py", changes["files"])
 
 
 if __name__ == "__main__":

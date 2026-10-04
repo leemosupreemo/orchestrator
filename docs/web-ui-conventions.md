@@ -25,6 +25,10 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 - **Job**: one piece of work with a plan, a branch and a status. **Run**: one command that was
   executed. **Task**: one step inside a job's plan. A job has tasks and runs; a run is never "a job".
 - **Feature**: something a user would name. Jobs belong to features.
+- Plain words a casual user knows: "Needs you", "Planning", "Split into jobs", never "execution", "decomposed" or
+  upper-case type ids. Sentence case for every label and title. Counts are words: `plural(n, "job")`, never "job(s)".
+- Ask before something can't be undone with `formDialog`, and name the action on its button ("Remove machine"), never
+  `confirm()`. `test_copy_stays_plain_and_consistent` checks these.
 - Status labels come from the server's job state (`state.label`, `state.reason`, `state.next`).
   Pages never invent their own status words.
 - Plain names first, the older technical term in the description ("Machines", "fleet").
@@ -37,10 +41,15 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 
 ## Every page
 
+- A change to the interface is checked by the UX and design review (`orchestrator/prompts/ux_reviewer.md`) after the
+  code review. Its checklist ids (`ux.one-primary`, `design.overlap`, …) are the vocabulary for UI findings.
+
 - One `h1` (the header). It takes focus on navigation so screen readers announce the page.
 - Interactive targets are at least about 32px tall (44px on phones for primary controls).
 - It works at 390px: nothing overflows, and anything reachable on desktop is reachable from the
-  bottom bar or the More sheet.
+  phone tab bar (Home, Product, New job, Activity, Projects) or the drawer behind the menu button, which holds
+  everything else. New job is the tab bar's centre button on phones and Home's header button on wider screens; there
+  is no floating button.
 - Errors show what happened and what to do next (`errors.js`).
 - It is reachable from the command palette (`Cmd/Ctrl+K`): add it to `PALETTE_PAGES`.
 
@@ -53,6 +62,12 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 | Spacing | `--space-0` 2, `--space-1` 4, `--space-2` 8, `--space-3` 12, `--space-4` 16, `--space-5` 20, `--space-6` 24, `--space-7` 32, `--space-8` 40 |
 | Type | `--text-2xs` 11, `--text-xs` 12, `--text-sm` 13, `--text-md` 14, `--text-base` 15, `--text-lg` 16, `--text-xl` 18, `--text-2xl` 22, `--text-3xl` 28 |
 | Radius | `--r-xs` 4, `--r-sm` 6, `--r-md` 8, `--r-lg` 12 (cards; `--radius`), `--r-pill` |
+| Control height | `--control-xs` 28 (inline), `--control-sm` 32 (small buttons), `--control-md` 38 (default), `--control-lg` 44 (touch), `--control-xl` 48 |
+| Shadow | `--shadow` (cards), `--shadow-2` (menus, popovers), `--shadow-3` (dialogs, drawers) |
+| Layer | `--z-raised`, `--z-inner`, `--z-sticky`, `--z-float`, `--z-header`, `--z-palette`, `--z-drawer`, `--z-menu`, `--z-toast`; a backdrop is its layer minus one |
+
+Every `var(--x)` must be defined; `test_design_tokens_hold` checks this, the layers, the control heights and the shadows,
+and ratchets the number of inline styles in `app.js` down.
 
 Rules checked on every page at 360, 430 and 1440 px, light and dark:
 - No horizontal scroll. A control that sizes itself to its content (a select, a long path) needs `max-width` and its parents `min-width: 0`.

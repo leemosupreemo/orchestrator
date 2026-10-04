@@ -2045,7 +2045,8 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
     IGNORED_DIRS = {
         ".git", ".build", ".orchestrator", ".swiftpm", ".cache", ".venv", ".tox",
         "build", "DerivedData", "Pods", "Carthage", "node_modules", "vendor",
-        "xcuserdata", "fastlane", ".idea", ".vscode", "dist", "target", "__pycache__"
+        "xcuserdata", "fastlane", ".idea", ".vscode", "dist", "target", "__pycache__",
+        "venv", "site-packages",  # installed libraries ship their own tests; they are not the project's
     }
 
     candidate_files: list[Path] = []

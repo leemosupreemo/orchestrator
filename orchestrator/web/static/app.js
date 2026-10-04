@@ -96,6 +96,43 @@ function getToken() {
   return localStorage.getItem("orchestrator_token") || "";
 }
 
+// What this page saw go wrong while it couldn't reach the computer: failed requests, going offline, the tab hidden.
+// Kept in localStorage (so a reload doesn't lose it) and sent to the computer's client.jsonl once a request gets through,
+// where `orchestrator connection-log -f` shows it next to what the server answered and what the tunnel said.
+const ConnectionLog = (() => {
+  const KEY = "orchestrator_connection_log";
+  const MAX = 200;
+  let events = [];
+  try { events = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch { events = []; }
+  if (!Array.isArray(events)) events = [];
+  let sending = false;
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(events)); } catch { /* storage blocked */ } };
+  function add(kind, detail = {}) {
+    events.push({ kind, client_at: new Date().toISOString(), online: navigator.onLine, visible: document.visibilityState,
+      connection: navigator.connection?.effectiveType || "", ...detail });
+    if (events.length > MAX) events = events.slice(-MAX);
+    save();
+  }
+  async function flush() {
+    if (sending || !events.length) return;
+    sending = true;
+    const batch = events.slice(0, 100);
+    try {
+      await api("client-log", { method: "POST", body: { events: batch } });
+      events = events.slice(batch.length);
+    } catch (e) {
+      if (e.status === 404) events = []; // a computer running an older Orchestrator has nowhere to keep them
+    } finally {
+      sending = false;
+      save();
+    }
+  }
+  window.addEventListener("online", () => add("browser_online"));
+  window.addEventListener("offline", () => add("browser_offline"));
+  document.addEventListener("visibilitychange", () => add(document.hidden ? "tab_hidden" : "tab_visible"));
+  return { add, flush };
+})();
+
 async function api(path, { method = "GET", body } = {}) {
   const backend = getBackendUrl();
   const token = getToken();
@@ -106,13 +143,26 @@ async function api(path, { method = "GET", body } = {}) {
     ...(hasBody || isMutation ? { "Content-Type": "application/json", "X-Orchestrator-UI": "1" } : {}),
     ...(token ? { "Authorization": `Bearer ${token}` } : {}),
   };
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: hasBody ? JSON.stringify(body) : (isMutation ? "{}" : undefined),
-    credentials: backend ? "omit" : "same-origin",
-  });
+  const started = performance.now();
+  const logged = path !== "client-log";
+  const where = { method, path: path.split("?")[0], backend: backend ? new URL(backend).host : location.host };
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: hasBody ? JSON.stringify(body) : (isMutation ? "{}" : undefined),
+      credentials: backend ? "omit" : "same-origin",
+    });
+  } catch (e) {
+    // The browser doesn't say why (DNS, reset, timeout), but how long it took and whether it thought it was online helps.
+    if (logged) ConnectionLog.add("fetch_failed", { ...where, ms: Math.round(performance.now() - started), error: `${e.name}: ${e.message}` });
+    throw e;
+  }
   const data = await res.json().catch(() => ({}));
+  if (logged && (res.status === 401 || res.status >= 500)) {
+    ConnectionLog.add("http_error", { ...where, status: res.status, ms: Math.round(performance.now() - started) });
+  }
   if (!res.ok) {
     const err = new Error(data.error || `${res.status} ${res.statusText}`);
     err.status = res.status;
@@ -145,6 +195,9 @@ function toast(message, kind = false, action = null) {
   const isConnection = text.startsWith("Can't reach Orchestrator.");
   return notify(level, text, { ...(isConnection ? { id: "connection" } : {}), ...(action ? { actions: [action] } : {}) });
 }
+
+// "1 test", "3 tests": counts read as words, never "test(s)".
+const plural = (n, word, many = `${word}s`) => `${n} ${Number(n) === 1 ? word : many}`;
 
 function ago(ts) {
   if (!ts) return "";
@@ -619,7 +672,7 @@ const dialogs = {
     toast(`Exported context to job-${params.job}-context.md`);
   },
   async close_issue(params) {
-    if (confirm(`Close issue #${params.issue} on GitHub and mark this job completed?`)) {
+    if (await formDialog(`Close issue #${params.issue}?`, `<p>Closes the issue on GitHub and marks this job complete.</p>`, "Close issue")) {
       api(`jobs/${encodeURIComponent(params.job)}/close_issue`, {
         method: "POST",
         body: {}
@@ -679,7 +732,7 @@ const dialogs = {
     }
   },
   async splinter_job(params) {
-    if (confirm("Decompose this feature plan into separate parallel child tasks and GitHub sub-issues?")) {
+    if (await formDialog("Split into separate jobs?", `<p>Each task becomes its own job that can run alongside the others, with a GitHub sub-issue for each.</p>`, "Split")) {
       await runAction("splinter", { job: params.job });
     }
   },
@@ -749,15 +802,14 @@ document.addEventListener("click", (e) => {
   if (forgetBtn) {
     e.stopPropagation();
     const root = forgetBtn.dataset.forgetProject;
-    if (confirm("Remove this project from your list of tracked projects?")) {
+    formDialog("Remove from your projects?", `<p>Only the list changes: the folder and its files stay where they are. Add it again any time.</p>`, "Remove", { danger: true }).then((ok) => ok &&
       api("projects", { method: "DELETE", body: { root } })
         .then(async () => {
           toast("Project removed");
           await refreshState();
           route();
         })
-        .catch((err) => toast(err.message, true));
-    }
+        .catch((err) => toast(err.message, true)));
     return;
   }
   const switchBtn = e.target.closest("[data-switch-project]");
@@ -813,6 +865,7 @@ if (configurationTrigger && configurationMenu) {
 let consecutiveAuthFailures = 0;
 
 let connectionLost = false;
+let connectionLostAt = 0;
 let pollFailures = 0; // consecutive failed background polls
 let lastInbox = null; // previous inbox items, to spot new things waiting on you
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
@@ -851,7 +904,13 @@ async function refreshState() {
     if (configurationMenu) configurationMenu.innerHTML = ConfigurationPages.renderMenu(viewerRole);
     consecutiveAuthFailures = 0;
     pollFailures = 0;
-    if (connectionLost) { connectionLost = false; clearMessage("connection"); notify("success", "Back online.", { id: "connection-restored", timeout: 2500 }); }
+    if (connectionLost) {
+      connectionLost = false;
+      ConnectionLog.add("reconnected", { down_ms: Date.now() - connectionLostAt });
+      clearMessage("connection");
+      notify("success", "Back online.", { id: "connection-restored", timeout: 2500 });
+    }
+    ConnectionLog.flush();
     if (newState.token) {
       localStorage.setItem("orchestrator_token", newState.token);
     }
@@ -869,10 +928,15 @@ async function refreshState() {
     // Transient network errors, tunnel drops, or 502/504 errors should NEVER lock the user out!
     console.warn("Background state refresh notice (will retry):", e.message);
     pollFailures += 1;
-    if (pollFailures >= 2 && !connectionLost) { // two misses in a row: say so, rather than showing stale data silently
+    // Opening the hosted app with an old saved address: the account screen below finds the computer, so no warning.
+    const reopening = !state.project && Account.active();
+    if (pollFailures >= 2 && !connectionLost && !reopening) { // two misses in a row: say so, rather than showing stale data silently
       connectionLost = true;
+      connectionLostAt = Date.now();
+      ConnectionLog.add("connection_lost", { failures: pollFailures, error: e.message, ua: navigator.userAgent });
       notify("warning", "Can't reach Orchestrator. Check that it's running and that you're online.", { id: "connection", sticky: true });
     }
+    if (pollFailures >= 2 && state.project) relocateMachine();
     if (!state.project) {
       showSignInGate(`Unable to reach Orchestrator on your Mac: ${e.message}`);
     }
@@ -896,19 +960,14 @@ async function refreshState() {
     inboxBadge.textContent = state.inbox_count || "";
     inboxBadge.title = `${state.inbox_count} waiting on you`;
   }
+  // The phone tab bar repeats the sidebar's counts.
+  for (const [source, copy] of [["#inbox-badge", "inbox"], ["#running-badge", "running"]]) {
+    const from = $(source), to = document.querySelector(`.tabbar [data-badge="${copy}"]`);
+    if (from && to) { to.hidden = from.hidden; to.textContent = from.textContent; to.title = from.title; to.className = from.className; }
+  }
   const pageTitle = $("#page-title")?.dataset.title;
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
-  const topLangsEl = $("#topbar-languages");
-  if (topLangsEl && (current?.page === "home" || $("#page-title")?.dataset.title === state.project?.name)) {
-    if (state.project?.languages?.length) {
-      topLangsEl.innerHTML = renderLanguagesBar(state.project.languages, { maxLabels: 3 });
-      topLangsEl.title = state.project.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · ");
-      topLangsEl.hidden = false;
-    } else {
-      topLangsEl.hidden = true;
-      topLangsEl.innerHTML = "";
-    }
-  }
+
   renderProjectSelect($("#project-select"));
 }
 
@@ -1099,7 +1158,7 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
       const machine = machines.find((m) => m.id === button.dataset.id);
       if (machine) enterMachine(machine);
     } else if (action === "remove") {
-      if (!confirm(`Remove ${button.dataset.name} from your account? You can add it again with \`orchestrator connect\`.`)) return;
+      if (!await formDialog(`Remove ${button.dataset.name}?`, `<p>It leaves your account. Add it again any time with <code>orchestrator connect</code> on that computer.</p>`, "Remove", { danger: true })) return;
       button.disabled = true;
       try {
         await cpApi("machines/remove", { method: "POST", body: { machine_id: button.dataset.id } });
@@ -1226,6 +1285,28 @@ async function enterMachine(machine) {
   }
 }
 
+// The hosted app reaches a computer at the address its account last heard. That address can change (a quick tunnel gets a
+// new one each time it restarts), so when calls keep failing, ask the account where the computer is now and move there.
+let relocating = false;
+let lastRelocateTry = 0;
+async function relocateMachine() {
+  if (relocating || signingIn || !Account.active() || Date.now() - lastRelocateTry < 30000) return;
+  let remembered = null;
+  try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { return; }
+  if (!remembered) return;
+  relocating = true;
+  lastRelocateTry = Date.now();
+  try {
+    const { machines } = await cpApi("machines");
+    const machine = (machines || []).find((m) => m.id === remembered);
+    const endpoint = (machine?.endpoint || "").replace(/\/+$/, "");
+    if (!machine?.reachable || !endpoint || endpoint === getBackendUrl()) return; // same address: it's down, not moved
+    ConnectionLog.add("relocated", { backend: new URL(endpoint).host });
+    await enterMachine(machine);
+  } catch { /* the account can't be asked either: keep retrying the old address */ }
+  finally { relocating = false; }
+}
+
 // The hosted app remembers your Google sign-in, so coming back opens your computer without the sign-in screen.
 if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) {
   try {
@@ -1254,7 +1335,7 @@ function showSignInGate(message) {
         <div>
           <h2 style="margin: 0; font-size: 1.3rem; font-weight: 700;">Sign In</h2>
           <p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;">
-            ${message ? `<span style="color: var(--err);">${esc(message)}</span>` : "Sign in to access and manage projects on your computer."}
+            ${message ? `<span style="color: var(--bad);">${esc(message)}</span>` : "Sign in to access and manage projects on your computer."}
           </p>
         </div>
         ${providers ? "" : `<div class="notice signin-elsewhere">
@@ -1280,7 +1361,7 @@ function showSignInGate(message) {
         <div class="backend-config-card" style="margin-top: 0.75rem; padding: 0.65rem 0.85rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.82rem; text-align: left;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
             <span style="font-weight: 600; color: var(--text);">Mac Backend URL:</span>
-            <span style="font-size: 0.75rem; color: ${backend ? "var(--good, #2e9d5b)" : "var(--warn, #d99a00)"};">${backend ? "Configured" : "Required for phone"}</span>
+            <span style="font-size: 0.75rem; color: ${backend ? "var(--ok)" : "var(--warn, #d99a00)"};">${backend ? "Configured" : "Required for phone"}</span>
           </div>
           <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com or Tailscale" value="${esc(backend)}" style="width: 100%; box-sizing: border-box; font-size: 0.85rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text);">
           <small class="muted" style="display: block; margin-top: 0.35rem; line-height: 1.3;">Run <code>orchestrator ui --tunnel</code> on your Mac to generate an HTTPS URL for your phone.</small>
@@ -1442,8 +1523,7 @@ async function lockSession() {
     window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
   }
   state = { project: null, runs: [], actions: {} };
-  const badge = $("#running-badge");
-  if (badge) badge.hidden = true;
+  for (const badge of document.querySelectorAll("#running-badge, .tabbar .badge")) badge.hidden = true;
   toast("Session locked", "info");
   showSignInGate("Session locked. Please sign in again.");
 }
@@ -1475,23 +1555,6 @@ function jobItem(j, { withAction = false } = {}) {
 }
 
 
-
-function formatJobDate(ts) {
-  if (!ts) return "—";
-  const d = new Date(ts * 1000);
-  const now = new Date();
-  const isSameYear = d.getFullYear() === now.getFullYear();
-  const dateStr = d.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    ...(isSameYear ? {} : { year: "numeric" }),
-  });
-  const timeStr = d.toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return `${dateStr}, ${timeStr}`;
-}
 
 // Job list sorting (tap Status / Last modified; tap again to reverse).
 const GROUP_ORDER = { needs_you: 0, working: 1, done: 2 };
@@ -1529,10 +1592,8 @@ function jobTableRow(j, { hidden = false } = {}) {
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
   ].filter(Boolean);
 
-  const reason = (j.state?.reason && j.state.group === "needs_you")
-    ? `<span class="job-reason">${esc(j.state.reason)}</span>`
-    : "";
-  const metaHtml = [reason, parts.join(" · ")].filter(Boolean).join(" · ");
+  // The status pill already says what the job needs; its longer reason is on the job page.
+  const metaHtml = parts.join(" · ");
   const typeLabel = esc(j.kind || j.type || "Job");
 
   return `
@@ -1553,11 +1614,10 @@ function jobTableRow(j, { hidden = false } = {}) {
       </div>
       <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">
         <span class="date-relative">${esc(ago(j.updated))}</span>
-        <span class="date-exact muted">${esc(formatJobDate(j.updated))}</span>
       </div>
       <div class="row-hover-hint">
         <span>Click for details</span>
-        <svg class="icon" style="width: 14px; height: 14px;"><use href="#i-chevron"/></svg>
+        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-chevron"/></svg>
       </div>
     </a>`;
 }
@@ -1593,12 +1653,17 @@ function statusLine(p) {
   const branchPicker = branches.length
     ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => branchOption(b, p.branch, p.elsewhere)).join("")}</select>`
     : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
-  const langs = p.languages?.length
-    ? `<span class="sep">·</span><span class="topbar-languages" title="${esc(p.languages.map((l) => `${l.name}: ${l.percent}%`).join(" · "))}">${renderLanguagesBar(p.languages, { maxLabels: 3 })}</span>`
-    : "";
-  // Row 1: the branch. Row 2: the stats, then the language mix.
+  // Only what needs a glance: work not yet committed, work running, or a missing machine or model. The language mix
+  // is on the project's card under Projects.
+  const stats = [
+    p.dirty_files ? `<a href="#/git">${p.dirty_files} uncommitted</a>` : "",
+    running ? `<a href="#/activity">${running} running</a>` : "",
+    p.machine_count === 0 ? `<a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>`
+      : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
+  ].filter(Boolean);
+  // Row 1: the branch. Row 2: the stats, when there are any.
   return `<span class="status-line status-stack"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>
-    <span class="status-stats"><span>${p.dirty_files} uncommitted</span><span class="sep">·</span><span>${running} running</span>${p.machine_count == null ? "" : p.machine_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>` : p.model_count === 0 ? `<span class="sep">·</span><a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : `<span class="sep">·</span><a href="#/config">${p.machine_count} ${p.machine_count === 1 ? "machine" : "machines"}</a><span class="sep">·</span><a href="#/config">${p.model_count} ${p.model_count === 1 ? "model" : "models"}</a>`}${langs}</span></span>`;
+    ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</span>`;
 }
 
 // A branch checked out in another worktree folder is labelled: git won't switch to it here.
@@ -1736,6 +1801,24 @@ document.addEventListener("click", (e) => {
 });
 
 const HOME_JOBS_SHOWN = 10;
+const STALE_DAYS = 14;
+const isStaleJob = (j) => j.state?.group === "needs_you" && !j.active_run && j.updated && Date.now() / 1000 - j.updated > STALE_DAYS * 86400;
+
+// Archive keeps the branch and files; Configuration > Archived jobs (or Undo here) brings a job back as it was.
+document.addEventListener("click", async (e) => {
+  const button = e.target.closest("[data-archive-jobs]");
+  if (!button) return;
+  const ids = JSON.parse(button.dataset.archiveJobs);
+  button.disabled = true;
+  try {
+    const { archived } = await api("jobs/archive", { method: "POST", body: { ids } });
+    if (current.page === "job") location.hash = "#/"; else route();
+    toast(`Archived ${archived.length === 1 ? "1 job" : `${archived.length} jobs`}`, false, { label: "Undo", run: async () => {
+      for (const id of archived) await api("config/archived-restore", { method: "POST", body: { id } });
+      route();
+    } });
+  } catch (err) { button.disabled = false; toast(err.message, true); }
+});
 
 // Jobs waiting in other projects: one line, not a second list.
 function elsewhereLine(items) {
@@ -1765,6 +1848,9 @@ pages.home = async (_, query) => {
   let filter = (query && query.get("filter")) || "all";
   if (!HOME_FILTERS[filter]) filter = "all";
   const filteredJobs = sortedJobs.filter(HOME_FILTERS[filter][1]);
+  // Jobs that have waited on you for weeks fold into one line you can clear, so the list shows what's current.
+  const staleJobs = filteredJobs.filter(isStaleJob);
+  const currentJobs = filteredJobs.filter((j) => !isStaleJob(j));
 
   const runningRuns = state.runs.filter((r) => r.running);
   const runningBanner = runningRuns.length
@@ -1776,15 +1862,16 @@ pages.home = async (_, query) => {
     title: p.name,
     // The project's name is the switcher: one control to change project, labelled, above the labelled branch.
     titleHtml: `<label class="title-switch"><span class="label">Project</span>
-      <select class="project-select-inline title-project-select" aria-label="Project"><option>${esc(p.name)}</option></select></label>`,
+      <div class="project-select-container"><select class="project-select-inline title-project-select" aria-label="Project"><option>${esc(p.name)}</option></select></div></label>`,
     sub: statusLine(p),
+    actions: `<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a>`,
     html: `
       ${product ? productStripHtml(product) : ""}
 
       ${runningBanner}
 
       <section class="card">
-        <div class="card-h" style="flex-wrap: wrap; gap: 10px;">
+        <div class="card-h card-h-wrap">
           <h2>Jobs <span class="count">${filteredJobs.length}</span></h2>
           <div class="filters">
             ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
@@ -1802,9 +1889,16 @@ pages.home = async (_, query) => {
               <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified"><span class="date-header-long">Last modified</span><span class="date-header-short">Date</span>${sortArrow("updated")}</button>
             </div>
             <div class="job-table-body" id="job-list">
-              ${filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
+              ${currentJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
             </div>
-            ${filteredJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${filteredJobs.length}</button></div>` : ""}
+            ${currentJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${currentJobs.length}</button></div>` : ""}
+            ${staleJobs.length ? `
+              <div class="stale-jobs">
+                <p class="stale-jobs-text">${staleJobs.length === 1 ? "1 job hasn't" : `${staleJobs.length} jobs haven't`} changed in over ${STALE_DAYS} days.</p>
+                <button type="button" class="btn small" data-show-all="stale-list">Show</button>
+                <button type="button" class="btn small" data-archive-jobs='${attrJSON(staleJobs.map((j) => j.id))}'>Archive ${staleJobs.length === 1 ? "it" : "them"}</button>
+              </div>
+              <div class="job-table-body" id="stale-list">${staleJobs.map((j) => jobTableRow(j, { hidden: true })).join("")}</div>` : ""}
           </div>
         ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description, a bug report or a design.' : 'No jobs match this filter.'}</div>`}
         ${elsewhereLine(waiting.elsewhere)}
@@ -1840,7 +1934,13 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   for (const link of links) items.push([`Open ${link.label}`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]);
   if (s.issue_number) items.push(["Close GitHub issue", `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`]);
   if (state.you?.role !== "member") items.push(["Open in console", act("console")]);
-  return `${moreMenu(items)}<button type="button" class="btn danger" ${act("delete_job", j)}${s.active_run ? ' disabled title="Stop the running task before deleting"' : ""}>Delete</button>`;
+  // Putting a job away lives last in the menu, the way GitHub keeps deletion out of the everyday controls.
+  if (!s.active_run) {
+    items.push("---");
+    items.push(["Archive", `data-archive-jobs='${attrJSON([s.id])}'`, "Hide it from Home; branch and files stay. Restore from Configuration."]);
+    items.push(["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"]);
+  }
+  return moreMenu(items);
 }
 
 document.addEventListener("click", async (e) => {
@@ -1864,16 +1964,16 @@ document.addEventListener("click", (e) => {
 });
 
 function formatJobTests(t) {
-  if (!t) return "⚙️ Pending execution";
+  if (!t) return "Tests not run yet";
   const st = (t.status || "").toLowerCase();
   const passed = t.passed_count || 0;
   const failed = t.failed_count || 0;
   if (failed > 0) return `❌ ${failed} failed${passed ? ` (${passed} passed)` : ""}`;
   if (passed > 0) return `✅ ${passed} passed`;
-  if (st === "running" || st === "in_progress") return "⚙️ Running tests...";
+  if (st === "running" || st === "in_progress") return "⚙️ Running tests…";
   if (st === "passed") return "✅ Passed";
   if (st === "failed") return "❌ Failed";
-  return "⚙️ Pending execution";
+  return "Tests not run yet";
 }
 
 pages.job = async ([id]) => {
@@ -1897,7 +1997,6 @@ pages.job = async ([id]) => {
   const tasksPct = tasksTotal > 0 ? Math.round((tasksDone / tasksTotal) * 100) : 0;
   const nextTask = jobNextTask || (tasksTotal > tasksDone && tasks[tasksDone] ? (typeof tasks[tasksDone] === "object" ? (tasks[tasksDone].name || tasks[tasksDone].title || tasks[tasksDone].description || `Task ${tasksDone + 1}`) : String(tasks[tasksDone])) : null);
 
-  const displayId = s.display_id || (s.issue_number ? `#${s.issue_number} (${s.id})` : s.id);
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
   const scope = data.scope || null;
@@ -1906,6 +2005,7 @@ pages.job = async ([id]) => {
   const phone = matchMedia("(max-width: 760px)").matches;
   const canEditPlan = Array.isArray(job.plan?.tasks) && !activeRun && !["completed", "archived", "discarded", "decomposed"].includes(s.status) && s.status !== "executing";
   const fold = (title, count, body) => `<section class="card mb-16"><details class="fold" ${phone ? "" : "open"}><summary class="card-h"><h2>${title}</h2>${count === "" ? "" : `<span class="count">${count}</span>`}</summary>${body}</details></section>`;
+  const uxWarning = ["merge", "complete"].includes(s.state.next?.action) ? data.ux_review?.counts?.major || 0 : 0;
   const scopeWarning = scope && ["merge", "complete"].includes(s.state.next?.action) ? actionableFindings.reduce((n, f) => n + Math.max(f.files.length, 1), 0) : 0;
   const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
   const missingTests = testCases.cases.filter((c) => c.due && (c.status === "unassigned" || c.status === "planned")).length;
@@ -1936,7 +2036,7 @@ pages.job = async ([id]) => {
     const stat = (changes.summary_line || "").replace(/^\s*\d+\s+files?\s+changed,?\s*/, "").trim();
     deltaUnsaved = `${changes.files.length} file${changes.files.length > 1 ? "s" : ""} modified${stat ? ` ${stat}` : ""}`;
   } else {
-    deltaUnsaved = "0 files unsaved (working tree clean)";
+    deltaUnsaved = "";
   }
 
   const allFiles = (changes?.files && changes.files.length) ? changes.files : (changes?.local_files || []);
@@ -2009,39 +2109,37 @@ pages.job = async ([id]) => {
   };
 
   const phasesInfo = [planStep, buildStep, verifyStep, reviewStep];
-  const currentPhaseLabel = ["Planning & Spec", "Implementation", "Verification", "Review & Ship"][currentPhaseIndex];
+  const currentPhaseLabel = ["Planning", "Building", "Checking", "Review"][currentPhaseIndex];
 
   // Actor label for hero badge
   const actorLabel = s.state.group === "needs_you"
-    ? "Your action needed"
+    ? "Needs you"
     : s.state.group === "working"
-      ? (activeRun ? "AI Worker active" : "Queued")
-      : "Complete";
+      ? (activeRun ? "AI is working" : "Waiting to start")
+      : "Done";
 
   // Contextual consequence preview for hero
   let nextExecutionPreview = "";
   if (activeRun) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Active worker:</span> Currently executing <strong>${esc(nextTask || "tasks")}</strong>`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> working on <strong>${esc(nextTask || "the tasks")}</strong>`;
   } else if (s.state.next?.action === "approve") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next execution:</span> Approving will queue builder on <strong>${esc(nextTask || "Task 1")}</strong>`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
   } else if (s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next execution:</span> Builder will begin <strong>${esc(nextTask || "Task 1")}</strong>`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
   } else if (s.state.next?.action === "resume") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next execution:</span> Resumes with <strong>${esc(nextTask || "next task")}</strong> (${tasksTotal - tasksDone} tasks left)`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> it picks up at <strong>${esc(nextTask || "the next task")}</strong> (${plural(tasksTotal - tasksDone, "task")} left)`;
   } else if (s.state.next?.action === "merge") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next step:</span> Merge branch into ${esc(job.base_branch || "main")} and complete job`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the changes go into ${esc(job.base_branch || "main")} and the job is done`;
   } else if (s.state.next?.action === "debug") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next step:</span> Run AI fix attempt to investigate and resolve failing tests`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI looks into the failing tests and tries a fix`;
   }
 
   return {
     title: s.title,
-    sub: `<span class="status-line"><span>${esc(kindUpper)}</span><span class="sep">·</span><span class="mono">${esc(displayId)}</span>${s.feature ? `<span class="sep">·</span><span>${esc(featureName || s.feature)}</span>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
+    sub: `<span class="status-line"><span>${esc(s.kind || "Job")}</span>${s.issue_number ? `<span class="sep">·</span><span>#${esc(s.issue_number)}</span>` : ""}${s.feature ? `<span class="sep">·</span><span>${esc(featureName || s.feature)}</span>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter }),
     html: `
       ${runs.filter((r) => r.running).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
-      ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
-        <p class="question">${clamped(s.question, 320)}</p><div><button class="btn primary" ${act("answer", { job: s.id })}>Answer</button></div></div></section>` : ""}
 
       <nav class="job-stepper" aria-label="Job lifecycle progress">
         ${phasesInfo.map((p, idx) => `
@@ -2060,15 +2158,19 @@ pages.job = async ([id]) => {
         <div class="job-hero-main">
           <div class="job-hero-badge-row">
             <span class="pill ${s.state.tone || "muted"}">${esc(actorLabel)}</span>
-            <span class="job-hero-phase-label">Phase: ${esc(currentPhaseLabel)}</span>
+            <span class="job-hero-phase-label">${esc(currentPhaseLabel)}</span>
           </div>
           <h2 class="job-hero-title">${esc(s.state.label || s.status)}</h2>
-          <p class="job-hero-reason">${s.question && /architect/i.test(s.question) && /architect/i.test(s.state.reason || "") ? "The architect raised concerns (see the question above). Answer them, or accept its suggestions and re-plan." : clamped(s.state.reason || "", 320)}</p>
+          <p class="job-hero-reason">${s.question && /architect/i.test(s.question) && /architect/i.test(s.state.reason || "") ? "The architect raised concerns (below). Answer them, or accept its suggestions and re-plan." : clamped(s.state.reason || "", 320)}</p>
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
+          ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
           ${scopeWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#scope-section">Scope check: ${scopeWarning} beyond the plan. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
       </section>
+
+      ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
+        <p class="question">${clamped(s.question, 320)}</p>${s.state.next?.action === "answer" ? "" : `<div><button class="btn" ${act("answer", { job: s.id })}>Answer</button></div>`}</div></section>` : ""}
 
       ${(data.blockers || []).map((b) => `<div class="banner attention"><p><strong>This job can't start yet.</strong> ${esc(b.text)}${b.route ? ` <a class="btn small" href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</p></div>`).join("")}
 
@@ -2105,7 +2207,7 @@ pages.job = async ([id]) => {
       <!-- Brief Section: Prominently displayed near the top, editable, with file location -->
       <section class="card mb-16" id="brief-section">
         <div class="card-h">
-          <div class="row gap-8 align-center" style="flex-wrap: wrap;">
+          <div class="row gap-8 align-center wrap">
             <h2>Brief</h2>
             <span class="mono muted brief-path-chip" title="File location: click to select">${esc(briefDoc.path || `.orchestrator/output/${s.id}/brief.md`)}</span>
           </div>
@@ -2114,14 +2216,14 @@ pages.job = async ([id]) => {
             <button class="btn small" data-brief-edit ${activeRun ? 'disabled title="Pause worker to edit brief"' : ""}>Edit brief</button>
           </div>
         </div>
-        <pre class="doc brief-content">${esc(briefDoc.text || "No brief content.")}</pre>
+        <div class="md brief-content">${briefDoc.text ? Markdown.render(briefDoc.text) : `<p class="muted">No brief yet.</p>`}</div>
       </section>
 
       <section class="card mb-16"><div class="card-h"><h2>Test cases</h2>${testCases.cases.length ? `<span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</div>
-        ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad" style="margin-top:10px">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}</div>
+        ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad mt-8">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}</div>
         <div class="list">${canEditPlan ? testCaseRowsHtml(testCases.cases, { editable: true, actionPrefix: "job-tc" }) : testCaseRowsHtml(testCases.cases)}</div>`
           : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}
-        ${canEditPlan ? `<div class="card-b" style="border-top:1px solid var(--border)"><button class="btn small" data-job-tc-op="add">Add test case</button></div>` : ""}</section>
+        ${canEditPlan ? `<div class="card-b card-b-split"><button class="btn small" data-job-tc-op="add">Add test case</button></div>` : ""}</section>
 
       ${assumptions.length ? `<section class="card mb-16"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
@@ -2130,12 +2232,14 @@ pages.job = async ([id]) => {
       <section class="card mb-16">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
         <div class="card-b delta-summary-line">
-          <div class="delta-line unsaved">${esc(deltaUnsaved)}</div>
+          ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
           <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more (see the full diffstat below)</div>` : ""}</div>
         </div>
-        ${changes?.hypothesis ? `<div class="card-b" style="border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px;"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
+        ${changes?.hypothesis ? `<div class="card-b card-b-split text-sm"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
+
+      ${uxReviewCard(s, data.ux_review)}
 
       ${scope ? `<section class="card mb-16" id="scope-section">
         <div class="card-h">
@@ -2164,14 +2268,14 @@ pages.job = async ([id]) => {
 
 
 
-      <!-- Decomposed Subtasks (if any) -->
+      <!-- Jobs this one was split into (if any) -->
       ${(job.subtask_job_ids && job.subtask_job_ids.length) ? `
         <section class="card mb-16">
-          <div class="card-h"><h2>Decomposed Sub-Task Jobs</h2><span class="count">${job.subtask_job_ids.length}</span></div>
+          <div class="card-h"><h2>Split into jobs</h2><span class="count">${job.subtask_job_ids.length}</span></div>
           <div class="list">
             ${job.subtask_job_ids.map((subId) => `
-              <a class="item" href="#/job/${encodeURIComponent(subId)}">
-                <div class="main-col"><div class="title mono">${esc(subId)}</div><div class="meta">Parallel subtask job</div></div>
+              <a class="item" href="#/jobs/${encodeURIComponent(subId)}">
+                <div class="main-col"><div class="title mono">${esc(subId)}</div><div class="meta">Runs alongside the others</div></div>
                 <span class="arrow">→</span>
               </a>
             `).join("")}
@@ -2245,7 +2349,7 @@ pages.job = async ([id]) => {
       ` : ""}
 
       <!-- Tasks, runs, logs and output: folded on phones so the page isn't one long scroll -->
-      ${tasks.length || canEditPlan ? fold("Tasks Checklist", `${tasksDone}/${tasks.length}`, `<div class="list">${tasks.map((t, i) => {
+      ${tasks.length || canEditPlan ? fold("Tasks", `${tasksDone}/${tasks.length}`, `<div class="list">${tasks.map((t, i) => {
           const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
           const detail = typeof t === "object" && t && t.title && t.description ? t.description : "";
           const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
@@ -2274,6 +2378,7 @@ pages.job = async ([id]) => {
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
     `,
     after: () => {
+      hydrateAuthImages(); // the UX and design check's screenshots
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const bodyHtml = `
           <div class="stack gap-12">
@@ -2433,7 +2538,9 @@ pages.new = async (_, query) => {
   const field = (label, input, hint = "") => `<label class="field"><span>${label}</span>${input}${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
   const opt = (text) => ` <span class="muted">(${text})</span>`;
   const uploadBox = (label, hint, accept, optional = true) => `<div class="field"><span>${label}${optional ? opt("optional") : ""}</span>
-      <input type="file" id="nj-files" multiple accept="${accept}" aria-label="${esc(label)}"><small class="hint-text">${hint}</small>
+      <input type="file" id="nj-files" class="sr-only" multiple accept="${accept}" aria-label="${esc(label)}">
+      <label class="prd-drop upload-drop" for="nj-files" id="nj-drop"><strong>Choose files</strong><span class="muted drop-hint">or drop them here</span></label>
+      <small class="hint-text">${hint}</small>
       <div class="upload-chips row" id="nj-chips" aria-live="polite"></div></div>`;
   const logPicker = () => {
     const rows = (st.recent || []).map((l, i) => `<label class="check"><input type="checkbox" data-nj-log="${esc(l.path)}" ${st.logs.has(l.path) ? "checked" : ""}>
@@ -2523,6 +2630,19 @@ pages.new = async (_, query) => {
       }
       e.target.value = "";
     });
+    // Dropped files go through the same path as chosen ones.
+    const drop = $("#nj-drop");
+    if (drop) {
+      drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+      drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+      drop.addEventListener("drop", (e) => {
+        e.preventDefault(); drop.classList.remove("over");
+        const input = $("#nj-files");
+        if (!e.dataTransfer?.files?.length || !input) return;
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event("change"));
+      });
+    }
     $("#nj-chips")?.addEventListener("click", (e) => { const b = e.target.closest("[data-nj-remove]"); if (b) { mine().splice(Number(b.dataset.njRemove), 1); chips(); } });
     $("select[name=vibe]")?.addEventListener("change", (e) => { $("#nj-custom-vibe").hidden = e.target.value !== "other"; });
     document.querySelectorAll("[data-nj-log]").forEach((box) => box.addEventListener("change", () => { box.checked ? st.logs.add(box.dataset.njLog) : st.logs.delete(box.dataset.njLog); }));
@@ -2808,11 +2928,138 @@ pages.measure = async () => {
   };
 };
 
+// ---------------------------------------------------------------- UX and design review
+
+const UX_SEVERITY = ["cosmetic", "minor", "moderate", "major", "blocker"];
+const UX_TONE = ["muted", "muted", "attention", "failed", "failed"];
+
+function uxFindingsHtml(findings, { listId, shown = 8 } = {}) {
+  if (!findings.length) return `<div class="empty">No findings.</div>`;
+  return `<div class="list" id="${listId}">${findings.map((f, n) => `<div class="item ux-finding"${n >= shown ? " hidden" : ""}>
+      <div class="main-col"><div class="row gap-8"><span class="pill ${UX_TONE[f.severity]}">${UX_SEVERITY[f.severity]}</span>
+        <strong>${esc([f.screen, f.element].filter(Boolean).join(" · ") || "All screens")}</strong>${f.item ? `<span class="muted mono">${esc(f.item)}</span>` : ""}</div>
+        <div>${esc(f.problem)}</div>${f.fix ? `<div class="muted">Fix: ${esc(f.fix)}</div>` : ""}</div></div>`).join("")}</div>
+    ${findings.length > shown ? `<div class="card-b"><button type="button" class="btn small" data-show-all="${listId}">Show all ${findings.length}</button></div>` : ""}`;
+}
+
+function uxChecklistHtml(checklist) {
+  const judged = checklist.filter((c) => c.status !== "n/a");
+  if (!judged.length) return `<div class="empty">Nothing on the checklist applied.</div>`;
+  const mark = { pass: ["done", "Pass"], partial: ["attention", "Partly"], fail: ["failed", "Fail"] };
+  return `<div class="list">${judged.map((c) => `<div class="item"><span class="pill ${mark[c.status][0]}">${mark[c.status][1]}</span>
+    <div class="main-col"><div class="title mono">${esc(c.id)}</div>${c.note ? `<div class="meta">${esc(c.note)}</div>` : ""}</div></div>`).join("")}</div>`;
+}
+
+function uxScreensHtml(screens, base) {
+  if (!screens?.length) return "";
+  return `<div class="ux-screens">${screens.map((sc) => `<figure class="ux-screen"><img alt="${esc(sc.route)} at ${sc.width ? `${sc.width} px` : "simulator"}${sc.dark ? ", dark" : ""}" data-auth-src="${base}/${encodeURIComponent(sc.file)}">
+    <figcaption>${esc(sc.route)}${sc.width ? ` · ${sc.width} px` : ""}${sc.dark ? " · dark" : ""}</figcaption></figure>`).join("")}</div>`;
+}
+
+const uxFixLink = (text, label = "Create a job to fix") =>
+  `<a class="btn small" href="#/new?type=quick&summary=${encodeURIComponent("Fix UX and design findings")}&spec=${encodeURIComponent(text)}">${label}</a>`;
+
+// The job page's card: the checklist run on this job's interface changes.
+function uxReviewCard(s, ux) {
+  if (!ux || (ux.skipped && !ux.error)) return "";
+  const c = ux.counts || {};
+  const rerun = `<button type="button" class="btn small ghost" ${act("ux_review_job", { job: s.id })}>Check again</button>`;
+  if (ux.error) return `<section class="card mb-16" id="ux-section"><div class="card-h"><h2>UX and design check</h2>${rerun}</div>
+    <div class="card-b"><p class="muted">It couldn't run: ${esc(ux.error)}</p></div></section>`;
+  const findings = ux.findings || [];
+  const fixText = "Fix these UX and design findings:\n" + findings.filter((f) => f.severity >= 2).map((f) => `- [${UX_SEVERITY[f.severity]}] ${f.screen || "All screens"}: ${f.problem}${f.fix ? ` Fix: ${f.fix}` : ""}`).join("\n");
+  return `<section class="card mb-16" id="ux-section">
+    <div class="card-h"><h2>UX and design check</h2><span class="count">${c.findings ? `${plural(c.findings, "finding")}${c.major ? ` · ${c.major} major` : ""}` : "Nothing found"}</span></div>
+    <div class="card-b stack">
+      ${ux.summary ? `<p>${clamped(ux.summary, 320)}</p>` : ""}
+      <div class="muted">Checked ${plural((ux.files || []).length, "interface file")}${ux.screens ? ` and ${plural(ux.screens, "screen")}` : ", from the code only"}. A prompt to look, not a gate.</div>
+      ${uxScreensHtml(ux.screen_list, `ux-screens/job/${encodeURIComponent(s.id)}`)}
+    </div>
+    ${findings.length ? uxFindingsHtml(findings, { listId: "ux-findings", shown: 5 }) : ""}
+    <details class="fold"><summary class="card-h"><h2>Checklist</h2></summary>${uxChecklistHtml(ux.checklist || [])}</details>
+    <div class="card-b card-b-split row gap-8">${findings.some((f) => f.severity >= 2) ? uxFixLink(fixText) : ""}${rerun}</div>
+  </section>`;
+}
+
+pages["ux-review"] = async (_, query) => {
+  const data = await api("ux-pass");
+  const id = query.get("id") || data.passes[0]?.id;
+  const pass = id ? await api(`ux-pass/${encodeURIComponent(id)}`).catch(() => null) : null;
+  const cfg = data.settings;
+  const noScreens = cfg && !cfg.url && !cfg.simulator;
+  const saved = data.saved || {};
+  const areaCard = (area, title) => {
+    const findings = (pass.findings || []).filter((f) => f.area === area);
+    const checks = (pass.checklist || []).filter((c) => c.id.startsWith(area));
+    return `<section class="card mb-16"><div class="card-h"><h2>${title}</h2><span class="count">${plural(findings.length, "finding")}</span></div>
+      ${uxFindingsHtml(findings, { listId: `ux-${area}` })}
+      <details class="fold"><summary class="card-h"><h2>${title} checklist</h2><span class="count">${checks.filter((c) => c.status === "pass").length} of ${checks.filter((c) => c.status !== "n/a").length} pass</span></summary>${uxChecklistHtml(checks)}</details></section>`;
+  };
+  return {
+    title: "UX review",
+    sub: "Your product's screens checked against usability heuristics and your design system: a UX pass and a design pass.",
+    actions: `<button class="btn primary" ${act("ux_pass")}>Run a pass</button>`,
+    html: `
+      ${data.error ? `<div class="notice bad mb-16">Screens to review: ${esc(data.error)}</div>` : ""}
+      ${noScreens ? `<div class="notice mb-16">No screens are set up, so a pass reviews the code only and can't judge layout, spacing or contrast. Add your app's address below.</div>` : ""}
+      ${cfg?.url && !data.browser ? `<div class="notice bad mb-16">No Chrome, Chromium or Edge found on this computer, so screens can't be captured.</div>` : ""}
+      ${pass ? `
+        <section class="card mb-16"><div class="card-h"><h2>Latest pass</h2><span class="count">${esc(ago(Date.parse(pass.at) / 1000))}</span></div>
+          <div class="card-b stack">
+            <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings ? "attention" : "done"}">${plural(pass.counts.findings, "finding")}</span>
+              ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span></div>
+            ${pass.summary ? `<p>${clamped(pass.summary, 500)}</p>` : ""}
+            ${pass.limits ? `<p class="muted">${esc(pass.limits)}</p>` : ""}
+            ${pass.findings?.length ? `<div>${uxFixLink(pass.fix_text, "Create a job to fix the main ones")}</div>` : ""}
+          </div>
+          ${pass.screens?.length ? `<details class="fold"><summary class="card-h"><h2>Screens</h2><span class="count">${pass.screens.length}</span></summary>
+            <div class="card-b">${uxScreensHtml(pass.screens, `ux-screens/pass/${encodeURIComponent(pass.id)}`)}</div></details>` : ""}
+        </section>
+        ${areaCard("ux", "UX")}
+        ${areaCard("design", "Design")}` : `<section class="card mb-16"><div class="empty">No pass yet. <strong>Run a pass</strong> captures your screens and reviews them, which takes a few minutes.</div></section>`}
+      <section class="card mb-16" id="ux-setup"><details class="fold"${query.get("setup") || noScreens ? " open" : ""}><summary class="card-h"><h2>Screens to review</h2></summary>
+        <form class="card-b stack" id="ux-settings">
+          <label class="field"><span>Your app's address</span><input type="url" name="url" value="${esc(saved.url || "")}" placeholder="http://localhost:3000" spellcheck="false">
+            <small class="hint-text">Where it runs while you develop. A sign-in token can come from an environment variable: <code class="nowrap">?token=$MY_TOKEN</code>.</small></label>
+          <label class="field"><span>Pages to capture <span class="muted">(one per line)</span></span><textarea name="routes" rows="4" spellcheck="false">${esc((saved.routes || ["/"]).join("\n"))}</textarea></label>
+          <label class="field"><span>Widths <span class="muted">(pixels)</span></span><input type="text" name="widths" value="${esc((saved.widths || [390, 1440]).join(" "))}"></label>
+          <details class="np-more"><summary class="np-section-legend">More options</summary><div class="stack">
+            <label class="field"><span>Command that starts the app <span class="muted">(optional)</span></span><input type="text" name="start_command" value="${esc(saved.start_command || "")}" placeholder="npm run dev" spellcheck="false">
+              <small class="hint-text">Used only when the address isn't answering; stopped afterwards.</small></label>
+            <label class="field"><span>Your UI conventions file <span class="muted">(optional)</span></span><input type="text" name="conventions" value="${esc(saved.conventions || "")}" placeholder="docs/ui-conventions.md" spellcheck="false">
+              <small class="hint-text">Found automatically when it's named like docs/*ui*conventions*.md or DESIGN.md.</small></label>
+            <label class="check"><input type="checkbox" name="dark_mode" ${saved.dark_mode !== false ? "checked" : ""}><span>Also capture dark mode</span></label>
+            <label class="check"><input type="checkbox" name="simulator" ${saved.simulator ? "checked" : ""}><span>Also capture the iOS simulator</span></label>
+            <label class="check"><input type="checkbox" name="review_changes" ${saved.review_changes !== false ? "checked" : ""}><span>Check every job that changes the interface</span></label>
+          </div></details>
+          <div><button class="btn" type="submit">Save</button></div>
+        </form></details></section>
+      ${data.passes.length > 1 ? `<section class="card"><div class="card-h"><h2>Earlier passes</h2></div><div class="list">${data.passes.map((p) => `<a class="item" href="#/ux-review?id=${encodeURIComponent(p.id)}">
+        <div class="main-col"><div class="title">${esc(ago(Date.parse(p.at) / 1000))}${p.id === id ? " · showing" : ""}</div><div class="meta">${plural(p.counts.findings, "finding")}, ${p.counts.major} major</div></div></a>`).join("")}</div></section>` : ""}`,
+    after: () => {
+      hydrateAuthImages();
+      $("#ux-settings").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = new FormData(e.target);
+        try {
+          await api("ui-review", { method: "POST", body: { ...Object.fromEntries(f), dark_mode: f.has("dark_mode"), simulator: f.has("simulator"), review_changes: f.has("review_changes") } });
+          toast("Saved"); route();
+        } catch (err) { toast(err.message, true); }
+      });
+    },
+  };
+};
+
+// Server text marks commands with `backticks`: show them as code, not as literal backticks.
+const codeSpans = (text) => esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+
 pages.checkup = async () => {
   const d = await api("health");
-  const action = (i) => {
-    if (i.job) return `<a class="btn small primary" href="#/new?type=${encodeURIComponent(i.job.type)}&summary=${encodeURIComponent(i.job.summary)}">${esc(i.label)}</a>`;
-    if (i.route) return `<a class="btn small ${i.status === "todo" ? "primary" : ""}" href="${esc(i.route)}">${esc(i.label)}</a>`;
+  // Only the highlighted next step gets a filled button; the rest of the list stays quiet.
+  const action = (i, primary = false) => {
+    const kind = primary ? "btn small primary" : "btn small";
+    if (i.job) return `<a class="${kind}" href="#/new?type=${encodeURIComponent(i.job.type)}&summary=${encodeURIComponent(i.job.summary)}">${esc(i.label)}</a>`;
+    if (i.route) return `<a class="${kind}" href="${esc(i.route)}">${esc(i.label)}</a>`;
     if (i.hint) return `<div class="setup-hint"><code>${esc(i.hint)}</code><button class="btn small ghost" data-setup-copy="${esc(i.hint)}">Copy</button></div>`;
     return "";
   };
@@ -2823,11 +3070,14 @@ pages.checkup = async () => {
     sub: `${esc(d.name)} · ${esc(d.stage)}`,
     html: `
       <div class="tasks-progress-wrap mb-16"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round((d.ok / d.total) * 100)}%"></div></div><span class="progress-text">${d.ok}/${d.total} in place</span></div>
-      ${next ? `<section class="card" style="margin-bottom: 16px; border-color: var(--accent);"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div>
-        <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on Home for what needs you next.</div>`}
-      <section class="card"><div class="card-h"><h2>Everything</h2><span class="muted">Product state. Tools and keys are in the setup checklist.</span></div>
+      ${next ? `<section class="card mb-16 card-next"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div>
+        <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next, true)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on Home for what needs you next.</div>`}
+      <section class="card"><div class="card-h"><h2>Everything</h2><span class="count">${d.ok} of ${d.total}</span></div>
+        <div class="card-b muted card-note">What the product has in place. Tools and keys are in the setup checklist.</div>
         <div class="list">${d.items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div>
           <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>
+      <section class="card mt-16"><div class="card-h"><h2>UX and design</h2><a class="btn small" href="#/ux-review">Open UX review</a></div>
+        <div class="card-b muted" id="ux-checkup">Checking…</div></section>
       <section class="card mt-16"><div class="card-h"><h2>Will this computer build it?</h2><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
         <div class="list" id="preflight-list"><div class="item"><div class="main-col muted">Checking this computer…</div></div></div></section>
       <section class="card mt-16"><div class="card-h"><h2>Setup tools</h2></div>
@@ -2839,11 +3089,17 @@ pages.checkup = async () => {
         try {
           const { items } = await api(`preflight${refresh ? "?refresh=1" : ""}`);
           const icon = { ok: `<span class="setup-icon done" aria-label="fine">✓</span>`, warn: `<span class="pill attention">Maybe</span>`, fail: `<span class="pill failed">Blocks</span>` };
-          box.innerHTML = items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}${i.fix && !i.route ? ` · ${esc(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.fix || "Open")}</a></div>` : ""}</div>`).join("") || `<div class="empty">Nothing to check.</div>`;
+          box.innerHTML = items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${codeSpans(i.detail)}${i.fix && !i.route ? ` · ${codeSpans(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.fix || "Open")}</a></div>` : ""}</div>`).join("") || `<div class="empty">Nothing to check.</div>`;
         } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
       };
       paint(false);
       $("#preflight-refresh")?.addEventListener("click", () => paint(true));
+      api("ux-pass").then(({ passes, settings }) => {
+        const last = passes[0];
+        $("#ux-checkup").textContent = last
+          ? `Last pass ${ago(Date.parse(last.at) / 1000)}: ${plural(last.counts.findings, "finding")}, ${last.counts.major} major or worse.`
+          : settings && (settings.url || settings.simulator) ? "No pass yet. Run one from UX review." : "No pass yet, and no screens set up. UX review shows how.";
+      }).catch(() => { $("#ux-checkup").textContent = "Couldn't read the UX review."; });
     },
   };
 };
@@ -3032,12 +3288,12 @@ async function waitForTask(started) {
 
 function productStripHtml(p) {
   const lead = p.sections.find((x) => x.id === "pitch" && x.filled) || p.sections.find((x) => x.filled);
-  // The heading and the pitch open the product requirements: the Product page isn't in the sidebar, so this is the way in.
+  // The heading and the pitch open the product requirements. Its buttons stay secondary: New job is Home's one primary.
   return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2></div>
     <div class="card-b stack">
       ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build. All of it is optional.</p>
-           <div class="row gap-10">${p.can_draft ? `<a class="btn small primary" href="#/product?draft=1">Draft it from my project</a><a class="btn small" href="#/product">Write it</a>` : `<a class="btn small primary" href="#/product">Write it</a>`}<a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
+           <div class="row gap-10">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft it from my project</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
     </div></section>`;
 }
 
@@ -3050,7 +3306,7 @@ pages.product = async (_, query) => {
         <button type="button" class="btn small" data-prd-edit="${s.id}">${s.filled ? "Edit" : "Write"}</button></div>
       <div class="card-b stack" data-prd-body="${s.id}">
         <div class="muted">${esc(s.hint)}</div>
-        ${s.filled ? `<div class="md">${Markdown.render(s.body)}</div>` : `<div class="prd-empty">Nothing here, and that's fine.</div>`}
+        ${s.filled ? `<div class="md">${Markdown.render(s.body)}</div>` : ""}
         ${designs.length ? `<div class="prd-designs">${designs.map((d) => `<figure class="prd-design"><img alt="${esc(d.replace("designs/", ""))}" data-auth-src="product/design/${esc(d.replace("designs/", ""))}"></figure>`).join("")}</div>` : ""}
         ${s.id === "look" ? `<div class="row gap-10"><button type="button" class="btn small" id="prd-add-file">Add a design or sketch</button>
           <button type="button" class="btn small" id="prd-add-link">Add a link</button><button type="button" class="btn small" id="prd-add-app">Pick from a connected app</button>
@@ -3071,7 +3327,9 @@ pages.product = async (_, query) => {
   return {
     title: "Product",
     sub: `<span class="mono">${esc(p.path)}</span> · Every job reads this first. Everything here is optional; edit it any time.`,
-    actions: `${p.can_draft ? `<button class="btn" id="prd-draft">Draft it from my project</button>` : ""}<button class="btn" id="prd-import">Import PRD</button>`,
+    // An empty document gets one "Start here" card with these choices; the header offers them only after that.
+    actions: !p.sections.some((x) => x.filled) && !p.history.length ? ""
+      : `${p.can_draft ? `<button class="btn" id="prd-draft">Draft it from my project</button>` : ""}<button class="btn" id="prd-import">Import PRD</button>`,
     html: render(),
     after: () => {
       const panel = () => $("#prd-panel");
@@ -3342,6 +3600,23 @@ function testCaseRowsHtml(cases, { editable = false, actionPrefix = "tc" } = {})
   }).join("");
 }
 
+// Suites grouped by folder, like a file tree: a glance shows where the tests live and how many; open a folder to run
+// one suite. A single folder (or a filter) shows its suites straight away.
+function suiteGroupsHtml(suites, { open = false } = {}) {
+  if (!suites.length) return `<div class="empty">No suites${open ? " match" : ""}.</div>`;
+  const groups = new Map();
+  for (const s of suites) {
+    const folder = (s.path || "").split("/").slice(0, -1).join("/") || "(project root)";
+    groups.set(folder, [...(groups.get(folder) || []), s]);
+  }
+  const expand = open || groups.size === 1;
+  return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([folder, rows]) => `
+    <details class="fold suite-group"${expand ? " open" : ""}><summary class="card-h"><h3 class="mono">${esc(folder)}</h3>
+      <span class="count">${rows.length} ${rows.length === 1 ? "suite" : "suites"} · ${plural(rows.reduce((n, s) => n + s.tests, 0), "test")}</span></summary>
+      <div class="list">${rows.map((s) => `<div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${plural(s.tests, "test")} · ${esc((s.path || "").split("/").pop())}</div></div>
+        <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`).join("")}</div></details>`).join("");
+}
+
 pages.tests = async (_, query) => {
   view.innerHTML = `<div class="empty">Finding tests…</div>`;
   const [data, caseView] = await Promise.all([api(`tests${query.get("refresh") ? "?refresh=1" : ""}`), api("test-cases").catch(() => ({ cases: [], summary: null }))]);
@@ -3362,7 +3637,7 @@ pages.tests = async (_, query) => {
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
       ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>
-        <div class="row gap-10" style="align-items:center;">
+        <div class="row gap-10 align-center">
           <div class="filters">${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
             `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div>
           <a class="btn small ghost" href="#/test-cases">Manage cases ↗</a>
@@ -3370,20 +3645,18 @@ pages.tests = async (_, query) => {
         <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
         ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
       ${data.frameworks && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `
-      <section class="card"><div class="card-h"><h2>Test Frameworks &amp; Canary Scaffolding</h2>
+      <section class="card"><div class="card-h"><h2>Test frameworks</h2>
         <div class="row">
-          ${!data.frameworks.canary_suite?.installed ? `<button class="btn small primary" ${act("scaffold_canary")}>Scaffold Canary Suite</button>` : ""}
-          <button class="btn small" ${act("visual_check")}>Simulator Visual Check</button>
+          ${!data.frameworks.canary_suite?.installed ? `<button class="btn small primary" ${act("scaffold_canary")}>Add a canary suite</button>` : ""}
+          <button class="btn small" ${act("visual_check")}>Simulator visual check</button>
         </div>
       </div>
-      <div class="card-b" style="display:flex; flex-wrap:wrap; gap:12px;">
+      <div class="card-b framework-grid">
         ${Object.values(data.frameworks).map((f) => `
-          <div style="border:1px solid var(--border); border-radius:8px; padding:12px 14px; flex:1 1 200px; background:var(--bg-subtle, rgba(255,255,255,0.02));">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-              <strong>${esc(f.name)}</strong>
-              <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Installed" : "Available"}</span>
-            </div>
-            <div style="font-size:12px; color:var(--muted);">${esc(f.desc)}</div>
+          <div class="framework">
+            <div class="framework-h"><strong>${esc(f.name)}</strong>
+              <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Installed" : "Available"}</span></div>
+            <div class="framework-desc">${esc(f.desc)}</div>
           </div>
         `).join("")}
       </div></section>` : ""}
@@ -3395,9 +3668,7 @@ pages.tests = async (_, query) => {
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Suites</h2>
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
-        <div class="list">${suites.slice(0, 300).map((s) => `
-          <div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${esc(s.tests)} tests · ${esc(s.path || "")}</div></div>
-          <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`).join("") || `<div class="empty">No suites${filter ? " match" : ""}.</div>`}</div></section>`,
+        ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>`,
     after: () => $("#suite-filter").addEventListener("submit", (e) => {
       e.preventDefault();
       location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
@@ -3602,7 +3873,7 @@ pages.git = async () => {
         <div><div class="muted">Last commit</div><div>${esc(g.last_commit || "—")}</div></div>
         <div>
           <div class="muted">Switch branch</div>
-          <select id="git-branch-select" name="branch" class="mono" aria-label="Switch branch" style="margin-top: 4px; max-width: 320px;">
+          <select id="git-branch-select" name="branch" class="mono" aria-label="Switch branch" style="margin-top: 4px; max-width: 200px;">
             ${g.branches.map((b) => branchOption(b, g.branch, g.elsewhere)).join("")}
           </select>
         </div>
@@ -3896,13 +4167,13 @@ pages.config = async (args = []) => {
             showConfigMutationDialog(
               `Customize ${name} Instructions`,
               `<label class="field"><span>Prompt Instructions (.md)</span>
-               <textarea name="content" style="min-height:220px; font-family:var(--font-mono); font-size:12px;" required>${esc(content || "")}</textarea></label>`,
+               <textarea name="content" style="min-height:220px; font-family:var(--mono); font-size:12px;" required>${esc(content || "")}</textarea></label>`,
               "Save Instructions",
               (values) => ({part: "role-prompts", body: {id, content: values.content}}),
               "Instructions saved"
             );
           } else if (configAction === "prompt-revert") {
-            if (confirm(`Revert ${name} instructions to system default?`)) {
+            if (await formDialog(`Reset the ${name} instructions?`, `<p>Your edits are replaced with the built-in instructions.</p>`, "Reset", { danger: true })) {
               await runConfigMutation(button, {part: "role-prompts", body: {id, revert: true}}, "Reverted to default");
             }
           }
@@ -3942,7 +4213,7 @@ pages.config = async (args = []) => {
           } else if (configAction === "machine-toggle") {
             await runConfigMutation(button, {part: "fleet", body: {op: "toggle", name}}, "Status updated");
           } else if (configAction === "machine-remove") {
-            if (confirm(`Remove machine '${name}' from fleet?`)) {
+            if (await formDialog(`Remove ${name}?`, `<p>Jobs stop running on this machine. Add it again any time.</p>`, "Remove machine", { danger: true })) {
               await runConfigMutation(button, {part: "fleet", body: {op: "remove", name}}, "Machine removed");
             }
           }
@@ -4288,33 +4559,29 @@ pages["new-project"] = async (_, query) => {
   };
 
   if (step === "describe") {
-    const qMap = new Map(data.questions.map((q) => [q.key, q]));
-    const projectKeys = data.questions.filter((q) => q.section === "project").map((q) => q.key);
-    const sections = [
-      { id: "project", title: "Project Setup", description: "The working name and target platforms.", keys: projectKeys },
-      ...(data.prd_sections || []).map((s) => ({ ...s, title: `PRD · ${s.title}` })),
-    ];
-    const renderedKeys = new Set(sections.flatMap((s) => s.keys));
-    const extraQuestions = data.questions.filter((q) => !renderedKeys.has(q.key));
-    const renderSection = (s) => {
-      const qs = s.keys.map((k) => qMap.get(k)).filter(Boolean);
-      if (!qs.length) return "";
-      return `<fieldset class="np-section-card stack">
-        <legend class="np-section-legend">${esc(s.title)}</legend>
-        ${s.description ? `<p class="np-section-desc">${esc(s.description)}</p>` : ""}
-        ${qs.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}
-      </fieldset>`;
-    };
-    const sectionsHtml = sections.map(renderSection).join("") + (extraQuestions.length ? extraQuestions.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("") : "");
+    // What's needed to start comes first; everything optional waits behind one fold (NN/g: progressive disclosure).
+    const needed = data.questions.filter((q) => q.required);
+    const optional = data.questions.filter((q) => !q.required);
+    const filledOptional = optional.some((q) => (draft.answers[q.key] || "").trim());
+    const sectionsHtml = `<fieldset class="np-section-card stack"><legend class="np-section-legend">The basics</legend>
+        ${needed.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}</fieldset>
+      ${optional.length ? `<details class="np-section-card np-more"${filledOptional ? " open" : ""}><summary class="np-section-legend">Add more detail (optional)</summary>
+        <div class="stack">${optional.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}</div></details>` : ""}`;
 
     return {
       title: "Start a new project", sub: npStepper("describe"),
       html: `${resume}<form class="card card-b stack np-form" id="np-describe">
-        <p class="muted">These questions directly shape your product requirements doc (PRD). Keep answers short; you and the AI can refine them anytime.</p>
+        <p class="muted">Short answers are fine. They become your product description, which you can change any time.</p>
         ${sectionsHtml}
         <div class="row"><span class="spacer"></span>${discard}<button class="btn primary big" type="submit">Next: where it lives</button></div></form>`,
       after: () => {
         wireIdeaChoice();
+        // "Not sure" and a platform contradict each other: picking one clears the other.
+        $("#np-describe").addEventListener("change", (e) => {
+          if (e.target.name !== "platform" || !e.target.checked) return;
+          const notSure = e.target.value.startsWith("Not sure");
+          e.currentTarget.querySelectorAll('input[name="platform"]').forEach((box) => { if (box !== e.target && box.value.startsWith("Not sure") !== notSure) box.checked = false; });
+        });
         $("#np-describe").addEventListener("submit", async (e) => {
           e.preventDefault();
           const picked = answersFrom(e.target);
@@ -4414,12 +4681,19 @@ function answersSlug(draft) {
 pages.activity = async () => {
   const running = state.runs.filter((r) => r.running);
   const finished = state.runs.filter((r) => !r.running);
+  // Runs from before Orchestrator last started are read back from their saved logs (owners only: logs are private).
+  const earlier = state.you?.role === "member" ? [] : ((await api("runs/history").catch(() => null))?.runs || []);
+  const earlierRow = (r) => `<a class="item" href="#/file?path=${encodeURIComponent(r.log)}">
+    <div class="main-col"><div class="title">${esc(r.title)}</div><div class="meta">${esc(ago(r.started))}</div></div><div class="side"><span class="muted">Log</span></div></a>`;
   return {
     title: "Activity",
-    sub: "Everything started from this page since the UI was opened",
+    sub: "Everything run from this app: builds, tests, plans and fixes.",
     html: `
-      ${running.length ? `<section class="card"><div class="card-h"><h2>Running</h2><span class="count">${running.length}</span></div><div class="list">${running.map(liveRunCard).join("")}</div></section>` : ""}
-      <section class="card"><div class="card-h"><h2>Finished</h2></div><div class="list">${finished.map(runItem).join("") || `<div class="empty">Nothing yet.</div>`}</div></section>`,
+      ${running.length ? `<section class="card mb-16"><div class="card-h"><h2>Running</h2><span class="count">${running.length}</span></div><div class="list">${running.map(liveRunCard).join("")}</div></section>` : ""}
+      ${finished.length || !earlier.length ? `<section class="card mb-16"><div class="card-h"><h2>Finished</h2><span class="count">${finished.length || ""}</span></div><div class="list">${finished.map(runItem).join("") || `<div class="empty">Nothing has run yet. Start one with New job, or run your tests from Tests.</div>`}</div></section>` : ""}
+      ${earlier.length ? `<section class="card"><div class="card-h"><h2>Earlier runs</h2><span class="count">${earlier.length}</span></div>
+        <div class="list" id="earlier-runs">${earlier.map((r, n) => n < 10 ? earlierRow(r) : earlierRow(r).replace("<a ", "<a hidden ")).join("")}</div>
+        ${earlier.length > 10 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="earlier-runs">Show all ${earlier.length}</button></div>` : ""}</section>` : ""}`,
   };
 };
 
@@ -4465,10 +4739,10 @@ pages.projects = async () => {
       ${p.active ? 'data-href="#/"' : `data-switch-project="${esc(p.root)}"`} aria-label="${p.active ? "Open" : "Switch to"} ${esc(p.name)}">
       <div class="project-card-header">
         <h4 class="project-card-title">${esc(p.name)}</h4>
-        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+        <div class="project-card-badges">
           ${p.active ? '<span class="pill-badge active-badge">Active</span>' : ""}
           ${renderSourceBadge(p)}
-          ${p.configured ? '<span class="pill-badge configured-badge">Orchestrated</span>' : ""}
+          ${p.configured ? "" : '<span class="pill-badge muted-badge" title="No .orchestrator/project.json yet">Not set up</span>'}
           ${p.needs_you_count ? `<span class="pill-badge needs-badge">${p.needs_you_count} waiting</span>` : ""}
         </div>
       </div>
@@ -4479,11 +4753,11 @@ pages.projects = async () => {
         <span class="sep">·</span>
         <span class="muted">${p.dirty_files ? `${p.dirty_files} uncommitted` : "clean"}</span>
         <span class="sep">·</span>
-        <span class="muted">${p.jobs_count} job(s)</span>
+        <span class="muted">${plural(p.jobs_count, "job")}</span>
       </div>
       <div class="project-card-actions">
         ${p.active ? `
-          <a class="btn small primary" href="#/">Open Dashboard</a>
+          <a class="btn small" href="#/">Open</a>
         ` : `
           ${state.you?.role !== "member" ? `<button class="btn small ghost" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>` : ""}
         `}
@@ -4502,12 +4776,12 @@ pages.projects = async () => {
     html: `
       <div class="projects-container">
         ${unfinished ? `<div class="banner attention mb-16"><p><strong>Unfinished new project${unfinished.answers?.name ? `: ${esc(unfinished.answers.name)}` : ""}.</strong>${unfinished.waiting_on_github ? " Waiting on GitHub." : ""}</p><a class="btn small primary" href="#/new-project">Continue</a></div>` : ""}
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 10px;">
-          <h2 style="font-size: 1.15rem; margin: 0;">Tracked Projects (${pList.length})</h2>
+        <div class="projects-head">
+          <h2>Your projects</h2>
           <div class="filters projects-filter">
             <button type="button" class="btn small on" data-project-filter="all">All (${pList.length})</button>
-            <button type="button" class="btn small" data-project-filter="github"><svg class="icon badge-icon" style="width:12px;height:12px;margin-right:3px;vertical-align:-1px;"><use href="#i-github"/></svg>GitHub (${githubCount})</button>
-            <button type="button" class="btn small" data-project-filter="local"><svg class="icon badge-icon" style="width:12px;height:12px;margin-right:3px;vertical-align:-1px;"><use href="#i-folder"/></svg>Local (${localCount})</button>
+            <button type="button" class="btn small" data-project-filter="github"><svg class="icon badge-icon"><use href="#i-github"/></svg>GitHub (${githubCount})</button>
+            <button type="button" class="btn small" data-project-filter="local"><svg class="icon badge-icon"><use href="#i-folder"/></svg>Local (${localCount})</button>
           </div>
         </div>
         <div class="projects-grid" id="tracked-projects-grid">
@@ -4731,7 +5005,7 @@ function resolveRoute() {
   }
   if (parts[0] === "connect" || parts[0] === "computers") return { page: parts[0], args: [], nav: null, query };
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "projects", query };
-  if (parts[0] === "product") return { page: "product", args: [], nav: "home", query };
+  if (parts[0] === "product") return { page: "product", args: [], nav: "product", query };
   if (parts[0] === "docs") return { page: "docs", args: parts.slice(1), nav: "docs", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
@@ -4749,6 +5023,7 @@ function apply(result) {
 
 async function route() {
   if (signingIn) return; // the loading screen stays until sign-in finishes
+  navigationDrawer.close();
   // Anything tied to the previous page goes: terminals, streams, and dialogs,
   // so an action can never run against a page you've left.
   cleanup.forEach((fn) => { try { fn(); } catch {} });
@@ -4766,10 +5041,12 @@ async function route() {
     return openAccount({ list: r.page === "computers" });
   }
   current = { page: r.page, args: r.args, query: r.query, rendered: "" };
-  document.querySelectorAll(".nav [data-route]").forEach((item) => item.classList.toggle("active", item.dataset.route === r.nav));
+  document.querySelectorAll(".nav [data-route], .tabbar [data-route]").forEach((item) => {
+    const active = item.dataset.route === r.nav;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");
+  });
   renderSetupFab();
-  const floatingBtn = $("#floating-new-btn");
-  if (floatingBtn) floatingBtn.hidden = (r.page === "new");
   try {
     if (!state.project && !["setup", "new-project"].includes(r.page)) {
       await refreshState();
@@ -4789,8 +5066,12 @@ async function route() {
     }
   } catch (e) {
     if (e.status === 401) return showLocked(e.message);
-    setHeader({ title: "Something went wrong" });
-    view.innerHTML = `<div class="notice bad">${esc(e.message)}</div>`;
+    // Say what happened and offer a way on, never a dead end.
+    const missing = e.status === 404;
+    setHeader({ title: missing ? "Couldn't find that" : "This page didn't load" });
+    view.innerHTML = `<div class="notice bad"><p>${esc(Errors.explain(e.message))}</p>
+      <div class="row mt-8"><a class="btn small" href="#/">Go to Home</a>${missing ? "" : `<button type="button" class="btn small" data-retry-route>Try again</button>`}</div></div>`;
+    view.querySelector("[data-retry-route]")?.addEventListener("click", () => route());
   }
 }
 
@@ -4822,11 +5103,13 @@ if (connBtn) {
 }
 $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScroll: false }); });
 
+const navigationDrawer = NavigationDrawer.mount({document, window});
+
 // ---------------------------------------------------------------- command palette
 const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Test cases", "#/test-cases", "Manage test cases library, coverage and definitions"],
-  ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"],
+  ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
 const palette = { open: false, entries: [], shown: [], active: 0, opener: null };
@@ -4843,6 +5126,7 @@ function paletteBase() {
 
 async function openPalette() {
   if (palette.open) return;
+  navigationDrawer.close();
   palette.open = true;
   palette.opener = document.activeElement;
   palette.entries = paletteBase();
@@ -4907,30 +5191,6 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "Tab") { e.preventDefault(); } // focus stays in the search box while it is open
 });
 window.addEventListener("hashchange", closePalette);
-
-// Phone layout: the bottom bar holds the everyday pages; everything else lives behind "More".
-const moreBtn = $("#nav-more"), moreSheet = $("#more-sheet");
-const MORE_LINKS = [["Help", "#/help"], ["Device logs", "#/devlogs"], ["Tests", "#/tests"], ["Test cases", "#/test-cases"], ["Git", "#/git"], ["Delivery", "#/delivery"], ["Measure", "#/measure"], ["Check-up", "#/checkup"], ["Docs", "#/docs"], ["Connections", "#/connections"], ["Configuration", "#/config"]];
-function closeMore() { if (moreSheet.hidden) return; moreSheet.hidden = true; moreBtn.setAttribute("aria-expanded", "false"); }
-moreBtn?.addEventListener("click", () => {
-  if (!moreSheet.hidden) return closeMore();
-  moreSheet.innerHTML = `<div class="more-sheet-h"><strong>More</strong><button type="button" class="btn small ghost" data-more-close aria-label="Close">✕</button></div>
-    <nav aria-label="More pages">${MORE_LINKS.filter(([, href]) => !(href === "#/devlogs" && state.project?.mobile_app === false)).map(([label, href]) => `<a href="${href}">${esc(label)}</a>`).join("")}</nav>
-    <div class="more-sheet-actions"><button type="button" class="btn" data-more-search>Search</button><a class="btn" href="#/new">New job</a>
-      ${Notifications.supported() ? `<button type="button" class="btn" data-more-notify>${Notifications.enabled() ? "Turn off alerts" : "Notify me when done"}</button>` : ""}
-      <button type="button" class="btn" data-more-lock>Lock session</button></div>`;
-  moreSheet.hidden = false;
-  moreBtn.setAttribute("aria-expanded", "true");
-  moreSheet.querySelector("a")?.focus();
-});
-moreSheet?.addEventListener("click", (e) => {
-  if (e.target.closest("a, [data-more-close]")) closeMore();
-  if (e.target.closest("[data-more-search]")) { closeMore(); openPalette(); }
-  if (e.target.closest("[data-more-notify]")) { $("#notify-btn").click(); closeMore(); }
-  if (e.target.closest("[data-more-lock]")) { closeMore(); $("#lock-btn").click(); }
-});
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMore(); });
-window.addEventListener("hashchange", closeMore);
 
 // On the hosted app, alerts also come as push through your account, so they arrive with the app closed.
 const PUSH_KEY = "orchestrator_push_token";

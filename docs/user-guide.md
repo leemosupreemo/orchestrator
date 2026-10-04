@@ -405,6 +405,48 @@ Visual checks require an app bundle and bundle identifier. Configure:
 
 If `visual_app_path` is omitted, the visual check flow searches the configured derived data path for a built `.app`.
 
+## UX And Design Review
+
+A checklist review of your product's screens, in two parts: **UX** (how it works: status, wording, one primary action,
+progressive disclosure, navigation, empty states, errors, forms) and **Design** (how it looks: hierarchy, tokens,
+spacing, alignment, sizes, overlap, responsiveness, contrast, dark mode, focus). The checklist is
+`orchestrator/prompts/ux_reviewer.md`; your own UI conventions file, if you have one, takes precedence over it.
+
+- **Product pass.** Web UI > UX review > Run a pass, or `orchestrator script ux_review_run.py pass`. It captures every
+  configured screen, runs a UX pass and a design pass (two model calls), and writes one report with findings ranked by
+  severity, the checklist, and the screenshots, under `.orchestrator/output/ux-pass/<when>/`. "Create a job to fix"
+  turns the findings into a job.
+- **Change check.** After the code review, every job whose diff touches interface files (HTML, CSS, JSX/TSX, Vue,
+  Svelte, SwiftUI views, storyboards, scripts in UI folders, or anything matching `ui_review.paths`) gets the same
+  checklist on just what it changed. The job page shows a "UX and design check" card, and the hero warns before you
+  merge when something major was found. It is a prompt to look, never a gate.
+
+Screens come from `ui_review` in `.orchestrator/project.json` (or Web UI > Configuration > Screens to review):
+
+```json
+"ui_review": {
+  "url": "http://localhost:3000",
+  "routes": ["/", "/settings"],
+  "widths": [390, 1440],
+  "dark_mode": true,
+  "start_command": "npm run dev",
+  "simulator": false,
+  "review_changes": true,
+  "conventions": "docs/ui-conventions.md",
+  "paths": ["lib/theme/**"]
+}
+```
+
+Web screens are captured with a headless Chrome, Chromium or Edge (set `ORCHESTRATOR_BROWSER` to choose one) using
+device emulation, so 390 px is a real phone viewport, and dark mode through `prefers-color-scheme`. `$VARIABLES` in the
+URL are read from the environment, so a sign-in token needn't be written into the file. `start_command` runs only if
+the URL isn't answering, and is stopped afterwards. `simulator: true` adds the iOS simulator check's screenshots.
+Without screens, the review works from the code and says what it couldn't judge. Screens are first-load views: no
+scrolling, signing in or interaction.
+
+Models see the screenshots as attachments (Codex, opencode) or through their file tools (Claude, Gemini, agy); a model
+that can't open images says so in the report's limits.
+
 ## Firebase Delivery
 
 Firebase delivery is opt-in:

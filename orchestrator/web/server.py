@@ -56,12 +56,14 @@ import urllib.request
 
 from orchestrator import account
 from orchestrator import audit
+from orchestrator import connection_log
 from orchestrator import integrations
 from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import features as feature_store
 from orchestrator import feature_map
 from orchestrator import plan_run
+from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
 from orchestrator import task_revert
 from orchestrator import preflight
@@ -729,7 +731,7 @@ def project_facts(root: Path) -> dict[str, Any]:
         "tag": live["tag"] if live else None, "unreleased": live["unreleased"] if live else None,
         "jobs_total": len(jobs) + len(archived_feature_jobs(root)), "jobs_open": sum(1 for j in jobs if j["state"]["group"] != "done"),
         "jobs_unassigned": sum(1 for j in jobs if not j.get("feature") and j["state"]["group"] != "done"),
-        "features": len(features), "suites": len(test_index(root)["suites"]), "cases_total": len(cases), "cases_gap": gaps,
+        "features": len(features), "suites": len(set(test_index(root)["suites"].values())), "cases_total": len(cases), "cases_gap": gaps,
         "kpis_total": len(kpis), "kpis_measured": sum(1 for k in kpis if k.get("measurements")),
         "features_needing_kpis": sum(1 for f in features if f["id"] in with_jobs and not f.get("kpis")),
         "ci": workflows.is_dir() and any(workflows.glob("*.y*ml")) or (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists(),
@@ -780,6 +782,45 @@ def resolve_job_path(root: Path, job_id: str) -> Path:
     if not path.is_file():
         raise UIError("Job not found", HTTPStatus.NOT_FOUND)
     return path
+
+
+RUN_LOG = re.compile(r"(\d{8}-\d{6})-([0-9a-f]{6})-([a-z0-9_]+)\.log")
+
+
+def run_history(root: Path, limit: int = 50) -> list[dict[str, Any]]:
+    """Runs started from the web app, read back from their saved transcripts, so the list outlives a restart."""
+    folder = runtime_dir(root) / "logs" / "ui"
+    runs = []
+    for path in folder.glob("*.log") if folder.is_dir() else []:
+        match = RUN_LOG.fullmatch(path.name)
+        if not match:
+            continue
+        stamp, token, action = match.groups()
+        runs.append({"id": f"{stamp}-{token}", "action": action,
+                     "title": ACTIONS[action].title if action in ACTIONS else action.replace("_", " ").capitalize(),
+                     "started": datetime.strptime(stamp, "%Y%m%d-%H%M%S").timestamp(),
+                     "log": f"logs/ui/{path.name}", "size": path.stat().st_size})
+    return sorted(runs, key=lambda r: r["started"], reverse=True)[:limit]
+
+
+def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]:
+    """Put jobs away without touching their branch or files: the job file moves to the archive and remembers its
+    status, so Configuration > Archived jobs can restore it exactly. Running jobs are left alone."""
+    archived = []
+    folder = jobs_dir(root) / "archive"
+    for job_id in job_ids:
+        if job_id in running:
+            continue
+        job_path = resolve_job_path(root, job_id)
+        job = read_json_file(job_path)
+        job["restore_status"] = job.get("status")
+        job["status"] = "archived"
+        job["completed_at"] = datetime.now().isoformat()
+        folder.mkdir(parents=True, exist_ok=True)
+        write_json_file(job_path, job)
+        shutil.move(str(job_path), str(folder / job_path.name))
+        archived.append(job_id)
+    return archived
 
 
 def delete_job(root: Path, job_id: str, revert: bool = False) -> None:
@@ -953,6 +994,88 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
+def job_ux_review(root: Path, job_id: str, job: dict[str, Any]) -> dict[str, Any] | None:
+    """The job's UX and design check: the summary the worker recorded plus the full result, if there is one."""
+    record = job.get("ux_review")
+    if not record:
+        return None
+    result = read_json_file(runtime_dir(root) / "output" / job_id / "ux-review" / "result.json")
+    if not result:
+        return record
+    clean = ux_review.parse_result(json.dumps(result))  # the same shape, however the file was written
+    return {**record, **{k: clean[k] for k in ("checklist", "findings", "limits")}, "screen_list": result.get("screens") or []}
+
+
+UX_PASS_RE = re.compile(r"^\d{8}-\d{6}$")
+
+
+def ux_passes(root: Path) -> list[dict[str, Any]]:
+    """Product UX and design passes, newest first, each with its counts."""
+    folder = runtime_dir(root) / "output" / "ux-pass"
+    out = []
+    for child in sorted(folder.iterdir() if folder.is_dir() else [], reverse=True):
+        result = read_json_file(child / "result.json") if UX_PASS_RE.match(child.name) else {}
+        if result:
+            out.append({"id": child.name, "at": result.get("at"), "summary": result.get("summary", ""),
+                        "counts": ux_review.counts(ux_review.parse_result(json.dumps(result)))})
+    return out
+
+
+def ux_pass_detail(root: Path, pass_id: str) -> dict[str, Any]:
+    if not UX_PASS_RE.match(pass_id or ""):
+        raise UIError("Unknown pass", HTTPStatus.NOT_FOUND)
+    result = read_json_file(runtime_dir(root) / "output" / "ux-pass" / pass_id / "result.json")
+    if not result:
+        raise UIError("Unknown pass", HTTPStatus.NOT_FOUND)
+    clean = ux_review.parse_result(json.dumps(result))
+    return {"id": pass_id, **result, **{k: clean[k] for k in ("checklist", "findings", "limits", "summary")},
+            "counts": ux_review.counts(clean), "fix_text": ux_review.fix_job_text(clean["findings"])}
+
+
+def ux_screen(root: Path, kind: str, ident: str, name: str) -> Path | None:
+    """A screenshot from a pass (`pass/<id>`) or a job's check (`job/<job id>`), or None. Every part is validated."""
+    if not VISUAL_RUN_RE.match(ident) or ident.startswith(".") or not VISUAL_RUN_RE.match(name) or not name.endswith(".png"):
+        return None
+    out = runtime_dir(root) / "output"
+    folder = {"pass": out / "ux-pass" / ident / "screens", "job": out / ident / "ux-review" / "screens"}.get(kind)
+    if not folder:
+        return None
+    candidate = (folder / name).resolve()
+    return candidate if candidate.parent == folder.resolve() and candidate.is_file() else None
+
+
+def ui_review_settings(root: Path) -> dict[str, Any]:
+    raw = read_json_file(runtime_dir(root) / "project.json").get("ui_review") or {}
+    try:
+        cfg, error = ux_review.settings({"ui_review": raw}), ""
+    except ux_review.ConfigError as exc:
+        cfg, error = None, str(exc)
+    return {"saved": raw, "settings": cfg, "error": error, "browser": bool(ux_review.find_browser())}
+
+
+def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Screens to review, from the Configuration page, into project.json (the only key this writes)."""
+    lines = lambda key: [x.strip() for x in str(body.get(key) or "").splitlines() if x.strip()]
+    try:
+        widths = [int(w) for w in str(body.get("widths") or "").replace(",", " ").split()] or list(ux_review.DEFAULT_WIDTHS)
+    except ValueError:
+        raise UIError("Widths are numbers in pixels, like 390 1440.")
+    raw = {"url": _text(body, "url", limit=500), "start_command": _text(body, "start_command", limit=500),
+           "routes": lines("routes") or ["/"], "widths": widths, "dark_mode": bool(body.get("dark_mode")),
+           "simulator": bool(body.get("simulator")), "review_changes": bool(body.get("review_changes")),
+           "conventions": _text(body, "conventions", limit=300)}
+    raw = {k: v for k, v in raw.items() if v not in ("", None)}
+    try:
+        ux_review.settings({"ui_review": raw})
+    except ux_review.ConfigError as exc:
+        raise UIError(str(exc))
+    path = runtime_dir(root) / "project.json"
+    project = read_json_file(path)
+    project["ui_review"] = raw
+    write_json_file(path, project)
+    return ui_review_settings(root)
+
+
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
@@ -960,7 +1083,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     outputs = []
     if out_dir.is_dir():
         for f in sorted(out_dir.rglob("*"), key=lambda p: p.stat().st_mtime, reverse=True)[:60]:
-            if f.is_file():
+            if f.is_file() and "ux-review" not in f.relative_to(out_dir).parts:  # shown in its own card
                 outputs.append({"path": str(f.relative_to(runtime_dir(root))), "size": f.stat().st_size,
                                 "mtime": f.stat().st_mtime})
 
@@ -1001,6 +1124,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "links": github_links(root, job),
         "test_summary": test_summary,
         "scope": job_scope(root, job),
+        "ux_review": job_ux_review(root, job_id, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
@@ -1080,8 +1204,10 @@ def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         summary_line = git(root, "diff", "--shortstat", f"{base}...{branch}", "--")
         changed_files = [f for f in git(root, "diff", "--name-only", f"{base}...{branch}", "--").splitlines() if f.strip()]
 
-    local_summary = git(root, "diff", "--shortstat", "HEAD", "--")
-    local_files = [f for f in git(root, "diff", "--name-only", "HEAD", "--").splitlines() if f.strip()]
+    # Uncommitted edits belong to this job only while its branch is checked out; otherwise they're someone else's work.
+    on_job_branch = bool(branch) and git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    local_summary = git(root, "diff", "--shortstat", "HEAD", "--") if on_job_branch else ""
+    local_files = [f for f in git(root, "diff", "--name-only", "HEAD", "--").splitlines() if f.strip()] if on_job_branch else []
 
     # Orchestrator's own state (jobs, receipts, config) isn't part of the work being reviewed.
     all_impacted = sorted(f for f in set(changed_files + local_files + [str(f) for f in files]) if not f.startswith(".orchestrator/"))
@@ -2106,10 +2232,10 @@ def visual_check_image(root: Path, run_id: str, name: str) -> Path | None:
 
 def get_role_prompts(root: Path) -> list[dict[str, Any]]:
     roles = [
-        {"id": "architect", "name": "Senior Architect", "file": "agent_lead.md", "desc": "Reviews proposals, sets architecture standards & acceptance criteria"},
-        {"id": "planner", "name": "Planner Agent", "file": "planner_feature.md", "desc": "Breaks down requirements, investigates codebase, designs task plans"},
-        {"id": "builder", "name": "Builder Agent", "file": "builder_feature_task.md", "desc": "Implements code changes, tests, and resolves compilation errors"},
-        {"id": "reviewer", "name": "Reviewer Agent", "file": "reviewer.md", "desc": "Evaluates diffs, checks test coverage and regression risks"},
+        {"id": "architect", "name": "Architect", "file": "agent_lead.md", "desc": "Reviews proposals, sets architecture standards & acceptance criteria"},
+        {"id": "planner", "name": "Planner", "file": "planner_feature.md", "desc": "Breaks down requirements, investigates codebase, designs task plans"},
+        {"id": "builder", "name": "Builder", "file": "builder_feature_task.md", "desc": "Implements code changes, tests, and resolves compilation errors"},
+        {"id": "reviewer", "name": "Reviewer", "file": "reviewer.md", "desc": "Evaluates diffs, checks test coverage and regression risks"},
     ]
     prompts_dir = runtime_dir(root) / "prompts"
     results = []
@@ -2717,6 +2843,9 @@ ACTIONS: dict[str, Action] = {
     "fleet_llm_check": Action("Fleet LLM latency & quota check", lambda p, r: orchestrator_argv("script", "fleet_llm_check.py")),
     "update_local": Action("Update Orchestrator (local)", lambda p, r: orchestrator_argv("update")),
     "update_fleet": Action("Update Orchestrator (fleet-wide)", lambda p, r: orchestrator_argv("update", "--fleet")),
+    "ux_pass": Action("UX and design pass", lambda p, r: orchestrator_argv("script", "ux_review_run.py", "pass")),
+    "ux_review_job": Action("UX and design check", lambda p, r: orchestrator_argv("script", "ux_review_run.py", "job", _job_path(p, r)),
+                            fields=["job"]),
     "scaffold_canary": Action("Scaffold canary test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "scaffold-canary")),
 }
 
@@ -2838,6 +2967,10 @@ def get_or_create_ui_token(supplied: str | None = None) -> str:
 
 class UIServer(ThreadingHTTPServer):
     daemon_threads = True
+    # A page load opens a burst of connections (index, ~16 scripts, styles, the first API calls). The socketserver
+    # default backlog of 5 overflowed on first load and the extra connections were reset, so a script never loaded
+    # and the app stayed blank until a reload.
+    request_queue_size = 128
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], root: Path | None, token: str | None = None,
@@ -2860,6 +2993,8 @@ class UIServer(ThreadingHTTPServer):
         self.allowed_origins = set(HOSTED_ORIGINS) | {
             o.strip().rstrip("/") for o in os.environ.get("ORCHESTRATOR_ALLOWED_ORIGINS", "").split(",") if o.strip()}
         self.audit = audit.AuditLog(user_state_dir() / "audit.jsonl")
+        self.requests_log = connection_log.requests_log()
+        self.client_log = connection_log.client_log()
         self._email_sources: tuple[float, Path, dict[str, str]] | None = None
         self._used_tickets: dict[str, float] = {}
         self._ticket_lock = threading.Lock()
@@ -2874,7 +3009,7 @@ class UIServer(ThreadingHTTPServer):
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
-            for name in ("token", "sign_ins", "audit", "gate", "sessions", "tasks", "_used_tickets",
+            for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
                          "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel"):
                 setattr(self, name, getattr(shared, name))
 
@@ -3112,6 +3247,18 @@ class UIHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:  # keep the terminal quiet
         return
 
+    def log_request(self, code: Any = "-", size: Any = "-") -> None:
+        # Every API answer goes to requests.jsonl (see connection_log), so a page that says it lost the connection can be
+        # checked against what the server actually sent. The path only: the query can carry a token.
+        path = urlparse(self.path).path
+        if not path.startswith("/api/"):
+            return
+        started = getattr(self, "_started", None)
+        self.server.requests_log.record(
+            "request", (getattr(self, "_principal", None) or {}).get("email") or "", method=self.command, path=path,
+            status=int(code) if isinstance(code, int) else code,
+            ms=round((time.monotonic() - started) * 1000) if started else None, ip=self._client_ip())
+
     # -- plumbing
 
     def _send(self, status: int, body: bytes, content_type: str, extra: dict[str, str] | None = None) -> None:
@@ -3236,6 +3383,7 @@ class UIHandler(BaseHTTPRequestHandler):
     # -- routing
 
     def do_OPTIONS(self) -> None:
+        self._started = time.monotonic()
         origin = self.headers.get("Origin", "")
         if not origin or not self._origin_allowed(origin):
             self.send_response(HTTPStatus.FORBIDDEN)
@@ -3264,6 +3412,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        self._started = time.monotonic()
         self._body_read = False
         self._principal: dict[str, Any] | None = None  # set per request: a kept-alive connection reuses this handler
         try:
@@ -3530,8 +3679,9 @@ class UIHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.CONFLICT, str(exc))
         except UIError as exc:
             self._error(exc.status, str(exc))
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            self.server.requests_log.record("dropped", "", method=method, path=url.path, error=type(exc).__name__,
+                                            ms=round((time.monotonic() - self._started) * 1000), ip=self._client_ip())
         except Exception as exc:  # surface, don't crash the handler thread
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
@@ -3590,7 +3740,13 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         root = self.server.root
 
-        if method == "GET" and parts == ["state"]:
+        if method == "POST" and parts == ["client-log"]:
+            # What the page saw go wrong while it couldn't reach this computer, sent once it can (see connection_log).
+            body = self._body()
+            kept = connection_log.record_client_events(self.server.client_log, body.get("events"),
+                                                       self._principal.get("email") or "access token", self._client_ip())
+            self._json({"ok": True, "kept": kept})
+        elif method == "GET" and parts == ["state"]:
             visible_runs = self._sessions_view()
             self._json({"project": project_state(root), "runs": visible_runs,
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
@@ -3961,6 +4117,11 @@ class UIHandler(BaseHTTPRequestHandler):
             job["updated_at"] = datetime.now().isoformat()
             write_json_file(job_path, job)
             self._json({"ok": True, "commit": commit, "completed": job.get("completed_task_indices", [])})
+        elif method == "POST" and parts == ["jobs", "archive"]:
+            ids = self._body().get("ids")
+            if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids) or len(ids) > 500:
+                raise UIError("Choose the jobs to archive")
+            self._json({"archived": archive_jobs(root, ids, set(self.server.sessions.running_job_ids()))})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
@@ -4168,6 +4329,19 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, data, "application/zip", {
                 "Content-Disposition": f'attachment; filename="{job_id}-export.zip"'
             })
+        elif method == "GET" and parts == ["ux-pass"]:
+            self._json({"passes": ux_passes(root), **ui_review_settings(root)})
+        elif method == "GET" and len(parts) == 2 and parts[0] == "ux-pass":
+            self._json(ux_pass_detail(root, parts[1]))
+        elif method == "GET" and len(parts) == 4 and parts[0] == "ux-screens":
+            target = ux_screen(root, parts[1], parts[2], parts[3])
+            if not target:
+                self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
+                return
+            self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+        elif method == "POST" and parts == ["ui-review"]:
+            self._require_owner("change which screens are reviewed")
+            self._json(save_ui_review(root, self._body()))
         elif method == "GET" and parts == ["visual-checks"]:
             self._json({"checks": visual_checks_inventory(root)})
         elif method == "GET" and len(parts) >= 4 and parts[0] == "visual-checks" and parts[2] == "screenshots":
@@ -4180,6 +4354,10 @@ class UIHandler(BaseHTTPRequestHandler):
             self._switch_project(self._body())
         elif method == "GET" and parts == ["runs"]:
             self._json({"runs": self._sessions_view()})
+        elif method == "GET" and parts == ["runs", "history"]:
+            self._require_owner("read earlier run logs")
+            live = {r["id"] for r in self._sessions_view()}
+            self._json({"runs": [r for r in run_history(root) if r["id"] not in live]})
         elif method == "POST" and parts == ["runs"]:
             self._start_run(self._body(), root)
         elif len(parts) == 3 and parts[0] == "runs":
@@ -4406,15 +4584,27 @@ def get_tailscale_info() -> tuple[str | None, str | None]:
         return None, None
 
 
-def _drain(proc: subprocess.Popen) -> None:
-    """cloudflared logs to the pipe we gave it. Once nobody reads it the pipe fills (about 64 KB) and cloudflared blocks,
-    so a tunnel left running for hours would stop carrying traffic. Read and discard it."""
-    def pump() -> None:
+def _copy_to(sink: Any, line: str) -> None:
+    if sink is not None:
         try:
-            for _ in proc.stdout or ():
-                pass
+            sink.write(line)
         except (OSError, ValueError):
             pass
+
+
+def _drain(proc: subprocess.Popen) -> None:
+    """cloudflared logs to the pipe we gave it. Once nobody reads it the pipe fills (about 64 KB) and cloudflared blocks,
+    so a tunnel left running for hours would stop carrying traffic. Read it, keeping a copy in cloudflared.log."""
+    def pump() -> None:
+        sink = connection_log.open_tunnel_log()
+        try:
+            for line in proc.stdout or ():
+                _copy_to(sink, line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if sink is not None:
+                sink.close()
     threading.Thread(target=pump, daemon=True, name="cloudflared-output").start()
 
 
@@ -4444,11 +4634,13 @@ def start_tunnel(port: int, token: str | None = None, discovery_timeout: float =
         return None, None
     found: queue.Queue[str] = queue.Queue(maxsize=1)
     def discover_and_drain() -> None:
+        sink = connection_log.open_tunnel_log()
         try:
             while proc.stdout:
                 line = proc.stdout.readline()
                 if not line:
                     break
+                _copy_to(sink, line)
                 match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
                 if match:
                     try:
@@ -4457,6 +4649,9 @@ def start_tunnel(port: int, token: str | None = None, discovery_timeout: float =
                         pass
         except (OSError, ValueError, StopIteration):
             pass
+        finally:
+            if sink is not None:
+                sink.close()
     threading.Thread(target=discover_and_drain, daemon=True, name="cloudflared-output").start()
     deadline = time.monotonic() + discovery_timeout
     while time.monotonic() < deadline:

@@ -58,8 +58,11 @@ class E2EWorkflowTests(unittest.TestCase):
         # Mock some required files for new_job.py
         (self.root / "docs").mkdir(exist_ok=True)
         (self.root / "docs" / "build-test-commands.md").write_text("## iOS app build\n```bash\necho build\n```\n## iOS app tests\n```bash\necho test\n```")
+        self.patcher_stdin_tty = patch("sys.stdin.isatty", return_value=False)
+        self.patcher_stdin_tty.start()
 
     def tearDown(self) -> None:
+        self.patcher_stdin_tty.stop()
         sys.modules.clear()
         sys.modules.update(self.old_modules)
         os.environ.clear()
@@ -373,10 +376,11 @@ class E2EWorkflowTests(unittest.TestCase):
         }), "mock-model", "mock-session-id")
 
         from orchestrator.scripts import new_job
-        args = ["coverage", "--summary", "Expand Unit Test Coverage: AuthViewModel", "--branch-mode", "manual", "--no-dispatch"]
+        args = ["coverage", "--summary", "Expand Unit Test Coverage: AuthViewModel", "--branch-mode", "manual", "--no-dispatch", "--allowed-models", "gemini", "--allowed-machines", "local"]
         with patch("orchestrator.scripts.new_job.ROOT", self.root):
             with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
-                new_job.main(args)
+                with patch("sys.stdin", io.StringIO("")):
+                    new_job.main(args)
 
         # Check job file creation
         jobs_dir = self.root / ".orchestrator" / "jobs"

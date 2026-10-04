@@ -103,7 +103,7 @@ JSON_REMINDER = (
 )
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None) -> tuple[str, str, str]:
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model
@@ -132,7 +132,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id)
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images)
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
@@ -144,7 +144,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     # with only one model allowed (a free-only setup) there is no other to move on to.
                     print(f"⚠️  {current_model} produced invalid JSON. Asking it to restate the answer as plain JSON...")
                     try:
-                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id)
+                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images)
                         json.loads(extract_json_block(raw_output))
                     except json.JSONDecodeError as exc2:
                         print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
@@ -174,7 +174,27 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
 import selectors
 
-def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None) -> str:
+def image_args(cmd_base: str, images: list[Path] | None) -> str:
+    """Flags that let a model CLI see screenshots: attached where the CLI can attach images, otherwise their folder is
+    opened to its file tools (the prompt lists the paths). CLIs without either (Ollama) get nothing and the prompt
+    asks the model to say it couldn't look."""
+    if not images:
+        return ""
+    files = [shlex.quote(str(p)) for p in images]
+    folders = sorted({shlex.quote(str(Path(p).parent)) for p in images})
+    program = cmd_base.split(" ", 1)[0]
+    if program == "codex":
+        return "".join(f" -i {f}" for f in files)
+    if program == "opencode":
+        return "".join(f" -f {f}" for f in files)
+    if program in ("claude", "agy"):
+        return "".join(f" --add-dir {d}" for d in folders)
+    if " --prompt - " in cmd_base:  # the Gemini CLI
+        return "".join(f" --include-directories {d}" for d in folders)
+    return ""
+
+
+def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None) -> str:
     # Resolve actual model ID
     m_meta = get_model(model)
     model_id = m_meta.id if m_meta else model
@@ -242,7 +262,7 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
     else:
         cmd_base = f"{model_id}"
 
-    return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}'
+    return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}{image_args(cmd_base, images)}'
 
 
 def get_llm_env() -> dict[str, str]:
@@ -289,7 +309,7 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
-def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None) -> str:
+def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
         prompt = f"[SOURCE: {source}]\n\n{prompt}"
@@ -299,7 +319,7 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
         prompt_file = f.name
 
     actual_session_id = session_id or str(uuid.uuid4())
-    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id)
+    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id, images=images)
     env = get_llm_env()
 
     prompt_chars = len(prompt)

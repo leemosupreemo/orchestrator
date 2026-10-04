@@ -2456,6 +2456,11 @@ def _main(argv: list[str] | None = None) -> int:
     logs_parser.add_argument("logs_args", nargs=argparse.REMAINDER,
                              help="setup | sessions | pull [--latest|--session ID] | tail")
 
+    connection_parser = subparsers.add_parser(
+        "connection-log", help="Why the web app lost its connection: server requests, browser failures and tunnel output")
+    connection_parser.add_argument("-f", "--follow", action="store_true", help="Keep printing new lines as they arrive")
+    connection_parser.add_argument("-n", "--lines", type=int, default=40, help="Recent lines to show from each log (default 40)")
+
     passthrough = subparsers.add_parser("script")
     passthrough.add_argument("--project", help="Recent project name or project root path")
     passthrough.add_argument("script_name")
@@ -2546,6 +2551,9 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         return run_script("cloud_logs.py", args.logs_args or ["--help"])
+    if args.command == "connection-log":
+        from orchestrator import connection_log
+        return connection_log.show(lines=args.lines, follow=args.follow)
     if args.command == "script":
         if args.project and apply_project_env(args.project):
             return 1

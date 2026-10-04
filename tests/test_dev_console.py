@@ -29,8 +29,14 @@ class DevConsoleTests(unittest.TestCase):
         dev_console.ROOT = self.temp_root
         dev_console.CONFIG_DIR = self.temp_root / ".orchestrator" / "config"
         dev_console.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.patcher_stdin_tty = patch("sys.stdin.isatty", return_value=False)
+        self.patcher_stdout_tty = patch("sys.stdout.isatty", return_value=False)
+        self.patcher_stdin_tty.start()
+        self.patcher_stdout_tty.start()
 
     def tearDown(self) -> None:
+        self.patcher_stdin_tty.stop()
+        self.patcher_stdout_tty.stop()
         dev_console.ROOT = self.old_root
         import shutil
         if self.temp_root.exists():

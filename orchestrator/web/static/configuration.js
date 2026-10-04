@@ -1,48 +1,58 @@
 (function (root) {
   "use strict";
 
+  // Grouped by what a setting affects, the way GitHub splits a repository's settings from your own: this project,
+  // the AI, the computers and who reaches them, alerts, and troubleshooting. Entries with `listed: false` are already
+  // one tap away elsewhere (Projects, Docs, Check-up), so menus leave them out; their routes still work.
   const registry = [
     {
-      id: "models-instructions",
-      label: "Models & instructions",
+      id: "project",
+      label: "This project",
       entries: [
-        {id: "ai", label: "Add an AI", description: "Get an AI to do the work: free options first, with install and sign-in steps.", route: "#/config/ai", enabled: true, status: null},
-        {id: "models", label: "Models", description: "Choose the AI models available to jobs.", route: "#/config/models", enabled: true, status: null},
-        {id: "api-keys", label: "API Keys", description: "Connect AI providers without displaying saved secrets.", route: "#/config/api-keys", enabled: true, ownerOnly: true, status: null},
-        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about your project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
+        {id: "base-branch", label: "Base branch", description: "The branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
+        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about this project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
+        {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
+        {id: "xcode-cloud", label: "Xcode Cloud", description: "Cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
+        {id: "ui-review", label: "Screens to review", description: "Where your app runs and which pages the UX and design review captures.", route: "#/ux-review?setup=1", enabled: true, status: null},
+        {id: "archived-jobs", label: "Archived jobs", description: "Jobs you finished or put away. Restore any of them.", route: "#/config/archived-jobs", enabled: true, status: null},
+        {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null, listed: false},
       ],
     },
     {
-      id: "projects-machines",
-      label: "Projects & machines",
+      id: "ai",
+      label: "AI models",
       entries: [
-        {id: "base-branch", label: "Base Branch", description: "Choose the branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
-        {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
-        {id: "archived-jobs", label: "Archived Jobs", description: "Review and restore completed work.", route: "#/config/archived-jobs", enabled: true, status: null},
+        {id: "ai", label: "Add an AI", description: "Get an AI to do the work: free options first, with install and sign-in steps.", route: "#/config/ai", enabled: true, status: null},
+        {id: "models", label: "Models", description: "Which AI models jobs can use.", route: "#/config/models", enabled: true, status: null},
+        {id: "api-keys", label: "API keys", description: "Connect AI providers. Saved keys are never shown.", route: "#/config/api-keys", enabled: true, ownerOnly: true, status: null},
+      ],
+    },
+    {
+      id: "computers",
+      label: "Computers & access",
+      entries: [
         {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, ownerOnly: true, status: null},
         {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, status: null, hostedOnly: true},
         {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
+        {id: "updates", label: "Updates", description: "Update Orchestrator on this and your other machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
       ],
     },
     {
-      id: "delivery-notifications",
-      label: "Delivery & notifications",
+      id: "alerts",
+      label: "Alerts",
       entries: [
-        {id: "email", label: "Email Notifications", description: "Choose recipients and configure the sender.", route: "#/config/email", enabled: true, ownerOnly: true, status: null},
+        {id: "email", label: "Email alerts", description: "Who gets emails, and the account that sends them.", route: "#/config/email", enabled: true, ownerOnly: true, status: null},
         {id: "chat", label: "Slack & chat alerts", description: "Get pinged when something needs you, even with the tab closed.", route: "#/config/chat", enabled: true, ownerOnly: true, status: null},
-        {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
-        {id: "xcode-cloud", label: "Xcode Cloud", description: "Configure cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
       ],
     },
     {
-      id: "help-health",
-      label: "Help & health",
+      id: "troubleshooting",
+      label: "Troubleshooting",
       entries: [
-        {id: "documentation", label: "Documentation", description: "Read Orchestrator and project guides.", route: "#/config/documentation", enabled: true, status: null},
-        {id: "setup-wizard", label: "Setup Wizard", description: "Walk through initial project setup.", route: "#/config/setup-wizard", enabled: true, ownerOnly: true, status: null},
         {id: "audit", label: "Tool check", description: "Check the tools and machines jobs need are ready (prerequisite audit).", route: "#/config/audit", enabled: true, status: null},
         {id: "self-tests", label: "Orchestrator health check", description: "Run Orchestrator's own self-tests to confirm it works on this machine.", route: "#/config/self-tests", enabled: true, status: null},
-        {id: "updates", label: "Updates", description: "Update Orchestrator on local and remote machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
+        {id: "setup-wizard", label: "Setup wizard", description: "Walk through project, tools and delivery setup.", route: "#/config/setup-wizard", enabled: true, ownerOnly: true, status: null, listed: false},
+        {id: "documentation", label: "Documentation", description: "Read Orchestrator and project guides.", route: "#/config/documentation", enabled: true, status: null, listed: false},
       ],
     },
   ];
@@ -58,11 +68,12 @@
     return !entry.hostedOnly || Boolean(root.Account && root.Account.active());
   }
 
+  // What menus list. `resolve` and `find` also know the unlisted entries.
   function groups(role = "owner") {
     return registry.map((group) => ({
       id: group.id,
       label: group.label,
-      entries: group.entries.filter((entry) => shown(entry) && (role !== "member" || !entry.ownerOnly)).map(copyEntry),
+      entries: group.entries.filter((entry) => entry.listed !== false && shown(entry) && (role !== "member" || !entry.ownerOnly)).map(copyEntry),
     })).filter((group) => group.entries.length);
   }
 
@@ -192,7 +203,7 @@
       </div>`;
     }).join("");
     return {
-      title: "API Keys",
+      title: "API keys",
       sub: "Connect AI providers. Saved key values are never displayed.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
@@ -239,7 +250,7 @@
     const branches = Array.isArray(state.branches) ? state.branches : [];
     const options = branches.map((branch) => `<option value="${escapeHtml(branch)}"${branch === state.base_branch ? " selected" : ""}>${escapeHtml(branch)}</option>`).join("");
     return {
-      title: "Base Branch",
+      title: "Base branch",
       sub: "Choose the branch jobs use as their comparison point.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
@@ -269,7 +280,7 @@
         : `<button type="button" class="btn small" data-config-action="archive-restore" data-id="${escapeHtml(job.id)}">Restore</button>`}
     </div>`).join("");
     return {
-      title: "Archived Jobs",
+      title: "Archived jobs",
       sub: "Restore completed work to the active jobs list.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
@@ -296,7 +307,7 @@
       <button type="button" class="btn small danger" data-config-action="email-remove" data-email="${escapeHtml(recipient)}">Remove</button>
     </div>`).join("");
     return {
-      title: "Email Notifications",
+      title: "Email alerts",
       sub: "Choose who receives updates and how Orchestrator sends them.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
@@ -432,10 +443,10 @@
     const assignments = modelsData.assignments || {};
     const available = modelsData.available || [];
     const roles = [
-      {id: "architect", label: "Senior Architect", desc: "Oversees plan, architecture standards, and design"},
-      {id: "planner", label: "Planner Agent", desc: "Decomposes requirements and investigates codebase"},
-      {id: "builder", label: "Builder Agent", desc: "Implements code changes, refactors, and fixes"},
-      {id: "reviewer", label: "Reviewer Agent", desc: "Reviews diffs, analyzes tests and regression risks"}
+      {id: "architect", label: "Architect", desc: "Checks the plan and sets the standards it must meet"},
+      {id: "planner", label: "Planner", desc: "Turns a request into tasks after reading the code"},
+      {id: "builder", label: "Builder", desc: "Writes the code and the tests"},
+      {id: "reviewer", label: "Reviewer", desc: "Reads the changes and the test results, and looks for what could break"}
     ];
     const formRows = roles.map((role) => {
       const currentVal = assignments[role.id] || "claude-sonnet-4-6";
@@ -632,12 +643,12 @@
 
   function renderSetupWizard(state) {
     return {
-      title: "Setup Wizard",
+      title: "Setup wizard",
       sub: "Walk through project configuration and environment setup.",
       html: `<div class="configuration-page">
         <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
-          <div class="card-h"><h2>Interactive Setup Wizard</h2><button type="button" class="btn primary small" data-config-action="launch-wizard">Launch Wizard</button></div>
+          <div class="card-h"><h2>Setup wizard</h2><button type="button" class="btn primary small" data-config-action="launch-wizard">Start the wizard</button></div>
           <div class="card-b stack">
             <p>Walks step-by-step through Xcode project detection, scheme selection, test targets, API keys, and notification channels.</p>
           </div>
