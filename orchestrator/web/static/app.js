@@ -530,19 +530,7 @@ function addProjectsDialog(trackedProjects) {
 }
 
 const dialogs = {
-  async logs_setup() {
-    const v = await formDialog("Set up device logs", `
-      <p class="muted">Reads what the app logged on testers' phones from Sentry. Leave the Sentry details empty and they're found in your project.</p>
-      <label class="field"><span>Read-only Sentry token</span><input type="password" name="token" autocomplete="off" placeholder="sntryu_…">
-        <small class="hint-text">Scopes <code>org:read</code>, <code>project:read</code>, <code>event:read</code>. It's saved on this computer only, never shown again.</small></label>
-      <details class="advanced"><summary>Sentry details (optional)</summary><div class="stack">
-        <label class="field"><span>DSN</span><input type="text" name="dsn" spellcheck="false" placeholder="https://…@o123.ingest.us.sentry.io/456"></label>
-        <label class="field"><span>Organization</span><input type="text" name="org" spellcheck="false"></label>
-        <label class="field"><span>Project id</span><input type="text" name="project" spellcheck="false"></label>
-        <label class="field"><span>API address</span><input type="url" name="api_base" spellcheck="false" placeholder="https://us.sentry.io"></label>
-      </div></details>`, "Set up");
-    if (v) runAction("logs_setup", { token: v.token || "", dsn: v.dsn || "", org: v.org || "", project: v.project || "", api_base: v.api_base || "" }, { skipConfirm: true });
-  },
+
   async fix(params) {
     const values = await formDialog("Still broken?", `
       <label class="field"><span>What's wrong?</span>
@@ -947,6 +935,8 @@ async function refreshState() {
     const from = $(source), to = document.querySelector(`.tabbar [data-badge="${copy}"]`);
     if (from && to) { to.hidden = from.hidden; to.textContent = from.textContent; to.title = from.title; to.className = from.className; }
   }
+  const mobileTitle = $("#mobile-title"); // the phone header names the project you're in
+  if (mobileTitle) mobileTitle.textContent = state.project?.name || "";
   const pageTitle = $("#page-title")?.dataset.title;
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
 
@@ -993,7 +983,7 @@ function renderProjectSelect(select) {
 }
 
 document.addEventListener("change", async (e) => {
-  if (!e.target.matches("#project-select, .project-select-inline")) return;
+  if (!e.target.matches("#project-select")) return;
   const val = e.target.value;
   if (val === "__manage__") {
     location.hash = "#/projects";
@@ -1513,6 +1503,7 @@ async function lockSession() {
 // `titleHtml` replaces the plain title with markup (Home's project switcher); `title` stays the page's name for the
 // browser tab and anything else that asks what page this is (#page-title's data-title).
 function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
+  document.body.dataset.page = current.page || "";
   const back = $("#back-link");
   if (back) { back.hidden = !current.parent; if (current.parent) back.setAttribute("href", current.parent); }
   const heading = $("#page-title");
@@ -1844,10 +1835,7 @@ pages.home = async (_, query) => {
     : "";
 
   return {
-    title: p.name,
-    // The project's name is the switcher: one control to change project, labelled, above the labelled branch.
-    titleHtml: `<label class="title-switch"><span class="label">Project</span>
-      <div class="project-select-container"><select class="project-select-inline title-project-select" aria-label="Project"><option>${esc(p.name)}</option></select></div></label>`,
+    title: p.name, // switching projects lives in the menu's project picker and on Projects
     sub: statusLine(p),
     actions: `<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a>`,
     html: `
@@ -1889,7 +1877,6 @@ pages.home = async (_, query) => {
         ${elsewhereLine(waiting.elsewhere)}
       </section>`,
     after: () => {
-      renderProjectSelect($(".project-select-inline"));
     },
   };
 };
@@ -3524,7 +3511,7 @@ pages.devlogs = async () => {
         ${reason ? `<div class="notice bad">${esc(reason)}</div>` : ""}
         <p>${sessions.configured ? "Finish setup to read logs." : "Not set up for this project yet."} Setup finds the Sentry project in your repo,
         asks for a read-only token (scopes <code>org:read</code>, <code>project:read</code>, <code>event:read</code>), and checks it works.</p>
-        ${ConfigurationPages.canRunAction("logs_setup", state) ? `<div><button class="btn primary" ${act("logs_setup")}>Set up device logs</button></div>` : ""}
+        <div data-owner-only><a class="btn primary" href="#/connections?connect=sentry">Connect Sentry</a></div>
       </section>` };
   }
   const ok = !sessions.error;
@@ -3533,7 +3520,7 @@ pages.devlogs = async () => {
     actions: `<button class="btn primary" ${act("logs_pull")} ${ok ? "" : "disabled"}>Pull newest launch</button>
               <button class="btn" ${act("logs_tail")} ${ok ? "" : "disabled"}>Follow live</button>`,
     html: `
-      ${sessions.error ? `<div class="notice bad">${esc(sessions.error)}${ConfigurationPages.canRunAction("logs_setup", state) ? `<div class="row"><button class="btn small" ${act("logs_setup")}>Re-run setup</button></div>` : ""}</div>` : ""}
+      ${sessions.error ? `<div class="notice bad">${esc(sessions.error)}<div class="row" data-owner-only><a class="btn small" href="#/connections?connect=sentry">Reconnect Sentry</a></div></div>` : ""}
       <section class="card"><div class="card-h"><h2>App launches, last 24h</h2></div>
         <div class="list">${sessions.items.map((s) => `
           <div class="item">
@@ -4371,7 +4358,23 @@ const PROVIDER_HINT = {
   figma: "Paste a link to a file or frame (right-click a frame → Copy link)",
 };
 
-pages.connections = async () => {
+// Trello's own approval page, then back to the app with the token (trello-auth.html passes it along).
+function connectTrello(key) {
+  const back = new URL("trello-auth.html", location.href).href;
+  const q = new URLSearchParams({ key, name: "Orchestrator", scope: "read,write", expiration: "never", response_type: "token",
+    callback_method: "fragment", return_url: back });
+  location.href = `https://trello.com/1/authorize?${q}`;
+}
+
+function connectionStatus(p) {
+  if (!p.connected) return pill("", "Not connected");
+  if (p.rejected) return pill("failed", "Reconnect");
+  if (p.expiry?.expired) return pill("failed", "Expired");
+  if (p.expiry?.soon) return pill("attention", p.expiry.days_left === 0 ? "Expires today" : `Expires in ${plural(p.expiry.days_left, "day")}`);
+  return pill("done", "Connected");
+}
+
+pages.connections = async (_, query) => {
   let list;
   try { list = (await api("integrations")).integrations; } catch (err) {
     if (err.status !== 404) throw err;
@@ -4383,9 +4386,11 @@ pages.connections = async () => {
     html: `<div class="conn-grid">${list.map((p) => `
       <section class="card conn-card" data-conn="${esc(p.id)}">
         <div class="card-b stack">
-          <div class="row"><strong class="conn-name">${esc(p.name)}</strong>${p.connected ? pill("done", "Connected") : pill("", "Not connected")}</div>
+          <div class="row"><strong class="conn-name">${esc(p.name)}</strong>${connectionStatus(p)}</div>
           <div class="muted">${esc(p.blurb)}</div>
           ${p.connected && p.summary ? `<div class="mono conn-summary">${esc(p.summary)}</div>` : ""}
+          ${p.rejected ? `<div class="notice bad">${esc(p.name)} turned down the saved token. It may have expired or been revoked: reconnect to keep jobs linked.</div>` : ""}
+          ${p.connected && p.expiry && !p.rejected ? `<div class="muted conn-expiry">${p.expiry.expired ? "The token expired on" : "The token expires on"} ${esc(new Date(`${p.expiry.on}T12:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }))}.</div>` : ""}
           ${p.connected && p.can_write ? `<div class="conn-options stack" data-conn-options="${esc(p.id)}" data-owner-only>
             <div class="muted conn-options-h">Keep it updated</div>
             <label class="check"><input type="checkbox" data-opt="comment_pr" ${p.options.comment_pr ? "checked" : ""}><span>Comment when a pull request opens</span></label>
@@ -4394,7 +4399,9 @@ pages.connections = async () => {
             ${p.move_default ? `<input type="text" data-opt="target" value="${esc(p.options.target)}" placeholder="${esc(p.move_default)}" aria-label="Target" ${p.options.move_on_merge ? "" : "disabled"}>` : ""}
           </div>` : ""}
           <div class="row" data-owner-only>
-            <button class="btn small ${p.connected ? "" : "primary"}" data-conn-connect="${esc(p.id)}">${p.connected ? "Update" : "Connect"}</button>
+            ${p.authorize_key && !p.connected ? `<button class="btn small primary" data-trello-authorize="${esc(p.authorize_key)}">Connect with Trello</button>
+              <button type="button" class="linklike" data-conn-connect="${esc(p.id)}">Use your own key instead</button>`
+            : `<button class="btn small ${!p.connected || p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect" : p.rejected || p.expiry?.expired ? "Reconnect" : "Update"}</button>`}
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
         </div></section>`).join("")}</div>
@@ -4409,11 +4416,19 @@ pages.connections = async () => {
           try { await api(`integrations/${p.id}/disconnect`, { method: "POST", body: {} }); toast(`${p.name} disconnected`); route(); } catch (e) { toast(e.message, true); }
         } else if (connect) {
           const p = list.find((x) => x.id === connect.dataset.connConnect);
-          const v = await formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, p.fields.map((f) => `
+          const latest = p.token_max_days ? new Date(Date.now() + p.token_max_days * 86400000).toISOString().slice(0, 10) : "";
+          const v = await formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
+            ${p.token_url ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : ""}
+            ${Object.keys(p.suggest || {}).length ? `<p class="muted">Filled in from the Sentry setup found in this project. Check it, then add a token.</p>` : ""}
+            ${p.fields.map((f) => `
             <label class="field"><span>${esc(f.label)}</span>
               <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"
+                value="${esc(!f.secret && p.suggest?.[f.key] ? p.suggest[f.key] : "")}"
                 placeholder="${esc(p.connected && f.secret ? "saved: leave blank to keep" : f.placeholder)}">
-              <small class="hint-text">${esc(f.help)}</small></label>`).join(""), p.connected ? "Save" : "Connect");
+              <small class="hint-text">${esc(f.help)}</small></label>`).join("")}
+            ${p.token_max_days ? `<label class="field"><span>Token expires on</span><input type="date" name="expires" value="${esc(p.expiry?.on || latest)}" max="${latest}">
+              <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}`,
+            p.connected ? "Save" : "Connect");
           if (!v) return;
           const btn = connect; btn.disabled = true; btn.textContent = "Checking…";
           try { const r = await api(`integrations/${p.id}/connect`, { method: "POST", body: { values: v } }); toast(`${p.name} connected${r.who ? ` as ${r.who}` : ""}`); route(); }
@@ -4432,6 +4447,21 @@ pages.connections = async () => {
       };
       view.addEventListener("click", onClick);
       view.addEventListener("change", onChange);
+      const trelloStart = (ev) => { const b = ev.target.closest("[data-trello-authorize]"); if (b) connectTrello(b.dataset.trelloAuthorize); };
+      view.addEventListener("click", trelloStart);
+      cleanup.push(() => view.removeEventListener("click", trelloStart));
+      // Back from Trello's approval page with a token: save it like any connection.
+      let trelloToken = null;
+      try { trelloToken = sessionStorage.getItem("orchestrator_trello_token"); sessionStorage.removeItem("orchestrator_trello_token"); } catch { /* storage blocked */ }
+      const trello = list.find((x) => x.id === "trello");
+      if (trelloToken && trello?.authorize_key) {
+        api("integrations/trello/connect", { method: "POST", body: { values: { key: trello.authorize_key, token: trelloToken } } })
+          .then((r) => { toast(`Trello connected${r.who ? ` as ${r.who}` : ""}`); route(); })
+          .catch((e) => toast(e.message, true));
+      }
+      // Arriving to connect one app (Device logs → Connect Sentry): open its form straight away.
+      const wanted = query?.get("connect");
+      if (wanted) view.querySelector(`[data-conn-connect="${CSS.escape(wanted)}"]`)?.click();
       cleanup.push(() => { view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); });
     },
   };

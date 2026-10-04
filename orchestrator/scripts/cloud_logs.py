@@ -53,6 +53,7 @@ from typing import Any, Callable, Iterable
 
 from common import OUTPUT_DIR, ROOT, ORCHESTRATOR_RUNTIME_DIR, load_secrets, timestamp, write_json, write_text
 from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator.sentry_dsn import DSN_RE, DSN_SCAN_SKIP_DIRS, DSN_SCAN_SUFFIXES, TEST_PATH_RE, detect_dsn, parse_dsn  # noqa: F401
 
 CLOUD_LOGS_DIR = OUTPUT_DIR / "cloud_logs"
 SESSION_START_MARKER = "remote_log.session_start"
@@ -63,12 +64,6 @@ DEFAULT_MAX_ROWS = 5000
 LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"]
 LEVEL_ALIASES = {"warning": "warn", "critical": "fatal", "fault": "fatal", "notice": "info"}
 REF_PREFIX = "cloud:"
-
-DSN_RE = re.compile(r"https://[0-9a-f]{16,}@[A-Za-z0-9.\-]+(?::\d+)?/\d+")
-DSN_SCAN_SUFFIXES = {".swift", ".m", ".plist", ".xcconfig", ".json", ".js", ".ts", ".kt", ".java", ".py", ".dart", ".env"}
-# Hidden directories (.git, .swiftpm, .worktrees, ...) are skipped too.
-DSN_SCAN_SKIP_DIRS = {"DerivedData", "node_modules", "Pods", "build", "SPM"}
-
 
 class CloudLogsError(RuntimeError):
     pass
@@ -116,7 +111,7 @@ class RemoteLogsConfig:
     def token(self) -> str:
         load_secrets()
         # SENTRY_AUTH_TOKEN is often an upload-only token, so it is only a fallback.
-        token = os.environ.get(self.token_env) or os.environ.get("SENTRY_AUTH_TOKEN")
+        token = os.environ.get(self.token_env) or connected_sentry().get("token") or os.environ.get("SENTRY_AUTH_TOKEN")
         if not token:
             raise CloudLogsError(
                 f"No Sentry read token found in ${self.token_env}. Run: orchestrator logs setup"
@@ -127,55 +122,26 @@ class RemoteLogsConfig:
         return f"{self.api_base}/settings/account/api/auth-tokens/"
 
 
+def connected_sentry() -> dict[str, Any]:
+    """The Sentry account saved under Connections (address, org, project, token), or {}."""
+    try:
+        settings = json.loads((ORCHESTRATOR_RUNTIME_DIR / "config" / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    sentry = (settings.get("integrations") or {}).get("sentry")
+    return sentry if isinstance(sentry, dict) else {}
+
+
 def load_config() -> RemoteLogsConfig:
+    """Device logs' own settings, or else the Sentry account from Connections: one Sentry setup serves both."""
+    if PROJECT_CONFIG.remote_logs:
+        return RemoteLogsConfig.from_dict(PROJECT_CONFIG.remote_logs)
+    sentry = connected_sentry()
+    if sentry.get("org"):
+        host = (sentry.get("host") or "sentry.io").strip().rstrip("/")
+        return RemoteLogsConfig.from_dict({"provider": "sentry", "org": sentry["org"], "project": sentry.get("project"),
+                                           "api_base": host if host.startswith("https://") else f"https://{host}"})
     return RemoteLogsConfig.from_dict(PROJECT_CONFIG.remote_logs)
-
-
-def parse_dsn(dsn: str) -> dict[str, str | None]:
-    """Maps a Sentry DSN to API coordinates.
-
-    SaaS DSNs look like https://<key>@o<org_id>.ingest[.<region>].sentry.io/<project_id>;
-    the API for that org lives at https://[<region>.]sentry.io. Self-hosted DSNs
-    carry no org, so `org` comes back None and must be supplied.
-    """
-    parsed = urllib.parse.urlparse(dsn.strip())
-    host = parsed.hostname or ""
-    project = parsed.path.strip("/").split("/")[-1] or None
-    match = re.match(r"^o(\d+)\.ingest\.(?:([a-z0-9-]+)\.)?sentry\.io$", host)
-    if match:
-        org_id, region = match.groups()
-        api_host = f"{region}.sentry.io" if region else "sentry.io"
-        return {"api_base": f"https://{api_host}", "org": org_id, "project": project}
-    port = f":{parsed.port}" if parsed.port else ""
-    return {"api_base": f"{parsed.scheme}://{host}{port}", "org": None, "project": project}
-
-
-TEST_PATH_RE = re.compile(r"test|spec|fixture|mock|sample|example", re.IGNORECASE)
-
-
-def detect_dsn(root: Path) -> tuple[str, Path] | None:
-    """Finds the app's Sentry DSN. Test code often carries fake DSNs, so a hit
-    under a test/fixture/mock path is only used when nothing else matches."""
-    fallback: tuple[str, Path] | None = None
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames
-                             if d not in DSN_SCAN_SKIP_DIRS and not d.startswith(".") and not d.endswith(".xcassets"))
-        for name in sorted(filenames):
-            path = Path(dirpath) / name
-            if path.suffix not in DSN_SCAN_SUFFIXES:
-                continue
-            try:
-                if path.stat().st_size > 2_000_000:
-                    continue
-                match = DSN_RE.search(path.read_text(encoding="utf-8", errors="ignore"))
-            except OSError:
-                continue
-            if not match:
-                continue
-            if not TEST_PATH_RE.search(str(path.relative_to(root))):
-                return match.group(0), path
-            fallback = fallback or (match.group(0), path)
-    return fallback
 
 
 # --------------------------------------------------------------------------- API client

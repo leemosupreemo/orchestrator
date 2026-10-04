@@ -2819,8 +2819,36 @@ def saved_integrations(root: Path) -> dict[str, dict[str, str]]:
     return data if isinstance(data, dict) else {}
 
 
-def integration_error(exc: "integrations.IntegrationError") -> UIError:
+def integration_error(exc: "integrations.IntegrationError", root: Path | None = None, provider_id: str | None = None) -> UIError:
+    """A connected app's error, in words. A turned-down token also marks the connection, so Connections says Reconnect."""
+    pid = provider_id or getattr(exc, "provider", None)
+    if root is not None and pid in integrations.PROVIDERS and isinstance(exc, integrations.RejectedCredentials):
+        settings = read_settings(root)
+        settings.setdefault("integration_status", {})[pid] = {"rejected_at": datetime.now().isoformat(timespec="seconds")}
+        write_settings(root, settings)
+        name = integrations.PROVIDERS[pid].name
+        return UIError(f"{name} turned down the saved token; it may have expired. Reconnect {name} under Connections.",
+                       HTTPStatus.BAD_GATEWAY)
     return UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+
+
+_SENTRY_SUGGEST: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def sentry_suggestion(root: Path) -> dict[str, str]:
+    """Sentry's address, org and project from the DSN in the project's code, to fill in the connect form.
+    Cached for a few minutes: it walks the project's files."""
+    from orchestrator import sentry_dsn
+    key = str(root)
+    cached = _SENTRY_SUGGEST.get(key)
+    if cached and time.time() - cached[0] < 300:
+        return cached[1]
+    found = sentry_dsn.detect_dsn(root)
+    coords = sentry_dsn.parse_dsn(found[0]) if found else {}
+    value = {k: v for k, v in {"host": (coords.get("api_base") or "").replace("https://", ""), "org": coords.get("org") or "",
+                               "project": coords.get("project") or ""}.items() if v}
+    _SENTRY_SUGGEST[key] = (time.time(), value)
+    return value
 
 
 def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -2831,6 +2859,7 @@ def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) ->
         raise integration_error(exc)
     settings = read_settings(root)
     settings.setdefault("integrations", {})[provider_id] = creds
+    (settings.get("integration_status") or {}).pop(provider_id, None)  # a working token again
     write_settings(root, settings)
     return {"ok": True, "who": who}
 
@@ -2863,7 +2892,7 @@ def search_integration(root: Path, provider_id: str, query: str) -> list[dict[st
     try:
         return [i.as_dict() for i in integrations.provider_for(provider_id, saved[provider_id]).search(query[:200])]
     except integrations.IntegrationError as exc:
-        raise integration_error(exc)
+        raise integration_error(exc, root, provider_id)
 
 
 def _clean_links(raw: Any) -> list[dict[str, str]]:
@@ -2892,7 +2921,7 @@ def context_for_new_job(root: Path, links: list[dict[str, str]]) -> tuple[str, l
     try:
         contexts = integrations.build_context(links, saved_integrations(root))
     except integrations.IntegrationError as exc:
-        raise integration_error(exc)
+        raise integration_error(exc, root)
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     extra = []
     for ctx in contexts:
@@ -2908,7 +2937,7 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
     try:
         contexts = integrations.build_context(links, saved_integrations(root))
     except integrations.IntegrationError as exc:
-        raise integration_error(exc)
+        raise integration_error(exc, root)
     job = read_json_file(path)
     refs_dir = runtime_dir(root) / "output" / job_id / "references"
     refs_dir.mkdir(parents=True, exist_ok=True)
@@ -3693,7 +3722,7 @@ class UIHandler(BaseHTTPRequestHandler):
                     try:
                         contexts = integrations.build_context(picked, saved_integrations(root))
                     except integrations.IntegrationError as exc:
-                        raise integration_error(exc)
+                        raise integration_error(exc, root)
                     for ctx in contexts:
                         doc.add_reference(f"{PROVIDER_NAMES.get(ctx.item.provider, ctx.item.provider)}: {ctx.item.title}", ctx.item.url or ctx.item.ref)
                         img = _save_image(root, root / prd_doc.DESIGNS_DIR, ctx)
@@ -4447,7 +4476,11 @@ class UIHandler(BaseHTTPRequestHandler):
             body = self._body()
             self._json({"step": publish_known_project(str(body.get("root") or ""), str(body.get("visibility") or "private"))})
         elif method == "GET" and parts == ["integrations"]:
-            self._json({"integrations": integrations.public_catalog(saved_integrations(root), read_settings(root).get("integration_options"))})
+            settings = read_settings(root)
+            saved = saved_integrations(root)
+            self._json({"integrations": integrations.public_catalog(
+                saved, settings.get("integration_options"), status=settings.get("integration_status"), settings=settings,
+                suggest={} if "sentry" in saved else {"sentry": sentry_suggestion(root)})})
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "options":
             self._require_owner("change connected app settings")
             self._json({"options": save_integration_options(root, parts[1], self._body().get("options"))})
@@ -4602,7 +4635,7 @@ class UIHandler(BaseHTTPRequestHandler):
         return data
 
     def _device_sessions(self, root: Path) -> dict[str, Any]:
-        if not read_json_file(runtime_dir(root) / "project.json").get("remote_logs"):
+        if not read_json_file(runtime_dir(root) / "project.json").get("remote_logs") and not saved_integrations(root).get("sentry", {}).get("org"):
             return {"configured": False, "items": [], "error": None}
         try:
             result = subprocess.run(orchestrator_argv("logs", "sessions", "--json", "--limit", "15"),

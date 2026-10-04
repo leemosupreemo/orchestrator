@@ -116,7 +116,7 @@ class TheAppNeverOpensTerminalMenusTests(unittest.TestCase):
             self.assertNotIn(f'runAction("{tool}"', app, tool)
             self.assertNotIn(f'act("{tool}"', app, tool)
         self.assertIn('data-action="console"', (static / "index.html").read_text())  # the one labelled way in
-        self.assertIn("async logs_setup()", app)  # device logs are set up in a form, not terminal questions
+        self.assertIn('href="#/connections?connect=sentry">Connect Sentry</a>', app)  # device logs use the one Sentry connection
         self.assertIn("async function signInToGitHub()", app)
 
 

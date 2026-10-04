@@ -501,7 +501,7 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
 
     def test_project_select_change_navigates_to_home(self):
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        start = app_js.index('matches("#project-select, .project-select-inline")')
+        start = app_js.index('matches("#project-select")')
         end = app_js.index("showSigningIn", start)
         handler_code = app_js[start:end]
         self.assertIn('location.hash = "#/";', handler_code)
@@ -527,29 +527,28 @@ class FakeTunnelProcess:
 
 
 class ProjectTitleTests(unittest.TestCase):
-    def test_home_title_is_the_project_switcher_and_branch_is_labelled(self):
-        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        home = js[js.index("  return {\n    title: p.name,"):][:700]
-        self.assertIn('<span class="label">Project</span>', home)
-        self.assertIn('class="project-select-inline title-project-select"', home)  # the existing switch handler covers it
-        self.assertNotIn("project-inline", js)  # the second project picker under the branch is gone
+    def test_home_names_the_project_without_a_second_switcher_and_branch_is_labelled(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, css, html = (static / "app.js").read_text(), (static / "style.css").read_text(), (static / "index.html").read_text()
+        home = js[js.index("  return {\n    title: p.name,"):][:400]
+        self.assertNotIn("select", home)  # switching projects lives in the menu's picker and on Projects
+        self.assertNotIn("project-select-inline", js + css)
         status = js[js.index("function statusLine"):][:1600]
         self.assertIn('<span class="status-branch"><span class="label">Branch</span>', status)
         header = js[js.index("function setHeader"):][:600]
-        self.assertIn("heading.dataset.title = title", header)  # the tab title stays the name, not every option's text
+        self.assertIn("heading.dataset.title = title", header)  # the tab title stays the name
         self.assertIn('$("#page-title")?.dataset.title', js)
-        self.assertNotIn('$("#page-title")?.textContent', js)
 
-    def test_home_project_selector_has_container_and_compact_widths(self):
-        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
-        home = js[js.index("  return {\n    title: p.name,"):][:700]
-        self.assertIn('<div class="project-select-container">', home)
-        self.assertIn('.project-select-container {', css)
-        self.assertIn('width: 16rem;', css)  # a fixed, comfortable field width on wider screens
-        self.assertIn('.status-line .branch-select { min-height: var(--control-md); width: 16rem; max-width: 100%;', css)
-        self.assertIn('.title-switch, .status-branch { display: inline-flex; flex-direction: column;', css)  # label above, both
-        self.assertIn('.topbar-text:has(.title-switch) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);', css)  # side by side on phones
+    def test_the_phone_header_centres_the_project_name_with_the_logo_and_no_wordmark(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, css, html = (static / "app.js").read_text(), (static / "style.css").read_text(), (static / "index.html").read_text()
+        header = html[html.index('<header class="mobile-header">'):html.index("</header>")]
+        self.assertIn('<span class="mobile-title" id="mobile-title"></span>', header)
+        self.assertIn('role="img" aria-label="Orchestrator"', header)  # the logo keeps the name for screen readers
+        self.assertNotIn("<span>Orchestrator</span>", html)
+        self.assertIn('mobileTitle.textContent = state.project?.name', js)
+        self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
+        self.assertIn('body[data-page="home"] #page-title { display: none; }', css)  # not said twice on phones
 
 
 class ProductStripTests(unittest.TestCase):

@@ -522,54 +522,15 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 .notice .row { margin-top: var(--space-3); }
 
 /* Home only needs a project switcher when the sidebar's picker is hidden. */
-#page-title:has(.title-switch) { display: none; }
-.topbar-text:has(.title-switch) .sub { margin-top: 0; }
-/* Home's context fields (project, branch): label above, same size, side by side on phones. */
-.title-switch, .status-branch { display: inline-flex; flex-direction: column; align-items: stretch; gap: var(--space-1); max-width: 100%; min-width: 0; }
-.project-select-container {
-  display: inline-flex;
-  align-items: center;
-  position: relative;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  max-width: 100%;
-  width: 16rem;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
-}
-.project-select-container:hover {
-  border-color: var(--accent);
-  background-color: var(--panel-2);
-}
-.project-select-container:focus-within {
-  border-color: var(--accent);
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-/* A select is as wide as its longest option ("Manage all projects…" in heading type), so cap it to a compact width. */
-.title-project-select {
-  font: inherit;
-  font-size: var(--text-md);
-  font-weight: 600;
-  color: var(--text);
-  background: transparent;
-  border: 0;
-  border-radius: var(--r-md);
-  padding: var(--space-1) var(--space-6) var(--space-1) var(--space-3);
-  min-height: var(--control-md);
-  width: 100%;
-  max-width: 100%;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  outline: none;
-}
+/* Home's branch field: label above the control. */
+.status-branch { display: inline-flex; flex-direction: column; align-items: stretch; gap: var(--space-1); max-width: 100%; min-width: 0; }
 
 /* phones */
 @media (max-width: 760px) {
   .app { grid-template-columns: 1fr; }
   .mobile-header {
     position: fixed; inset: 0 0 auto; z-index: var(--z-header);
-    display: flex; align-items: center; gap: var(--space-3);
+    display: grid; grid-template-columns: 1fr minmax(0, auto) 1fr; align-items: center; gap: var(--space-2);
     height: calc(64px + env(safe-area-inset-top));
     padding: env(safe-area-inset-top) max(var(--space-4), env(safe-area-inset-right)) 0 max(var(--space-2), env(safe-area-inset-left));
     background: var(--panel); border-bottom: 1px solid var(--border);
@@ -598,8 +559,6 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   .app.drawer-open .sidebar { transform: translateX(0); visibility: visible; transition-delay: 0s; }
   .sidebar .brand { padding: 0; }
   .sidebar .nav a, .sidebar .nav-secondary a, .sidebar .btn, .sidebar select, .configuration-menu-trigger { min-height: var(--control-lg); }
-  #page-title:has(.title-switch) { display: block; }
-  .topbar-text:has(.title-switch) .sub { margin-top: var(--space-1); }
   .main { padding: calc(80px + env(safe-area-inset-top)) var(--space-4) calc(96px + env(safe-area-inset-bottom)); }
   .topbar { flex-direction: column; gap: var(--space-3); }
   .topbar-actions { justify-content: flex-start; width: 100%; }
@@ -626,13 +585,9 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   .projects-actions > .btn { min-height: var(--control-lg); padding: var(--space-2) var(--space-2); font-size: var(--text-xs); gap: var(--space-1); }
   .term { height: calc(100vh - 380px); min-height: 240px; }
   .keybar .btn { min-height: var(--control-lg); }
-  /* Project and branch share a row: two equal columns, the stats under them. */
-  .topbar-text:has(.title-switch) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); align-items: end; }
-  .topbar-text:has(.title-switch) > .back-link { grid-column: 1 / -1; }
-  .topbar-text:has(.title-switch) #page-sub, .topbar-text:has(.title-switch) .status-line { display: contents; }
-  #page-title:has(.title-switch) { margin: 0; }
-  .project-select-container, .status-line .branch-select { width: 100%; }
-  .topbar-text:has(.title-switch) .status-stats { grid-column: 1 / -1; }
+  /* The header already names the project, so Home doesn't repeat it as a title. */
+  body[data-page="home"] #page-title { display: none; }
+  .status-line .branch-select { width: 100%; }
   .status-stats a, .card-h a { min-height: var(--control-md); }
   .item .meta { white-space: normal; }
   .item .meta .reason-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -2068,3 +2023,7 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 
 .gh-code { display: flex; align-items: center; gap: var(--space-3); }
 .gh-code code { font-size: var(--text-2xl); font-weight: 650; letter-spacing: .08em; padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); }
+
+/* Phone header: menu and logo on the left, the current project's name centred */
+.mobile-header-start { display: flex; align-items: center; gap: var(--space-2); }
+.mobile-title { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-lg); font-weight: 650; }
