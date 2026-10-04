@@ -511,7 +511,12 @@ Access and security:
 - Signing in with Google (or another provider) works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page where it can be ended, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
 - Browsers can call the server only from its own pages, pages on this computer, and the hosted app. Add other origins (a custom domain, say) with `ORCHESTRATOR_ALLOWED_ORIGINS`, comma-separated.
 - The browser can only start a fixed set of actions. It never sends a command line, and file reads are limited to `.orchestrator/`.
-- From a phone, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
+- **One address from anywhere:** connect this computer to your account once (`orchestrator connect`) and run
+  `orchestrator ui --tunnel`. Then https://swift-orch-web-20260923.web.app is the address to use on any device: it
+  never changes, and after you sign in it finds this computer, because the computer reports its current tunnel address
+  every 60 seconds. The tunnel's own `trycloudflare.com` link changes on every restart; the startup output lists it as
+  a fallback.
+- From a phone without an account, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
 - Stopping the server (Ctrl-C) also stops the commands it started.
 
 ## Device Logs

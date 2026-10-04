@@ -4946,10 +4946,17 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     def reachable_url() -> str:
         return reach["url"].rstrip("/") if reach["url"].startswith("https://") else ""
 
+    paired = account.load_machine() is not None
+
     def announce(label: str, address: str) -> None:
         reach["url"] = address
         hosted_url = f"{HOSTED_APP_URL}/?backend={address}&token={server.token}"
         PUBLIC_URL["url"] = hosted_url
+        if paired and address.startswith("https://"):
+            # The hosted app is the address to use: it never changes and finds this computer through the account.
+            # The tunnel's own address changes whenever a quick tunnel restarts, so it's only a fallback.
+            print(f"  Direct link (changes when the tunnel restarts): {address}/?token={server.token}")
+            return
         print(f"  \033[92m✓ {label}:\033[0m   {address}/?token={server.token}")
         print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
 
@@ -4971,7 +4978,8 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     machine = account.load_machine()
     if machine:
         if reachable_url():
-            print(f"  \033[92m✓ Account:\033[0m {machine.get('owner_email')} can sign in at {HOSTED_APP_URL}")
+            print(f"  \033[92m✓ Open from anywhere:\033[0m {HOSTED_APP_URL}  (always this address; sign in as "
+                  f"{machine.get('owner_email')} and it finds this computer)")
         else:
             print(f"  Account: connected to {machine.get('owner_email')}, but not reachable from {HOSTED_APP_URL} "
                   "until it has an https address (--tunnel, or --public-url https://…).")
