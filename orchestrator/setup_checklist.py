@@ -109,8 +109,8 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
     project = _read_json(runtime / "project.json")
     settings = _read_json(runtime / "config" / "settings.json")
     machines = [m for m in _read_json(runtime / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
-    wizard = {"type": "run", "action": "wizard"}
-    menu = lambda name: {"type": "run", "action": "config_menu", "params": {"menu": name}}  # noqa: E731
+    # Every fix is a page in the app (or the in-app GitHub sign-in), never a terminal menu or the terminal wizard.
+    page = lambda to: {"type": "route", "to": to}  # noqa: E731
 
     is_git = (root / ".git").exists()
     origin = (_run(["git", "remote", "get-url", "origin"], cwd=root) or subprocess.CompletedProcess([], 1, "", "")).stdout.strip() if is_git else ""
@@ -122,7 +122,7 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
 
     items = [
         _item("project", "Project configured", True, bool(project), "Name, build and test settings" if project else "No .orchestrator/project.json yet",
-              action=wizard, group="Project"),
+              action=page("#/setup"), group="Project"),
         _item("git", "Git repository", True, is_git, "Initialized" if is_git else "This folder isn't a git repository",
               hint=None if is_git else "git init", group="GitHub" if github else "Git"),
     ]
@@ -133,7 +133,7 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
                   hint=None if GITHUB_REMOTE.search(origin) else "gh repo create --source . --push", group="GitHub"),
             _item("github_cli", "GitHub CLI signed in", True, bool(gh["user"]),
                   f"Signed in as {gh['user']}" if gh["user"] else ("Installed, not signed in" if gh["installed"] else "GitHub CLI (gh) isn't installed"),
-                  action=menu("github") if gh["installed"] and not gh["user"] else None,
+                  action={"type": "github"} if gh["installed"] and not gh["user"] else None,
                   hint=None if gh["installed"] else "brew install gh", group="GitHub"),
         ]
     else:
@@ -148,23 +148,23 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
               action={"type": "route", "to": "#/config/ai"}, group="AI"),
         _item("machines", "A machine to run jobs on", True, bool(machines),
               f"{len(machines)} configured" if machines else "machines.json is missing or empty",
-              action=wizard, group="AI"),
+              action=page("#/config/fleet"), group="AI"),
         _item("models", "At least one model selected", True, bool(models),
               f"{len(models)} selected" if models else "No models are assigned to a machine",
-              action=wizard, group="AI"),
+              action=page("#/config/models"), group="AI"),
         _item("docs", "Grounding docs (AGENTS.md, docs/)", False,
               (root / "AGENTS.md").exists() and (root / "docs" / "architecture.md").exists(),
               "Give the AI the project's rules and architecture", action={"type": "route", "to": "#/config"}, group="Recommended"),
         _item("connections", "Connect Jira, Trello, Sentry or Figma", False, bool(settings.get("integrations")),
               "Tie jobs to tickets, pull in error logs and designs", action={"type": "route", "to": "#/connections"}, group="Optional"),
         _item("firebase", "Firebase delivery to testers", False, bool(project.get("firebase_distribution")),
-              "Send builds to testers after a job", action=menu("firebase"), group="Optional"),
+              "Send builds to testers after a job", action=page("#/config/firebase"), group="Optional"),
         _item("email", "Email notifications", False, bool(settings.get("notification_emails")),
               "Get told when a job finishes or needs you", action={"type": "route", "to": "#/config"}, group="Optional"),
         _item("workers", "Remote SSH workers", False, any(m.get("execution_mode") == "ssh" for m in machines),
-              "Run jobs on other Macs", action=menu("fleet"), group="Optional"),
+              "Run jobs on other Macs", action=page("#/config/fleet"), group="Optional"),
         _item("prompts", "Custom role prompts", False, (runtime / "prompts").is_dir() and any((runtime / "prompts").iterdir()),
-              "Tune how the planner, builder and reviewer behave", action=wizard, group="Optional"),
+              "Tune how the planner, builder and reviewer behave", action=page("#/config/ai-instructions"), group="Optional"),
     ]
     required = [i for i in items if i["required"]]
     return {

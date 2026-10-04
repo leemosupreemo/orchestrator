@@ -231,3 +231,24 @@ reads as this project's conventions.
   tools and deletion, with two items for "fix it" and steps that didn't fit the stage. Now grouped (This job, Share,
   Open, Settings), one line each with descriptions in tooltips, stage-aware, one "Run a fix…", ending actions last and
   apart, a sheet with a dimmed backdrop on phones. The review checks for this as `ux.menus`.
+
+## No terminal menus from the app (2026-10-04)
+
+Tapping some actions opened the run's terminal and waited for a choice. Found and fixed:
+
+| Where | Was | Now |
+|---|---|---|
+| Revise plan | Model, machine and branch menus (the job's choices weren't passed) | Passes the job's models, machines and branch mode |
+| A question mid-plan or mid-build | "Your Answer (or Enter to pause)" in the terminal | Pauses; the question is on the job page with Answer |
+| After a build | "Follow-up / Feedback (or Enter to finish)" | Skipped in app runs (Run a fix… is on the job page) |
+| Merge, Discard, Measure coverage | Finished, then waited on "Tap Enter to return to menu" | No pause in app runs |
+| Keychain locked | Asked for the Mac password in the terminal | Says to unlock the keychain on the Mac |
+| Job menu: Console | The terminal console | Removed |
+| Check-up, Configuration, New project: Setup wizard | The terminal wizard | The app's setup checklist page |
+| New project: Sign in to GitHub | Terminal configuration menu | In-app sign-in showing GitHub's one-time code and link |
+| Device logs: Set up | Terminal questions (and a hidden token prompt) | A form; the token goes to the run privately and is saved |
+
+The root cause was that app runs have a pseudo-terminal, so scripts believed someone was typing. App runs now carry
+`ORCHESTRATOR_NONINTERACTIVE=1`, and every shared prompt (and any plain `input()`) respects it. Covered by
+`tests/test_noninteractive.py`, which runs the prompts under a real pseudo-terminal. The review checks for this as
+`ux.no-terminal`. The sidebar's "Open full console" remains as the one deliberate way into the terminal.

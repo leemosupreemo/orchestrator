@@ -173,6 +173,12 @@ def revise(path: Path, change: str, where: str, done_when: str) -> int:
     job = read_json(path)
     args = [replan_type(job), "--no-dispatch", "--update", str(path),
             "--feedback", revision_feedback(change, where, done_when)]
+    # Keep the job's own choices, so re-planning never stops to ask for models, machines or a branch mode.
+    if job.get("allowed_models"):
+        args += ["--allowed-models", ",".join(job["allowed_models"])]
+    if job.get("allowed_machines"):
+        args += ["--allowed-machines", ",".join(job["allowed_machines"])]
+    args += ["--branch-mode", job.get("branch_mode") or ("current" if job.get("branch") else "new")]
     if job.get("design_spec") or job.get("status") == "designing" or "design" in str(job.get("type", "")):
         args.append("--stitch")
     print("Revising the plan with your feedback...\n")

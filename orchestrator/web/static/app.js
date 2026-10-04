@@ -530,6 +530,19 @@ function addProjectsDialog(trackedProjects) {
 }
 
 const dialogs = {
+  async logs_setup() {
+    const v = await formDialog("Set up device logs", `
+      <p class="muted">Reads what the app logged on testers' phones from Sentry. Leave the Sentry details empty and they're found in your project.</p>
+      <label class="field"><span>Read-only Sentry token</span><input type="password" name="token" autocomplete="off" placeholder="sntryu_…">
+        <small class="hint-text">Scopes <code>org:read</code>, <code>project:read</code>, <code>event:read</code>. It's saved on this computer only, never shown again.</small></label>
+      <details class="advanced"><summary>Sentry details (optional)</summary><div class="stack">
+        <label class="field"><span>DSN</span><input type="text" name="dsn" spellcheck="false" placeholder="https://…@o123.ingest.us.sentry.io/456"></label>
+        <label class="field"><span>Organization</span><input type="text" name="org" spellcheck="false"></label>
+        <label class="field"><span>Project id</span><input type="text" name="project" spellcheck="false"></label>
+        <label class="field"><span>API address</span><input type="url" name="api_base" spellcheck="false" placeholder="https://us.sentry.io"></label>
+      </div></details>`, "Set up");
+    if (v) runAction("logs_setup", { token: v.token || "", dsn: v.dsn || "", org: v.org || "", project: v.project || "", api_base: v.api_base || "" }, { skipConfirm: true });
+  },
   async fix(params) {
     const values = await formDialog("Still broken?", `
       <label class="field"><span>What's wrong?</span>
@@ -1767,6 +1780,7 @@ document.addEventListener("click", (e) => {
     if (!item?.action) return;
     closeSetupPanel();
     if (item.action.type === "route") location.hash = item.action.to;
+    else if (item.action.type === "github") signInToGitHub();
     else if (item.action.type === "run") runAction(item.action.action, item.action.params || {});
   }
 });
@@ -1906,7 +1920,6 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     ["Open", [
       ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page in Docs"],
       ...links.map((link) => [`${link.where ? `Open a ${link.label}` : link.label} ↗`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]),
-      state.you?.role !== "member" && ["Console", act("console"), "The terminal console"],
     ]],
     ["Settings", [
       ["Move to feature…", `data-job-feature="${esc(s.id)}"`, "Group this job under a feature"],
@@ -2090,14 +2103,7 @@ pages.job = async ([id]) => {
   };
 
   const phasesInfo = [planStep, buildStep, verifyStep, reviewStep];
-  const currentPhaseLabel = ["Plan", "Build", "Check", "Review"][currentPhaseIndex]; // the stage, not an activity: "Building" is only said while it is
 
-  // Actor label for hero badge
-  const actorLabel = s.state.group === "needs_you"
-    ? "Needs you"
-    : s.state.group === "working"
-      ? (activeRun ? "AI is working" : "Waiting to start")
-      : "Done";
 
   // Contextual consequence preview for hero
   let nextExecutionPreview = "";
@@ -2182,10 +2188,6 @@ pages.job = async ([id]) => {
 
       <section class="job-hero tone-${esc(s.state.tone || "")}">
         <div class="job-hero-main">
-          <div class="job-hero-badge-row">
-            <span class="pill ${s.state.tone || "muted"}">${esc(actorLabel)}</span>
-            <span class="job-hero-phase-label">${esc(currentPhaseLabel)}</span>
-          </div>
           <h2 class="job-hero-title">${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
@@ -2967,6 +2969,41 @@ function uxReviewCard(s, ux) {
   </section>`;
 }
 
+// What jobs need, each with a way to do it in the app (the terminal setup wizard's job, without the terminal).
+pages["setup-checklist"] = async () => {
+  setupState = await api("setup"); // its buttons look items up here
+  const page = setupPage(setupState);
+  return { ...page, actions: "", after: () => { page.after?.(); } };
+};
+
+// GitHub sign-in without a terminal: start GitHub's device flow, show its one-time code and link, and wait here.
+async function signInToGitHub() {
+  let start;
+  try { start = await api("github/login", { method: "POST", body: {} }); } catch (e) { return toast(e.message, true); }
+  if (start.signed_in) { toast(`Signed in to GitHub as ${start.user}`); return route(); }
+  const done = formDialog("Sign in to GitHub", `
+    <p>Open GitHub, then enter this code:</p>
+    <div class="gh-code"><code id="gh-code">${esc(start.code)}</code><button type="button" class="btn small" data-setup-copy="${esc(start.code)}">Copy</button></div>
+    <p><a class="btn" href="${esc(start.url)}" target="_blank" rel="noopener">Open GitHub ↗</a></p>
+    <p class="muted" id="gh-status" role="status">Waiting for you to approve it on GitHub…</p>`, "Close");
+  const timer = setInterval(async () => {
+    try {
+      const st = await api("github/login");
+      if (st.signed_in) {
+        clearInterval(timer);
+        $("#dialog")?.close("cancel");
+        toast(`Signed in to GitHub as ${st.user}`);
+        route();
+      } else if (!st.waiting) {
+        clearInterval(timer);
+        const el = $("#gh-status"); if (el) el.textContent = "That code expired or was declined. Close this and try again.";
+      }
+    } catch { /* keep waiting */ }
+  }, 3000);
+  await done;
+  clearInterval(timer);
+}
+
 pages["ux-review"] = async (_, query) => {
   const data = await api("ux-pass");
   const id = query.get("id") || data.passes[0]?.id;
@@ -3066,8 +3103,8 @@ pages.checkup = async () => {
         <div class="card-b muted" id="ux-checkup">Checking…</div></section>
       <section class="card mt-16"><div class="card-h"><h2>Will this computer build it?</h2><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
         <div class="list" id="preflight-list"><div class="item"><div class="main-col muted">Checking this computer…</div></div></div></section>
-      <section class="card mt-16"><div class="card-h"><h2>Setup tools</h2></div>
-        <div class="list">${[["check", "Tools and logins", "CLIs, sign-ins and keys"], ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"], ["wizard", "Setup wizard", "Walk through project, tools and delivery setup"]].filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
+      <section class="card mt-16"><div class="card-h"><h2>Setup tools</h2><a class="btn small" href="#/setup-checklist">Setup checklist</a></div>
+        <div class="list">${[["check", "Tools and logins", "CLIs, sign-ins and keys"], ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"]].filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
           `<div class="item"><div class="main-col"><div class="title">${title}</div><div class="meta">${hint}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>`,
     after: () => {
       const paint = async (refresh) => {
@@ -4282,9 +4319,8 @@ pages.config = async (args = []) => {
     return {
       ...result,
       after: () => {
-        const onClick = async (event) => {
-          const button = event.target.closest('[data-config-action="launch-wizard"]');
-          if (button) await runAction("wizard");
+        const onClick = (event) => {
+          if (event.target.closest('[data-config-action="launch-wizard"]')) location.hash = "#/setup-checklist";
         };
         view.addEventListener("click", onClick);
         cleanup.push(() => view.removeEventListener("click", onClick));
@@ -4679,7 +4715,7 @@ pages["new-project"] = async (_, query) => {
         $("#np-back").addEventListener("click", async () => { await npSave(collect({ step: "describe" })); location.hash = "#/new-project?step=describe"; route(); });
         $("#np-recheck")?.addEventListener("click", () => route());
         $("#np-local")?.addEventListener("click", async () => { await npSave(collect({ host: "local", waiting_on_github: false })); route(); });
-        $("#np-signin")?.addEventListener("click", async () => { await npSave(collect({ waiting_on_github: true, step: "where" })); runAction("config_menu", { menu: "github" }); });
+        $("#np-signin")?.addEventListener("click", async () => { await npSave(collect({ waiting_on_github: true, step: "where" })); signInToGitHub(); });
         form.addEventListener("submit", async (e) => {
           e.preventDefault();
           const btn = form.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = "Creating…";
@@ -4711,12 +4747,11 @@ pages["new-project"] = async (_, query) => {
       <section class="card mt-16"><div class="card-h"><h2>Product requirements ready</h2></div><div class="card-b stack">
         <div>Your product requirements document is saved with all five PRD sections. You can review or refine it anytime as the project evolves.</div>
         <div><a class="btn" href="#/product">Open the product requirements</a></div></div></section>
-      <div class="row mt-16"><button class="btn primary big" id="np-wizard">Set up this project</button><a class="btn big" href="#/">Open dashboard</a></div>
-      <p class="muted">“Set up this project” runs the setup wizard, which asks how it's built and tested so jobs can run.</p>`,
+      <div class="row mt-16"><a class="btn primary big" href="#/setup-checklist">Set up this project</a><a class="btn big" href="#/">Open dashboard</a></div>
+      <p class="muted">“Set up this project” lists what jobs need (an AI, a machine, how it's built and tested), each with a way to do it here.</p>`,
     after: () => {
       $("#np-recheck")?.addEventListener("click", () => route());
-      $("#np-signin")?.addEventListener("click", () => runAction("config_menu", { menu: "github" }));
-      $("#np-wizard").addEventListener("click", () => runAction("wizard"));
+      $("#np-signin")?.addEventListener("click", () => signInToGitHub());
       $("#np-publish")?.addEventListener("click", async (e) => {
         e.target.disabled = true; e.target.textContent = "Creating…";
         try {
@@ -5081,6 +5116,7 @@ function routeParent(r) {
   if (r.page === "docs" && r.args.length) return "#/docs";
   if (r.page === "config" && r.args.length) return "#/config";
   if (r.page === "new-project") return "#/projects";
+  if (r.page === "setup-checklist") return "#/checkup";
   return null;
 }
 const navStack = [];
@@ -5113,12 +5149,33 @@ function wireExpandables(root = document) {
     bar.innerHTML = `<button type="button" class="btn small" aria-expanded="false" aria-controls="${box.id}">Show more</button>`;
     box.after(bar);
     bar.firstElementChild.addEventListener("click", (e) => {
-      const open = box.classList.toggle("is-clamped") === false;
-      e.currentTarget.textContent = open ? "Show less" : "Show more";
-      e.currentTarget.setAttribute("aria-expanded", String(open));
-      if (!open && box.getBoundingClientRect().top < 0) box.scrollIntoView({ block: "start" });
+      const button = e.currentTarget;
+      const opening = box.classList.contains("is-clamped");
+      button.textContent = opening ? "Show less" : "Show more";
+      button.setAttribute("aria-expanded", String(opening));
+      slideExpandable(box, limit, opening);
     });
   });
+}
+
+// Slide between the clamped height and the full height. max-height can't animate to "none", so animate to the
+// measured height and drop the inline value once the slide ends. Reduced motion: no slide.
+function slideExpandable(box, limit, opening) {
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const settle = () => { box.style.maxHeight = ""; box.classList.remove("is-sliding"); };
+  if (still) { box.classList.toggle("is-clamped", !opening); settle(); return; }
+  box.classList.add("is-sliding");
+  const ms = Math.min(600, 220 + Math.abs(box.scrollHeight - limit) * 0.25); // longer travel, a little longer slide
+  box.style.setProperty("--slide", `${Math.round(ms)}ms`);
+  box.style.maxHeight = `${opening ? limit : box.scrollHeight}px`;
+  void box.offsetHeight; // start from there
+  box.classList.toggle("is-clamped", !opening); // the fade crossfades with the slide
+  box.style.maxHeight = `${opening ? box.scrollHeight : limit}px`;
+  if (!opening && box.getBoundingClientRect().top < 0) box.scrollIntoView({ block: "start", behavior: "smooth" });
+  let done = false;
+  const finish = (e) => { if (done || (e && (e.target !== box || e.propertyName !== "max-height"))) return; done = true; box.removeEventListener("transitionend", finish); settle(); };
+  box.addEventListener("transitionend", finish);
+  setTimeout(finish, ms + 150); // in case the transition never reports its end
 }
 
 function apply(result) {

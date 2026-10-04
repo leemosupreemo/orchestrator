@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from common import (
+    interactive,
     ROOT,
     PROMPTS_DIR,
     gh_text,
@@ -725,7 +726,7 @@ def main(args_override: list[str] | None = None) -> None:
                 print("!"*60 + "\n")
 
                 # Inline interactive prompt when running in an interactive terminal
-                if sys.stdin.isatty() and not getattr(args, "non_interactive", False) and not args.yolo:
+                if interactive() and not getattr(args, "non_interactive", False) and not args.yolo:
                     print("\033[97m💡 Answer now to revise the plan immediately, or press Enter to pause.\033[0m")
                     try:
                         user_ans = input("\033[1;96mYour Answer (or Enter to pause):\033[0m ").strip()

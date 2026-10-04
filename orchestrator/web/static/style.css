@@ -44,7 +44,8 @@
   --r-lg: 12px;
   --r-pill: 999px;
   --radius: var(--r-lg);
-  --clamp: 320px;      /* how much of long content shows before "Show more" (set per element) */
+  --clamp: 320px;
+  --slide: 360ms;      /* Show more / Show less slide (set per element, by distance) */      /* how much of long content shows before "Show more" (set per element) */
   /* Layers, lowest to highest. A backdrop sits one below its layer, e.g. calc(drawer - 1). */
   --z-raised: 2;      /* a hovered row */
   --z-inner: 10;      /* something inside a component */
@@ -223,9 +224,13 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 /* Facts about the card's content (where a file lives, when it changed) sit in a caption under the header. */
 .card-caption { padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); }
 /* "Show more" for long content (wireExpandables in app.js) */
-.expandable.is-clamped { max-height: var(--clamp); overflow: hidden; position: relative; }
-.expandable.is-clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 72px; pointer-events: none;
-  background: linear-gradient(to bottom, transparent, var(--panel)); }
+.expandable { position: relative; overflow: hidden; }
+.expandable.is-clamped { max-height: var(--clamp); }
+.expandable.is-sliding { transition: max-height var(--slide) cubic-bezier(.4, 0, .2, 1); }
+.expandable::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 72px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--panel)); opacity: 0; transition: opacity .24s ease; }
+.expandable.is-clamped::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .expandable.is-sliding, .expandable::after { transition: none; } }
 .expandable-bar { display: flex; justify-content: center; padding: var(--space-2) var(--space-4) var(--space-4); }
 .card-h .count { color: var(--muted); font-weight: 500; }
 .card-b { padding: var(--space-4); }
@@ -1299,19 +1304,6 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   .job-step-arrow { display: none; }
 }
 
-.job-hero-badge-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-1);
-}
-.job-hero-phase-label {
-  font-size: var(--text-xs);
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 550;
-}
 .job-hero-next-preview {
   font-size: var(--text-sm);
   color: var(--text);
@@ -2073,3 +2065,6 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 .task-done-when ul { margin: var(--space-1) 0 0; padding-left: var(--space-5); color: var(--text); font-size: var(--text-sm); }
 .task-files { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .task-files code { padding: 0 var(--space-2); border-radius: var(--r-sm); background: var(--panel-2); font-size: var(--text-xs); overflow-wrap: anywhere; }
+
+.gh-code { display: flex; align-items: center; gap: var(--space-3); }
+.gh-code code { font-size: var(--text-2xl); font-weight: 650; letter-spacing: .08em; padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); }

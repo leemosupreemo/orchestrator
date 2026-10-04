@@ -79,7 +79,7 @@ class SetupChecklistTests(unittest.TestCase):
             items = _by_id(result)
             self.assertFalse(items["github_remote"]["done"])
             self.assertFalse(items["github_cli"]["done"])
-            self.assertEqual(items["github_cli"]["action"]["params"], {"menu": "github"})  # offers to sign in
+            self.assertEqual(items["github_cli"]["action"], {"type": "github"})  # offers to sign in, in the app
             self.assertFalse(result["complete"])
 
 

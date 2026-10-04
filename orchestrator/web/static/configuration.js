@@ -631,9 +631,9 @@
       sub: "Walk through project configuration and environment setup.",
       html: `<div class="configuration-page">
         <section class="card configuration-card">
-          <div class="card-h"><h2>Setup wizard</h2><button type="button" class="btn primary small" data-config-action="launch-wizard">Start the wizard</button></div>
+          <div class="card-h"><h2>Setup</h2><button type="button" class="btn primary small" data-config-action="launch-wizard">Open the setup checklist</button></div>
           <div class="card-b stack">
-            <p>Walks step-by-step through Xcode project detection, scheme selection, test targets, API keys, and notification channels.</p>
+            <p>What jobs need (an AI, a machine, how the project is built and tested, delivery), each with a way to do it here.</p>
           </div>
         </section>
       </div>`,

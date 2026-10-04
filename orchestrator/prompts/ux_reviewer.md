@@ -30,6 +30,7 @@ they take precedence over general guidance.
 - `ux.errors`: Errors say what happened and what to do next, in plain words, with a way forward (retry, go back, fix link).
 - `ux.decision-context`: When the screen asks for a decision (approve a plan, merge, accept suggestions, delete), what is being decided is shown right next to the button, in enough detail to judge it. Never "Approve" with the thing to approve folded away elsewhere on the page.
 - `ux.menus`: Overflow menus are grouped under short headings, one line per item, and fit on screen without scrolling. They offer only what makes sense at this stage, never repeat the screen's primary action, and keep ending actions (archive, delete) last and apart.
+- `ux.no-terminal`: Every choice is made in the app's own interface. No step hands the person a terminal, a text menu, or a "press Enter" prompt to finish something the app started.
 - `ux.destructive`: Destructive actions are last in a menu, say what will be lost, name the action on the button, and offer undo where possible.
 - `ux.forms`: Forms ask only what is needed now; optional questions are folded; required fields are clear; choices that contradict each other cannot both be picked.
 - `ux.recognition`: Options are visible or one tap away; nothing depends on remembering a hidden shortcut or a value from another screen.

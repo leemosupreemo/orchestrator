@@ -51,6 +51,14 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   actions (close, archive, delete) last below a divider. It fits without scrolling; on phones it opens as a sheet over
   a dimmed page.
 
+- Nothing the app starts waits at a terminal. Runs from the app carry `ORCHESTRATOR_NONINTERACTIVE=1`
+  (`child_env()`); in them, menus take their defaults, "press Enter" pauses don't wait, and a question that needs
+  typed input ends that step with a clear line instead (`scripts/common.py`: `web_run()`, `interactive()`). Questions
+  for you go to the job's page (Answer). Each action passes everything its script needs (Revise passes the job's
+  models, machines and branch mode). The only terminal tools are the console, wizard and configuration menus
+  (`TERMINAL_ACTIONS`), and the app reaches only the console, from the sidebar; setup, GitHub sign-in and device
+  logs have app pages.
+
 ## Navigation and fields
 
 - A page one level down (a job, a run, a document, a setting, a form) shows **Back** above its title. It returns to
@@ -130,7 +138,7 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
 - **Job lifecycle stepper & next step clarity**:
   - Every job detail page presents a 4-phase lifecycle stepper (`.job-stepper`): `1. Plan` → `2. Build` → `3. Verify` → `4. Review`.
   - Active steps use `var(--accent)` (or `var(--warn)`/`var(--bad)` when attention/fix is needed), completed steps use `var(--ok)` with `✓`, upcoming steps are muted.
-  - The hero card clarifies **who has the ball** (`.job-hero-badge-row`: e.g. "Your action needed" vs "AI Worker active") and previews the exact automated builder task that will run upon taking the primary action (`.job-hero-next-preview`).
+  - The hero card leads with its title (what's needed, e.g. "Approve plan"), says why and what to look at, and previews what happens after the primary action (`.job-hero-next-preview`). No badge row above the title: the stepper shows the stage, and the title and button already say whose move it is.
   - The **Progress** card clearly separates task completion count, active/next builder task, remaining tasks, and verification status.
 - **Job Brief**:
   - Positioned near the top of the Job Detail page immediately following Progress (before Test Cases and technical changes).

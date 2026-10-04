@@ -551,8 +551,12 @@ def run_setup(args: argparse.Namespace) -> int:
     print(f"  api_base: {config.api_base}\n  org:      {config.org}\n  project:  {config.project or '(all)'}")
 
     load_secrets()
-    token = os.environ.get(config.token_env)
-    if not token and not args.no_prompt and sys.stdin.isatty():
+    token = os.environ.get(config.token_env) or os.environ.get("SENTRY_AUTH_TOKEN")
+    if token and getattr(args, "save_token", False):  # from the web app's form, through the environment
+        env_file = save_token(config.token_env, token)
+        os.environ[config.token_env] = token
+        print(f"Saved the token to {env_file} (chmod 600)")
+    if not token and not args.no_prompt and sys.stdin.isatty() and os.environ.get("ORCHESTRATOR_NONINTERACTIVE") != "1":
         print(f"\nCreate a Sentry token with scopes org:read, project:read, event:read:\n  {config.token_settings_url()}")
         token = getpass.getpass(f"Paste token for ${config.token_env} (input hidden, Enter to skip): ").strip()
         if token:
@@ -594,6 +598,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     setup.add_argument("--api-base", dest="api_base", help="e.g. https://us.sentry.io")
     setup.add_argument("--token-env", dest="token_env", help=f"Env var holding the read token (default {DEFAULT_TOKEN_ENV})")
     setup.add_argument("--no-prompt", action="store_true", help="Never prompt for a token")
+    setup.add_argument("--save-token", action="store_true", help="Save the token given in $SENTRY_AUTH_TOKEN")
     setup.add_argument("--no-verify", action="store_true", help="Skip the live API check")
 
     sessions = sub.add_parser("sessions", help="List recent app launches")

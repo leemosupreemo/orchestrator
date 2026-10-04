@@ -21,6 +21,43 @@ if str(PACKAGE_ROOT.parent) not in sys.path:
 
 from orchestrator.project_config import PROJECT_CONFIG
 
+# Runs started from the web app have a pseudo-terminal (so output streams with colours and progress), which makes
+# sys.stdin.isatty() true. Nobody is at that terminal, though: the web app sets this, and every question must then go
+# to the app (a job's Answer card, a form) instead of waiting for keys that will never come.
+NONINTERACTIVE_ENV = "ORCHESTRATOR_NONINTERACTIVE"
+
+
+def web_run() -> bool:
+    """Started from the web app: nobody will type anything, whatever stdin looks like."""
+    return os.environ.get(NONINTERACTIVE_ENV) == "1"
+
+
+def interactive() -> bool:
+    """A person is at a terminal to answer prompts. (Piped input, as tests and scripts use, isn't a person.)"""
+    return not web_run() and sys.stdin.isatty()
+
+
+def _plain(text: object) -> str:
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(text or "")).strip()
+
+
+def no_terminal_answer(prompt: object = "") -> str:
+    """What a prompt gets in a run nobody can type into. "Press Enter to continue" pauses return at once; anything else
+    behaves like closed input (EOFError, which prompts already treat as "pause and ask later"), after saying why."""
+    text = _plain(prompt)
+    if re.search(r"\b(tap|press|hit)\s+enter\b", text, re.I):
+        return ""
+    print(f"\n[{text or 'This step asks for input'}] needs an answer typed in a terminal, which a run started from the "
+          "web app can't give. Questions for you appear on the job's page instead.", flush=True)
+    raise EOFError("no terminal to answer from")
+
+
+if os.environ.get(NONINTERACTIVE_ENV) == "1":  # covers every input()/getpass() in the scripts, including older ones
+    import builtins
+    import getpass as _getpass
+    builtins.input = no_terminal_answer
+    _getpass.getpass = lambda prompt="Password: ", stream=None: no_terminal_answer(prompt)
+
 ROOT = PROJECT_CONFIG.root
 ORCHESTRATOR_DIR = PACKAGE_ROOT
 ORCHESTRATOR_RUNTIME_DIR = PROJECT_CONFIG.runtime_dir
@@ -109,6 +146,9 @@ def ensure_keychain_unlocked(prompt_if_missing: bool = False) -> tuple[bool, str
     if res.returncode == 0:
         return True, "Keychain is already unlocked."
         
+    if prompt_if_missing and web_run():
+        return False, ("The macOS login keychain is locked. Unlock it on the Mac (log in, or run "
+                       "`security unlock-keychain`), then try again.")
     if prompt_if_missing:
         print("\n\033[1;93m🔑 macOS Login Keychain is locked.\033[0m")
         print("\033[90mTo avoid pausing or failing during build archiving/distribution, please enter your keychain password now:\033[0m")
@@ -1131,6 +1171,8 @@ def _split_option_description(option: str) -> tuple[str, str | None]:
     return title, "; ".join(descriptions)
 
 def prompt_radio(label: str, options: list[str], default: str | None = None, clear_screen: bool = True, status_bar: StatusBar | None = None, description: str | list[str] | None = None) -> str:
+    if web_run():  # nobody to choose: the default, as pressing Enter would
+        return default if default in options else (options[0] if options else "")
     """Displays interactive radio buttons navigated by arrow keys."""
     if not sys.stdin.isatty():
         return default or options[0]
@@ -1257,6 +1299,8 @@ def prompt_radio(label: str, options: list[str], default: str | None = None, cle
     return options[idx]
 
 def prompt_confirm(question: str, default: bool = True, description: str | list[str] | None = None, clear_screen: bool = True) -> bool:
+    if web_run():
+        return default
     """Displays interactive yes/no radio buttons."""
     # Defensive logic for reported UI duplication
     if question.startswith("Would you Would you"):
@@ -1268,6 +1312,8 @@ def prompt_confirm(question: str, default: bool = True, description: str | list[
     return choice == "yes"
 
 def prompt_multiline(prompt: str) -> str:
+    if web_run():
+        no_terminal_answer(prompt)
     flush_stdin()
     title, desc = split_title_description(prompt)
     print_header(title)
@@ -1341,6 +1387,8 @@ def print_wrapped_option(option_str: str, indent_size: int = 4, subsequent_inden
         print(f"{ind}{line}")
 
 def prompt_password(label: str, placeholder: str = "(enter to skip)") -> str:
+    if web_run():
+        return ""
     """Interactive password input that shows asterisks instead of clear text."""
     if not sys.stdin.isatty():
         return ""
@@ -1413,6 +1461,10 @@ def prompt_password(label: str, placeholder: str = "(enter to skip)") -> str:
         sys.stdout.flush()
 
 def prompt_input(label: str, placeholder: str = "", default: str = "", allow_back: bool = False, field_below: bool = False, q_msg: str | None = None) -> str:
+    if web_run():
+        if default:
+            return default
+        no_terminal_answer(label)
     """Interactive text input with styling, backspace handling, and back-out support."""
     if not sys.stdin.isatty():
         return default
@@ -1650,6 +1702,8 @@ def _build_checkbox_hint(allow_bulk_select: bool, extra_keys: list[str], has_fre
     return f"\033[1;90m({', '.join(parts)})\033[0m"
 
 def prompt_checkbox(label: str, options: list[str], defaults: list[str] | None = None, extra_keys: list[str] | None = None, footer: str | None = None, details_map: dict[str, list[str]] | None = None, status_bar: StatusBar | None = None, clear_screen: bool = True, max_selections: int | None = None, footer_actions: list[str] | None = None, details_title: str | None = None, allow_bulk_select: bool = True) -> list[str]:
+    if web_run():  # nobody to choose: what's pre-selected, as confirming would
+        return [o for o in options if o in (defaults or [])]
     """Displays interactive checkboxes navigated by arrow keys, toggled by space (vertical)."""
     if not sys.stdin.isatty():
         return defaults or []

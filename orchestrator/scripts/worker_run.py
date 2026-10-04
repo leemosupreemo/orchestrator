@@ -26,6 +26,7 @@ except:
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
 from common import (
+    interactive,
     CONFIG_DIR,
     LOGS_DIR,
     OUTPUT_DIR,
@@ -459,7 +460,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     except BuilderClarificationNeeded as clarification:
                         mark_human_needed(job_path, job, clarification.question, task_index=i)
                         update_issue_status(issue_number, "status:human-needed", ["status:executing"])
-                        if sys.stdin.isatty() and not job.get("headless", False) and not is_yolo:
+                        if interactive() and not job.get("headless", False) and not is_yolo:
                             print_clarification_report(job, question=clarification.question)
                             print("\033[97m💡 Answer now to resume the builder immediately, or press Enter to pause.\033[0m")
                             try:
@@ -580,7 +581,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 except BuilderClarificationNeeded as clarification:
                     mark_human_needed(job_path, job, clarification.question)
                     update_issue_status(issue_number, "status:human-needed", ["status:executing"])
-                    if sys.stdin.isatty() and not job.get("headless", False) and not is_yolo:
+                    if interactive() and not job.get("headless", False) and not is_yolo:
                         print_clarification_report(job, question=clarification.question)
                         print("\033[97m💡 Answer now to resume the builder immediately, or press Enter to pause.\033[0m")
                         try:
@@ -822,7 +823,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 print("\n\033[1;92m🏁 YOLO MODE: All tasks completed successfully!\033[0m")
 
         # Interactive Follow-up / Bug / Missing Functionality prompt
-        if sys.stdin.isatty() and not job.get("headless", False) and not job.get("is_yolo", False):
+        if interactive() and not job.get("headless", False) and not job.get("is_yolo", False):
             job_type = job.get("type", "")
             is_feature = job_type in ["feature-plan", "feature", "feature-design"]
 

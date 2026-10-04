@@ -3592,9 +3592,10 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
         self.assertIn('["Build", act("build")', self.js)  # Tests
         self.assertIn('Will this computer build it?', self.js)  # Check-up: probes
-        self.assertIn('Setup tools', self.js)  # Check-up: the setup checks and wizard
-        for action in ("check", "check_config", "worker_check", "wizard"):
+        self.assertIn('Setup tools', self.js)  # Check-up: the setup checks, and the setup checklist (not the terminal wizard)
+        for action in ("check", "check_config", "worker_check"):
             self.assertIn(f'["{action}", ', self.js)
+        self.assertIn('href="#/setup-checklist">Setup checklist</a>', self.js)
         self.assertIn('act("distribute")', self.js)  # Delivery
         self.assertIn('act("logs_pull")', self.js)  # Device logs
         self.assertIn("Open full console", self.html + self.js)
@@ -5147,12 +5148,10 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn('<nav class="job-stepper"', self.job_page)
         self.assertIn(".job-stepper {", css)
         self.assertIn(".job-step-dot {", css)
-        self.assertIn('<div class="job-hero-badge-row">', self.job_page)
-        self.assertIn(".job-hero-badge-row {", css)
         self.assertIn(".job-hero-next-preview {", css)
         self.assertIn('job-hero-next-preview', self.job_page)
-        self.assertIn('job-hero-phase-label', self.job_page)
-        self.assertIn('currentPhaseLabel', self.job_page)
+        # The stepper shows the stage and the hero's title and button say what's needed: no badge row repeating them.
+        self.assertNotIn("job-hero-badge-row", self.job_page)
 
     def test_brief_section_positioned_near_top_and_editable(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"

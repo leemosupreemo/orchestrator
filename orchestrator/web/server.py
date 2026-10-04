@@ -31,6 +31,7 @@ import os
 import queue
 import re
 import secrets
+import select
 import socket
 import shutil
 import zipfile
@@ -1953,6 +1954,8 @@ class Action:
     # Shown in a confirm dialog before running: set for anything outward-facing.
     confirm: str | None = None
     fields: list[str] = field(default_factory=list)
+    # Extra environment for the run (a secret that mustn't appear in the command line).
+    env: Callable[[dict[str, Any]], dict[str, str]] | None = None
 
 
 def orchestrator_argv(*args: str) -> list[str]:
@@ -2728,6 +2731,67 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
     return {"ok": True}
 
 
+GH_CODE = re.compile(r"one-time code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})")
+GH_URL = re.compile(r"https://github\.com/login/device")
+
+
+def github_user() -> str:
+    """Who `gh` is signed in as on github.com, or "" when it isn't."""
+    gh = shutil.which("gh")
+    if not gh:
+        return ""
+    res = subprocess.run([gh, "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=20, check=False)
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def start_github_login(server: Any) -> dict[str, Any]:
+    """GitHub sign-in without a terminal: start the device flow and hand back its code and link. The process keeps
+    waiting for the approval in the background; github_login_status() says when it's done."""
+    user = github_user()
+    if user:
+        return {"signed_in": True, "user": user}
+    gh = shutil.which("gh")
+    if not gh:
+        raise UIError("The GitHub CLI isn't installed on this computer. Install it (`brew install gh`), then try again.")
+    old = getattr(server, "gh_login", None)
+    if old and old.poll() is None:
+        old.terminate()
+    proc = subprocess.Popen([gh, "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    server.gh_login = proc
+    code, url, deadline = "", "", time.time() + 20
+    while time.time() < deadline and proc.poll() is None and not (code and url):
+        ready, _, _ = select.select([proc.stdout], [], [], max(0.1, deadline - time.time()))
+        if not ready:
+            break
+        line = proc.stdout.readline()
+        code = code or (GH_CODE.search(line).group(1) if GH_CODE.search(line) else "")
+        url = url or (GH_URL.search(line).group(0) if GH_URL.search(line) else "")
+    if not code:
+        proc.terminate()
+        raise UIError("GitHub didn't give a sign-in code. Check this computer is online, then try again.")
+    threading.Thread(target=lambda: (proc.stdout.read(), proc.wait()), daemon=True).start()  # drain until approved
+    return {"signed_in": False, "code": code, "url": url or "https://github.com/login/device"}
+
+
+def github_login_status(server: Any) -> dict[str, Any]:
+    proc = getattr(server, "gh_login", None)
+    user = github_user()
+    return {"signed_in": bool(user), "user": user, "waiting": bool(proc and proc.poll() is None)}
+
+
+def build_logs_setup(params: dict[str, Any], root: Path) -> list[str]:
+    """Device logs setup from the app's form: no prompts. The token (if given) arrives in the environment and is saved."""
+    argv = orchestrator_argv("logs", "setup", "--no-prompt")
+    for key, flag in (("dsn", "--dsn"), ("org", "--org"), ("project", "--project"), ("api_base", "--api-base")):
+        value = _text(params, key, limit=500)
+        if value:
+            argv += [flag, value]
+    if str(params.get("token") or "").strip():
+        argv.append("--save-token")
+    return argv
+
+
 def build_config_menu(params: dict[str, Any], root: Path) -> list[str]:
     menu = _choice(params, "menu", CONFIG_MENUS)
     if not menu:
@@ -2912,6 +2976,11 @@ def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
     return lambda params, root: orchestrator_argv("script", "manual_run.py", mode)
 
 
+# Terminal tools: the only runs someone is expected to type into. Everything else runs non-interactive, and the web
+# app never sends people into a terminal menu: each of these has an app page (the console stays as a deliberate,
+# clearly labelled escape hatch in the sidebar).
+TERMINAL_ACTIONS = {"console", "wizard", "config_menu"}
+
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
     "check": Action("Setup check", lambda p, r: orchestrator_argv("check")),
@@ -2951,7 +3020,9 @@ ACTIONS: dict[str, Action] = {
                          fields=["notes"]),
     "config_menu": Action("Configuration", build_config_menu, fields=["menu"]),
     "test_email": Action("Send test email", build_test_email),
-    "logs_setup": Action("Device logs setup", lambda p, r: orchestrator_argv("logs", "setup")),
+    "logs_setup": Action("Device logs setup", lambda p, r: build_logs_setup(p, r),
+                         fields=["dsn", "org", "project", "api_base", "token"],
+                         env=lambda p: {"SENTRY_AUTH_TOKEN": str(p.get("token") or "").strip()} if str(p.get("token") or "").strip() else {}),
     "logs_pull": Action("Pull device logs", build_logs_pull, fields=["session", "level", "query"]),
     "logs_tail": Action("Follow device logs", build_logs_tail, fields=["session"]),
     "splinter": Action("Splinter into sub-jobs", build_splinter,
@@ -3349,8 +3420,14 @@ class UIServer(ThreadingHTTPServer):
                     print(f"  Notifications: {exc}", flush=True)
         return events
 
-    def child_env(self) -> dict[str, str]:
+    def child_env(self, terminal: bool = False) -> dict[str, str]:
+        """Environment for what the web app runs. Unless it's a terminal tool (the console), nobody can type into it:
+        prompts take their defaults or hand the question to the app (scripts/common.py: interactive())."""
         env = dict(os.environ)
+        if terminal:
+            env.pop("ORCHESTRATOR_NONINTERACTIVE", None)
+        else:
+            env["ORCHESTRATOR_NONINTERACTIVE"] = "1"
         env["ORCHESTRATOR_PROJECT_ROOT"] = str(self.root)
         env.pop("ORCHESTRATOR_CONFIG", None)
         # Actions run with the project as cwd, where `python -m orchestrator` would pick up the
@@ -4460,6 +4537,11 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, data, "application/zip", {
                 "Content-Disposition": f'attachment; filename="{job_id}-export.zip"'
             })
+        elif parts == ["github", "login"] and method in ("GET", "POST"):
+            self._require_owner("sign in to GitHub on this computer")
+            if method == "POST":
+                self._body()
+            self._json(start_github_login(self.server) if method == "POST" else github_login_status(self.server))
         elif method == "GET" and parts == ["ux-pass"]:
             self._json({"passes": ux_passes(root), **ui_review_settings(root)})
         elif method == "GET" and len(parts) == 2 and parts[0] == "ux-pass":
@@ -4566,7 +4648,10 @@ class UIHandler(BaseHTTPRequestHandler):
             cols, rows = int(body.get("cols") or 110), int(body.get("rows") or 32)
         except (TypeError, ValueError):
             raise UIError("cols/rows must be numbers")
-        session = self.server.sessions.start(key, title, argv, root, self.server.child_env(),
+        env = self.server.child_env(terminal=key in TERMINAL_ACTIONS)
+        if action.env:
+            env.update(action.env(params))
+        session = self.server.sessions.start(key, title, argv, root, env,
                                              runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
         session.job_id = job_id
         self._audit("run_started", action=key, job=job_id)
