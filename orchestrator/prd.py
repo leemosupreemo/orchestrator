@@ -44,12 +44,12 @@ SECTIONS: list[dict[str, Any]] = [
     {"id": "pitch", "title": "Pitch", "optional": True,
      "hint": "Say what you have in mind as briefly as you can, the way you'd explain it to a friend. Rough is fine."},
     {"id": "who", "title": "Who it's for", "optional": True,
-     "hint": "Do you have an ideal user in mind, or some situations it's for? If you don't know yet, say so; we'll fill in the blanks and refine as we go."},
+     "hint": "Do you have an ideal user in mind, or some situations it's for?"},
     {"id": "features", "title": "Core features", "optional": True,
      "hint": "The things it has to do. One per line. If it helps, write each as a story: \"As a ..., I can ... so that ...\"."},
     {"id": "look", "title": "Look and feel", "optional": True,
      "hint": "What should it look and feel like? Describe it (\"feels like Google Docs\"), or add designs, sketches or Figma items."},
-    {"id": "not", "title": "Not this", "optional": True,
+    {"id": "not", "title": "What to exclude", "optional": True,
      "hint": "Anything it should not be or include: features you don't want, competitors not to copy exactly."},
 ]
 BY_ID = {s["id"]: s for s in SECTIONS}
@@ -76,6 +76,7 @@ def split(text: str) -> dict[str, str]:
     found: dict[str, list[str]] = {}
     current: str | None = None
     by_heading = {s["title"].lower(): s["id"] for s in SECTIONS}
+    by_heading["not this"] = "not"
     for line in (text or "").splitlines():
         m = re.match(r"^##\s+(.*?)\s*$", line)
         if m:

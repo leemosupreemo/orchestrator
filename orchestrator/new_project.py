@@ -38,7 +38,7 @@ PRD_SECTIONS: list[dict[str, Any]] = [
     {"id": "who", "title": "Who it's for", "keys": ["audience"], "description": "The ideal user, target audience, or context of use."},
     {"id": "features", "title": "Core features", "keys": ["features", "done"], "description": "What it must do on day one, and completion criteria for version 1."},
     {"id": "look", "title": "Look and feel", "keys": ["look"], "description": "Visual style, design language, or reference apps."},
-    {"id": "not", "title": "Not this", "keys": ["not"], "description": "What it should NOT be or do: features or anti-patterns to avoid."},
+    {"id": "not", "title": "What to exclude", "keys": ["not"], "description": "What it should NOT be or do: features or anti-patterns to avoid."},
 ]
 REQUIRED = [q["key"] for q in QUESTIONS if q["required"]]
 PLATFORMS = next(q["options"] for q in QUESTIONS if q["key"] == "platform")

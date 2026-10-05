@@ -82,6 +82,32 @@ class SetupChecklistTests(unittest.TestCase):
             self.assertEqual(items["github_cli"]["action"], {"type": "github"})  # offers to sign in, in the app
             self.assertFalse(result["complete"])
 
+    def test_uninitialized_folder_offers_git_init_action(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = _checklist(Path(d), gh={"installed": True, "user": "dev"}, providers=[])
+            items = _by_id(result)
+            self.assertFalse(items["git"]["done"])
+            self.assertEqual(items["git"]["action"], {"type": "git_init", "label": "Initialize"})
+
+    def test_git_repo_without_origin_offers_github_create_when_signed_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root, origin=None)
+            result = _checklist(root, gh={"installed": True, "user": "dev"})
+            items = _by_id(result)
+            self.assertTrue(items["git"]["done"])
+            self.assertIsNone(items["git"]["action"])
+            self.assertEqual(items["remote"]["action"], {"type": "github_create", "label": "Create repo"})
+
+    def test_github_mode_without_origin_offers_github_create_when_signed_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root, origin=None)
+            (root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "App", "code_host": "github"}))
+            result = _checklist(root, gh={"installed": True, "user": "dev"})
+            items = _by_id(result)
+            self.assertEqual(items["github_remote"]["action"], {"type": "github_create", "label": "Create repo"})
+
 
 if __name__ == "__main__":
     unittest.main()

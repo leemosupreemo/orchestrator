@@ -114,7 +114,7 @@ p { margin: 0; }
 code, pre, .mono { font-family: var(--mono); font-size: var(--text-sm); }
 .icon { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
-.app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+.app { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; }
 
 /* sidebar */
 .mobile-header, .nav-close, .sidebar-backdrop { display: none; }
@@ -402,6 +402,15 @@ dialog form {
   max-height: min(85dvh, 720px);
   box-sizing: border-box;
 }
+dialog.dialog-compact {
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(70vh, 400px);
+}
+dialog.dialog-compact form {
+  padding: var(--space-4) var(--space-5);
+  gap: var(--space-3);
+  max-height: min(70vh, 400px);
+}
 .dialog-header {
   display: flex;
   align-items: center;
@@ -527,7 +536,7 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 
 /* phones */
 @media (max-width: 760px) {
-  .app { grid-template-columns: 1fr; }
+  .app { grid-template-columns: minmax(0, 1fr); }
   .mobile-header {
     position: fixed; inset: 0 0 auto; z-index: var(--z-header);
     display: grid; grid-template-columns: 1fr minmax(0, auto) 1fr; align-items: center; gap: var(--space-2);
@@ -611,6 +620,15 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
     padding: var(--space-4);
     gap: var(--space-3);
     max-height: calc(100dvh - 24px);
+  }
+  dialog.dialog-compact {
+    width: min(420px, calc(100vw - 24px));
+    max-height: min(80dvh, 380px);
+  }
+  dialog.dialog-compact form {
+    padding: var(--space-4);
+    gap: var(--space-3);
+    max-height: min(80dvh, 380px);
   }
   .dialog-actions {
     flex-direction: column-reverse;
@@ -1165,6 +1183,11 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 .live-run:first-child { border-top: 0; }
 .live-run.waiting { box-shadow: inset 3px 0 0 var(--warn); }
 .live-run .main-col { min-width: 0; flex: 1 1 260px; color: var(--text); }
+.live-run { min-width: 0; max-width: 100%; }
+.live-run .title { overflow-wrap: anywhere; }
+/* The newest output line can be one long unbroken path or URL; keep it to the card's width. */
+.last-line { margin-top: var(--space-1); font-size: var(--text-xs); color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 760px) { .live-run .row { width: 100%; } }
 /* Job Lifecycle Stepper */
 .job-stepper {
   display: flex;
@@ -1528,7 +1551,7 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 }
 .configuration-document-list li:first-child { border-top: 0; }
 @media (max-width: 760px) {
-  .configuration-chooser { grid-template-columns: 1fr; }
+  .configuration-chooser { grid-template-columns: minmax(0, 1fr); }
   .configuration-setting-row { align-items: flex-start; flex-direction: column; }
 }
 
@@ -1680,6 +1703,26 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 .flex-1 { flex: 1; }
 
 .topbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+.home-new-job-btn {
+  position: fixed;
+  top: var(--space-6);
+  right: var(--space-7);
+  z-index: var(--z-sticky);
+  box-shadow: var(--shadow-2);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.home-new-job-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-3);
+}
+.home-new-job-btn:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow);
+}
+.topbar-actions:has(.home-new-job-btn) {
+  min-width: 120px;
+  min-height: var(--control-md);
+}
 .warn-link { color: var(--warn); font-weight: 600; }
 .badge.good { background: var(--ok-solid); color: var(--ok-solid-ink); }
 .badge.muted-badge { background: var(--panel-2); color: var(--muted); }
@@ -1716,13 +1759,41 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 .help-faq summary { cursor: pointer; font-weight: 600; min-height: var(--control-xs); }
 .help-faq p { margin: var(--space-2) 0 0; color: var(--muted); }
 @media (max-width: 760px) {
-  .help-terms { grid-template-columns: 1fr; gap: var(--space-0); }
+  .help-terms { grid-template-columns: minmax(0, 1fr); gap: var(--space-0); }
   .help-terms dd { margin-bottom: var(--space-2); }
 }
 
 /* Command palette */
-.search-btn { justify-content: space-between; color: var(--muted); font-weight: 500; }
-.search-btn kbd, .palette-foot kbd { font: inherit; font-size: var(--text-2xs); padding: 1px var(--space-2); border: 1px solid var(--border); border-radius: var(--r-xs); background: var(--panel-2); color: var(--muted); }
+.search-btn {
+  margin: 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  justify-content: space-between;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: var(--text-sm);
+  background: var(--panel);
+}
+.search-btn:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.search-btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.palette-foot kbd { font: inherit; font-size: var(--text-2xs); padding: 1px var(--space-2); border: 1px solid var(--border); border-radius: var(--r-xs); background: var(--panel-2); color: var(--muted); }
+.search-btn kbd {
+  font: inherit;
+  font-size: var(--text-2xs);
+  padding: 1px var(--space-3) 1px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--panel-2);
+  color: var(--muted);
+  flex-shrink: 0;
+}
 .palette-backdrop { position: fixed; inset: 0; background: var(--backdrop); z-index: calc(var(--z-palette) - 1); }
 .palette { position: fixed; z-index: var(--z-palette); left: 50%; top: 14vh; transform: translateX(-50%); width: min(640px, calc(100vw - 24px)); max-height: 70vh; display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-3); overflow: hidden; }
@@ -1764,6 +1835,15 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 .diff-line.del { background: var(--bad-soft); color: var(--text); }
 .diff-line.hunk { color: var(--muted); }
 .task-controls { display: flex; gap: var(--space-1); flex-wrap: wrap; justify-content: flex-end; }
+.task-more > summary { min-width: var(--control-sm); justify-content: center; padding-inline: var(--space-2); letter-spacing: 0.1em; }
+.task-more .more-menu { min-width: 160px; }
+.task-number.is-done { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
+.progress-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.progress-now:empty { display: none; }
+.progress-now strong { min-width: 0; overflow-wrap: anywhere; }
+.progress-now .label { text-transform: uppercase; font-size: var(--text-2xs); font-weight: 700; letter-spacing: 0.05em; color: var(--muted); }
+.progress-foot { font-size: var(--text-xs); border-top: 1px solid var(--border); padding-top: var(--space-2); overflow-wrap: anywhere; }
+.empty-state { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) 0; }
 
 /* New job */
 .nj-logs { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
@@ -1806,6 +1886,12 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .prd-design img { display: block; max-height: 160px; max-width: 100%; min-width: 80px; min-height: 60px; object-fit: contain; }
 .prd-version .prd-diff { margin-top: var(--space-2); }
 .prd-version .prd-diff[hidden] { display: none; }
+.prd-features-edit { display: flex; flex-direction: column; gap: var(--space-2); }
+.prd-feature-row { display: flex; align-items: center; gap: var(--space-2); }
+.prd-feature-bullet { color: var(--muted); font-size: 1.2rem; line-height: 1; user-select: none; width: 14px; text-align: center; flex-shrink: 0; }
+.prd-feature-input { flex: 1; min-width: 0; }
+.prd-feature-del { flex-shrink: 0; width: var(--control-sm); height: var(--control-sm); min-height: var(--control-sm); padding: 0; color: var(--muted); font-size: var(--text-lg); line-height: 1; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius); }
+.prd-feature-del:hover { color: var(--bad); background: var(--bad-soft); }
 
 /* Docs */
 .docs-search { margin: 0 0 var(--space-4); }
@@ -1950,17 +2036,11 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .framework-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
 .framework-desc { font-size: var(--text-xs); color: var(--muted); }
 
-/* Phones: filter chips stay on one line and scroll sideways instead of wrapping into a second row. */
-@media (max-width: 760px) {
-  .filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: calc(-1 * var(--space-1)); padding-inline: var(--space-1); }
-  .filters::-webkit-scrollbar { display: none; }
-  .filters > * { flex: none; }
-}
-
 /* Tablets: the sidebar stays, but narrower, and the page gets less padding. */
 @media (min-width: 761px) and (max-width: 1100px) {
-  .app { grid-template-columns: 200px 1fr; }
+  .app { grid-template-columns: 200px minmax(0, 1fr); }
   .main { padding: var(--space-5) var(--space-5) var(--space-7); }
+  .home-new-job-btn { top: var(--space-5); right: var(--space-5); }
   .search-btn kbd { display: none; }
   .job-table-row, .job-table-header { grid-template-columns: minmax(180px, 1fr) 100px 130px 110px; gap: var(--space-3); }
 }
@@ -2011,7 +2091,9 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 .job-top .banner { margin-bottom: var(--space-4); }
 
 /* The plan, shown under the decision while it waits for approval */
-.plan-review { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.plan-review.needs-approval { border-color: var(--warn); background: var(--warn-soft); }
+.plan-review.needs-approval .card-h { background: transparent; border-bottom-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
+.plan-review.needs-approval .list .item, .plan-review.needs-approval .plan-summary, .plan-review.needs-approval .card-b-split { border-color: color-mix(in srgb, var(--warn) 25%, var(--border)); }
 .plan-summary { font-size: var(--text-base); border-bottom: 1px solid var(--border); }
 .task-row { align-items: flex-start; }
 .task-number { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-top: 1px;
@@ -2027,3 +2109,10 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 /* Phone header: menu and logo on the left, the current project's name centred */
 .mobile-header-start { display: flex; align-items: center; gap: var(--space-2); }
 .mobile-title { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-lg); font-weight: 650; }
+
+/* A task's ⋯ menu stays beside its title on phones instead of dropping to a row of its own */
+@media (max-width: 760px) {
+  .task-row:has(.side .btn) { flex-wrap: nowrap; }
+  .task-row:has(.side .btn) .main-col { flex-basis: auto; }
+  .task-row:has(.side .btn) .side { width: auto; }
+}

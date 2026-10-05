@@ -2798,7 +2798,10 @@ class TestCaseViewTests(ServerTestCase):
         summary = view["summary"]
         self.assertEqual((summary["covered"], summary["planned"], summary["unassigned"], summary["manual"], summary["automated"]), (2, 1, 1, 1, 4))
         self.assertEqual(summary["covered_pct"], 50.0)
-        self.assertEqual(summary["by_type"], {"unit": 2, "integration": 1, "ui": 1, "manual": 1})
+        # Cases saved with the older unit/integration/ui/manual names read as the eight standard categories.
+        self.assertEqual({t: n for t, n in summary["by_type"].items() if n},
+                         {"functionality": 2, "integration": 1, "user-interface": 1, "user-acceptance": 1})
+        self.assertEqual(len(summary["by_type"]), 8)
         covered = next(c for c in view["cases"] if c["id"] == "TC-1-01")
         self.assertTrue(covered["found_in"][0].endswith("test_seat.py"))
 
@@ -3637,10 +3640,26 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("Import a PRD", self.js)  # the button just says Import PRD
         self.assertNotIn("product/scaffold", self.js)  # no six documents to create
         self.assertNotIn("last-review", self.js)  # and no separate review job
-        self.assertNotIn(">Optional<", page)  # every section is optional, so none is singled out
-        self.assertIn("Everything here is optional", page)
+        self.assertNotIn("Everything here is optional", page)
+        self.assertIn('title: "Product requirements"', page)
+        self.assertIn("Press Enter to add another feature", page)
+        self.assertIn("prd-features-edit", page)
+        self.assertIn("compact: true", page)
         # Look and feel takes uploads, a pasted link, and an item picked from a connected app (Figma).
         self.assertIn("linkPickerHtml({ prefer: [\"figma\"]", page)
+
+    def test_hosted_self_healing_and_reconnection(self):
+        # Hosted app auto-reconnects and relocates without locking user into sign-in gate
+        self.assertIn("authResolved = true", self.js)
+        self.assertIn("relocateMachine().catch", self.js)
+        self.assertIn("Account.pickMachine(machines, remembered)", self.js)
+        self.assertIn("https://${stored}", self.js)
+
+    def test_home_new_job_button_is_sticky(self):
+        # The + new job button stays in place when scrolling
+        self.assertIn(".home-new-job-btn {", self.css)
+        self.assertIn("position: fixed;", self.css)
+        self.assertIn(".topbar-actions:has(.home-new-job-btn)", self.css)
 
     def test_slow_model_work_is_started_and_polled_not_held_open(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
@@ -3703,6 +3722,16 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(".job-hero.tone-attention { border-color: var(--warn); background: var(--warn-soft); }", self.css)
         self.assertIn(".banner { display: flex; align-items: center; gap: var(--space-3) var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--border);", self.css)
         self.assertIn(".notice { padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--warn);", self.css)
+
+    def test_setup_checklist_js_handles_git_init_and_github_create(self):
+        self.assertIn('api("setup/git-init"', self.js)
+        self.assertIn('api("setup/github-create"', self.js)
+        self.assertIn("Create GitHub repository", self.js)
+
+    def test_console_stopped_message_in_js(self):
+        self.assertIn("Console connection was stopped.", self.js)
+        fn = self.js[self.js.index("function nextStep(r)"):self.js.index("pages.run =")]
+        self.assertIn('r.action === "console"', fn)
 
 
 class ScopeEndpointTests(ServerTestCase):
@@ -5360,6 +5389,33 @@ class JobChangesTests(unittest.TestCase):
         changes = ui.job_changes(self.root, {"branch": "ai/job-1", "base_branch": "main"})
         self.assertEqual(changes["local_files"], ["app.py"])
         self.assertIn("app.py", changes["files"])
+
+
+class SetupActionEndpointTests(ServerTestCase):
+    def test_setup_git_init_endpoint(self):
+        new_folder = Path(self.tmp.name) / "uninitialized_project"
+        new_folder.mkdir()
+        (new_folder / "file.txt").write_text("hello")
+        self.server.set_root(new_folder)
+        res, data = self.request("POST", "/api/setup/git-init", body={}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertTrue((new_folder / ".git").is_dir())
+
+    def test_setup_github_create_endpoint(self):
+        with patch("orchestrator.new_project.publish_to_github") as mock_pub:
+            mock_pub.return_value = {"ok": True, "name": "Create the GitHub repository", "detail": "user/repo", "url": "https://github.com/user/repo"}
+            res, data = self.request("POST", "/api/setup/github-create", body={"visibility": "private"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            mock_pub.assert_called_once()
+
+    def test_ptysession_records_stopped(self):
+        sess = ui.PtySession("test", "console", "Interactive console", ["echo", "1"], self.root, {})
+        self.assertFalse(sess.stopped)
+        sess.stop()
+        self.assertTrue(sess.stopped)
+        self.assertTrue(sess.summary()["stopped"])
 
 
 if __name__ == "__main__":

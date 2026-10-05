@@ -198,6 +198,7 @@ class PtySession:
         self.last_output = self.started
         self.ended: float | None = None
         self.exit_code: int | None = None
+        self.stopped: bool = False
         self._buffer = bytearray()
         self._base = 0  # absolute offset of _buffer[0]
         self._cond = threading.Condition()
@@ -299,6 +300,7 @@ class PtySession:
     def stop(self) -> None:
         if not self.running:
             return
+        self.stopped = True
         try:
             os.killpg(self._proc.pid, signal.SIGTERM)
         except OSError:
@@ -320,6 +322,7 @@ class PtySession:
             "id": self.id, "action": self.action, "title": self.title,
             "command": " ".join(_display_argv(self.argv)), "started": self.started,
             "ended": self.ended, "running": self.running, "exit_code": self.exit_code,
+            "stopped": self.stopped,
             "job": self.job_id, "result_job": self.result_job,
             # Quiet for a while with a prompt-shaped last line: probably waiting on you.
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
@@ -752,7 +755,7 @@ def project_facts(root: Path) -> dict[str, Any]:
     gaps = 0
     if cases:
         cov = test_case_lib.coverage(root, cases, test_index(root))
-        gaps = sum(1 for c in cases if c.get("type") != "manual" and cov[c["id"]]["status"] in ("unassigned", "planned"))
+        gaps = sum(1 for c in cases if not test_case_lib.is_manual(c) and cov[c["id"]]["status"] in ("unassigned", "planned"))
     kpis = [k for f in features for k in f.get("kpis") or []]
     pipeline = delivery_view.pipeline(lambda argv: gh_cached(root, argv), base_branch(root, settings))
     base_runs = [r for r in pipeline["runs"] if r["on_base"]]
@@ -925,7 +928,7 @@ def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | 
     rows = []
     for c in cases:
         c_cov = cov[c["id"]]
-        rows.append({"id": c["id"], "area": c.get("area") or "General", "title": c.get("title", ""), "type": c.get("type", "unit"),
+        rows.append({"id": c["id"], "area": c.get("area") or "General", "title": c.get("title", ""), "type": test_case_lib.normalize_type(c.get("type")),
                      "priority": c.get("priority", "medium"), "preconditions": c.get("preconditions") or [], "steps": c.get("steps") or [],
                      "expected": c.get("expected", ""), "covers": c.get("covers") or [], "task": c.get("task"),
                      "status": c_cov["status"], "found_in": c_cov["tests"], "assigned": c_cov["assigned"],
@@ -3007,6 +3010,58 @@ def publish_known_project(root_str: str, visibility: str) -> dict[str, Any]:
     return step
 
 
+def init_git_repo(root: Path | None) -> dict[str, Any]:
+    if root is None:
+        raise UIError("No project selected")
+    if (root / ".git").exists():
+        return {"ok": True, "already_initialized": True}
+    res = subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, capture_output=True, text=True)
+    if res.returncode != 0:
+        res = subprocess.run(["git", "init", "-q"], cwd=root, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise UIError(f"Failed to initialize git: {(res.stderr or res.stdout).strip()}")
+    subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+    diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root)
+    if diff.returncode != 0:
+        subprocess.run(["git", "commit", "-q", "-m", "Start project"], cwd=root, capture_output=True)
+    return {"ok": True}
+
+
+def create_github_repo_for_project(root: Path | None, visibility: str, name: str | None = None) -> dict[str, Any]:
+    if root is None:
+        raise UIError("No project selected")
+    if not (root / ".git").exists():
+        init_git_repo(root)
+    from orchestrator.setup_checklist import GITHUB_REMOTE
+    origin = git(root, "remote", "get-url", "origin")
+    if origin and GITHUB_REMOTE.search(origin):
+        raise UIError("This project already has a GitHub remote")
+
+    # Ensure there is at least one commit so --push succeeds
+    has_commit = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=root, capture_output=True).returncode == 0
+    if not has_commit:
+        subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root)
+        if diff.returncode != 0:
+            subprocess.run(["git", "commit", "-q", "-m", "Start project"], cwd=root, capture_output=True)
+        else:
+            subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "Initial commit"], cwd=root, capture_output=True)
+
+    proj_file = runtime_dir(root) / "project.json"
+    proj = read_json_file(proj_file) if proj_file.exists() else {}
+    repo_name = (name or "").strip() or proj.get("name") or proj.get("project_name") or root.name
+    step = new_project.publish_to_github(root, repo_name, "public" if visibility == "public" else "private")
+    if not step.get("ok"):
+        raise UIError(step.get("detail") or "Failed to create GitHub repository")
+    if proj_file.exists():
+        proj["code_host"] = "github"
+        if step.get("url"):
+            proj["git_remote"] = step["url"]
+        write_json_file(proj_file, proj)
+    remember_project(root, repo_name, active=True)
+    return {"ok": True, "step": step}
+
+
 def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
     return lambda params, root: orchestrator_argv("script", "manual_run.py", mode)
 
@@ -4503,6 +4558,20 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"links": attach_links_to_job(root, parts[1], _clean_links(self._body().get("links")))})
         elif method == "GET" and parts == ["setup"]:
             self._json(setup_checklist(root, runtime_dir(root)))
+        elif method == "POST" and parts == ["setup", "git-init"]:
+            self._require_owner("initialize git repository")
+            self._body()
+            result = init_git_repo(root)
+            self._audit("git_initialized", root=str(root))
+            self._json(result)
+        elif method == "POST" and parts == ["setup", "github-create"]:
+            self._require_owner("create a GitHub repository")
+            body = self._body()
+            visibility = _choice(body, "visibility", ["private", "public"], default="private")
+            name = _text(body, "name", limit=80)
+            result = create_github_repo_for_project(root, visibility, name=name)
+            self._audit("github_repo_created", root=str(root), visibility=visibility)
+            self._json(result)
         elif method == "GET" and parts == ["ai-providers"]:
             self._json(ai_providers_state(root))
         elif method == "GET" and parts == ["config"]:

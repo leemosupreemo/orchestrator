@@ -116,7 +116,7 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
     origin = (_run(["git", "remote", "get-url", "origin"], cwd=root) or subprocess.CompletedProcess([], 1, "", "")).stdout.strip() if is_git else ""
     from orchestrator.code_host import host_kind, resolve_mode
     github = resolve_mode(project.get("code_host"), origin) == "github"
-    gh = github_cli_state() if github else {"installed": bool(shutil.which("gh")), "user": None}
+    gh = github_cli_state()
     providers = ready_llm_providers(settings)
     models = list(dict.fromkeys(m for mach in machines if mach.get("enabled", True) for m in mach.get("models", [])))
 
@@ -124,12 +124,14 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
         _item("project", "Project configured", True, bool(project), "Name, build and test settings" if project else "No .orchestrator/project.json yet",
               action=page("#/setup"), group="Project"),
         _item("git", "Git repository", True, is_git, "Initialized" if is_git else "This folder isn't a git repository",
+              action=None if is_git else {"type": "git_init", "label": "Initialize"},
               hint=None if is_git else "git init", group="GitHub" if github else "Git"),
     ]
     if github:
         items += [
             _item("github_remote", "GitHub remote (origin)", True, bool(GITHUB_REMOTE.search(origin)),
                   origin if GITHUB_REMOTE.search(origin) else ("origin isn't a GitHub URL" if origin else "No origin remote"),
+                  action={"type": "github_create", "label": "Create repo"} if (not GITHUB_REMOTE.search(origin) and gh.get("user")) else None,
                   hint=None if GITHUB_REMOTE.search(origin) else "gh repo create --source . --push", group="GitHub"),
             _item("github_cli", "GitHub CLI signed in", True, bool(gh["user"]),
                   f"Signed in as {gh['user']}" if gh["user"] else ("Installed, not signed in" if gh["installed"] else "GitHub CLI (gh) isn't installed"),
@@ -138,9 +140,11 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
         ]
     else:
         host = {"gitlab": "GitLab", "bitbucket": "Bitbucket", "azure": "Azure DevOps", "github": "GitHub"}.get(host_kind(origin), "")
+        remote_action = {"type": "github_create", "label": "Create repo"} if (is_git and not origin and gh.get("user")) else None
         items.append(_item("remote", "Git remote (origin)", False, bool(origin),
                            f"{host + ': ' if host else ''}{origin}. Finished jobs are pushed here as branches." if origin
                            else "None: finished work stays on this computer as branches.",
+                           action=remote_action,
                            hint=None if origin else "git remote add origin <url>", group="Git"))
     items += [
         _item("llm", "An AI provider is ready", True, bool(providers),

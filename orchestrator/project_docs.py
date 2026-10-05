@@ -91,7 +91,7 @@ def job_doc(job: dict[str, Any], review: str = "", changed_files: list[str] | No
     if cases:
         lines = []
         for c in cases:
-            line = f"- **{str(c.get('title', '')).strip()}** ({str(c.get('type', 'unit'))}): {str(c.get('expected', '')).strip()}"
+            line = f"- **{str(c.get('title', '')).strip()}** ({str(c.get('type') or 'functionality')}): {str(c.get('expected', '')).strip()}"
             if c.get("tests"):
                 line += f" Tests: {', '.join(f'`{t}`' for t in c['tests'])}"
             lines.append(line)
