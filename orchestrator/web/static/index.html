@@ -22,6 +22,7 @@
     <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 18h4"/></symbol>
     <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/></symbol>
     <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 16h7"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"/></symbol>
     <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></symbol>
@@ -50,26 +51,25 @@
         <select id="project-select" aria-label="Project"></select>
       </label>
       <button type="button" class="btn search-btn" id="search-btn" aria-haspopup="dialog"><span>Search Orchestrator</span><kbd>⌘K</kbd></button>
+      <!-- What people open most sits at the top; settings they touch once are one place, under Settings. -->
       <nav class="nav" id="nav" aria-label="Main">
+        <a href="#/readiness" data-route="readiness" id="nav-readiness" hidden><svg class="icon"><use href="#i-check"/></svg><span>Finish setup</span><span class="badge" id="setup-badge"></span></a>
         <a href="#/" data-route="home"><svg class="icon"><use href="#i-home"/></svg><span>Home</span><span class="badge" id="inbox-badge" hidden></span></a>
-        <a href="#/product" data-route="product"><svg class="icon"><use href="#i-doc"/></svg><span>Product</span></a>
-        <a href="#/projects" data-route="projects"><svg class="icon"><use href="#i-folder"/></svg><span>Projects</span></a>
-        <a href="#/devlogs" data-route="devlogs"><svg class="icon"><use href="#i-phone"/></svg><span>Device logs</span></a>
         <a href="#/activity" data-route="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span><span class="badge" id="running-badge" hidden></span></a>
+        <a href="#/product" data-route="product"><svg class="icon"><use href="#i-doc"/></svg><span>Product</span></a>
       </nav>
       <nav class="nav nav-secondary" aria-label="Tools">
         <span class="label">Build &amp; ship</span>
         <a href="#/tests" data-route="tests"><span>Tests</span></a>
-        <a href="#/git" data-route="git"><span>Git</span></a>
         <a href="#/delivery" data-route="delivery"><span>Delivery</span></a>
-        <span class="label">Learn &amp; improve</span>
-        <a href="#/measure" data-route="measure"><span>Measure</span></a>
+        <a href="#/git" data-route="git"><span>Git</span></a>
+        <a href="#/devlogs" data-route="devlogs"><span>Device logs</span></a>
+        <span class="label">Review</span>
         <a href="#/checkup" data-route="checkup"><span>Check-up</span></a>
         <a href="#/ux-review" data-route="ux-review"><span>UX review</span></a>
+        <a href="#/measure" data-route="measure"><span>Measure</span></a>
         <a href="#/docs" data-route="docs"><span>Docs</span></a>
-        <span class="label">Set up</span>
-        <a href="#/readiness" data-route="readiness"><span>Readiness</span></a>
-        <a href="#/connections" data-route="connections"><span>Connections</span></a>
+        <span class="label">Settings</span>
         <div class="nav-item-row configuration-nav-item">
           <button type="button" class="configuration-menu-trigger" id="configuration-menu-trigger" data-route="config"
                   aria-haspopup="menu" aria-controls="configuration-context-menu" aria-expanded="false">
@@ -105,7 +105,7 @@
       <a href="#/product" data-route="product"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg><span>Product</span></a>
       <a href="#/new" data-route="new" class="tabbar-new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>New job</span></a>
       <a href="#/activity" data-route="activity"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg><span>Activity</span><span class="badge" data-badge="running" hidden></span></a>
-      <a href="#/projects" data-route="projects"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>Projects</span></a>
+      <a href="#/tests" data-route="tests"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Tests</span></a>
     </nav>
   </div>
 

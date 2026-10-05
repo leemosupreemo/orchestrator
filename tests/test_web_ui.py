@@ -1307,7 +1307,9 @@ process.stdout.write(JSON.stringify(page));
         for route in ("#/config/ai", "#/config/base-branch", "#/config/email", "#/config/ai-instructions",
                       "#/config/models", "#/config/fleet", "#/config/firebase"):
             self.assertIn(route, result["html"])
-        for route in ("#/projects", "#/config/documentation", "#/config/setup-wizard", "#/config/audit", "#/ux-review"):
+        for route in ("#/readiness", "#/connections", "#/projects"):  # pages of their own, reached from Settings
+            self.assertIn(route, result["html"])
+        for route in ("#/config/documentation", "#/config/setup-wizard", "#/config/audit", "#/ux-review"):
             self.assertNotIn(route, result["html"])  # reachable elsewhere, not repeated
         self.assertEqual(result["html"].count(" disabled"), 0)
         self.assertNotIn("Coming next", result["html"])
@@ -3350,8 +3352,11 @@ class AccessibilityStaticTests(unittest.TestCase):
 
         sidebar = SidebarParser()
         sidebar.feed(self.html)
-        for href in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/git", "#/connections", "#/devlogs", "#/help"):
+        for href in ("#/", "#/activity", "#/product", "#/tests", "#/delivery", "#/git", "#/devlogs", "#/checkup", "#/ux-review",
+                     "#/measure", "#/docs", "#/readiness", "#/help"):
             self.assertIn(href, sidebar.links)
+        for href in ("#/connections", "#/projects"):  # set once: under Settings (Configuration), not the sidebar
+            self.assertNotIn(href, sidebar.links)
         for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "lock-btn"):
             self.assertIn(control, sidebar.controls)
 
@@ -3462,7 +3467,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('aria-activedescendant', self.js)
 
     def test_sidebar_tools_are_grouped_by_purpose(self):
-        for label in ("Build &amp; ship", "Learn &amp; improve", "Set up"):
+        for label in ("Build &amp; ship", "Review", "Settings"):
             self.assertIn(f'<span class="label">{label}</span>', self.html)
 
     def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
@@ -5474,7 +5479,8 @@ class MenuParityTests(unittest.TestCase):
                 # ...under the same heading: the last heading printed before the option
                 before = menu[:menu.index(f"[{letter}] {entry['label']}")]
                 self.assertEqual(re.findall(r"--- (.+?) ---", before)[-1], group["label"].replace("&amp;", "&"), entry["id"])
-        self.assertTrue({g["label"] for g in self.registry()} <= set(headings))
+        shared_groups = {g["label"].replace("&amp;", "&") for g in self.registry() if any(e["id"] in self.SHARED for e in g["entries"])}
+        self.assertTrue(shared_groups <= set(headings))
 
     def test_moved_settings_have_one_home_and_old_links_land_there(self):
         aliases = (self.STATIC / "routes.js").read_text()
@@ -5483,8 +5489,25 @@ class MenuParityTests(unittest.TestCase):
                          ("config/documentation", "docs"), ("config/archived-jobs", "?filter=archived"), ("test-cases", "tests/cases")):
             self.assertIn(f'"{old}": "{new}"', aliases, old)
         html = (self.STATIC / "index.html").read_text()
-        self.assertIn('href="#/readiness" data-route="readiness"', html)
+        self.assertIn('href="#/readiness" data-route="readiness" id="nav-readiness" hidden', html)  # shown until setup is done
+        self.assertIn('navItem.hidden = !s || s.complete;', app := (self.STATIC / "app.js").read_text())
         app = (self.STATIC / "app.js").read_text()
         connections = app[app.index("pages.connections = async"):]
         self.assertIn('const hook = owner ? (await api("config").catch(() => null))?.webhook : null;', connections)  # owners only
         self.assertIn("data-owner-only", (self.STATIC / "configuration.js").read_text().split("function chatCard")[1][:200])
+
+
+class SidebarLayoutTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def test_most_used_pages_lead_and_set_once_settings_sit_under_settings(self):
+        html = (self.STATIC / "index.html").read_text()
+        main = html[html.index('<nav class="nav" id="nav"'):html.index("</nav>", html.index('<nav class="nav" id="nav"'))]
+        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["readiness", "home", "activity", "product"])
+        tabbar = html[html.index('<nav class="tabbar"'):]
+        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', tabbar[:tabbar.index("</nav>")]), ["home", "product", "new", "activity", "tests"])
+        out = subprocess.run(["node", "--require", HTML_JS, "-e", "require(process.argv[1]);"
+                              "process.stdout.write(JSON.stringify(globalThis.ConfigurationPages.groups('owner')[0]))",
+                              str(self.STATIC / "configuration.js")], capture_output=True, text=True)
+        first = json.loads(out.stdout)
+        self.assertEqual((first["label"], [e["route"] for e in first["entries"]]), ("Set up", ["#/readiness", "#/connections", "#/projects"]))

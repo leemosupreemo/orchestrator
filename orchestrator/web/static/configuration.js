@@ -4,8 +4,18 @@
   // Grouped by what a setting affects, the way GitHub splits a repository's settings from your own: this project,
   // the AI, the computers and who reaches them, and alerts. Each setting has one home: environment checks are on
   // Readiness, Slack alerts on Connections, guides in Docs, archived jobs on Home, screen setup in UX review.
-  // Entries with `listed: false` are one tap away elsewhere (Projects), so menus leave them out; their routes work.
+  // Entries with `listed: false` are left out of menus; their routes still work.
   const registry = [
+    {
+      // Pages of their own, listed here so every setting is reached from one place (Settings in the sidebar).
+      id: "setup",
+      label: "Set up",
+      entries: [
+        {id: "readiness", label: "Readiness", description: "Whether jobs can run here: what's missing, build tools and checks.", route: "#/readiness", enabled: true, status: null},
+        {id: "connections", label: "Connections", description: "Jira, Trello, Sentry and Figma for jobs, and Slack alerts.", route: "#/connections", enabled: true, status: null},
+        {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
+      ],
+    },
     {
       id: "project",
       label: "This project",
@@ -13,7 +23,6 @@
         {id: "base-branch", label: "Base branch", description: "The branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
         {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
         {id: "xcode-cloud", label: "Xcode Cloud", description: "Cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
-        {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null, listed: false},
       ],
     },
     {

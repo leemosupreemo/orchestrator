@@ -475,7 +475,7 @@ For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://s
 
 > **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have, or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. See [Product requirements](product-requirements.md).
 
-> **Docs.** The **Docs** page (under *Learn & improve*) is the project's documentation in one place: the product requirements, a page for every feature and every job (what it is, what was decided, what was built, how it was tested, what the review said), and the project's own `README`, `AGENTS.md` and `docs/` files. Job and feature pages are generated from the live project, so they can't go stale. Search them, and **Download everything** gives one markdown file. See [Product requirements](product-requirements.md) for the PRD.
+> **Docs.** The **Docs** page (under *Review*) is the project's documentation in one place: the product requirements, a page for every feature and every job (what it is, what was decided, what was built, how it was tested, what the review said), and the project's own `README`, `AGENTS.md` and `docs/` files. Job and feature pages are generated from the live project, so they can't go stale. Search them, and **Download everything** gives one markdown file. See [Product requirements](product-requirements.md) for the PRD.
 
 `orchestrator ui` starts a local web interface for the current project and opens it in your browser:
 

@@ -1821,6 +1821,11 @@ function renderSetupFab() {
   const show = s && !s.complete && ["home", "checkup"].includes(current.page) && !(current.page === "home" && !s.seen);
   fab.hidden = !show;
   if (s) fab.querySelector("span").textContent = `Setup ${s.required_done}/${s.required_total}`;
+  const navItem = $("#nav-readiness"); // the sidebar's way back to it, until everything required is done
+  if (navItem) {
+    navItem.hidden = !s || s.complete;
+    if (s) $("#setup-badge").textContent = String(s.required_total - s.required_done);
+  }
   if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
 }
 
@@ -5323,7 +5328,9 @@ function resolveRoute() {
     return { page: "config", args: section ? [section.id] : [], nav: "config", query };
   }
   if (parts[0] === "connect" || parts[0] === "computers") return { page: parts[0], args: [], nav: null, query };
-  if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "projects", query };
+  if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "config", query };
+  if (["connections", "projects"].includes(parts[0])) return { page: parts[0], args: [], nav: "config", query }; // under Settings
+  if (parts[0] === "readiness") return { page: "readiness", args: [], nav: setupState && !setupState.complete ? "readiness" : "config", query };
   if (parts[0] === "product") return { page: "product", args: [], nav: "product", query };
   if (parts[0] === "docs") return { page: "docs", args: parts.slice(1), nav: "docs", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
