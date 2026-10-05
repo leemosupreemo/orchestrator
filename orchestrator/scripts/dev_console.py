@@ -6934,28 +6934,33 @@ def handle_configuration_menu(session_allowed_machines: list[str], session_allow
                 except:
                     pass
 
-            print("  \033[1;96m--- Models & Instructions ---\033[0m")
-            print_wrapped_option("[\033[93mM\033[0m] LLM Models (Session Defaults)")
-            print_wrapped_option("[\033[93mK\033[0m] Manage LLM API Keys")
-            print_wrapped_option("[\033[93mI\033[0m] AI Instruction Settings (.md files)")
+            # Same groups and names as the web app's Configuration menu (configuration.js); the letters stay as they were.
+            print("  \033[1;96m--- This project ---\033[0m")
+            print_wrapped_option(f"[\033[93mG\033[0m] Base branch (\033[97m{global_base}\033[0m)")
+            print_wrapped_option("[\033[93mC\033[0m] Projects (switch project)")
+            print_wrapped_option("[\033[93mA\033[0m] Archived jobs")
+            print_wrapped_option("[\033[93mD\033[0m] Tester builds (Firebase)")
+            print_wrapped_option("[\033[93mX\033[0m] Xcode Cloud")
 
-            print("\n  \033[1;96m--- Machine Fleet & Project Config ---\033[0m")
-            print_wrapped_option("[\033[93mF\033[0m] Manage Machine Fleet")
-            print_wrapped_option(f"[\033[93mG\033[0m] Select Base Branch (\033[97m{global_base}\033[0m)")
-            print_wrapped_option("[\033[93mC\033[0m] Change Target Project")
-            print_wrapped_option("[\033[93mA\033[0m] Manage Archived Jobs")
+            print("\n  \033[1;96m--- AI ---\033[0m")
+            print_wrapped_option("[\033[93mM\033[0m] Models")
+            print_wrapped_option("[\033[93mK\033[0m] API keys")
+            print_wrapped_option("[\033[93mI\033[0m] Instructions for AI helpers")
 
-            print("\n  \033[1;96m--- Delivery & Notifications ---\033[0m")
-            print_wrapped_option("[\033[93mD\033[0m] Firebase App Distro (Delivery)")
-            print_wrapped_option("[\033[93mX\033[0m] Xcode Cloud & CI Workflows (ci_scripts)")
-            print_wrapped_option("[\033[93mE\033[0m] Email Notification Settings")
+            print("\n  \033[1;96m--- Computers & access ---\033[0m")
+            print_wrapped_option("[\033[93mF\033[0m] Machines")
+            print_wrapped_option("[\033[93mU\033[0m] Updates")
 
-            print("\n  \033[1;96m--- Setup, Health & Documentation ---\033[0m")
-            print_wrapped_option("[\033[93mW\033[0m] Setup Wizard (Full Project & Tools Setup)")
-            print_wrapped_option("[\033[93mP\033[0m] Run Prerequisite Audit")
-            print_wrapped_option("[\033[93mS\033[0m] Documentation & Architecture Guides")
-            print_wrapped_option("[\033[93mT\033[0m] Orchestrator Self-Tests")
-            print_wrapped_option("[\033[93mU\033[0m] Update Orchestrator (Local & Fleet)")
+            print("\n  \033[1;96m--- Alerts ---\033[0m")
+            print_wrapped_option("[\033[93mE\033[0m] Email alerts")
+
+            print("\n  \033[1;96m--- Readiness ---\033[0m")
+            print_wrapped_option("[\033[93mW\033[0m] Setup wizard")
+            print_wrapped_option("[\033[93mP\033[0m] Tools and logins (prerequisite audit)")
+            print_wrapped_option("[\033[93mT\033[0m] Orchestrator health check")
+
+            print("\n  \033[1;96m--- Docs ---\033[0m")
+            print_wrapped_option("[\033[93mS\033[0m] Orchestrator guides")
             print()
             print_wrapped_option("[\033[1;91mB\033[0m] Back", indent_size=4, subsequent_indent_size=4)
             # Anchor prompt to bottom

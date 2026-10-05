@@ -148,7 +148,9 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
 ## Home
 
 - One list of jobs. A job that needs you is a job in an earlier status: it sorts first and its status says what it needs ("Approve plan"). The whole row is one link to the job, where the next step is the primary action; rows carry no buttons. There is no second "waiting" list; "Needs you" is a filter.
-- Actions belong to the page for what they act on (Tests: run, build, coverage; Delivery: send a build; Device logs: pull; Check-up: environment checks and the setup wizard). Home has no menu of them.
+- Actions belong to the page for what they act on (Tests: run, build, coverage; Delivery: send a build; Device logs: pull; Readiness: environment checks and the setup checklist). Home has no menu of them.
+- One home per setting. Check-up is about the product; Readiness is about whether jobs can run here (setup checklist, build tools, tool and health checks); Slack alerts are on Connections; Orchestrator's guides are in Docs; archived jobs are a filter on Home; the test case library is under Tests (`#/tests/cases`). The terminal console's Configuration menu uses the same groups and names (checked by `MenuParityTests`).
+- A route that moves keeps its old address working: add it to `routes.js`, which sends old links to the new place with their query.
 - Things that are not jobs go where they belong: the Product card (what the product is, and a notice when the AI updated it), other projects' waiting jobs as one line under the list.
 
 ## Sign-in

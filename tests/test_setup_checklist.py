@@ -41,7 +41,7 @@ class SetupChecklistTests(unittest.TestCase):
             # No GitHub remote, so plain git: GitHub isn't asked for, and a remote is optional.
             self.assertNotIn("github_cli", items)
             self.assertFalse(items["remote"]["required"])
-            self.assertTrue(all(not items[k]["required"] for k in ("firebase", "email", "workers", "prompts")))
+            self.assertTrue(all(not items[k]["required"] for k in ("firebase", "email", "prompts")))
 
     def test_github_project_needs_github(self):
         with tempfile.TemporaryDirectory() as d:

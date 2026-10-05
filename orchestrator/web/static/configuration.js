@@ -2,29 +2,27 @@
   "use strict";
 
   // Grouped by what a setting affects, the way GitHub splits a repository's settings from your own: this project,
-  // the AI, the computers and who reaches them, alerts, and troubleshooting. Entries with `listed: false` are already
-  // one tap away elsewhere (Projects, Docs, Check-up), so menus leave them out; their routes still work.
+  // the AI, the computers and who reaches them, and alerts. Each setting has one home: environment checks are on
+  // Readiness, Slack alerts on Connections, guides in Docs, archived jobs on Home, screen setup in UX review.
+  // Entries with `listed: false` are one tap away elsewhere (Projects), so menus leave them out; their routes work.
   const registry = [
     {
       id: "project",
       label: "This project",
       entries: [
         {id: "base-branch", label: "Base branch", description: "The branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
-        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about this project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
         {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
         {id: "xcode-cloud", label: "Xcode Cloud", description: "Cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
-        {id: "ui-review", label: "Screens to review", description: "Where your app runs and which pages the UX and design review captures.", route: "#/ux-review?setup=1", enabled: true, status: null},
-        {id: "archived-jobs", label: "Archived jobs", description: "Jobs you finished or put away. Restore any of them.", route: "#/config/archived-jobs", enabled: true, status: null},
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null, listed: false},
       ],
     },
     {
       id: "ai",
-      label: "AI models",
+      label: "AI",
       entries: [
-        {id: "ai", label: "Add an AI", description: "Get an AI to do the work: free options first, with install and sign-in steps.", route: "#/config/ai", enabled: true, status: null},
-        {id: "models", label: "Models", description: "Which AI models jobs can use.", route: "#/config/models", enabled: true, status: null},
-        {id: "api-keys", label: "API keys", description: "Connect AI providers. Saved keys are never shown.", route: "#/config/api-keys", enabled: true, ownerOnly: true, status: null},
+        {id: "ai", label: "Add an AI", description: "Get an AI to do the work: free options first, with install and sign-in steps or an API key.", route: "#/config/ai", enabled: true, status: null},
+        {id: "models", label: "Models", description: "Which AI model each role (architect, planner, builder, reviewer) uses.", route: "#/config/models", enabled: true, status: null},
+        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about this project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
       ],
     },
     {
@@ -42,17 +40,6 @@
       label: "Alerts",
       entries: [
         {id: "email", label: "Email alerts", description: "Who gets emails, and the account that sends them.", route: "#/config/email", enabled: true, ownerOnly: true, status: null},
-        {id: "chat", label: "Slack & chat alerts", description: "Get pinged when something needs you, even with the tab closed.", route: "#/config/chat", enabled: true, ownerOnly: true, status: null},
-      ],
-    },
-    {
-      id: "troubleshooting",
-      label: "Troubleshooting",
-      entries: [
-        {id: "audit", label: "Tool check", description: "Check the tools and machines jobs need are ready (prerequisite audit).", route: "#/config/audit", enabled: true, status: null},
-        {id: "self-tests", label: "Orchestrator health check", description: "Run Orchestrator's own self-tests to confirm it works on this machine.", route: "#/config/self-tests", enabled: true, status: null},
-        {id: "setup-wizard", label: "Setup wizard", description: "Walk through project, tools and delivery setup.", route: "#/config/setup-wizard", enabled: true, ownerOnly: true, status: null, listed: false},
-        {id: "documentation", label: "Documentation", description: "Read Orchestrator and project guides.", route: "#/config/documentation", enabled: true, status: null, listed: false},
       ],
     },
   ];
@@ -185,7 +172,8 @@
     };
   }
 
-  function renderApiKeys(state) {
+  // API keys: a card on Add an AI (owners only; members' config has no keys).
+  function apiKeysCard(state) {
     const keys = Array.isArray(state.keys) ? state.keys : [];
     const rows = keys.map((key) => {
       const isOllama = key.id === "ollama_api_key";
@@ -202,16 +190,11 @@
         </div>
       </div>`;
     }).join("");
-    return {
-      title: "API keys",
-      sub: "Connect AI providers. Saved key values are never displayed.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Provider keys</h2><span class="count">${keys.length}</span></div>
+    return `<section class="card configuration-card" id="api-keys">
+          <div class="card-h"><h2>API keys</h2><span class="count">${keys.length}</span></div>
+          <p class="muted">Use a provider through its API instead of its app. Saved key values are never shown.</p>
           <div class="configuration-setting-list">${rows || `<div class="empty">No providers are available.</div>`}</div>
-        </section>
-      </div>`,
-    };
+        </section>`;
   }
 
   // Add an AI: each provider with its cost, whether it's ready here, and the exact install and sign-in steps.
@@ -226,7 +209,7 @@
         <p><strong>${escapeHtml(p.cost_label)}.</strong> ${escapeHtml(p.what)}</p>
         ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}${p.install_note ? `<small>${escapeHtml(p.install_note)}</small>` : ""}`}
           <p class="muted">${p.installed ? "Then" : "2."} ${escapeHtml(p.sign_in)}</p>`}
-        <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key ? ` · <a href="#/config/api-keys">Add an API key instead</a>` : ""}</p>
+        <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
       </section>`).join("");
     const plugins = ai.plugins.map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {
@@ -235,6 +218,7 @@
       html: `<div class="configuration-page">
         <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
         ${cards || `<div class="empty">Couldn't check the AI tools on this computer.</div>`}
+        ${Array.isArray(state.keys) ? apiKeysCard(state) : ""}
         <section class="card configuration-card">
           <div class="card-h"><h2>Helpful plugins for your AI tools</h2></div>
           <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
@@ -259,30 +243,6 @@
             </label>
             <div class="row end"><button class="btn primary" type="submit">Save base branch</button></div>
           </form>
-        </section>
-      </div>`,
-    };
-  }
-
-  function renderArchivedJobs(state) {
-    const archived = Array.isArray(state.archived) ? state.archived : [];
-    const rows = archived.map((job) => `<div class="configuration-setting-row">
-      <div class="main-col">
-        <strong><span class="mono">${escapeHtml(job.job_id)}</span> ${escapeHtml(job.title)}</strong>
-        <span class="configuration-status">${escapeHtml(job.status)}</span>
-        ${job.corrupt ? `<small>Corrupt archive data</small>` : ""}
-      </div>
-      ${job.corrupt
-        ? `<button type="button" class="btn small" disabled>Unavailable</button>`
-        : `<button type="button" class="btn small" data-config-action="archive-restore" data-id="${escapeHtml(job.id)}">Restore</button>`}
-    </div>`).join("");
-    return {
-      title: "Archived jobs",
-      sub: "Restore completed work to the active jobs list.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Archived jobs</h2><span class="count">${archived.length}</span></div>
-          <div class="configuration-setting-list">${rows || `<div class="empty">No archived jobs</div>`}</div>
         </section>
       </div>`,
     };
@@ -326,14 +286,10 @@
     };
   }
 
-  function renderChat(state) {
-    const hook = state.webhook || {};
-    return {
-      title: "Slack & chat alerts",
-      sub: "A message when a job needs you, and when a run finishes or fails. Works with any Slack-compatible incoming webhook.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Webhook</h2><div class="row">
+  // Slack & chat alerts, shown on Connections with the other apps Orchestrator talks to (owners only).
+  function chatCard(hook = {}) {
+    return `<section class="card configuration-card" id="chat-alerts" data-owner-only>
+          <div class="card-h"><h2>Slack &amp; chat alerts</h2><div class="row">
             <button type="button" class="btn small" data-config-action="chat-set">${hook.set ? "Change" : "Add webhook"}</button>
             ${hook.set ? `<button type="button" class="btn small primary" data-config-action="chat-test">Send test message</button>
             <button type="button" class="btn small danger" data-config-action="chat-clear">Remove</button>` : ""}
@@ -341,11 +297,9 @@
           <div class="card-b stack">
             <strong>${hook.set ? "Connected" : "Not set up"}</strong>
             <span class="configuration-status">${hook.set ? `Sending to ${escapeHtml(hook.host)}. The full address is stored but not shown.` : "Paste an https:// incoming-webhook URL from Slack (or a compatible tool)."}</span>
-            <span class="muted">Runs while the Orchestrator web server is running. Browser alerts (sidebar button) and worker emails work separately.</span>
+            <span class="muted">A message when a job needs you, and when a run finishes or fails. Works with any Slack-compatible incoming webhook, while the Orchestrator web server is running. Browser alerts (sidebar button) and worker emails work separately.</span>
           </div>
-        </section>
-      </div>`,
-    };
+        </section>`;
   }
 
   const EMAIL_SOURCES = {
@@ -408,28 +362,6 @@
     };
   }
 
-  function renderDocumentation(state) {
-    const docs = Array.isArray(state.docs) ? state.docs : [];
-    const sections = ["Orchestrator docs", "Project docs"].map((section) => {
-      const entries = docs.filter((doc) => doc.section === section);
-      if (!entries.length) return "";
-      return `<section class="card configuration-card" aria-labelledby="configuration-docs-${section === "Orchestrator docs" ? "orchestrator" : "project"}">
-        <div class="card-h"><h2 id="configuration-docs-${section === "Orchestrator docs" ? "orchestrator" : "project"}">${escapeHtml(section)}</h2><span class="count">${entries.length}</span></div>
-        <ul class="configuration-document-list">${entries.map((doc) => `<li>
-          <span>${escapeHtml(doc.name)}</span>
-          <button type="button" class="btn small" data-config-action="document-read" data-id="${escapeHtml(doc.id)}">Read</button>
-        </li>`).join("")}</ul>
-      </section>`;
-    }).join("");
-    return {
-      title: "Documentation",
-      sub: "Read guides for Orchestrator and the active project.",
-      html: `<div class="configuration-page">
-        ${sections || `<div class="empty">No documentation is available.</div>`}
-      </div>`,
-    };
-  }
-
   function renderModels(state) {
     const modelsData = state.models || {};
     const assignments = modelsData.assignments || {};
@@ -452,8 +384,8 @@
       </div>`;
     }).join("");
     return {
-      title: "AI Model Team",
-      sub: "Assign default AI models for each specialized role in the orchestrator team.",
+      title: "Models",
+      sub: "Which AI model each role uses by default.",
       html: `<div class="configuration-page">
         <section class="card configuration-card">
           <div class="card-h"><h2>Team Role Assignments</h2></div>
@@ -595,69 +527,20 @@
     };
   }
 
-  function renderAudit(state) {
-    return {
-      title: "Tool check",
-      sub: "Verify developer tools, git, python, and environment readiness.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Are the tools ready?</h2><button type="button" class="btn primary small" data-config-action="run-audit">Run tool check</button></div>
-          <div class="card-b stack">
-            <p>Checks Xcode Command Line Tools, Python 3.10+, Git, GitHub CLI (gh), model API keys, and simulator runtimes.</p>
-          </div>
-        </section>
-      </div>`,
-    };
-  }
 
-  function renderSelfTests(state) {
-    return {
-      title: "Orchestrator health check",
-      sub: "Run validation suites to test Orchestrator functionality.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Self-tests</h2><button type="button" class="btn primary small" data-config-action="run-self-tests">Run All Self-Tests</button></div>
-          <div class="card-b stack">
-            <p>Runs the test suite across job scheduling, worker tools, stack detection, and model routing.</p>
-          </div>
-        </section>
-      </div>`,
-    };
-  }
 
-  function renderSetupWizard(state) {
-    return {
-      title: "Setup wizard",
-      sub: "Walk through project configuration and environment setup.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Setup</h2><button type="button" class="btn primary small" data-config-action="launch-wizard">Open the setup checklist</button></div>
-          <div class="card-b stack">
-            <p>What jobs need (an AI, a machine, how the project is built and tested, delivery), each with a way to do it here.</p>
-          </div>
-        </section>
-      </div>`,
-    };
-  }
 
   function render(section, state = {}) {
     if (section === "ai") return renderAi(state);
-    if (section === "api-keys") return renderApiKeys(state);
     if (section === "base-branch") return renderBaseBranch(state);
-    if (section === "archived-jobs") return renderArchivedJobs(state);
     if (section === "email") return renderEmail(state);
-    if (section === "chat") return renderChat(state);
     if (section === "access") return renderAccess(state);
-    if (section === "documentation") return renderDocumentation(state);
     if (section === "models") return renderModels(state);
     if (section === "ai-instructions") return renderAiInstructions(state);
     if (section === "fleet") return renderFleet(state);
     if (section === "firebase") return renderFirebase(state);
     if (section === "xcode-cloud") return renderXcodeCloud(state);
     if (section === "updates") return renderUpdates(state);
-    if (section === "audit") return renderAudit(state);
-    if (section === "self-tests") return renderSelfTests(state);
-    if (section === "setup-wizard") return renderSetupWizard(state);
     return renderChooser(state);
   }
 
@@ -700,5 +583,6 @@
     routeMatches,
     applyRole,
     canRunAction,
+    chatCard,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

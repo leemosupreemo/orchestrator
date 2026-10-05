@@ -118,6 +118,7 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
     github = resolve_mode(project.get("code_host"), origin) == "github"
     gh = github_cli_state()
     providers = ready_llm_providers(settings)
+    ssh_machines = sum(1 for m in machines if m.get("execution_mode") == "ssh")
     models = list(dict.fromkeys(m for mach in machines if mach.get("enabled", True) for m in mach.get("models", [])))
 
     items = [
@@ -151,22 +152,21 @@ def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
               ", ".join(providers[:4]) if providers else "No AI is set up yet. Free options are available.",
               action={"type": "route", "to": "#/config/ai"}, group="AI"),
         _item("machines", "A machine to run jobs on", True, bool(machines),
-              f"{len(machines)} configured" if machines else "machines.json is missing or empty",
+              (f"{len(machines)} configured, {ssh_machines} remote over SSH" if ssh_machines else f"{len(machines)} configured. Add other Macs to run jobs side by side.")
+              if machines else "machines.json is missing or empty",
               action=page("#/config/fleet"), group="AI"),
         _item("models", "At least one model selected", True, bool(models),
               f"{len(models)} selected" if models else "No models are assigned to a machine",
               action=page("#/config/models"), group="AI"),
         _item("docs", "Grounding docs (AGENTS.md, docs/)", False,
               (root / "AGENTS.md").exists() and (root / "docs" / "architecture.md").exists(),
-              "Give the AI the project's rules and architecture", action={"type": "route", "to": "#/config"}, group="Recommended"),
+              "Give the AI the project's rules and architecture", action=page("#/config/ai-instructions"), group="Recommended"),
         _item("connections", "Connect Jira, Trello, Sentry or Figma", False, bool(settings.get("integrations")),
               "Tie jobs to tickets, pull in error logs and designs", action={"type": "route", "to": "#/connections"}, group="Optional"),
         _item("firebase", "Firebase delivery to testers", False, bool(project.get("firebase_distribution")),
               "Send builds to testers after a job", action=page("#/config/firebase"), group="Optional"),
         _item("email", "Email notifications", False, bool(settings.get("notification_emails")),
-              "Get told when a job finishes or needs you", action={"type": "route", "to": "#/config"}, group="Optional"),
-        _item("workers", "Remote SSH workers", False, any(m.get("execution_mode") == "ssh" for m in machines),
-              "Run jobs on other Macs", action=page("#/config/fleet"), group="Optional"),
+              "Get told when a job finishes or needs you", action=page("#/config/email"), group="Optional"),
         _item("prompts", "Custom role prompts", False, (runtime / "prompts").is_dir() and any((runtime / "prompts").iterdir()),
               "Tune how the planner, builder and reviewer behave", action=page("#/config/ai-instructions"), group="Optional"),
     ]

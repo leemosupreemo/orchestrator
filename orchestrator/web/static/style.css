@@ -1398,6 +1398,7 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 .setup-panel-h { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
 .setup-panel-h .btn { margin-left: auto; }
 .setup-panel-b { overflow: auto; padding-bottom: var(--space-2); }
+.setup-panel-more { margin: var(--space-2) var(--space-4) 0; }
 @media (max-width: 760px) {
   .setup-fab { right: 16px; bottom: calc(72px + env(safe-area-inset-bottom)); }
   .setup-panel { left: 16px; right: 16px; bottom: calc(128px + env(safe-area-inset-bottom)); width: auto; }

@@ -6,6 +6,7 @@ import shutil
 import io
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -1022,8 +1023,9 @@ const ai = {checked: "October 2026", any_ready: false, plugins: [{name: "Playwri
   {id: "claude", name: "Claude Code", cost_label: "Subscription", what: "Plans", install: "y", install_alt: "", sign_in: "z",
    link: "https://docs.claude.com", installed: true, ready: true},
 ]};
-const page = P.render("ai", {ai});
-process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: page.html, entry: P.resolve("ai", "member")?.route || null}));
+const page = P.render("ai", {ai, keys: []});
+const member = P.render("ai", {ai});  // members' config carries no keys
+process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: page.html, member: member.html, entry: P.resolve("ai", "member")?.route || null}));
 """)
         html = result["html"]
         self.assertEqual(result["title"], "Add an AI")
@@ -1034,6 +1036,8 @@ process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: pag
         self.assertIn("Installed, not signed in", codex)
         self.assertNotIn("Install it", codex)  # already installed: only the sign-in step
         self.assertIn("Add an API key instead", codex)
+        self.assertNotIn("Add an API key instead", result["member"])
+        self.assertNotIn('id="api-keys"', result["member"])
         claude = html[html.index('data-provider="claude"'):]
         self.assertIn("Ready", claude)
         self.assertNotIn("Run", claude.split("</section>")[0])
@@ -1096,27 +1100,23 @@ process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]),
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
 const pages = globalThis.ConfigurationPages;
-const ids = ["api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"];
+const ids = ["ai", "base-branch", "projects", "email"];
 process.stdout.write(JSON.stringify(Object.fromEntries(ids.map((id) => [id, pages.find(id)]))));
 """)
-        self.assertEqual({key: entries[key]["route"] for key in (
-            "api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"
-        )}, {
-            "api-keys": "#/config/api-keys",
-            "base-branch": "#/config/base-branch",
-            "projects": "#/projects",
-            "archived-jobs": "#/config/archived-jobs",
-            "email": "#/config/email",
-            "documentation": "#/config/documentation",
-        })
-        self.assertTrue(all(entries[key]["enabled"] for key in (
-            "api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"
-        )))
+        self.assertEqual({key: entry["route"] for key, entry in entries.items()}, {
+            "ai": "#/config/ai", "base-branch": "#/config/base-branch", "projects": "#/projects", "email": "#/config/email"})
+        self.assertTrue(all(entry["enabled"] for entry in entries.values()))
+
+    def test_settings_that_moved_are_gone_from_configuration(self):
+        found = self.run_configuration_script("""
+const ids = ["api-keys", "archived-jobs", "documentation", "chat", "audit", "self-tests", "setup-wizard", "ui-review"];
+process.stdout.write(JSON.stringify(ids.filter((id) => globalThis.ConfigurationPages.find(id))));
+""")
+        self.assertEqual(found, [])  # each has one home now; routes.js sends their old addresses there
 
     def test_registry_exposes_all_configuration_entries_enabled(self):
         result = self.run_configuration_script("""
-const ids = ['models', 'ai-instructions', 'fleet', 'firebase', 'xcode-cloud',
-  'setup-wizard', 'audit', 'self-tests', 'updates'];
+const ids = ['models', 'ai-instructions', 'fleet', 'firebase', 'xcode-cloud', 'updates'];
 const active = Object.fromEntries(ids.map((id) => [id, globalThis.ConfigurationPages.resolve(id)]));
 process.stdout.write(JSON.stringify({active, menu: globalThis.ConfigurationPages.renderMenu()}));
 """)
@@ -1134,11 +1134,10 @@ const pages = globalThis.ConfigurationPages;
 const ids = pages.groups('member').flatMap((group) => group.entries.map((entry) => entry.id));
 process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), access: pages.resolve('access', 'member')}));
 """)
-        for entry_id in ("api-keys", "ai-instructions", "fleet", "access", "email", "chat", "firebase", "updates"):
+        for entry_id in ("ai-instructions", "fleet", "access", "email", "firebase", "updates"):
             self.assertNotIn(entry_id, result["ids"])
-        for entry_id in ("models", "base-branch", "archived-jobs", "audit", "self-tests"):
+        for entry_id in ("ai", "models", "base-branch", "xcode-cloud"):
             self.assertIn(entry_id, result["ids"])
-        self.assertNotIn("documentation", result["ids"])  # Docs and Help are one tap away; menus don't repeat them
         self.assertNotIn("Who can sign in", result["menu"])
         self.assertIsNone(result["access"])
 
@@ -1147,10 +1146,10 @@ process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), acce
 const page = globalThis.ConfigurationPages.render(undefined, {viewer: {role: 'member'}});
 process.stdout.write(JSON.stringify(page.html));
 """)
-        self.assertNotIn("API keys", html)
+        self.assertNotIn("Instructions for AI helpers", html)
         self.assertNotIn("Who can sign in", html)
         self.assertIn("Base branch", html)
-        self.assertIn("Tool check", html)
+        self.assertIn("Add an AI", html)
 
     def test_role_ui_hides_owner_controls_and_can_restore_them(self):
         result = self.run_configuration_script("""
@@ -1212,13 +1211,13 @@ process.stdout.write(JSON.stringify(page.html));
         result = self.run_configuration_script("""
 const pages = globalThis.ConfigurationPages;
 process.stdout.write(JSON.stringify({
-  enabled: pages.resolve('api-keys'),
+  enabled: pages.resolve('email'),
   models: pages.resolve('models'),
   external: pages.resolve('projects'),
   unknown: pages.resolve('unknown')
 }));
 """)
-        self.assertEqual(result["enabled"]["route"], "#/config/api-keys")
+        self.assertEqual(result["enabled"]["route"], "#/config/email")
         self.assertEqual(result["models"]["route"], "#/config/models")
         self.assertIsNone(result["external"])
         self.assertIsNone(result["unknown"])
@@ -1302,20 +1301,22 @@ const page = globalThis.ConfigurationPages.render(undefined, {});
 process.stdout.write(JSON.stringify(page));
 """)
         self.assertEqual(result["title"], "Configuration")
-        for group in ("This project", "AI models", "Computers &amp; access", "Alerts", "Troubleshooting"):
+        for group in ("This project", ">AI<", "Computers &amp; access", "Alerts"):
             self.assertIn(group, result["html"])
-        for route in ("#/config/api-keys", "#/config/base-branch", "#/config/archived-jobs", "#/config/email",
+        self.assertNotIn("Troubleshooting", result["html"])  # its checks are on Readiness now
+        for route in ("#/config/ai", "#/config/base-branch", "#/config/email", "#/config/ai-instructions",
                       "#/config/models", "#/config/fleet", "#/config/firebase"):
             self.assertIn(route, result["html"])
-        for route in ("#/projects", "#/config/documentation", "#/config/setup-wizard"):  # reachable elsewhere, not repeated
-            self.assertNotIn(route, result["html"])
+        for route in ("#/projects", "#/config/documentation", "#/config/setup-wizard", "#/config/audit", "#/ux-review"):
+            self.assertNotIn(route, result["html"])  # reachable elsewhere, not repeated
         self.assertEqual(result["html"].count(" disabled"), 0)
         self.assertNotIn("Coming next", result["html"])
         self.assertNotIn('data-action="config_menu"', result["html"])
 
     def test_api_keys_page_shows_status_without_rendering_secrets(self):
         result = self.run_configuration_script("""
-const page = globalThis.ConfigurationPages.render('api-keys', {
+const page = globalThis.ConfigurationPages.render('ai', {
+  ai: {providers: [], plugins: []},
   keys: [
     {id: 'anthropic_api_key', label: 'Anthropic', saved: true, env: true, value: 'sk-do-not-render'},
     {id: 'openai_api_key', label: 'OpenAI', saved: false, env: true},
@@ -1325,7 +1326,8 @@ const page = globalThis.ConfigurationPages.render('api-keys', {
 });
 process.stdout.write(JSON.stringify(page));
 """)
-        self.assertEqual(result["title"], "API keys")
+        self.assertEqual(result["title"], "Add an AI")
+        self.assertIn('id="api-keys"', result["html"])  # the keys card, on the page for adding an AI
         for label in ("Anthropic", "OpenAI", "Ollama", "Saved", "From environment", "Not set"):
             self.assertIn(label, result["html"])
         self.assertNotIn("sk-do-not-render", result["html"])
@@ -1394,25 +1396,14 @@ process.stdout.write(JSON.stringify(page));
         self.assertNotIn('<script>bad()</script>', result["html"])
         self.assertNotIn("develop", result["html"])
 
-    def test_archived_jobs_page_marks_corrupt_entries_and_empty_state(self):
-        result = self.run_configuration_script("""
-const populated = globalThis.ConfigurationPages.render('archived-jobs', {
-  archived: [
-    {id: 'job-1', job_id: 'JOB-1', title: 'Ready <now>', status: 'completed', corrupt: false},
-    {id: 'broken', job_id: 'BROKEN', title: 'Unreadable', status: 'unknown', corrupt: true}
-  ]
-});
-const empty = globalThis.ConfigurationPages.render('archived-jobs', {archived: []});
-process.stdout.write(JSON.stringify({populated, empty}));
-""")
-        html = result["populated"]["html"]
-        self.assertEqual(result["populated"]["title"], "Archived jobs")
-        for text in ("JOB-1", "Ready &lt;now&gt;", "completed", "BROKEN", "Corrupt"):
-            self.assertIn(text, html)
-        self.assertIn('data-config-action="archive-restore"', html)
-        self.assertIn('data-id="job-1"', html)
-        self.assertRegex(html, r'BROKEN[\s\S]*?<button[^>]*disabled')
-        self.assertIn("No archived jobs", result["empty"]["html"])
+    def test_archived_jobs_are_a_filter_on_home_with_restore(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
+        self.assertIn('href="#/?filter=archived"', home)
+        self.assertIn("data-restore-job", home)
+        self.assertIn('api("config/archived-restore"', home)
+        self.assertIn("this archive can't be read", home)  # a corrupt archive is listed, without Restore
+        self.assertIn("No archived jobs", home)
 
     def test_email_page_reports_sender_readiness_without_secret_values(self):
         result = self.run_configuration_script("""
@@ -1447,36 +1438,19 @@ process.stdout.write(JSON.stringify({gmail, resend, empty}));
         self.assertIn("No recipients yet", empty)
         self.assertNotIn('data-config-action="email-test"', empty)
 
-    def test_documentation_page_groups_allowlisted_opaque_documents(self):
+    def test_orchestrator_guides_are_on_the_docs_page_and_settings_have_no_terminal_handoff(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        docs = app[app.index("pages.docs = async"):app.index("pages.product = async")]
+        self.assertIn('g.section === "Orchestrator docs"', docs)
+        self.assertIn("Orchestrator guides", docs)
+        self.assertIn("config/doc?id=", docs)  # read by opaque id: no path is ever sent or shown
         result = self.run_configuration_script("""
-const grouped = globalThis.ConfigurationPages.render('documentation', {docs: [
-  {id: '0', name: 'Getting <Started>.md', section: 'Orchestrator docs', path: '/must/not/render'},
-  {id: '7', name: 'Project Guide.md', section: 'Project docs'}
-]});
-const oneGroup = globalThis.ConfigurationPages.render('documentation', {docs: [
-  {id: '2', name: 'Only.md', section: 'Orchestrator docs'}
-]});
-const pages = [
-  globalThis.ConfigurationPages.render(undefined, {}),
-  globalThis.ConfigurationPages.render('api-keys', {keys: []}),
-  globalThis.ConfigurationPages.render('base-branch', {branches: []}),
-  globalThis.ConfigurationPages.render('archived-jobs', {archived: []}),
-  globalThis.ConfigurationPages.render('email', {email: {recipients: []}}),
-  grouped
-];
-process.stdout.write(JSON.stringify({grouped, oneGroup, allHtml: pages.map((page) => page.html).join('')}));
+const R = globalThis.ConfigurationPages.render;
+const pages = [R(undefined, {}), R('ai', {ai: {providers: [], plugins: []}, keys: []}), R('base-branch', {branches: []}), R('email', {email: {recipients: []}})];
+process.stdout.write(JSON.stringify(pages.map((page) => page.html).join('')));
 """)
-        grouped = result["grouped"]["html"]
-        self.assertEqual(result["grouped"]["title"], "Documentation")
-        self.assertIn("Orchestrator docs", grouped)
-        self.assertIn("Project docs", grouped)
-        self.assertIn("Getting &lt;Started&gt;.md", grouped)
-        self.assertIn('data-id="0"', grouped)
-        self.assertIn('data-id="7"', grouped)
-        self.assertNotIn("/must/not/render", grouped)
-        self.assertNotIn("Project docs", result["oneGroup"]["html"])
-        for terminal_handoff in ('data-action="config_menu"', "data-scroll-to", "Open Full CLI Menu"):
-            self.assertNotIn(terminal_handoff, result["allHtml"])
+        for terminal_handoff in ('data-action="config_menu"', "Open Full CLI Menu"):
+            self.assertNotIn(terminal_handoff, result)
 
 
 class PlanRunApiTests(ServerTestCase):
@@ -3466,8 +3440,9 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_help_covers_every_page_it_names_and_the_undo_window(self):
         start = self.js.index("pages.help = async")
         help_page = self.js[start:self.js.index("pages.devlogs = async")]
-        for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config", "#/config/documentation"):
-            self.assertIn(f'"{route}"' if route != "#/config/documentation" else route, help_page, route)
+        for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/readiness", "#/projects", "#/activity", "#/config"):
+            self.assertIn(f'"{route}"', help_page, route)
+        self.assertIn('href="#/docs"', help_page)
         self.assertIn("10 seconds", help_page)
         for page in ("features", "tests", "delivery", "measure", "checkup"):
             self.assertIn(f"pages.{page} = async", self.js)
@@ -3492,9 +3467,13 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
         config = (self.STATIC / "configuration.js").read_text()
-        for label, old in (("Machines", "fleet"), ("Tool check", "prerequisite audit"), ("Orchestrator health check", "self-tests"), ("Tester builds (Firebase)", "firebase app distribution")):
+        for label, old in (("Machines", "fleet"), ("Tester builds (Firebase)", "firebase app distribution")):
             line = next(l for l in config.splitlines() if f'label: "{label}"' in l)
             self.assertIn(old, line.lower(), label)
+        app = (self.STATIC / "app.js").read_text()
+        checks = app[app.index("const READINESS_CHECKS"):app.index("pages.readiness = async")]
+        for label, old in (("Tools and logins", "prerequisite audit"), ("Orchestrator health check", "self-tests")):
+            self.assertIn(old, checks[checks.index(label):].split("]")[0].lower(), label)
         for jargon in ('label: "Machine Fleet"', 'label: "Prerequisite Audit"', 'label: "Self-Tests"'):
             self.assertNotIn(jargon, config)
 
@@ -3514,7 +3493,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('<script src="errors.js">', self.html)
         self.assertIn("Notify me when done", self.html + self.js)  # browser alerts
         config = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "configuration.js").read_text()
-        self.assertIn('label: "Slack & chat alerts"', config)  # the webhook, in the Configuration menu
+        self.assertIn("Slack &amp; chat alerts", config)  # the webhook card
+        self.assertIn("ConfigurationPages.chatCard(hook)", self.js)  # shown on Connections, for owners
 
     def test_there_is_no_separate_inbox_page_and_a_job_waiting_on_you_is_just_a_job_in_the_list(self):
         self.assertNotIn('data-route="inbox"', self.html)
@@ -3593,11 +3573,11 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
         self.assertIn('["Build", act("build")', self.js)  # Tests
-        self.assertIn('Will this computer build it?', self.js)  # Check-up: probes
-        self.assertIn('Setup tools', self.js)  # Check-up: the setup checks, and the setup checklist (not the terminal wizard)
-        for action in ("check", "check_config", "worker_check"):
-            self.assertIn(f'["{action}", ', self.js)
-        self.assertIn('href="#/setup-checklist">Setup checklist</a>', self.js)
+        readiness = self.js[self.js.index("const READINESS_CHECKS"):self.js.index("pages.help = async")]
+        self.assertIn('Will this computer build it?', readiness)  # Readiness: probes
+        for action in ("check", "check_config", "worker_check", "test"):  # and every environment check, in one place
+            self.assertIn(f'["{action}", ', readiness)
+        self.assertIn('href="#/readiness"', self.js[self.js.index("pages.checkup = async"):])  # Check-up points there
         self.assertIn('act("distribute")', self.js)  # Delivery
         self.assertIn('act("logs_pull")', self.js)  # Device logs
         self.assertIn("Open full console", self.html + self.js)
@@ -5161,14 +5141,16 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         html = (static / "index.html").read_text()
         css = (static / "style.css").read_text()
-        self.assertIn('href="#/test-cases" data-route="test-cases"', html)
+        self.assertNotIn('href="#/test-cases"', html)  # under Tests now, not its own sidebar entry
         self.assertIn('pages["test-cases"] = async', self.source)
+        self.assertIn('parts[0] === "tests" && parts[1] === "cases") return { page: "test-cases"', self.source)
+        self.assertIn('"test-cases": "tests/cases"', (static / "routes.js").read_text())  # old links still work
         self.assertIn('function testCaseForm(', self.source)
-        self.assertIn('["Test cases", "#/test-cases"', self.source)
+        self.assertIn('["Test cases", "#/tests/cases"', self.source)
         self.assertIn('data-job-tc-op="add"', self.job_page)
         self.assertIn('plan-test-cases', self.job_page)
         self.assertIn('.tc-actions { display: flex; gap: var(--space-2);', css)
-        self.assertIn('href="#/test-cases"', self.source)  # Linked from pages.tests
+        self.assertIn('href="#/tests/cases"', self.source)  # Linked from pages.tests
 
     def test_lifecycle_stepper_and_clarified_hero_in_job_page(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -5420,3 +5402,89 @@ class SetupActionEndpointTests(ServerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteAliasTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def node(self, source: str):
+        result = subprocess.run(["node", "-e", f"require(process.argv[1]);\n{source}", str(self.STATIC / "routes.js")],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_an_old_address_goes_to_where_the_page_lives_now_keeping_its_query(self):
+        out = self.node("""
+const R = globalThis.RouteAliases, map = {"test-cases": "tests/cases", "config/chat": "connections?card=chat"};
+process.stdout.write(JSON.stringify([
+  R.redirect("#/test-cases?q=login&type=security", map), R.redirect("#/test-cases/", map),
+  R.redirect("#/config/chat?card=x&y=1", map), R.redirect("#/tests", map), R.redirect("", map), R.redirect("#/nowhere"),
+]));""")
+        self.assertEqual(out, ["#/tests/cases?q=login&type=security", "#/tests/cases", "#/connections?card=chat&y=1", None, None, None])
+
+    def test_aliases_load_before_the_app_and_route_applies_them_first(self):
+        html = (self.STATIC / "index.html").read_text()
+        self.assertLess(html.index('src="routes.js"'), html.index('src="app.js"'))
+        app = (self.STATIC / "app.js").read_text()
+        body = app[app.index("async function route() {"):]
+        self.assertLess(body.index("RouteAliases.redirect(location.hash)"), body.index("resolveRoute()"))
+
+    def test_every_settings_link_the_server_sends_opens_a_real_setting(self):
+        import re as _re
+        sources = (PACKAGE_ROOT / "orchestrator").rglob("*.py")
+        routes = {m for p in sources for m in _re.findall(r'"#/config/([a-z0-9-]+)', p.read_text(encoding="utf-8"))}
+        self.assertTrue(routes)
+        out = subprocess.run(["node", "--require", HTML_JS, "-e",
+                              f"require(process.argv[1]); process.stdout.write(JSON.stringify({json.dumps(sorted(routes))}"
+                              ".filter((id) => !globalThis.ConfigurationPages.find(id))));",
+                              str(self.STATIC / "configuration.js")], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), [], "server links to settings that don't exist")
+
+
+class MenuParityTests(unittest.TestCase):
+    """The web Configuration menu and the terminal console's Configuration menu use the same groups and names."""
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+    # Settings both menus have: registry id -> the console letter that opens it.
+    SHARED = {"base-branch": "G", "firebase": "D", "xcode-cloud": "X", "models": "M", "ai-instructions": "I",
+              "fleet": "F", "updates": "U", "email": "E"}
+
+    def registry(self):
+        out = subprocess.run(["node", "--require", HTML_JS, "-e", "require(process.argv[1]); const P = globalThis.ConfigurationPages;"
+                              "process.stdout.write(JSON.stringify(P.groups('owner')))", str(self.STATIC / "configuration.js")],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def console_menu(self):
+        source = (PACKAGE_ROOT / "orchestrator" / "scripts" / "dev_console.py").read_text(encoding="utf-8")
+        start = source.index("def handle_configuration_menu(")
+        menu = source[start:source.index("get_choice_prompt(", start)]
+        return re.sub(r"\\033\[[0-9;]*m", "", menu)
+
+    def test_shared_settings_have_the_same_name_and_group_in_both_menus(self):
+        menu = self.console_menu()
+        headings = re.findall(r"--- (.+?) ---", menu)
+        for group in self.registry():
+            for entry in group["entries"]:
+                letter = self.SHARED.get(entry["id"])
+                if not letter:
+                    continue
+                self.assertIn(f"[{letter}] {entry['label']}", menu, entry["id"])
+                # ...under the same heading: the last heading printed before the option
+                before = menu[:menu.index(f"[{letter}] {entry['label']}")]
+                self.assertEqual(re.findall(r"--- (.+?) ---", before)[-1], group["label"].replace("&amp;", "&"), entry["id"])
+        self.assertTrue({g["label"] for g in self.registry()} <= set(headings))
+
+    def test_moved_settings_have_one_home_and_old_links_land_there(self):
+        aliases = (self.STATIC / "routes.js").read_text()
+        for old, new in (("setup-checklist", "readiness"), ("config/audit", "readiness"), ("config/self-tests", "readiness"),
+                         ("config/setup-wizard", "readiness"), ("config/chat", "connections?card=chat"), ("config/api-keys", "config/ai"),
+                         ("config/documentation", "docs"), ("config/archived-jobs", "?filter=archived"), ("test-cases", "tests/cases")):
+            self.assertIn(f'"{old}": "{new}"', aliases, old)
+        html = (self.STATIC / "index.html").read_text()
+        self.assertIn('href="#/readiness" data-route="readiness"', html)
+        app = (self.STATIC / "app.js").read_text()
+        connections = app[app.index("pages.connections = async"):]
+        self.assertIn('const hook = owner ? (await api("config").catch(() => null))?.webhook : null;', connections)  # owners only
+        self.assertIn("data-owner-only", (self.STATIC / "configuration.js").read_text().split("function chatCard")[1][:200])

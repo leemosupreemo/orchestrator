@@ -841,7 +841,7 @@ def run_history(root: Path, limit: int = 50) -> list[dict[str, Any]]:
 
 def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]:
     """Put jobs away without touching their branch or files: the job file moves to the archive and remembers its
-    status, so Configuration > Archived jobs can restore it exactly. Running jobs are left alone."""
+    status, so Home's Archived filter can restore it exactly. Running jobs are left alone."""
     archived = []
     folder = jobs_dir(root) / "archive"
     for job_id in job_ids:
@@ -3100,7 +3100,7 @@ ACTIONS: dict[str, Action] = {
                       confirm="Reverts the files this job changed, deletes its AI branch and archives the job. This can't be undone.", fields=["job"]),
     "delete_job": Action("Delete job", build_delete_job, fields=["job", "keep_changes"]),
     "complete": Action("Mark complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "complete", _job_path(p, r)),
-                       confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from Configuration > Archived jobs.", fields=["job"]),
+                       confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from the Archived filter on Home.", fields=["job"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),

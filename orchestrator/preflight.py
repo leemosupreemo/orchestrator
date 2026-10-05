@@ -50,7 +50,7 @@ def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app:
         missing = [t for t in dict.fromkeys(command_tools(command)) if not t.startswith(("./", "/")) and not which(t)]
         if missing:
             out.append(_item(f"{label}-tool", "fail", f"The {label} command can't run", f"`{command}` needs {', '.join(missing)}, which isn't installed or isn't on the PATH.",
-                             "Install it, or change the command", "#/config/project"))
+                             f"Install it, or change `{label}_command` in `.orchestrator/project.json`"))
         else:
             out.append(_item(f"{label}-tool", "ok", f"The {label} command's tools are installed", f"`{command}`"))
 

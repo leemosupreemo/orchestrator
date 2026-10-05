@@ -1828,7 +1828,8 @@ function renderSetupPanel() {
   const s = setupState, panel = $("#setup-panel");
   if (!s) return;
   panel.innerHTML = `<div class="setup-panel-h"><strong>Setup</strong><span class="muted">${s.required_done}/${s.required_total} required</span>
-    <button class="btn small ghost" data-setup-close aria-label="Close">✕</button></div><div class="setup-panel-b">${setupListHtml(s)}</div>`;
+    <button class="btn small ghost" data-setup-close aria-label="Close">✕</button></div><div class="setup-panel-b">${setupListHtml(s)}
+    <a class="btn small ghost setup-panel-more" href="#/readiness" data-setup-close>Open Readiness: build tools and checks</a></div>`;
 }
 
 async function openSetupPanel() {
@@ -1912,7 +1913,7 @@ const HOME_JOBS_SHOWN = 10;
 const STALE_DAYS = 14;
 const isStaleJob = (j) => j.state?.group === "needs_you" && !j.active_run && j.updated && Date.now() / 1000 - j.updated > STALE_DAYS * 86400;
 
-// Archive keeps the branch and files; Configuration > Archived jobs (or Undo here) brings a job back as it was.
+// Archive keeps the branch and files; Home's Archived filter (or Undo here) brings a job back as it was.
 document.addEventListener("click", async (e) => {
   const button = e.target.closest("[data-archive-jobs]");
   if (!button) return;
@@ -1954,8 +1955,10 @@ pages.home = async (_, query) => {
     done: ["Completed", (j) => j.state.group === "done"],
   };
   let filter = (query && query.get("filter")) || "all";
-  if (!HOME_FILTERS[filter]) filter = "all";
-  const filteredJobs = sortedJobs.filter(HOME_FILTERS[filter][1]);
+  if (!HOME_FILTERS[filter] && filter !== "archived") filter = "all";
+  // Archived jobs are put away, not in the list: this filter reads them separately, each with Restore.
+  const archived = filter === "archived" ? ((await api("config").catch(() => null))?.archived || []) : null;
+  const filteredJobs = archived ? [] : sortedJobs.filter(HOME_FILTERS[filter][1]);
   // Jobs that have waited on you for weeks fold into one line you can clear, so the list shows what's current.
   const staleJobs = filteredJobs.filter(isStaleJob);
   const currentJobs = filteredJobs.filter((j) => !isStaleJob(j));
@@ -1977,15 +1980,20 @@ pages.home = async (_, query) => {
 
       <section class="card">
         <div class="card-h card-h-wrap">
-          <h2>Jobs <span class="count">${filteredJobs.length}</span></h2>
+          <h2>Jobs <span class="count">${archived ? archived.length : filteredJobs.length}</span></h2>
           <div class="filters">
             ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
               const count = sortedJobs.filter(fn).length;
               return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
             }).join("")}
+            <a class="btn small ${archived ? "on" : ""}" href="#/?filter=archived">Archived${archived ? ` (${archived.length})` : ""}</a>
           </div>
         </div>
-        ${filteredJobs.length ? `
+        ${archived ? (archived.length ? `<div class="list">${archived.map((j) => `<div class="item"><div class="main-col"><div class="title">${esc(j.title)}</div>
+            <div class="meta"><span class="mono">${esc(j.job_id)}</span> · ${esc(j.status)}${j.corrupt ? " · this archive can't be read" : ""}</div></div>
+            <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div>`
+          : `<div class="empty">No archived jobs. Archive a finished job from its More menu; it comes back here with Restore.</div>`)
+        : filteredJobs.length ? `
           <div class="job-table">
             <div class="job-table-header">
               <div class="col-job">Job</div>
@@ -2009,6 +2017,11 @@ pages.home = async (_, query) => {
         ${elsewhereLine(waiting.elsewhere)}
       </section>`,
     after: () => {
+      view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
+        b.disabled = true;
+        try { await api("config/archived-restore", { method: "POST", body: { id: b.dataset.restoreJob } }); toast("Job restored"); route(); }
+        catch (e) { b.disabled = false; toast(e.message, true); }
+      }));
     },
   };
 };
@@ -3081,10 +3094,39 @@ function uxReviewCard(s, ux) {
 }
 
 // What jobs need, each with a way to do it in the app (the terminal setup wizard's job, without the terminal).
-pages["setup-checklist"] = async () => {
+// Readiness: can jobs run on this computer? What they need (required, then optional), whether the project's build
+// tools are here, and the checks you can run. Check-up is about the product; this is about the environment.
+const READINESS_CHECKS = [["check", "Tools and logins", "Command-line tools, sign-ins and keys (prerequisite audit)"],
+  ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"],
+  ["test", "Orchestrator health check", "Orchestrator's own self-tests, to confirm it works on this computer"]];
+
+pages.readiness = async () => {
   setupState = await api("setup"); // its buttons look items up here
-  const page = setupPage(setupState);
-  return { ...page, actions: "", after: () => { page.after?.(); } };
+  const s = setupState, left = s.required_total - s.required_done;
+  return {
+    title: "Readiness",
+    sub: left ? `${left} required step${left > 1 ? "s" : ""} left before jobs can run` : "Everything jobs need is in place",
+    html: `
+      <div class="tasks-progress-wrap mb-16"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round(100 * s.required_done / s.required_total)}%"></div></div><span class="progress-text">${s.required_done}/${s.required_total} required</span></div>
+      <section class="card mb-16">${setupListHtml(s)}</section>
+      <section class="card mb-16"><div class="card-h"><h2>Will this computer build it?</h2><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
+        <div class="list" id="preflight-list"><div class="item"><div class="main-col muted">Checking this computer…</div></div></div></section>
+      <section class="card"><div class="card-h"><h2>Run a check</h2></div>
+        <div class="list">${READINESS_CHECKS.filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
+          `<div class="item"><div class="main-col"><div class="title">${title}</div><div class="meta">${hint}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>`,
+    after: () => {
+      const paint = async (refresh) => {
+        const box = $("#preflight-list");
+        try {
+          const { items } = await api(`preflight${refresh ? "?refresh=1" : ""}`);
+          const icon = { ok: `<span class="setup-icon done" aria-label="fine">✓</span>`, warn: `<span class="pill attention">Maybe</span>`, fail: `<span class="pill failed">Blocks</span>` };
+          box.innerHTML = items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${codeSpans(i.detail)}${i.fix && !i.route ? ` · ${codeSpans(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.fix || "Open")}</a></div>` : ""}</div>`).join("") || `<div class="empty">Nothing to check.</div>`;
+        } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+      };
+      paint(false);
+      $("#preflight-refresh")?.addEventListener("click", () => paint(true));
+    },
+  };
 };
 
 // GitHub sign-in without a terminal: start GitHub's device flow, show its one-time code and link, and wait here.
@@ -3207,27 +3249,14 @@ pages.checkup = async () => {
       ${next ? `<section class="card mb-16 card-next"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div>
         <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next, true)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on Home for what needs you next.</div>`}
       <section class="card"><div class="card-h"><h2>Everything</h2><span class="count">${d.ok} of ${d.total}</span></div>
-        <div class="card-b muted card-note">What the product has in place. Tools and keys are in the setup checklist.</div>
+        <div class="card-b muted card-note">What the product has in place. Tools, keys and machines are in <a href="#/readiness">Readiness</a>.</div>
         <div class="list">${d.items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div>
           <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>
       <section class="card mt-16"><div class="card-h"><h2>UX and design</h2><a class="btn small" href="#/ux-review">Open UX review</a></div>
         <div class="card-b muted" id="ux-checkup">Checking…</div></section>
-      <section class="card mt-16"><div class="card-h"><h2>Will this computer build it?</h2><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
-        <div class="list" id="preflight-list"><div class="item"><div class="main-col muted">Checking this computer…</div></div></div></section>
-      <section class="card mt-16"><div class="card-h"><h2>Setup tools</h2><a class="btn small" href="#/setup-checklist">Setup checklist</a></div>
-        <div class="list">${[["check", "Tools and logins", "CLIs, sign-ins and keys"], ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"]].filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
-          `<div class="item"><div class="main-col"><div class="title">${title}</div><div class="meta">${hint}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>`,
+      <section class="card mt-16"><div class="card-h"><h2>This computer and its tools</h2><a class="btn small" href="#/readiness">Open Readiness</a></div>
+        <div class="card-b muted">Whether jobs can run here: the AI, machines, sign-ins and build tools, and the checks you can run.</div></section>`,
     after: () => {
-      const paint = async (refresh) => {
-        const box = $("#preflight-list");
-        try {
-          const { items } = await api(`preflight${refresh ? "?refresh=1" : ""}`);
-          const icon = { ok: `<span class="setup-icon done" aria-label="fine">✓</span>`, warn: `<span class="pill attention">Maybe</span>`, fail: `<span class="pill failed">Blocks</span>` };
-          box.innerHTML = items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${codeSpans(i.detail)}${i.fix && !i.route ? ` · ${codeSpans(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.fix || "Open")}</a></div>` : ""}</div>`).join("") || `<div class="empty">Nothing to check.</div>`;
-        } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-      };
-      paint(false);
-      $("#preflight-refresh")?.addEventListener("click", () => paint(true));
       api("ux-pass").then(({ passes, settings }) => {
         const last = passes[0];
         $("#ux-checkup").textContent = last
@@ -3254,7 +3283,7 @@ pages.help = async () => ({
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
       ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads. Edit it, import a PRD, see its history."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
-         ["Check-up", "#/checkup", "What's in place and what's missing for this project."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
+         ["Check-up", "#/checkup", "What the product has in place and what's missing."], ["Readiness", "#/readiness", "Whether jobs can run here: AI, machines, sign-ins, build tools and checks."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
     </div></section>
     <section class="card mb-16"><div class="card-h"><h2>Words we use</h2></div><div class="card-b"><dl class="help-terms">
@@ -3267,12 +3296,12 @@ pages.help = async () => ({
       <dt>Pause</dt><dd>Stops the worker. The job keeps its work; Resume continues from the next task.</dd>
     </dl></div></section>
     <section class="card"><div class="card-h"><h2>Common questions</h2></div><div class="card-b help-faq">
-      <details><summary>A job won't run</summary><p>Jobs need a machine, a model, a signed-in AI provider and a GitHub remote. <a href="#/checkup">Check-up</a> and the Setup button on Home show what is missing; <a href="#/config">Configuration</a> is where you fix it.</p></details>
+      <details><summary>A job won't run</summary><p>Jobs need a machine, a model, a signed-in AI provider and a GitHub remote. <a href="#/readiness">Readiness</a> shows what is missing, each with a way to fix it here.</p></details>
       <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. All of it is optional, and “not sure yet” is a fine answer. Draft it from your project, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
-      <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from Configuration > Archived jobs.</p></details>
-      <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends alerts to this device. Turned on in the hosted app, they arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run (on iPhone, add it to your Home Screen first). For Slack, add a webhook under Configuration > Slack &amp; chat alerts.</p></details>
-      <details><summary>Where are the full guides?</summary><p><a href="#/config/documentation">Configuration > Documentation</a> lists the Orchestrator and project guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
+      <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from the <a href="#/?filter=archived">Archived</a> filter on Home.</p></details>
+      <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends alerts to this device. Turned on in the hosted app, they arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run (on iPhone, add it to your Home Screen first). For Slack, add a webhook under <a href="#/connections?card=chat">Connections</a>.</p></details>
+      <details><summary>Where are the full guides?</summary><p><a href="#/docs">Docs</a> has the project's own files and Orchestrator's guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>`,
 });
 
@@ -3305,7 +3334,8 @@ pages.docs = async (args, query) => {
     };
   }
 
-  const d = await api("docs");
+  const [d, config] = await Promise.all([api("docs"), api("config").catch(() => null)]);
+  const guides = (config?.docs || []).filter((g) => g.section === "Orchestrator docs"); // how Orchestrator itself works
   const SHOWN = 15;
   const featureRow = (f) => `<a class="item doc-row" href="#/docs/feature/${encodeURIComponent(f.id)}" data-find="${esc(`${f.name} ${f.summary}`.toLowerCase())}"><div class="main-col"><div class="title">${esc(f.name)}</div>
       <div class="meta">${f.summary ? `${esc(f.summary)} · ` : ""}${f.jobs ? `${f.jobs_done} of ${f.jobs} jobs done` : "no jobs yet"}</div></div><div class="side"><span class="pill ${f.status === "complete" ? "done" : "working"}">${esc(f.status === "in-progress" ? "In progress" : f.status === "complete" ? "Complete" : "Planned")}</span></div></a>`;
@@ -3330,7 +3360,10 @@ pages.docs = async (args, query) => {
         <div class="list" id="docs-jobs">${d.jobs.length ? d.jobs.map(jobRow).join("") : `<div class="empty">No jobs yet.</div>`}</div>
         ${d.jobs.length > SHOWN ? `<div class="card-b"><button type="button" class="btn small" id="docs-more">Show all ${d.jobs.length}</button></div>` : ""}</section>
       <section class="card"><div class="card-h"><h2>Project files</h2><span class="count">${d.files.length}</span></div>
-        <div class="list" id="docs-files">${d.files.length ? fileRows : `<div class="empty">No README or docs/ folder found.</div>`}</div></section>`,
+        <div class="list" id="docs-files">${d.files.length ? fileRows : `<div class="empty">No README or docs/ folder found.</div>`}</div></section>
+      ${guides.length ? `<section class="card mt-16"><div class="card-h"><h2>Orchestrator guides</h2><span class="count">${guides.length}</span></div>
+        <div class="list">${guides.map((g) => `<div class="item doc-row" data-find="${esc(g.name.toLowerCase())}"><div class="main-col"><div class="title">${esc(g.name)}</div></div>
+          <div class="side"><button type="button" class="btn small" data-guide="${esc(g.id)}">Read</button></div></div>`).join("")}</div></section>` : ""}`,
     after: () => {
       const q = $("#docs-q"), rows = () => [...view.querySelectorAll(".doc-row")];
       let group = "", all = false;
@@ -3354,6 +3387,15 @@ pages.docs = async (args, query) => {
         group = b.dataset.docsGroup; all = false;
         view.querySelectorAll("[data-docs-group]").forEach((x) => x.classList.toggle("on", x === b));
         apply();
+      }));
+      view.querySelectorAll("[data-guide]").forEach((b) => b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          const g = await api(`config/doc?id=${encodeURIComponent(b.dataset.guide)}`);
+          const closed = formDialog(g.name, `<pre class="doc-text">${esc(g.text)}</pre>`, "Close");
+          $("#dialog-cancel").hidden = true;
+          await closed;
+        } catch (err) { toast(err.message, true); } finally { if (b.isConnected) b.disabled = false; }
       }));
       $("#docs-export").addEventListener("click", async (e) => {
         e.target.disabled = true;
@@ -3872,7 +3914,7 @@ pages.tests = async (_, query) => {
         <div class="row gap-10 align-center">
           <div class="filters">${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
             `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div>
-          <a class="btn small ghost" href="#/test-cases">Manage cases ↗</a>
+          <a class="btn small ghost" href="#/tests/cases">Manage cases</a>
         </div></div>
         <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
         ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
@@ -3950,7 +3992,7 @@ pages["test-cases"] = async (_, query) => {
       }
     }
     const qs = params.toString();
-    return `#/test-cases${qs ? `?${qs}` : ""}`;
+    return `#/tests/cases${qs ? `?${qs}` : ""}`;
   };
 
   const totalCases = caseView.cases.length;
@@ -4130,12 +4172,12 @@ pages.git = async () => {
 
 async function runConfigMutation(button, request, successMessage) {
   if (!button || button.disabled) return false;
-  const section = current?.args?.[0];
+  const here = location.hash; // settings live on Configuration pages and on Connections (Slack alerts)
   button.disabled = true;
   try {
     await api(`config/${request.part}`, {method: "POST", body: request.body});
     if (successMessage) toast(successMessage);
-    if (ConfigurationPages.routeMatches(current, section)) await route();
+    if (location.hash === here) await route();
     return true;
   } catch (error) {
     toast(error.message, true);
@@ -4208,24 +4250,6 @@ pages.config = async (args = []) => {
       },
     };
   }
-  if (section === "archived-jobs") {
-    return {
-      ...result,
-      after: () => {
-        const onClick = async (event) => {
-          const button = event.target.closest('[data-config-action="archive-restore"]');
-          if (!button || button.disabled) return;
-          await runConfigMutation(
-            button,
-            {part: "archived-restore", body: {id: button.dataset.id}},
-            "Job restored",
-          );
-        };
-        view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
-      },
-    };
-  }
   if (section === "email") {
     const email = config.email || {};
     return {
@@ -4272,37 +4296,6 @@ pages.config = async (args = []) => {
       },
     };
   }
-  if (section === "chat") {
-    return {
-      ...result,
-      after: () => {
-        const onClick = async (event) => {
-          const button = event.target.closest("[data-config-action]");
-          if (!button || button.disabled) return;
-          const action = button.dataset.configAction;
-          if (action === "chat-set") {
-            showConfigMutationDialog(
-              "Slack webhook",
-              `<label class="field"><span>Webhook URL</span><input type="url" name="url" required autocomplete="off" placeholder="https://hooks.slack.com/services/…"></label>`,
-              "Save",
-              (values) => ({part: "webhook", body: {op: "set", url: values.url}}),
-              "Webhook saved. Sending a test message…",
-              async () => {
-                try { await api("config/webhook", {method: "POST", body: {op: "test"}}); toast("Webhook saved and tested: check your channel for the message."); }
-                catch (error) { toast(`Saved, but the test message failed: ${error.message}`, true); }
-              },
-            );
-          } else if (action === "chat-clear") {
-            await runConfigMutation(button, {part: "webhook", body: {op: "clear"}}, "Webhook removed");
-          } else if (action === "chat-test") {
-            await runConfigMutation(button, {part: "webhook", body: {op: "test"}}, "Test message sent");
-          }
-        };
-        view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
-      },
-    };
-  }
   if (section === "access") {
     return {
       ...result,
@@ -4334,30 +4327,6 @@ pages.config = async (args = []) => {
             } finally {
               if (button.isConnected) button.disabled = false;
             }
-          }
-        };
-        view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
-      },
-    };
-  }
-  if (section === "documentation") {
-    return {
-      ...result,
-      after: () => {
-        const onClick = async (event) => {
-          const button = event.target.closest('[data-config-action="document-read"]');
-          if (!button || button.disabled) return;
-          button.disabled = true;
-          try {
-            const documentData = await api(`config/doc?id=${encodeURIComponent(button.dataset.id)}`);
-            const closed = formDialog(documentData.name, `<pre class="doc-text">${esc(documentData.text)}</pre>`, "Close");
-            $("#dialog-cancel").hidden = true;
-            await closed;
-          } catch (error) {
-            toast(error.message, true);
-          } finally {
-            if (button.isConnected) button.disabled = false;
           }
         };
         view.addEventListener("click", onClick);
@@ -4498,46 +4467,9 @@ pages.config = async (args = []) => {
       },
     };
   }
-  if (section === "audit") {
-    return {
-      ...result,
-      after: () => {
-        const onClick = async (event) => {
-          const button = event.target.closest('[data-config-action="run-audit"]');
-          if (button) await runAction("check");
-        };
-        view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
-      },
-    };
-  }
-  if (section === "self-tests") {
-    return {
-      ...result,
-      after: () => {
-        const onClick = async (event) => {
-          const button = event.target.closest('[data-config-action="run-self-tests"]');
-          if (button) await runAction("test");
-        };
-        view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
-      },
-    };
-  }
-  if (section === "setup-wizard") {
-    return {
-      ...result,
-      after: () => {
-        const onClick = (event) => {
-          if (event.target.closest('[data-config-action="launch-wizard"]')) location.hash = "#/setup-checklist";
-        };
-        view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
-      },
-    };
-  }
-  if (section !== "api-keys") return result;
+  if (section !== "ai") return result;
 
+  // Add an AI: its API keys card
   return {
     ...result,
     after: () => {
@@ -4602,9 +4534,11 @@ pages.connections = async (_, query) => {
     if (err.status !== 404) throw err;
     return { title: "Connections", html: `<div class="notice">Connections aren't available yet. They're part of an update that hasn't reached your Orchestrator. Everything else works as usual. Check back soon.</div>` };
   }
+  const owner = state.you?.role !== "member";
+  const hook = owner ? (await api("config").catch(() => null))?.webhook : null;
   return {
     title: "Connections",
-    sub: "Link jobs to tickets, errors and designs",
+    sub: "Link jobs to tickets, errors and designs, and get alerts in Slack",
     html: `<div class="conn-grid">${list.map((p) => `
       <section class="card conn-card" data-conn="${esc(p.id)}">
         <div class="card-b stack">
@@ -4627,9 +4561,35 @@ pages.connections = async (_, query) => {
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
         </div></section>`).join("")}</div>
-      <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>`,
+      <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>
+      ${hook ? `<div class="mt-16">${ConfigurationPages.chatCard(hook)}</div>` : ""}`,
     after: () => {
       ConfigurationPages.applyRole(state.you?.role || "owner", view);
+      const onChat = async (event) => {
+        const button = event.target.closest("[data-config-action]");
+        if (!button || button.disabled) return;
+        const action = button.dataset.configAction;
+        if (action === "chat-set") {
+          showConfigMutationDialog(
+            "Slack webhook",
+            `<label class="field"><span>Webhook URL</span><input type="url" name="url" required autocomplete="off" placeholder="https://hooks.slack.com/services/…"></label>`,
+            "Save",
+            (values) => ({part: "webhook", body: {op: "set", url: values.url}}),
+            "Webhook saved. Sending a test message…",
+            async () => {
+              try { await api("config/webhook", {method: "POST", body: {op: "test"}}); toast("Webhook saved and tested: check your channel for the message."); }
+              catch (error) { toast(`Saved, but the test message failed: ${error.message}`, true); }
+            },
+          );
+        } else if (action === "chat-clear") {
+          await runConfigMutation(button, {part: "webhook", body: {op: "clear"}}, "Webhook removed");
+        } else if (action === "chat-test") {
+          await runConfigMutation(button, {part: "webhook", body: {op: "test"}}, "Test message sent");
+        }
+      };
+      view.addEventListener("click", onChat);
+      cleanup.push(() => view.removeEventListener("click", onChat));
+      if (query?.get("card") === "chat") $("#chat-alerts")?.scrollIntoView({ block: "start" });
       const onClick = async (ev) => {
         const connect = ev.target.closest("[data-conn-connect]"), disc = ev.target.closest("[data-conn-disconnect]");
         if (disc) {
@@ -4999,7 +4959,7 @@ pages["new-project"] = async (_, query) => {
       <section class="card mt-16"><div class="card-h"><h2>Product requirements ready</h2></div><div class="card-b stack">
         <div>Your product requirements document is saved with all five PRD sections. You can review or refine it anytime as the project evolves.</div>
         <div><a class="btn" href="#/product">Open the product requirements</a></div></div></section>
-      <div class="row mt-16"><a class="btn primary big" href="#/setup-checklist">Set up this project</a><a class="btn big" href="#/">Open dashboard</a></div>
+      <div class="row mt-16"><a class="btn primary big" href="#/readiness">Set up this project</a><a class="btn big" href="#/">Open dashboard</a></div>
       <p class="muted">“Set up this project” lists what jobs need (an AI, a machine, how it's built and tested), each with a way to do it here.</p>`,
     after: () => {
       $("#np-recheck")?.addEventListener("click", () => route());
@@ -5356,6 +5316,7 @@ function resolveRoute() {
   if (parts[0] === "runs" && parts[1]) return { page: "run", args: [parts[1]], nav: "activity", query };
   if (parts[0] === "runs") return { page: "activity", args: [], nav: "activity", query };
   if (parts[0] === "file") return { page: "file", args: [], nav: null, query };
+  if (parts[0] === "tests" && parts[1] === "cases") return { page: "test-cases", args: [], nav: "tests", query }; // the case library, under Tests
   if (parts[0] === "jobs") return { page: "home", args: [], nav: "home", query }; // Jobs list lives on Home
   if (parts[0] === "config") {
     const section = ConfigurationPages.resolve(parts[1]);
@@ -5377,7 +5338,7 @@ function routeParent(r) {
   if (r.page === "docs" && r.args.length) return "#/docs";
   if (r.page === "config" && r.args.length) return "#/config";
   if (r.page === "new-project") return "#/projects";
-  if (r.page === "setup-checklist") return "#/checkup";
+  if (r.page === "test-cases") return "#/tests";
   return null;
 }
 const navStack = [];
@@ -5450,6 +5411,8 @@ function apply(result) {
 
 async function route() {
   if (signingIn) return; // the loading screen stays until sign-in finishes
+  const moved = RouteAliases.redirect(location.hash); // an old address: show the page where it lives now
+  if (moved) history.replaceState(null, "", moved);
   navigationDrawer.close();
   // Anything tied to the previous page goes: terminals, streams, and dialogs,
   // so an action can never run against a page you've left.
@@ -5536,9 +5499,9 @@ const navigationDrawer = NavigationDrawer.mount({document, window});
 // ---------------------------------------------------------------- command palette
 const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
-  ["Test cases", "#/test-cases", "Manage test cases library, coverage and definitions"],
-  ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What's missing in this project"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
-  ["Connections", "#/connections", "Jira, Trello, Sentry, Figma"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
+  ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
+  ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What the product has and what's missing"], ["Readiness", "#/readiness", "Can jobs run here: setup, build tools, checks"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
+  ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
 const palette = { open: false, entries: [], shown: [], active: 0, opener: null };
 
