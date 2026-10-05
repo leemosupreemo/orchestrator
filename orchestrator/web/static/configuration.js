@@ -201,7 +201,7 @@
     }).join("");
     return `<section class="card configuration-card" id="api-keys">
           <div class="card-h"><h2>API keys</h2><span class="count">${keys.length}</span></div>
-          <p class="muted">Use a provider through its API instead of its app. Saved key values are never shown.</p>
+          <p class="card-b muted card-note">Use a provider through its API instead of its app. Saved key values are never shown.</p>
           <div class="configuration-setting-list">${rows || `<div class="empty">No providers are available.</div>`}</div>
         </section>`;
   }
@@ -215,10 +215,12 @@
       : p.installed ? `<span class="pill">Installed, not signed in</span>` : `<span class="pill">Not installed</span>`;
     const cards = ai.providers.map((p) => `<section class="card configuration-card ai-provider" data-provider="${escapeHtml(p.id)}">
         <div class="card-h"><h2>${escapeHtml(p.name)}</h2>${badge(p)}</div>
+        <div class="card-b stack">
         <p><strong>${escapeHtml(p.cost_label)}.</strong> ${escapeHtml(p.what)}</p>
         ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}${p.install_note ? `<small>${escapeHtml(p.install_note)}</small>` : ""}`}
           <p class="muted">${p.installed ? "Then" : "2."} ${escapeHtml(p.sign_in)}</p>`}
         <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
+        </div>
       </section>`).join("");
     const plugins = ai.plugins.map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {
@@ -230,8 +232,10 @@
         ${Array.isArray(state.keys) ? apiKeysCard(state) : ""}
         <section class="card configuration-card">
           <div class="card-h"><h2>Helpful plugins for your AI tools</h2></div>
-          <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
-          <ul>${plugins}</ul>
+          <div class="card-b stack">
+            <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
+            <ul class="plain-list">${plugins}</ul>
+          </div>
         </section>
       </div>`,
     };

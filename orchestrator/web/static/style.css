@@ -234,6 +234,9 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 .expandable-bar { display: flex; justify-content: center; padding: var(--space-2) var(--space-4) var(--space-4); }
 .card-h .count { color: var(--muted); font-weight: 500; }
 .card-b { padding: var(--space-4); }
+/* Card content goes in .card-b (or a .list / row that pads itself). A bare paragraph or list straight inside a card
+   still gets the card's padding, so text never touches the edge. */
+.card > :is(p, ul, ol, form):not([class]) { margin: 0; padding: var(--space-3) var(--space-4); }
 .muted { color: var(--muted); }
 .empty { color: var(--muted); padding: var(--space-5) var(--space-4); }
 .row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
@@ -572,6 +575,13 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   .topbar { flex-direction: column; gap: var(--space-3); }
   .topbar-actions { justify-content: flex-start; width: 100%; }
   .topbar-actions > .btn.primary { flex: 1; min-height: var(--control-lg); }
+  body[data-page="tests"] .topbar-actions { flex-wrap: nowrap; }
+  body[data-page="tests"] .topbar-actions > .test-run-all-btn { flex: 2 1 0; min-width: 0; min-height: var(--control-lg); }
+  body[data-page="tests"] .topbar-actions > .test-expand-coverage-btn {
+    flex: 1 1 0; min-width: 0; min-height: var(--control-lg);
+    padding-inline: var(--space-2); font-size: var(--text-sm); text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .topbar-actions:has(.home-new-job-btn:only-child) { display: none; }
   .home-new-job-btn { display: none; }
   .tabbar {
@@ -1506,6 +1516,9 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   border-top: 1px solid var(--border);
 }
 .configuration-setting-row:first-child { border-top: 0; }
+.configuration-setting-row > * { min-width: 0; overflow-wrap: anywhere; } /* long emails, IPs and paths wrap inside the card */
+.ai-provider .card-b.stack { gap: var(--space-2); }
+.plain-list { margin: 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-1); }
 .configuration-setting-row .main-col { display: flex; flex-direction: column; gap: var(--space-1); }
 .configuration-setting-row small { color: var(--muted); }
 .configuration-status { color: var(--muted); font-size: var(--text-sm); }
@@ -1724,6 +1737,7 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   min-width: 120px;
   min-height: var(--control-md);
 }
+.test-run-all-btn, .test-expand-coverage-btn { white-space: nowrap; }
 .warn-link { color: var(--warn); font-weight: 600; }
 .badge.good { background: var(--ok-solid); color: var(--ok-solid-ink); }
 .badge.muted-badge { background: var(--panel-2); color: var(--muted); }

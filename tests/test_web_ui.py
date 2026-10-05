@@ -3577,7 +3577,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("showSigningIn(\"Unlocking…\")", js)  # the token form too
 
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
-        self.assertIn('["Build", act("build")', self.js)  # Tests
+        self.assertIn('Run all tests', self.js)  # Tests
+        self.assertIn('Expand coverage', self.js)
+        self.assertNotIn('["Build", act("build")', self.js)
         readiness = self.js[self.js.index("const READINESS_CHECKS"):self.js.index("pages.help = async")]
         self.assertIn('Will this computer build it?', readiness)  # Readiness: probes
         for action in ("check", "check_config", "worker_check", "test"):  # and every environment check, in one place
@@ -3586,6 +3588,17 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('act("distribute")', self.js)  # Delivery
         self.assertIn('act("logs_pull")', self.js)  # Device logs
         self.assertIn("Open full console", self.html + self.js)
+
+    def test_test_menu_actions_and_button_widths(self):
+        tests_src = self.js[self.js.index("pages.tests = async"):self.js.index("pages.git = async")]
+        self.assertIn("Run all tests", tests_src)
+        self.assertIn("Expand coverage", tests_src)
+        self.assertNotIn("moreMenu", tests_src)
+        self.assertNotIn("Build", tests_src)
+        self.assertNotIn("Refresh list", tests_src)
+        self.assertIn('body[data-page="tests"] .topbar-actions > .test-run-all-btn { flex: 2 1 0;', self.css)
+        self.assertIn('body[data-page="tests"] .topbar-actions > .test-expand-coverage-btn {', self.css)
+        self.assertIn('flex: 1 1 0;', self.css)
 
     def test_new_job_asks_what_each_kind_needs_and_has_no_you_decide_toggle(self):
         form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]

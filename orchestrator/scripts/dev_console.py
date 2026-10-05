@@ -2050,7 +2050,7 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
     }
 
     candidate_files: list[Path] = []
-    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx")
+    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx", ".kt", ".java")
     
     # Walk the directory tree to find test files across supported languages
     for current_root, dirnames, filenames in os.walk(root):
@@ -2178,7 +2178,31 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
                 "language": "go",
             })
 
-        # 5. JavaScript / TypeScript
+        # 5. Kotlin / Java (JUnit, Android): files under src/test or src/androidTest, or named *Test / *Tests
+        elif file_path.suffix in (".kt", ".java"):
+            in_jvm_tests = bool(re.search(r'(?:^|[/\\])src[/\\](?:test|androidTest)[/\\]', rel_path_str))
+            is_test_filename = bool(re.search(r'(?:Test|Tests|IT)\.(?:kt|java)$', file_path.name))
+            if not (in_jvm_tests or is_test_filename):
+                continue
+            test_funcs = ["".join(m) for m in re.findall(
+                r'@(?:Test|ParameterizedTest)\b(?:\([^)]*\))?\s*(?:@\w+(?:\([^)]*\))?\s*)*'
+                r'(?:(?:public|private|internal|protected|override|suspend|open|final)\s+)*(?:fun|void)\s+(?:`([^`]+)`|([A-Za-z_]\w*))\s*\(',
+                raw_content)]
+            if not test_funcs:
+                continue
+            class_match = re.search(r'\bclass\s+([A-Za-z_][A-Za-z0-9_]*)', raw_content)
+            seen_paths.add(file_path)
+            suites.append({
+                "path": file_path,
+                "rel_path": rel_path,
+                "name": class_match.group(1) if class_match else file_path.stem,
+                "file_stem": file_path.stem,
+                "test_count": len(test_funcs),
+                "test_funcs": test_funcs,
+                "language": "kotlin" if file_path.suffix == ".kt" else "java",
+            })
+
+        # 6. JavaScript / TypeScript
         elif any(file_path.name.endswith(ext) for ext in (".test.js", ".test.ts", ".test.jsx", ".test.tsx", ".spec.js", ".spec.ts", ".spec.jsx", ".spec.tsx")) or (is_in_test_dir and file_path.suffix in (".js", ".ts", ".jsx", ".tsx")):
             test_cases = re.findall(r'(?:it|test)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
             desc_match = re.search(r'describe\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
@@ -2208,7 +2232,23 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
     base_command = project_config.test_command or ""
 
     if language == "python":
+        words = shlex.split(base_command)
+        if "unittest" in words:
+            # unittest doesn't take a file path (`discover tests tests/test_x.py` runs nothing); discover just that
+            # file in its folder, which works with or without an __init__.py there
+            python = words[0] if words else "python3"
+            folder = shlex.quote(str(rel_path.parent))
+            return f"{python} -m unittest discover -s {folder} -p {shlex.quote(rel_path.name)}"
         return f"{base_command} {quoted_path}".strip()
+    if language in {"kotlin", "java"}:
+        root = Path(getattr(project_config, "root", ".") or ".")
+        suite_class = shlex.quote(str(suite["name"]))
+        if (root / "pom.xml").exists():
+            return f"mvn -q test -Dtest={suite_class}"
+        gradle = "./gradlew" if (root / "gradlew").exists() else "gradle"
+        if "androidTest" in rel_path.parts:  # instrumented tests need a device or emulator, and run as one set
+            return f"{gradle} connectedAndroidTest"
+        return f"{gradle} test --tests {suite_class}"
     if language == "rust":
         if rel_path.parts and rel_path.parts[0] == "tests":
             return f"cargo test --test {shlex.quote(suite['file_stem'])}"
@@ -2491,8 +2531,45 @@ def rename_test_suite(suite: dict[str, Any], root: Path) -> bool:
         input("\n\033[1;96mTap Enter to continue...\033[0m")
         return False
 
+def record_coverage_failure(message: str) -> None:
+    """Keeps the last real measurement and notes why this attempt didn't produce one."""
+    record = {k: v for k, v in (get_coverage_data() or {}).items() if k != "estimated"}
+    if (get_coverage_data() or {}).get("estimated"):  # an old guess from the test count is not a measurement
+        record.pop("overall_coverage_pct", None)
+    save_coverage_data({**record, "last_error": message, "last_error_at": now_iso()})
+
+
+def run_project_coverage() -> float | None:
+    """Coverage for a project not built with Xcode, by its language's own tool (orchestrator/coverage.py)."""
+    from orchestrator import coverage as cov
+
+    print_header("Measuring code coverage")
+    try:
+        result = cov.measure(ROOT, PROJECT_CONFIG.test_command)
+    except cov.CoverageUnavailable as exc:
+        print(f"\n\033[1;93m⚠️  {exc}\033[0m")
+        record_coverage_failure(str(exc))
+        return None
+    suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
+    save_coverage_data({
+        "timestamp": now_iso(), "overall_coverage_pct": result.pct, "tool": result.tool, "metric": result.metric,
+        "targets": [], "total_tests": sum(s["test_count"] for s in suites), "total_suites": len(suites),
+    })
+    print(f"\n\033[1;92m✅ {result.pct:.1f}% of {result.metric} covered (measured with {result.tool}).\033[0m")
+    return result.pct
+
+
+def project_uses_xcode() -> bool:
+    return bool(PROJECT_CONFIG.uses_xcode)
+
+
 def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_models: list[str]) -> float | None:
     clear_screen()
+    if not project_uses_xcode():
+        pct = run_project_coverage()
+        if sys.stdin.isatty():
+            input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        return pct
     print_header("Calculating Code Coverage")
     print("Running test suite with code coverage enabled (-enableCodeCoverage YES)...\n")
     
@@ -2685,12 +2762,9 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.clear_footer()
             status_bar.reset_scroll_region()
 
-    # Fallback simulation/estimation if xcresult couldn't be parsed or was empty (e.g. test environment)
-    estimated = overall_pct is None
+    # No number unless Xcode measured one: a guess from the test count would read as a fact.
     if overall_pct is None:
-        if total_tests > 0:
-            overall_pct = min(95.0, round(float(total_tests * 8.5), 1))
-            targets_cov = [{"name": PROJECT_CONFIG.scheme or "App", "coverage_pct": overall_pct}]
+        record_coverage_failure("Xcode didn't report coverage. Check that the scheme's tests build and run, then measure again.")
 
     if overall_pct is not None:
         cov_delta = (overall_pct - prev_pct) if prev_pct is not None else None
@@ -2702,8 +2776,8 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             "targets": targets_cov,
             "total_tests": total_tests,
             "total_suites": total_suites,
-            # True when the number is a rough estimate from the test count, not measured.
-            "estimated": estimated,
+            "tool": "Xcode (xccov)",
+            "metric": "lines",
         }
         save_coverage_data(cov_record)
 

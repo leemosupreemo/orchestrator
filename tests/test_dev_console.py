@@ -1129,7 +1129,8 @@ class AppFeatureTests_{i}: XCTestCase {{
         status_bar_context.__enter__.return_value = status_bar_instance
         mock_status_bar.return_value = status_bar_context
 
-        pct = dev_console.run_calculate_coverage(["local"], ["gemini"])
+        with patch.object(dev_console, "project_uses_xcode", return_value=True):
+            pct = dev_console.run_calculate_coverage(["local"], ["gemini"])  # the xcodebuild path
 
         mock_progress_indicator.assert_called_once()
         self.assertIn("Thinking", mock_progress_indicator.call_args[1].get("label", ""))

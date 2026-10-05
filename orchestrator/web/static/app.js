@@ -3904,6 +3904,8 @@ pages.tests = async (_, query) => {
   const byArea = new Map();
   for (const c of shownCases) byArea.set(c.area, [...(byArea.get(c.area) || []), c]);
   const cov = data.coverage;
+  // Only a real measurement shows a number (older versions saved an estimate from the test count).
+  const measured = cov && cov.overall_coverage_pct != null && !cov.estimated;
   const filter = (query.get("q") || "").toLowerCase();
   // Discovery also matches source files with no tests in them; those aren't runnable suites.
   const withTests = data.suites.filter((s) => s.tests > 0);
@@ -3912,7 +3914,7 @@ pages.tests = async (_, query) => {
   return {
     title: "Tests",
     sub: `${withTests.length} suites · ${total} tests`,
-    actions: `<button class="btn primary" ${act("test")}>Run all tests</button>${moreMenu([["Build", act("build"), "Compile without running tests"], ["Refresh list", `data-href="#/tests?refresh=1"`], ["Expand coverage (AI job)", `data-href="#/new?type=coverage"`]])}`,
+    actions: `<button class="btn primary test-run-all-btn" ${act("test")}>Run all tests</button><a class="btn test-expand-coverage-btn" href="#/new?type=coverage" data-href="#/new?type=coverage" title="Expand coverage (AI job)">Expand coverage</a>`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
       ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>
@@ -3939,11 +3941,12 @@ pages.tests = async (_, query) => {
           </div>
         `).join("")}
       </div></section>` : ""}
-      <section class="card"><div class="card-h"><h2>Coverage${cov ? ` <span class="count">${esc(ago(Date.parse(cov.timestamp) / 1000))}</span>` : ""}</h2>
-        <button type="button" class="btn small" ${act("coverage")} title="Runs every test with coverage on; takes a while">${cov ? "Measure again" : "Measure coverage"}</button></div>
-        <div class="card-b">${cov ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
-          ${cov.estimated ? pill("attention", "Estimate — measuring failed") : ""}<span class="muted">${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
-          : `<p class="muted">Not measured yet. Measuring runs every test with coverage on, so it takes a while.</p>`}</div></section>
+      <section class="card"><div class="card-h"><h2>Coverage${measured ? ` <span class="count">${esc(ago(Date.parse(cov.timestamp) / 1000))}</span>` : ""}</h2>
+        <button type="button" class="btn small" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Measure again" : "Measure coverage"}</button></div>
+        <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
+          <span class="muted">of ${esc(cov.metric || "lines")} covered${cov.tool ? `, measured with ${esc(cov.tool)}` : ""} · ${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
+          : `<p class="muted">Not measured yet. Measuring runs every test with coverage turned on, which may take time.</p>`}
+          ${cov?.last_error && (!measured || cov.last_error_at > cov.timestamp) ? `<div class="notice">${measured ? "The last attempt didn't measure: " : "Couldn't measure: "}${codeSpans(cov.last_error)}</div>` : ""}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Suites</h2>
