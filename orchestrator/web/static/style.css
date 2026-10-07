@@ -740,6 +740,9 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
     min-height: var(--control-md);
     justify-content: center;
   }
+  .signin-wrap {
+    padding: var(--space-1) 0 var(--space-6);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .sidebar { transition: none; }
@@ -748,10 +751,9 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 /* sign-in gate */
 .signin-wrap {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  min-height: calc(100vh - 120px);
-  padding: var(--space-6);
+  padding: var(--space-2) var(--space-4) var(--space-8);
 }
 .signin-card {
   width: 100%;
@@ -885,6 +887,9 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
 }
 .app.session-locked .tabbar {
   display: none !important;
+}
+.app.session-locked .topbar {
+  margin-bottom: var(--space-3);
 }
 
 /* projects hub */

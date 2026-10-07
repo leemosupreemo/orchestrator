@@ -3765,6 +3765,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('<symbol id="i-google" viewBox="0 0 48 48">', index_html)
         self.assertIn('<symbol id="i-apple" viewBox="17 14 22 22">', index_html)
         self.assertIn('<symbol id="i-github" viewBox="0 0 24 24">', index_html)
+        self.assertIn(".signin-wrap {", css)
+        self.assertIn("align-items: flex-start;", css)
+        self.assertNotIn("min-height: calc(100vh - 120px);", css)
+        self.assertIn(".app.session-locked .topbar {", css)
 
     def test_home_new_job_button_is_sticky(self):
         # The + new job button stays in place when scrolling
