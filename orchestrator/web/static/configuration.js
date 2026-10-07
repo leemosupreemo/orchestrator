@@ -309,8 +309,8 @@
           </div></div>
           <div class="card-b stack">
             <strong>${hook.set ? "Connected" : "Not set up"}</strong>
-            <span class="configuration-status">${hook.set ? `Sending to ${escapeHtml(hook.host)}. The full address is stored but not shown.` : "Paste an https:// incoming-webhook URL from Slack (or a compatible tool)."}</span>
-            <span class="muted">A message when a job needs you, and when a run finishes or fails. Works with any Slack-compatible incoming webhook, while the Orchestrator web server is running. Browser alerts (sidebar button) and worker emails work separately.</span>
+            <span class="configuration-status">${hook.set ? `Sending to ${escapeHtml(hook.host)}. The full address is stored but not shown.` : "Paste a Slack webhook URL."}</span>
+            <span class="muted">Sends a message when a job needs you, or when a run finishes or fails.</span>
           </div>
         </section>`;
   }

@@ -82,6 +82,7 @@ from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.runtime_control import ActivityGate, BusyError, InstanceLease
+from orchestrator.web.run_progress import RunProgress
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
@@ -215,6 +216,7 @@ class PtySession:
         self.exit_code: int | None = None
         self.stopped: bool = False
         self._buffer = bytearray()
+        self._progress = RunProgress()
         self._base = 0  # absolute offset of _buffer[0]
         self._cond = threading.Condition()
         self._transcript = transcript.open("ab") if transcript else None
@@ -271,6 +273,7 @@ class PtySession:
         with self._cond:
             self.last_output = time.time()
             self._buffer.extend(chunk)
+            self._progress.feed(chunk)
             overflow = len(self._buffer) - MAX_BUFFER_BYTES
             if overflow > 0:
                 del self._buffer[:overflow]
@@ -333,6 +336,8 @@ class PtySession:
 
     def summary(self) -> dict[str, Any]:
         idle = time.time() - self.last_output if self.running else 0
+        with self._cond:
+            progress = self._progress.snapshot(running=self.running)
         return {
             "id": self.id, "action": self.action, "title": self.title,
             "command": " ".join(_display_argv(self.argv)), "started": self.started,
@@ -342,6 +347,7 @@ class PtySession:
             # Quiet for a while with a prompt-shaped last line: probably waiting on you.
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
             "last_line": self._last_line(), "idle": int(idle),
+            "progress": progress,
         }
 
     def _last_line(self) -> str:
@@ -727,7 +733,7 @@ def gh_cached(root: Path, args: list[str]) -> str | None:
     return out
 
 
-def delivery_overview(root: Path) -> dict[str, Any]:
+def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     settings = read_settings(root)
     config = read_json_file(runtime_dir(root) / "project.json")
     jobs = list_jobs(root)
@@ -739,6 +745,40 @@ def delivery_overview(root: Path) -> dict[str, Any]:
     data = delivery_view.overview(lambda *a: git(root, *a), lambda argv: gh_cached(root, argv), runtime_dir(root),
                                   base_branch(root, settings), jobs, firebase, ci)
     data["web_url"] = repo_web_url(root)
+
+    all_branches = [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200]
+    current_git_branch = git(root, "branch", "--show-current") or base_branch(root, settings)
+    target_branch = branch if branch and branch in all_branches else (current_git_branch if current_git_branch in all_branches else (all_branches[0] if all_branches else "main"))
+
+    commit_parts = git(root, "log", "-1", "--format=%h%x09%s%x09%cr%x09%an", target_branch).split("\t") if target_branch else []
+    branch_commit = {
+        "commit": commit_parts[0] if len(commit_parts) > 0 else "",
+        "subject": commit_parts[1] if len(commit_parts) > 1 else "",
+        "when": commit_parts[2] if len(commit_parts) > 2 else "",
+        "author": commit_parts[3] if len(commit_parts) > 3 else "",
+    }
+
+    matching_jobs = [j for j in jobs if j.get("branch") == target_branch] + [j for j in archived_feature_jobs(root) if j.get("branch") == target_branch]
+    matching_jobs.sort(key=lambda j: j.get("updated", 0), reverse=True)
+    latest_job = None
+    if matching_jobs:
+        lj = matching_jobs[0]
+        latest_job = {
+            "id": lj.get("id"),
+            "title": lj.get("title") or lj.get("id"),
+            "status": lj.get("status"),
+            "updated": lj.get("updated"),
+        }
+
+    auth_sources = allowed_auth_sources(root)
+    user_email = next(iter(auth_sources), "")
+
+    data["branches"] = all_branches
+    data["current_branch"] = current_git_branch
+    data["selected_branch"] = target_branch
+    data["branch_commit"] = branch_commit
+    data["latest_job"] = latest_job
+    data["user_email"] = user_email
     return data
 
 
@@ -2215,7 +2255,19 @@ def build_logs_tail(params: dict[str, Any], root: Path) -> list[str]:
 
 def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
     notes = _text(params, "notes", limit=4000)
-    return orchestrator_argv("distribute", *(["--notes", notes] if notes else []))
+    branch = _text(params, "branch", limit=200)
+    group = _text(params, "group", limit=200)
+    testers = _text(params, "testers", limit=500)
+    argv = orchestrator_argv("distribute")
+    if notes:
+        argv += ["--notes", notes]
+    if branch:
+        argv += ["--branch", branch]
+    if group:
+        argv += ["--groups", group]
+    if testers:
+        argv += ["--testers", testers]
+    return argv
 
 
 def build_answer(params: dict[str, Any], root: Path) -> list[str]:
@@ -2423,6 +2475,14 @@ ORCHESTRATOR_DOCS = ["getting-started.md", "user-guide.md", "recommended-mcp-plu
 # Console menus the Configuration page can open in a terminal (see scripts/config_menu.py).
 CONFIG_MENUS = ["github", "models", "keys", "instructions", "fleet", "project", "archived", "firebase",
                 "xcode", "email", "audit", "selftests", "update", "all"]
+AVAILABLE_MODELS = [
+    {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (Recommended)", "provider": "Anthropic"},
+    {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "provider": "Anthropic"},
+    {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "provider": "Google"},
+    {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "provider": "Google"},
+    {"id": "gpt-4o", "label": "GPT-4o", "provider": "OpenAI"},
+    {"id": "o3-mini", "label": "o3-mini", "provider": "OpenAI"},
+]
 
 
 def settings_path(root: Path) -> Path:
@@ -2531,14 +2591,7 @@ def config_state(root: Path) -> dict[str, Any]:
                 "builder": "claude-sonnet-4-6",
                 "reviewer": "claude-sonnet-4-6",
             }),
-            "available": [
-                {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (Recommended)", "provider": "Anthropic"},
-                {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "provider": "Anthropic"},
-                {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "provider": "Google"},
-                {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "provider": "Google"},
-                {"id": "gpt-4o", "label": "GPT-4o", "provider": "OpenAI"},
-                {"id": "o3-mini", "label": "o3-mini", "provider": "OpenAI"},
-            ],
+            "available": AVAILABLE_MODELS,
             **settings.get("default_models", {
                 "architect": "claude-sonnet-4-6",
                 "planner": "claude-sonnet-4-6",
@@ -3092,7 +3145,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "repro", "expected", "vibe", "subsystems", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
@@ -3120,9 +3173,9 @@ ACTIONS: dict[str, Action] = {
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
     "test": Action("Run all tests", build_manual("test")),
-    "distribute": Action("Distribute current branch", build_distribute,
-                         confirm="Builds whatever branch is checked out now and sends a real Firebase release to your testers.",
-                         fields=["notes"]),
+    "distribute": Action("Distribute build for testing", build_distribute,
+                         confirm="Builds and sends a test build to Firebase App Distribution.",
+                         fields=["notes", "branch", "group", "testers"]),
     "config_menu": Action("Configuration", build_config_menu, fields=["menu"]),
     "test_email": Action("Send test email", build_test_email),
     "logs_setup": Action("Device logs setup", lambda p, r: build_logs_setup(p, r),
@@ -3749,7 +3802,13 @@ class UIHandler(BaseHTTPRequestHandler):
         doc.migrate_legacy()
         try:
             if method == "GET" and parts == ["product"]:
-                self._json(doc.overview())
+                settings = read_settings(root)
+                models_cfg = settings.get("default_models", {})
+                current_model = models_cfg.get("reviewer") or "claude-sonnet-4-6"
+                resp = doc.overview()
+                resp["model"] = current_model
+                resp["available_models"] = AVAILABLE_MODELS
+                self._json(resp)
             elif method == "GET" and len(parts) == 3 and parts[1] == "design":
                 name = parts[2]
                 folder = root / prd_doc.DESIGNS_DIR
@@ -3823,13 +3882,27 @@ class UIHandler(BaseHTTPRequestHandler):
                     raise UIError("That request is no longer around.", HTTPStatus.NOT_FOUND)
                 self.server.tasks.cancel(parts[2])
                 self._json({"ok": True, "task": parts[2], "status": "canceled"})
+            elif method == "POST" and parts == ["product", "model"]:
+                body = self._body()
+                new_model = _text(body, "model", required=True, limit=100)
+                settings = read_settings(root)
+                if "default_models" not in settings or not isinstance(settings["default_models"], dict):
+                    settings["default_models"] = {}
+                settings["default_models"]["reviewer"] = new_model
+                write_settings(root, settings)
+                self._json({"ok": True, "model": new_model})
             elif method == "POST" and parts == ["product", "draft"]:
                 if not prd_doc.can_draft(root):
                     raise UIError("There's nothing in this project to read yet (no README, notes or code). Describe it in your own words instead.")
+                body = self._body() if (self.headers.get("Content-Type") or "").startswith("application/json") else {}
                 commits = git(root, "log", "--format=%s", "-n", "30").splitlines()
                 current = doc.read() or prd_doc.template()
                 digest = prd_doc.project_digest(root, commits)
-                self._start_proposal(root, current, prd_doc.draft_prompt(digest, current), lambda reply: prd_doc.parse_draft(reply, current), 270)
+                settings = read_settings(root)
+                models_cfg = settings.get("default_models", {})
+                req_model = _text(body, "model", limit=100) if body.get("model") else ""
+                chosen_model = req_model or models_cfg.get("reviewer") or ""
+                self._start_proposal(root, current, prd_doc.draft_prompt(digest, current), lambda reply: prd_doc.parse_draft(reply, current), 270, model=chosen_model)
             elif method == "POST" and parts == ["product", "import"]:
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
                     body = self._body()
@@ -3846,14 +3919,14 @@ class UIHandler(BaseHTTPRequestHandler):
         except prd_doc.PrdError as exc:
             raise UIError(str(exc), HTTPStatus.BAD_GATEWAY if "model" in str(exc).lower() else HTTPStatus.BAD_REQUEST)
 
-    def _start_proposal(self, root: Path, current: str, prompt: str, parse: Callable[[str], dict[str, str]], timeout: int) -> None:
+    def _start_proposal(self, root: Path, current: str, prompt: str, parse: Callable[[str], dict[str, str]], timeout: int, model: str = "") -> None:
         """Ask the model for a proposed document in the background; the page polls /api/product/task/<id> for the diff."""
         def work() -> dict[str, Any]:
             try:
-                proposal = parse(self._model_call(root, prompt, timeout=timeout))
+                proposal = parse(self._model_call(root, prompt, model=model, timeout=timeout))
             except prd_doc.PrdError:
                 # Models sometimes answer in prose or break the JSON. Say what format is needed and ask once more before giving up.
-                proposal = parse(self._model_call(root, prompt + prd_doc.FORMAT_REMINDER, timeout=timeout))
+                proposal = parse(self._model_call(root, prompt + prd_doc.FORMAT_REMINDER, model=model, timeout=timeout))
             return {
                 **proposal,
                 "sections": prd_doc.sections_view(proposal["markdown"]),
@@ -4181,7 +4254,24 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["preflight"]:
             self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
         elif method == "GET" and parts == ["delivery"]:
-            self._json(delivery_overview(root))
+            self._json(delivery_overview(root, branch=(query.get("branch") or [None])[0]))
+        elif method == "POST" and parts == ["delivery", "group"]:
+            body = self._body()
+            name = _text(body, "name", required=True, limit=100).strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                raise UIError("Group name should only contain letters, numbers, hyphens, and underscores.")
+            settings = read_settings(root)
+            current_groups = [g.strip() for g in str(settings.get("firebase_tester_groups", "")).split(",") if g.strip()]
+            if name not in current_groups:
+                current_groups.append(name)
+                settings["firebase_tester_groups"] = ", ".join(current_groups)
+                write_settings(root, settings)
+            if shutil.which("firebase"):
+                try:
+                    subprocess.run(["firebase", "appdistribution:group:create", name, name], cwd=root, capture_output=True, timeout=15)
+                except Exception:
+                    pass
+            self._json({"ok": True, "groups": current_groups, "created": name})
         elif method == "POST" and parts == ["delivery", "rerun"]:
             run_id = self._body().get("run_id")
             if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
@@ -4726,6 +4816,11 @@ class UIHandler(BaseHTTPRequestHandler):
             data = None
         if data is None:
             return {"suites": [], "plans": [], "coverage": None, "error": "Couldn't list tests; try the console's Test menu."}
+        if data.get("coverage") and not data["coverage"].get("total_lines"):
+            from orchestrator.coverage import count_source_lines
+            cnt = count_source_lines(root)
+            if cnt > 0:
+                data["coverage"]["total_lines"] = cnt
         self.server.tests_cache = (root, time.time(), data)
         return data
 
@@ -4778,6 +4873,10 @@ class UIHandler(BaseHTTPRequestHandler):
         if job_id:
             job_title = job_summary(resolve_job_path(root, job_id), read_json_file(resolve_job_path(root, job_id)))["title"]
             title = f"{action.title} · {job_title}"
+        elif params.get("title") and isinstance(params.get("title"), str) and str(params.get("title")).strip():
+            title = str(params["title"]).strip()
+        elif key == "new_job" and str(params.get("type") or "") == "coverage":
+            title = "Coverage expanding"
         try:
             cols, rows = int(body.get("cols") or 110), int(body.get("rows") or 32)
         except (TypeError, ValueError):

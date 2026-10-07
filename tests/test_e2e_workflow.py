@@ -390,6 +390,61 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertEqual(job_data["type"], "test-audit")
         mock_create_issue.assert_called_once()
 
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_new_job_coverage_handles_list_shaped_planner_outputs(self, mock_create_issue, mock_llm):
+        """Verify new_job handles list-shaped LLM planner responses without AttributeError."""
+        mock_create_issue.return_value = 140
+        from orchestrator.scripts import new_job
+
+        cases = [
+            # 1. Wrapped dict inside list
+            json.dumps([{
+                "title": "Coverage: AuthViewModel",
+                "summary": "Audit Auth",
+                "audit_goals": ["goal 1"],
+                "target_subsystems": ["Auth"],
+            }]),
+            # 2. List of test case dicts
+            json.dumps([
+                {"title": "Test login", "covers": ["AC1"], "expected": "Passes"},
+                {"title": "Test logout", "covers": ["AC2"], "expected": "Passes"},
+            ]),
+            # 3. List of strings
+            json.dumps([
+                "Audit auth flow and token refresh",
+                "Audit session expiration handling",
+            ]),
+        ]
+
+        for idx, llm_response in enumerate(cases):
+            with self.subTest(case_idx=idx):
+                jobs_dir = self.root / ".orchestrator" / "jobs"
+                for f in jobs_dir.glob("*.json"):
+                    f.unlink()
+                mock_create_issue.return_value = 140 + idx
+                mock_llm.return_value = (llm_response, "mock-model", f"sid-{idx}")
+                args = [
+                    "coverage",
+                    "--summary", f"Expand Coverage Case {idx}",
+                    "--branch-mode", "manual",
+                    "--no-dispatch",
+                    "--allowed-models", "gemini",
+                    "--allowed-machines", "local",
+                ]
+                with patch("orchestrator.scripts.new_job.ROOT", self.root):
+                    with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+                        with patch("sys.stdin", io.StringIO("")):
+                            new_job.main(args)
+
+                job_files = list(jobs_dir.glob(f"*coverage*.json"))
+                self.assertEqual(len(job_files), 1)
+                latest_job = json.loads(job_files[0].read_text())
+                self.assertEqual(latest_job["type"], "test-audit")
+                self.assertIsInstance(latest_job["plan"], dict)
+                self.assertIn("title", latest_job["plan"])
+                self.assertIn("summary", latest_job["plan"])
+
 
     @patch("orchestrator.scripts.new_job.run_llm")
     @patch("orchestrator.scripts.new_job.create_issue")

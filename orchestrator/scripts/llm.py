@@ -36,49 +36,95 @@ DEFAULT_FALLBACKS = get_prioritized_models()
 def extract_json_block(text: str) -> str:
     text = text.strip()
 
-    # 1. Try markdown fences
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    if fenced:
-        text = fenced.group(1).strip()
+    def _extract_balanced_span(s: str, opener: str, closer: str) -> tuple[str | None, int, int]:
+        start = s.find(opener)
+        if start == -1:
+            return None, -1, -1
+        stack = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(s)):
+            c = s[i]
+            if c == '"' and not escape:
+                in_string = not in_string
+            elif not in_string:
+                if c == opener:
+                    stack += 1
+                elif c == closer:
+                    stack -= 1
+                    if stack == 0:
+                        return s[start:i+1].strip(), start, i + 1
+            if c == '\\' and not escape:
+                escape = True
+            else:
+                escape = False
+        return None, -1, -1
+
+    # 1. Try markdown fences (all blocks)
+    fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fenced_blocks:
+        # Prioritize any fenced block that parses as a JSON dict
+        for b in fenced_blocks:
+            b_clean = re.sub(r"//.*$", "", b.strip(), flags=re.M).strip()
+            try:
+                parsed = json.loads(b_clean)
+                if isinstance(parsed, dict):
+                    return b_clean
+            except Exception:
+                pass
+        # Next, try any fenced block that parses as valid JSON (e.g. list)
+        for b in fenced_blocks:
+            b_clean = re.sub(r"//.*$", "", b.strip(), flags=re.M).strip()
+            try:
+                json.loads(b_clean)
+                return b_clean
+            except Exception:
+                pass
+        text = fenced_blocks[0].strip()
     else:
-        # 2. Stack-based extraction for the first full object or array
-        # This handles cases where models append garbage or closing braces after the valid JSON
-        first_brace = text.find('{')
-        first_bracket = text.find('[')
-        
-        start_idx = -1
-        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
-            start_idx = first_brace
-            opener, closer = '{', '}'
-        elif first_bracket != -1:
-            start_idx = first_bracket
-            opener, closer = '[', ']'
-        
-        if start_idx != -1:
-            stack = 0
-            in_string = False
-            escape = False
-            for i in range(start_idx, len(text)):
-                c = text[i]
-                if c == '"' and not escape:
-                    in_string = not in_string
-                elif not in_string:
-                    if c == opener:
-                        stack += 1
-                    elif c == closer:
-                        stack -= 1
-                        if stack == 0:
-                            text = text[start_idx:i+1].strip()
-                            break
-                if c == '\\' and not escape:
-                    escape = True
-                else:
-                    escape = False
+        # 2. Stack-based extraction:
+        dict_cand, dict_start, dict_end = _extract_balanced_span(text, '{', '}')
+        list_cand, list_start, list_end = _extract_balanced_span(text, '[', ']')
+
+        dict_valid = False
+        dict_clean = ""
+        if dict_cand:
+            dict_clean = re.sub(r"//.*$", "", dict_cand, flags=re.M).strip()
+            try:
+                if isinstance(json.loads(dict_clean), dict):
+                    dict_valid = True
+            except Exception:
+                pass
+
+        list_valid = False
+        list_clean = ""
+        if list_cand:
+            list_clean = re.sub(r"//.*$", "", list_cand, flags=re.M).strip()
+            try:
+                json.loads(list_clean)
+                list_valid = True
+            except Exception:
+                pass
+
+        # If list_cand encloses dict_cand and is valid JSON, the top-level structure is the list!
+        if list_valid and dict_valid and list_start <= dict_start and list_end >= dict_end:
+            return list_clean
+
+        # If dict_valid is true (e.g. dict after list, or no valid list), prioritize the dict
+        if dict_valid:
+            return dict_clean
+
+        # If only list_valid is true
+        if list_valid:
+            return list_clean
+
+        if dict_cand:
+            text = dict_cand
+        elif list_cand:
+            text = list_cand
 
     # 3. Strip single-line comments (// ...) which some models (like deepseek) hallucinate into JSON
-    # This is non-standard JSON but common in LLM "pseudo-JSON"
     text = re.sub(r"//.*$", "", text, flags=re.M)
-    
     return text.strip()
 
 

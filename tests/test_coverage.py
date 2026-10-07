@@ -89,6 +89,28 @@ class CoverageTests(unittest.TestCase):
         m = cov.measure(self.project(package={"devDependencies": {"jest": "29"}}), "npm test", jest)
         self.assertEqual((m.pct, m.tool, m.metric), (90.0, "Jest", "lines"))
 
+    def test_total_lines_and_covered_lines_extracted_when_present(self):
+        py = sys.executable
+        root = self.project("pyproject.toml")
+        run = FakeRun({f"{py} -m coverage json": (0, "", lambda a: Path(a[-1]).write_text(json.dumps({"totals": {"percent_covered": 85.0, "num_statements": 1200, "covered_lines": 1020}})))})
+        m = cov.measure(root, "pytest -q", run)
+        self.assertEqual(m.total_lines, 1200)
+        self.assertEqual(m.covered_lines, 1020)
+
+        llvm = {"data": [{"totals": {"lines": {"percent": 72.06, "count": 2500, "covered": 1800}}}]}
+        rust = FakeRun({"cargo llvm-cov --json": (0, "", lambda a: Path(a[-1]).write_text(json.dumps(llvm)))})
+        m_rust = cov.measure(self.project("Cargo.toml"), "cargo test", rust)
+        self.assertEqual(m_rust.total_lines, 2500)
+        self.assertEqual(m_rust.covered_lines, 1800)
+
+    def test_count_source_lines_helper(self):
+        root = self.project()
+        (root / "a.swift").write_text("let a = 1\nlet b = 2\n")
+        (root / "b.py").write_text("print('hello')\n")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "x.js").write_text("ignore = 1\n")
+        self.assertEqual(cov.count_source_lines(root), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

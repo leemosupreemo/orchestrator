@@ -2553,6 +2553,7 @@ def run_project_coverage() -> float | None:
     suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
     save_coverage_data({
         "timestamp": now_iso(), "overall_coverage_pct": result.pct, "tool": result.tool, "metric": result.metric,
+        "total_lines": result.total_lines, "covered_lines": result.covered_lines,
         "targets": [], "total_tests": sum(s["test_count"] for s in suites), "total_suites": len(suites),
     })
     print(f"\n\033[1;92m✅ {result.pct:.1f}% of {result.metric} covered (measured with {result.tool}).\033[0m")
@@ -2726,7 +2727,12 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                         "Firebase", "Google", "GUL", "GTM", "FBL", "AppAuth", "gRPC", "abseil", "absl", "nanopb",
                         "leveldb", "Promises", "GTMSessionFetcher", "SnapshotTesting", "Quick", "Nimble", "Pods-", "openssl"
                     ])
-                    entry = {"name": t_name, "coverage_pct": t_cov}
+                    entry = {
+                        "name": t_name,
+                        "coverage_pct": t_cov,
+                        "total_lines": t.get("executableLines", 0),
+                        "covered_lines": t.get("coveredLines", 0),
+                    }
                     if is_app_target:
                         app_targets.insert(0, entry)
                     elif is_third_party:
@@ -2739,8 +2745,12 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                     primary_target = app_targets[0]
                     overall_pct = primary_target["coverage_pct"]
                     targets_cov = app_targets + third_party_targets
+                    total_lines = primary_target.get("total_lines") or cov_json.get("executableLines", 0)
+                    covered_lines = primary_target.get("covered_lines") or cov_json.get("coveredLines", 0)
                 else:
                     targets_cov = third_party_targets
+                    total_lines = cov_json.get("executableLines", 0)
+                    covered_lines = cov_json.get("coveredLines", 0)
             except Exception as e:
                 print(f"\n⚠️ Could not parse .xcresult coverage: {e}")
 
@@ -2773,6 +2783,8 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
         cov_record = {
             "timestamp": now_iso(),
             "overall_coverage_pct": overall_pct,
+            "total_lines": total_lines,
+            "covered_lines": covered_lines,
             "targets": targets_cov,
             "total_tests": total_tests,
             "total_suites": total_suites,
@@ -2793,10 +2805,11 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             color = "\033[1;92m" if tests_delta > 0 else "\033[1;91m"
             tests_delta_str = f" ({color}{sign}{tests_delta} test(s) added\033[0m)"
 
+        lines_detail_str = f" of {total_lines:,} lines ({covered_lines:,} covered)" if total_lines else ""
         print(f"\n\033[1;92m" + "=" * 58 + "\033[0m")
         print(f"   \033[1;92m🧪 CODE COVERAGE & TEST HEALTH REPORT\033[0m")
         print(f"\033[1;92m" + "=" * 58 + "\033[0m")
-        print(f"   \033[1;36m• Overall Coverage:\033[0m      \033[1;97m{overall_pct:.1f}%\033[0m{cov_delta_str}")
+        print(f"   \033[1;36m• Overall Coverage:\033[0m      \033[1;97m{overall_pct:.1f}%{lines_detail_str}\033[0m{cov_delta_str}")
         print(f"   \033[1;36m• Test Suite Breakdown:\033[0m  \033[97m{total_tests} test(s) across {total_suites} suite(s)\033[0m{tests_delta_str}")
         if suites:
             print(f"   \033[1;36m• Active Suites:\033[0m")

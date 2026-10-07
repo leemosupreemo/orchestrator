@@ -263,15 +263,21 @@ struct SampleSwiftTestingTests {{
 
 def test_inventory() -> dict[str, Any]:
     from dev_console import ROOT, PROJECT_CONFIG, discover_test_suites, get_coverage_data
+    from orchestrator.coverage import count_source_lines
 
     suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
     plans_root = ROOT / (PROJECT_CONFIG.test_target or "") / "TestPlans"
     plans = sorted(plans_root.glob("*.xctestplan")) if PROJECT_CONFIG.test_target and plans_root.exists() else []
+    cov = get_coverage_data()
+    if cov and not cov.get("total_lines"):
+        lines_cnt = count_source_lines(ROOT)
+        if lines_cnt > 0:
+            cov["total_lines"] = lines_cnt
     return {
         "suites": [{"name": s["name"], "tests": s["test_count"], "path": str(s.get("rel_path") or ""),
                     "language": s.get("language", "swift")} for s in suites],
         "plans": [p.stem for p in plans],
-        "coverage": get_coverage_data(),
+        "coverage": cov,
         "frameworks": frameworks_inventory(),
     }
 

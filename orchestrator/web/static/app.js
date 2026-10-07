@@ -643,7 +643,11 @@ const dialogs = {
       <small class="hint-text">Created from ${esc(state.project?.branch || "the current branch")} and checked out.</small>`, "Create");
     if (values?.name.trim()) runAction("git_new_branch", { name: values.name.trim() });
   },
-  async distribute() {
+  async distribute(params) {
+    if (params?.branch) {
+      runAction("distribute", { branch: params.branch, notes: params.notes, group: params.group, testers: params.testers }, { skipConfirm: false });
+      return;
+    }
     const values = await formDialog("Distribute current branch", `
       <p>Builds <strong class="mono">${esc(state.project?.branch || "the checked-out branch")}</strong> and sends a real Firebase release to your testers.</p>
       <label class="field"><span>Release notes <span class="muted">(optional)</span></span><textarea name="notes"></textarea></label>`, "Distribute");
@@ -803,6 +807,73 @@ const dialogs = {
   },
 };
 
+const stoppingRuns = new Set();
+
+async function stopJob(runId, stopBtn) {
+  if (!runId || stoppingRuns.has(runId)) return;
+  let run = state.runs.find((r) => r.id === runId);
+  if (!run) {
+    try { await refreshState(); } catch {}
+    run = state.runs.find((r) => r.id === runId);
+  }
+  const hasJob = Boolean(run?.job || run?.result_job || (current.page === "job" && current.args[0]));
+  const title = hasJob ? "Stop this job?" : "Stop this run?";
+  const body = "<p>Work stops now. What was done is kept, and you can resume later.</p>";
+  const okLabel = hasJob ? "Stop job" : "Stop run";
+
+  const ok = await formDialog(title, body, okLabel, { danger: true, compact: true });
+  if (!ok) return;
+
+  stoppingRuns.add(runId);
+  if (run) run.stopping = true;
+
+  const liveRunEl = stopBtn?.closest(".live-run") || Array.from(document.querySelectorAll(".live-run")).find((el) => el.dataset.runId === runId);
+  if (liveRunEl) {
+    liveRunEl.classList.add("stopping");
+    liveRunEl.setAttribute("aria-busy", "true");
+    if (!liveRunEl.querySelector(".live-run-overlay")) {
+      const overlay = document.createElement("div");
+      overlay.className = "live-run-overlay";
+      overlay.setAttribute("role", "status");
+      overlay.setAttribute("aria-label", "Stopping…");
+      overlay.innerHTML = '<div class="spinner" aria-hidden="true"></div><span class="live-run-overlay-text">Stopping…</span>';
+      liveRunEl.prepend(overlay);
+    }
+  }
+
+  document.querySelectorAll("[data-stop]").forEach((btn) => {
+    if (btn.dataset.stop === runId) {
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      btn.textContent = "Stopping…";
+    }
+  });
+
+  try {
+    await api(`runs/${encodeURIComponent(runId)}/stop`, { method: "POST", body: {} });
+    const maxPolls = 60;
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await refreshState();
+      const currentRun = state.runs.find((r) => r.id === runId);
+      if (!currentRun || !currentRun.running) {
+        if (currentRun) currentRun.stopped = true;
+        break;
+      }
+    }
+    toast(hasJob ? "Job stopped" : "Run stopped");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    stoppingRuns.delete(runId);
+    if (run) run.stopping = false;
+    await refreshState();
+    if (LIVE.has(current.page)) {
+      await route();
+    }
+  }
+}
+
 document.addEventListener("click", (e) => {
   // Close any open "More" menu when clicking outside it or on one of its items.
   document.querySelectorAll("details.more[open]").forEach((d) => {
@@ -836,9 +907,9 @@ document.addEventListener("click", (e) => {
   }
   const stop = e.target.closest("[data-stop]");
   if (stop) {
-    const run = state.runs.find((r) => r.id === stop.dataset.stop);
-    if (run) run.stopped = true;
-    api(`runs/${encodeURIComponent(stop.dataset.stop)}/stop`, { method: "POST", body: {} }).catch((err) => toast(err.message, true));
+    e.preventDefault();
+    e.stopPropagation();
+    stopJob(stop.dataset.stop, stop);
     return;
   }
   const forgetBtn = e.target.closest("[data-forget-project]");
@@ -1030,7 +1101,7 @@ async function refreshState() {
     if (from && to) { to.hidden = from.hidden; to.textContent = from.textContent; to.title = from.title; to.className = from.className; }
   }
   const mobileTitle = $("#mobile-title"); // the phone header names the project you're in
-  if (mobileTitle) mobileTitle.textContent = state.project?.name || "";
+  if (mobileTitle) mobileTitle.textContent = document.body.classList.contains("signin-gate") ? "Orchestrator" : (state.project?.name || "");
   const pageTitle = $("#page-title")?.dataset.title;
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
 
@@ -1098,9 +1169,11 @@ document.addEventListener("change", async (e) => {
 // Shown from the click on a provider (or the token form) until the first page is ready.
 function showSigningIn(label = "Signing you in…") {
   setHeader({ title: "Signing in", sub: "", actions: "" });
+  document.body.classList.add("signin-gate");
+  const mobileTitle = $("#mobile-title");
+  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
-      <div class="signin-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></div>
       <div class="spinner" aria-hidden="true"></div>
       <h2>${esc(label)}</h2>
       <p class="muted">Connecting to your computer and loading your projects.</p></div></div>`;
@@ -1417,6 +1490,9 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) 
 
 function showSignInGate(message) {
   setHeader({ title: "Sign In", sub: "", actions: "" });
+  document.body.classList.add("signin-gate");
+  const mobileTitle = $("#mobile-title");
+  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
   const backend = getBackendUrl() || "";
   const token = getToken() || "";
@@ -1429,10 +1505,6 @@ function showSignInGate(message) {
   view.innerHTML = `
     <div class="signin-wrap">
       <div class="signin-card">
-        <div class="signin-brand">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <span>Orchestrator</span>
-        </div>
         <div>
           <h2 style="margin: 0; font-size: 1.3rem; font-weight: 700;">Sign In</h2>
           <p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;">
@@ -1658,6 +1730,9 @@ async function lockSession() {
 // `titleHtml` replaces the plain title with markup (Home's project switcher); `title` stays the page's name for the
 // browser tab and anything else that asks what page this is (#page-title's data-title).
 function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
+  document.body.classList.remove("signin-gate");
+  const mobileTitle = $("#mobile-title");
+  if (mobileTitle) mobileTitle.textContent = state.project?.name || "";
   document.body.dataset.page = current.page || "";
   const back = $("#back-link");
   if (back) { back.hidden = !current.parent; if (current.parent) back.setAttribute("href", current.parent); }
@@ -1717,6 +1792,7 @@ document.addEventListener("click", (e) => {
 });
 
 function jobTableRow(j, { hidden = false } = {}) {
+  const activeRun = state.runs.find((r) => r.running && (r.job === j.id || r.result_job === j.id));
   const parts = [
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
@@ -1745,6 +1821,7 @@ function jobTableRow(j, { hidden = false } = {}) {
       <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">
         <span class="date-relative">${esc(ago(j.updated))}</span>
       </div>
+      ${activeRun ? runStatus(activeRun) : ""}
       <div class="row-hover-hint">
         <span>Click for details</span>
         <svg class="icon icon-sm" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -1760,7 +1837,12 @@ function elapsed(ts) {
 // A running task: status, how long, its newest output line, and open/stop.
 function liveRunCard(r) {
   const target = r.job || r.result_job;
-  return `<div class="live-run ${r.waiting ? "waiting" : ""}">
+  const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
+  const overlayHtml = isStopping
+    ? `<div class="live-run-overlay" role="status" aria-label="Stopping…"><div class="spinner" aria-hidden="true"></div><span class="live-run-overlay-text">Stopping…</span></div>`
+    : "";
+  return `<div class="live-run ${r.waiting ? "waiting" : ""} ${isStopping ? "stopping" : ""}" data-run-id="${esc(r.id)}" ${isStopping ? 'aria-busy="true"' : ""}>
+    ${overlayHtml}
     <a class="main-col" href="#/runs/${encodeURIComponent(r.id)}">
       <div class="title">${esc(r.title)}</div>
       <div class="meta">${esc(`Running ${elapsed(r.started)}`)}${r.waiting ? " · waiting for you" : r.idle > 30 ? ` · quiet for ${elapsed(Date.now() / 1000 - r.idle)}` : ""}</div>
@@ -1768,7 +1850,7 @@ function liveRunCard(r) {
     </a>
     <div class="row">${runPill(r)}<a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Open log</a>
       ${target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Job</a>` : ""}
-      <button class="btn small danger" data-stop="${esc(r.id)}">Stop</button></div></div>`;
+      <button class="btn small danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? "Stopping…" : "Stop"}</button></div></div>`;
 }
 
 function runItem(r) {
@@ -2096,6 +2178,15 @@ pages.home = async (_, query) => {
         ${elsewhereLine(waiting.elsewhere)}
       </section>`,
     after: () => {
+      view.querySelector("#prd-home-model-select")?.addEventListener("change", async (e) => {
+        const next = e.target.value;
+        try {
+          await api("product/model", { method: "POST", body: { model: next } });
+          toast("Draft model updated");
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
         try { await api("config/archived-restore", { method: "POST", body: { id: b.dataset.restoreJob } }); toast("Job restored"); route(); }
@@ -2256,8 +2347,11 @@ pages.job = async ([id]) => {
     : `<span class="muted">No modified files</span>`;
 
   const next = s.state.next;
+  const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
   const heroAction = activeRun
-    ? `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`
+    ? (isStoppingActive
+      ? `<button class="btn" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
+      : `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
     : next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : "";
 
   // 4-Phase Lifecycle determination
@@ -2908,7 +3002,7 @@ pages.new = async (_, query) => {
         if (st.type === "bug") Object.assign(params, { repro: v.repro, expected: v.expected, logs: [...st.logs] });
         if (st.type === "feature") params.spec = featureSpec(v);
         if (st.type === "design") Object.assign(params, { spec: v.details, vibe: v.vibe === "other" ? (v.customVibe.trim() || "minimalist") : v.vibe, urls: v.url.trim() ? [v.url.trim()] : [] });
-        if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems, spec: v.details });
+        if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems, spec: v.details, title: "Coverage expanding" });
         runAction("new_job", params);
       });
     },
@@ -2992,51 +3086,181 @@ document.addEventListener("click", (e) => {
   }
 });
 
-pages.delivery = async () => {
-  const d = await api("delivery");
-  const { live, testers, ready, pipeline } = d;
-  const baseRun = pipeline.runs.find((r) => r.on_base);
+pages.delivery = async (args, query) => {
+  const branchParam = query?.get("branch") || "";
+  const d = await api("delivery" + (branchParam ? `?branch=${encodeURIComponent(branchParam)}` : ""));
+  const { testers, pipeline, branches = [], current_branch = "", selected_branch = "", branch_commit = {}, latest_job = null, user_email = "" } = d;
   const when = (iso) => (iso ? ago(Date.parse(iso) / 1000) : "");
-  const latest = testers.latest;
-  const liveCard = live ? `<section class="card mb-16"><div class="card-h"><h2>Live</h2><span class="count mono">${esc(live.branch)}</span></div>
-      <div class="card-b stack">
-        <div><strong class="mono">${esc(live.commit)}</strong> ${esc(live.subject)} <span class="muted">· ${esc(live.when)}</span></div>
-        <div class="row gap-10">
-          <span class="muted">${live.tag ? `Last release ${esc(live.tag)}` : "No release tagged yet"}</span>
-          ${live.unreleased ? `<span class="pill attention">${live.unreleased} change${live.unreleased === 1 ? "" : "s"} not released</span>` : `<span class="pill done">Up to date</span>`}
-          ${baseRun ? `<a href="${esc(baseRun.url || "#")}" target="_blank" rel="noopener"><span class="pill ${esc(baseRun.tone)}">Build ${esc(baseRun.outcome.replace("_", " "))}</span></a>` : ""}
-        </div></div></section>`
-    : `<section class="card mb-16"><div class="card-h"><h2>Live</h2></div><div class="empty">The base branch isn't in this repository yet, so there's nothing live to show.</div></section>`;
-  const testersCard = `<section class="card mb-16"><div class="card-h"><h2>With testers</h2>
-      <span data-owner-only>${testers.configured ? `<button class="btn small primary" ${act("distribute")}>Send current branch</button>` : `<a class="btn small" href="#/config/firebase">Set up Firebase</a>`}</span></div>
-      <div class="card-b stack">
-        ${latest ? `<div><strong>${esc(latest.version || "Unknown version")}${latest.build ? ` (${esc(latest.build)})` : ""}</strong>
-            <span class="muted">· ${esc(ago(latest.delivered))} · ${esc(latest.branch)}${latest.recipients ? ` · to ${esc(latest.recipients)}` : ""}</span>
-            ${latest.job_id ? ` <a href="#/jobs/${encodeURIComponent(latest.job_id)}">${esc(latest.title || latest.job_id)}</a>` : ""}</div>`
-          : `<div class="muted">${testers.configured ? "Nothing has been sent to testers yet." : "Testers get builds through Firebase App Distribution. Set it up once, then send any branch."}</div>`}
-        ${testers.groups.length ? `<div class="row" style="gap:6px"><span class="muted">Tester groups</span>${testers.groups.map((g) => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
-        ${testers.configured && !testers.cli_installed ? `<div class="notice bad">The Firebase CLI isn't installed on this machine, so sending will fail. Install it with <code>npm i -g firebase-tools</code>.</div>` : ""}
-        ${testers.configured ? (testers.invite_url
-          ? `<div class="row gap-10"><span class="muted">Invite link</span><a class="mono" href="${esc(testers.invite_url)}" target="_blank" rel="noopener">${esc(testers.invite_url.replace(/^https:\/\//, "").slice(0, 48))}</a><button class="btn small" data-setup-copy="${esc(testers.invite_url)}">Copy</button><a class="btn small ghost" href="#/config/firebase" data-owner-only>Change</a></div>`
-          : `<div class="muted">Want people to join without you adding them? <a href="#/config/firebase" data-owner-only>Add the group's invite link</a> and share it from here.</div>`) : ""}
-        ${testers.configured ? `<div class="muted">Add or remove testers and devices in the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener">Firebase console</a>.</div>` : ""}
-      </div></section>`;
-  const readyCard = ready.length ? `<section class="card mb-16"><div class="card-h"><h2>Ready to ship</h2><span class="count">${ready.length}</span></div>
-      <div class="list">${ready.map((j) => `<div class="item"><a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(j.title)}</div><div class="meta mono">${esc(j.branch)}${j.pr_number ? ` · PR #${esc(j.pr_number)}` : ""}</div></a>
-        <div class="side">${testers.configured ? `<button class="btn small" data-owner-only ${act("deliver", { job: j.id })}>Send to testers</button>` : ""}
-        ${j.next ? `<button class="btn small primary" ${act(j.next.action, { job: j.id })}>${esc(j.next.label)}</button>` : ""}</div></div>`).join("")}</div></section>` : "";
+
+  const jobTone = (status) => (status === "completed" ? "done" : status === "review-needed" ? "attention" : "working");
+
+  const branchCard = `<section class="card mb-16">
+    <div class="card-h">
+      <h2>Branch &amp; Test Build</h2>
+      <div class="row gap-8 align-center">
+        <span class="muted font-13">Branch:</span>
+        <select id="delivery-branch-select" class="mono" style="min-width: 140px;">
+          ${branches.map((b) => `<option value="${esc(b)}" ${b === selected_branch ? "selected" : ""}>${esc(b)}${b === current_branch ? " (current)" : ""}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="card-b stack">
+      <div>
+        ${branch_commit.commit ? `
+          <div><strong class="mono">${esc(branch_commit.commit)}</strong> ${esc(branch_commit.subject || "(no commit message)")} <span class="muted">· ${branch_commit.author ? `by ${esc(branch_commit.author)} · ` : ""}${esc(branch_commit.when)}</span></div>
+        ` : `<div class="muted">No commit information found for this branch.</div>`}
+      </div>
+      <div>
+        ${latest_job ? `
+          <span class="muted">Latest job on branch:</span>
+          <a href="#/jobs/${encodeURIComponent(latest_job.id)}"><strong>${esc(latest_job.title || latest_job.id)}</strong></a>
+          <span class="pill ${jobTone(latest_job.status)}">${esc(latest_job.status)}</span>
+          <span class="muted">· ${esc(ago(latest_job.updated))}</span>
+        ` : `
+          <span class="muted">No Orchestrator jobs have run on this branch yet.</span>
+        `}
+      </div>
+
+      ${!testers.configured ? `
+        <div class="notice">
+          <div class="stack">
+            <strong>Distribution is not set up yet.</strong>
+            <p class="muted">Configure Firebase App Distribution and code signing to build and install test versions on your devices.</p>
+            <div><a class="btn small primary" href="#/config/firebase">Set up Firebase</a></div>
+          </div>
+        </div>
+      ` : `
+        <form id="delivery-build-form" class="stack gap-12 mt-8 pt-12" style="border-top: 1px solid var(--border);">
+          <div class="field">
+            <span class="label">Send to</span>
+            <div class="row gap-16 align-center flex-wrap">
+              <label class="row gap-6 align-center cursor-pointer">
+                <input type="radio" name="recipient_type" value="me" checked>
+                <span>Just me ${user_email ? `<span class="muted">(${esc(user_email)})</span>` : ""}</span>
+              </label>
+              <label class="row gap-6 align-center cursor-pointer">
+                <input type="radio" name="recipient_type" value="group">
+                <span>Tester group:</span>
+              </label>
+              <select id="delivery-group-select" name="group" style="min-width: 140px;" ${testers.groups.length ? "" : "disabled"}>
+                ${testers.groups.length ? testers.groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("") : `<option value="">No groups configured</option>`}
+              </select>
+              <button type="button" class="btn small ghost" id="delivery-new-group-btn" title="Create a new Firebase tester group">+ New group</button>
+            </div>
+          </div>
+          <label class="field">
+            <span>Release notes <span class="muted">(optional)</span></span>
+            <input type="text" name="notes" placeholder="e.g. Test notes for this build">
+          </label>
+          <div class="row gap-10 align-center">
+            <button type="submit" class="btn primary" ${act("distribute")}>Launch build for testing</button>
+            ${testers.invite_url ? `
+              <span class="muted">·</span>
+              <button type="button" class="btn small ghost" data-setup-copy="${esc(testers.invite_url)}">Copy invite link</button>
+            ` : ""}
+          </div>
+          ${!testers.cli_installed ? `
+            <div class="notice bad">The Firebase CLI isn't installed on this machine (<code>firebase-tools</code>). Run <code>npm i -g firebase-tools</code>.</div>
+          ` : ""}
+        </form>
+      `}
+    </div>
+  </section>`;
+
   const pipelineCard = `<section class="card mb-16"><div class="card-h"><h2>Pipeline</h2>${d.xcode_cloud ? `<span class="count">Xcode Cloud configured</span>` : ""}</div>
       ${pipeline.available ? `<div class="list">${pipeline.runs.map((r) => `<div class="item"><a class="main-col" href="${esc(r.url || "#")}" target="_blank" rel="noopener"><div class="title">${esc(r.title || r.name)}</div>
         <div class="meta"><span class="mono">${esc(r.branch)}</span> · ${esc(r.name)} · ${esc(when(r.created))}</div></a><div class="side"><span class="pill ${esc(r.tone)}">${esc(r.outcome.replace("_", " "))}</span>${r.can_rerun ? `<button type="button" class="btn small" data-rerun="${r.id}">Re-run failed</button>` : ""}</div></div>`).join("") || `<div class="empty">No pipeline runs yet.</div>`}</div>`
         : `<div class="empty">Pipeline status comes from GitHub Actions. Sign in with the GitHub CLI (<code>gh auth login</code>) and push this repository to GitHub to see it here.</div>`}</section>`;
-  const buildsCard = testers.builds.length > 1 ? `<section class="card"><div class="card-h"><h2>Earlier builds</h2><span class="count">${testers.builds.length - 1}</span></div>
-      <div class="list">${testers.builds.slice(1).map((b) => `<a class="item" href="#/jobs/${encodeURIComponent(b.job_id)}"><div class="main-col"><div class="title">${esc(b.version || "?")}${b.build ? ` (${esc(b.build)})` : ""} · ${esc(b.title || b.job_id)}</div>
-        <div class="meta">${esc(ago(b.delivered))} · ${esc(b.branch)}${b.recipients ? ` · ${esc(b.recipients)}` : ""}</div></div></a>`).join("")}</div></section>` : "";
+
+  const buildsCard = testers.builds && testers.builds.length ? `<section class="card"><div class="card-h"><h2>Recent tester builds</h2><span class="count">${testers.builds.length}</span></div>
+      <div class="list">${testers.builds.map((b) => `<div class="item"><div class="main-col"><div class="title">${esc(b.version || "?")}${b.build ? ` (${esc(b.build)})` : ""}${b.title ? ` · ${esc(b.title)}` : ""}</div>
+        <div class="meta">${esc(ago(b.delivered))} · <span class="mono">${esc(b.branch)}</span>${b.recipients ? ` · to ${esc(b.recipients)}` : ""}</div></div>
+        ${b.job_id ? `<div class="side"><a class="btn small" href="#/jobs/${encodeURIComponent(b.job_id)}">Job</a></div>` : ""}</div>`).join("")}</div></section>` : "";
+
   return {
     title: "Delivery",
-    sub: "What's live, what testers have, and what's on the way.",
-    html: `${liveCard}${testersCard}${readyCard}${pipelineCard}${buildsCard}`,
+    sub: "Launch test builds on devices and monitor pipelines.",
+    html: `${branchCard}${buildsCard}${pipelineCard}`,
     after: () => {
+      const branchSelect = view.querySelector("#delivery-branch-select");
+      if (branchSelect) {
+        branchSelect.addEventListener("change", () => {
+          location.hash = `#/delivery?branch=${encodeURIComponent(branchSelect.value)}`;
+        });
+      }
+
+      const form = view.querySelector("#delivery-build-form");
+      if (form) {
+        const groupSelect = form.querySelector("#delivery-group-select");
+        const radios = form.querySelectorAll('input[name="recipient_type"]');
+        const updateGroupSelect = () => {
+          const isGroup = form.querySelector('input[name="recipient_type"]:checked')?.value === "group";
+          if (groupSelect && testers.groups.length) groupSelect.disabled = !isGroup;
+        };
+        radios.forEach((r) => r.addEventListener("change", updateGroupSelect));
+        updateGroupSelect();
+
+        const submitBtn = form.querySelector('[data-action="distribute"]');
+        if (submitBtn) {
+          submitBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+          }, true);
+        }
+
+        form.addEventListener("submit", (e) => {
+          e.preventDefault();
+          const fd = new FormData(form);
+          const recipientType = fd.get("recipient_type");
+          const notes = (fd.get("notes") || "").trim();
+          const group = recipientType === "group" ? (fd.get("group") || "").trim() : "";
+          const testersTarget = recipientType === "me" ? user_email : "";
+
+          runAction("distribute", {
+            branch: selected_branch,
+            group,
+            testers: testersTarget,
+            notes,
+          }, { skipConfirm: false });
+        });
+      }
+
+      const newGroupBtn = view.querySelector("#delivery-new-group-btn");
+      if (newGroupBtn) {
+        newGroupBtn.addEventListener("click", async () => {
+          const values = await formDialog("Create tester group", `
+            <p>Creates a new tester group in Firebase App Distribution and saves it to your project settings.</p>
+            <label class="field"><span>Group name</span><input type="text" name="name" placeholder="qa-team" required></label>
+          `, "Create group");
+          if (!values || !values.name?.trim()) return;
+          const groupName = values.name.trim();
+          try {
+            const res = await api("delivery/group", { method: "POST", body: { name: groupName } });
+            toast(`Created group "${groupName}"`);
+            const groupSelect = view.querySelector("#delivery-group-select");
+            if (groupSelect && Array.isArray(res.groups)) {
+              groupSelect.innerHTML = res.groups.map((g) => `<option value="${esc(g)}" ${g === groupName ? "selected" : ""}>${esc(g)}</option>`).join("");
+              groupSelect.disabled = false;
+            }
+            const groupRadio = form?.querySelector('input[name="recipient_type"][value="group"]');
+            if (groupRadio) {
+              groupRadio.checked = true;
+              if (groupSelect) groupSelect.disabled = false;
+            }
+          } catch (err) {
+            toast(err.message, true);
+          }
+        });
+      }
+
+      view.querySelectorAll("[data-setup-copy]").forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.setupCopy);
+          toast("Copied invite link");
+        } catch {
+          toast("Couldn't copy", true);
+        }
+      }));
+
       view.querySelectorAll("[data-rerun]").forEach((btn) => btn.addEventListener("click", async () => {
         btn.disabled = true;
         try { await api("delivery/rerun", { method: "POST", body: { run_id: Number(btn.dataset.rerun) } }); toast("Re-running the failed jobs"); route(); }
@@ -3586,12 +3810,22 @@ async function waitForTask(started, opts) {
 
 function productStripHtml(p) {
   const lead = p.sections.find((x) => x.id === "pitch" && x.filled) || p.sections.find((x) => x.filled);
+  const models = p.available_models || [];
+  const currentModel = p.model || "claude-sonnet-4-6";
+  const modelPicker = p.can_draft && models.length ? `
+    <div class="prd-model-picker">
+      <span class="muted">Model:</span>
+      <select id="prd-home-model-select" class="prd-model-select" aria-label="AI model for draft">
+        ${models.map((m) => `<option value="${esc(m.id)}"${m.id === currentModel ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}
+      </select>
+    </div>` : "";
+
   // The heading and the pitch open the product requirements. Its buttons stay secondary: New job is Home's one primary.
   return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2></div>
     <div class="card-b stack">
       ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-10">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
+           <div class="row gap-10 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a>${modelPicker}</div>`}
     </div></section>`;
 }
 
@@ -3618,7 +3852,7 @@ pages.product = async (_, query) => {
           <strong>Connected apps</strong>
           <div class="connected-apps-list">${connectedApps.length ? connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("") : `<span class="muted text-sm">None connected</span>`}</div>
           <div class="connected-apps-actions row gap-8 mt-4">
-            <button type="button" class="btn small ${connectedApps.length ? "primary" : "ghost"}" id="prd-add-app" ${connectedApps.length ? "" : "disabled title=\"Connect an app first\""}>Choose reference</button>
+            ${connectedApps.length ? `<button type="button" class="btn small primary" id="prd-add-app">Choose reference</button>` : ""}
             <a href="#/connections" class="btn small ${connectedApps.length ? "ghost" : "primary"}">${connectedApps.length ? "Connect more" : "Connect an app"}</a>
           </div>
         </div>
@@ -3633,15 +3867,26 @@ pages.product = async (_, query) => {
       ${p.sections.map(sectionCard).join("")}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
         <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
+        <div class="row gap-10 items-center wrap">
+          <span class="muted text-sm">Model:</span>
+          <select id="prd-update-model-select" class="prd-model-select" aria-label="AI model for product requirements">
+            ${(p.available_models || [
+              { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Recommended)" },
+              { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+              { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
+              { id: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
+              { id: "gpt-4o", label: "GPT-4o" },
+              { id: "o3-mini", label: "o3-mini" },
+            ]).map((m) => `<option value="${esc(m.id)}"${m.id === (p.model || "claude-sonnet-4-6") ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}
+          </select>
+        </div>
         <div class="muted">After feature or design jobs, AI updates clear changes, keeps your wording, and notifies you. Review or undo any update in History.</div></div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
         <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
     title: "Product requirements",
-    sub: `<a class="mono" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.`,
-    // An empty document gets one "Start here" card with these choices; the header offers them only after that.
-    actions: !p.sections.some((x) => x.filled) && !p.history.length ? ""
-      : `<a class="btn" href="#/docs/product">View .md</a>${p.can_draft ? `<button class="btn" id="prd-draft">Draft with AI</button>` : ""}<button class="btn" id="prd-import">Import PRD</button>`,
+    sub: `<a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.`,
+    actions: `${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button>`,
     html: render(),
     after: () => {
       const panel = () => $("#prd-panel");
@@ -3652,122 +3897,134 @@ pages.product = async (_, query) => {
       };
       const save = async (body) => { p = await api("product", { method: "POST", body }); };
 
+      const showSectionEditor = (id, box, currentBody, hint, title, onSave, onCancel) => {
+        if (id === "features") {
+          const rawLines = (currentBody || "").split("\n").map((l) => l.replace(/^\s*[-*•\d+.]\s*/, "").trim()).filter(Boolean);
+          const initialFeatures = rawLines.length ? rawLines : [""];
+          box.innerHTML = `<div class="muted">${esc(hint)}</div>
+            <div class="prd-features-edit" id="prd-features-list"></div>
+            <div class="row items-center gap-10 mt-8">
+              <button type="button" class="btn small ghost" id="prd-feature-add">+ Add feature</button>
+              <span class="muted text-xs">Press Enter to add another feature</span>
+            </div>
+            <div class="row gap-10 mt-12">
+              <button type="button" class="btn primary" id="prd-save-features">Save</button>
+              <button type="button" class="btn ghost" id="prd-cancel-features">Cancel</button>
+            </div>`;
+          const list = box.querySelector("#prd-features-list");
+          const createRow = (val = "") => {
+            const row = document.createElement("div");
+            row.className = "prd-feature-row";
+            row.innerHTML = `<span class="prd-feature-bullet" aria-hidden="true">&bull;</span>
+              <input type="text" class="prd-feature-input" value="${esc(val)}" placeholder="Describe a feature…" aria-label="Feature item">
+              <button type="button" class="btn icon ghost prd-feature-del" title="Remove feature" aria-label="Remove feature">&times;</button>`;
+            const input = row.querySelector(".prd-feature-input");
+            const delBtn = row.querySelector(".prd-feature-del");
+            input.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                const newRow = createRow("");
+                row.after(newRow);
+                newRow.querySelector(".prd-feature-input").focus();
+              } else if (e.key === "Backspace" && input.value === "") {
+                const rows = list.querySelectorAll(".prd-feature-row");
+                if (rows.length > 1) {
+                  e.preventDefault();
+                  const prevRow = row.previousElementSibling;
+                  const nextRow = row.nextElementSibling;
+                  row.remove();
+                  const targetInput = (prevRow || nextRow)?.querySelector(".prd-feature-input");
+                  if (targetInput) {
+                    targetInput.focus();
+                    const len = targetInput.value.length;
+                    targetInput.setSelectionRange(len, len);
+                  }
+                }
+              } else if (e.key === "ArrowUp") {
+                const prevInput = row.previousElementSibling?.querySelector(".prd-feature-input");
+                if (prevInput) { e.preventDefault(); prevInput.focus(); }
+              } else if (e.key === "ArrowDown") {
+                const nextInput = row.nextElementSibling?.querySelector(".prd-feature-input");
+                if (nextInput) { e.preventDefault(); nextInput.focus(); }
+              }
+            });
+            input.addEventListener("paste", (e) => {
+              const text = (e.clipboardData || window.clipboardData)?.getData("text") || "";
+              if (text.includes("\n")) {
+                e.preventDefault();
+                const lines = text.split("\n").map((l) => l.replace(/^\s*[-*•\d+.]\s*/, "").trim()).filter(Boolean);
+                if (!lines.length) return;
+                input.value = lines[0];
+                let curRow = row;
+                for (let i = 1; i < lines.length; i++) {
+                  const nr = createRow(lines[i]);
+                  curRow.after(nr);
+                  curRow = nr;
+                }
+                curRow.querySelector(".prd-feature-input")?.focus();
+              }
+            });
+            delBtn.addEventListener("click", () => {
+              const rows = list.querySelectorAll(".prd-feature-row");
+              if (rows.length > 1) {
+                const prev = row.previousElementSibling || row.nextElementSibling;
+                row.remove();
+                prev?.querySelector(".prd-feature-input")?.focus();
+              } else {
+                input.value = "";
+                input.focus();
+              }
+            });
+            return row;
+          };
+
+          initialFeatures.forEach((f) => list.appendChild(createRow(f)));
+          box.querySelector("#prd-feature-add").addEventListener("click", () => {
+            const nr = createRow("");
+            list.appendChild(nr);
+            nr.querySelector(".prd-feature-input").focus();
+          });
+          box.querySelector("#prd-cancel-features").addEventListener("click", onCancel);
+          box.querySelector("#prd-save-features").addEventListener("click", async () => {
+            const items = Array.from(box.querySelectorAll(".prd-feature-input")).map((i) => i.value.trim()).filter(Boolean);
+            const body = items.length ? items.map((f) => `- ${f}`).join("\n") : "";
+            await onSave(body);
+          });
+          const firstEmpty = Array.from(box.querySelectorAll(".prd-feature-input")).find((i) => !i.value) || box.querySelector(".prd-feature-input");
+          firstEmpty?.focus();
+          return;
+        }
+
+        box.innerHTML = `<div class="muted">${esc(hint)}</div><label class="field"><span class="sr-only">${esc(title)}</span><textarea rows="${id === "pitch" ? 5 : 8}" id="prd-text-${id}" spellcheck="true" aria-label="Edit ${esc(title)}">${esc(currentBody)}</textarea></label>
+          <div class="row gap-10"><button type="button" class="btn primary" id="prd-save-${id}">Save</button><button type="button" class="btn ghost" id="prd-cancel-${id}">Cancel</button></div>`;
+        $(`#prd-text-${id}`).focus();
+        $(`#prd-cancel-${id}`).addEventListener("click", onCancel);
+        $(`#prd-save-${id}`).addEventListener("click", async () => {
+          await onSave($(`#prd-text-${id}`).value);
+        });
+      };
+
       const wire = () => {
         $("#prd-import")?.addEventListener("click", () => importPanel());
         $("#prd-draft")?.addEventListener("click", () => draftPanel());
         view.querySelectorAll("[data-prd-edit]").forEach((btn) => btn.addEventListener("click", () => {
           const id = btn.dataset.prdEdit, s = p.sections.find((x) => x.id === id), box = view.querySelector(`[data-prd-body="${id}"]`);
           btn.hidden = true;
-          if (id === "features") {
-            const rawLines = (s.body || "").split("\n").map((l) => l.replace(/^\s*[-*•\d+.]\s*/, "").trim()).filter(Boolean);
-            const initialFeatures = rawLines.length ? rawLines : [""];
-            box.innerHTML = `<div class="muted">${esc(s.hint)}</div>
-              <div class="prd-features-edit" id="prd-features-list"></div>
-              <div class="row items-center gap-10 mt-8">
-                <button type="button" class="btn small ghost" id="prd-feature-add">+ Add feature</button>
-                <span class="muted text-xs">Press Enter to add another feature</span>
-              </div>
-              <div class="row gap-10 mt-12">
-                <button type="button" class="btn primary" id="prd-save-features">Save</button>
-                <button type="button" class="btn ghost" id="prd-cancel-features">Cancel</button>
-              </div>`;
-            const list = box.querySelector("#prd-features-list");
-            const createRow = (val = "") => {
-              const row = document.createElement("div");
-              row.className = "prd-feature-row";
-              row.innerHTML = `<span class="prd-feature-bullet" aria-hidden="true">&bull;</span>
-                <input type="text" class="prd-feature-input" value="${esc(val)}" placeholder="Describe a feature…" aria-label="Feature item">
-                <button type="button" class="btn icon ghost prd-feature-del" title="Remove feature" aria-label="Remove feature">&times;</button>`;
-              const input = row.querySelector(".prd-feature-input");
-              const delBtn = row.querySelector(".prd-feature-del");
-              input.addEventListener("keydown", (e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  const newRow = createRow("");
-                  row.after(newRow);
-                  newRow.querySelector(".prd-feature-input").focus();
-                } else if (e.key === "Backspace" && input.value === "") {
-                  const rows = list.querySelectorAll(".prd-feature-row");
-                  if (rows.length > 1) {
-                    e.preventDefault();
-                    const prevRow = row.previousElementSibling;
-                    const nextRow = row.nextElementSibling;
-                    row.remove();
-                    const targetInput = (prevRow || nextRow)?.querySelector(".prd-feature-input");
-                    if (targetInput) {
-                      targetInput.focus();
-                      const len = targetInput.value.length;
-                      targetInput.setSelectionRange(len, len);
-                    }
-                  }
-                } else if (e.key === "ArrowUp") {
-                  const prevInput = row.previousElementSibling?.querySelector(".prd-feature-input");
-                  if (prevInput) { e.preventDefault(); prevInput.focus(); }
-                } else if (e.key === "ArrowDown") {
-                  const nextInput = row.nextElementSibling?.querySelector(".prd-feature-input");
-                  if (nextInput) { e.preventDefault(); nextInput.focus(); }
-                }
-              });
-              input.addEventListener("paste", (e) => {
-                const text = (e.clipboardData || window.clipboardData)?.getData("text") || "";
-                if (text.includes("\n")) {
-                  e.preventDefault();
-                  const lines = text.split("\n").map((l) => l.replace(/^\s*[-*•\d+.]\s*/, "").trim()).filter(Boolean);
-                  if (!lines.length) return;
-                  input.value = lines[0];
-                  let curRow = row;
-                  for (let i = 1; i < lines.length; i++) {
-                    const nr = createRow(lines[i]);
-                    curRow.after(nr);
-                    curRow = nr;
-                  }
-                  curRow.querySelector(".prd-feature-input")?.focus();
-                }
-              });
-              delBtn.addEventListener("click", () => {
-                const rows = list.querySelectorAll(".prd-feature-row");
-                if (rows.length > 1) {
-                  const prev = row.previousElementSibling || row.nextElementSibling;
-                  row.remove();
-                  prev?.querySelector(".prd-feature-input")?.focus();
-                } else {
-                  input.value = "";
-                  input.focus();
-                }
-              });
-              return row;
-            };
-
-            initialFeatures.forEach((f) => list.appendChild(createRow(f)));
-            box.querySelector("#prd-feature-add").addEventListener("click", () => {
-              const nr = createRow("");
-              list.appendChild(nr);
-              nr.querySelector(".prd-feature-input").focus();
-            });
-            box.querySelector("#prd-cancel-features").addEventListener("click", reload);
-            box.querySelector("#prd-save-features").addEventListener("click", async () => {
-              try {
-                const items = Array.from(box.querySelectorAll(".prd-feature-input")).map((i) => i.value.trim()).filter(Boolean);
-                const body = items.length ? items.map((f) => `- ${f}`).join("\n") : "";
-                await save({ section: "features", body });
-                toast("Saved");
-                await reload();
-              } catch (e) {
-                toast(e.message, true);
-              }
-            });
-            const firstEmpty = Array.from(box.querySelectorAll(".prd-feature-input")).find((i) => !i.value) || box.querySelector(".prd-feature-input");
-            firstEmpty?.focus();
-            return;
-          }
-
-          box.innerHTML = `<div class="muted">${esc(s.hint)}</div><label class="field"><span class="sr-only">${esc(s.title)}</span><textarea rows="${id === "pitch" ? 5 : 8}" id="prd-text-${id}" spellcheck="true" aria-label="Edit ${esc(s.title)}">${esc(s.body)}</textarea></label>
-            <div class="row gap-10"><button type="button" class="btn primary" id="prd-save-${id}">Save</button><button type="button" class="btn ghost" id="prd-cancel-${id}">Cancel</button></div>`;
-          $(`#prd-text-${id}`).focus();
-          $(`#prd-cancel-${id}`).addEventListener("click", reload);
-          $(`#prd-save-${id}`).addEventListener("click", async () => { try { await save({ section: id, body: $(`#prd-text-${id}`).value }); toast("Saved"); await reload(); } catch (e) { toast(e.message, true); } });
+          showSectionEditor(id, box, s.body, s.hint, s.title, async (body) => {
+            try { await save({ section: id, body }); toast("Saved"); await reload(); } catch (e) { toast(e.message, true); }
+          }, reload);
         }));
         $("#prd-auto")?.addEventListener("change", async (e) => { try { p = await api("product/settings", { method: "POST", body: { auto_update: e.target.checked } }); toast(p.auto_update ? "It will keep itself up to date" : "Automatic updates are off"); } catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); } });
+        $("#prd-update-model-select")?.addEventListener("change", async (e) => {
+          const next = e.target.value;
+          p.model = next;
+          try {
+            await api("product/model", { method: "POST", body: { model: next } });
+            toast("Product model updated");
+          } catch (err) {
+            toast(err.message, true);
+          }
+        });
         view.querySelectorAll("[data-prd-diff]").forEach((btn) => btn.addEventListener("click", async () => {
           const box = btn.closest(".prd-version").querySelector(".prd-diff");
           if (!box.hidden) { box.hidden = true; btn.textContent = "See changes"; return; }
@@ -3855,15 +4112,18 @@ pages.product = async (_, query) => {
         return bulleted.join("\n");
       };
 
-      // Shared by Import and Draft: turn a proposed document into subsections you can review and approve individually or all together.
-      const proposalView = (proposal, { source, label, onDone }) => {
+      // Shared by Import and Draft: review drafted or imported subsections, edit or revert each in place.
+      const proposalView = async (proposal, { source, label, onDone }) => {
+        const prevSections = (p?.sections || []).map((s) => ({ ...s }));
+        const prevMap = new Map(prevSections.map((s) => [s.id, s.body || ""]));
+        try {
+          await save({ text: proposal.markdown, source, summary: proposal.summary });
+          toast(source === "draft" ? "Drafted from your project" : "PRD imported");
+        } catch (e) {
+          toast(e.message, true);
+        }
         const sections = proposal.sections && proposal.sections.length ? proposal.sections : splitPrdSections(proposal.markdown);
-        const approvedSecs = new Set();
-        panel().innerHTML = `<section class="card mb-16" id="prd-proposal-card"><div class="card-h"><h2>${esc(label)}</h2>
-            <div class="row gap-10">
-              <button type="button" class="btn small primary" id="prd-approve-all">Approve all</button>
-              <button type="button" class="btn small ghost" id="prd-discard">Discard</button>
-            </div></div>
+        panel().innerHTML = `<section class="card mb-16" id="prd-proposal-card"><div class="card-h"><h2>${esc(label)}</h2></div>
           <div class="card-b stack">
             ${proposal.summary ? `<div class="proposal-summary">
               <div class="proposal-summary-title"><strong>What was inferred &amp; gaps:</strong></div>
@@ -3871,76 +4131,89 @@ pages.product = async (_, query) => {
             </div>` : ""}
             <div class="proposal-sections">
               ${sections.map((s) => {
-                const hasBody = s.body && s.body.trim();
+                const curBody = p?.sections?.find((x) => x.id === s.id)?.body ?? (s.body || "");
+                const prevBody = prevMap.get(s.id) ?? "";
+                const canRevert = prevBody.trim() !== curBody.trim();
                 return `<div class="card proposal-section-item" id="prop-sec-${esc(s.id)}">
                   <div class="card-h">
                     <h3 class="proposal-sec-title">${esc(s.title)}</h3>
                     <div class="row gap-10 items-center">
-                      <span class="pill done prop-sec-status" id="prop-status-${esc(s.id)}" hidden>Approved</span>
-                      ${hasBody ? `<button type="button" class="btn small primary" data-approve-sec="${esc(s.id)}">Approve</button>` : `<span class="muted text-sm">No changes</span>`}
+                      <button type="button" class="btn small ghost" data-revert-sec="${esc(s.id)}" ${canRevert ? "" : "disabled"}>Revert</button>
+                      <button type="button" class="btn small" data-edit-sec="${esc(s.id)}">Edit</button>
                     </div>
                   </div>
                   <div class="card-b">
-                    ${hasBody ? `<div class="md">${Markdown.render(s.body)}</div>` : `<div class="muted">No content proposed for this section.</div>`}
+                    ${curBody.trim() ? `<div class="md">${Markdown.render(curBody)}</div>` : `<div class="muted">No content for this section.</div>`}
                   </div>
                 </div>`;
               }).join("")}
             </div>
             <div class="row gap-10 mt-12 items-center">
-              <button type="button" class="btn primary" id="prd-approve-all-bottom">Approve all</button>
-              <button type="button" class="btn ghost" id="prd-discard-bottom">Discard</button>
-              <span class="muted text-xs">Approve each subsection or approve all at once.</span>
+              <button type="button" class="btn primary" id="prd-proposal-done">Done</button>
             </div>
-            <div class="muted">Nothing is saved until you accept. You can undo anytime from history.</div>
           </div></section>`;
 
-        const approveAll = async () => {
-          try {
-            await save({ text: proposal.markdown, source, summary: proposal.summary });
-            toast("Approved all sections");
-            panel().innerHTML = "";
-            await reload();
-          } catch (e) {
-            toast(e.message, true);
-          }
-        };
-
-        const discard = async () => {
+        $("#prd-proposal-done")?.addEventListener("click", async () => {
           panel().innerHTML = "";
+          await reload();
           onDone?.();
-          if (approvedSecs.size > 0) {
-            await reload();
-          }
-        };
+        });
 
-        $("#prd-approve-all")?.addEventListener("click", approveAll);
-        $("#prd-approve-all-bottom")?.addEventListener("click", approveAll);
-        $("#prd-discard")?.addEventListener("click", discard);
-        $("#prd-discard-bottom")?.addEventListener("click", discard);
-
-        panel().querySelectorAll("[data-approve-sec]").forEach((btn) => {
+        panel().querySelectorAll("[data-revert-sec]").forEach((btn) => {
           btn.addEventListener("click", async () => {
-            const id = btn.dataset.approveSec;
+            const id = btn.dataset.revertSec;
             const s = sections.find((x) => x.id === id);
             if (!s) return;
+            const cardEl = panel().querySelector(`#prop-sec-${CSS.escape(id)}`);
+            const box = cardEl?.querySelector(".card-b");
+            const prevBody = prevMap.get(id) ?? "";
             btn.disabled = true;
             try {
-              await save({ section: id, body: s.body, source, summary: `Approved ${s.title}` });
-              approvedSecs.add(id);
-              btn.hidden = true;
-              const statusEl = panel().querySelector(`#prop-status-${CSS.escape(id)}`);
-              if (statusEl) statusEl.hidden = false;
-              toast(`Approved ${s.title}`);
-              const proposedWithBody = sections.filter((x) => x.body && x.body.trim());
-              if (proposedWithBody.every((x) => approvedSecs.has(x.id))) {
-                toast("All proposed sections approved");
-                panel().innerHTML = "";
-                await reload();
+              await save({ section: id, body: prevBody, summary: `Reverted ${s.title}` });
+              toast(`Reverted ${s.title}`);
+              if (box) {
+                box.innerHTML = prevBody.trim() ? `<div class="md">${Markdown.render(prevBody)}</div>` : `<div class="muted">No content for this section.</div>`;
               }
+              btn.disabled = true;
             } catch (e) {
               btn.disabled = false;
               toast(e.message, true);
             }
+          });
+        });
+
+        panel().querySelectorAll("[data-edit-sec]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const id = btn.dataset.editSec;
+            const s = sections.find((x) => x.id === id);
+            if (!s) return;
+            const cardEl = panel().querySelector(`#prop-sec-${CSS.escape(id)}`);
+            const box = cardEl?.querySelector(".card-b");
+            const revertBtn = cardEl?.querySelector(`[data-revert-sec="${CSS.escape(id)}"]`);
+            if (!box) return;
+            btn.hidden = true;
+            if (revertBtn) revertBtn.disabled = true;
+            const curSection = p?.sections?.find((x) => x.id === id) || s;
+            const hint = curSection.hint || s.hint || "";
+            const currentBody = p?.sections?.find((x) => x.id === id)?.body ?? (s.body || "");
+            const prevBody = prevMap.get(id) ?? "";
+
+            showSectionEditor(id, box, currentBody, hint, s.title, async (newBody) => {
+              try {
+                await save({ section: id, body: newBody, summary: `Updated ${s.title}` });
+                toast("Saved");
+                box.innerHTML = newBody.trim() ? `<div class="md">${Markdown.render(newBody)}</div>` : `<div class="muted">No content for this section.</div>`;
+                btn.hidden = false;
+                if (revertBtn) revertBtn.disabled = (prevBody.trim() === newBody.trim());
+              } catch (e) {
+                toast(e.message, true);
+              }
+            }, () => {
+              const cur = p?.sections?.find((x) => x.id === id)?.body ?? (s.body || "");
+              box.innerHTML = cur.trim() ? `<div class="md">${Markdown.render(cur)}</div>` : `<div class="muted">No content for this section.</div>`;
+              btn.hidden = false;
+              if (revertBtn) revertBtn.disabled = (prevBody.trim() === cur.trim());
+            });
           });
         });
       };
@@ -3979,7 +4252,7 @@ pages.product = async (_, query) => {
           }
           const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
           if (canceled) return;
-          proposalView(taskResult, { source: "import", label: "Your PRD, in this format", onDone: () => {} });
+          await proposalView(taskResult, { source: "import", label: "Your PRD, in this format", onDone: () => {} });
         } catch (e) {
           if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
           toast(e.message, true);
@@ -3990,7 +4263,7 @@ pages.product = async (_, query) => {
       const importPanel = () => {
         panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>Import PRD</h2></div><div class="card-b stack">
           <div class="prd-drop" id="prd-drop" tabindex="0" role="button" aria-label="Choose a PRD file, or drop one here">
-            <strong><span class="drop-hint">Drag a file here, or </span>click to choose one</strong><span class="muted">Markdown, text, Word or PDF</span>
+            <strong><span class="drop-hint">Drag a file here, or </span>browse files</strong><span class="muted">Markdown, text, Word or PDF</span>
             <input type="file" id="prd-import-input" accept=".md,.markdown,.txt,.docx,.pdf" hidden></div>
           <label class="field"><span>Or paste it</span><textarea id="prd-import-text" rows="6" aria-label="Paste your PRD"></textarea></label>
           <div class="row gap-10"><button type="button" class="btn primary" id="prd-import-go" disabled>Submit</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
@@ -4046,9 +4319,13 @@ pages.product = async (_, query) => {
           toast("Draft cancelled", "cancel");
           showStartHere();
         };
-        busy("Reading your project and drafting with AI…", cancel);
+        const modelLabel = p.available_models?.find((m) => m.id === p.model)?.label || p.model || "";
+        const busyText = modelLabel
+          ? `Reading your project and drafting with ${modelLabel}…`
+          : "Reading your project and drafting with AI…";
+        busy(busyText, cancel);
         try {
-          const started = await api("product/draft", { method: "POST", body: {}, signal: abortCtrl.signal });
+          const started = await api("product/draft", { method: "POST", body: { model: p.model || "" }, signal: abortCtrl.signal });
           taskId = started?.task;
           if (canceled) {
             if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
@@ -4056,7 +4333,7 @@ pages.product = async (_, query) => {
           }
           const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
           if (canceled) return;
-          proposalView(taskResult, { source: "draft", label: "Drafted from your project", onDone: () => {} });
+          await proposalView(taskResult, { source: "draft", label: modelLabel ? `Drafted with ${modelLabel}` : "Drafted from your project", onDone: () => showStartHere() });
         } catch (e) {
           if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
           toast(e.message, true);
@@ -4067,11 +4344,38 @@ pages.product = async (_, query) => {
       const showStartHere = () => {
         if (!p.sections.some((x) => x.filled) && !p.history.length) {
           const existing = p.can_draft; // there is already a project to read
+          const models = p.available_models || [
+            { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Recommended)" },
+            { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+            { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
+            { id: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
+            { id: "gpt-4o", label: "GPT-4o" },
+            { id: "o3-mini", label: "o3-mini" },
+          ];
+          const currentModel = p.model || "claude-sonnet-4-6";
+          const modelOptions = models.map((m) => `<option value="${esc(m.id)}"${m.id === currentModel ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("");
+          const modelPicker = existing ? `
+            <div class="prd-model-picker">
+              <span class="muted">Model:</span>
+              <select id="prd-model-select" class="prd-model-select" aria-label="AI model for draft">
+                ${modelOptions}
+              </select>
+            </div>` : "";
           panel().innerHTML = `<section class="card mb-16"><div class="card-b stack"><strong>Start here</strong>
             <div>${existing ? "This project already exists, so we can read it and draft a first version for you to correct. Or say what you have in mind in the pitch below." : "Say what you have in mind in the pitch below."}</div>
-            <div class="row gap-10">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft with AI</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button></div></div></section>`;
+            <div class="row gap-10 align-center wrap">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft with AI</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button>${modelPicker}</div></div></section>`;
           $("#prd-start-draft")?.addEventListener("click", () => draftPanel());
           $("#prd-start-import")?.addEventListener("click", () => importPanel());
+          $("#prd-model-select")?.addEventListener("change", async (e) => {
+            const next = e.target.value;
+            p.model = next;
+            try {
+              await api("product/model", { method: "POST", body: { model: next } });
+              toast("Draft model updated");
+            } catch (err) {
+              toast(err.message, true);
+            }
+          });
         } else {
           panel().innerHTML = "";
         }
@@ -4216,7 +4520,7 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
 }
 
 function coverageJobParams(data, caseView, values = {}) {
-  const rawTarget = (values.target || "").trim();
+  const rawTarget = (values.target || "").replace(/%/g, "").trim();
   const target = rawTarget ? Number(rawTarget) : null;
   if (target !== null && (!Number.isFinite(target) || target <= 0 || target > 100)) throw new Error("Choose a coverage target between 1 and 100%.");
   const cov = data.coverage;
@@ -4224,12 +4528,12 @@ function coverageJobParams(data, caseView, values = {}) {
   const gaps = (caseView.cases || []).filter((c) => c.status === "unassigned" || c.status === "planned").slice(0, 30);
   const spec = [
     "Analyze the project's existing tests and source code. Identify and prioritise coverage gaps by user impact and regression risk.",
-    measured ? `Last measured coverage: ${cov.overall_coverage_pct}% of ${cov.metric || "lines"} (${cov.timestamp || "date unknown"}). Verify with a fresh measurement.` : "Coverage is not measured yet. Establish a baseline using the project's coverage tooling.",
+    measured ? `Last measured coverage: ${cov.overall_coverage_pct}% of ${cov.total_lines ? `${cov.total_lines.toLocaleString()} ` : ""}${cov.metric || "lines"} (${cov.timestamp || "date unknown"}). Verify with a fresh measurement.` : "Coverage is not measured yet. Establish a baseline using the project's coverage tooling.",
     target !== null ? `Aim for ${target}% measured coverage. Explain if the target is impractical or coverage tooling is unavailable; do not invent a percentage.` : "Increase measured coverage with meaningful tests for the highest-risk gaps.",
     "In the plan, explain which gaps to address and why. Then implement the recommended tests, run the affected suites, measure coverage again, and report the before/after results. Keep production behavior unchanged and use the project's existing test frameworks.",
     gaps.length ? "Known missing automated test cases:\n" + gaps.map((c) => `- ${c.id}: ${c.title} (${c.area || "General"})`).join("\n") : "",
   ].filter(Boolean).join("\n\n");
-  return { type: "coverage", summary: target !== null ? `Improve test coverage toward ${target}%` : "Find and address the highest-risk test coverage gaps",
+  return { type: "coverage", title: "Coverage expanding", summary: target !== null ? `Improve test coverage toward ${target}%` : "Find and address the highest-risk test coverage gaps",
     subsystems: "Project-wide: prioritise missing coverage", spec, branch_mode: "current", no_dispatch: values.execution === "review", yolo: false, free: values.free === "on" };
 }
 
@@ -4265,7 +4569,7 @@ pages.tests = async (_, query) => {
       <section class="card"><div class="card-h"><h2>Coverage${measured ? ` <span class="count">${esc(ago(Date.parse(cov.timestamp) / 1000))}</span>` : ""}</h2>
         <button type="button" class="btn small" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Measure again" : "Measure coverage"}</button></div>
         <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
-          <span class="muted">of ${esc(cov.metric || "lines")} covered${cov.tool ? `, measured with ${esc(cov.tool)}` : ""} · ${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
+          <span class="muted">${cov.total_lines ? `of ${cov.total_lines.toLocaleString()} ` : "of "}${esc(cov.metric || "lines")} covered${cov.tool ? `, measured with ${esc(cov.tool)}` : ""} · ${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
           : `<p class="muted">Not measured yet. Measuring runs every test with coverage turned on, which may take time.</p>`}
           ${cov?.last_error && (!measured || cov.last_error_at > cov.timestamp) ? `<div class="notice">${measured ? "The last attempt didn't measure: " : "Couldn't measure: "}${codeSpans(cov.last_error)}</div>` : ""}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
@@ -4274,8 +4578,8 @@ pages.tests = async (_, query) => {
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
         ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
       ${state.project.mobile_app !== false && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><div class="card-h"><h2>Simulator visual check</h2></div>
-        <div class="card-b stack"><p>Builds and launches your iOS app in the simulator, then captures screenshots for you to inspect layout, clipping and rendering. Open the screenshots and report when the run finishes.</p>
-          <p class="muted">A manual visual review; it does not compare against image baselines or measure code coverage. Requires Xcode and an iOS simulator on the build computer.</p>
+        <div class="card-b stack"><p>Builds and launches your app in the simulator, then captures screenshots for you to review.</p>
+          <p class="muted">Requires Xcode and an iOS simulator.</p>
           <div><button type="button" class="btn" ${act("visual_check")}>Capture screenshots</button></div></div></section>` : ""}
       ${data.frameworks && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><details class="fold"><summary class="card-h"><h2>Test frameworks &amp; tools <span class="count">${Object.keys(data.frameworks).length}</span></h2></summary>
         <div class="card-b stack"><p class="muted">Detection checks your test source files and local tools. Expand an item to see what it does and how to get started.</p>
@@ -4301,7 +4605,12 @@ pages.tests = async (_, query) => {
         $("#dialog-ok").hidden = false;
         if (!choice) return;
         const values = await formDialog("Improve coverage with AI", `<p>AI inspects your code and tests, ranks gaps, and creates a coverage job.</p>
-          <label class="field"><span>Coverage target <span class="muted">(optional)</span></span><input type="number" name="target" min="1" max="100" step="any" placeholder="e.g. 80"><small class="hint-text">Leave blank to focus on the most valuable missing tests.</small></label>
+          <label class="field"><span>Coverage target (%) <span class="muted">(optional)</span></span>
+            <div class="input-with-suffix">
+              <input type="number" name="target" min="1" max="100" step="any" placeholder="80" aria-label="Coverage target percentage">
+              <span class="input-suffix">%</span>
+            </div>
+            <small class="hint-text">Leave blank to focus on the most valuable missing tests.</small></label>
           <fieldset class="field"><legend>After the analysis</legend>
             <label class="check"><input type="radio" name="execution" value="automatic" checked><span>Add tests automatically<small>Plan, implement and measure the result.</small></span></label>
             <label class="check"><input type="radio" name="execution" value="review"><span>Review advice first<small>Stop at the plan. Start implementation from the job when ready.</small></span></label></fieldset>
@@ -5535,10 +5844,13 @@ const KEYS = [
 function runHeader(r) {
   // The top-left Back returns to the job (or wherever you came from); opened directly, it falls back to the job.
   if (r.job && current.page === "run") current.parent = `#/jobs/${encodeURIComponent(r.job)}`;
+  const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   return {
     title: r.title,
     sub: `<span class="status-line">${runPill(r)}<span class="mono">${esc(r.command)}</span></span>`,
-    actions: r.running ? `<button class="btn danger" data-stop="${esc(r.id)}">Stop</button>` : "",
+    actions: r.running
+      ? `<button class="btn danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…' : "Stop"}</button>`
+      : "",
   };
 }
 
@@ -5598,6 +5910,63 @@ async function getVisualCheckForRun(r) {
   }
 }
 
+function runDuration(started) {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - started));
+  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+    : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
+}
+
+function runStatus(r, vc = null) {
+  if (!r.running) return nextStep(r, vc);
+  const p = r.progress || {};
+  const stopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
+  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : "Running";
+  const numbered = Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total;
+  const headline = `${numbered ? `Step ${p.step} of ${p.total}: ` : ""}${p.label || r.title || "Starting run"}`;
+  const activeModels = p.active_models || [];
+  const models = activeModels.length ? activeModels : p.models || [];
+  return `<section class="banner run-status ${stopping || r.waiting ? "attention" : "working"}" aria-label="Run status">
+    <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${stopping || r.waiting ? "attention" : "working"}">${esc(status)}</span>
+      <strong>${esc(headline)}</strong>${p.task ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
+    <dl class="run-status-details">
+      <div><dt>${activeModels.length ? "Models in use" : "Models used"}</dt><dd>${models.length ? models.map(esc).join(", ") : "None yet"}</dd></div>
+      <div><dt>LLM agents</dt><dd>${Number.isInteger(p.agents) ? `${p.agents} active` : "Awaiting activity"}</dd></div>
+      <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(runDuration(r.started))}</dd></div>
+    </dl>
+    ${numbered ? `<progress class="run-status-progress" value="${p.step - 1}" max="${p.total}" aria-label="Completed steps">${p.step - 1} of ${p.total}</progress>` : ""}
+  </section>`;
+}
+
+function updateRunStatus(r) {
+  const container = $("#next-step");
+  if (!container) return;
+  if (!r.running) {
+    // Polling also detects completion if the terminal's event stream disconnects.
+    if (container.querySelector(".run-status")) {
+      if (r.action === "visual_check" || /visual check/i.test(r.title)) {
+        if (!container.runResultPending) {
+          container.runResultPending = true;
+          finishRunStatus(r).finally(() => { container.runResultPending = false; });
+        }
+        return;
+      }
+      container.innerHTML = runStatus(r);
+      if ($("#keybar")) $("#keybar").hidden = true;
+      if ($("#term-input")) $("#term-input").hidden = true;
+    }
+    return;
+  }
+  const signature = JSON.stringify([r.progress, r.waiting, r.stopping, stoppingRuns.has(r.id), r.title]);
+  if (container.runStatusSignature !== signature) {
+    container.innerHTML = runStatus(r);
+    container.runStatusSignature = signature;
+  } else {
+    // Keep the live region in place; a ticking clock shouldn't re-announce the headline.
+    const clock = container.querySelector("[data-run-elapsed]");
+    if (clock) clock.textContent = runDuration(r.started);
+  }
+}
+
 function nextStep(r) {
   const vc = arguments[1] || null;
   if (r.action === "console") {
@@ -5653,6 +6022,25 @@ function nextStep(r) {
   return `<div class="banner ${failed ? "failed" : "done"}"><p>${esc(text)}</p>${extra}${open}</div>`;
 }
 
+async function finishRunStatus(run) {
+  const container = $("#next-step");
+  let vc = null;
+  if (run.action === "visual_check" || /visual check/i.test(run.title)) {
+    vc = await getVisualCheckForRun(run);
+    if (!vc?.screenshots?.length) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      vc = await getVisualCheckForRun(run);
+    }
+  }
+  if (!container || $("#next-step") !== container || current.page !== "run" || current.args[0] !== run.id) return;
+  setHeader(runHeader(run));
+  container.innerHTML = nextStep(run, vc);
+  hydrateAuthImages(container);
+  wireImagePreviews(container);
+  $("#keybar").hidden = true;
+  $("#term-input").hidden = true;
+}
+
 pages.run = async ([id]) => {
   let run = state.runs.find((r) => r.id === id);
   if (!run) { await refreshState(); run = state.runs.find((r) => r.id === id); } // opened before the list caught up
@@ -5673,7 +6061,7 @@ pages.run = async ([id]) => {
   return {
     ...runHeader(run),
     html: `
-      <div id="next-step">${run.running ? "" : nextStep(run, vc)}</div>
+      <div id="next-step">${runStatus(run, vc)}</div>
       <div class="term-wrap" id="term-wrap">
         <div class="term" id="term"></div>
         <div class="keybar" id="keybar" aria-label="Terminal keys" ${run.running ? "" : "hidden"}>${KEYS.map(([label], i) => `<button class="btn small" data-key="${i}">${esc(label)}</button>`).join("")}</div>
@@ -5684,6 +6072,11 @@ pages.run = async ([id]) => {
       </div>`,
     after: () => {
       attachTerminal(id);
+      const statusTimer = setInterval(() => {
+        const latest = state.runs.find((r) => r.id === id);
+        if (latest) updateRunStatus(latest);
+      }, 1000);
+      cleanup.push(() => clearInterval(statusTimer));
       if (!run.running) {
         hydrateAuthImages($("#next-step"));
         wireImagePreviews($("#next-step"));
@@ -5764,21 +6157,7 @@ function attachTerminal(id) {
       run = state.runs.find((r) => r.id === id);
     }
     if (!run || current.page !== "run" || current.args[0] !== id) return;
-    setHeader(runHeader(run));
-    let vc = null;
-    if (run.action === "visual_check" || /visual check/i.test(run.title)) {
-      vc = await getVisualCheckForRun(run);
-      if (!vc?.screenshots?.length) {
-        await new Promise((r) => setTimeout(r, 400));
-        vc = await getVisualCheckForRun(run);
-      }
-    }
-    $("#next-step").innerHTML = nextStep(run, vc);
-    hydrateAuthImages($("#next-step"));
-    wireImagePreviews($("#next-step"));
-    // Nothing left to type into.
-    $("#keybar").hidden = true;
-    $("#term-input").hidden = true;
+    await finishRunStatus(run);
   });
   cleanup.push(follow.stop);
 }
@@ -5992,7 +6371,10 @@ async function tick() {
   loadSetup();
   if (current.page === "run") {
     const run = state.runs.find((r) => r.id === current.args[0]);
-    if (run) setHeader(runHeader(run)); // keeps Stop / waiting status current while you watch
+    if (run) {
+      setHeader(runHeader(run)); // keeps Stop / waiting status current while you watch
+      updateRunStatus(run);
+    }
     return;
   }
   if (!LIVE.has(current.page) || $("#dialog").open || document.querySelector("details.more[open]")) return;

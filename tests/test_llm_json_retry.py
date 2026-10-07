@@ -50,6 +50,28 @@ class JsonRetryTests(unittest.TestCase):
         (out, _, _), prompts = self.run_llm([PROSE], role=ModelRole.REVIEWER)
         self.assertEqual((out, len(prompts)), (PROSE, 1))
 
+    def test_extract_json_block_prioritizes_dict_over_preceding_list_block(self):
+        text = (
+            "Here are the files I examined:\n"
+            "```json\n"
+            '["Tests/AuthTests.swift", "Sources/Auth.swift"]\n'
+            "```\n\n"
+            "Here is the plan:\n"
+            "```json\n"
+            '{"title": "Expand Auth Coverage", "summary": "Audit auth", "tasks": []}\n'
+            "```"
+        )
+        extracted = llm.extract_json_block(text)
+        self.assertIn('"title": "Expand Auth Coverage"', extracted)
+
+    def test_extract_json_block_balanced_braces_with_preceding_brackets(self):
+        text = (
+            "In [Tests/AppTests.swift] we found gaps.\n"
+            'Plan: {"title": "Coverage Plan", "summary": "Audit", "tasks": []}'
+        )
+        extracted = llm.extract_json_block(text)
+        self.assertEqual(extracted, '{"title": "Coverage Plan", "summary": "Audit", "tasks": []}')
+
 
 if __name__ == "__main__":
     unittest.main()

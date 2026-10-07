@@ -29,6 +29,37 @@ class Measurement:
     pct: float
     tool: str
     metric: str  # what was counted: "lines" or "statements"
+    total_lines: int | None = None
+    covered_lines: int | None = None
+
+
+def count_source_lines(root: Path) -> int:
+    """Fast count of source code lines across common programming languages."""
+    if not root.is_dir():
+        return 0
+    exts = {
+        ".swift", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".c", ".cpp",
+        ".h", ".hpp", ".m", ".mm", ".kt", ".java", ".rb", ".sh",
+    }
+    ignored = {
+        ".git", ".build", "node_modules", "Pods", "DerivedData", ".venv", "venv",
+        "__pycache__", ".orchestrator", "dist", "build", "coverage", ".pytest_cache",
+    }
+    total = 0
+    try:
+        import os
+        for r, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in ignored and not d.startswith(".")]
+            for f in files:
+                if os.path.splitext(f)[1].lower() in exts:
+                    try:
+                        with open(os.path.join(r, f), "rb") as fp:
+                            total += sum(1 for _ in fp)
+                    except OSError:
+                        pass
+        return total
+    except Exception:
+        return 0
 
 
 def stream(argv: list[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
@@ -74,7 +105,9 @@ def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
     report = out / "coverage.json"
     run([sys.executable, "-m", "coverage", "json", "-o", str(report)], root)
     totals = json.loads(report.read_text(encoding="utf-8"))["totals"]
-    return Measurement(round(float(totals["percent_covered"]), 1), "coverage.py", "statements")
+    total_stmts = int(totals["num_statements"]) if "num_statements" in totals else None
+    covered = int(totals["covered_lines"]) if "covered_lines" in totals else (int(totals["covered_statements"]) if "covered_statements" in totals else None)
+    return Measurement(round(float(totals["percent_covered"]), 1), "coverage.py", "statements", total_lines=total_stmts, covered_lines=covered)
 
 
 def go(root: Path, run: Run, out: Path) -> Measurement:
@@ -99,7 +132,9 @@ def rust(root: Path, run: Run, out: Path) -> Measurement:
     if run(["cargo", "llvm-cov", "--json", "--summary-only", "--output-path", str(report)], root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
     totals = json.loads(report.read_text(encoding="utf-8"))["data"][0]["totals"]
-    return Measurement(round(float(totals["lines"]["percent"]), 1), "cargo llvm-cov", "lines")
+    total_lines = int(totals["lines"]["count"]) if "lines" in totals and "count" in totals["lines"] else None
+    covered_lines = int(totals["lines"]["covered"]) if "lines" in totals and "covered" in totals["lines"] else None
+    return Measurement(round(float(totals["lines"]["percent"]), 1), "cargo llvm-cov", "lines", total_lines=total_lines, covered_lines=covered_lines)
 
 
 def swift_package(root: Path, run: Run, out: Path) -> Measurement:
@@ -107,7 +142,9 @@ def swift_package(root: Path, run: Run, out: Path) -> Measurement:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
     path = run(["swift", "test", "--show-codecov-path"], root).stdout.strip().splitlines()[-1]
     totals = json.loads(Path(path).read_text(encoding="utf-8"))["data"][0]["totals"]
-    return Measurement(round(float(totals["lines"]["percent"]), 1), "swift test (llvm-cov)", "lines")
+    total_lines = int(totals["lines"]["count"]) if "lines" in totals and "count" in totals["lines"] else None
+    covered_lines = int(totals["lines"]["covered"]) if "lines" in totals and "covered" in totals["lines"] else None
+    return Measurement(round(float(totals["lines"]["percent"]), 1), "swift test (llvm-cov)", "lines", total_lines=total_lines, covered_lines=covered_lines)
 
 
 def javascript(root: Path, run: Run, out: Path) -> Measurement:
@@ -128,7 +165,9 @@ def javascript(root: Path, run: Run, out: Path) -> Measurement:
     if run(argv, root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
     total = json.loads((out / "coverage-summary.json").read_text(encoding="utf-8"))["total"]
-    return Measurement(round(float(total["lines"]["pct"]), 1), tool, "lines")
+    total_lines = int(total["lines"]["total"]) if "lines" in total and "total" in total["lines"] else None
+    covered_lines = int(total["lines"]["covered"]) if "lines" in total and "covered" in total["lines"] else None
+    return Measurement(round(float(total["lines"]["pct"]), 1), tool, "lines", total_lines=total_lines, covered_lines=covered_lines)
 
 
 def measure(root: Path, test_command: str | None, run: Run = stream) -> Measurement:

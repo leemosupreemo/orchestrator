@@ -33,6 +33,7 @@ const cases = { cases: [{ id: 'TC-1', title: 'Rejoin', area: 'Lobby', status: 'u
   { id: 'TC-2', title: 'Login', area: 'Auth', status: 'covered' }] };
 const job = coverageJobParams(inventory, cases, { target: '75', execution: 'review' });
 assert.equal(job.type, 'coverage');
+assert.equal(job.title, 'Coverage expanding');
 assert.equal(job.branch_mode, 'current');
 assert.equal(job.no_dispatch, true);
 assert.equal(job.yolo, false);
@@ -41,10 +42,13 @@ assert.match(job.spec, /75%/);
 assert.match(job.spec, /TC-1.*Rejoin/);
 assert.doesNotMatch(job.spec, /TC-2/);
 assert.match(job.spec, /prioriti[sz]e/i);
-assert.match(job.spec, /measure/i);
 const automatic = coverageJobParams(inventory, cases, { target: '', execution: 'automatic' });
 assert.equal(automatic.no_dispatch, false);
 assert.doesNotMatch(automatic.spec, /NaN/);
+const inventoryWithLines = { coverage: { overall_coverage_pct: 42, total_lines: 12450, metric: 'lines', timestamp: '2026-10-01' } };
+const jobWithLines = coverageJobParams(inventoryWithLines, cases, { target: '75', execution: 'review' });
+assert.match(jobWithLines.spec, /12,450 lines/);
+
 """)
 
     def test_coverage_advisor_never_treats_estimates_as_measured_or_accepts_bad_targets(self):

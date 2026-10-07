@@ -2410,6 +2410,9 @@ def _main(argv: list[str] | None = None) -> int:
     distribute_parser = subparsers.add_parser("distribute", help="Quickly build and distribute current project to Firebase")
     distribute_parser.add_argument("--project", help="Recent project name or project root path")
     distribute_parser.add_argument("--notes", help="Release notes for this build")
+    distribute_parser.add_argument("--branch", help="Git branch to distribute")
+    distribute_parser.add_argument("--groups", help="Firebase tester groups (comma-separated)")
+    distribute_parser.add_argument("--testers", help="Firebase tester emails (comma-separated)")
 
     fix_parser = subparsers.add_parser("fix", help="Fast 1-line bug fix / feedback for active or new job")
     fix_parser.add_argument("feedback", help="Description of what is broken or what to fix")
@@ -2482,6 +2485,12 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         if getattr(args, "notes", None):
             os.environ["DISTRIBUTION_RELEASE_NOTES"] = args.notes
+        if getattr(args, "branch", None):
+            os.environ["DISTRIBUTION_BRANCH"] = args.branch
+        if getattr(args, "groups", None):
+            os.environ["FIREBASE_GROUPS"] = args.groups
+        if getattr(args, "testers", None):
+            os.environ["FIREBASE_TESTERS"] = args.testers
         return run_script("smoke_test_delivery.py", [])
     if args.command == "fix":
         return fix_command(args)

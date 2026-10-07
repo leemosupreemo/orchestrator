@@ -560,6 +560,13 @@ class ProductStripTests(unittest.TestCase):
         self.assertIn('<a class="product-pitch" href="#/product"', strip)
         self.assertNotIn(">Open</a>", strip)  # no separate Open link
 
+    def test_product_strip_and_start_here_include_model_dropdown(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('id="prd-home-model-select"', js)
+        self.assertIn('id="prd-model-select"', js)
+        self.assertIn('prd-model-picker', js)
+        self.assertIn('api("product/model"', js)
+
 
 class UiShutdownTests(unittest.TestCase):
     """Stopping `orchestrator ui` the way a service manager or `kill` does must close its tunnel, as Ctrl-C does."""
@@ -2364,6 +2371,13 @@ class RunApiTests(ServerTestCase):
         _, runs = self.request("GET", "/api/runs")
         self.assertEqual(runs["runs"][0]["result_job"], "new-1")
 
+    def test_coverage_job_run_is_titled_coverage_expanding(self):
+        fake = ui.Action("New job", lambda p, r: [sys.executable, "-c", "import time; time.sleep(0.1)"])
+        with patch.dict(ui.ACTIONS, {"new_job": fake}):
+            _, data = self.request("POST", "/api/runs", body={"action": "new_job", "params": {"type": "coverage", "summary": "Improve test coverage"}}, headers=UI_HEADERS)
+        self.assertEqual(data["run"]["title"], "Coverage expanding")
+        self.wait_finished(data["run"]["id"])
+
     def test_jobs_list_marks_jobs_with_a_running_run(self):
         sleeper = ui.Action("Run fix", lambda p, r: [sys.executable, "-c", "import time; time.sleep(30)"], fields=["job"])
         with patch.dict(ui.ACTIONS, {"sleep": sleeper}):
@@ -3436,6 +3450,12 @@ class AccessibilityStaticTests(unittest.TestCase):
         # A ratchet: inline styles in app.js may only go down. Lower this number when you remove one.
         self.assertLessEqual((static / "app.js").read_text().count('style="'), 62)
 
+    def test_brand_mark_uses_app_icon(self):
+        self.assertIn('.brand-mark {', self.css)
+        self.assertIn('url("icon-192.png")', self.css)
+        block = self.css[self.css.index('.brand-mark {'):self.css.index('.project-switch {')]
+        self.assertNotIn('background: var(--accent);', block)
+
     def test_badges_use_ink_tokens_not_hardcoded_white(self):
         for selector in (".badge {", ".pill-badge.needs-badge {", ".pill-badge.active-badge {"):
             block = self.css[self.css.index(selector):][:260].split("}")[0]
@@ -3644,6 +3664,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('body[data-page="tests"] .topbar-actions > .test-run-all-btn { flex: 2 1 0;', self.css)
         self.assertIn('body[data-page="tests"] .topbar-actions > .test-expand-coverage-btn {', self.css)
         self.assertIn('flex: 1 1 0;', self.css)
+        self.assertIn("cov.total_lines", tests_src)
+        self.assertIn("cov.total_lines.toLocaleString()", tests_src)
+        self.assertIn("Coverage target (%)", tests_src)
+        self.assertIn(".input-with-suffix", self.css)
+        self.assertIn(".input-suffix", self.css)
 
     def test_run_screen_stop_button_in_same_row_as_title(self):
         # Stop button on in-progress screens is placed on the right side, same row as the title
@@ -3652,6 +3677,52 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('"title actions"', self.css)
         self.assertIn('.topbar:has(> .topbar-actions > [data-stop]) .topbar-actions', self.css)
         self.assertIn('grid-area: actions;', self.css)
+
+    def test_stop_job_confirmation_modal_spinner_and_toast(self):
+        # Tapping stop has a confirmation modal using formDialog
+        self.assertIn("async function stopJob(", self.js)
+        self.assertIn('formDialog(title, body, okLabel, { danger: true, compact: true })', self.js)
+        self.assertIn('"Stop this job?"', self.js)
+        self.assertIn('"Stop job"', self.js)
+        # Shows loading spinner overlay over job card while in progress
+        self.assertIn('live-run-overlay', self.js)
+        self.assertIn('role="status"', self.js)
+        self.assertIn('aria-busy="true"', self.js)
+        self.assertIn('Stopping…', self.js)
+        # Toast confirms once stopped
+        self.assertIn('toast(hasJob ? "Job stopped" : "Run stopped")', self.js)
+        # CSS rules for card overlay and spinner
+        self.assertIn('.live-run { position: relative;', self.css)
+        self.assertIn('.live-run.stopping { pointer-events: none; }', self.css)
+        self.assertIn('.live-run-overlay {', self.css)
+        self.assertIn('.live-run-overlay .spinner {', self.css)
+
+
+    def test_back_button_chevron_beside_title_without_text(self):
+        # Back button is a chevron icon only, placed on the same row to the left of the title
+        self.assertIn('<div class="topbar-title-row">', self.html)
+        self.assertIn('<a class="back-link" id="back-link" href="#/" aria-label="Back" title="Back" hidden><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></a>', self.html)
+        self.assertNotIn('>Back<', self.html)
+        self.assertIn('.topbar-title-row {', self.css)
+        self.assertIn('.back-link .icon {', self.css)
+        self.assertIn('width: 22px;', self.css)
+        self.assertIn('height: 22px;', self.css)
+        self.assertIn('stroke-width: 2.5;', self.css)
+        self.assertIn('transform: rotate(180deg);', self.css)
+
+    def test_product_topbar_buttons_color_background_and_centered(self):
+        # Product topbar buttons (Draft, Import) use color background and are centered; file link is larger
+        self.assertNotIn('id="prd-view"', self.js)
+        self.assertNotIn('>View .md<', self.js)
+        self.assertIn('<button class="btn primary" id="prd-draft">Draft with AI</button>', self.js)
+        self.assertIn('<button class="btn primary" id="prd-import">Import PRD</button>', self.js)
+        self.assertIn('prd-file-link', self.js)
+        self.assertIn('.prd-file-link', self.css)
+        self.assertIn('body[data-page="product"] .topbar {', self.css)
+        self.assertIn('body[data-page="product"] .topbar-actions {', self.css)
+        self.assertIn('body[data-page="product"] .topbar-actions .btn {', self.css)
+        self.assertIn('background: var(--accent);', self.css)
+        self.assertIn('color: var(--accent-ink);', self.css)
 
     def test_visual_check_done_container_thumbnails_and_lightbox(self):
         # Visual check results are shown as thumbnails in the done container and can be opened
@@ -3696,7 +3767,7 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_the_product_page_is_one_document_with_five_sections_you_can_edit_import_and_restore(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
         for part in ('data-prd-edit', 'api("product/settings"', 'api("product/revert"', 'product/history/', '"product/import"', '"product/design"', 'product/reference',
-                     'api("product/draft"', "Update this automatically when jobs finish", "Import PRD", "Nothing is saved until you accept"):
+                     'api("product/draft"', "Update this automatically when jobs finish", "Import PRD"):
             self.assertIn(part, page, part)
         self.assertNotIn("Help me with this", self.js)  # removed
         self.assertNotIn("product/refine", self.js)
@@ -3729,6 +3800,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('providerIcon(a.id)', page)
         self.assertIn('href="#/connections"', page)
         self.assertIn('Connect more', page)
+        self.assertIn('${connectedApps.length ? `<button type="button" class="btn small primary" id="prd-add-app">Choose reference</button>` : ""}', page)
+        self.assertNotIn('disabled title="Connect an app first"', page)
         self.assertIn('.brand-icon', self.css)
         picker = self.js[self.js.index("async function linkPickerHtml"):self.js.index("async function attachToJob")]
         self.assertIn('Connected apps:', picker)
@@ -3770,6 +3843,15 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("min-height: calc(100vh - 120px);", css)
         self.assertIn(".app.session-locked .topbar {", css)
 
+    def test_signin_modal_omits_orchestrator_icon_and_title(self):
+        # Sign-in modal card begins directly with heading without redundant app brand mark or title
+        gate = self.js[self.js.index("function showSignInGate"):self.js.index("function showSignInGate") + 2500]
+        self.assertNotIn("signin-brand", gate)
+        self.assertNotIn("brand-mark", gate)
+        signing_in = self.js[self.js.index("function showSigningIn"):self.js.index("function cpApi")]
+        self.assertNotIn("signin-brand", signing_in)
+        self.assertNotIn("brand-mark", signing_in)
+
     def test_home_new_job_button_is_sticky(self):
         # The + new job button stays in place when scrolling
         self.assertIn(".home-new-job-btn {", self.css)
@@ -3806,9 +3888,13 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('method: "DELETE"', page)
         self.assertIn('toast("Draft cancelled", "cancel")', page)
         self.assertIn(".msg-cancel { --kind: var(--warn); }", self.css)
-        # Proposed view shows subsections and individual approve buttons, not raw diff/file
-        self.assertIn('id="prd-approve-all"', page)
-        self.assertIn('data-approve-sec=', page)
+        # Proposed view shows subsections with revert and edit buttons, auto-saving without top approve/discard
+        self.assertNotIn('id="prd-approve-all"', page)
+        self.assertNotIn('id="prd-discard"', page)
+        self.assertNotIn('data-approve-sec=', page)
+        self.assertIn('data-revert-sec=', page)
+        self.assertIn('data-edit-sec=', page)
+        self.assertIn('id="prd-proposal-done"', page)
         self.assertIn('proposal-sections', page)
         self.assertIn('proposal-summary', page)
         proposal_fn = page[page.index("const proposalView"):page.index("const busy")]
@@ -3826,6 +3912,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("md|markdown|txt|docx|pdf", read)
         self.assertIn(".prd-drop.over", self.css)
         self.assertIn("pointer: coarse", self.css)  # phones have nothing to drag, so they are not told to
+        self.assertIn("browse files", page)
+        self.assertNotIn("click to choose one", page)
 
     def test_home_shows_what_the_product_is_without_the_section_buttons(self):
         card = self.js[self.js.index("function productStripHtml"):][:1500]
@@ -4928,6 +5016,43 @@ class ProductEndpointTests(ServerTestCase):
             self.assertEqual(res_post.status, 200)
             self.assertEqual(data_post.get("status"), "canceled")
 
+    def test_product_overview_returns_model_and_available_models(self):
+        _, data = self.request("GET", "/api/product")
+        self.assertEqual(data["model"], "claude-sonnet-4-6")
+        self.assertTrue(isinstance(data["available_models"], list))
+        self.assertTrue(any(m["id"] == "claude-sonnet-4-6" for m in data["available_models"]))
+
+    def test_switching_product_model_persists_and_updates_subsequent_reads(self):
+        res, data = self.post("/api/product/model", {"model": "gemini-3.1-pro-preview"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data, {"ok": True, "model": "gemini-3.1-pro-preview"})
+        _, get_data = self.request("GET", "/api/product")
+        self.assertEqual(get_data["model"], "gemini-3.1-pro-preview")
+
+        # Rejects empty or invalid model
+        self.assertEqual(self.post("/api/product/model", {"model": ""})[0].status, 400)
+        self.assertEqual(self.post("/api/product/model", {})[0].status, 400)
+
+    def test_drafting_forwards_selected_model_to_model_call(self):
+        (self.root / "README.md").write_text("# Word Duel\n\nA word game.")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=self.root, check=True)
+        seen_models = []
+
+        def fake_call(self_, root, prompt, model="", timeout=150):
+            seen_models.append(model)
+            return json.dumps({"summary": "Drafted", "markdown": prd_mod.template()})
+
+        with patch.object(ui.UIHandler, "_model_call", fake_call):
+            # 1. Draft with explicit model in body
+            self.finish(self.post("/api/product/draft", {"model": "gpt-4o"}))
+            self.assertEqual(seen_models[-1], "gpt-4o")
+
+            # 2. Draft without model uses the persisted model
+            self.post("/api/product/model", {"model": "claude-opus-4-8"})
+            self.finish(self.post("/api/product/draft", {}))
+            self.assertEqual(seen_models[-1], "claude-opus-4-8")
+
     def test_model_calls_get_an_empty_scratch_folder_never_the_project(self):
         calls = []
         real = ui.subprocess.run
@@ -5398,6 +5523,8 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn(".dialog-tab-panel {", css)
         self.assertIn("max-height: calc(100dvh - 24px);", css)
         self.assertIn("flex-direction: row;", css)
+        self.assertIn("width: min(var(--dialog-width), calc(100% - 2 * var(--space-4))", css)
+        self.assertNotIn("width: calc(100vw - 2 * var(--space-3));", css)
 
 
 class JobDeleteEndpointTests(ServerTestCase):
@@ -5693,3 +5820,38 @@ class SidebarLayoutTests(unittest.TestCase):
                               str(self.STATIC / "configuration.js")], capture_output=True, text=True)
         first = json.loads(out.stdout)
         self.assertEqual((first["label"], [e["route"] for e in first["entries"]]), ("Set up", ["#/readiness", "#/connections", "#/projects"]))
+
+
+class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def test_container_padding_design_standard_enforces_consistency(self):
+        css = (self.STATIC / "style.css").read_text()
+        # Canonical container padding tokens declared in :root
+        self.assertIn("--container-pad-x: var(--space-5);", css)
+        self.assertIn("--container-pad-y: var(--space-4);", css)
+        # Mobile responsive override for container padding tokens
+        self.assertIn("--container-pad-x: var(--space-4);", css)
+        self.assertIn("--container-pad-y: var(--space-3);", css)
+        # .card-b and card components use the container padding tokens
+        self.assertIn(".card-b { padding: var(--container-pad-y) var(--container-pad-x); }", css)
+        self.assertIn("padding: var(--space-3) var(--container-pad-x);", css)
+        # Home page job table and hero use container-pad tokens
+        self.assertIn(".job-hero {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: var(--space-3) var(--space-5);\n  flex-wrap: wrap;\n  padding: var(--container-pad-y) var(--container-pad-x);", css)
+        # Connections cards explicitly enforce container padding consistency
+        self.assertIn(".conn-card .card-b,", css)
+        self.assertIn('body[data-page="connections"] .card-b,', css)
+
+    def test_modal_on_mobile_is_contained_and_does_not_bleed_off_edges(self):
+        css = (self.STATIC / "style.css").read_text()
+        # Form inputs selector includes input[type=date] with min-width: 0 and box-sizing: border-box
+        self.assertIn("input[type=date]", css)
+        self.assertIn("min-width: 0;", css)
+        # Mobile dialog does not use narrow 12px margins that bleed off screen
+        self.assertNotIn("width: calc(100vw - 2 * var(--space-3));", css)
+        # Dialog is bounded by safe viewport margins and safe area insets
+        self.assertIn("calc(100vw - 2 * var(--space-5)", css)
+        self.assertIn("overflow-x: hidden;", css)
+        # Dialog body is constrained with box-sizing and overflow containment
+        self.assertIn("#dialog-body {\n  overflow-y: auto;\n  overflow-x: hidden;\n  min-height: 0;\n  min-width: 0;\n  max-width: 100%;", css)
+
