@@ -234,7 +234,7 @@ function clearMessage(id) {
 }
 
 function toast(message, kind = false, action = null) {
-  const level = kind === true ? "error" : typeof kind === "string" ? kind : "success";
+  const level = kind === true ? "error" : typeof kind === "string" ? kind : /\bcancell?ed\b/i.test(message) ? "cancel" : "success";
   const text = level === "error" ? Errors.explain(message) : message;
   const isConnection = text.startsWith("Can't reach Orchestrator.");
   return notify(level, text, { ...(isConnection ? { id: "connection" } : {}), ...(action ? { actions: [action] } : {}) });
@@ -3966,7 +3966,7 @@ pages.product = async (_, query) => {
           canceled = true;
           abortCtrl.abort();
           if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
-          toast("Import canceled");
+          toast("Import cancelled", "cancel");
           importPanel();
         };
         busy(file ? `Reading ${file.name}…` : "Reading it…", cancel);
@@ -3981,7 +3981,7 @@ pages.product = async (_, query) => {
           if (canceled) return;
           proposalView(taskResult, { source: "import", label: "Your PRD, in this format", onDone: () => {} });
         } catch (e) {
-          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Draft canceled.") return;
+          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
           toast(e.message, true);
           importPanel();
         }
@@ -4043,7 +4043,7 @@ pages.product = async (_, query) => {
           canceled = true;
           abortCtrl.abort();
           if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
-          toast("Draft canceled");
+          toast("Draft cancelled", "cancel");
           showStartHere();
         };
         busy("Reading your project and drafting with AI…", cancel);
@@ -4058,7 +4058,7 @@ pages.product = async (_, query) => {
           if (canceled) return;
           proposalView(taskResult, { source: "draft", label: "Drafted from your project", onDone: () => {} });
         } catch (e) {
-          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Draft canceled.") return;
+          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
           toast(e.message, true);
           showStartHere();
         }

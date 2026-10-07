@@ -183,7 +183,7 @@ class BackgroundTasks:
             if item is None:
                 return False
             if item.get("status") == "running":
-                item.update(status="canceled", error="Draft canceled.")
+                item.update(status="canceled", error="Draft cancelled.")
             return True
 
     def get(self, task_id: str) -> dict[str, Any] | None:

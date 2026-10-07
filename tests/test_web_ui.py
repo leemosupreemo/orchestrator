@@ -3804,6 +3804,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("This can take a few minutes.", page)
         self.assertIn('id="prd-busy-cancel"', page)
         self.assertIn('method: "DELETE"', page)
+        self.assertIn('toast("Draft cancelled", "cancel")', page)
+        self.assertIn(".msg-cancel { --kind: var(--warn); }", self.css)
         # Proposed view shows subsections and individual approve buttons, not raw diff/file
         self.assertIn('id="prd-approve-all"', page)
         self.assertIn('data-approve-sec=', page)

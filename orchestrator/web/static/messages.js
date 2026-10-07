@@ -18,6 +18,7 @@
     info: { timeout: 6000, role: "status", icon: "i", label: "Note" },
     warning: { timeout: 10000, role: "alert", icon: "!", label: "Warning" },
     error: { timeout: 10000, role: "alert", icon: "!", label: "Problem" },
+    cancel: { timeout: 4000, role: "status", icon: "✕", label: "Cancelled" },
   };
   const WITH_ACTIONS_MIN = 10000;
   const RESUME_MIN = 1500;
@@ -36,6 +37,7 @@
       const text = String((input && input.text) || "").trim();
       if (!text) return null;
       const kind = KINDS[input.kind] ? input.kind : "info";
+      const icon = (input && input.icon) || KINDS[kind].icon;
       const actions = Array.isArray(input.actions) ? input.actions.filter((a) => a && a.label) : [];
       let timeout = 0;
       if (!input.sticky) timeout = input.timeout ?? (actions.length ? Math.max(KINDS[kind].timeout, WITH_ACTIONS_MIN) : KINDS[kind].timeout);
@@ -43,12 +45,12 @@
       // The same message again (an error repeated by a retry) refreshes the one on screen instead of piling up.
       const same = input.id ? find(input.id) : items.find((m) => m.kind === kind && m.text === text && !m.explicitId);
       if (same) {
-        Object.assign(same, { kind, text, actions, timeout, sticky: !!input.sticky, onDismiss: input.onDismiss, rev: same.rev + 1 });
+        Object.assign(same, { kind, text, icon, actions, timeout, sticky: !!input.sticky, onDismiss: input.onDismiss, rev: same.rev + 1 });
         same.deadline = deadlineFor(same);
         same.remaining = null;
         return same.id;
       }
-      const message = { id: input.id || `m${++seq}`, explicitId: !!input.id, kind, text, actions, timeout, sticky: !!input.sticky, onDismiss: input.onDismiss, rev: 0, remaining: null };
+      const message = { id: input.id || `m${++seq}`, explicitId: !!input.id, kind, text, icon, actions, timeout, sticky: !!input.sticky, onDismiss: input.onDismiss, rev: 0, remaining: null };
       message.deadline = deadlineFor(message);
       items.push(message);
       // Over the limit: the oldest message that can go, goes. Sticky ones are never pushed out by newer ones.
@@ -122,7 +124,7 @@
     function fill(el, m) {
       el.className = `msg msg-${m.kind}`;
       el.setAttribute("role", KINDS[m.kind].role);
-      el.querySelector(".msg-icon").textContent = KINDS[m.kind].icon;
+      el.querySelector(".msg-icon").textContent = m.icon || KINDS[m.kind].icon;
       el.querySelector(".msg-text").textContent = m.text; // text only: messages can carry what a server said
       const box = el.querySelector(".msg-actions");
       box.textContent = "";
