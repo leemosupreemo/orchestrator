@@ -95,6 +95,9 @@ def release(bundle: Path, output: Path, development: bool, identity: str = "", n
     facts = validate_bundle(bundle)
     if not development:
         check_release_inputs(identity, notary_profile, feed_url, public_key)
+        source_info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+        if not re.fullmatch(r"[a-f0-9]{40}", source_info.get("OrchestratorSourceCommit", "")) or source_info.get("OrchestratorSourceDirty") is not False:
+            raise ValueError("Public releases must be assembled from a clean, identified source commit.")
     output.mkdir(parents=True, exist_ok=True)
     name = f"Orchestrator-{facts['version']}-{facts['architecture']}{'-development' if development else ''}"
     dmg = output / f"{name}.dmg"
@@ -117,6 +120,8 @@ def release(bundle: Path, output: Path, development: bool, identity: str = "", n
         run(["/usr/sbin/spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", dmg])
     digest = hashlib.sha256(dmg.read_bytes()).hexdigest()
     record = {**facts, "development": development, "file": dmg.name, "sha256": digest, "size": dmg.stat().st_size}
+    source_info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+    record["commit"] = source_info.get("OrchestratorSourceCommit", "")
     (output / f"{name}.json").write_text(json.dumps(record, indent=2) + "\n")
     return dmg
 

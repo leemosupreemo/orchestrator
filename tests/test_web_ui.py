@@ -707,6 +707,29 @@ class TunnelKeeperTests(unittest.TestCase):
 
 
 class AccountUiTests(unittest.TestCase):
+    def test_mac_setup_requires_a_complete_https_release_and_preserves_pairing(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const release = {version: '0.2.0', build: 2, commit: 'a'.repeat(40), minimum_macos: '13.0',
+ arm64: {url: 'https://example.com/arm.dmg', sha256: 'a'.repeat(64)},
+ x86_64: {url: 'https://example.com/intel.dmg', sha256: 'b'.repeat(64)}};
+process.stdout.write(JSON.stringify({
+ good: A.macRelease(release),
+ bad: [null, {}, {...release, x86_64: null}, {...release, arm64: {...release.arm64, url: 'javascript:alert(1)'}},
+ {...release, arm64: {...release.arm64, url: 'https://user:password@example.com/app.dmg'}},
+ {...release, arm64: {...release.arm64, sha256: '0'.repeat(64)}}].map(A.macRelease),
+ ready: A.renderMacSetup(release), missing: A.renderMacSetup(null)
+}));""")
+        self.assertEqual(result['good']['version'], '0.2.0')
+        self.assertEqual(result['bad'], [None] * 6)
+        self.assertIn('Apple Silicon', result['ready'])
+        self.assertIn('https://example.com/intel.dmg', result['ready'])
+        self.assertIn('Applications', result['ready'])
+        self.assertNotIn('download href=', result['missing'])
+        self.assertIn('not available yet', result['missing'])
+        self.assertIn('data-account-form="code"', result['missing'])
+        self.assertIn('<details', result['missing'])
+
     def run_account_script(self, source: str, preload: str = ""):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         result = subprocess.run(
@@ -5854,4 +5877,3 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
         self.assertIn("overflow-x: hidden;", css)
         # Dialog body is constrained with box-sizing and overflow containment
         self.assertIn("#dialog-body {\n  overflow-y: auto;\n  overflow-x: hidden;\n  min-height: 0;\n  min-width: 0;\n  max-width: 100%;", css)
-

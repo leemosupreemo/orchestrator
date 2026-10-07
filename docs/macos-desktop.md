@@ -78,3 +78,54 @@ Publishing comes after that and is deliberate. For **Add a Mac**, also copy `pac
 ```
 
 The digests come from the `.json` file `release.py` writes beside each image. Then publish a GitHub release with both images, the Sparkle appcast (signed with the private EdDSA key, which never goes into the repository), and **Download for Mac** links on the hosted page. Keep the hosted links off until both architectures have passed clean-machine checks on macOS 13 and on a current macOS: install, pairing, setup, tunnel, port conflict, menu quit, update while busy, and migration.
+
+## Preparing website downloads
+
+The signed-in website now shows a Mac installation guide. Download buttons appear only when
+`orchestrator/web/static/releases/macos.json` contains a complete valid release record. A missing
+record leaves account pairing available and explains that the download is not yet available.
+The old `MAC_APP_RELEASED` switch still controls unattended SSH enrollment separately.
+
+Use one clean source commit for both app builds and website assets. The builder records the
+commit and whether tracked source files were modified. Public signing refuses dirty or
+unidentified source builds. Build outputs must be outside tracked source files. Tag the
+selected commit `v<version>` before offering the release; advanced CLI installation uses that tag.
+
+After clean-machine acceptance, create an acceptance JSON outside the repository:
+
+```json
+{"commit": "FULL_40_CHARACTER_SOURCE_COMMIT",
+ "arm64": {"passed": true, "notes": "Record the Macs/OS versions and actual acceptance results here"},
+ "x86_64": {"passed": true, "notes": "Record the Macs/OS versions and actual acceptance results here"}}
+```
+
+The notes must document the required checklist on macOS 13 and a current macOS for each architecture.
+Only write passing results after actually running those checks. This file is a human acceptance
+record; the metadata tool validates its presence and matching commit, not the truth of the observations.
+
+Put both signed DMGs and their release receipts in one artifacts directory, then run:
+
+```bash
+python3 packaging/macos/prepare_manifest.py \
+  --artifacts /path/to/signed-artifacts \
+  --base-url https://github.com/leemosupreemo/orchestrator/releases/download/v0.1.0 \
+  --commit FULL_40_CHARACTER_SOURCE_COMMIT \
+  --acceptance /path/to/acceptance.json \
+  --output /path/to/staged-hosting/releases/macos.json
+```
+
+The command refuses development receipts, mismatched versions/builds/commits, missing
+architectures, digest mismatches, and missing acceptance evidence. It never overwrites a manifest.
+
+Publication order:
+
+1. Build, sign, notarize, and validate app images from the selected commit.
+2. Finish clean-machine acceptance and generate the matching release manifest.
+3. Publish the versioned GitHub release, both images, and the signed Sparkle update feed.
+4. Stage static website files from that same commit with the generated manifest. Verify both
+   artifact URLs are reachable before deploying Firebase Hosting from that staging directory.
+5. Walk through installation and pairing from a fresh browser account. Keep the previous
+   release artifacts available for rollback.
+
+Until signed artifacts and acceptance evidence exist, do not place a fabricated release record
+in static hosting or expose development DMGs as client downloads.

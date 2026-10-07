@@ -22,6 +22,16 @@ def _by_id(result):
 
 
 class SetupChecklistTests(unittest.TestCase):
+    def test_explicit_recheck_discards_cached_tool_and_login_results(self):
+        with tempfile.TemporaryDirectory() as d:
+            sc._cache["gh"] = (0, {"installed": False, "user": None})
+            sc._cache["llm"] = (0, [])
+            with patch.object(sc, "github_cli_state", return_value={"installed": False, "user": None}), \
+                 patch.object(sc, "ready_llm_providers", return_value=[]):
+                sc.setup_checklist(Path(d), Path(d) / ".orchestrator", fresh=True)
+            self.assertNotIn("gh", sc._cache)
+            self.assertNotIn("llm", sc._cache)
+
     def make_project(self, root: Path, origin: str | None = "git@github.com:me/app.git") -> None:
         (root / ".orchestrator" / "config").mkdir(parents=True)
         (root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "App"}))

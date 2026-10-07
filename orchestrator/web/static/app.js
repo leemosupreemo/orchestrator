@@ -1233,6 +1233,7 @@ async function unlockWith(token, message) {
 }
 
 let accountPoll = null;
+let accountScreenGeneration = 0;
 function stopAccountPoll() { clearInterval(accountPoll); accountPoll = null; }
 
 // Your computers: open the one you used last (or the only one), otherwise list them. A code from a link is handled first.
@@ -1258,15 +1259,31 @@ async function openAccount({ list = false, message = "", troubleshoot = null } =
 
 function showAccountScreen(machines, message = "", troubleshoot = null) {
   stopAccountPoll();
+  const generation = ++accountScreenGeneration;
   signingIn = true;
   setHeader({ title: "Your computers", sub: "", actions: "" });
   document.querySelector(".app")?.classList.add("session-locked");
   const email = window.firebase?.auth?.().currentUser?.email || "";
+  let macRelease = null;
   const render = (list, msg, tb) => {
     if (view.contains(document.activeElement) && document.activeElement.matches("input")) return; // not while typing a code
-    view.innerHTML = Account.renderMachines(list, { email, message: msg, troubleshoot: tb });
+    view.innerHTML = Account.renderMachines(list, { email, message: msg, troubleshoot: tb, release: macRelease });
   };
   render(machines, message, troubleshoot);
+  fetch("/releases/macos.json", {cache: "no-store"})
+    .then((response) => response.ok ? response.json() : null)
+    .then((release) => {
+      macRelease = Account.macRelease(release);
+      if (!macRelease || generation !== accountScreenGeneration) return;
+      // Update download details alone so a slow fetch never erases a typed pairing code.
+      const downloads = view.querySelector(".mac-setup [data-mac-downloads]");
+      if (!downloads) return;
+      const template = document.createElement("template");
+      template.innerHTML = Account.renderMacSetup(macRelease);
+      downloads.replaceChildren(...template.content.querySelector("[data-mac-downloads]").childNodes);
+      const install = view.querySelector(".mac-setup [data-cli-install]");
+      if (install) install.textContent = template.content.querySelector("[data-cli-install]").textContent;
+    }).catch(() => {}); // An unpublished installer must not block account pairing.
   // Watch for a computer coming online (someone just ran `orchestrator ui` on it).
   let last = JSON.stringify(machines);
   accountPoll = setInterval(async () => {
@@ -1305,7 +1322,7 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
       const machine = machines.find((m) => m.id === button.dataset.id);
       if (machine) enterMachine(machine);
     } else if (action === "remove") {
-      if (!await formDialog(`Remove ${button.dataset.name}?`, `<p>It leaves your account. Add it again any time with <code>orchestrator connect</code> on that computer.</p>`, "Remove", { danger: true })) return;
+      if (!await formDialog(`Remove ${button.dataset.name}?`, `<p>It leaves your account. To reconnect, choose Connect this Mac in Orchestrator on that computer. Command-line users can run <code>orchestrator connect</code>.</p>`, "Remove", { danger: true })) return;
       button.disabled = true;
       try {
         await cpApi("machines/remove", { method: "POST", body: { machine_id: button.dataset.id } });
@@ -1396,7 +1413,7 @@ async function showPairScreen(code) {
     try {
       const { machine } = await cpApi("pair/claim", { method: "POST", body: { code } });
       toast(`Added ${machine.name}`);
-      done(`${machine.name} is on your account. Start \`orchestrator ui --tunnel\` on it and it will show as online here.`);
+      done(`${machine.name} is connected to your account. Keep Orchestrator open on that Mac and turn on Remote access in its menu. It will appear online here shortly. For a command-line installation, start \`orchestrator ui --tunnel\`.`);
     } catch (err) { done(err.message); }
   };
 }
@@ -1418,7 +1435,7 @@ async function enterMachine(machine) {
     try {
       res = await api("auth", { method: "POST", body: { ticket } });
     } catch (err) {
-      throw new Error(`Couldn't reach ${machine.name} at ${endpoint} (${err.message}). Check that \`orchestrator ui --tunnel\` is still running on it.`);
+      throw new Error(`Couldn't reach ${machine.name} (${err.message}). ${machine.updatable ? "Wake the Mac, open Orchestrator and check that Remote access is on in its menu." : "Check that `orchestrator ui --tunnel` is still running on it."}`);
     }
     // An idea from before this computer was set up: go and start it (or add the code they already have).
     const idea = Account.pendingIdea();
@@ -1924,7 +1941,7 @@ let setupFetched = 0;
 async function loadSetup(force = false) {
   if (!force && Date.now() - setupFetched < 15000) return setupState;
   setupFetched = Date.now();
-  try { setupState = await api("setup"); } catch { setupState = null; } // older servers have no /api/setup
+  try { setupState = await api(force ? "setup?refresh=1" : "setup"); } catch { setupState = null; } // older servers have no /api/setup
   renderSetupFab();
   if (setupState?.complete && !setupState.seen) {
     setupState.seen = true;
@@ -1957,7 +1974,7 @@ function setupPage(s) {
   return {
     title: "Let's get set up",
     sub: left ? `${left} required step${left > 1 ? "s" : ""} left before you can run a job` : "All required steps are done",
-    actions: `<button class="btn ghost" id="setup-skip">Skip for now</button>`,
+    actions: `<button class="btn ghost" id="setup-recheck">Check again</button><button class="btn ghost" id="setup-skip">Skip for now</button>`,
     html: `<div class="setup-full">
       <div class="setup-progress"><div style="width:${Math.round(100 * s.required_done / s.required_total)}%"></div></div>
       <section class="card">${setupListHtml(s)}</section>
@@ -1966,6 +1983,7 @@ function setupPage(s) {
       const seen = async () => { try { await api("config/setup-seen", { method: "POST", body: {} }); } catch {} if (setupState) setupState.seen = true; route(); };
       $("#setup-skip")?.addEventListener("click", seen);
       $("#setup-done")?.addEventListener("click", seen);
+      $("#setup-recheck")?.addEventListener("click", async () => { await loadSetup(true); route(); });
     },
   };
 }

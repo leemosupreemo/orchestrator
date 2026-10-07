@@ -4673,7 +4673,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError("This job is running right now. Attach context once it stops.", HTTPStatus.CONFLICT)
             self._json({"links": attach_links_to_job(root, parts[1], _clean_links(self._body().get("links")))})
         elif method == "GET" and parts == ["setup"]:
-            self._json(setup_checklist(root, runtime_dir(root)))
+            self._json(setup_checklist(root, runtime_dir(root), fresh=bool(query.get("refresh"))))
         elif method == "POST" and parts == ["setup", "git-init"]:
             self._require_owner("initialize git repository")
             self._body()

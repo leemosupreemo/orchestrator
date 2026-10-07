@@ -105,7 +105,10 @@ def _item(id: str, title: str, required: bool, done: bool, detail: str, *, actio
             "action": action, "hint": hint, "group": group}
 
 
-def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
+def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str, Any]:
+    if fresh:
+        _cache.pop("gh", None)
+        _cache.pop("llm", None)
     project = _read_json(runtime / "project.json")
     settings = _read_json(runtime / "config" / "settings.json")
     machines = [m for m in _read_json(runtime / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
