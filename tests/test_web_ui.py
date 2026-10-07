@@ -3303,6 +3303,51 @@ assert.equal(stored[199].kind, 'event_249');
 })();
 """)
 
+    def test_last_login_method_persistence(self):
+        script = """
+const fs = require('fs');
+const assert = require('node:assert/strict');
+const appJs = fs.readFileSync(process.argv[1], 'utf8');
+
+const storage = {};
+globalThis.localStorage = {
+  getItem: (k) => storage[k] || null,
+  setItem: (k, v) => { storage[k] = String(v); },
+  removeItem: (k) => { delete storage[k]; },
+};
+globalThis.document = { cookie: '' };
+globalThis.window = { firebase: { auth: () => ({ currentUser: null }) } };
+
+const fnMatch = appJs.match(/(const LAST_LOGIN_KEY = [\\s\\S]*?function setLastLoginMethod[\\s\\S]*?\\n\\})/);
+assert.ok(fnMatch, 'helpers found');
+eval(fnMatch[0]);
+
+assert.equal(getLastLoginMethod(), '');
+
+setLastLoginMethod('google');
+assert.equal(storage['orchestrator_last_login_method'], 'google');
+assert.ok(document.cookie.includes('orchestrator_last_login_method=google'));
+assert.equal(getLastLoginMethod(), 'google');
+
+delete storage['orchestrator_last_login_method'];
+assert.equal(getLastLoginMethod(), 'google');
+
+document.cookie = '';
+assert.equal(getLastLoginMethod(), '');
+window.firebase.auth = () => ({ currentUser: { providerData: [{ providerId: 'github.com' }] } });
+assert.equal(getLastLoginMethod(), 'github');
+
+setLastLoginMethod('token');
+assert.equal(getLastLoginMethod(), 'token');
+assert.equal(storage['orchestrator_last_login_method'], 'token');
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 
 class AccessibilityStaticTests(unittest.TestCase):
     STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -3594,11 +3639,31 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Run all tests", tests_src)
         self.assertIn("Expand coverage", tests_src)
         self.assertNotIn("moreMenu", tests_src)
-        self.assertNotIn("Build", tests_src)
+        self.assertNotIn('act("build")', tests_src)
         self.assertNotIn("Refresh list", tests_src)
         self.assertIn('body[data-page="tests"] .topbar-actions > .test-run-all-btn { flex: 2 1 0;', self.css)
         self.assertIn('body[data-page="tests"] .topbar-actions > .test-expand-coverage-btn {', self.css)
         self.assertIn('flex: 1 1 0;', self.css)
+
+    def test_run_screen_stop_button_in_same_row_as_title(self):
+        # Stop button on in-progress screens is placed on the right side, same row as the title
+        self.assertIn('.topbar:has(> .topbar-actions > [data-stop])', self.css)
+        self.assertIn('body[data-page="run"] .topbar', self.css)
+        self.assertIn('"title actions"', self.css)
+        self.assertIn('.topbar:has(> .topbar-actions > [data-stop]) .topbar-actions', self.css)
+        self.assertIn('grid-area: actions;', self.css)
+
+    def test_visual_check_done_container_thumbnails_and_lightbox(self):
+        # Visual check results are shown as thumbnails in the done container and can be opened
+        self.assertIn('.visual-check-banner', self.css)
+        self.assertIn('.visual-check-grid', self.css)
+        self.assertIn('.visual-check-thumb-card', self.css)
+        self.assertIn('dialog.dialog-image-viewer', self.css)
+        self.assertIn('getVisualCheckForRun(', self.js)
+        self.assertIn('openImageModal(', self.js)
+        self.assertIn('wireImagePreviews(', self.js)
+        self.assertIn('visual-check-banner', self.js)
+        self.assertIn('data-preview-img', self.js)
 
     def test_new_job_asks_what_each_kind_needs_and_has_no_you_decide_toggle(self):
         form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
@@ -3653,6 +3718,15 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Account.pickMachine(machines, remembered)", self.js)
         self.assertIn("https://${stored}", self.js)
 
+    def test_last_used_login_method_highlight_and_tag(self):
+        # Last used login method is tracked and visually tagged in the sign-in gate
+        self.assertIn("getLastLoginMethod()", self.js)
+        self.assertIn("setLastLoginMethod(", self.js)
+        self.assertIn("orchestrator_last_login_method", self.js)
+        self.assertIn(".last-used-tag", self.css)
+        self.assertIn(".sso-btn.last-used", self.css)
+        self.assertIn("Last used", self.js)
+
     def test_home_new_job_button_is_sticky(self):
         # The + new job button stays in place when scrolling
         self.assertIn(".home-new-job-btn {", self.css)
@@ -3676,10 +3750,12 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("var(--accent)", css)  # in the accent colour, on its soft tint
         self.assertIn("var(--accent-soft)", css)
 
-    def test_import_takes_a_dropped_file_and_starts_reading_at_once(self):
+    def test_import_takes_a_dropped_file_and_waits_for_submit(self):
         page = self.js[self.js.index("const importPanel"):self.js.index("An existing project: read what is there")]
-        for part in ('id="prd-drop"', '"dragover"', '"drop"', "e.dataTransfer?.files?.[0]", "readPrd({ file: f })", "e.preventDefault()", 'zone.addEventListener("keydown"'):
+        for part in ('id="prd-drop"', '"dragover"', '"drop"', "e.dataTransfer?.files?.[0]", "if (f) setFile(f)", "e.preventDefault()", 'zone.addEventListener("keydown"'):
             self.assertIn(part, page, part)
+        self.assertIn('id="prd-import-go" disabled>Submit</button>', page)
+        self.assertIn("goBtn.disabled = !picked && !textEl.value.trim()", page)
         read = self.js[self.js.index("const readPrd"):self.js.index("const importPanel")]
         self.assertIn("NJ_UPLOAD_LIMIT", read)  # a dropped file is checked like a chosen one
         self.assertIn("md|markdown|txt|docx|pdf", read)
@@ -5228,7 +5304,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn(".dialog-tab-btn {", css)
         self.assertIn(".dialog-tab-panel {", css)
         self.assertIn("max-height: calc(100dvh - 24px);", css)
-        self.assertIn("flex-direction: column-reverse;", css)
+        self.assertIn("flex-direction: row;", css)
 
 
 class JobDeleteEndpointTests(ServerTestCase):

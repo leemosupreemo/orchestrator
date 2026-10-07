@@ -62,6 +62,10 @@
   --control-md: 38px;   /* default buttons and inputs */
   --control-lg: 44px;   /* touch targets on phones */
   --control-xl: 48px;   /* the rare big call to action; the phone tab bar */
+  --dialog-width: 560px;
+  --dialog-width-compact: 440px;
+  --dialog-padding: var(--space-5);
+  --dialog-gap: var(--space-4);
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
   --backdrop: rgba(10, 12, 16, .45);
   --shadow-2: 0 8px 24px rgba(16, 24, 40, .18), 0 1px 3px rgba(16, 24, 40, .12);  /* menus, popovers */
@@ -256,7 +260,28 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 .btn.small { padding: var(--space-1) var(--space-3); min-height: var(--control-sm); font-size: var(--text-sm); }
 .btn.big { min-height: var(--control-xl); font-size: var(--text-lg); padding: var(--space-3) var(--space-5); }
 
-/* more menu */
+/* Reference imports, job briefs and Git actions */
+.reference-imports { border-top: 1px solid var(--border); padding: var(--space-4); background: var(--panel-2); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.reference-imports > .label { display: block; margin-bottom: var(--space-3); }
+.import-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
+.import-option { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: var(--space-1); padding: var(--space-4); min-height: var(--control-xl); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.import-option:hover { border-color: var(--accent); background: var(--accent-soft); }
+.import-option span { color: var(--muted); font-size: var(--text-sm); }
+.coverage-paths { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.brief-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.autopilot-option { padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+.git-sync-actions { display: flex; align-items: center; gap: var(--space-2); }
+body[data-page="git"] .more-menu { position: absolute; top: calc(100% + var(--space-2)); bottom: auto; left: auto; right: 0; min-width: min(240px, calc(100vw - 2 * var(--space-6))); z-index: var(--z-menu); }
+body[data-page="git"] details.more[open] > summary::before { display: none; }
+@media (max-width: 760px) {
+  .import-options, .brief-grid { grid-template-columns: minmax(0, 1fr); }
+  .git-sync-header { flex-wrap: wrap; }
+  .git-sync-actions { width: 100%; }
+  .git-sync-actions > .btn { flex: 1; }
+  .git-sync-actions .more > summary { min-height: var(--control-lg); }
+}
+
+/* More menu */
 .more { position: relative; }
 .more > summary { list-style: none; }
 .more > summary::-webkit-details-marker { display: none; }
@@ -390,28 +415,28 @@ details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow:
 
 dialog {
   border: 1px solid var(--border); border-radius: var(--r-lg); padding: 0; background: var(--panel); color: var(--text);
-  width: min(560px, calc(100vw - 32px)); box-shadow: var(--shadow-3);
+  width: min(var(--dialog-width), calc(100vw - 2 * var(--space-4))); box-shadow: var(--shadow-3);
   max-height: min(85vh, 720px);
   max-height: min(85dvh, 720px);
   margin: auto;
 }
 dialog::backdrop { background: var(--backdrop); }
 dialog form {
-  padding: var(--space-5);
+  padding: var(--dialog-padding);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--dialog-gap);
   max-height: min(85vh, 720px);
   max-height: min(85dvh, 720px);
   box-sizing: border-box;
 }
 dialog.dialog-compact {
-  width: min(440px, calc(100vw - 32px));
+  width: min(var(--dialog-width-compact), calc(100vw - 2 * var(--space-4)));
   max-height: min(70vh, 400px);
 }
 dialog.dialog-compact form {
-  padding: var(--space-4) var(--space-5);
-  gap: var(--space-3);
+  padding: var(--dialog-padding);
+  gap: var(--dialog-gap);
   max-height: min(70vh, 400px);
 }
 .dialog-header {
@@ -449,6 +474,7 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
+#dialog-body.stack { gap: var(--dialog-gap); }
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -606,7 +632,7 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   .keybar .btn { min-height: var(--control-lg); }
   /* The header already names the project, so Home doesn't repeat it as a title. */
   body[data-page="home"] #page-title { display: none; }
-  .status-line .branch-select { width: 100%; }
+  .status-line .branch-select { width: min(12rem, calc((100vw - 2 * var(--space-4)) / 2)); }
   .status-stats a, .card-h a { min-height: var(--control-md); }
   .item .meta { white-space: normal; }
   .item .meta .reason-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -621,31 +647,33 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   details.more[open] > summary::before { content: ""; position: fixed; inset: 0; z-index: calc(var(--z-menu) - 1); background: var(--backdrop); cursor: default; }
   .term-input { display: flex; }
   dialog {
-    width: calc(100vw - 20px);
-    max-width: 560px;
+    --dialog-padding: var(--space-4);
+    --dialog-gap: var(--space-3);
+    width: calc(100vw - 2 * var(--space-3));
+    max-width: var(--dialog-width);
     max-height: calc(100dvh - 24px);
     border-radius: var(--r-md);
   }
   dialog form {
-    padding: var(--space-4);
-    gap: var(--space-3);
+    padding: var(--dialog-padding);
+    gap: var(--dialog-gap);
     max-height: calc(100dvh - 24px);
   }
   dialog.dialog-compact {
-    width: min(420px, calc(100vw - 24px));
+    width: min(var(--dialog-width-compact), calc(100vw - 2 * var(--space-3)));
     max-height: min(80dvh, 380px);
   }
   dialog.dialog-compact form {
-    padding: var(--space-4);
-    gap: var(--space-3);
+    padding: var(--dialog-padding);
+    gap: var(--dialog-gap);
     max-height: min(80dvh, 380px);
   }
   .dialog-actions {
-    flex-direction: column-reverse;
+    flex-direction: row;
     gap: var(--space-2);
   }
   .dialog-actions .btn {
-    width: 100%;
+    flex: 1;
     min-height: var(--control-lg);
     justify-content: center;
     text-align: center;
@@ -750,6 +778,7 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   gap: var(--space-3);
 }
 .sso-btn {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -773,28 +802,76 @@ dialog h2 { font-size: var(--text-lg); margin: 0; }
   transform: scale(0.99);
 }
 .sso-btn .icon {
+  position: absolute;
+  left: var(--space-4);
   width: 18px;
   height: 18px;
   flex-shrink: 0;
 }
-.sso-btn.apple-btn {
-  background: #000;
-  color: #fff;
-  border-color: #333;
-}
-.sso-btn.apple-btn:hover {
-  background: #1a1a1a;
-  border-color: #555;
-}
+.sso-btn.apple-btn,
 .sso-btn.github-btn {
   background: #24292f;
   color: #fff;
   border-color: #3b4148;
 }
+.sso-btn.apple-btn:hover,
 .sso-btn.github-btn:hover {
   background: #32383f;
   border-color: #5b636b;
 }
+
+/* Highlight and tag for the last used login method */
+.sso-btn.last-used,
+#account-continue-btn.last-used,
+#signin-submit-btn.last-used {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.sso-btn.apple-btn.last-used,
+.sso-btn.github-btn.last-used {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.last-used-tag {
+  position: absolute;
+  right: var(--space-3);
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  line-height: 1.25;
+  pointer-events: none;
+}
+.sso-btn.apple-btn .last-used-tag,
+.sso-btn.github-btn .last-used-tag,
+#account-continue-btn .last-used-tag,
+#signin-submit-btn.primary .last-used-tag {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+.last-used-tag.token-tag {
+  position: static;
+  display: inline-flex;
+}
+.manual-token-details.last-used-section {
+  border-top-color: var(--accent) !important;
+}
+@media (max-width: 480px) {
+  .last-used-tag {
+    font-size: 9px;
+    padding: 1px 5px;
+    right: var(--space-2);
+  }
+}
+
 .app.session-locked .sidebar {
   opacity: 0.35;
   pointer-events: none;
@@ -2050,6 +2127,10 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 .framework { flex: 1 1 200px; padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
 .framework-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
 .framework-desc { font-size: var(--text-xs); color: var(--muted); }
+.framework > summary { cursor: pointer; min-height: var(--control-lg); gap: var(--space-2); }
+.framework > summary::after { content: "+"; color: var(--muted); }
+.framework[open] > summary::after { content: "−"; }
+.framework-detail { padding-top: var(--space-3); font-size: var(--text-sm); }
 
 /* Tablets: the sidebar stays, but narrower, and the page gets less padding. */
 @media (min-width: 761px) and (max-width: 1100px) {
@@ -2075,6 +2156,54 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
   /* A job's More menu sits beside its title instead of on a row of its own */
   .topbar:has(> .topbar-actions > details.more:only-child) { flex-direction: row; align-items: flex-start; }
   .topbar-actions:has(> details.more:only-child) { width: auto; flex: none; }
+}
+
+/* In-progress run screens: Stop button sits on the right side, same row as the title across desktop & mobile */
+.topbar:has(> .topbar-actions > [data-stop]),
+body[data-page="run"] .topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "back back"
+    "title actions"
+    "sub sub";
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+.topbar:has(> .topbar-actions > [data-stop]) .topbar-text,
+body[data-page="run"] .topbar-text {
+  display: contents;
+}
+
+.topbar:has(> .topbar-actions > [data-stop]) .back-link,
+body[data-page="run"] .back-link {
+  grid-area: back;
+  margin-bottom: 0;
+}
+
+.topbar:has(> .topbar-actions > [data-stop]) #page-title,
+body[data-page="run"] #page-title {
+  grid-area: title;
+  margin: 0;
+  line-height: 1.25;
+}
+
+.topbar:has(> .topbar-actions > [data-stop]) #page-sub,
+body[data-page="run"] #page-sub {
+  grid-area: sub;
+  margin-top: 0;
+}
+
+.topbar:has(> .topbar-actions > [data-stop]) .topbar-actions,
+body[data-page="run"] .topbar-actions {
+  grid-area: actions;
+  width: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  align-self: center;
 }
 
 /* "Back" above a detail page's title: returns to where you came from (see routeParent in app.js). */
@@ -2130,4 +2259,162 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
   .task-row:has(.side .btn) { flex-wrap: nowrap; }
   .task-row:has(.side .btn) .main-col { flex-basis: auto; }
   .task-row:has(.side .btn) .side { width: auto; }
+}
+
+/* Visual check done container & screenshots */
+.visual-check-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: stretch;
+}
+.visual-check-done-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.visual-check-done-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.visual-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+.visual-check-thumb-card {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--space-2);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.visual-check-thumb-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+.visual-check-thumb-btn {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: var(--panel-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  overflow: hidden;
+  line-height: 0;
+}
+.visual-check-thumb-img {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  object-position: top;
+  border-radius: var(--r-sm);
+  transition: transform 0.2s ease;
+  display: block;
+}
+.visual-check-thumb-btn:hover .visual-check-thumb-img {
+  transform: scale(1.02);
+}
+.visual-check-thumb-badge {
+  position: absolute;
+  inset: auto 6px 6px auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: var(--text-2xs);
+  font-weight: 550;
+  border-radius: var(--r-pill);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+.visual-check-thumb-btn:hover .visual-check-thumb-badge {
+  opacity: 1;
+}
+.visual-check-thumb-badge .icon {
+  width: 11px;
+  height: 11px;
+}
+.visual-check-thumb-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  padding-inline: var(--space-1);
+}
+.visual-check-thumb-caption .mono {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+.visual-check-ext-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--text-sm);
+  padding: 0 var(--space-1);
+  border-radius: var(--r-xs);
+}
+.visual-check-ext-link:hover {
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
+/* Modal lightbox for full size preview */
+dialog.dialog-image-viewer {
+  width: min(920px, calc(100vw - 24px));
+  max-height: min(92vh, 860px);
+  max-height: min(92dvh, 860px);
+}
+dialog.dialog-image-viewer form {
+  padding: var(--space-4);
+  max-height: min(92vh, 860px);
+  max-height: min(92dvh, 860px);
+}
+.image-preview-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: center;
+  width: 100%;
+}
+.image-preview-modal-frame {
+  max-height: min(65vh, 600px);
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--space-2);
+  width: 100%;
+  box-sizing: border-box;
+}
+.image-preview-modal-img {
+  max-width: 100%;
+  max-height: min(60vh, 560px);
+  object-fit: contain;
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow);
+}
+.image-preview-modal-foot {
+  width: 100%;
 }

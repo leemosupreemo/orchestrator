@@ -102,6 +102,43 @@ function getToken() {
   return localStorage.getItem("orchestrator_token") || "";
 }
 
+const LAST_LOGIN_KEY = "orchestrator_last_login_method";
+
+function getLastLoginMethod() {
+  try {
+    const val = localStorage.getItem(LAST_LOGIN_KEY);
+    if (val) return val;
+  } catch {}
+  try {
+    if (typeof document !== "undefined" && document.cookie) {
+      const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${LAST_LOGIN_KEY}=([^;]+)`));
+      if (match) return decodeURIComponent(match[1]);
+    }
+  } catch {}
+  if (typeof window !== "undefined") {
+    const currentUser = window.firebase?.auth?.().currentUser;
+    if (currentUser?.providerData?.length) {
+      const pid = currentUser.providerData[0]?.providerId;
+      if (pid === "google.com") return "google";
+      if (pid === "apple.com") return "apple";
+      if (pid === "github.com") return "github";
+    }
+  }
+  return "";
+}
+
+function setLastLoginMethod(method) {
+  if (!method) return;
+  try {
+    localStorage.setItem(LAST_LOGIN_KEY, method);
+  } catch {}
+  try {
+    if (typeof document !== "undefined") {
+      document.cookie = `${LAST_LOGIN_KEY}=${encodeURIComponent(method)};path=/;max-age=31536000;SameSite=Lax`;
+    }
+  } catch {}
+}
+
 // What this page saw go wrong while it couldn't reach the computer: failed requests, going offline, the tab hidden.
 // Kept in localStorage (so a reload doesn't lose it) and sent to the computer's client.jsonl once a request gets through,
 // where `orchestrator connection-log -f` shows it next to what the server answered and what the tunnel said.
@@ -287,7 +324,7 @@ function terminalSize() {
 
 async function runAction(action, params = {}, { skipConfirm = false } = {}) {
   const meta = state.actions[action] || {};
-  if (meta.confirm && !skipConfirm && !(await formDialog(meta.title, `<p>${esc(meta.confirm)}</p>`, "Continue"))) return;
+  if (meta.confirm && !skipConfirm && !(await formDialog(meta.title, `<p>${esc(meta.confirm)}</p>`, "Continue", { compact: true }))) return;
   try {
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
     await refreshState(); // so the run page finds the new run straight away
@@ -306,6 +343,7 @@ function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact 
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = bodyHtml;
   $("#dialog-ok").textContent = okLabel;
+  $("#dialog-ok").hidden = false;
   $("#dialog-ok").className = danger ? "btn danger" : "btn primary";
   dlg.returnValue = "";
   if (!dlg.open) dlg.showModal();
@@ -1082,6 +1120,14 @@ async function cpApi(path, { method = "GET", body } = {}) {
 
 // After Google (or another provider): on the hosted app, find your computers; elsewhere, sign in to this server directly.
 async function afterProviderSignIn(user, name) {
+  const provider = (name || "").toLowerCase().includes("google") ? "google"
+    : (name || "").toLowerCase().includes("apple") ? "apple"
+    : (name || "").toLowerCase().includes("github") ? "github"
+    : (user?.providerData?.[0]?.providerId === "google.com") ? "google"
+    : (user?.providerData?.[0]?.providerId === "apple.com") ? "apple"
+    : (user?.providerData?.[0]?.providerId === "github.com") ? "github"
+    : "google";
+  setLastLoginMethod(provider);
   if (Account.active()) return openAccount();
   const backend = getBackendUrl();
   if (!backend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
@@ -1374,6 +1420,8 @@ function showSignInGate(message) {
   const hosted = Account.active();
   const hostedUser = hosted ? window.firebase?.auth?.().currentUser : null;
   const providers = Account.providerSignInWorks();
+  const lastUsed = getLastLoginMethod();
+  const isLastProvider = (p) => lastUsed === p;
   view.innerHTML = `
     <div class="signin-wrap">
       <div class="signin-card">
@@ -1392,20 +1440,26 @@ function showSignInGate(message) {
           <a class="btn primary" href="${esc(Account.HOSTED_ORIGINS[0])}" style="width: 100%; justify-content: center;">Sign in on the Orchestrator site</a>
           <p class="muted">Or use the access token below${location.hostname === "127.0.0.1" ? `, or open <a href="${esc(location.href.replace("//127.0.0.1", "//localhost"))}">localhost</a> instead of 127.0.0.1` : ""}.</p></div>`}
         <div class="sso-buttons" ${providers ? "" : "hidden"}>
-          <button type="button" class="sso-btn google-btn" id="google-signin-btn">
+          <button type="button" class="sso-btn google-btn ${isLastProvider("google") ? "last-used" : ""}" id="google-signin-btn">
             <svg class="icon"><use href="#i-google"/></svg>
             <span>Continue with Google</span>
+            ${isLastProvider("google") ? `<span class="last-used-tag">Last used</span>` : ""}
           </button>
-          <button type="button" class="sso-btn apple-btn" id="apple-signin-btn">
+          <button type="button" class="sso-btn apple-btn ${isLastProvider("apple") ? "last-used" : ""}" id="apple-signin-btn">
             <svg class="icon"><use href="#i-apple"/></svg>
             <span>Continue with Apple</span>
+            ${isLastProvider("apple") ? `<span class="last-used-tag">Last used</span>` : ""}
           </button>
-          <button type="button" class="sso-btn github-btn" id="github-signin-btn">
+          <button type="button" class="sso-btn github-btn ${isLastProvider("github") ? "last-used" : ""}" id="github-signin-btn">
             <svg class="icon"><use href="#i-github"/></svg>
             <span>Continue with GitHub</span>
+            ${isLastProvider("github") ? `<span class="last-used-tag">Last used</span>` : ""}
           </button>
         </div>
-        ${hostedUser ? `<button type="button" class="btn primary" id="account-continue-btn" style="width: 100%; justify-content: center;">Continue as ${esc(hostedUser.email || "you")}</button>` : ""}
+        ${hostedUser ? `<button type="button" class="btn primary sso-continue-btn ${lastUsed && lastUsed !== "token" ? "last-used" : ""}" id="account-continue-btn" style="width: 100%; justify-content: center; position: relative;">
+          <span>Continue as ${esc(hostedUser.email || "you")}</span>
+          <span class="last-used-tag">Last used</span>
+        </button>` : ""}
         ${isRemote && !hosted ? `
         <div class="backend-config-card" style="margin-top: 0.75rem; padding: 0.65rem 0.85rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.82rem; text-align: left;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
@@ -1417,8 +1471,11 @@ function showSignInGate(message) {
         </div>
         ` : ""}
         ${blockedProvider ? `<p class="muted signin-fallback">Pop-ups still blocked? <button type="button" class="linklike" id="redirect-fallback">Try full-page ${esc(blockedProvider.name)} sign-in</button>. Some browsers can't finish this way; the access token below always works.</p>` : ""}
-        <details class="manual-token-details" ${hosted ? "" : "open"} style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
-          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center; font-weight: 500;">${hosted ? "Connect by address and access token" : "Sign in with CLI access token"}</summary>
+        <details class="manual-token-details ${lastUsed === "token" ? "last-used-section" : ""}" ${hosted && lastUsed !== "token" ? "" : "open"} style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 8px;">
+            <span>${hosted ? "Connect by address and access token" : "Sign in with CLI access token"}</span>
+            ${lastUsed === "token" ? `<span class="last-used-tag token-tag">Last used</span>` : ""}
+          </summary>
           <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
             <label class="field">
               <span>CLI Access Token</span>
@@ -1430,14 +1487,24 @@ function showSignInGate(message) {
               <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(backend)}" style="font-size: 0.85rem;">
             </label>
             ` : ""}
-            <button type="submit" id="signin-submit-btn" class="btn" style="width: 100%; justify-content: center; padding: 0.55rem;">Use Access Token</button>
+            <button type="submit" id="signin-submit-btn" class="btn ${lastUsed === "token" ? "primary last-used" : ""}" style="width: 100%; justify-content: center; padding: 0.55rem; position: relative;">
+              <span>Use Access Token</span>
+              ${lastUsed === "token" ? `<span class="last-used-tag">Last used</span>` : ""}
+            </button>
           </form>
         </details>
       </div>
     </div>
   `;
 
-  $("#account-continue-btn")?.addEventListener("click", () => openAccount());
+  $("#account-continue-btn")?.addEventListener("click", () => {
+    const u = window.firebase?.auth?.().currentUser;
+    const pid = u?.providerData?.[0]?.providerId;
+    if (pid === "google.com") setLastLoginMethod("google");
+    else if (pid === "apple.com") setLastLoginMethod("apple");
+    else if (pid === "github.com") setLastLoginMethod("github");
+    openAccount();
+  });
 
   const syncBackend = () => {
     const el = $("#signin-backend");
@@ -1463,6 +1530,7 @@ function showSignInGate(message) {
         return;
       }
       syncBackend();
+      setLastLoginMethod(name.toLowerCase());
       btn.disabled = true;
       signingIn = true; // the gate stays as it is while the provider's window is open
       const originalHtml = btn.innerHTML;
@@ -1533,10 +1601,12 @@ function showSignInGate(message) {
       syncBackend();
       const t = (form.token?.value || "").trim();
       localStorage.setItem("orchestrator_token", t);
+      setLastLoginMethod("token");
       signingIn = true;
       showSigningIn("Unlocking…");
       try {
         await api("auth", { method: "POST", body: { token: t } });
+        setLastLoginMethod("token");
         toast("Session unlocked");
         document.querySelector(".app")?.classList.remove("session-locked");
         endSigningIn();
@@ -1979,7 +2049,7 @@ pages.home = async (_, query) => {
     sub: statusLine(p),
     actions: `<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a>`,
     html: `
-      ${product ? productStripHtml(product) : ""}
+      ${product && !product.sections.some((x) => x.filled) ? productStripHtml(product) : ""}
 
       ${runningBanner}
 
@@ -2455,8 +2525,8 @@ pages.job = async ([id]) => {
           <div class="card-b" style="display:flex; gap:14px; overflow-x:auto; padding:12px 16px;">
             ${visualChecks[0].screenshots.map((img) => `
               <div style="flex:0 0 auto; text-align:center;">
-                <a href="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" target="_blank" rel="noopener">
-                  <img src="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" style="max-height:220px; border-radius:10px; border:1px solid var(--border); box-shadow:0 2px 8px rgba(0,0,0,0.15);" alt="Screenshot">
+                <a href="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" target="_blank" rel="noopener" data-preview-img="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-auth="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-title="${esc(img)}">
+                  <img src="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-auth-src="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" style="max-height:220px; border-radius:10px; border:1px solid var(--border); box-shadow:0 2px 8px rgba(0,0,0,0.15);" alt="Screenshot">
                 </a>
                 <div style="font-size:11px; margin-top:4px;" class="muted mono">${esc(img)}</div>
               </div>
@@ -2501,6 +2571,7 @@ pages.job = async ([id]) => {
     `,
     after: () => {
       hydrateAuthImages(); // the UX and design check's screenshots
+      wireImagePreviews(view);
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const bodyHtml = `
           <div class="stack gap-12">
@@ -2641,6 +2712,14 @@ async function uploadFile(file, endpoint = "uploads") {
 
 const formatBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
+function featureSpec(v) {
+  const parts = [(v.details || "").trim()];
+  for (const [key, label] of [["audience", "Who it's for"], ["outcome", "User outcome"], ["acceptance", "Acceptance criteria"], ["constraints", "Constraints and out of scope"]]) {
+    if (v[key]?.trim()) parts.push(`## ${label}\n${v[key].trim()}`);
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
 pages.new = async (_, query) => {
   let features = [];
   try { features = (await api("features")).features; } catch { /* the field just doesn't show */ }
@@ -2650,7 +2729,7 @@ pages.new = async (_, query) => {
   const skipped = () => { try { return localStorage.getItem(skipKey) === "1"; } catch { return false; } };
   const wanted = query.get("type");
   const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "bug", uploads: {}, uploading: 0, logs: new Set(), recent: null,
-    v: { summary: query.get("summary") || "", details: query.get("spec") || "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", url: "" } };
+    v: { summary: query.get("summary") || "", details: query.get("spec") || "", audience: "", outcome: "", acceptance: "", constraints: "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", url: "" } };
 
   const field = (label, input, hint = "") => `<label class="field"><span>${label}</span>${input}${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
   const opt = (text) => ` <span class="muted">(${text})</span>`;
@@ -2683,8 +2762,16 @@ pages.new = async (_, query) => {
         const picker = await linkPickerHtml({ prefer: ["jira", "trello"], label: "Link a ticket or card", emptyHint: "" });
         return { picker, html: `
           ${field("What should it do?", `<input type="text" name="summary" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. Let either player ask for a rematch">`)}
-          ${field(`Anything specific?${opt("optional")}`, `<textarea name="spec" rows="4" placeholder="Who it's for, rules it must follow, what &quot;done&quot; looks like">${esc(v.details)}</textarea>`,
-            "Skip anything you don't care about. The AI picks sensible defaults and lists what it assumed, so you can change it.")}
+          <div class="brief-grid">
+            ${field(`Who is it for?${opt("optional")}`, `<input type="text" name="audience" maxlength="500" value="${esc(v.audience)}" placeholder="e.g. Players finishing a match">`)}
+            ${field(`What will they achieve?${opt("optional")}`, `<input type="text" name="outcome" maxlength="1000" value="${esc(v.outcome)}" placeholder="e.g. Play again without making a new lobby">`)}
+          </div>
+          ${field(`What counts as done?${opt("optional")}`, `<textarea name="acceptance" rows="3" maxlength="5000" placeholder="Both players accept → a new match starts&#10;Either declines → return to the lobby">${esc(v.acceptance)}</textarea>`, "A few testable outcomes, including any important edge case.")}
+          <details class="advanced"><summary>Constraints and context</summary><div class="stack">
+            ${field("Constraints or things to leave out", `<input type="text" name="constraints" maxlength="2000" value="${esc(v.constraints)}" placeholder="e.g. Keep the existing lobby; no ranked rematches">`)}
+            ${field("Additional context", `<textarea name="spec" rows="3" placeholder="Rules, references, or an existing brief">${esc(v.details)}</textarea>`)}
+            <small class="hint-text">Leave answers blank and the AI will list its assumptions in the plan.</small>
+          </div></details>
           ${picker.html}` };
       }
       case "design": {
@@ -2714,7 +2801,7 @@ pages.new = async (_, query) => {
   const read = (name) => form()?.elements[name]?.value ?? undefined;
   const capture = () => { // remember what was typed before the fields are swapped
     const v = st.v;
-    for (const [key, name] of [["summary", "summary"], ["details", "spec"], ["repro", "repro"], ["expected", "expected"], ["vibe", "vibe"], ["customVibe", "customVibe"], ["subsystems", "subsystems"], ["url", "url"]]) {
+    for (const [key, name] of [["summary", "summary"], ["details", "spec"], ["audience", "audience"], ["outcome", "outcome"], ["acceptance", "acceptance"], ["constraints", "constraints"], ["repro", "repro"], ["expected", "expected"], ["vibe", "vibe"], ["customVibe", "customVibe"], ["subsystems", "subsystems"], ["url", "url"]]) {
       const val = read(name); if (val !== undefined) v[key] = val;
     }
   };
@@ -2782,18 +2869,21 @@ pages.new = async (_, query) => {
       <div id="nj-discovery"></div>
       <div class="stack" id="nj-fields"></div>
       ${featureSelect()}
+      <div class="autopilot-option">
+        <label class="check risky"><input type="checkbox" name="yolo"><span><strong>Autopilot</strong><small>Runs without confirmations, including follow-up steps and Firebase releases to testers. Leave off to review decisions.</small></span></label>
+      </div>
       <details class="advanced"><summary>Options</summary>
         <div class="stack">
           <label class="field"><span>Where to work</span>
             <select name="branch_mode">
-              <option value="new" selected>New branch for this job (recommended)</option>
-              <option value="current">The branch that's checked out now</option>
+              <option value="current" selected>Use the current branch</option>
+              <option value="new">Create a new branch for this job</option>
               <option value="manual">Don't create or switch branches</option>
             </select>
+            <small class="hint-text">Jobs share the current branch by default. For parallel jobs touching the same files, separate branches and worktrees keep changes isolated.</small>
           </label>
           <label class="check"><input type="checkbox" name="no_dispatch"><span>Plan only<small>Stop after planning so you can review the plan first.</small></span></label>
-          <label class="check"><input type="checkbox" name="free"><span>Free models only</span></label>
-          <label class="check risky"><input type="checkbox" name="yolo"><span>Autopilot<small>Skips every confirmation and runs follow-up steps automatically, including a real Firebase release to testers.</small></span></label>
+          <label class="check"><input type="checkbox" name="free"><span>Use free AI only</span></label>
         </div>
       </details>
       <div class="row"><span class="spacer"></span><button class="btn primary big" type="submit">Create job</button></div>
@@ -2809,12 +2899,12 @@ pages.new = async (_, query) => {
         try { links = JSON.parse(form().elements.links?.value || "[]"); } catch { /* none */ }
         const f = new FormData(form());
         const v = st.v;
-        const params = { type: st.type, summary: v.summary, branch_mode: f.get("branch_mode") || "new", no_dispatch: f.has("no_dispatch"), yolo: f.has("yolo"), free: f.has("free"),
+        const params = { type: st.type, summary: v.summary, branch_mode: f.get("branch_mode") || "current", no_dispatch: f.has("no_dispatch"), yolo: f.has("yolo"), free: f.has("free"),
           feature: f.get("feature") || "", links, files: mine().map((u) => u.path) };
         if (st.type === "bug") Object.assign(params, { repro: v.repro, expected: v.expected, logs: [...st.logs] });
-        if (st.type === "feature") params.spec = v.details;
+        if (st.type === "feature") params.spec = featureSpec(v);
         if (st.type === "design") Object.assign(params, { spec: v.details, vibe: v.vibe === "other" ? (v.customVibe.trim() || "minimalist") : v.vibe, urls: v.url.trim() ? [v.url.trim()] : [] });
-        if (st.type === "coverage") params.subsystems = v.subsystems;
+        if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems, spec: v.details });
         runAction("new_job", params);
       });
     },
@@ -3323,6 +3413,16 @@ function downloadText(name, text) {
 
 pages.docs = async (args, query) => {
   const [kind, id] = args || [];
+  if (kind === "product") {
+    const p = await api("product");
+    return {
+      title: "PRD Markdown",
+      sub: `<span class="mono">${esc(p.path)}</span>`,
+      actions: `<button class="btn" id="prd-download">Download .md</button>`,
+      html: `<section class="card"><div class="card-b"><pre class="file">${esc(p.text)}</pre></div></section>`,
+      after: () => $("#prd-download").addEventListener("click", () => downloadText(p.path.split("/").pop() || "PRD.md", p.text)),
+    };
+  }
   if (kind === "job" || kind === "feature" || kind === "file") {
     const path = kind === "file" ? `docs/file?path=${encodeURIComponent(query?.get("path") || "")}` : `docs/${kind}/${encodeURIComponent(id || "")}`;
     let doc;
@@ -3474,7 +3574,7 @@ function productStripHtml(p) {
     <div class="card-b stack">
       ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-10">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft it from my project</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
+           <div class="row gap-10">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft PRD</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
     </div></section>`;
 }
 
@@ -3489,10 +3589,13 @@ pages.product = async (_, query) => {
         <div class="muted">${esc(s.hint)}</div>
         ${s.filled ? `<div class="md" data-expandable="280">${Markdown.render(s.body)}</div>` : ""}
         ${designs.length ? `<div class="prd-designs">${designs.map((d) => `<figure class="prd-design"><img alt="${esc(d.replace("designs/", ""))}" data-auth-src="product/design/${esc(d.replace("designs/", ""))}"></figure>`).join("")}</div>` : ""}
-        ${s.id === "look" ? `<div class="row gap-10"><button type="button" class="btn small" id="prd-add-file">Add a design or sketch</button>
-          <button type="button" class="btn small" id="prd-add-link">Add a link</button><button type="button" class="btn small" id="prd-add-app">Pick from a connected app</button>
-          <input type="file" id="prd-file" accept="image/*,.pdf,.fig,.html,.htm" multiple hidden></div>` : ""}
-      </div></section>`;
+      </div>
+      ${s.id === "look" ? `<div class="reference-imports"><div class="label">Import references</div><div class="import-options">
+        <button type="button" class="import-option" id="prd-add-file"><strong>Upload files</strong><span>Designs, sketches, images or PDFs</span></button>
+        <button type="button" class="import-option" id="prd-add-link"><strong>Paste a link</strong><span>A design or site to use as a reference</span></button>
+        <button type="button" class="import-option" id="prd-add-app"><strong>Connected apps</strong><span>Choose from Figma or another app</span></button>
+        <input type="file" id="prd-file" accept="image/*,.pdf,.fig,.html,.htm" multiple hidden>
+      </div></div>` : ""}</section>`;
   };
   const historyRows = (h) => h.map((v, i) => `<div class="item prd-version" data-version="${esc(v.id)}"><div class="main-col"><div class="title">${esc(PRD_SOURCE[v.source] || v.source)}${i === 0 ? ` <span class="pill done">Current</span>` : ""}</div>
       <div class="meta">${esc(ago(v.at))}${v.summary ? ` · ${esc(v.summary)}` : ""}</div><div class="prd-diff" hidden></div></div>
@@ -3502,15 +3605,15 @@ pages.product = async (_, query) => {
       ${p.sections.map(sectionCard).join("")}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
         <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
-        <div class="muted">After a feature or design job, the AI checks whether what it learned changes this document. It only edits when something clearly changed, keeps your words, tells you, and every change is in the history below where you can undo it.</div></div></section>
+        <div class="muted">After feature or design jobs, AI updates clear changes, keeps your wording, and notifies you. Review or undo any update in History.</div></div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
         <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
     title: "Product requirements",
-    sub: `<span class="mono">${esc(p.path)}</span> · Every job reads this first.`,
+    sub: `<a class="mono" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.`,
     // An empty document gets one "Start here" card with these choices; the header offers them only after that.
     actions: !p.sections.some((x) => x.filled) && !p.history.length ? ""
-      : `${p.can_draft ? `<button class="btn" id="prd-draft">Draft it from my project</button>` : ""}<button class="btn" id="prd-import">Import PRD</button>`,
+      : `<a class="btn" href="#/docs/product">View .md</a>${p.can_draft ? `<button class="btn" id="prd-draft">Draft PRD</button>` : ""}<button class="btn" id="prd-import">Import PRD</button>`,
     html: render(),
     after: () => {
       const panel = () => $("#prd-panel");
@@ -3673,13 +3776,19 @@ pages.product = async (_, query) => {
           }
         });
         $("#prd-add-app")?.addEventListener("click", async () => {
-          const picker = await linkPickerHtml({ prefer: ["figma"], label: "Pick a design or item" });
-          const dlg = formDialog("Pick from a connected app", picker.html + `<small class="hint-text">A link is added under Look and feel, with the image when the app can provide one.</small>`, "Add");
-          picker.wire();
-          const v = await dlg;
-          const links = v ? JSON.parse(v.links || "[]") : [];
-          if (!links.length) return;
-          try { await api("product/reference", { method: "POST", body: { links } }); await reload(); } catch (e) { toast(e.message, true); }
+          if ($("#dialog")?.open) return;
+          try {
+            const picker = await linkPickerHtml({ prefer: ["figma"], label: "Choose a reference" });
+            const dlg = formDialog("Connected apps", picker.html + (picker.connected ? `<small class="hint-text">Choose search results or paste a link, then submit to add references to Look and feel.</small>` : ""), picker.connected ? "Submit" : "Close");
+            picker.wire();
+            if (picker.connected) wireReferenceSubmit();
+            else $("#dialog-body a[href='#/connections']")?.addEventListener("click", () => $("#dialog").close("cancel"));
+            const v = await dlg;
+            const links = v ? JSON.parse(v.links || "[]") : [];
+            if (!links.length) return;
+            await api("product/reference", { method: "POST", body: { links } });
+            toast("References added"); await reload();
+          } catch (e) { toast(e.message, true); }
         });
         if (open.section) { view.querySelector(`#sec-${CSS.escape(open.section)}`)?.scrollIntoView({ block: "start" }); open.section = ""; }
         if (open.history) {
@@ -3723,24 +3832,48 @@ pages.product = async (_, query) => {
 
       const importPanel = () => {
         panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>Import PRD</h2></div><div class="card-b stack">
-          <div class="muted">Bring a PRD you already have. It is rearranged into the five sections below, keeping your words, and you see the result before anything is saved.</div>
           <div class="prd-drop" id="prd-drop" tabindex="0" role="button" aria-label="Choose a PRD file, or drop one here">
             <strong><span class="drop-hint">Drag a file here, or </span>click to choose one</strong><span class="muted">Markdown, text, Word or PDF</span>
             <input type="file" id="prd-import-input" accept=".md,.markdown,.txt,.docx,.pdf" hidden></div>
           <label class="field"><span>Or paste it</span><textarea id="prd-import-text" rows="6" aria-label="Paste your PRD"></textarea></label>
-          <div class="row gap-10"><button type="button" class="btn primary" id="prd-import-go">Read it</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
-        const input = $("#prd-import-input"), zone = $("#prd-drop");
+          <div class="row gap-10"><button type="button" class="btn primary" id="prd-import-go" disabled>Submit</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
+        const input = $("#prd-import-input"), zone = $("#prd-drop"), goBtn = $("#prd-import-go"), textEl = $("#prd-import-text");
+        let picked = null;
+        const sync = () => {
+          goBtn.disabled = !picked && !textEl.value.trim();
+        };
+        const setFile = (f) => {
+          if (!f) return;
+          picked = f;
+          const strong = zone.querySelector("strong");
+          if (strong) strong.textContent = f.name;
+          const sub = zone.querySelector(".muted");
+          if (sub) sub.textContent = "Click to choose another file";
+          sync();
+        };
         zone.addEventListener("click", () => input.click());
         zone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
-        input.addEventListener("change", () => { if (input.files[0]) readPrd({ file: input.files[0] }); });
+        input.addEventListener("change", () => { if (input.files[0]) setFile(input.files[0]); });
         ["dragenter", "dragover"].forEach((t) => zone.addEventListener(t, (e) => { e.preventDefault(); zone.classList.add("over"); }));
         ["dragleave", "dragend"].forEach((t) => zone.addEventListener(t, () => zone.classList.remove("over")));
-        zone.addEventListener("drop", (e) => { e.preventDefault(); zone.classList.remove("over"); const f = e.dataTransfer?.files?.[0]; if (f) readPrd({ file: f }); });
+        zone.addEventListener("drop", (e) => {
+          e.preventDefault();
+          zone.classList.remove("over");
+          const f = e.dataTransfer?.files?.[0];
+          if (f) setFile(f);
+        });
+        textEl.addEventListener("input", sync);
+        textEl.addEventListener("keydown", (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !goBtn.disabled) {
+            e.preventDefault();
+            goBtn.click();
+          }
+        });
         $("#prd-import-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
-        $("#prd-import-go").addEventListener("click", () => {
-          const text = $("#prd-import-text").value.trim();
-          if (!text) return toast("Paste some text, or choose a file.", "warning");
-          readPrd({ text });
+        goBtn.addEventListener("click", () => {
+          if (picked) return readPrd({ file: picked });
+          const text = textEl.value.trim();
+          if (text) readPrd({ text });
         });
       };
 
@@ -3759,7 +3892,7 @@ pages.product = async (_, query) => {
         const existing = p.can_draft; // there is already a project to read
         panel().innerHTML = `<section class="card mb-16"><div class="card-b stack"><strong>Start here</strong>
           <div>${existing ? "This project already exists, so we can read it and draft a first version for you to correct. Or say what you have in mind in the pitch below." : "Say what you have in mind in the pitch below."}</div>
-          <div class="row gap-10">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft it from my project</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button></div></div></section>`;
+          <div class="row gap-10">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft PRD</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button></div></div></section>`;
         $("#prd-start-draft")?.addEventListener("click", () => draftPanel());
         $("#prd-start-import").addEventListener("click", () => importPanel());
       }
@@ -3896,6 +4029,24 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
         <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`).join("")}</div></details>`).join("");
 }
 
+function coverageJobParams(data, caseView, values = {}) {
+  const rawTarget = (values.target || "").trim();
+  const target = rawTarget ? Number(rawTarget) : null;
+  if (target !== null && (!Number.isFinite(target) || target <= 0 || target > 100)) throw new Error("Choose a coverage target between 1 and 100%.");
+  const cov = data.coverage;
+  const measured = cov?.overall_coverage_pct != null && !cov.estimated;
+  const gaps = (caseView.cases || []).filter((c) => c.status === "unassigned" || c.status === "planned").slice(0, 30);
+  const spec = [
+    "Analyze the project's existing tests and source code. Identify and prioritise coverage gaps by user impact and regression risk.",
+    measured ? `Last measured coverage: ${cov.overall_coverage_pct}% of ${cov.metric || "lines"} (${cov.timestamp || "date unknown"}). Verify with a fresh measurement.` : "Coverage is not measured yet. Establish a baseline using the project's coverage tooling.",
+    target !== null ? `Aim for ${target}% measured coverage. Explain if the target is impractical or coverage tooling is unavailable; do not invent a percentage.` : "Increase measured coverage with meaningful tests for the highest-risk gaps.",
+    "In the plan, explain which gaps to address and why. Then implement the recommended tests, run the affected suites, measure coverage again, and report the before/after results. Keep production behavior unchanged and use the project's existing test frameworks.",
+    gaps.length ? "Known missing automated test cases:\n" + gaps.map((c) => `- ${c.id}: ${c.title} (${c.area || "General"})`).join("\n") : "",
+  ].filter(Boolean).join("\n\n");
+  return { type: "coverage", summary: target !== null ? `Improve test coverage toward ${target}%` : "Find and address the highest-risk test coverage gaps",
+    subsystems: "Project-wide: prioritise missing coverage", spec, branch_mode: "current", no_dispatch: values.execution === "review", yolo: false, free: values.free === "on" };
+}
+
 pages.tests = async (_, query) => {
   view.innerHTML = `<div class="empty">Finding tests…</div>`;
   const [data, caseView] = await Promise.all([api(`tests${query.get("refresh") ? "?refresh=1" : ""}`), api("test-cases").catch(() => ({ cases: [], summary: null }))]);
@@ -3914,7 +4065,7 @@ pages.tests = async (_, query) => {
   return {
     title: "Tests",
     sub: `${withTests.length} suites · ${total} tests`,
-    actions: `<button class="btn primary test-run-all-btn" ${act("test")}>Run all tests</button><a class="btn test-expand-coverage-btn" href="#/new?type=coverage" data-href="#/new?type=coverage" title="Expand coverage (AI job)">Expand coverage</a>`,
+    actions: `<button class="btn primary test-run-all-btn" ${act("test")}>Run all tests</button><button type="button" class="btn test-expand-coverage-btn" id="expand-coverage">Expand coverage</button>`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
       ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>
@@ -3925,22 +4076,6 @@ pages.tests = async (_, query) => {
         </div></div>
         <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
         ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
-      ${data.frameworks && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `
-      <section class="card"><div class="card-h"><h2>Test frameworks</h2>
-        <div class="row">
-          ${!data.frameworks.canary_suite?.installed ? `<button class="btn small primary" ${act("scaffold_canary")}>Add a canary suite</button>` : ""}
-          <button class="btn small" ${act("visual_check")}>Simulator visual check</button>
-        </div>
-      </div>
-      <div class="card-b framework-grid">
-        ${Object.values(data.frameworks).map((f) => `
-          <div class="framework">
-            <div class="framework-h"><strong>${esc(f.name)}</strong>
-              <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Installed" : "Available"}</span></div>
-            <div class="framework-desc">${esc(f.desc)}</div>
-          </div>
-        `).join("")}
-      </div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Coverage${measured ? ` <span class="count">${esc(ago(Date.parse(cov.timestamp) / 1000))}</span>` : ""}</h2>
         <button type="button" class="btn small" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Measure again" : "Measure coverage"}</button></div>
         <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
@@ -3951,11 +4086,44 @@ pages.tests = async (_, query) => {
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Suites</h2>
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
-        ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>`,
-    after: () => $("#suite-filter").addEventListener("submit", (e) => {
-      e.preventDefault();
-      location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
-    }),
+        ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
+      ${state.project.mobile_app !== false && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><div class="card-h"><h2>Simulator visual check</h2></div>
+        <div class="card-b stack"><p>Builds and launches your iOS app in the simulator, then captures screenshots for you to inspect layout, clipping and rendering. Open the screenshots and report when the run finishes.</p>
+          <p class="muted">A manual visual review; it does not compare against image baselines or measure code coverage. Requires Xcode and an iOS simulator on the build computer.</p>
+          <div><button type="button" class="btn" ${act("visual_check")}>Capture screenshots</button></div></div></section>` : ""}
+      ${data.frameworks && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><details class="fold"><summary class="card-h"><h2>Test frameworks &amp; tools <span class="count">${Object.keys(data.frameworks).length}</span></h2></summary>
+        <div class="card-b stack"><p class="muted">Detection checks your test source files and local tools. Expand an item to see what it does and how to get started.</p>
+          <div class="framework-grid">${Object.entries(data.frameworks).map(([key, f]) => `<details class="framework"><summary class="framework-h"><strong>${esc(f.name)}</strong>
+            <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Detected" : "Not detected"}</span></summary>
+            <div class="framework-detail stack"><p>${esc(f.desc)}</p><p class="muted">${key === "xcbeautify" ? (f.installed ? "This formatter is installed on this computer. It makes Xcode build logs easier to read." : "This formatter was not found on this computer. It formats build logs; it does not add tests.")
+              : key === "canary_suite" ? (f.installed ? "The generated sample test file exists in this project. Replace its examples with checks for your app." : "Generate a small sample Swift Testing suite, then replace its examples with checks for your app.")
+              : f.installed ? "Usage was found in your test source files. This does not confirm every test passes; run your suites to check." : "No usage was found in your test source files. It may still be installed as a dependency. Create a test job to add relevant tests."}</p>
+              ${key === "canary_suite" && !f.installed ? `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>` : key !== "xcbeautify" && key !== "canary_suite" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`).join("")}</div>
+        </div></details></section>` : ""}`,
+    after: () => {
+      $("#suite-filter").addEventListener("submit", (e) => {
+        e.preventDefault();
+        location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
+      });
+      $("#expand-coverage").addEventListener("click", async () => {
+        const choicePromise = formDialog("Expand coverage", `<p>Choose an area, or let AI find the most useful gaps to address.</p>
+          <div class="import-options coverage-paths"><a class="import-option" id="coverage-specific" href="#/new?type=coverage"><strong>I have an area in mind</strong><span>Describe the feature or code you want tested.</span></a>
+            <button type="submit" value="ok" class="import-option"><strong>Find gaps with AI</strong><span>Get a prioritised plan to improve overall coverage.</span></button></div>`, "Find gaps with AI");
+        $("#dialog-ok").hidden = true;
+        $("#coverage-specific")?.addEventListener("click", () => $("#dialog").close("cancel"));
+        const choice = await choicePromise;
+        $("#dialog-ok").hidden = false;
+        if (!choice) return;
+        const values = await formDialog("Improve coverage with AI", `<p>AI inspects your code and tests, ranks gaps, and creates a coverage job.</p>
+          <label class="field"><span>Coverage target <span class="muted">(optional)</span></span><input type="number" name="target" min="1" max="100" step="any" placeholder="e.g. 80"><small class="hint-text">Leave blank to focus on the most valuable missing tests.</small></label>
+          <fieldset class="field"><legend>After the analysis</legend>
+            <label class="check"><input type="radio" name="execution" value="automatic" checked><span>Add tests automatically<small>Plan, implement and measure the result.</small></span></label>
+            <label class="check"><input type="radio" name="execution" value="review"><span>Review advice first<small>Stop at the plan. Start implementation from the job when ready.</small></span></label></fieldset>
+          <label class="check"><input type="checkbox" name="free"><span>Use free AI only</span></label>`, "Create coverage job");
+        if (!values) return;
+        try { await runAction("new_job", coverageJobParams(data, caseView, values)); } catch (e) { toast(e.message, true); }
+      });
+    },
   };
 };
 
@@ -4149,10 +4317,11 @@ pages.git = async () => {
   return {
     title: "Git",
     sub: `<span class="status-line"><span class="mono">${esc(g.branch || "detached")}</span><span class="sep">·</span><span>${esc(sync)}</span></span>`,
-    actions: `<button class="btn" ${act("git_pull")}>Pull</button><button class="btn primary" ${act("git_push")}>Push</button>
-      ${moreMenu([["New branch…", act("git_new_branch")], ...(g.web_url ? [["Open repo on GitHub", `data-open="${esc(g.web_url)}"`]] : [])])}`,
     html: `
-      <section class="card"><div class="card-b stack">
+      <section class="card"><div class="card-h git-sync-header"><h2>Sync branch</h2><div class="git-sync-actions">
+        <button type="button" class="btn" id="git-pull">Pull</button><button type="button" class="btn primary" id="git-push">Push</button>
+        ${moreMenu([["New branch…", act("git_new_branch")], ...(g.web_url ? [["Open repo on GitHub", `data-open="${esc(g.web_url)}"`]] : [])])}
+      </div></div><div class="card-b stack">
         <div><div class="muted">Last commit</div><div>${esc(g.last_commit || "—")}</div></div>
         <div>
           <div class="muted">Switch branch</div>
@@ -4165,6 +4334,12 @@ pages.git = async () => {
         <div class="list">${g.changes.map((c) => `<div class="item"><span class="pill">${esc(c.status)}</span><span class="mono">${esc(c.path)}</span></div>`).join("") || `<div class="empty">Working tree clean.</div>`}</div>
         ${g.changes_total > g.changes.length ? `<div class="empty">…and ${g.changes_total - g.changes.length} more.</div>` : ""}</section>`,
     after: () => {
+      $("#git-pull").addEventListener("click", async () => {
+        if (await formDialog("Pull branch", `<p>Download and merge remote changes into <strong>${esc(g.branch || "the current branch")}</strong>.</p><p class="muted">${esc(sync)}</p>`, "Pull", { compact: true })) await runAction("git_pull", {}, { skipConfirm: true });
+      });
+      $("#git-push").addEventListener("click", async () => {
+        if (await formDialog("Push branch", `<p>Upload commits from <strong>${esc(g.branch || "the current branch")}</strong> to origin${g.upstream ? "." : " and set its upstream."}</p><p class="muted">${esc(sync)}</p>`, "Push", { compact: true })) await runAction("git_push", {}, { skipConfirm: true });
+      });
       $("#git-branch-select")?.addEventListener("change", (e) => {
         const branch = e.target.value;
         if (branch && branch !== g.branch) {
@@ -4660,6 +4835,22 @@ pages.connections = async (_, query) => {
 
 // A small picker for linking items from connected apps. Keeps its picks in a hidden input
 // named "links" (JSON), so it works inside forms and dialogs alike.
+function wireReferenceSubmit() {
+  const form = $("#dialog-form"), dialog = $("#dialog"), picker = $("#dialog-body .link-picker");
+  if (!picker) return;
+  const onSubmit = (event) => {
+    if (event.submitter !== $("#dialog-ok")) return;
+    if (picker.querySelector(".lp-input").value.trim()) picker.querySelector(".lp-add").click();
+    if (!JSON.parse(picker.querySelector('input[name="links"]').value || "[]").length) {
+      event.preventDefault();
+      toast("Choose a reference or paste a link first.", "warning");
+      picker.querySelector(".lp-input").focus();
+    }
+  };
+  form.addEventListener("submit", onSubmit);
+  dialog.addEventListener("close", () => form.removeEventListener("submit", onSubmit), { once: true });
+}
+
 async function linkPickerHtml({ prefer = [], label = "Link from your apps", emptyHint = null } = {}) {
   let providers = [];
   try { providers = (await api("integrations")).integrations.filter((p) => p.connected); } catch { /* older server */ }
@@ -5150,7 +5341,64 @@ function runHeader(r) {
   };
 }
 
+function openImageModal({ title, src, authSrc, fullUrl }) {
+  const dlg = $("#dialog");
+  dlg.classList.remove("dialog-compact");
+  dlg.classList.add("dialog-image-viewer");
+  $("#dialog-cancel").hidden = true;
+  $("#dialog-title").textContent = title || "Screenshot preview";
+  $("#dialog-body").innerHTML = `
+    <div class="image-preview-modal-body">
+      <div class="image-preview-modal-frame">
+        <img src="${esc(src)}" ${authSrc ? `data-auth-src="${esc(authSrc)}"` : ""} alt="${esc(title)}" class="image-preview-modal-img">
+      </div>
+      <div class="image-preview-modal-foot row align-center justify-between">
+        <span class="mono text-xs muted">${esc(title)}</span>
+        <a class="btn small ghost" href="${esc(fullUrl || src)}" target="_blank" rel="noopener">Open full size in new tab ↗</a>
+      </div>
+    </div>
+  `;
+  hydrateAuthImages($("#dialog-body"));
+  $("#dialog-ok").textContent = "Close";
+  $("#dialog-ok").className = "btn";
+  dlg.addEventListener("close", () => {
+    dlg.classList.remove("dialog-compact");
+    dlg.classList.remove("dialog-image-viewer");
+  }, { once: true });
+  if (!dlg.open) dlg.showModal();
+}
+
+function wireImagePreviews(root = document) {
+  root.querySelectorAll("[data-preview-img]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      openImageModal({
+        title: btn.dataset.previewTitle,
+        src: btn.dataset.previewImg,
+        authSrc: btn.dataset.previewAuth,
+        fullUrl: btn.dataset.previewImg,
+      });
+    };
+  });
+}
+
+async function getVisualCheckForRun(r) {
+  try {
+    const data = await api("visual-checks");
+    const checks = data?.checks || [];
+    if (!checks.length) return null;
+    if (r.job) {
+      const match = checks.find((c) => c.job === r.job);
+      if (match) return match;
+    }
+    return checks[0];
+  } catch {
+    return null;
+  }
+}
+
 function nextStep(r) {
+  const vc = arguments[1] || null;
   if (r.action === "console") {
     return `<div class="banner"><p>Console connection was stopped.</p></div>`;
   }
@@ -5160,6 +5408,40 @@ function nextStep(r) {
     return `<div class="banner"><p>Run was stopped.</p>${open}</div>`;
   }
   const failed = r.exit_code !== 0;
+  if (!failed && (r.action === "visual_check" || /visual check/i.test(r.title)) && vc?.screenshots?.length) {
+    const target = r.result_job || r.job;
+    const openJob = target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Back to job</a>` : "";
+    const openReport = vc.id ? `<a class="btn small ghost" href="#/file?path=${encodeURIComponent(`.orchestrator/output/manual/${vc.id}/report.md`)}">Report</a>` : "";
+    return `<div class="banner done visual-check-banner">
+      <div class="visual-check-done-header">
+        <div class="visual-check-done-title">
+          <strong>Visual check complete</strong>
+          <span class="count">${plural(vc.screenshots.length, "screenshot")}</span>
+        </div>
+        <div class="visual-check-done-actions row gap-8">
+          ${openReport}
+          ${openJob}
+        </div>
+      </div>
+      <div class="visual-check-grid" role="region" aria-label="Visual check screenshot results">
+        ${vc.screenshots.map((img) => {
+          const imgUrl = `/api/visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}`;
+          const authSrc = `visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}`;
+          return `
+            <figure class="visual-check-thumb-card">
+              <button type="button" class="visual-check-thumb-btn" data-preview-img="${esc(imgUrl)}" data-preview-auth="${esc(authSrc)}" data-preview-title="${esc(img)}" aria-label="Open screenshot ${esc(img)}">
+                <img src="${esc(imgUrl)}" data-auth-src="${esc(authSrc)}" alt="Screenshot: ${esc(img)}" class="visual-check-thumb-img" loading="lazy">
+                <span class="visual-check-thumb-badge"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg> Open</span>
+              </button>
+              <figcaption class="visual-check-thumb-caption">
+                <span class="mono">${esc(img)}</span>
+                <a href="${esc(imgUrl)}" target="_blank" rel="noopener" class="visual-check-ext-link" title="Open full image in new tab" aria-label="Open ${esc(img)} in new tab">↗</a>
+              </figcaption>
+            </figure>`;
+        }).join("")}
+      </div>
+    </div>`;
+  }
   const target = r.result_job || r.job;
   const open = r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>` : ""; // Back covers returning to the job
   const text = failed ? "This run failed. The output below shows why."
@@ -5183,19 +5465,29 @@ pages.run = async ([id]) => {
       : { title: "Run not found", html: `<div class="notice"><p>This run isn't running, and no saved log matches it.</p>
             <div class="row mt-8"><a class="btn small" href="#/activity">See earlier runs</a></div></div>` };
   }
+  let vc = null;
+  if (!run.running && (run.action === "visual_check" || /visual check/i.test(run.title))) {
+    vc = await getVisualCheckForRun(run);
+  }
   return {
     ...runHeader(run),
     html: `
-      <div id="next-step"></div>
+      <div id="next-step">${run.running ? "" : nextStep(run, vc)}</div>
       <div class="term-wrap" id="term-wrap">
         <div class="term" id="term"></div>
-        <div class="keybar" id="keybar" aria-label="Terminal keys">${KEYS.map(([label], i) => `<button class="btn small" data-key="${i}">${esc(label)}</button>`).join("")}</div>
-        <form class="term-input" id="term-input">
+        <div class="keybar" id="keybar" aria-label="Terminal keys" ${run.running ? "" : "hidden"}>${KEYS.map(([label], i) => `<button class="btn small" data-key="${i}">${esc(label)}</button>`).join("")}</div>
+        <form class="term-input" id="term-input" ${run.running ? "" : "hidden"}>
           <input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Type into the terminal" placeholder="Type, then Send">
           <button class="btn">Send</button>
         </form>
       </div>`,
-    after: () => attachTerminal(id),
+    after: () => {
+      attachTerminal(id);
+      if (!run.running) {
+        hydrateAuthImages($("#next-step"));
+        wireImagePreviews($("#next-step"));
+      }
+    },
   };
 };
 
@@ -5272,7 +5564,17 @@ function attachTerminal(id) {
     }
     if (!run || current.page !== "run" || current.args[0] !== id) return;
     setHeader(runHeader(run));
-    $("#next-step").innerHTML = nextStep(run);
+    let vc = null;
+    if (run.action === "visual_check" || /visual check/i.test(run.title)) {
+      vc = await getVisualCheckForRun(run);
+      if (!vc?.screenshots?.length) {
+        await new Promise((r) => setTimeout(r, 400));
+        vc = await getVisualCheckForRun(run);
+      }
+    }
+    $("#next-step").innerHTML = nextStep(run, vc);
+    hydrateAuthImages($("#next-step"));
+    wireImagePreviews($("#next-step"));
     // Nothing left to type into.
     $("#keybar").hidden = true;
     $("#term-input").hidden = true;
@@ -5346,10 +5648,14 @@ function resolveRoute() {
 function routeParent(r) {
   if (r.page === "job" || r.page === "new" || r.page === "file") return "#/";
   if (r.page === "run") return "#/activity";
+  if (r.page === "docs" && r.args[0] === "product") return "#/product";
   if (r.page === "docs" && r.args.length) return "#/docs";
   if (r.page === "config" && r.args.length) return "#/config";
   if (r.page === "new-project") return "#/projects";
   if (r.page === "test-cases") return "#/tests";
+  if (["connections", "projects", "readiness"].includes(r.page)) return "#/config";
+  if (r.page === "ux-review") return "#/checkup";
+  if (["git", "help", "checkup", "devlogs", "setup"].includes(r.page)) return "#/";
   return null;
 }
 const navStack = [];
