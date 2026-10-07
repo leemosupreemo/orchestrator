@@ -160,16 +160,31 @@ class BackgroundTasks:
         def run() -> None:
             try:
                 result = work()
-                item.update(status="done", result=result)
+                with self._lock:
+                    if item.get("status") != "canceled":
+                        item.update(status="done", result=result)
             except UIError as exc:
-                item.update(status="error", error=str(exc), code=int(exc.status))
+                with self._lock:
+                    if item.get("status") != "canceled":
+                        item.update(status="error", error=str(exc), code=int(exc.status))
             except Exception as exc:  # whatever went wrong, the page gets a message rather than a task that never ends
-                item.update(status="error", error=str(exc)[:300] or "Something went wrong.", code=500)
+                with self._lock:
+                    if item.get("status") != "canceled":
+                        item.update(status="error", error=str(exc)[:300] or "Something went wrong.", code=500)
             finally:
                 release()
 
         threading.Thread(target=run, daemon=True).start()
         return task_id
+
+    def cancel(self, task_id: str) -> bool:
+        with self._lock:
+            item = self._items.get(task_id)
+            if item is None:
+                return False
+            if item.get("status") == "running":
+                item.update(status="canceled", error="Draft canceled.")
+            return True
 
     def get(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -3801,6 +3816,13 @@ class UIHandler(BaseHTTPRequestHandler):
                 if task is None:
                     raise UIError("That request is no longer around. Start it again.", HTTPStatus.NOT_FOUND)
                 self._json(task)
+            elif ((method == "DELETE" and len(parts) == 3 and parts[1] == "task") or
+                  (method == "POST" and len(parts) == 4 and parts[1] == "task" and parts[3] in ("cancel", "stop"))):
+                task = self.server.tasks.get(parts[2])
+                if task is None:
+                    raise UIError("That request is no longer around.", HTTPStatus.NOT_FOUND)
+                self.server.tasks.cancel(parts[2])
+                self._json({"ok": True, "task": parts[2], "status": "canceled"})
             elif method == "POST" and parts == ["product", "draft"]:
                 if not prd_doc.can_draft(root):
                     raise UIError("There's nothing in this project to read yet (no README, notes or code). Describe it in your own words instead.")
@@ -3832,7 +3854,11 @@ class UIHandler(BaseHTTPRequestHandler):
             except prd_doc.PrdError:
                 # Models sometimes answer in prose or break the JSON. Say what format is needed and ask once more before giving up.
                 proposal = parse(self._model_call(root, prompt + prd_doc.FORMAT_REMINDER, timeout=timeout))
-            return {**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])}
+            return {
+                **proposal,
+                "sections": prd_doc.sections_view(proposal["markdown"]),
+                "diff": prd_doc.unified_diff(current, proposal["markdown"]),
+            }
 
         self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
 

@@ -176,7 +176,7 @@ const ConnectionLog = (() => {
   return { add, flush };
 })();
 
-async function api(path, { method = "GET", body } = {}) {
+async function api(path, { method = "GET", body, signal } = {}) {
   const backend = getBackendUrl();
   const token = getToken();
   const url = `${backend ?? ""}/api/${path}`;
@@ -196,10 +196,11 @@ async function api(path, { method = "GET", body } = {}) {
       headers,
       body: hasBody ? JSON.stringify(body) : (isMutation ? "{}" : undefined),
       credentials: backend ? "omit" : "same-origin",
+      signal,
     });
   } catch (e) {
     // The browser doesn't say why (DNS, reset, timeout), but how long it took and whether it thought it was online helps.
-    if (logged) ConnectionLog.add("fetch_failed", { ...where, ms: Math.round(performance.now() - started), error: `${e.name}: ${e.message}` });
+    if (logged && e.name !== "AbortError") ConnectionLog.add("fetch_failed", { ...where, ms: Math.round(performance.now() - started), error: `${e.name}: ${e.message}` });
     throw e;
   }
   const data = await res.json().catch(() => ({}));
@@ -375,6 +376,9 @@ const closeGlobalDialog = (event) => {
 $("#dialog-close")?.addEventListener("pointerdown", closeGlobalDialog);
 $("#dialog-close")?.addEventListener("click", closeGlobalDialog);
 $("#dialog-cancel")?.addEventListener("pointerdown", closeGlobalDialog);
+$("#dialog-body")?.addEventListener("click", (event) => {
+  if (event.target.closest("a[href^='#']")) closeGlobalDialog(event);
+});
 
 globalDialog?.addEventListener("pointerdown", (event) => {
   if (event.target === globalDialog) {
@@ -2699,10 +2703,10 @@ const NJ_VIBES = [["minimalist", "Minimalist: clean, lots of space"], ["glassmor
   ["high-energy", "Playful: animated, dynamic"], ["gothic-noir", "Dark and moody"], ["other", "Something else…"]];
 const NJ_UPLOAD_LIMIT = 25 * 1024 * 1024;
 
-async function uploadFile(file, endpoint = "uploads") {
+async function uploadFile(file, endpoint = "uploads", { signal } = {}) {
   const backend = getBackendUrl(), token = getToken();
   const res = await fetch(`${backend ?? ""}/api/${endpoint}?name=${encodeURIComponent(file.name)}`, {
-    method: "POST", body: file, credentials: backend ? "omit" : "same-origin",
+    method: "POST", body: file, credentials: backend ? "omit" : "same-origin", signal,
     headers: { "Content-Type": "application/octet-stream", "X-Orchestrator-UI": "1", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   });
   const data = await res.json().catch(() => ({}));
@@ -3415,12 +3419,18 @@ pages.docs = async (args, query) => {
   const [kind, id] = args || [];
   if (kind === "product") {
     const p = await api("product");
+    const filename = p.path.split("/").pop() || "prd.md";
     return {
       title: "PRD Markdown",
       sub: `<span class="mono">${esc(p.path)}</span>`,
-      actions: `<button class="btn" id="prd-download">Download .md</button>`,
-      html: `<section class="card"><div class="card-b"><pre class="file">${esc(p.text)}</pre></div></section>`,
-      after: () => $("#prd-download").addEventListener("click", () => downloadText(p.path.split("/").pop() || "PRD.md", p.text)),
+      actions: "",
+      html: `<section class="card"><div class="card-h"><h2>${esc(filename)}</h2><div class="card-actions"><button type="button" class="btn small" id="prd-copy-path" title="Copy file path">Copy path</button><button type="button" class="btn small" id="prd-download">Download</button></div></div><div class="card-b"><div class="md">${Markdown.render(p.text)}</div></div></section>`,
+      after: () => {
+        $("#prd-download").addEventListener("click", () => downloadText(filename, p.text));
+        $("#prd-copy-path")?.addEventListener("click", () => {
+          navigator.clipboard?.writeText(p.path).then(() => toast("Copied path")).catch(() => toast(p.path, "info"));
+        });
+      },
     };
   }
   if (kind === "job" || kind === "feature" || kind === "file") {
@@ -3552,16 +3562,23 @@ async function undoPrdUpdate(noteId) {
 
 // Slow model work runs on the server in the background: start it, then ask how it is getting on. (A tunnel closes any single
 // request held open for about 100 seconds, so waiting on one long request made slower models look like failures.)
-async function waitForTask(started) {
+async function waitForTask(started, opts) {
   const { task } = started;
   const began = Date.now();
   let misses = 0;
   for (;;) {
+    if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     await new Promise((r) => setTimeout(r, 1500));
+    if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     let r;
-    try { r = await api(`product/task/${encodeURIComponent(task)}`); misses = 0; }
-    catch (e) { if (e.status === 404 || ++misses >= 4) throw e; continue; } // a dropped connection is retried a few times
+    try { r = await api(`product/task/${encodeURIComponent(task)}`, { signal: opts?.signal }); misses = 0; }
+    catch (e) {
+      if (opts?.signal?.aborted || e.name === "AbortError") throw e;
+      if (e.status === 404 || ++misses >= 4) throw e;
+      continue;
+    } // a dropped connection is retried a few times
     if (r.status === "done") return r.result;
+    if (r.status === "canceled" || r.status === "cancelled") throw new DOMException("Aborted", "AbortError");
     if (r.status === "error") throw new Error(r.error);
     if (Date.now() - began > 7 * 60 * 1000) throw new Error("This is taking much longer than expected. Try again.");
   }
@@ -3574,12 +3591,16 @@ function productStripHtml(p) {
     <div class="card-b stack">
       ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-10">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft PRD</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
+           <div class="row gap-10">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a></div>`}
     </div></section>`;
 }
 
 pages.product = async (_, query) => {
-  let p = await api("product");
+  let [p, integrationsData] = await Promise.all([
+    api("product"),
+    api("integrations").catch(() => ({ integrations: [] })),
+  ]);
+  let connectedApps = (integrationsData?.integrations || []).filter((i) => i.connected);
   const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1", section: query?.get("section") || "" };
   const sectionCard = (s) => {
     const designs = s.id === "look" ? [...s.body.matchAll(/\]\((designs\/[^)\s]+)\)/g)].map((m) => m[1]).filter((d) => DESIGN_IMAGE.test(d)) : [];
@@ -3593,7 +3614,14 @@ pages.product = async (_, query) => {
       ${s.id === "look" ? `<div class="reference-imports"><div class="label">Import references</div><div class="import-options">
         <button type="button" class="import-option" id="prd-add-file"><strong>Upload files</strong><span>Designs, sketches, images or PDFs</span></button>
         <button type="button" class="import-option" id="prd-add-link"><strong>Paste a link</strong><span>A design or site to use as a reference</span></button>
-        <button type="button" class="import-option" id="prd-add-app"><strong>Connected apps</strong><span>Choose from Figma or another app</span></button>
+        <div class="import-option import-option-apps" id="prd-apps-section">
+          <strong>Connected apps</strong>
+          <div class="connected-apps-list">${connectedApps.length ? connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("") : `<span class="muted text-sm">None connected</span>`}</div>
+          <div class="connected-apps-actions row gap-8 mt-4">
+            <button type="button" class="btn small ${connectedApps.length ? "primary" : "ghost"}" id="prd-add-app" ${connectedApps.length ? "" : "disabled title=\"Connect an app first\""}>Choose reference</button>
+            <a href="#/connections" class="btn small ${connectedApps.length ? "ghost" : "primary"}">${connectedApps.length ? "Connect more" : "Connect an app"}</a>
+          </div>
+        </div>
         <input type="file" id="prd-file" accept="image/*,.pdf,.fig,.html,.htm" multiple hidden>
       </div></div>` : ""}</section>`;
   };
@@ -3613,11 +3641,15 @@ pages.product = async (_, query) => {
     sub: `<a class="mono" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.`,
     // An empty document gets one "Start here" card with these choices; the header offers them only after that.
     actions: !p.sections.some((x) => x.filled) && !p.history.length ? ""
-      : `<a class="btn" href="#/docs/product">View .md</a>${p.can_draft ? `<button class="btn" id="prd-draft">Draft PRD</button>` : ""}<button class="btn" id="prd-import">Import PRD</button>`,
+      : `<a class="btn" href="#/docs/product">View .md</a>${p.can_draft ? `<button class="btn" id="prd-draft">Draft with AI</button>` : ""}<button class="btn" id="prd-import">Import PRD</button>`,
     html: render(),
     after: () => {
       const panel = () => $("#prd-panel");
-      const reload = async () => { p = await api("product"); $("#view").innerHTML = render(); wire(); hydrateAuthImages(); wireExpandables(view); };
+      const reload = async () => {
+        [p, integrationsData] = await Promise.all([api("product"), api("integrations").catch(() => ({ integrations: [] }))]);
+        connectedApps = (integrationsData?.integrations || []).filter((i) => i.connected);
+        $("#view").innerHTML = render(); wire(); hydrateAuthImages(); wireExpandables(view);
+      };
       const save = async (body) => { p = await api("product", { method: "POST", body }); };
 
       const wire = () => {
@@ -3782,7 +3814,7 @@ pages.product = async (_, query) => {
             const dlg = formDialog("Connected apps", picker.html + (picker.connected ? `<small class="hint-text">Choose search results or paste a link, then submit to add references to Look and feel.</small>` : ""), picker.connected ? "Submit" : "Close");
             picker.wire();
             if (picker.connected) wireReferenceSubmit();
-            else $("#dialog-body a[href='#/connections']")?.addEventListener("click", () => $("#dialog").close("cancel"));
+            $("#dialog-body a[href='#/connections']")?.addEventListener("click", () => $("#dialog").close("cancel"));
             const v = await dlg;
             const links = v ? JSON.parse(v.links || "[]") : [];
             if (!links.length) return;
@@ -3799,35 +3831,160 @@ pages.product = async (_, query) => {
         }
       };
 
-      // Shared by Import and Draft: turn a proposed document into something you can read, then accept or drop.
-      const proposalView = (proposal, { source, label, onDone }) => {
-        panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>${esc(label)}</h2></div><div class="card-b stack">
-          ${proposal.summary ? `<div>${esc(proposal.summary)}</div>` : ""}
-          ${proposal.diff.length ? `<pre class="diff" aria-label="Changes">${proposal.diff.map((l) => `<span class="diff-line ${l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : ""}">${esc(l)}</span>`).join("")}</pre>` : `<div class="muted">This would not change anything.</div>`}
-          <details class="fold"><summary>Read the whole proposed document</summary><div class="md">${Markdown.render(proposal.markdown)}</div></details>
-          <div class="row gap-10"><button type="button" class="btn primary" id="prd-accept" ${proposal.diff.length ? "" : "disabled"}>Accept and save</button><button type="button" class="btn ghost" id="prd-discard">Discard</button></div>
-          <div class="muted">Nothing is saved until you accept. You can undo it afterwards from the history.</div></div></section>`;
-        $("#prd-accept").addEventListener("click", async () => {
-          try { await save({ text: proposal.markdown, source, summary: proposal.summary }); toast("Saved"); await reload(); } catch (e) { toast(e.message, true); }
-        });
-        $("#prd-discard").addEventListener("click", () => { panel().innerHTML = ""; onDone?.(); });
+      // Helpers to split proposal into sections and format summary
+      const splitPrdSections = (text) => {
+        const byTitle = { "pitch": "pitch", "who it's for": "who", "who": "who", "core features": "features", "features": "features", "look and feel": "look", "look": "look", "what to exclude": "not", "not this": "not", "not": "not" };
+        const titles = { pitch: "Pitch", who: "Who it's for", features: "Core features", look: "Look and feel", not: "What to exclude" };
+        const sections = { pitch: "", who: "", features: "", look: "", not: "" };
+        let cur = null;
+        for (const line of (text || "").split("\n")) {
+          const m = line.match(/^##\s+(.*?)\s*$/);
+          if (m) {
+            cur = byTitle[m[1].toLowerCase()] || null;
+            continue;
+          }
+          if (cur) sections[cur] = (sections[cur] ? sections[cur] + "\n" : "") + line;
+        }
+        return ["pitch", "who", "features", "look", "not"].map((id) => ({ id, title: titles[id], body: (sections[id] || "").trim() }));
       };
-      const busy = (text) => {
+
+      const formatSummaryBullets = (summary) => {
+        if (!summary) return "";
+        const lines = summary.split("\n").map((l) => l.trim()).filter(Boolean);
+        const bulleted = lines.map((l) => (l.startsWith("-") || l.startsWith("*") || l.startsWith("•") ? l : `- ${l}`));
+        return bulleted.join("\n");
+      };
+
+      // Shared by Import and Draft: turn a proposed document into subsections you can review and approve individually or all together.
+      const proposalView = (proposal, { source, label, onDone }) => {
+        const sections = proposal.sections && proposal.sections.length ? proposal.sections : splitPrdSections(proposal.markdown);
+        const approvedSecs = new Set();
+        panel().innerHTML = `<section class="card mb-16" id="prd-proposal-card"><div class="card-h"><h2>${esc(label)}</h2>
+            <div class="row gap-10">
+              <button type="button" class="btn small primary" id="prd-approve-all">Approve all</button>
+              <button type="button" class="btn small ghost" id="prd-discard">Discard</button>
+            </div></div>
+          <div class="card-b stack">
+            ${proposal.summary ? `<div class="proposal-summary">
+              <div class="proposal-summary-title"><strong>What was inferred &amp; gaps:</strong></div>
+              <div class="md">${Markdown.render(formatSummaryBullets(proposal.summary))}</div>
+            </div>` : ""}
+            <div class="proposal-sections">
+              ${sections.map((s) => {
+                const hasBody = s.body && s.body.trim();
+                return `<div class="card proposal-section-item" id="prop-sec-${esc(s.id)}">
+                  <div class="card-h">
+                    <h3 class="proposal-sec-title">${esc(s.title)}</h3>
+                    <div class="row gap-10 items-center">
+                      <span class="pill done prop-sec-status" id="prop-status-${esc(s.id)}" hidden>Approved</span>
+                      ${hasBody ? `<button type="button" class="btn small primary" data-approve-sec="${esc(s.id)}">Approve</button>` : `<span class="muted text-sm">No changes</span>`}
+                    </div>
+                  </div>
+                  <div class="card-b">
+                    ${hasBody ? `<div class="md">${Markdown.render(s.body)}</div>` : `<div class="muted">No content proposed for this section.</div>`}
+                  </div>
+                </div>`;
+              }).join("")}
+            </div>
+            <div class="row gap-10 mt-12 items-center">
+              <button type="button" class="btn primary" id="prd-approve-all-bottom">Approve all</button>
+              <button type="button" class="btn ghost" id="prd-discard-bottom">Discard</button>
+              <span class="muted text-xs">Approve each subsection or approve all at once.</span>
+            </div>
+            <div class="muted">Nothing is saved until you accept. You can undo anytime from history.</div>
+          </div></section>`;
+
+        const approveAll = async () => {
+          try {
+            await save({ text: proposal.markdown, source, summary: proposal.summary });
+            toast("Approved all sections");
+            panel().innerHTML = "";
+            await reload();
+          } catch (e) {
+            toast(e.message, true);
+          }
+        };
+
+        const discard = async () => {
+          panel().innerHTML = "";
+          onDone?.();
+          if (approvedSecs.size > 0) {
+            await reload();
+          }
+        };
+
+        $("#prd-approve-all")?.addEventListener("click", approveAll);
+        $("#prd-approve-all-bottom")?.addEventListener("click", approveAll);
+        $("#prd-discard")?.addEventListener("click", discard);
+        $("#prd-discard-bottom")?.addEventListener("click", discard);
+
+        panel().querySelectorAll("[data-approve-sec]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const id = btn.dataset.approveSec;
+            const s = sections.find((x) => x.id === id);
+            if (!s) return;
+            btn.disabled = true;
+            try {
+              await save({ section: id, body: s.body, source, summary: `Approved ${s.title}` });
+              approvedSecs.add(id);
+              btn.hidden = true;
+              const statusEl = panel().querySelector(`#prop-status-${CSS.escape(id)}`);
+              if (statusEl) statusEl.hidden = false;
+              toast(`Approved ${s.title}`);
+              const proposedWithBody = sections.filter((x) => x.body && x.body.trim());
+              if (proposedWithBody.every((x) => approvedSecs.has(x.id))) {
+                toast("All proposed sections approved");
+                panel().innerHTML = "";
+                await reload();
+              }
+            } catch (e) {
+              btn.disabled = false;
+              toast(e.message, true);
+            }
+          });
+        });
+      };
+      const busy = (text, onCancel) => {
         const started = Date.now();
         panel().innerHTML = `<div class="prd-busy" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
-          <div><strong>${esc(text)}</strong><div class="prd-busy-sub">This can take up to a minute. <span data-elapsed>0s</span></div></div></div>`;
+          <div><strong>${esc(text)}</strong><div class="prd-busy-sub">This can take a few minutes. <span data-elapsed>0s</span></div></div>
+          ${onCancel ? `<button type="button" class="btn small" id="prd-busy-cancel" aria-label="Cancel drafting" title="Stop drafting">Cancel</button>` : ""}</div>`;
         const el = panel().querySelector("[data-elapsed]");
         const timer = setInterval(() => { if (!el.isConnected) return clearInterval(timer); el.textContent = `${Math.floor((Date.now() - started) / 1000)}s`; }, 1000);
+        if (onCancel) {
+          $("#prd-busy-cancel")?.addEventListener("click", () => onCancel());
+        }
       };
 
       const readPrd = async ({ file, text }) => {
         if (file && file.size > NJ_UPLOAD_LIMIT) { toast("That file is over 25 MB.", "warning"); return importPanel(); }
         if (file && !/\.(md|markdown|txt|docx|pdf)$/i.test(file.name)) { toast("Use a markdown, text, Word or PDF file, or paste the text.", "warning"); return importPanel(); }
-        busy(file ? `Reading ${file.name}…` : "Reading it…");
+        let canceled = false, taskId = null;
+        const abortCtrl = new AbortController();
+        const cancel = async () => {
+          if (canceled) return;
+          canceled = true;
+          abortCtrl.abort();
+          if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
+          toast("Import canceled");
+          importPanel();
+        };
+        busy(file ? `Reading ${file.name}…` : "Reading it…", cancel);
         try {
-          const started = file ? await uploadFile(file, "product/import") : await api("product/import", { method: "POST", body: { text } });
-          proposalView(await waitForTask(started), { source: "import", label: "Your PRD, in this format", onDone: () => {} });
-        } catch (e) { toast(e.message, true); importPanel(); }
+          const started = file ? await uploadFile(file, "product/import", { signal: abortCtrl.signal }) : await api("product/import", { method: "POST", body: { text }, signal: abortCtrl.signal });
+          taskId = started?.task;
+          if (canceled) {
+            if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
+            return;
+          }
+          const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
+          if (canceled) return;
+          proposalView(taskResult, { source: "import", label: "Your PRD, in this format", onDone: () => {} });
+        } catch (e) {
+          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Draft canceled.") return;
+          toast(e.message, true);
+          importPanel();
+        }
       };
 
       const importPanel = () => {
@@ -3869,7 +4026,7 @@ pages.product = async (_, query) => {
             goBtn.click();
           }
         });
-        $("#prd-import-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
+        $("#prd-import-cancel").addEventListener("click", () => { showStartHere(); });
         goBtn.addEventListener("click", () => {
           if (picked) return readPrd({ file: picked });
           const text = textEl.value.trim();
@@ -3879,23 +4036,52 @@ pages.product = async (_, query) => {
 
       // An existing project: read what is there (README, notes, manifests, layout, recent commits) and propose a first version.
       const draftPanel = async () => {
-        busy("Reading your project and drafting…");
-        try { proposalView(await waitForTask(await api("product/draft", { method: "POST", body: {} })), { source: "draft", label: "Drafted from your project", onDone: () => {} }); }
-        catch (e) { toast(e.message, true); panel().innerHTML = ""; }
+        let canceled = false, taskId = null;
+        const abortCtrl = new AbortController();
+        const cancel = async () => {
+          if (canceled) return;
+          canceled = true;
+          abortCtrl.abort();
+          if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
+          toast("Draft canceled");
+          showStartHere();
+        };
+        busy("Reading your project and drafting with AI…", cancel);
+        try {
+          const started = await api("product/draft", { method: "POST", body: {}, signal: abortCtrl.signal });
+          taskId = started?.task;
+          if (canceled) {
+            if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
+            return;
+          }
+          const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
+          if (canceled) return;
+          proposalView(taskResult, { source: "draft", label: "Drafted from your project", onDone: () => {} });
+        } catch (e) {
+          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Draft canceled.") return;
+          toast(e.message, true);
+          showStartHere();
+        }
+      };
+
+      const showStartHere = () => {
+        if (!p.sections.some((x) => x.filled) && !p.history.length) {
+          const existing = p.can_draft; // there is already a project to read
+          panel().innerHTML = `<section class="card mb-16"><div class="card-b stack"><strong>Start here</strong>
+            <div>${existing ? "This project already exists, so we can read it and draft a first version for you to correct. Or say what you have in mind in the pitch below." : "Say what you have in mind in the pitch below."}</div>
+            <div class="row gap-10">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft with AI</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button></div></div></section>`;
+          $("#prd-start-draft")?.addEventListener("click", () => draftPanel());
+          $("#prd-start-import")?.addEventListener("click", () => importPanel());
+        } else {
+          panel().innerHTML = "";
+        }
       };
 
       wire();
       hydrateAuthImages();
       if (open.imp) importPanel();
       else if (open.draft && p.can_draft) draftPanel();
-      else if (!p.sections.some((x) => x.filled) && !p.history.length) {
-        const existing = p.can_draft; // there is already a project to read
-        panel().innerHTML = `<section class="card mb-16"><div class="card-b stack"><strong>Start here</strong>
-          <div>${existing ? "This project already exists, so we can read it and draft a first version for you to correct. Or say what you have in mind in the pitch below." : "Say what you have in mind in the pitch below."}</div>
-          <div class="row gap-10">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft PRD</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button></div></div></section>`;
-        $("#prd-start-draft")?.addEventListener("click", () => draftPanel());
-        $("#prd-start-import").addEventListener("click", () => importPanel());
-      }
+      else showStartHere();
     },
   };
 };
@@ -4696,6 +4882,17 @@ const PROVIDER_HINT = {
   figma: "Paste a link to a file or frame (right-click a frame → Copy link)",
 };
 
+const PROVIDER_ICONS = {
+  figma: `<svg class="brand-icon" viewBox="0 0 38 57" width="14" height="14" fill="none" aria-hidden="true"><path d="M19 28.5a9.5 9.5 0 1 1 19 0 9.5 9.5 0 0 1-19 0z" fill="#1ABCFE"/><path d="M0 47.5a9.5 9.5 0 0 1 9.5-9.5H19v9.5a9.5 9.5 0 1 1-19 0z" fill="#0ACF83"/><path d="M19 0v19h9.5a9.5 9.5 0 1 0 0-19H19z" fill="#FF7262"/><path d="M0 9.5a9.5 9.5 0 0 0 9.5 9.5H19V0H9.5A9.5 9.5 0 0 0 0 9.5z" fill="#F24E1E"/><path d="M0 28.5a9.5 9.5 0 0 0 9.5 9.5H19V19H9.5A9.5 9.5 0 0 0 0 28.5z" fill="#A259FF"/></svg>`,
+  jira: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#0052CC" d="M11.5 2.5a9.5 9.5 0 0 0-9.5 9.5h9.5V2.5z"/><path fill="#2684FF" d="M12.5 12a9.5 9.5 0 0 0 9.5-9.5H12.5V12z"/><path fill="#0052CC" d="M11.5 12H2a9.5 9.5 0 0 0 9.5 9.5V12z"/></svg>`,
+  trello: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#0079BF"/><rect x="4.5" y="4.5" width="6" height="11" rx="1.5" fill="#ffffff"/><rect x="13.5" y="4.5" width="6" height="7.5" rx="1.5" fill="#ffffff"/></svg>`,
+  sentry: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#E1567C" d="M13.2 2.2a1.5 1.5 0 0 0-2.4 0L1.8 19.3a1.5 1.5 0 0 0 1.2 2.3h18a1.5 1.5 0 0 0 1.2-2.3L13.2 2.2zm-1.2 6.3 4.2 8.7H7.8L12 8.5z"/></svg>`,
+};
+
+function providerIcon(id) {
+  return PROVIDER_ICONS[String(id || "").toLowerCase()] || "";
+}
+
 // Trello's own approval page, then back to the app with the token (trello-auth.html passes it along).
 function connectTrello(key) {
   const back = new URL("trello-auth.html", location.href).href;
@@ -4726,7 +4923,7 @@ pages.connections = async (_, query) => {
     html: `<div class="conn-grid">${list.map((p) => `
       <section class="card conn-card" data-conn="${esc(p.id)}">
         <div class="card-b stack">
-          <div class="row"><strong class="conn-name">${esc(p.name)}</strong>${connectionStatus(p)}</div>
+          <div class="row"><strong class="conn-name">${providerIcon(p.id)}${esc(p.name)}</strong>${connectionStatus(p)}</div>
           <div class="muted">${esc(p.blurb)}</div>
           ${p.connected && p.summary ? `<div class="mono conn-summary">${esc(p.summary)}</div>` : ""}
           ${p.rejected ? `<div class="notice bad">${esc(p.name)} turned down the saved token. It may have expired or been revoked: reconnect to keep jobs linked.</div>` : ""}
@@ -4860,6 +5057,10 @@ async function linkPickerHtml({ prefer = [], label = "Link from your apps", empt
   const html = `<div class="link-picker field"><span>${esc(label)} <span class="muted">(optional)</span></span>
     <div class="row"><select class="lp-provider" aria-label="App">${providers.map((p) => `<option value="${esc(p.id)}" data-search="${p.searchable}">${esc(p.name)}</option>`).join("")}</select>
       <input type="text" class="lp-input" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;min-width:160px"><button type="button" class="btn small lp-add">Add</button></div>
+    <div class="row justify-between align-center mt-2 text-xs">
+      <span class="muted">Connected apps: ${providers.map((p) => esc(p.name)).join(", ")}</span>
+      <a href="#/connections" class="linklike">Connect more apps ↗</a>
+    </div>
     <small class="hint-text lp-hint"></small>
     <div class="lp-results list"></div><div class="lp-chips row"></div><input type="hidden" name="links" value="[]"></div>`;
   const wire = (root) => {
@@ -4868,7 +5069,7 @@ async function linkPickerHtml({ prefer = [], label = "Link from your apps", empt
     let picked = [], timer;
     const sync = () => {
       hidden.value = JSON.stringify(picked.map(({ provider, ref }) => ({ provider, ref })));
-      chips.innerHTML = picked.map((p, i) => `<span class="chip">${esc(PROVIDER_LABEL[p.provider])} · ${esc(p.title || p.ref)}<button type="button" data-lp-remove="${i}" aria-label="Remove">✕</button></span>`).join("");
+      chips.innerHTML = picked.map((p, i) => `<span class="chip">${providerIcon(p.provider)}${esc(PROVIDER_LABEL[p.provider] || p.provider)} · ${esc(p.title || p.ref)}<button type="button" data-lp-remove="${i}" aria-label="Remove">✕</button></span>`).join("");
     };
     const add = (item) => { if (!picked.some((p) => p.provider === item.provider && p.ref === item.ref)) picked.push(item); sync(); input.value = ""; results.innerHTML = ""; };
     const search = async () => {

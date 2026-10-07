@@ -151,6 +151,7 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 | `POST /product/import` | A file (raw body, `?name=`) or `{text}`. Starts the work and returns `{task}` at once (202). |
 | `POST /product/draft` | Draft from the project. Starts the work and returns `{task}` at once (202). |
 | `GET /product/task/<id>` | How a started import or draft is getting on: `running`, `done` with the proposal and its diff (saves nothing), or `error` with why. 404 once it has expired (30 minutes). |
+| `DELETE /product/task/<id>` | Stop or cancel an in-flight background task (or `POST /product/task/<id>/cancel`). |
 | `POST /product/design?name=` | Upload a design (raw body, up to 25 MB). |
 | `GET /product/design/<name>` | A saved design: images inline, anything else as a download. |
 | `POST /product/reference` `{label, url}` or `{links}` | Add a link, or items picked from a connected app. |

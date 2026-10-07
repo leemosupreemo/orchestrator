@@ -3711,6 +3711,29 @@ class AccessibilityStaticTests(unittest.TestCase):
         # Look and feel takes uploads, a pasted link, and an item picked from a connected app (Figma).
         self.assertIn("linkPickerHtml({ prefer: [\"figma\"]", page)
 
+    def test_prd_markdown_rendered_flat_on_docs_page(self):
+        docs = self.js[self.js.index("pages.docs = async"):self.js.index("pages.product = async")]
+        prd_section = docs[docs.index('kind === "product"'):docs.index('kind === "job"')]
+        self.assertIn('Markdown.render(p.text)', prd_section)
+        self.assertNotIn('<pre class="file">${esc(p.text)}</pre>', prd_section)
+        self.assertIn('actions: ""', prd_section)
+        self.assertIn('class="card-h"', prd_section)
+        self.assertIn('class="card-actions"', prd_section)
+        self.assertIn('id="prd-download">Download</button>', prd_section)
+        self.assertIn('id="prd-copy-path"', prd_section)
+
+    def test_connected_apps_subsection_of_import_lists_apps_and_links_to_connections(self):
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        self.assertIn('reference-imports', page)
+        self.assertIn('connected-apps-list', page)
+        self.assertIn('providerIcon(a.id)', page)
+        self.assertIn('href="#/connections"', page)
+        self.assertIn('Connect more', page)
+        self.assertIn('.brand-icon', self.css)
+        picker = self.js[self.js.index("async function linkPickerHtml"):self.js.index("async function attachToJob")]
+        self.assertIn('Connected apps:', picker)
+        self.assertIn('href="#/connections"', picker)
+
     def test_hosted_self_healing_and_reconnection(self):
         # Hosted app auto-reconnects and relocates without locking user into sign-in gate
         self.assertIn("authResolved = true", self.js)
@@ -3726,6 +3749,22 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(".last-used-tag", self.css)
         self.assertIn(".sso-btn.last-used", self.css)
         self.assertIn("Last used", self.js)
+
+    def test_signin_modal_sso_icons_alignment_and_assets(self):
+        # SSO button icons align in a fixed column, use official 24x24 assets, and backgrounds match
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn(".sso-btn .icon {", css)
+        self.assertIn("position: absolute;", css)
+        self.assertIn("left: var(--space-4);", css)
+        self.assertIn("top: 50%;", css)
+        self.assertIn("transform: translateY(-50%);", css)
+        self.assertIn(".sso-btn.apple-btn,", css)
+        self.assertIn(".sso-btn.github-btn {", css)
+        self.assertNotIn(".sso-btn.apple-btn {\n  background: #000;", css)
+        index_html = (self.STATIC / "index.html").read_text()
+        self.assertIn('<symbol id="i-google" viewBox="0 0 48 48">', index_html)
+        self.assertIn('<symbol id="i-apple" viewBox="17 14 22 22">', index_html)
+        self.assertIn('<symbol id="i-github" viewBox="0 0 24 24">', index_html)
 
     def test_home_new_job_button_is_sticky(self):
         # The + new job button stays in place when scrolling
@@ -3749,6 +3788,26 @@ class AccessibilityStaticTests(unittest.TestCase):
         css = self.css[self.css.index(".prd-busy {"):][:400]
         self.assertIn("var(--accent)", css)  # in the accent colour, on its soft tint
         self.assertIn("var(--accent-soft)", css)
+
+    def test_draft_with_ai_button_and_cancellation(self):
+        # Button label is "Draft with AI" across all PRD entry points
+        self.assertIn('>Draft with AI</a>', self.js)
+        self.assertIn('id="prd-draft">Draft with AI</button>', self.js)
+        self.assertIn('id="prd-start-draft">Draft with AI</button>', self.js)
+        self.assertNotIn('>Draft PRD<', self.js)
+        # Busy indicator says it can take a few minutes and provides a cancel/stop option
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        self.assertIn("This can take a few minutes.", page)
+        self.assertIn('id="prd-busy-cancel"', page)
+        self.assertIn('method: "DELETE"', page)
+        # Proposed view shows subsections and individual approve buttons, not raw diff/file
+        self.assertIn('id="prd-approve-all"', page)
+        self.assertIn('data-approve-sec=', page)
+        self.assertIn('proposal-sections', page)
+        self.assertIn('proposal-summary', page)
+        proposal_fn = page[page.index("const proposalView"):page.index("const busy")]
+        self.assertNotIn('<pre class="diff"', proposal_fn)
+        self.assertNotIn('Read the whole proposed document', proposal_fn)
 
     def test_import_takes_a_dropped_file_and_waits_for_submit(self):
         page = self.js[self.js.index("const importPanel"):self.js.index("An existing project: read what is there")]
@@ -4834,6 +4893,34 @@ class ProductEndpointTests(ServerTestCase):
         self.assertNotIn("Not an IDE", p["markdown"])  # guardrails are the person's
         self.assertIn("only you can say", p["summary"])
         self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())  # nothing is saved until they accept
+
+    def test_in_flight_draft_task_can_be_cancelled(self):
+        (self.root / "README.md").write_text("# Word Duel\n\nA word game for two friends.")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=self.root, check=True)
+
+        def slow_call(*a, **k):
+            time.sleep(5)
+            return "{}"
+
+        with patch.object(ui.UIHandler, "_model_call", slow_call):
+            res, data = self.post("/api/product/draft", {})
+            self.assertEqual(res.status, 202)
+            task_id = data["task"]
+
+            # Cancel via DELETE with UI_HEADERS
+            res_del, data_del = self.request("DELETE", f"/api/product/task/{task_id}", headers=UI_HEADERS)
+            self.assertEqual(res_del.status, 200)
+            self.assertEqual(data_del.get("status"), "canceled")
+
+            # Polling task status returns canceled
+            _, task = self.request("GET", f"/api/product/task/{task_id}")
+            self.assertEqual(task["status"], "canceled")
+
+            # POST /cancel route also works
+            res_post, data_post = self.post(f"/api/product/task/{task_id}/cancel", {})
+            self.assertEqual(res_post.status, 200)
+            self.assertEqual(data_post.get("status"), "canceled")
 
     def test_model_calls_get_an_empty_scratch_folder_never_the_project(self):
         calls = []
