@@ -303,17 +303,33 @@
           <span class="muted">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</span>
           <span class="account-status ${s.tone}">${code(s.text)}</span>
           ${progress && m.update_state !== "current" ? `<span class="muted account-update">${escapeHtml(progress)}</span>` : ""}
+          ${!m.reachable ? `<div class="account-start-guide stack">
+            ${!m.updatable ? `<div class="row gap-6 account-cmd-box">
+              <span class="muted">To start:</span>
+              <code class="mono">orchestrator ui --tunnel</code>
+              <button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel" title="Copy command">Copy</button>
+            </div>` : ""}
+            <span class="account-listening"><span class="dot" aria-hidden="true"></span>Waiting for connection — opens automatically once started</span>
+            ${!m.updatable ? `<details class="account-more-options">
+              <summary>More ways to run</summary>
+              <ul>
+                <li><strong>Run at login in background:</strong> <code>orchestrator service install</code></li>
+                <li><strong>Working on this computer right now?</strong> Run <code>orchestrator ui</code> in Terminal to open locally at <code>localhost:8000</code>.</li>
+              </ul>
+            </details>` : ""}
+          </div>` : ""}
           ${readinessFixes(m.readiness).length ? `<details class="account-readiness"><summary>To run unattended, ${readinessFixes(m.readiness).length === 1 ? "one setting needs" : `${readinessFixes(m.readiness).length} settings need`} changing</summary>
             <ul>${readinessFixes(m.readiness).map((fix) => `<li>${code(fix)}</li>`).join("")}</ul></details>` : ""}
         </div>
         <div class="row gap-10">
-          ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : ""}
+          ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : (!m.updatable ? `<button type="button" class="btn small primary" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy start command</button>` : "")}
           ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}" title="Restart tunnel if connection is stale">Reset tunnel</button>` : ""}
           ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update</button>` : ""}
           <button type="button" class="btn small ghost" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove</button>
         </div>
       </div>`;
     }).join("");
+    const anyReachable = list.some((m) => m.reachable);
     return `<div class="signin-wrap"><div class="signin-card account-card">
       <div>
         <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
@@ -321,7 +337,7 @@
           ? "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
           : askIdea ? "Say it in a sentence. It becomes the start of your product's plan, and you can change it any time."
           : "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
-        ${troubleshoot ? renderTroubleshoot(troubleshoot) : (message ? `<p class="account-message" role="alert">${code(message)}</p>` : "")}
+        ${troubleshoot ? renderTroubleshoot(troubleshoot) : (message ? `<p class="account-message" role="alert">${code(message)}</p>` : (list.length && !anyReachable ? `<div class="account-offline-notice row gap-8"><span class="dot" aria-hidden="true"></span><span>Waiting for your computer to connect. Start Orchestrator on it to open your workspace.</span></div>` : ""))}
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
         <details class="account-add"><summary>Add another computer</summary>${renderMacSetup(release)}</details>` : askIdea ? ideaStep() : ideaRecap + renderMacSetup(release)}

@@ -1298,7 +1298,15 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
     try {
       const { machines: fresh } = await cpApi("machines");
       const now = JSON.stringify(fresh);
-      if (now !== last) { last = now; machines = fresh; render(fresh, message, troubleshoot); }
+      if (now !== last) {
+        last = now;
+        machines = fresh;
+        render(fresh, message, troubleshoot);
+        let remembered = null;
+        try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
+        const pick = location.hash !== "#/computers" && !message && !troubleshoot && Account.pickMachine(fresh, remembered);
+        if (pick) return enterMachine(pick);
+      }
     } catch { /* keep the last list */ }
   }, 5000);
 

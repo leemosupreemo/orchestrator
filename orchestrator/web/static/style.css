@@ -2398,6 +2398,14 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .account-foot { margin: 0; font-size: var(--text-sm); }
 .account-card code { white-space: nowrap; } /* keep `orchestrator ui --tunnel` on one line */
 .account-card code.account-address { white-space: normal; overflow-wrap: anywhere; } /* an address can be longer than the card */
+.account-offline-notice { padding: var(--space-2) var(--space-3); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); font-size: var(--text-sm); align-items: center; margin-top: var(--space-2); }
+.account-start-guide { margin-top: var(--space-2); gap: 6px; }
+.account-cmd-box { align-items: center; flex-wrap: wrap; }
+.account-cmd-box code { padding: 3px 6px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: var(--text-sm); user-select: all; }
+.account-listening { font-size: var(--text-xs); color: var(--muted); display: inline-flex; align-items: center; }
+.account-more-options { font-size: var(--text-xs); color: var(--muted); margin-top: 2px; }
+.account-more-options summary { cursor: pointer; color: var(--muted); }
+.account-more-options ul { margin: var(--space-1) 0 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 4px; }
 .desktop-setup label { display: block; margin: 1rem 0; }
 .desktop-setup input { display: block; width: 100%; margin-top: .35rem; }
 
