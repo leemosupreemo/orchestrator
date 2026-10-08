@@ -1536,7 +1536,6 @@ function showSignInGate(message) {
             <source media="(prefers-reduced-motion: reduce)" srcset="signin-preview.png">
             <img src="signin-preview.gif" width="720" height="540" alt="Orchestrator screens with a sample Family Recipes project: describe an idea, shape its product brief, approve a plan, and follow build progress through completed checks.">
           </picture>
-          <figcaption><button type="button" class="linklike" data-preview-toggle aria-pressed="false">Pause</button></figcaption>
         </figure>
         ${providers ? "" : `<div class="notice signin-elsewhere">
           <p>Google, Apple and GitHub sign-in work on the Orchestrator site, which then opens this computer for you.</p>
@@ -1601,22 +1600,6 @@ function showSignInGate(message) {
       </div>
     </div>
   `;
-
-  const preview = view.querySelector(".signin-preview");
-  const previewToggle = preview.querySelector("[data-preview-toggle]");
-  let previewPaused = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const setPreviewPaused = (paused) => {
-    previewPaused = paused;
-    preview.querySelector("img").src = paused ? "signin-preview.png" : "signin-preview.gif";
-    previewToggle.textContent = paused ? "Play" : "Pause";
-    previewToggle.setAttribute("aria-pressed", String(paused));
-    previewToggle.setAttribute("aria-label", paused ? "Play app preview" : "Pause app preview");
-  };
-  setPreviewPaused(previewPaused);
-  previewToggle.addEventListener("click", () => {
-    preview.querySelector("source")?.remove(); // Explicit play overrides the initial motion preference.
-    setPreviewPaused(!previewPaused);
-  });
 
   $("#account-continue-btn")?.addEventListener("click", () => {
     const u = window.firebase?.auth?.().currentUser;
