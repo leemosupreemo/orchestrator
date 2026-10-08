@@ -3323,6 +3323,13 @@ class UIServer(ThreadingHTTPServer):
     request_queue_size = 128
     allow_reuse_address = True
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        import sys
+        exc = sys.exception()
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
     def __init__(self, address: tuple[str, int], root: Path | None, token: str | None = None,
                  bootstrap_mode: bool = False, desktop_listener: bool = False, shared: UIServer | None = None):
         super().__init__(address, UIHandler)
@@ -3599,6 +3606,7 @@ class UIServer(ThreadingHTTPServer):
 class UIHandler(BaseHTTPRequestHandler):
     server: UIServer
     protocol_version = "HTTP/1.1"
+    timeout = 30
 
     def log_message(self, fmt: str, *args: Any) -> None:  # keep the terminal quiet
         return
@@ -5215,6 +5223,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args: argparse.Namespace, root: Path) -> int:
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = min(10240, hard) if hard > 0 else 10240
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except Exception:
+        pass
     remember_project(root)
 
     settings_file = runtime_dir(root) / "config" / "settings.json"
