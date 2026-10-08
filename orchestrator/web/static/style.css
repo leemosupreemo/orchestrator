@@ -427,7 +427,7 @@ details.advanced > summary::before, details.raw > summary::before, .account-card
 }
 details.advanced[open] > summary::before, details.raw[open] > summary::before, .account-card details[open] > summary::before { transform: rotate(45deg); }
 @media (prefers-reduced-motion: reduce) { details.advanced > summary::before, details.raw > summary::before, .account-card details > summary::before { transition: none; } }
-.upload-drop { flex-direction: row; gap: var(--space-2); padding: var(--space-4); border-width: 1px; }
+.upload-drop { gap: var(--space-2); }
 #nj-files:focus-visible + .upload-drop { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 2px; }
 details.advanced > .stack { padding: var(--space-1) var(--space-3) var(--space-3); }
 pre.file {
@@ -856,6 +856,12 @@ dialog h2 {
   font-size: var(--text-xl);
   font-weight: 700;
 }
+.signin-preview { margin: 0; display: grid; gap: var(--space-2); }
+.signin-preview h3 { font-size: var(--text-xl); font-weight: 750; letter-spacing: -.025em; }
+.signin-preview picture { display: block; overflow: hidden; border-radius: var(--r-md); background: var(--term-bg); box-shadow: var(--shadow); }
+.signin-preview img { display: block; width: 100%; height: auto; }
+.signin-preview figcaption { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); font-size: var(--text-2xs); color: var(--muted); }
+.signin-preview [data-preview-toggle] { flex: none; padding: var(--space-1); font: inherit; }
 .signin-brand .brand-mark {
   width: 32px;
   height: 32px;
@@ -2280,6 +2286,18 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .prd-drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-1); padding: var(--space-6) var(--space-4); border: 2px dashed var(--border); border-radius: var(--radius); background: var(--panel-2); text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
 .prd-drop:hover, .prd-drop:focus-visible { border-color: var(--accent); }
 .prd-drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.prd-drop.file-picker { width: 100%; min-width: 0; gap: var(--space-4); padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel-2); color: var(--text); font: inherit; text-align: center; }
+.file-picker-title { font-size: var(--text-lg); font-weight: 650; overflow-wrap: anywhere; }
+.file-picker-target { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); width: 100%; min-height: calc(3 * var(--control-xl)); padding: var(--space-5) var(--space-3); border: 2px dashed var(--border); border-radius: var(--r-lg); background: var(--panel); transition: border-color .15s, background .15s; }
+.file-picker-action { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: var(--control-lg); padding: var(--space-3) var(--space-5); border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink); font-size: var(--text-md); font-weight: 650; }
+.file-picker .drop-hint, .file-picker-types { font-size: var(--text-sm); color: var(--muted); }
+.file-picker-types { display: block; }
+.file-picker:hover .file-picker-target, .file-picker:focus-visible .file-picker-target, .field:has(input[type="file"]:focus-visible) .file-picker-target, .file-picker.over .file-picker-target { border-color: var(--accent); background: var(--accent-soft); }
+.file-picker:focus-visible, .field:has(input[type="file"]:focus-visible) .file-picker { outline: 2px solid var(--accent); outline-offset: 2px; }
+.import-options .reference-file-picker { grid-column: 1 / -1; }
+.import-options:has(.reference-file-picker) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 760px) { .import-options:has(.reference-file-picker) { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .file-picker-target { transition: none; } }
 @media (pointer: coarse) { .prd-drop .drop-hint { display: none; } }
 
 /* Messages: everything the app tells you, over the top of the page (see messages.js) */

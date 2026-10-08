@@ -1528,6 +1528,14 @@ function showSignInGate(message) {
             ${message ? `<span style="color: var(--bad);">${esc(message)}</span>` : "Sign in to access and manage projects on your computer."}
           </p>
         </div>
+        <figure class="signin-preview">
+          <h3>From idea to reality.</h3>
+          <picture>
+            <source media="(prefers-reduced-motion: reduce)" srcset="signin-preview.png">
+            <img src="signin-preview.gif" width="640" height="400" alt="An illustrated walkthrough: describe a family recipe app, organise a plan, follow AI build and review progress, and see the app take shape.">
+          </picture>
+          <figcaption><span>Your idea. One workspace. Every step forward.</span><button type="button" class="linklike" data-preview-toggle aria-pressed="false">Pause</button></figcaption>
+        </figure>
         ${providers ? "" : `<div class="notice signin-elsewhere">
           <p>Google, Apple and GitHub sign-in work on the Orchestrator site, which then opens this computer for you.</p>
           <a class="btn primary" href="${esc(Account.HOSTED_ORIGINS[0])}" style="width: 100%; justify-content: center;">Sign in on the Orchestrator site</a>
@@ -1589,6 +1597,22 @@ function showSignInGate(message) {
       </div>
     </div>
   `;
+
+  const preview = view.querySelector(".signin-preview");
+  const previewToggle = preview.querySelector("[data-preview-toggle]");
+  let previewPaused = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const setPreviewPaused = (paused) => {
+    previewPaused = paused;
+    preview.querySelector("img").src = paused ? "signin-preview.png" : "signin-preview.gif";
+    previewToggle.textContent = paused ? "Play" : "Pause";
+    previewToggle.setAttribute("aria-pressed", String(paused));
+    previewToggle.setAttribute("aria-label", paused ? "Play app preview" : "Pause app preview");
+  };
+  setPreviewPaused(previewPaused);
+  previewToggle.addEventListener("click", () => {
+    preview.querySelector("source")?.remove(); // Explicit play overrides the initial motion preference.
+    setPreviewPaused(!previewPaused);
+  });
 
   $("#account-continue-btn")?.addEventListener("click", () => {
     const u = window.firebase?.auth?.().currentUser;
@@ -2836,6 +2860,14 @@ function featureSpec(v) {
   return parts.filter(Boolean).join("\n\n");
 }
 
+function filePickerContent(title, types = "", multiple = true) {
+  return `<strong class="file-picker-title">${esc(title)}</strong>
+    <span class="file-picker-target">
+      <span class="file-picker-action"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>Browse files</span>
+      <span class="muted drop-hint">${multiple ? "or drop files here" : "or drop a file here"}</span>
+    </span>${types ? `<small class="file-picker-types">${esc(types)}</small>` : ""}`;
+}
+
 pages.new = async (_, query) => {
   let features = [];
   try { features = (await api("features")).features; } catch { /* the field just doesn't show */ }
@@ -2851,7 +2883,7 @@ pages.new = async (_, query) => {
   const opt = (text) => ` <span class="muted">(${text})</span>`;
   const uploadBox = (label, hint, accept, optional = true) => `<div class="field"><span>${label}${optional ? opt("optional") : ""}</span>
       <input type="file" id="nj-files" class="sr-only" multiple accept="${accept}" aria-label="${esc(label)}">
-      <label class="prd-drop upload-drop" for="nj-files" id="nj-drop"><strong>Choose files</strong><span class="muted drop-hint">or drop them here</span></label>
+      <label class="prd-drop upload-drop file-picker" for="nj-files" id="nj-drop">${filePickerContent("Add files to your job")}</label>
       <small class="hint-text">${hint}</small>
       <div class="upload-chips row" id="nj-chips" aria-live="polite"></div></div>`;
   const logPicker = () => {
@@ -3864,7 +3896,7 @@ pages.product = async (_, query) => {
         ${designs.length ? `<div class="prd-designs">${designs.map((d) => `<figure class="prd-design"><img alt="${esc(d.replace("designs/", ""))}" data-auth-src="product/design/${esc(d.replace("designs/", ""))}"></figure>`).join("")}</div>` : ""}
       </div>
       ${s.id === "look" ? `<div class="reference-imports"><div class="label">Import references</div><div class="import-options">
-        <button type="button" class="import-option" id="prd-add-file"><strong>Upload files</strong><span>Designs, sketches, images or PDFs</span></button>
+        <button type="button" class="prd-drop file-picker reference-file-picker" id="prd-add-file">${filePickerContent("Add design references", "Designs, sketches, images or PDFs")}</button>
         <button type="button" class="import-option" id="prd-add-link"><strong>Paste a link</strong><span>A design or site to use as a reference</span></button>
         <div class="import-option import-option-apps" id="prd-apps-section">
           <strong>Connected apps</strong>
@@ -4062,6 +4094,15 @@ pages.product = async (_, query) => {
         }));
         const file = $("#prd-file");
         $("#prd-add-file")?.addEventListener("click", () => file.click());
+        const referenceDrop = $("#prd-add-file");
+        referenceDrop?.addEventListener("dragover", (event) => { event.preventDefault(); referenceDrop.classList.add("over"); });
+        referenceDrop?.addEventListener("dragleave", () => referenceDrop.classList.remove("over"));
+        referenceDrop?.addEventListener("drop", (event) => {
+          event.preventDefault(); referenceDrop.classList.remove("over");
+          if (!event.dataTransfer?.files?.length || !file) return;
+          file.files = event.dataTransfer.files;
+          file.dispatchEvent(new Event("change"));
+        });
         file?.addEventListener("change", async () => {
           for (const f of file.files) {
             if (f.size > NJ_UPLOAD_LIMIT) { toast(`${f.name} is over 25 MB`, "warning"); continue; }
@@ -4280,9 +4321,9 @@ pages.product = async (_, query) => {
 
       const importPanel = () => {
         panel().innerHTML = `<section class="card mb-16"><div class="card-h"><h2>Import PRD</h2></div><div class="card-b stack">
-          <div class="prd-drop" id="prd-drop" tabindex="0" role="button" aria-label="Choose a PRD file, or drop one here">
-            <strong><span class="drop-hint">Drag a file here, or </span>browse files</strong><span class="muted">Markdown, text, Word or PDF</span>
-            <input type="file" id="prd-import-input" accept=".md,.markdown,.txt,.docx,.pdf" hidden></div>
+          <div class="prd-drop file-picker" id="prd-drop" tabindex="0" role="button" aria-label="Choose a PRD file, or drop one here">
+            ${filePickerContent("Pick your product document", "Markdown, text, Word or PDF", false)}</div>
+          <input type="file" id="prd-import-input" accept=".md,.markdown,.txt,.docx,.pdf" hidden>
           <label class="field"><span>Or paste it</span><textarea id="prd-import-text" rows="6" aria-label="Paste your PRD"></textarea></label>
           <div class="row gap-10"><button type="button" class="btn primary" id="prd-import-go" disabled>Submit</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
         const input = $("#prd-import-input"), zone = $("#prd-drop"), goBtn = $("#prd-import-go"), textEl = $("#prd-import-text");
@@ -5469,7 +5510,7 @@ async function attachToJob(jobId, role = "") {
     <label class="field"><span>A link</span><input type="url" name="url" placeholder="https://" spellcheck="false" autocapitalize="off"></label>
     <div class="field"><span>A file</span>
       <input type="file" id="attach-file" class="sr-only" aria-label="Choose a file to attach">
-      <label class="prd-drop upload-drop" for="attach-file" id="attach-drop"><strong>Choose a file</strong><span class="muted drop-hint">or drop it here</span></label>
+      <label class="prd-drop upload-drop file-picker" for="attach-file" id="attach-drop">${filePickerContent("Attach a file", "", false)}</label>
       <small class="hint-text" id="attach-file-name"></small><input type="hidden" name="upload"></div>
     <label class="field" id="attach-text"><span>Or paste the log</span><textarea name="text" rows="4" spellcheck="false" placeholder="Stack trace, console output…"></textarea></label>
     <label class="field"><span>Note <span class="muted">(optional)</span></span><input type="text" name="note" placeholder="What to look at"></label>

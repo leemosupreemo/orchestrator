@@ -3935,7 +3935,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("md|markdown|txt|docx|pdf", read)
         self.assertIn(".prd-drop.over", self.css)
         self.assertIn("pointer: coarse", self.css)  # phones have nothing to drag, so they are not told to
-        self.assertIn("browse files", page)
+        self.assertIn("filePickerContent(", page)
+        self.assertIn("Browse files", self.js)
         self.assertNotIn("click to choose one", page)
 
     def test_home_shows_what_the_product_is_without_the_section_buttons(self):

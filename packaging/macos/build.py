@@ -78,7 +78,7 @@ def stage_source(source: Path, target: Path, version: str) -> None:
         relative = path.relative_to(source)
         if not path.is_file() or path.is_symlink() or "__pycache__" in relative.parts:
             continue
-        allowed = path.suffix == ".py" or (relative.parts[1] in ("config", "prompts", "templates") and path.suffix in (".json", ".md", ".sh", ".swift", ".yml")) or (relative.parts[1:3] == ("web", "static") and path.suffix in (".js", ".css", ".html", ".svg", ".woff2", ".png", ".json", ".webmanifest"))
+        allowed = path.suffix == ".py" or (relative.parts[1] in ("config", "prompts", "templates") and path.suffix in (".json", ".md", ".sh", ".swift", ".yml")) or (relative.parts[1:3] == ("web", "static") and path.suffix in (".js", ".css", ".html", ".svg", ".woff2", ".png", ".gif", ".json", ".webmanifest"))
         if allowed:
             destination = target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
