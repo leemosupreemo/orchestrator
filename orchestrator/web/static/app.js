@@ -1168,8 +1168,10 @@ document.addEventListener("change", async (e) => {
 
 // Shown from the click on a provider (or the token form) until the first page is ready.
 function showSigningIn(label = "Signing you in…") {
-  setHeader({ title: "Signing in", sub: "", actions: "" });
+  setHeader({ title: "", sub: "", actions: "" });
+  document.title = Notifications.tabTitle("Signing in · Orchestrator", state.inbox_count || 0);
   document.body.classList.add("signin-gate");
+  document.body.removeAttribute("data-page");
   const mobileTitle = $("#mobile-title");
   if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
@@ -1506,8 +1508,10 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) 
 }
 
 function showSignInGate(message) {
-  setHeader({ title: "Sign In", sub: "", actions: "" });
+  setHeader({ title: "", sub: "", actions: "" });
+  document.title = Notifications.tabTitle("Sign In · Orchestrator", state.inbox_count || 0);
   document.body.classList.add("signin-gate");
+  document.body.removeAttribute("data-page");
   const mobileTitle = $("#mobile-title");
   if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
@@ -1527,10 +1531,11 @@ function showSignInGate(message) {
           ${message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : ""}
         </div>
         <figure class="signin-preview">
-          <h3>From idea to reality.</h3>
+          <h3>The app in your head. Made real.</h3>
+          <p class="signin-preview-copy">Describe your idea. Let AI help plan, build, and test it—so you can bring it to life faster.</p>
           <picture>
             <source media="(prefers-reduced-motion: reduce)" srcset="signin-preview.png">
-            <img src="signin-preview.gif" width="640" height="400" alt="An illustrated walkthrough: describe a family recipe app, organise a plan, follow AI build and review progress, and see the app take shape.">
+            <img src="signin-preview.gif" width="720" height="540" alt="Orchestrator screens with a sample Family Recipes project: describe an idea, shape its product brief, approve a plan, and follow build progress through completed checks.">
           </picture>
           <figcaption><button type="button" class="linklike" data-preview-toggle aria-pressed="false">Pause</button></figcaption>
         </figure>

@@ -1,89 +1,64 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Orchestrator sign-in preview artwork</title>
-<style>html,body{margin:0;background:#0b1024}canvas{display:block}</style>
-<canvas id="art" width="640" height="400"></canvas>
+<title>Orchestrator sign-in preview composition</title>
+<style>html,body{margin:0;background:#edf2ff}canvas{display:block}</style>
+<canvas width="720" height="540"></canvas>
 <script>
-// Illustrative product walkthrough. Render deterministically with drawFrame(seconds).
-const c = document.querySelector('canvas'), ctx = c.getContext('2d');
+// Screen images come from the real app's renderers in render-signin-preview.cjs.
+// Only the surrounding captions and transitions are composed here.
+const ctx = document.querySelector('canvas').getContext('2d');
 const font = '-apple-system, BlinkMacSystemFont, "Arial", sans-serif';
-const ease = n => { n = Math.max(0, Math.min(1, n)); return 1 - Math.pow(1 - n, 3); };
-function box(x,y,w,h,r,fill,stroke) {
-  ctx.beginPath(); ctx.roundRect(x,y,w,h,r);
-  if(fill){ctx.fillStyle=fill;ctx.fill();} if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke();}
-}
-function text(s,x,y,size=18,color='#eef2ff',weight=500) {
-  ctx.font=`${weight} ${size}px ${font}`;ctx.fillStyle=color;ctx.fillText(s,x,y);
-}
-function check(x,y,color='#9cf6c3') {
-  ctx.strokeStyle=color;ctx.lineWidth=2.5;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+4,y+4);ctx.lineTo(x+12,y-5);ctx.stroke();
-}
-function screen(label) {
-  box(26,99,588,231,15,'#151c35','#394366');
-  box(26,99,588,34,[15,15,0,0],'#202943');
-  for(let i=0;i<3;i++){ctx.beginPath();ctx.arc(43+i*13,116,3,0,Math.PI*2);ctx.fillStyle=['#ff9b9b','#ffe19a','#a2edc1'][i];ctx.fill();}
-  text('Orchestrator',91,121,13,'#d9e1ff',650);text(label,492,121,12,'#b7c8ff');
-}
-function sidebar(active) {
-  box(39,144,101,173,8,'#11172c');
-  ['Home','Product','New job','Activity'].forEach((s,i)=>{
-    if(s===active)box(46,156+i*35,87,28,6,'#353d73');
-    text(s,55,175+i*35,12,s===active?'#fff':'#8b99bd',s===active?650:500);
-  });
-}
-window.drawFrame = function(t) {
-  ctx.globalAlpha=1;ctx.clearRect(0,0,640,400);
-  const bg=ctx.createLinearGradient(0,0,640,400);bg.addColorStop(0,'#151536');bg.addColorStop(.55,'#111d38');bg.addColorStop(1,'#0d2730');ctx.fillStyle=bg;ctx.fillRect(0,0,640,400);
-  const glow=ctx.createRadialGradient(470+Math.sin(t*.5)*30,130,0,470,130,280);glow.addColorStop(0,'#5355b432');glow.addColorStop(1,'#5355b400');ctx.fillStyle=glow;ctx.fillRect(0,0,640,400);
-  for(let i=0;i<22;i++){ctx.fillStyle=i%2?'#8eafff44':'#9ce8c544';ctx.beginPath();ctx.arc((i*131)%640,((i*73-t*6)%400+400)%400,1.2,0,Math.PI*2);ctx.fill();}
-  const scene=Math.min(3,Math.floor(t/2.5)),local=t%2.5,p=ease(local/.55);
-  const names=['START WITH A SPARK','GIVE IT A PLAN','WATCH IT TAKE SHAPE','MAKE IT REAL'];
-  text(names[scene],27,33,12,'#b8bcff',750);
-  text(['Your idea. A new beginning.','A clear path forward.','Less juggling. More building.','From your head to your hands.'][scene],26,72,30,'#f3f5ff',750);
-  ctx.save();ctx.globalAlpha=p;ctx.translate(0,(1-p)*12);
-  if(scene===0){
-    screen('New job');sidebar('New job');text('What do you want to build?',159,165,20,'#f2f5ff',650);
-    box(158,183,433,65,9,'#0e152b','#5a6598');
-    const idea='A recipe app for my family';text(idea.slice(0,Math.floor(Math.max(0,local-.2)*28)),174,221,20,'#fff');
-    if(local<1.6){ctx.fillStyle='#a3b3ff';ctx.fillRect(174+Math.min(idea.length,Math.floor(Math.max(0,local-.2)*28))*10,205,2,21);}
-    box(158,266,144,37,9,'#9ba8ff');text('Create a plan  →',173,290,14,'#111735',750);
-    box(318,270,263,29,14,'#293748');text('One idea. So many possibilities.',333,290,12,'#b9f2d7');
-  }else if(scene===1){
-    screen('Product');sidebar('Product');text('Family Recipes',158,164,20,'#fff',700);
-    text('Your idea, broken into clear steps',158,186,13,'#a9b7da');
-    ['Save your favourite recipes','Organise a shared collection','Make it easy to share'].forEach((s,i)=>{
-      const appear=ease((local-.2-i*.22)/.45);ctx.save();ctx.globalAlpha*=appear;
-      box(158,199+i*36,433,31,7,'#202c48');box(167,208+i*36,15,15,4,'#364976');check(170,216+i*36);text(s,194,220+i*36,14,'#e1e9ff');ctx.restore();
-    });
-  }else if(scene===2){
-    screen('Activity');sidebar('Activity');text('Bringing your idea to life',158,165,20,'#fff',700);
-    ['Plan','Build','Review'].forEach((s,i)=>{
-      const progress=Math.max(0,Math.min(1,(local-.1-i*.45)/.7));const x=158+i*147;
-      box(x,184,138,78,9,'#202b47','#354368');text(s,x+13,208,14,'#b6c5ec');
-      text(progress===1?'Complete':'In progress',x+13,235,13,progress===1?'#a1f5ca':'#e7eaff',650);
-      box(x+12,247,113,3,2,'#3a4561');if(progress)box(x+12,247,113*progress,3,2,'#9cf6c3');
-    });
-    box(158,278,433,28,7,'#142e35');check(170,293);text('One workspace. Every step connected.',191,297,13,'#b5f4d7');
-  }else{
-    screen('Your app');
-    box(42,145,310,171,11,'#fff7eb');text('Family Recipes',58,174,21,'#493222',750);
-    text('A little home for your favourites.',58,196,12,'#806955');
-    ['Sunday pasta','Pancakes','Summer salad'].forEach((s,i)=>{
-      const x=58+i*94;box(x,209,85,56,8,['#f6bf76','#e7b3d2','#a7d3a1'][i]);
-      ctx.font='29px '+font;ctx.fillText(['🍝','🥞','🥗'][i],x+25,246);text(s,x,285,10,'#654937',650);
-    });
-    text('Your idea,',376,179,24,'#e6ecff',650);text('now a reality.',376,211,24,'#a0f5c7',750);
-    ['Planned with clarity','Built with AI','Reviewed in one place'].forEach((s,i)=>{check(379,243+i*25);text(s,401,247+i*25,12,'#bdc9e8');});
-    for(let i=0;i<16;i++){const q=ease(local/1.6),x=390+(i*37)%199,y=150+((i*53)%155)*q;ctx.save();ctx.globalAlpha=.5*(1-q);ctx.translate(x,y);ctx.rotate(i+t);box(0,0,4,7,1,i%2?'#a1f5ca':'#a9a0ff');ctx.restore();}
+const screens = {};
+window.loadScreens = async function(shots) {
+  for (const [key, images] of Object.entries(shots)) {
+    screens[key] = await Promise.all(images.map(src => new Promise((resolve, reject) => {
+      const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = src;
+    })));
   }
-  ctx.restore();
-  const labels=['Idea','Plan','Build','Reality'];
-  labels.forEach((s,i)=>{const x=48+i*154;const active=i===scene;
-    box(x,354,82,27,14,active?'#9fb0ff':'#202c43');text(s,x+17,373,13,active?'#111b32':'#a4b1ce',650);
-    if(i<3)text('→',x+111,374,17,'#637999');
-  });
-  // Gentle fade through the same background between loops; no flashing or strobing.
-  if(t>9.7){ctx.globalAlpha=(t-9.7)/.3;ctx.fillStyle=bg;ctx.fillRect(0,0,640,400);ctx.globalAlpha=1;}
 };
-drawFrame(8.4);
+function box(x,y,w,h,r,fill) {
+  ctx.beginPath(); ctx.roundRect(x,y,w,h,r); ctx.fillStyle=fill; ctx.fill();
+}
+function text(s,x,y,size=18,color='#152448',weight=500) {
+  ctx.font=`${weight} ${size}px ${font}`; ctx.fillStyle=color; ctx.fillText(s,x,y);
+}
+const scenes = [
+  {key:'idea', title:'Start with what’s in your head.', page:'Start a new project', step:0},
+  {key:'product', title:'Give your idea a clear direction.', page:'Product requirements', step:1},
+  {key:'plan', title:'A plan you can make your own.', page:'Family Recipes · Plan', step:1},
+  {key:'build', title:'Watch your idea take shape.', page:'Family Recipes · Build', step:2},
+  {key:'done', title:'Built. Tested. Ready for what’s next.', page:'Family Recipes · Completed', step:2},
+];
+window.drawFrame = function(t) {
+  const index = t < 3.6 ? 0 : t < 7 ? 1 : t < 10.6 ? 2 : t < 14.6 ? 3 : 4;
+  const start = [0,3.6,7,10.6,14.6][index], local = t-start, scene = scenes[index];
+  const bg=ctx.createLinearGradient(0,0,720,540); bg.addColorStop(0,'#edf2ff'); bg.addColorStop(1,'#e8f5ee');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,720,540);
+  text('ORCHESTRATOR',26,29,13,'#4c638e',750);
+  text(scene.title,26,69,29,'#152448',750);
+  // A brief slide-in at each cut, with a readable hold on each screen.
+  const p=Math.min(1,local/.3), offset=10*Math.pow(1-p,3);
+  ctx.save(); ctx.translate(0,offset);
+  box(22,93,676,391,14,'#d7e1f0');
+  box(24,95,672,387,12,'#ffffff');
+  box(24,95,672,38,[12,12,0,0],'#f4f6fa');
+  text(scene.page,42,119,15,'#344363',650);
+  text('Sample project',565,119,12,'#65748b');
+  ctx.save(); ctx.beginPath(); ctx.roundRect(24,133,672,349,[0,0,12,12]); ctx.clip();
+  const images=screens[scene.key];
+  if(images) {
+    const frame = scene.key==='idea' ? Math.min(18,Math.floor(Math.max(0,local-.4)*9))
+      : scene.key==='build' ? Math.min(2,Math.floor(local/1.25)) : 0;
+    const img=images[frame];
+    ctx.drawImage(img,34,143,652,img.height*652/img.width);
+  }
+  ctx.restore(); ctx.restore();
+  ['Describe your idea','Shape the plan','Build with AI'].forEach((label,i) => {
+    const x=27+i*235, active=i===scene.step;
+    box(x,501,21,21,11,active?'#4f6bed':'#d3ddec');
+    text(String(i+1),x+7,516,12,active?'#ffffff':'#536581',700);
+    text(label,x+29,517,15,active?'#253e7a':'#62728a',active?700:500);
+  });
+};
+drawFrame(0);
 </script>
