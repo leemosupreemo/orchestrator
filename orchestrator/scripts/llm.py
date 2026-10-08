@@ -34,7 +34,8 @@ for m in all_m:
 DEFAULT_FALLBACKS = get_prioritized_models()
 
 def extract_json_block(text: str) -> str:
-    text = text.strip()
+    # Strip ANSI escape sequences (CSI, OSC, cursor controls) so they do not break JSON decoding
+    text = re.sub(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\^\[\[?[A-Za-z0-9_~]*', '', text).strip()
 
     def _extract_balanced_span(s: str, opener: str, closer: str) -> tuple[str | None, int, int]:
         start = s.find(opener)
@@ -183,7 +184,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
                 try:
-                    json.loads(extract_json_block(raw_output))
+                    json.loads(extract_json_block(raw_output), strict=False)
                 except json.JSONDecodeError as exc:
                     # Agentic models often do the work, then write the answer to a file or describe it in prose.
                     # Ask the SAME model once to restate it as plain JSON before moving on to another model;
@@ -191,7 +192,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     print(f"⚠️  {current_model} produced invalid JSON. Asking it to restate the answer as plain JSON...")
                     try:
                         raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images)
-                        json.loads(extract_json_block(raw_output))
+                        json.loads(extract_json_block(raw_output), strict=False)
                     except json.JSONDecodeError as exc2:
                         print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
                         last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc2}")
@@ -294,9 +295,9 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         if session_id:
             cmd_base += f" --session-id {session_id}"
     elif model_id == "deepseek":
-        cmd_base = "ollama run deepseek-coder"
+        cmd_base = "ollama run deepseek-coder --nowordwrap"
     elif m_meta and ("ollama" in m_meta.required_clis or m_meta.family == "ollama" or m_meta.family == "qwen"):
-        cmd_base = f"ollama run {model_id}"
+        cmd_base = f"ollama run {model_id} --nowordwrap"
     elif model_id == "copilot":
         cmd_base = "gh copilot"
     elif model_id.startswith("opencode/"):

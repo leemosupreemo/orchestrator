@@ -52,7 +52,7 @@ PRESETS = {
     "hard-bug": {"planner": "gemini", "builder": "claude-opus-4-7", "reviewer": "gemini"},
     "architecture": {"planner": "claude-opus-4-7", "builder": "claude-opus-4-7", "reviewer": "gemini"},
     "fast": {"planner": "gemini-3-flash-preview", "builder": "codex", "reviewer": "gemini-3.1-flash-lite-preview"},
-    "free": {"planner": "opencode/qwen-3.7-max", "builder": "qwen2.5-coder", "reviewer": "opencode/big-pickle"},
+    "free": {"planner": "copilot", "builder": "qwen2.5-coder", "reviewer": "deepseek"},
 }
 
 BRANCH_MODE_CHOICES = ["new", "current", "manual"]
@@ -483,7 +483,7 @@ def main(args_override: list[str] | None = None) -> None:
     # Define defaults for 'quick' job
     job_type_for_defaults = args.job_type
     if job_type_for_defaults == "design": job_type_for_defaults = "feature"
-    defaults = PRESETS[args.preset] if args.preset else DEFAULTS[job_type_for_defaults]
+    defaults = PRESETS[args.preset] if args.preset else (PRESETS["free"] if args.free else DEFAULTS[job_type_for_defaults])
     # A re-plan keeps the job's own choices; only what is passed explicitly changes them.
     # (Otherwise the first re-plan resets a free-only or restricted job to the paid defaults.)
     saved = existing_job or {}
@@ -554,9 +554,15 @@ def main(args_override: list[str] | None = None) -> None:
     builder = b_meta.id if b_meta else builder
     reviewer = r_meta.id if r_meta else reviewer
 
-    if planner not in allowed_models: planner = allowed_models[0]
-    if builder not in allowed_models: builder = allowed_models[0]
-    if reviewer not in allowed_models: reviewer = allowed_models[0]
+    if planner not in allowed_models:
+        best_planners = get_prioritized_models(role=ModelRole.PLANNER, allowed_models=allowed_models)
+        planner = best_planners[0] if best_planners else allowed_models[0]
+    if builder not in allowed_models:
+        best_builders = get_prioritized_models(role=ModelRole.BUILDER, allowed_models=allowed_models)
+        builder = best_builders[0] if best_builders else allowed_models[0]
+    if reviewer not in allowed_models:
+        best_reviewers = get_prioritized_models(role=ModelRole.REVIEWER, allowed_models=allowed_models)
+        reviewer = best_reviewers[0] if best_reviewers else allowed_models[0]
 
     # Machine Selection
     machines_config = load_machines()
@@ -810,7 +816,7 @@ def main(args_override: list[str] | None = None) -> None:
 
             try:
                 plan = normalize_plan_dict(
-                    json.loads(llm_output),
+                    json.loads(llm_output, strict=False),
                     default_title=title_input,
                     default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                     job_type=args.job_type,
@@ -852,7 +858,7 @@ def main(args_override: list[str] | None = None) -> None:
                             llm_sessions.append({"id": sid, "model": actual_planner})
                             llm_output = extract_json_block(new_llm_raw_output)
                             plan = normalize_plan_dict(
-                                json.loads(llm_output),
+                                json.loads(llm_output, strict=False),
                                 default_title=title_input,
                                 default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                                 job_type=args.job_type,
@@ -880,7 +886,7 @@ def main(args_override: list[str] | None = None) -> None:
                         llm_sessions.append({"id": retry_sid, "model": actual_planner})
                         llm_output = extract_json_block(retry_raw)
                         plan = normalize_plan_dict(
-                            json.loads(llm_output),
+                            json.loads(llm_output, strict=False),
                             default_title=title_input,
                             default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                             job_type=args.job_type,
@@ -911,7 +917,7 @@ def main(args_override: list[str] | None = None) -> None:
                         llm_sessions.append({"id": retry_sid, "model": actual_planner})
                         llm_output = extract_json_block(retry_raw)
                         plan = normalize_plan_dict(
-                            json.loads(llm_output),
+                            json.loads(llm_output, strict=False),
                             default_title=title_input,
                             default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                             job_type=args.job_type,
@@ -939,7 +945,7 @@ def main(args_override: list[str] | None = None) -> None:
         
             # Only verify if the planner used was NOT an Extreme model
             if planner_meta and planner_meta.tier > ModelTier.EXTREME and not args.skip_verify:
-                # Find available extreme models in allowed_models
+                # Find available verifier models in allowed_models
                 extreme_options = get_prioritized_models(role=ModelRole.VERIFIER, allowed_models=allowed_models)
                 if extreme_options:
                     verifier_model = extreme_options[0]
@@ -963,7 +969,7 @@ def main(args_override: list[str] | None = None) -> None:
                         if v_thoughts:
                             print(f"      - Verifier thoughts: {v_thoughts}")
 
-                        verification = normalize_verification(json.loads(v_output), actual_verifier)
+                        verification = normalize_verification(json.loads(v_output, strict=False), actual_verifier)
                         if not verification:
                             raise ValueError("Verifier output missing required status/comments fields")
                         print(f"      - Verification complete: {verification['status'].upper()}")
@@ -990,7 +996,7 @@ def main(args_override: list[str] | None = None) -> None:
                                 try:
                                     llm_output = extract_json_block(new_llm_raw_output)
                                     plan = normalize_plan_dict(
-                                        json.loads(llm_output),
+                                        json.loads(llm_output, strict=False),
                                         default_title=title_input,
                                         default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                                         job_type=args.job_type,

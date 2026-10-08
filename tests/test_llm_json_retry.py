@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -71,6 +72,19 @@ class JsonRetryTests(unittest.TestCase):
         )
         extracted = llm.extract_json_block(text)
         self.assertEqual(extracted, '{"title": "Coverage Plan", "summary": "Audit", "tasks": []}')
+
+    def test_extract_json_block_strips_ansi_escapes(self):
+        # ANSI color codes and cursor movement codes (e.g. from Ollama or terminal output)
+        text = (
+            "\x1b[32m```json\n"
+            '{\x1b[1m"title"\x1b[0m: "Coverage Plan", "summary": "Audit persistence\x1b[3D\x1b[K and state", "tasks": []}\n'
+            "```\x1b[0m"
+        )
+        extracted = llm.extract_json_block(text)
+        self.assertNotIn("\x1b", extracted)
+        parsed = json.loads(extracted)
+        self.assertEqual(parsed["title"], "Coverage Plan")
+        self.assertEqual(parsed["summary"], "Audit persistence and state")
 
 
 if __name__ == "__main__":
