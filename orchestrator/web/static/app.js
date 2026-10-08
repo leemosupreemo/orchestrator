@@ -1263,7 +1263,12 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
   stopAccountPoll();
   const generation = ++accountScreenGeneration;
   signingIn = true;
-  setHeader({ title: "Your computers", sub: "", actions: "" });
+  setHeader({ title: "", sub: "", actions: "" });
+  document.title = Notifications.tabTitle("Your computers · Orchestrator", state.inbox_count || 0);
+  document.body.classList.add("signin-gate");
+  document.body.removeAttribute("data-page");
+  const mobileTitle = $("#mobile-title");
+  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
   const email = window.firebase?.auth?.().currentUser?.email || "";
   let macRelease = null;
@@ -1393,7 +1398,12 @@ async function makeEnrollCommand(form) {
 async function showPairScreen(code) {
   stopAccountPoll();
   signingIn = true;
-  setHeader({ title: "Add a computer", sub: "", actions: "" });
+  setHeader({ title: "", sub: "", actions: "" });
+  document.title = Notifications.tabTitle("Add a computer · Orchestrator", state.inbox_count || 0);
+  document.body.classList.add("signin-gate");
+  document.body.removeAttribute("data-page");
+  const mobileTitle = $("#mobile-title");
+  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
   const done = (message) => { Account.clearPendingCode(); if (location.hash.startsWith("#/connect")) history.replaceState(null, "", "#/"); openAccount({ list: true, message }); };
   let preview;

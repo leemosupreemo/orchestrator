@@ -159,10 +159,6 @@
     return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
   }
 
-  function brand() {
-    return `<div class="signin-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></div>`;
-  }
-
   function addSteps(pendingCodeValue = "", installCommand = INSTALL_COMMAND) {
     return `<ol class="account-steps">
         <li>Install Orchestrator on the computer with your projects:<pre class="mono" data-cli-install>${escapeHtml(installCommand)}</pre></li>
@@ -296,7 +292,7 @@
     const askIdea = !list.length && !idea;
     const ideaRecap = !list.length && idea ? `<p class="account-idea">${idea.existing ? "You're bringing code you already have." : `Your idea: <strong>${escapeHtml(idea.pitch)}</strong>`}
         <button type="button" class="linklike" data-account-action="idea-change">Change</button></p>
-        <p class="muted">Next, set up the computer it runs on. Your code and the AI work stay on that computer.</p>` : "";
+        <p class="muted">Next, set up the computer it runs on. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there.</p>` : "";
     const rows = list.map((m) => {
       const s = machineStatus(m, now);
       const progress = UPDATE_PROGRESS[m.update_state] || "";
@@ -319,13 +315,12 @@
       </div>`;
     }).join("");
     return `<div class="signin-wrap"><div class="signin-card account-card">
-      ${brand()}
       <div>
         <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
         <p class="muted account-sub">${list.length
-          ? "Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
+          ? "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
           : askIdea ? "Say it in a sentence. It becomes the start of your product's plan, and you can change it any time."
-          : "Orchestrator does the work on your own computer, so your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
+          : "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
         ${troubleshoot ? renderTroubleshoot(troubleshoot) : (message ? `<p class="account-message" role="alert">${code(message)}</p>` : "")}
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
@@ -337,7 +332,6 @@
 
   function renderPair(preview, codeValue, {email = ""} = {}) {
     return `<div class="signin-wrap"><div class="signin-card account-card">
-      ${brand()}
       <div>
         <h2 class="account-title">Add this computer?</h2>
         <p class="muted account-sub">Code <span class="mono">${escapeHtml(formatCode(codeValue))}</span></p>
