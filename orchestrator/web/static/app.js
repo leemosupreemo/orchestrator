@@ -1210,7 +1210,7 @@ async function afterProviderSignIn(user, name) {
   if (Account.active()) return openAccount();
   const backend = getBackendUrl();
   if (!backend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
-    throw new Error(`Signed in as ${user.email || name}, but there's no computer address yet. Enter it under "Connect by address" below.`);
+    throw new Error(`Signed in as ${user.email || name}, but there's no computer address yet. Enter it under "Mac Backend URL" below.`);
   }
   let res;
   try {
@@ -1573,10 +1573,11 @@ function showSignInGate(message) {
           <small class="muted" style="display: block; margin-top: 0.35rem; line-height: 1.3;">Run <code>orchestrator ui --tunnel</code> on your Mac to generate an HTTPS URL for your phone.</small>
         </div>
         ` : ""}
-        ${blockedProvider ? `<p class="muted signin-fallback">Pop-ups still blocked? <button type="button" class="linklike" id="redirect-fallback">Try full-page ${esc(blockedProvider.name)} sign-in</button>. Some browsers can't finish this way; the access token below always works.</p>` : ""}
-        <details class="manual-token-details ${lastUsed === "token" ? "last-used-section" : ""}" ${hosted && lastUsed !== "token" ? "" : "open"} style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+        ${blockedProvider ? `<p class="muted signin-fallback">Pop-ups still blocked? <button type="button" class="linklike" id="redirect-fallback">Try full-page ${esc(blockedProvider.name)} sign-in</button>.${hosted ? "" : " Some browsers can't finish this way; the access token below always works."}</p>` : ""}
+        ${hosted ? "" : `
+        <details class="manual-token-details ${lastUsed === "token" ? "last-used-section" : ""}" open style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
           <summary class="muted" style="cursor: pointer; user-select: none; text-align: center; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 8px;">
-            <span>${hosted ? "Connect by address and access token" : "Sign in with CLI access token"}</span>
+            <span>Sign in with CLI access token</span>
             ${lastUsed === "token" ? `<span class="last-used-tag token-tag">Last used</span>` : ""}
           </summary>
           <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
@@ -1584,7 +1585,7 @@ function showSignInGate(message) {
               <span>CLI Access Token</span>
               <input type="password" id="signin-token" name="token" value="${esc(token)}" placeholder="Paste access token from terminal" autocomplete="current-password" style="font-family: var(--mono); font-size: 0.9rem;">
             </label>
-            ${!isRemote || hosted ? `
+            ${!isRemote ? `
             <label class="field">
               <span>Backend URL</span>
               <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(backend)}" style="font-size: 0.85rem;">
@@ -1596,6 +1597,7 @@ function showSignInGate(message) {
             </button>
           </form>
         </details>
+        `}
       </div>
     </div>
   `;
