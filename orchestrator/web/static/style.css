@@ -130,7 +130,7 @@ code, pre, .mono { font-family: var(--mono); font-size: var(--text-sm); }
   padding: var(--space-5) var(--space-4); background: var(--panel); border-right: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: var(--space-3); font-weight: 650; font-size: var(--text-lg); padding: 0 var(--space-2); }
-.brand-mark { width: 27px; height: 27px; border-radius: var(--r-sm); background: url("icon-192.png") center / contain no-repeat; flex-shrink: 0; display: inline-block; }
+.brand-mark { width: 24px; height: 24px; border-radius: var(--r-sm); background: url("icon-192.png") center / contain no-repeat; flex-shrink: 0; display: inline-block; }
 .project-switch { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-2); }
 .label { font-size: var(--text-xs); color: var(--muted); font-weight: 550; text-transform: uppercase; letter-spacing: .04em; }
 .nav { display: flex; flex-direction: column; gap: var(--space-0); }
@@ -857,17 +857,17 @@ dialog h2 {
   font-weight: 700;
 }
 .signin-wrap:has(.signin-preview) { padding-inline: 0; }
-.signin-card:has(.signin-preview) { max-width: 520px; }
+.signin-card:has(.signin-preview) { max-width: 520px; gap: var(--space-5); }
 @media (max-width: 480px) {
   .signin-card:has(.signin-preview) { padding: var(--space-4); }
 }
-.signin-preview { margin: 0; display: grid; gap: var(--space-2); }
+.signin-preview { margin: var(--space-1) 0; display: grid; gap: var(--space-3); }
 .signin-preview h3 { font-size: var(--text-xl); font-weight: 750; letter-spacing: -.025em; text-align: center; }
 .signin-preview picture { display: block; overflow: hidden; border-radius: var(--r-md); background: var(--term-bg); box-shadow: var(--shadow); }
 .signin-preview img { display: block; width: 100%; height: auto; }
 .signin-brand .brand-mark {
-  width: 28.8px;
-  height: 28.8px;
+  width: 26px;
+  height: 26px;
 }
 .sso-buttons {
   display: flex;
