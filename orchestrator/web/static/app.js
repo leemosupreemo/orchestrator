@@ -1524,9 +1524,7 @@ function showSignInGate(message) {
       <div class="signin-card">
         <div>
           <h2 style="margin: 0; font-size: 1.3rem; font-weight: 700;">Sign In</h2>
-          <p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;">
-            ${message ? `<span style="color: var(--bad);">${esc(message)}</span>` : "Sign in to access and manage projects on your computer."}
-          </p>
+          ${message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : ""}
         </div>
         <figure class="signin-preview">
           <h3>From idea to reality.</h3>
@@ -1534,7 +1532,7 @@ function showSignInGate(message) {
             <source media="(prefers-reduced-motion: reduce)" srcset="signin-preview.png">
             <img src="signin-preview.gif" width="640" height="400" alt="An illustrated walkthrough: describe a family recipe app, organise a plan, follow AI build and review progress, and see the app take shape.">
           </picture>
-          <figcaption><span>Your idea. One workspace. Every step forward.</span><button type="button" class="linklike" data-preview-toggle aria-pressed="false">Pause</button></figcaption>
+          <figcaption><button type="button" class="linklike" data-preview-toggle aria-pressed="false">Pause</button></figcaption>
         </figure>
         ${providers ? "" : `<div class="notice signin-elsewhere">
           <p>Google, Apple and GitHub sign-in work on the Orchestrator site, which then opens this computer for you.</p>
