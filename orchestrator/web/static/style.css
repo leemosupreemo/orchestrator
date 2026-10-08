@@ -856,9 +856,13 @@ dialog h2 {
   font-size: var(--text-xl);
   font-weight: 700;
 }
+.signin-wrap:has(.signin-preview) { padding-inline: 0; }
+.signin-card:has(.signin-preview) { max-width: 520px; }
+@media (max-width: 480px) {
+  .signin-card:has(.signin-preview) { padding: var(--space-4); }
+}
 .signin-preview { margin: 0; display: grid; gap: var(--space-2); }
 .signin-preview h3 { font-size: var(--text-xl); font-weight: 750; letter-spacing: -.025em; }
-.signin-preview-copy { margin: 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
 .signin-preview picture { display: block; overflow: hidden; border-radius: var(--r-md); background: var(--term-bg); box-shadow: var(--shadow); }
 .signin-preview img { display: block; width: 100%; height: auto; }
 .signin-preview figcaption { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); font-size: var(--text-2xs); color: var(--muted); }

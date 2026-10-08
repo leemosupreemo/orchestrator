@@ -50,7 +50,9 @@ window.drawFrame = function(t) {
     const frame = scene.key==='idea' ? Math.min(18,Math.floor(Math.max(0,local-.4)*9))
       : scene.key==='build' ? Math.min(2,Math.floor(local/1.25)) : 0;
     const img=images[frame];
-    ctx.drawImage(img,34,143,652,img.height*652/img.width);
+    const scale=Math.min(652/img.width,329/img.height);
+    const w=img.width*scale, h=img.height*scale;
+    ctx.drawImage(img,24+(672-w)/2,143+(329-h)/2,w,h);
   }
   ctx.restore(); ctx.restore();
   ['Describe your idea','Shape the plan','Build with AI'].forEach((label,i) => {

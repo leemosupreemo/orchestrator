@@ -86,32 +86,36 @@ function jobFixture(stage, count = 0) {
       view.innerHTML = result.html;
       window.scrollTo(0, 0);
     }, name);
-    const capture = async (selector, height = 310) => {
+    const capture = async (selector, height = null) => {
       const box = await page.locator(selector).boundingBox();
       if (!box) throw Error(`Missing capture target: ${selector}`);
       return 'data:image/png;base64,' + (await page.screenshot({clip: {
-        x: box.x, y: box.y, width: box.width, height,
+        x: box.x, y: box.y, width: box.width, height: height ?? box.height,
       }, animations: 'disabled'})).toString('base64');
     };
     const shots = {idea: [], product: [], plan: [], build: [], done: []};
     await render('new-project');
     for (let i = 0; i <= 18; i++) {
       await page.locator('[name=pitch]').fill(pitch.slice(0, Math.ceil(pitch.length * i / 18)));
-      shots.idea.push(await capture('fieldset.np-section-card'));
+      const crop = await page.locator('[name=pitch]').evaluate(input => {
+        const field = input.closest('.field');
+        return field.getBoundingClientRect().bottom - field.closest('fieldset').getBoundingClientRect().top + 12;
+      });
+      shots.idea.push(await capture('fieldset.np-section-card', crop));
     }
     await render('product');
-    shots.product.push(await capture('#sec-pitch'));
+    shots.product.push(await capture('#sec-features'));
     fixtures['jobs/family-recipes'] = jobFixture('plan');
     await render('job');
     shots.plan.push(await capture('#plan-section'));
     for (let i = 0; i <= 2; i++) {
       fixtures['jobs/family-recipes'] = jobFixture('build', i);
       await render('job');
-      shots.build.push(await capture('.job-top', 390));
+      shots.build.push(await capture('.job-body > section:first-child'));
     }
     fixtures['jobs/family-recipes'] = jobFixture('done', 3);
     await render('job');
-    shots.done.push(await capture('.job-top', 390));
+    shots.done.push(await capture('.job-top'));
     if (errors.length) throw Error(errors.join('\n'));
     await page.close();
 
