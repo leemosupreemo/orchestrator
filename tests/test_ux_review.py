@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -12,6 +14,138 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 sys.path.insert(0, str(PACKAGE_ROOT / "orchestrator" / "scripts"))
 
 from orchestrator import ux_review as ux  # noqa: E402
+
+
+class ProductReviewProgressTests(unittest.TestCase):
+    def test_review_reports_each_real_stage_before_doing_the_work(self):
+        import ux_review_run as runner
+        from orchestrator.web.run_progress import RunProgress
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = io.StringIO()
+            observed = []
+
+            def observe_stage(*args, **kwargs):
+                progress = RunProgress()
+                progress.feed(output.getvalue().encode())
+                observed.append(progress.snapshot()["step"])
+                return ux.parse_result('{}'), '{}', 'fixture-model'
+
+            def capture_stage(*args, **kwargs):
+                progress = RunProgress()
+                progress.feed(output.getvalue().encode())
+                observed.append(progress.snapshot()["step"])
+                return [], []
+
+            with (
+                patch.object(runner, "ROOT", root),
+                patch.object(runner, "OUTPUT_DIR", root / "output"),
+                patch.object(runner, "project_settings", return_value=ux.settings({})),
+                patch.object(runner, "git_out", return_value=""),
+                patch.object(runner, "capture", side_effect=capture_stage),
+                patch.object(runner, "review", side_effect=observe_stage),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(runner.product_pass(False, "fixture-model"), 0)
+
+            self.assertEqual(observed, [1, 2, 3])
+            progress = RunProgress()
+            progress.feed(output.getvalue().encode())
+            self.assertEqual((progress.snapshot()["step"], progress.snapshot()["total"]), (4, 4))
+            self.assertEqual(progress.snapshot()["label"], "Save report")
+            self.assertEqual(len(list((root / "output" / "ux-pass").glob("*/result.json"))), 1)
+
+
+class ScreenshotEvidenceTests(unittest.TestCase):
+    def run_change(self, *, review_enabled=True, review_error=False):
+        import ux_review_run as runner
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        path = root / "job.json"
+        path.write_text(json.dumps({"job_id": "20261009-feature-1", "branch": "feature", "base_branch": "main", "title": "New settings screen"}))
+        cfg = ux.settings({"ui_review": {"url": "http://localhost:3000", "review_changes": review_enabled}})
+        shot = {"file": "settings-390-light.png", "route": "/settings", "width": 390, "dark": False}
+
+        def capture(_cfg, folder, **kwargs):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / shot["file"]).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+            return [shot], []
+
+        with patch.object(runner, "ROOT", root), patch.object(runner, "OUTPUT_DIR", root / "output"), \
+             patch.object(runner, "project_settings", return_value=cfg), \
+             patch.object(runner, "git_out", return_value="src/pages/Settings.tsx"), \
+             patch.object(runner, "capture", side_effect=capture) as captured, \
+             patch.object(runner, "review", side_effect=RuntimeError("Reviewer unavailable") if review_error else None,
+                          return_value=(ux.parse_result('{}'), '{}', 'fixture')) as reviewer, \
+             contextlib.redirect_stdout(io.StringIO()):
+            runner.job_review(path)
+        return root, json.loads(path.read_text()), captured.call_count, reviewer.call_count
+
+    def test_capture_is_saved_even_if_the_reviewer_fails(self):
+        root, job, captures, _ = self.run_change(review_error=True)
+        evidence = json.loads((root / "output/20261009-feature-1/ux-review/screens.json").read_text())
+        self.assertEqual(evidence["screens"][0]["route"], "/settings")
+        self.assertEqual(job["ux_review"]["screens"], 1)
+        self.assertEqual(captures, 1)
+
+    def test_disabling_ai_review_does_not_disable_screenshot_evidence(self):
+        root, job, captures, reviews = self.run_change(review_enabled=False)
+        self.assertEqual((captures, reviews), (1, 0))
+        self.assertTrue((root / "output/20261009-feature-1/ux-review/screens.json").exists())
+        self.assertEqual(job["ux_review"]["screens"], 1)
+
+    def test_colliding_route_names_archive_as_distinct_screens(self):
+        import ux_review_run as runner
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "job.json"
+            path.write_text(json.dumps({"job_id": "route-collision", "branch": "feature", "base_branch": "main"}))
+            cfg = ux.settings({"ui_review": {"url": "http://localhost:3000", "routes": ["/settings/profile", "/settings-profile", "/settings/profile"], "widths": [390, 390], "dark_mode": False, "review_changes": False}})
+            with patch.object(runner, "ROOT", root), patch.object(runner, "OUTPUT_DIR", root / "output"), \
+                 patch.object(runner, "project_settings", return_value=cfg), \
+                 patch.object(runner, "git_out", return_value="src/pages/Settings.tsx"), \
+                 patch.object(ux, "find_browser", return_value="fixture"), patch.object(ux, "reachable", return_value=True), \
+                 patch.object(ux, "Browser") as browser, contextlib.redirect_stdout(io.StringIO()):
+                browser.return_value.__enter__.return_value.screenshot.return_value = b"fixture PNG"
+                runner.job_review(path)
+                runner.job_review(path)
+            folder = root / "output/route-collision/ux-review"
+            records = [json.loads(p.read_text()) for p in (folder / "captures").glob("*.json")]
+            self.assertEqual(len(records), 2)
+            files = [s["file"] for record in records for s in record["screens"]]
+            self.assertEqual(len(files), 4)
+            self.assertEqual(len(set(files)), 4)
+            self.assertTrue(all((folder / "screens" / name).is_file() for name in files))
+
+    def test_failed_screen_state_keeps_successful_captures_and_reports_missing_state(self):
+        cfg = ux.capture_plan(ux.settings({"ui_review": {"url": "http://localhost:3000", "widths": [390], "dark_mode": False}}),
+                              {"screens": [{"name": "Edit dialog", "route": "/", "actions": [{"click": "#missing"}]}]})
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ux, "find_browser", return_value="fixture"), \
+             patch.object(ux, "reachable", return_value=True), patch.object(ux, "Browser") as browser:
+            browser.return_value.__enter__.return_value.screenshot.side_effect = [b"fixture PNG", ux.BrowserError("missing selector")]
+            shots, problem = ux.capture_web(Path(tmp), cfg, Path(tmp), log=lambda *_: None)
+            self.assertEqual(len(shots), 1)
+            self.assertTrue((Path(tmp) / shots[0]["file"]).is_file())
+            self.assertIn("Missing screenshots: Edit dialog", problem)
+
+    def test_navigation_error_does_not_capture_a_browser_error_page(self):
+        browser = ux.Browser("fixture", "fixture", settle=0)
+        with patch.object(browser, "call", side_effect=[{}, {}, {"errorText": "net::ERR_CONNECTION_REFUSED"}]) as calls:
+            with self.assertRaisesRegex(ux.BrowserError, "Navigation failed"):
+                browser.screenshot("http://localhost:3000", 390, False)
+            self.assertNotIn("Page.captureScreenshot", [call.args[0] for call in calls.call_args_list])
+
+    def test_capture_plan_adds_new_routes_and_modal_states(self):
+        cfg = ux.settings({"ui_review": {"url": "http://localhost:3000", "routes": ["/"]}})
+        expanded = ux.capture_plan(cfg, {"routes": ["/settings"], "screens": [
+            {"name": "New item dialog", "route": "/settings", "actions": [{"click": "button.new-item"}]}]})
+        self.assertEqual(expanded["routes"], ["/", "/settings"])
+        self.assertEqual(expanded["scenarios"][0]["name"], "New item dialog")
+        self.assertEqual(cfg["routes"], ["/"])
+        with self.assertRaises(ux.ConfigError):
+            ux.capture_plan(cfg, {"screens": [{"route": "https://other.example", "actions": []}]})
 
 
 class FrontendDetectionTests(unittest.TestCase):

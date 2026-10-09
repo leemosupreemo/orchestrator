@@ -14,6 +14,7 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -49,8 +50,8 @@ def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = ""
         if problem:
             limits.append(problem)
         else:
-            limits.append("Screens show what the app at the configured URL serves right now, at first load "
-                          "(no scrolling or interaction).")
+            limits.append("Screens show the app currently served at the configured URL. Baseline routes show first load; "
+                          "declared screen states include their capture interactions. Other states may be missing.")
     if cfg["simulator"]:
         result = subprocess.run([sys.executable, str(SCRIPTS_DIR / "simulator_visual_check.py"), "--job", job_id or "ux-pass"],
                                 cwd=ROOT, capture_output=True, text=True, check=False)
@@ -78,16 +79,26 @@ def review(prompt: str, shots: list[dict], screens_dir: Path, *, model: str, all
 
 def write_outputs(out_dir: Path, result: dict, raw: str, *, title: str, scope: str, shots: list[dict]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_json(out_dir / "result.json", {**result, "screens": shots, "title": title, "scope": scope, "at": now_iso()})
+    write_json(out_dir / "result.json", {**result, "screens": shots, "title": title, "scope": scope, "at": datetime.now().astimezone().isoformat()})
     write_text(out_dir / "raw.md", raw)
     write_text(out_dir / "report.md", ux.report_markdown(result, title=title, scope=scope, shots=shots, when=now_iso()[:16].replace("T", " ")))
+
+
+def save_screens(out_dir: Path, shots: list[dict], limits: list[str], **context: object) -> dict:
+    """Screenshot evidence survives independently of the model's review result."""
+    evidence = {"at": datetime.now().astimezone().isoformat(), "screens": shots, "limits": limits, **context}
+    write_json(out_dir / "screens.json", evidence)
+    return evidence
 
 
 def product_pass(no_screens: bool, model: str) -> int:
     cfg = project_settings()
     out_dir = OUTPUT_DIR / "ux-pass" / ux.stamp()
     screens_dir = out_dir / "screens"
+    stage = "Capture screens" if not no_screens and (cfg["url"] or cfg["simulator"]) else "Prepare interface code"
+    print(f"[1/4] {stage}", flush=True)
     shots, limits = ([], ["Screens were skipped for this run."]) if no_screens else capture(cfg, screens_dir, dark=None)
+    save_screens(out_dir, shots, limits, title="Whole-product review")
     tracked = git_out("ls-files").splitlines()
     interface = ux.frontend_files(tracked, cfg["paths"])
     from orchestrator import prd
@@ -95,7 +106,7 @@ def product_pass(no_screens: bool, model: str) -> int:
     merged = {"summary": [], "checklist": {}, "findings": [], "limits": set(limits)}
     raws = []
     for area in ("ux", "design"):  # two focused passes, then one report
-        print(f"\n{area.upper()} pass…")
+        print(f"[{2 if area == 'ux' else 3}/4] {'Check usability' if area == 'ux' else 'Check visual design'}", flush=True)
         prompt = ux.build_prompt(
             checklist, scope=f"A whole-product pass. {AREA_FOCUS[area]}",
             ask=prd.context_block(ROOT, "reviewer") or "", conventions=ux.conventions_text(ROOT, cfg["conventions"]),
@@ -114,6 +125,7 @@ def product_pass(no_screens: bool, model: str) -> int:
               "checklist": [merged["checklist"][i] for ids in ux.CHECKLIST.values() for i in ids],
               "findings": sorted(merged["findings"], key=lambda f: -f["severity"]),
               "limits": " ".join(sorted(merged["limits"]))}
+    print("[4/4] Save report", flush=True)
     write_outputs(out_dir, result, "\n\n".join(raws), title="UX and design pass", scope="Whole product", shots=shots)
     c = ux.counts(result)
     print(f"\n{c['findings']} findings ({c['major']} major or worse). Report: {(out_dir / 'report.md').relative_to(ROOT)}")
@@ -128,9 +140,8 @@ def job_review(job_path: Path) -> int:
     base = job.get("base_branch") or PROJECT_CONFIG.base_branch
     changed = git_out("diff", "--name-only", f"{base}...{branch}").splitlines() if branch else []
     interface = ux.frontend_files(changed, cfg["paths"])
-    if not cfg["review_changes"]:
-        record["skipped"] = "Turned off (ui_review.review_changes is false)."
-    elif not interface:
+    manifest_path = OUTPUT_DIR / job["job_id"] / "ux-screens.json"
+    if not interface and not manifest_path.is_file():
         record["skipped"] = "No interface files changed."
     if "skipped" in record:
         print(f"UX and design check: {record['skipped']}")
@@ -140,10 +151,46 @@ def job_review(job_path: Path) -> int:
         return 0
 
     out_dir = OUTPUT_DIR / job["job_id"] / "ux-review"
-    if out_dir.exists():
-        shutil.rmtree(out_dir)  # one current review per job; the previous one described older code
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("result.json", "raw.md", "report.md"):
+        (out_dir / name).unlink(missing_ok=True)  # old findings must not describe a new capture
+    capture_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    pending_dir = out_dir / f".capture-{capture_id}"
     screens_dir = out_dir / "screens"
-    shots, limits = capture(cfg, screens_dir, dark=False, job_id=job["job_id"])
+    plan_limits = []
+    if manifest_path.is_file():
+        try:
+            manifest = read_json(manifest_path)
+            cfg = ux.capture_plan(cfg, manifest)
+            plan_limits.extend(str(note)[:300] for note in manifest.get("notes", []) if isinstance(note, str))
+        except (ux.ConfigError, ValueError, TypeError) as exc:
+            plan_limits.append(f"Capture plan could not be read: {exc}. Only configured pages were captured.")
+    else:
+        plan_limits.append("No capture plan was provided for this UI change. Only configured pages were captured; new pages and interactive states may be missing.")
+    try:
+        shots, limits = capture(cfg, pending_dir, dark=None, job_id=job["job_id"])
+    except (OSError, subprocess.SubprocessError, ux.BrowserError) as exc:
+        shots, limits = [], [f"Screenshot capture failed: {exc}"]
+    screens_dir.mkdir(parents=True, exist_ok=True)
+    for shot in shots:
+        source = pending_dir / shot["file"]
+        name = f"{capture_id}-{shot['file']}"
+        shutil.move(str(source), screens_dir / name)
+        shot["file"] = name
+    if pending_dir.exists():
+        shutil.rmtree(pending_dir)
+    limits = plan_limits + limits
+    evidence = save_screens(out_dir, shots, limits, capture_id=capture_id, title=job.get("title", job["job_id"]), branch=branch, files=interface)
+    write_json(out_dir / "captures" / f"{capture_id}.json", evidence)
+    record.update({"at": evidence["at"], "files": interface, "screens": len(shots), "screen_list": shots,
+                   "capture_status": "captured" if shots else "missing", "capture_limits": limits})
+    current = read_json(job_path)
+    current["ux_review"] = record
+    write_json(job_path, current)
+    if not cfg["review_changes"]:
+        current["ux_review"]["skipped"] = "AI review is turned off. Screenshot evidence was still captured."
+        write_json(job_path, current)
+        return 0
     diff = git_out("diff", f"{base}...{branch}", "--", *interface)
     if len(diff) > ux.MAX_DIFF_CHARS:
         diff = diff[:ux.MAX_DIFF_CHARS] + "\n…[diff truncated]"

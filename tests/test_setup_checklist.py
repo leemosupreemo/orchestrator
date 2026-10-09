@@ -61,6 +61,17 @@ class SetupChecklistTests(unittest.TestCase):
             self.assertTrue(items["github_cli"]["required"] and not items["github_cli"]["done"])
             self.assertEqual(items["github_cli"]["hint"], "brew install gh")
 
+    def test_disabled_machines_do_not_satisfy_job_requirements(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root)
+            (root / ".orchestrator/config/machines.json").write_text(json.dumps({"machines": [
+                {"name": "paused", "enabled": False, "models": ["claude-x"]}]}))
+            result = _checklist(root)
+            self.assertFalse(_by_id(result)["machines"]["done"])
+            self.assertFalse(_by_id(result)["models"]["done"])
+            self.assertFalse(result["complete"])
+
     def test_fully_configured_project_is_complete(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

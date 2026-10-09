@@ -62,6 +62,7 @@ from orchestrator import connection_log
 from orchestrator import integrations
 from orchestrator import analytics
 from orchestrator import delivery as delivery_view
+from orchestrator import releases
 from orchestrator import features as feature_store
 from orchestrator import feature_map
 from orchestrator import plan_run
@@ -1252,7 +1253,9 @@ def job_ux_review(root: Path, job_id: str, job: dict[str, Any]) -> dict[str, Any
         return None
     result = read_json_file(runtime_dir(root) / "output" / job_id / "ux-review" / "result.json")
     if not result:
-        return record
+        evidence = read_json_file(runtime_dir(root) / "output" / job_id / "ux-review" / "screens.json")
+        return {**record, "screen_list": evidence.get("screens", record.get("screen_list", [])),
+                "capture_limits": evidence.get("limits", record.get("capture_limits", []))}
     clean = ux_review.parse_result(json.dumps(result))  # the same shape, however the file was written
     return {**record, **{k: clean[k] for k in ("checklist", "findings", "limits")}, "screen_list": result.get("screens") or []}
 
@@ -1267,7 +1270,8 @@ def ux_passes(root: Path) -> list[dict[str, Any]]:
     for child in sorted(folder.iterdir() if folder.is_dir() else [], reverse=True):
         result = read_json_file(child / "result.json") if UX_PASS_RE.match(child.name) else {}
         if result:
-            out.append({"id": child.name, "at": result.get("at"), "summary": result.get("summary", ""),
+            out.append({"id": child.name, "at": result.get("at"), "completed_at": (child / "result.json").stat().st_mtime,
+                        "summary": result.get("summary", ""),
                         "counts": ux_review.counts(ux_review.parse_result(json.dumps(result)))})
     return out
 
@@ -1283,6 +1287,39 @@ def ux_pass_detail(root: Path, pass_id: str) -> dict[str, Any]:
             "counts": ux_review.counts(clean), "fix_text": ux_review.fix_job_text(clean["findings"])}
 
 
+def ux_captures(root: Path) -> list[dict[str, Any]]:
+    """Recent screenshot evidence from product passes, jobs, and simulator visual checks."""
+    out = runtime_dir(root) / "output"
+    sources = [("pass", p.name, p) for p in (out / "ux-pass").glob("*") if UX_PASS_RE.fullmatch(p.name)]
+    sources += [("job", p.parent.name, p) for p in out.glob("*/ux-review") if VISUAL_RUN_RE.fullmatch(p.parent.name)]
+    captures = []
+    for kind, ident, folder in sources:
+        if not folder.resolve().is_relative_to(out.resolve()):
+            continue
+        archived = sorted((folder / "captures").glob("*.json"), reverse=True)
+        paths = archived or [folder / "screens.json" if (folder / "screens.json").is_file() else folder / "result.json"]
+        for path in paths:
+            if not path.resolve().is_relative_to(out.resolve()):
+                continue
+            record = read_json_file(path)
+            if not record:
+                continue
+            listed = record.get("screens", [])
+            screens = [s for s in (listed if isinstance(listed, list) else []) if isinstance(s, dict) and isinstance(s.get("file"), str)
+                       and ux_screen(root, kind, ident, s["file"])]
+            captures.append({"kind": kind, "id": ident, "capture_id": record.get("capture_id", ""),
+                "title": record.get("title") or ("Whole-product review" if kind == "pass" else ident),
+                "at": record.get("at") or datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(),
+                "completed_at": path.stat().st_mtime, "screens": screens, "limits": record.get("limits") or [],
+                "branch": record.get("branch", "")})
+    for visual in visual_checks_inventory(root):
+        if visual["screenshots"]:
+            captures.append({"kind": "visual", "id": visual["id"], "capture_id": "", "title": "Simulator visual check",
+                "at": visual["created_at"], "completed_at": datetime.fromisoformat(visual["created_at"]).timestamp(), "limits": [],
+                "screens": [{"file": name, "route": "Simulator", "width": 0, "dark": False} for name in visual["screenshots"]]})
+    return sorted(captures, key=lambda c: c["completed_at"], reverse=True)[:50]
+
+
 def ux_screen(root: Path, kind: str, ident: str, name: str) -> Path | None:
     """A screenshot from a pass (`pass/<id>`) or a job's check (`job/<job id>`), or None. Every part is validated."""
     if not VISUAL_RUN_RE.match(ident) or ident.startswith(".") or not VISUAL_RUN_RE.match(name) or not name.endswith(".png"):
@@ -1292,7 +1329,7 @@ def ux_screen(root: Path, kind: str, ident: str, name: str) -> Path | None:
     if not folder:
         return None
     candidate = (folder / name).resolve()
-    return candidate if candidate.parent == folder.resolve() and candidate.is_file() else None
+    return candidate if candidate.parent == folder.resolve() and candidate.is_relative_to(out.resolve()) and candidate.is_file() else None
 
 
 def ui_review_settings(root: Path) -> dict[str, Any]:
@@ -4519,6 +4556,22 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root, branch=(query.get("branch") or [None])[0]))
+        elif parts == ["delivery", "release"] and method in {"GET", "POST"}:
+            self._require_owner("create release tags")
+            base = base_branch(root, read_settings(root))
+            try:
+                if method == "GET":
+                    self._json(releases.options(root, base))
+                else:
+                    body = self._body()
+                    if not isinstance(body.get("push", False), bool):
+                        raise UIError("'push' must be true or false")
+                    result = releases.create(root, base, _text(body, "tag", required=True, limit=120),
+                        _text(body, "commit", required=True, limit=64), push=body.get("push", False))
+                    self._audit("release_tag", tag=result["tag"], commit=result["commit"], pushed=result["pushed"])
+                    self._json(result)
+            except releases.ReleaseError as exc:
+                raise UIError(str(exc), HTTPStatus.CONFLICT) from exc
         elif method == "POST" and parts == ["delivery", "group"]:
             body = self._body()
             name = _text(body, "name", required=True, limit=100).strip()
@@ -4937,7 +4990,17 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError("This job is running right now. Attach context once it stops.", HTTPStatus.CONFLICT)
             self._json({"links": attach_links_to_job(root, parts[1], _clean_links(self._body().get("links")))})
         elif method == "GET" and parts == ["setup"]:
-            self._json(setup_checklist(root, runtime_dir(root), fresh=bool(query.get("refresh"))))
+            setup = setup_checklist(root, runtime_dir(root), fresh=bool(query.get("refresh")))
+            config = read_json_file(runtime_dir(root) / "project.json")
+            setup["workflow_checks"] = []
+            if config.get("xcode_project") or config.get("xcode_workspace") or any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace")):
+                from orchestrator.project_config import load_project_config
+                errors = load_project_config(root).validate_distribution_config()
+                setup["workflow_checks"].append({"id": "apple-signing", "title": "Apple signing and distribution",
+                    "selected": bool(config.get("firebase_distribution") or config.get("delivery_provider") or config.get("delivery_method")),
+                    "status": "todo" if errors else "ok", "detail": " ".join(errors) if errors else "Signing configuration is present. Certificates and account access are checked when distributing.",
+                    "route": "#/delivery", "label": "Review app delivery"})
+            self._json(setup)
         elif method == "POST" and parts == ["setup", "git-init"]:
             self._require_owner("initialize git repository")
             self._body()
@@ -5031,7 +5094,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._body()
             self._json(start_github_login(self.server) if method == "POST" else github_login_status(self.server))
         elif method == "GET" and parts == ["ux-pass"]:
-            self._json({"passes": ux_passes(root), **ui_review_settings(root)})
+            self._json({"passes": ux_passes(root), "captures": ux_captures(root), **ui_review_settings(root)})
         elif method == "GET" and len(parts) == 2 and parts[0] == "ux-pass":
             self._json(ux_pass_detail(root, parts[1]))
         elif method == "GET" and len(parts) == 4 and parts[0] == "ux-screens":

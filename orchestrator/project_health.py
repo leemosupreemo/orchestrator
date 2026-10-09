@@ -27,8 +27,8 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
     sections = f.get("prd_sections") or {}
     written = [k for k, v in sections.items() if v]
     if not written:
-        items.append(_item("prd", "Product requirements", "todo", "Optional, but nothing says what this product is for, so every job guesses. Describe it in a few sentences, draft it from the project, or import a PRD.",
-                           route="#/product", label="Add it"))
+        items.append(_item("prd", "Product requirements", "todo", "Tell the AI what you're building. Write a short description, generate a draft, or import a PRD.",
+                           route="#/product", label="Define your product"))
     else:
         updates = "It updates itself as jobs finish." if f.get("prd_auto_update") else "Automatic updates are off."
         items.append(_item("prd", "Product requirements", "ok", f"{len(written)} of 5 sections written. {updates}"))
@@ -84,7 +84,8 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
         items.append(_item("delivery", "Getting builds to testers", "ok", f"{_n(f['builds_sent'], 'build')} sent."))
 
     if not f["tag"]:
-        items.append(_item("release", "Releases", "todo", "No release tagged yet, so \"what's live\" has no anchor.", hint="git tag v0.1.0 && git push --tags"))
+        items.append(_item("release", "Releases", "todo", "Mark a version as released so you can track changes since it shipped.",
+                           release=True, route="#/delivery", label="Create release tag"))
     elif f["unreleased"] is not None and f["unreleased"] > UNRELEASED_WARN:
         items.append(_item("release", "Releases", "warn", f"{f['unreleased']} changes since {f['tag']}. Time for a release?", route="#/delivery", label="See what's live"))
     else:

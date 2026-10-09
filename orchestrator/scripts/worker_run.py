@@ -802,6 +802,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         print_phase("review")
         status_bar.render()
+        # A change that touches the interface also gets the UX and design checklist (a warning, never a gate).
+        run_shell(f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "ux_review_run.py"))} job {shlex.quote(str(job_path))}',
+                  cwd=ROOT, check=False, capture=False)
         brief_file = OUTPUT_DIR / job["job_id"] / "brief.md"
         if pr_number:
             print(f"\n[5/5] Triggering local AI review for PR #{pr_number}...")
@@ -816,9 +819,6 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             capture=False,
         )
 
-        # A change that touches the interface also gets the UX and design checklist (a warning, never a gate).
-        run_shell(f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "ux_review_run.py"))} job {shlex.quote(str(job_path))}',
-                  cwd=ROOT, check=False, capture=False)
         update_product_requirements(job_path)
         print_status_report(job, True, True, pr_number=pr_number, pr_url=pr_url, distributed_status=distributed_status)
         

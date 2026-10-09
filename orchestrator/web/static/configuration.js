@@ -353,7 +353,7 @@
           <div class="card-b stack">
             <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
             <div class="row align-center gap-3">
-              <a href="#/connections#recommended-installs" class="btn small">View recommended MCPs &amp; mobile tools ↗</a>
+              <a href="#/connections?section=mcp" class="btn small">View recommended MCPs &amp; mobile tools ↗</a>
               <a href="docs/recommended-mcp-plugins.md" target="_blank" rel="noopener" class="linklike">Plugin recommendations doc ↗</a>
             </div>
             ${plugins ? `<details class="fold mt-8"><summary class="muted">See installed plugins list</summary><ul class="plain-list mt-8">${plugins}</ul></details>` : ""}
@@ -583,7 +583,7 @@
             </div>
             <label class="field"><span>Firebase App ID</span><input type="text" name="firebase_app_id" value="${escapeHtml(fb.app_id || "")}" placeholder="1:1234567890:ios:abcdef123456"><small>From Firebase Project Settings &gt; General &gt; Your apps.</small></label>
             <label class="field"><span>Tester Groups</span><input type="text" name="firebase_tester_groups" value="${escapeHtml(fb.tester_groups || "testers")}" placeholder="testers, qa-team"><small>Comma-separated tester group names configured in Firebase Console.</small></label>
-            <label class="field"><span>Tester invite link (optional)</span><input type="url" name="firebase_invite_url" value="${escapeHtml(fb.invite_url || "")}" placeholder="https://appdistribution.firebase.dev/i/…"><small>In Firebase Console &gt; App Distribution &gt; Testers &amp; Groups, open a group and copy its invite link. People who open it can join the group and install builds without you adding them one by one. Shown on the Delivery page to copy and share.</small></label>
+            <label class="field"><span>Tester invite link (optional)</span><input type="url" name="firebase_invite_url" value="${escapeHtml(fb.invite_url || "")}" placeholder="https://appdistribution.firebase.dev/i/…"><small>In Firebase Console &gt; App Distribution &gt; Testers &amp; Groups, open a group and copy its invite link. People who open it can join the group and install builds without you adding them one by one. Shown on the App delivery page to copy and share.</small></label>
             <label class="field"><span>Service Account Key Path (optional)</span><input type="text" name="firebase_service_account_path" value="${escapeHtml(fb.service_account_path || "")}" placeholder="~/.orchestrator/firebase-service-account.json"><small>Or set GOOGLE_APPLICATION_CREDENTIALS in your environment.</small></label>
             <div class="row end"><button class="btn primary" type="submit">Save settings</button></div>
           </form>

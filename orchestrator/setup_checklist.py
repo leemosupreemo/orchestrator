@@ -121,8 +121,9 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
     github = resolve_mode(project.get("code_host"), origin) == "github"
     gh = github_cli_state()
     providers = ready_llm_providers(settings)
-    ssh_machines = sum(1 for m in machines if m.get("execution_mode") == "ssh")
-    models = list(dict.fromkeys(m for mach in machines if mach.get("enabled", True) for m in mach.get("models", [])))
+    enabled_machines = [m for m in machines if m.get("enabled", True)]
+    ssh_machines = sum(1 for m in enabled_machines if m.get("execution_mode") == "ssh")
+    models = list(dict.fromkeys(m for mach in enabled_machines for m in mach.get("models", [])))
 
     items = [
         _item("project", "Project configured", True, bool(project), "Name, build and test settings" if project else "No .orchestrator/project.json yet",
@@ -154,9 +155,9 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
         _item("llm", "An AI provider is ready", True, bool(providers),
               ", ".join(providers[:4]) if providers else "No AI is set up yet. Free options are available.",
               action={"type": "route", "to": "#/config/ai"}, group="AI"),
-        _item("machines", "A machine to run jobs on", True, bool(machines),
-              (f"{len(machines)} configured, {ssh_machines} remote over SSH" if ssh_machines else f"{len(machines)} configured. Add other Macs to run jobs side by side.")
-              if machines else "machines.json is missing or empty",
+        _item("machines", "A machine to run jobs on", True, bool(enabled_machines),
+              (f"{len(enabled_machines)} enabled, {ssh_machines} remote over SSH" if ssh_machines else f"{len(enabled_machines)} enabled. Add other Macs to run jobs side by side.")
+              if enabled_machines else "No enabled machines. Add or enable a machine.",
               action=page("#/config/fleet"), group="AI"),
         _item("models", "At least one model selected", True, bool(models),
               f"{len(models)} selected" if models else "No models are assigned to a machine",

@@ -653,6 +653,7 @@ const dialogs = {
   },
   async git_new_branch() {
     const values = await formDialog("New branch", `
+      <p class="muted">Project: <strong>${esc(state.project?.name || state.project?.root || "Current project")}</strong></p>
       <label class="field"><span>Branch name</span><input type="text" name="name" required autocapitalize="off" spellcheck="false" placeholder="e.g. feature/rematch-flow"></label>
       <small class="hint-text">Created from ${esc(state.project?.branch || "the current branch")} and checked out.</small>`, "Create");
     if (values?.name.trim()) runAction("git_new_branch", { name: values.name.trim() });
@@ -1973,7 +1974,39 @@ document.addEventListener("change", (e) => {
 // re-rendered by the poll when their output changes.
 
 const pages = {};
-const LIVE = new Set(["home", "job", "activity", "git"]);
+const LIVE = new Set(["home", "job", "activity", "git", "ux-review"]);
+
+async function createReleaseTag() {
+  try {
+    const preview = await api("delivery/release");
+    const values = await formDialog("Create release tag", `
+      <p>Project: <strong>${esc(state.project?.name || "Current project")}</strong></p>
+      <p>Mark this committed version as a release. This records a version; it does not deploy your app.</p>
+      <p>Base branch: <strong>${esc(preview.branch)}</strong><br>Commit: <code>${esc(preview.commit.slice(0, 12))}</code> · ${esc(preview.subject)}</p>
+      <label class="field"><span>Release version</span><input name="tag" required maxlength="120" value="${esc(preview.suggested_tag)}" placeholder="v0.1.0" spellcheck="false"></label>
+      ${preview.can_push ? `<label class="check"><input type="checkbox" name="publish" checked><span>Publish this tag to origin</span></label>` : `<p class="muted">No remote is configured. The tag will be saved locally.</p>`}
+      <p class="muted">Your current branch and uncommitted changes stay as they are.</p>`, "Create release tag");
+    if (!values) return;
+    const body = {tag: values.tag, commit: preview.commit, push: Boolean(values.publish)};
+    let result = await api("delivery/release", {method: "POST", body});
+    while (result.warning) {
+      const retry = await formDialog("Release tag saved locally", `<p>${esc(result.warning)}</p><p>Version: <strong>${esc(result.tag)}</strong></p>`, "Retry publishing");
+      if (!retry) { await route(); return; }
+      result = await api("delivery/release", {method: "POST", body: {...body, push: true}});
+    }
+    toast(`${result.tag} ${result.pushed ? "created and published" : "saved locally"}`);
+    await route();
+  } catch (error) {
+    toast(error.status === 404 ? "Update and restart your local Orchestrator server to enable release tagging." : error.message, true);
+  }
+}
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-create-release]");
+  if (!button || button.disabled || state.you?.role === "member") return;
+  button.disabled = true;
+  try { await createReleaseTag(); } finally { button.disabled = false; }
+});
 
 // ---------------------------------------------------------------- setup checklist
 // What a job needs (GitHub, an AI provider, a machine, project config) vs. nice-to-haves.
@@ -3241,6 +3274,12 @@ pages.delivery = async (args, query) => {
 
   const jobTone = (status) => (status === "completed" ? "done" : status === "review-needed" ? "attention" : "working");
 
+  const releaseCard = `<section class="card mb-16"><div class="card-h"><h2>Release versions</h2>
+    ${d.live?.commit ? `<button type="button" class="btn small" data-create-release data-owner-only>Create release tag</button>` : ""}</div>
+    <div class="card-b stack"><p>${d.live?.tag ? `Last release: <strong>${esc(d.live.tag)}</strong>. ${esc(d.live.unreleased ?? "Unknown")} commits since that version.` : "Mark a committed version as released to track what changed since it shipped."}</p>
+    <p class="muted">Tags use the configured base branch. Creating a tag does not deploy your app.</p>
+    ${!d.live?.commit ? `<a class="btn small" href="#/git">Sync the base branch in Git setup</a>` : ""}</div></section>`;
+
   const branchCard = `<section class="card mb-16">
     <div class="card-h">
       <h2>Branch &amp; Test Build</h2>
@@ -3325,9 +3364,9 @@ pages.delivery = async (args, query) => {
         ${b.job_id ? `<div class="side"><a class="btn small" href="#/jobs/${encodeURIComponent(b.job_id)}">Job</a></div>` : ""}</div>`).join("")}</div></section>` : "";
 
   return {
-    title: "Delivery",
+    title: "App delivery",
     sub: "Launch test builds on devices and monitor pipelines.",
-    html: `${branchCard}${buildsCard}${pipelineCard}`,
+    html: `${branchCard}${releaseCard}${buildsCard}${pipelineCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
       if (branchSelect) {
@@ -3439,7 +3478,89 @@ function improveKpiSummary(k, st) {
     + " Propose the smallest change most likely to move it, and say how we will know it worked.";
 }
 
-pages.measure = async () => {
+const ANALYTICS_BLURBS = {
+  mixpanel: "Event tracking and product analytics. Events and KPI metrics are streamed directly to your Mixpanel project.",
+  amplitude: "Behavioral analytics and digital optimization. Stream feature KPI events into your Amplitude workspace.",
+  posthog: "Product analytics and feature metrics. Connects to PostHog Cloud or self-hosted instances."
+};
+function providerMcpTree(providerId, providerName, list) {
+  const pkg = `${providerId}-mcp`;
+  const items = list && list.length ? list : [
+    { id: "google", org: "Google (Antigravity / Gemini)", installed: false, cmd: `agy mcp add ${providerId} -- npx -y ${pkg}` },
+    { id: "anthropic", org: "Anthropic (Claude Code)", installed: false, cmd: `claude mcp add ${providerId} -- npx -y ${pkg}` },
+    { id: "openai", org: "OpenAI (Codex)", installed: false, cmd: `codex mcp add ${providerId} -- npx -y ${pkg}` },
+    { id: "opencode", org: "OpenCode", installed: false, cmd: `opencode mcp add ${providerId} -- npx -y ${pkg}` },
+    { id: "ollama", org: "Ollama (Local models)", installed: false, cmd: `npx -y ${pkg}` }
+  ];
+  const count = items.filter((m) => m.installed).length;
+  return `<details class="fold model-tree mt-12" ${count > 0 ? "open" : ""}>
+    <summary class="model-tree-summary">
+      <strong>${esc(providerName)} MCP by LLM organization</strong>
+      <span class="count">${count} / ${items.length} installed</span>
+    </summary>
+    <div class="model-tree-content">
+      <p class="muted text-sm mb-8">Model Context Protocol lets AI agents query funnels, retention, and events live during jobs.</p>
+      <ul class="model-tree-branch">
+        ${items.map((m, idx) => `
+          <li class="model-tree-item ${idx === items.length - 1 ? 'last-node' : ''}">
+            <div class="model-tree-row">
+              <strong class="model-id">${esc(m.org)}</strong>
+              ${m.installed ? pill("done", "Installed") : pill("", "Not configured")}
+              ${m.detected_via ? `<span class="model-caps muted">${esc(m.detected_via)}</span>` : ""}
+            </div>
+            ${!m.installed && m.cmd ? `
+              <div class="setup-hint mt-8">
+                <code>${esc(m.cmd)}</code>
+                <button type="button" class="btn small ghost" data-setup-copy="${esc(m.cmd)}" title="Copy command">Copy</button>
+              </div>
+            ` : ""}
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  </details>`;
+}
+
+function analyticsConnectionCards(data, manageOnly = false) {
+  return (data.providers || []).map((p) => {
+    const isCurrent = data.provider === p.id;
+    const isReady = isCurrent && data.key_set;
+    const statusPill = isReady
+      ? pill("done", `Connected (${(data.region || "us").toUpperCase()})`)
+      : isCurrent && !data.key_set
+      ? pill("failed", "Key missing")
+      : pill("", "Not connected");
+    const dashboardUrl = isReady
+      ? (p.dashboards?.[data.region || "us"] || (p.dashboards?.us) || (isCurrent && data.dashboard_url ? data.dashboard_url : null))
+      : null;
+    const mcpList = data.provider_mcp?.[p.id] || (p.id === "mixpanel" ? data.mixpanel_mcp : null);
+    const mcpTree = providerMcpTree(p.id, p.name, mcpList);
+    return `<section class="card conn-card" data-analytics-p="${esc(p.id)}">
+      <div class="card-b stack">
+        <div class="row">
+          <strong class="conn-name">${providerIcon(p.id)}${esc(p.name)}</strong>
+          ${statusPill}
+        </div>
+        <div class="muted">${esc(ANALYTICS_BLURBS[p.id] || "Product analytics and event tracking.")}</div>
+        <div class="muted text-sm">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
+        <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a>${dashboardUrl ? ` · <a href="${esc(dashboardUrl)}" target="_blank" rel="noopener">Open ${esc(p.name)} project ↗</a>` : ""}</p>
+        <div class="row" ${manageOnly ? "" : "data-owner-only"}>
+          ${manageOnly ? `<a href="#/measure?provider=${encodeURIComponent(p.id)}" class="btn small primary">${isReady ? "Manage" : "Connect"} ${esc(p.name)} ↗</a>` : isReady ? `
+            ${dashboardUrl ? `<a href="${esc(dashboardUrl)}" target="_blank" rel="noopener" class="btn small">Open project ↗</a>` : ""}
+            <button type="button" class="btn small" data-analytics-action="change" data-analytics-p="${esc(p.id)}">Update</button>
+            <button type="button" class="btn small" data-analytics-action="test" data-analytics-p="${esc(p.id)}">Send test event</button>
+            <button type="button" class="btn small danger" data-analytics-action="clear" data-analytics-p="${esc(p.id)}">Disconnect</button>
+          ` : `
+            <button type="button" class="btn small primary" data-analytics-action="connect" data-analytics-p="${esc(p.id)}">Connect ${esc(p.name)}</button>
+          `}
+        </div>
+        ${mcpTree}
+      </div>
+    </section>`;
+  }).join("");
+}
+
+pages.measure = async (_, query) => {
   const data = await api("analytics");
   const { features } = data;
   const connected = data.provider && data.key_set;
@@ -3457,48 +3578,6 @@ pages.measure = async () => {
   };
   const card = (f) => `<section class="card mb-16"><div class="card-h"><h2>${esc(f.name)}</h2><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div>
     <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working?</div>`}</div></section>`;
-  const ANALYTICS_BLURBS = {
-    mixpanel: "Event tracking and product analytics. Events and KPI metrics are streamed directly to your Mixpanel project.",
-    amplitude: "Behavioral analytics and digital optimization. Stream feature KPI events into your Amplitude workspace.",
-    posthog: "Product analytics and feature metrics. Connects to PostHog Cloud or self-hosted instances."
-  };
-  const providerMcpTree = (providerId, providerName, list) => {
-    const pkg = `${providerId}-mcp`;
-    const items = list && list.length ? list : [
-      { id: "google", org: "Google (Antigravity / Gemini)", installed: false, cmd: `agy mcp add ${providerId} -- npx -y ${pkg}` },
-      { id: "anthropic", org: "Anthropic (Claude Code)", installed: false, cmd: `claude mcp add ${providerId} -- npx -y ${pkg}` },
-      { id: "openai", org: "OpenAI (Codex)", installed: false, cmd: `codex mcp add ${providerId} -- npx -y ${pkg}` },
-      { id: "opencode", org: "OpenCode", installed: false, cmd: `opencode mcp add ${providerId} -- npx -y ${pkg}` },
-      { id: "ollama", org: "Ollama (Local models)", installed: false, cmd: `npx -y ${pkg}` }
-    ];
-    const count = items.filter((m) => m.installed).length;
-    return `<details class="fold model-tree mt-12" ${count > 0 ? "open" : ""}>
-      <summary class="model-tree-summary">
-        <strong>${esc(providerName)} MCP by LLM organization</strong>
-        <span class="count">${count} / ${items.length} installed</span>
-      </summary>
-      <div class="model-tree-content">
-        <p class="muted text-sm mb-8">Model Context Protocol lets AI agents query funnels, retention, and events live during jobs.</p>
-        <ul class="model-tree-branch">
-          ${items.map((m, idx) => `
-            <li class="model-tree-item ${idx === items.length - 1 ? 'last-node' : ''}">
-              <div class="model-tree-row">
-                <strong class="model-id">${esc(m.org)}</strong>
-                ${m.installed ? pill("done", "Installed") : pill("", "Not configured")}
-                ${m.detected_via ? `<span class="model-caps muted">${esc(m.detected_via)}</span>` : ""}
-              </div>
-              ${!m.installed && m.cmd ? `
-                <div class="setup-hint mt-8">
-                  <code>${esc(m.cmd)}</code>
-                  <button type="button" class="btn small ghost" data-setup-copy="${esc(m.cmd)}" title="Copy command">Copy</button>
-                </div>
-              ` : ""}
-            </li>
-          `).join("")}
-        </ul>
-      </div>
-    </details>`;
-  };
   return {
     title: "Measure",
     sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
@@ -3509,47 +3588,14 @@ pages.measure = async () => {
         <div class="card-b stack">
           <p class="muted">Connect an analytics provider so new jobs stream their KPI events directly to your tracking dashboard. Connect one to verify ingestion with a test event.</p>
           <div class="conn-grid">
-            ${(data.providers || []).map((p) => {
-              const isCurrent = data.provider === p.id;
-              const isReady = isCurrent && data.key_set;
-              const statusPill = isReady
-                ? pill("done", `Connected (${(data.region || "us").toUpperCase()})`)
-                : isCurrent && !data.key_set
-                ? pill("failed", "Key missing")
-                : pill("", "Not connected");
-              const dashboardUrl = isReady
-                ? (p.dashboards?.[data.region || "us"] || (p.dashboards?.us) || (isCurrent && data.dashboard_url ? data.dashboard_url : null))
-                : null;
-              const mcpList = data.provider_mcp?.[p.id] || (p.id === "mixpanel" ? data.mixpanel_mcp : null);
-              const mcpTree = providerMcpTree(p.id, p.name, mcpList);
-              return `<section class="card conn-card" data-analytics-p="${esc(p.id)}">
-                <div class="card-b stack">
-                  <div class="row">
-                    <strong class="conn-name">${providerIcon(p.id)}${esc(p.name)}</strong>
-                    ${statusPill}
-                  </div>
-                  <div class="muted">${esc(ANALYTICS_BLURBS[p.id] || "Product analytics and event tracking.")}</div>
-                  <div class="muted text-sm">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
-                  <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a>${dashboardUrl ? ` · <a href="${esc(dashboardUrl)}" target="_blank" rel="noopener">Open ${esc(p.name)} project ↗</a>` : ""}</p>
-                  <div class="row" data-owner-only>
-                    ${isReady ? `
-                      ${dashboardUrl ? `<a href="${esc(dashboardUrl)}" target="_blank" rel="noopener" class="btn small">Open project ↗</a>` : ""}
-                      <button type="button" class="btn small" data-analytics-action="change" data-analytics-p="${esc(p.id)}">Update</button>
-                      <button type="button" class="btn small" data-analytics-action="test" data-analytics-p="${esc(p.id)}">Send test event</button>
-                      <button type="button" class="btn small danger" data-analytics-action="clear" data-analytics-p="${esc(p.id)}">Disconnect</button>
-                    ` : `
-                      <button type="button" class="btn small primary" data-analytics-action="connect" data-analytics-p="${esc(p.id)}">Connect ${esc(p.name)}</button>
-                    `}
-                  </div>
-                  ${mcpTree}
-                </div>
-              </section>`;
-            }).join("")}
+            ${analyticsConnectionCards(data)}
           </div>
         </div>
       </section>
       ${features.map(card).join("") || `<div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div>`}`,
     after: () => {
+      const selectedProvider = (data.providers || []).find((p) => p.id === query?.get("provider"));
+      if (selectedProvider) view.querySelector(`[data-analytics-p="${selectedProvider.id}"]`)?.scrollIntoView({ block: "start" });
       const reload = () => route();
       const call = async (path, body, ok) => { try { await api(path, { method: "POST", body }); if (ok) toast(ok); reload(); } catch (e) { toast(e.message, true); } };
       view.querySelectorAll("[data-analytics-action]").forEach((btn) => {
@@ -3616,18 +3662,187 @@ function uxFindingsHtml(findings, { listId, shown = 8 } = {}) {
     ${findings.length > shown ? `<div class="card-b"><button type="button" class="btn small" data-show-all="${listId}">Show all ${findings.length}</button></div>` : ""}`;
 }
 
+const UX_CHECKS = {
+  "ux.status": {
+    "name": "Visibility of system status",
+    "criterion": "The person can always tell what is happening: loading, saving, running, failed, done. Nothing fails silently."
+  },
+  "ux.words": {
+    "name": "Plain language",
+    "criterion": "Labels use words a casual user knows. No internal ids, upper-case type codes, or jargon (\"execution\", \"decomposed\")."
+  },
+  "ux.consistent-names": {
+    "name": "Consistent names",
+    "criterion": "One name per thing and one thing per name, across every screen (Delete vs Discard vs Remove; Stop vs Pause)."
+  },
+  "ux.one-primary": {
+    "name": "One primary action",
+    "criterion": "At most one primary (filled) action per screen, and it is the thing most people come to do."
+  },
+  "ux.no-duplicate-actions": {
+    "name": "No duplicate actions",
+    "criterion": "The same action is not offered twice on one screen (a header button, a floating button and a menu item for the same thing)."
+  },
+  "ux.disclosure": {
+    "name": "Progressive disclosure",
+    "criterion": "Simple first, advanced one step away: common options visible, rare ones behind a fold or menu. Never more than two levels deep."
+  },
+  "ux.grouping": {
+    "name": "Meaningful grouping",
+    "criterion": "Things are grouped by what they mean to the person (the ticket, the designs, what went wrong), not by where they came from (an app, an upload). A section title joined with \"&\" or \"and\", or an \"Other\" bucket, is a warning sign of a junk drawer."
+  },
+  "ux.one-home": {
+    "name": "One home per destination",
+    "criterion": "Each destination has one home in the navigation; the same page is not reachable from three menus."
+  },
+  "ux.wayfinding": {
+    "name": "Clear navigation",
+    "criterion": "The navigation shows where you are: the right item is highlighted on every page, including pages below the top level."
+  },
+  "ux.back": {
+    "name": "Visible Back controls",
+    "criterion": "Every page below the top level (an item, a document, a setting, a form) has a visible Back control near its title that returns to where the person came from. The browser button or the sidebar alone is not enough."
+  },
+  "ux.mobile-nav": {
+    "name": "Mobile navigation",
+    "criterion": "On phones the main destinations are visible (a tab bar), not only behind a hamburger."
+  },
+  "ux.empty-states": {
+    "name": "Helpful empty states",
+    "criterion": "An empty screen says what goes here and offers one clear first action, once, not on every section."
+  },
+  "ux.errors": {
+    "name": "Recoverable errors",
+    "criterion": "Errors say what happened and what to do next, in plain words, with a way forward (retry, go back, fix link)."
+  },
+  "ux.decision-context": {
+    "name": "Context for decisions",
+    "criterion": "When the screen asks for a decision (approve a plan, merge, accept suggestions, delete), what is being decided is shown right next to the button, in enough detail to judge it. Never \"Approve\" with the thing to approve folded away elsewhere on the page."
+  },
+  "ux.menus": {
+    "name": "Clear menus",
+    "criterion": "Overflow menus are grouped under short headings, one line per item, and fit on screen without scrolling. They offer only what makes sense at this stage, never repeat the screen's primary action, and keep ending actions (archive, delete) last and apart."
+  },
+  "ux.no-terminal": {
+    "name": "No terminal handoffs",
+    "criterion": "Every choice is made in the app's own interface. No step hands the person a terminal, a text menu, or a \"press Enter\" prompt to finish something the app started."
+  },
+  "ux.destructive": {
+    "name": "Safe destructive actions",
+    "criterion": "Destructive actions are last in a menu, say what will be lost, name the action on the button, and offer undo where possible."
+  },
+  "ux.forms": {
+    "name": "Simple forms",
+    "criterion": "Forms ask only what is needed now; optional questions are folded; required fields are clear; choices that contradict each other cannot both be picked."
+  },
+  "ux.recognition": {
+    "name": "Visible choices",
+    "criterion": "Options are visible or one tap away; nothing depends on remembering a hidden shortcut or a value from another screen."
+  },
+  "ux.say-once": {
+    "name": "No repeated information",
+    "criterion": "Each fact appears once per screen (no status pill plus a sentence repeating it, no date shown twice)."
+  },
+  "ux.action-labels": {
+    "name": "Clear action labels",
+    "criterion": "Action labels are short verbs whose object is clear from where they sit (\"Edit\" in the Brief card's header, not \"Edit brief\"), and the same action has the same label everywhere."
+  },
+  "ux.long-content": {
+    "name": "Readable long content",
+    "criterion": "Long text on a busy screen shows a useful first part, then a clear \"Show more\" that expands it in place. No small inner scroll boxes, and no walls of text pushing the rest of the screen away."
+  },
+  "ux.counts": {
+    "name": "Accurate counts",
+    "criterion": "Counts use correct singular and plural words, and numbers agree between screens."
+  },
+  "design.hierarchy": {
+    "name": "Visual hierarchy",
+    "criterion": "Each screen has one clear focal point; headings, body and secondary text are visibly different levels."
+  },
+  "design.tokens": {
+    "name": "Design tokens",
+    "criterion": "Colours, spacing, type sizes, radii, shadows and layers come from the design system's tokens, not one-off values."
+  },
+  "design.spacing": {
+    "name": "Consistent spacing",
+    "criterion": "Spacing follows the scale; related things sit closer than unrelated things; cards and sections breathe evenly."
+  },
+  "design.alignment": {
+    "name": "Alignment",
+    "criterion": "Elements line up on a shared grid; buttons in a row have the same height; nothing is floating out of line."
+  },
+  "design.sizing": {
+    "name": "Control and touch target sizes",
+    "criterion": "Controls come in a small number of sizes; touch targets are at least 44 px on phones."
+  },
+  "design.consistency": {
+    "name": "Component consistency",
+    "criterion": "The same component looks and behaves the same everywhere (card headers, lists, pills, menus)."
+  },
+  "design.section-headers": {
+    "name": "Distinct section headers",
+    "criterion": "Card and section titles read as titles: a distinct header (larger, heavier, or on a tinted bar) separates them from the content under them."
+  },
+  "design.header-anatomy": {
+    "name": "Consistent header layout",
+    "criterion": "Headers follow one pattern: title on the left (a count may sit beside it), at most two actions on the right with the secondary one first, all the same size and on one line. Facts such as a file path sit in a caption under the header, not loose beside the title."
+  },
+  "design.fields": {
+    "name": "Consistent form labels",
+    "criterion": "Form labels sit in one consistent place (above the control). Paired controls (two pickers side by side) share size, font and spacing; nothing is cramped together."
+  },
+  "design.native-controls": {
+    "name": "Styled controls",
+    "criterion": "No unstyled browser-default controls (a raw file picker, the browser's disclosure triangle) beside styled ones; one disclosure icon and one button style throughout."
+  },
+  "design.overlap": {
+    "name": "No overlapping content",
+    "criterion": "Nothing covers content: floating buttons, banners and bars leave room; no element is clipped or cut off."
+  },
+  "design.responsive": {
+    "name": "Responsive layouts",
+    "criterion": "No horizontal scroll at 360 to 430 px; long text wraps or truncates with a way to see it all; tablets get a sensible layout."
+  },
+  "design.contrast": {
+    "name": "Text and control contrast",
+    "criterion": "Text and controls meet WCAG AA contrast in light and dark; colour is never the only signal."
+  },
+  "design.dark-mode": {
+    "name": "Dark mode",
+    "criterion": "Dark mode uses its own tokens; nothing turns invisible or stays bright."
+  },
+  "design.motion": {
+    "name": "Purposeful motion",
+    "criterion": "Motion is brief and purposeful, and respects reduced-motion settings."
+  },
+  "design.focus": {
+    "name": "Keyboard focus",
+    "criterion": "Keyboard focus is always visible; focus order follows the layout."
+  }
+};
+
 function uxChecklistHtml(checklist) {
-  const judged = checklist.filter((c) => c.status !== "n/a");
-  if (!judged.length) return `<div class="empty">Nothing on the checklist applied.</div>`;
-  const mark = { pass: ["done", "Pass"], partial: ["attention", "Partly"], fail: ["failed", "Fail"] };
-  return `<div class="list">${judged.map((c) => `<div class="item"><span class="pill ${mark[c.status][0]}">${mark[c.status][1]}</span>
-    <div class="main-col"><div class="title mono">${esc(c.id)}</div>${c.note ? `<div class="meta">${esc(c.note)}</div>` : ""}</div></div>`).join("")}</div>`;
+  if (!checklist.length) return `<div class="empty">No checks were reported.</div>`;
+  const mark = { pass: ["done", "Pass"], partial: ["attention", "Partial"], fail: ["failed", "Fail"], "n/a": ["", "Not applicable"], pending: ["", "Not checked"] };
+  return `<div class="list">${checklist.map((c) => {
+    const definition = UX_CHECKS[c.id];
+    const status = c.status === "n/a" && (!c.note || c.note === "not reported") ? "pending" : c.status;
+    const [tone, label] = mark[status] || mark.pending;
+    return `<div class="item ux-check"><span class="pill ${tone}">${label}</span>
+      <div class="main-col"><div class="title">${esc(definition?.name || c.id)}</div>
+        ${definition ? `<p class="muted text-sm">${esc(definition.criterion)}</p>` : ""}
+        ${c.note && c.note !== "not reported" ? `<p class="ux-check-evidence">${esc(c.note)}</p>` : ""}</div></div>`;
+  }).join("")}</div>`;
 }
 
 function uxScreensHtml(screens, base) {
   if (!screens?.length) return "";
-  return `<div class="ux-screens">${screens.map((sc) => `<figure class="ux-screen"><img alt="${esc(sc.route)} at ${sc.width ? `${sc.width} px` : "simulator"}${sc.dark ? ", dark" : ""}" data-auth-src="${base}/${encodeURIComponent(sc.file)}">
-    <figcaption>${esc(sc.route)}${sc.width ? ` · ${sc.width} px` : ""}${sc.dark ? " · dark" : ""}</figcaption></figure>`).join("")}</div>`;
+  return `<div class="ux-screens">${screens.map((sc) => {
+    const title = `${sc.name || sc.route}${sc.width ? ` · ${sc.width} px` : ""}${sc.dark ? " · dark" : " · light"}`;
+    const endpoint = `${base}/${encodeURIComponent(sc.file)}`;
+    return `<figure class="ux-screen"><button type="button" class="ux-screen-preview" data-preview-img="" data-preview-auth="${esc(endpoint)}" data-preview-title="${esc(title)}" aria-label="View screenshot: ${esc(title)}"><img alt="${esc(title)}" data-auth-src="${esc(endpoint)}"></button>
+      <figcaption>${esc(title)}${sc.name ? ` · ${esc(sc.route)}` : ""}</figcaption></figure>`;
+  }).join("")}</div>`;
 }
 
 const uxFixLink = (text, label = "Create a job to fix") =>
@@ -3635,19 +3850,24 @@ const uxFixLink = (text, label = "Create a job to fix") =>
 
 // The job page's card: the checklist run on this job's interface changes.
 function uxReviewCard(s, ux) {
-  if (!ux || (ux.skipped && !ux.error)) return "";
+  if (!ux || (ux.skipped && !ux.error && !ux.screens && !ux.capture_status)) return "";
   const c = ux.counts || {};
   const rerun = `<button type="button" class="btn small ghost" ${act("ux_review_job", { job: s.id })}>Check again</button>`;
   if (ux.error) return `<section class="card mb-16" id="ux-section"><div class="card-h"><h2>UX and design check</h2>${rerun}</div>
-    <div class="card-b"><p class="muted">It couldn't run: ${esc(ux.error)}</p></div></section>`;
+    <div class="card-b stack"><p class="muted">It couldn't run: ${esc(ux.error)}</p>${uxScreensHtml(ux.screen_list, `ux-screens/job/${encodeURIComponent(s.id)}`)}
+      <a class="btn small" href="#/ux-review">Open screenshots in UX review</a></div></section>`;
   const findings = ux.findings || [];
   const fixText = "Fix these UX and design findings:\n" + findings.filter((f) => f.severity >= 2).map((f) => `- [${UX_SEVERITY[f.severity]}] ${f.screen || "All screens"}: ${f.problem}${f.fix ? ` Fix: ${f.fix}` : ""}`).join("\n");
   return `<section class="card mb-16" id="ux-section">
-    <div class="card-h"><h2>UX and design check</h2><span class="count">${c.findings ? `${plural(c.findings, "finding")}${c.major ? ` · ${c.major} major` : ""}` : "Nothing found"}</span></div>
+    <div class="card-h"><h2>UX and design check</h2><span class="count">${ux.skipped ? `${ux.screens || 0} screenshots saved` : c.findings ? `${plural(c.findings, "finding")}${c.major ? ` · ${c.major} major` : ""}` : "Nothing found"}</span></div>
     <div class="card-b stack">
+      ${ux.skipped ? `<p class="muted">${esc(ux.skipped)}</p>` : ""}
       ${ux.summary ? `<p>${clamped(ux.summary, 320)}</p>` : ""}
-      <div class="muted">Checked ${plural((ux.files || []).length, "interface file")}${ux.screens ? ` and ${plural(ux.screens, "screen")}` : ", from the code only"}. A prompt to look, not a gate.</div>
+      <div class="muted">${ux.skipped ? "Screenshot evidence only; checks have not been evaluated." : `Checked ${plural((ux.files || []).length, "interface file")}${ux.screens ? ` and ${plural(ux.screens, "screen")}` : ", from the code only"}. A prompt to look, not a gate.`}</div>
       ${uxScreensHtml(ux.screen_list, `ux-screens/job/${encodeURIComponent(s.id)}`)}
+      ${ux.capture_status === "missing" ? `<p class="notice">No screenshots were captured. Configure the app and retry from UX review.</p>` : ""}
+      ${(ux.capture_limits || []).length ? `<p class="muted">${esc(ux.capture_limits.join(" "))}</p>` : ""}
+      <a class="btn small" href="#/ux-review">Open screenshot history</a>
     </div>
     ${findings.length ? uxFindingsHtml(findings, { listId: "ux-findings", shown: 5 }) : ""}
     <details class="fold"><summary class="card-h"><h2>Checklist</h2></summary>${uxChecklistHtml(ux.checklist || [])}</details>
@@ -3655,9 +3875,28 @@ function uxReviewCard(s, ux) {
   </section>`;
 }
 
+// Refresh live progress without replacing screen settings while they are being edited.
+function updateUxReviewWhileEditing(result) {
+  const form = $("#ux-settings");
+  if (!form || (form.dataset.dirty !== "true" && !form.contains(document.activeElement))) return false;
+  const holder = document.createElement("div");
+  holder.innerHTML = result.html;
+  const progress = holder.querySelector("#ux-current-progress");
+  const current = $("#ux-current-progress");
+  if (progress && current) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = "Save your screen settings to refresh the results below.";
+    progress.querySelector(".card-b")?.append(note);
+    current.replaceWith(progress);
+  }
+  setHeader(result);
+  return true;
+}
+
 // What jobs need, each with a way to do it in the app (the terminal setup wizard's job, without the terminal).
 // Readiness: can jobs run on this computer? What they need (required, then optional), whether the project's build
-// tools are here, and the checks you can run. Check-up is about the product; this is about the environment.
+// tools are here, and the checks you can run. Onboarding checklist is about the product; this is about the environment.
 const READINESS_CHECKS = [["check", "Tools and logins", "Command-line tools, sign-ins and keys (prerequisite audit)"],
   ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"],
   ["test", "Orchestrator health check", "Orchestrator's own self-tests, to confirm it works on this computer"]];
@@ -3726,23 +3965,71 @@ pages["ux-review"] = async (_, query) => {
   const cfg = data.settings;
   const noScreens = cfg && !cfg.url && !cfg.simulator;
   const saved = data.saved || {};
+  const captures = data.captures?.length ? data.captures : pass?.screens?.length ? [{kind: "pass", id: pass.id, title: "Whole-product review", screens: pass.screens, at: pass.at, limits: pass.limits ? [pass.limits] : []}] : [];
+  const captureKey = (capture) => `${capture.kind}:${capture.id}:${capture.capture_id || ""}`;
+  const selectedCapture = captures.find((capture) => captureKey(capture) === query.get("capture")) || captures[0];
+  const captureBase = selectedCapture?.kind === "visual" ? `visual-checks/${encodeURIComponent(selectedCapture.id)}/screenshots` : selectedCapture ? `ux-screens/${selectedCapture.kind}/${encodeURIComponent(selectedCapture.id)}` : "";
+  const captureLimits = selectedCapture?.limits ? Array.isArray(selectedCapture.limits) ? selectedCapture.limits : [selectedCapture.limits] : [];
+  const runs = (state.runs || []).filter((r) => r.action === "ux_pass").sort((a, b) => b.started - a.started);
+  const run = runs.find((r) => r.running) || runs[0];
+  const latest = data.passes[0];
+  const latestTime = latest?.completed_at ?? (/([zZ]|[+-]\d{2}:\d{2})$/.test(latest?.at || "") ? Date.parse(latest.at) / 1000 : NaN);
+  const timingUnknown = Boolean(run && latest && !Number.isFinite(latestTime));
+  const newerRun = run && (!latest || run.running || (Number.isFinite(latestTime) && run.started > latestTime));
+  const previousResults = Boolean(pass && (id !== latest?.id || newerRun));
+  const failed = newerRun && !run.running && run.exit_code !== 0;
+  const running = Boolean(run?.running);
+  const progress = run?.progress || {};
+  const hasSteps = Number.isInteger(progress.step) && progress.total === 4 && progress.step >= 1 && progress.step <= 4;
+  const status = running ? "Review running" : failed ? (run.stopped ? "Review stopped" : "Review failed") : latest && !newerRun ? (timingUnknown ? "Saved results available" : "Review complete") : newerRun ? "Results unavailable" : "Not started";
   const areaCard = (area, title) => {
-    const findings = (pass.findings || []).filter((f) => f.area === area);
-    const checks = (pass.checklist || []).filter((c) => c.id.startsWith(area));
-    return `<section class="card mb-16"><div class="card-h"><h2>${title}</h2><span class="count">${plural(findings.length, "finding")}</span></div>
-      ${uxFindingsHtml(findings, { listId: `ux-${area}` })}
-      <details class="fold"><summary class="card-h"><h2>${title} checklist</h2><span class="count">${checks.filter((c) => c.status === "pass").length} of ${checks.filter((c) => c.status !== "n/a").length} pass</span></summary>${uxChecklistHtml(checks)}</details></section>`;
+    const findings = (pass?.findings || []).filter((f) => f.area === area);
+    const reported = new Map((pass?.checklist || []).map((c) => [c.id, c]));
+    const checks = Object.keys(UX_CHECKS).filter((id) => id.startsWith(`${area}.`)).map((id) => reported.get(id) || { id, status: "pending", note: "" });
+    const checked = checks.filter((c) => ["pass", "partial", "fail"].includes(c.status)).length;
+    return `<section class="card mb-16"><div class="card-h"><h2>${title}</h2><span class="count">${checked} of ${checks.length} evaluated</span></div>
+      <div class="card-b stack"><div><button type="button" class="btn primary" ${act("ux_pass")} ${running ? "disabled" : ""}>${running ? "Review running…" : `Run all ${checks.length} checks`}</button></div>
+        <p class="muted">Runs a full review of usability and visual design. Results appear here when it finishes.</p></div>
+      ${findings.length ? uxFindingsHtml(findings, { listId: `ux-${area}` }) : ""}
+      ${uxChecklistHtml(checks)}</section>`;
   };
   return {
     title: "UX review",
-    sub: "Your product's screens checked against usability heuristics and your design system: a UX pass and a design pass.",
-    actions: `<button class="btn primary" ${act("ux_pass")}>Run a pass</button>`,
+    sub: "Review your app and choose what to improve.",
+    actions: `<button class="btn primary" ${act("ux_pass")} ${running ? "disabled" : ""}>${running ? "Review running…" : "Run full review"}</button>`,
     html: `
+      <section class="card mb-16"><div class="card-h"><h2>Improve your app</h2></div>
+        <div class="card-b stack">
+          <p>Find usability and design issues. Choose what to fix.</p>
+          <div class="row"><strong>Reviewing:</strong><span>${noScreens ? "Code only" : "Configured screens and interface code"}</span></div>
+          ${cfg?.url ? `<p class="muted">App address: ${esc(cfg.url)} · ${plural((cfg.routes || []).length, "page")} · ${(cfg.widths || []).map((w) => `${esc(w)}px`).join(", ")}${cfg.dark_mode ? " · light and dark mode" : ""}</p>` : ""}
+        </div>
+      </section>
+      <section class="card mb-16" id="ux-current-progress" aria-labelledby="ux-progress-title"><div class="card-h"><h2 id="ux-progress-title">Current progress</h2><span class="pill ${failed ? "failed" : running ? "working" : pass && !newerRun ? "done" : ""}">${status}</span></div>
+        <div class="card-b stack" role="status" aria-live="polite">
+          ${running ? `<p>${hasSteps ? `Step ${progress.step} of 4: ` : ""}${esc(progress.label || "Waiting for the reviewer to report its stage")}</p>
+            ${hasSteps ? `<progress class="ux-review-progress" value="${progress.step - 1}" max="4" aria-label="Completed review stages">${progress.step - 1} of 4</progress>` : ""}
+            <p class="muted">Started ${esc(ago(run.started))}. Check results appear when the report is saved.</p>` : `<p>${failed ? "This attempt did not finish. Open the run details to see what stopped it, then try again." : pass && !newerRun ? "The saved report is shown below. Unreported checks remain marked Not checked." : newerRun ? "The run ended, but no saved report is available. Open its details before starting another review." : "Start a review to capture screens and evaluate the checks below."}</p>`}
+          <ol class="ux-review-stages"><li>Capture screens or read interface code</li><li>Check usability</li><li>Check visual design</li><li>Save report</li></ol>
+          ${newerRun && run.last_line ? `<p class="muted">Latest activity: ${esc(run.last_line)}</p>` : ""}
+          ${run ? `<div><a class="btn small" href="#/runs/${encodeURIComponent(run.id)}">Open run details</a></div>` : ""}
+        </div>
+      </section>
       ${data.error ? `<div class="notice bad mb-16">Screens to review: ${esc(data.error)}</div>` : ""}
-      ${noScreens ? `<div class="notice mb-16">No screens are set up, so a pass reviews the code only and can't judge layout, spacing or contrast. Add your app's address below.</div>` : ""}
+      ${noScreens ? `<div class="notice mb-16">No screens are set up, so a review checks the code only and can't judge layout, spacing or contrast. Add your app's address below.</div>` : ""}
       ${cfg?.url && !data.browser ? `<div class="notice bad mb-16">No Chrome, Chromium or Edge found on this computer, so screens can't be captured.</div>` : ""}
+      <section class="card mb-16" id="ux-screenshot-gallery"><div class="card-h"><h2>UI screenshots</h2><span class="count">${selectedCapture?.screens?.length || 0} saved</span></div>
+        <div class="card-b stack"><p class="muted">Review screenshots of new and changed screens. Choose a capture, then select an image to inspect it.</p>
+          ${captures.length ? `<label class="field"><span>Capture history</span><select id="ux-capture-select">${captures.map((capture) => `<option value="${esc(captureKey(capture))}" ${capture === selectedCapture ? "selected" : ""}>${esc(capture.title || capture.id)} · ${esc(capture.at || "")}</option>`).join("")}</select></label>
+            ${selectedCapture.kind === "job" ? `<a href="#/jobs/${encodeURIComponent(selectedCapture.id)}">Source job: ${esc(selectedCapture.title || selectedCapture.id)}</a>` : ""}
+            ${selectedCapture.branch ? `<p class="muted">Job branch: ${esc(selectedCapture.branch)}</p>` : ""}
+            ${uxScreensHtml(selectedCapture.screens, captureBase)}
+            ${!selectedCapture.screens?.length ? `<div class="notice">This capture saved no screenshots. Check the setup and capture limits below, then retry.</div>` : ""}
+            ${captureLimits.length ? `<p class="muted">Capture limits: ${esc(captureLimits.join(" "))}</p>` : ""}`
+          : `<p>No UI screenshots have been saved yet.</p><a class="btn small" href="#/ux-review?setup=1">Set up screenshot capture</a>`}
+        </div></section>
       ${pass ? `
-        <section class="card mb-16"><div class="card-h"><h2>Latest pass</h2><span class="count">${esc(ago(Date.parse(pass.at) / 1000))}</span></div>
+        <section class="card mb-16"><div class="card-h"><h2>${previousResults ? "Previous results" : "Review results"}</h2><span class="count">${esc(ago(Date.parse(pass.at) / 1000))}</span></div>
           <div class="card-b stack">
             <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings ? "attention" : "done"}">${plural(pass.counts.findings, "finding")}</span>
               ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span></div>
@@ -3750,11 +4037,8 @@ pages["ux-review"] = async (_, query) => {
             ${pass.limits ? `<p class="muted">${esc(pass.limits)}</p>` : ""}
             ${pass.findings?.length ? `<div>${uxFixLink(pass.fix_text, "Create a job to fix the main ones")}</div>` : ""}
           </div>
-          ${pass.screens?.length ? `<details class="fold"><summary class="card-h"><h2>Screens</h2><span class="count">${pass.screens.length}</span></summary>
-            <div class="card-b">${uxScreensHtml(pass.screens, `ux-screens/pass/${encodeURIComponent(pass.id)}`)}</div></details>` : ""}
         </section>
-        ${areaCard("ux", "UX")}
-        ${areaCard("design", "Design")}` : `<section class="card mb-16"><div class="empty">No pass yet. <strong>Run a pass</strong> captures your screens and reviews them, which takes a few minutes.</div></section>`}
+        ` : ""}
       <section class="card mb-16" id="ux-setup"><details class="fold"${query.get("setup") || noScreens ? " open" : ""}><summary class="card-h"><h2>Screens to review</h2></summary>
         <form class="card-b stack" id="ux-settings">
           <label class="field"><span>Your app's address</span><input type="url" name="url" value="${esc(saved.url || "")}" placeholder="http://localhost:3000" spellcheck="false">
@@ -3768,15 +4052,26 @@ pages["ux-review"] = async (_, query) => {
               <small class="hint-text">Found automatically when it's named like docs/*ui*conventions*.md or DESIGN.md.</small></label>
             <label class="check"><input type="checkbox" name="dark_mode" ${saved.dark_mode !== false ? "checked" : ""}><span>Also capture dark mode</span></label>
             <label class="check"><input type="checkbox" name="simulator" ${saved.simulator ? "checked" : ""}><span>Also capture the iOS simulator</span></label>
-            <label class="check"><input type="checkbox" name="review_changes" ${saved.review_changes !== false ? "checked" : ""}><span>Check every job that changes the interface</span></label>
+            <label class="check"><input type="checkbox" name="review_changes" ${saved.review_changes !== false ? "checked" : ""}><span>Run AI review after UI jobs (screenshots are always captured when configured)</span></label>
           </div></details>
           <div><button class="btn" type="submit">Save</button></div>
         </form></details></section>
-      ${data.passes.length > 1 ? `<section class="card"><div class="card-h"><h2>Earlier passes</h2></div><div class="list">${data.passes.map((p) => `<a class="item" href="#/ux-review?id=${encodeURIComponent(p.id)}">
+      ${areaCard("ux", "Usability heuristics")}
+      ${areaCard("design", "Visual design checks")}
+      ${data.passes.length > 1 ? `<section class="card"><div class="card-h"><h2>Earlier reviews</h2></div><div class="list">${data.passes.map((p) => `<a class="item" href="#/ux-review?id=${encodeURIComponent(p.id)}">
         <div class="main-col"><div class="title">${esc(ago(Date.parse(p.at) / 1000))}${p.id === id ? " · showing" : ""}</div><div class="meta">${plural(p.counts.findings, "finding")}, ${p.counts.major} major</div></div></a>`).join("")}</div></section>` : ""}`,
     after: () => {
       hydrateAuthImages();
-      $("#ux-settings").addEventListener("submit", async (e) => {
+      wireImagePreviews(view);
+      $("#ux-capture-select")?.addEventListener("change", (event) => {
+        const nextQuery = new URLSearchParams(query); nextQuery.set("capture", event.target.value);
+        location.hash = `#/ux-review?${nextQuery}`;
+      });
+      const settingsForm = $("#ux-settings");
+      const markDirty = () => { settingsForm.dataset.dirty = "true"; };
+      settingsForm.addEventListener("input", markDirty);
+      settingsForm.addEventListener("change", markDirty);
+      settingsForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const f = new FormData(e.target);
         try {
@@ -3792,38 +4087,88 @@ pages["ux-review"] = async (_, query) => {
 const codeSpans = (text) => esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
 
 pages.checkup = async () => {
-  const d = await api("health");
-  // Only the highlighted next step gets a filled button; the rest of the list stays quiet.
+  const owner = state.you?.role !== "member";
+  const responses = await Promise.allSettled([api("health"), api("setup"), api("preflight"), api("integrations"), api("analytics"), owner ? api("config") : Promise.resolve(null)]);
+  const [health, setup, preflight, plugins, analytics, config] = responses.map((r) => r.status === "fulfilled" ? r.value : null);
+  if (setup) setupState = setup; // existing setup buttons use the current checklist
+  const d = health || {name: state.project?.name || "Project", stage: "Product status unavailable", items: []};
+  const product = d.items.map((i) => i.id === "prd" && i.status === "todo" ? {...i,
+    detail: "Tell the AI what you're building. Write a short description, generate a draft, or import a PRD.", label: "Define your product"}
+    : i.id === "release" && i.status === "todo" ? {...i, hint: "", release: true, detail: "Mark a version as released so you can track changes since it shipped.", label: "Create release tag"} : i);
+  const missing = (id, title, route) => ({id, title, status: "unknown", detail: "Status unavailable. Open settings to check.", route, label: "Check setup"});
+  const fromSetup = (i) => ({...i, status: i.done ? "ok" : "todo", setup: true});
+  const coreIds = ["project", "git", "llm", "machines", "models"];
+  const coreNames = ["Project configuration", "Git repository", "An AI provider is ready", "An enabled machine", "Model assigned to a machine"];
+  const coreRoutes = ["#/setup", "#/git", "#/config/ai", "#/config/fleet", "#/config/models"];
+  const required = coreIds.map((id, n) => {
+    const item = setup?.items.find((i) => i.id === id);
+    return item ? fromSetup(item) : missing(id, coreNames[n], coreRoutes[n]);
+  });
+  // Older servers count disabled machines; use their public machine inventory when available.
+  if (config?.machines) {
+    const enabled = config.machines.filter((m) => m.enabled !== false);
+    const machine = required.find((i) => i.id === "machines"), models = required.find((i) => i.id === "models");
+    machine.status = enabled.length ? "ok" : "todo"; machine.done = Boolean(enabled.length);
+    machine.detail = enabled.length ? `${enabled.length} enabled. Worker connectivity is checked before a job runs.` : "No enabled machines. Add or enable a machine.";
+    models.status = enabled.some((m) => m.models > 0) ? "ok" : "todo"; models.done = models.status === "ok";
+  }
+  const workflows = (setup?.items || []).filter((i) => i.required && !coreIds.includes(i.id)).map(fromSetup);
+  workflows.push(...(preflight?.items || []).filter((i) => i.id !== "github" || !workflows.some((w) => w.id === "github_cli")).map((i) => ({...i,
+    status: i.status === "fail" ? "todo" : i.status, route: i.route || "#/readiness", label: i.route ? i.fix || "Review setup" : "Open Readiness"})));
+  if (!preflight) workflows.push(missing("build-tools", "Build tools and platform prerequisites", "#/readiness"));
+  const signing = setup?.workflow_checks || [missing("signing", "Signing and delivery prerequisites", "#/delivery")];
+  workflows.push(...signing.filter((i) => i.selected === true));
+  const delivery = (setup?.items || []).find((i) => i.id === "firebase");
+  if (delivery?.done) workflows.push({...fromSetup(delivery), setup: false, status: config?.firebase ? config.firebase.app_id && config.firebase.cli_installed ? "ok" : "todo" : "unknown",
+    detail: "Firebase distribution is selected. Requires an App ID and Firebase CLI; account access is verified when sending a build.", route: "#/config/firebase", label: "Review Firebase delivery"});
+  const optional = product.filter((i) => i.id !== "repo" && i.id !== "delivery");
+  optional.push(...signing.filter((i) => i.selected !== true));
+  if (delivery && !delivery.done) optional.push(fromSetup(delivery));
+  optional.push(...(setup?.items || []).filter((i) => !i.required && !["connections", "firebase", "email", "docs"].includes(i.id)).map(fromSetup));
+  if (!health) optional.push(missing("product", "Product requirements and milestones", "#/product"));
+  if (plugins) optional.push(...plugins.integrations.map((p) => ({id: `plugin-${p.id}`, title: p.name,
+    status: p.connected && !p.rejected && !p.expiry?.expired ? "ok" : "todo",
+    detail: p.rejected || p.expiry?.expired ? "Reconnect: the saved token was rejected or expired." : p.connected ? "Connected. Credentials are checked when used." : p.blurb || "Connect to use tickets, designs, or error reports.",
+    route: "#/connections?section=plugins", label: p.rejected || p.expiry?.expired ? "Reconnect" : "Manage plugin"})));
+  else optional.push(missing("plugins", "Plugins", "#/connections?section=plugins"));
+  const email = config?.email;
+  const emailReady = email && email.recipients?.length && (email.provider === "resend" ? email.resend_api_key_set && email.resend_from_email : email.smtp_email && email.smtp_password_set);
+  optional.push(config?.webhook ? {id: "slack", title: "Slack alerts", status: config.webhook.set ? "ok" : "todo", detail: "Receive job updates in Slack.", route: "#/connections?section=alerts", label: "Manage alerts"} : missing("slack", "Slack alerts", "#/connections?section=alerts"));
+  optional.push(email ? {id: "email", title: "Email alerts", status: emailReady ? "ok" : "todo", detail: "Requires recipients and a configured sender.", route: "#/config/email", label: "Manage email"} : missing("email", "Email alerts", "#/config/email"));
+  if (analytics) {
+    optional.push(...(analytics.providers || []).map((p) => ({id: `analytics-${p.id}`, title: `${p.name} analytics`, status: analytics.provider === p.id && analytics.key_set ? "ok" : "todo", detail: "Optional event tracking. Send a test event to verify access.", route: `#/measure?provider=${encodeURIComponent(p.id)}`, label: "Manage analytics"})));
+    const mcps = Object.entries(analytics.provider_mcp || {}).flatMap(([provider, entries]) => entries.map((m) => ({provider, ...m})));
+    optional.push({id: "mcp", title: "Analytics MCP servers", status: mcps.length ? mcps.some((m) => m.installed) ? "ok" : "todo" : "unknown",
+      detail: mcps.length ? `${mcps.filter((m) => m.installed).length} of ${mcps.length} provider / AI organization configurations detected. Installation detection does not verify server access.` : "Installation status unavailable.", route: "#/connections?section=analytics", label: "Review MCP installations"});
+  } else optional.push(missing("analytics", "Analytics and analytics MCP servers", "#/connections?section=analytics"));
+  optional.push({id: "mobile", title: "Mobile portals", status: "unknown", detail: "Optional access from your phone. Installation is not detected here.", route: "#/connections?section=mobile", label: "View mobile portals"},
+    {id: "recommended-mcp", title: "Recommended MCP servers", status: "unknown", detail: "Optional tools for design, planning, and development. Review and connect the servers you need.", route: "#/connections?section=mcp", label: "View recommended servers"});
   const action = (i, primary = false) => {
+    if (i.setup) return setupItem(i);
     const kind = primary ? "btn small primary" : "btn small";
+    if (i.release) return owner ? `<button type="button" class="${kind}" data-create-release data-owner-only>Create release tag</button>` : `<span class="muted">Managed by the project owner</span>`;
     if (i.job) return `<a class="${kind}" href="#/new?type=${encodeURIComponent(i.job.type)}&summary=${encodeURIComponent(i.job.summary)}">${esc(i.label)}</a>`;
-    if (i.route) return `<a class="${kind}" href="${esc(i.route)}">${esc(i.label)}</a>`;
+    if (i.route) return `<a class="${kind}" href="${esc(i.route)}">${esc(i.label || "Open")}</a>`;
     if (i.hint) return `<div class="setup-hint"><code>${esc(i.hint)}</code><button class="btn small ghost" data-setup-copy="${esc(i.hint)}">Copy</button></div>`;
     return "";
   };
-  const icon = { ok: `<span class="setup-icon done" aria-label="in place">✓</span>`, todo: `<span class="setup-icon todo" aria-label="missing"></span>`, warn: `<span class="pill attention" aria-label="needs attention">!</span>` };
-  const next = d.items.find((i) => i.id === d.next);
+  const count = (items) => `${items.filter((i) => i.status === "ok").length} of ${items.length} configured`;
+  const group = (title, items, description) => `<section class="card mb-16"><div class="card-h"><h2>${title}</h2><span class="count">${count(items)}</span></div><div class="card-b muted card-note">${description}</div>
+    <div class="list onboarding-list">${items.map((i) => i.setup ? setupItem(i) : `<div class="item"><span class="pill ${i.status === "ok" ? "done" : i.status === "todo" || i.status === "warn" ? "attention" : ""}">${i.status === "ok" ? "Configured" : i.status === "unknown" ? "Status unavailable" : i.status === "warn" ? "Needs attention" : "Needs setup"}</span><div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div><div class="side">${action(i)}</div></div>`).join("") || `<div class="empty">No additional prerequisites reported for this project.</div>`}</div></section>`;
+  const next = required.find((i) => i.status !== "ok") || workflows.find((i) => i.status !== "ok");
   return {
-    title: "Check-up",
+    title: "Onboarding checklist",
     sub: `${esc(d.name)} · ${esc(d.stage)}`,
-    html: `
-      <div class="tasks-progress-wrap mb-16"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round((d.ok / d.total) * 100)}%"></div></div><span class="progress-text">${d.ok}/${d.total} in place</span></div>
-      ${next ? `<section class="card mb-16 card-next"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div>
-        <div class="card-b stack"><div>${esc(next.detail)}</div><div>${action(next, true)}</div></div></section>` : `<div class="notice">Everything on the list is in place. Keep an eye on Home for what needs you next.</div>`}
-      <section class="card"><div class="card-h"><h2>Everything</h2><span class="count">${d.ok} of ${d.total}</span></div>
-        <div class="card-b muted card-note">What the product has in place. Tools, keys and machines are in <a href="#/readiness">Readiness</a>.</div>
-        <div class="list">${d.items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div>
-          <div class="side">${i.id === d.next || i.status === "ok" ? "" : action(i)}</div></div>`).join("")}</div></section>
-      <section class="card mt-16"><div class="card-h"><h2>UX and design</h2><a class="btn small" href="#/ux-review">Open UX review</a></div>
-        <div class="card-b muted" id="ux-checkup">Checking…</div></section>
-      <section class="card mt-16"><div class="card-h"><h2>This computer and its tools</h2><a class="btn small" href="#/readiness">Open Readiness</a></div>
-        <div class="card-b muted">Whether jobs can run here: the AI, machines, sign-ins and build tools, and the checks you can run.</div></section>`,
+    html: `<p class="muted mb-16">Set up the essentials, then the workflows and connections you need. Optional items do not affect required setup counts. Configured does not guarantee access; job checks verify tools and workers when used.</p>
+      ${next ? `<section class="card mb-16 card-next"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div><div class="card-b stack">${next.setup ? action(next, true) : `<p>${esc(next.detail)}</p><div>${action(next, true)}</div>`}</div></section>` : ""}
+      ${group("Required to run jobs", required, "Project, Git, an AI provider, an enabled machine, and a model assignment.")}
+      ${group("Required for selected workflows", workflows, 'Applies when using GitHub, building or testing this app, or distributing builds. Some checks apply to this computer; remote workers are checked separately. <a href="#/readiness">Open Readiness</a> for detailed checks.')}
+      ${group("Optional", optional, 'Product guidance, milestones, and connections. Add what helps your work. Unavailable or undetected statuses are shown explicitly. <a href="#/connections">Manage connections</a>.')}
+      <section class="card mt-16"><div class="card-h"><h2>UX and design</h2><a class="btn small" href="#/ux-review">Open UX review</a></div><div class="card-b muted" id="ux-checkup">Checking…</div></section>`,
     after: () => {
-      api("ux-pass").then(({ passes, settings }) => {
+      api("ux-pass").then(({passes, settings}) => {
         const last = passes[0];
-        $("#ux-checkup").textContent = last
-          ? `Last pass ${ago(Date.parse(last.at) / 1000)}: ${plural(last.counts.findings, "finding")}, ${last.counts.major} major or worse.`
-          : settings && (settings.url || settings.simulator) ? "No pass yet. Run one from UX review." : "No pass yet, and no screens set up. UX review shows how.";
+        $("#ux-checkup").textContent = last ? `Last pass ${ago(Date.parse(last.at) / 1000)}: ${plural(last.counts.findings, "finding")}, ${last.counts.major} major or worse.` : settings && (settings.url || settings.simulator) ? "No pass yet. Run one from UX review." : "No pass yet, and no screens set up. UX review shows how.";
       }).catch(() => { $("#ux-checkup").textContent = "Couldn't read the UX review."; });
     },
   };
@@ -3839,13 +4184,13 @@ pages.help = async () => ({
         <li><strong>It gets planned.</strong> You may be asked a question. Anything waiting on you is marked in the job list on <a href="#/">Home</a>, with its next step on the row.</li>
         <li><strong>It gets built.</strong> A worker writes the code and the tests, on its own branch. Pause it any time; Resume picks up at the next task.</li>
         <li><strong>You review it.</strong> The job page shows progress, test cases, changes and a scope check. Ask the AI about it, revise the plan, or run a fix.</li>
-        <li><strong>You ship it.</strong> Merge (or Mark complete), then send a build to testers from <a href="#/delivery">Delivery</a>.</li>
+        <li><strong>You ship it.</strong> Merge (or Mark complete), then send a build to testers from <a href="#/delivery">App delivery</a>.</li>
         <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
       ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads. Edit it, import a PRD, see its history."],
-         ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
-         ["Check-up", "#/checkup", "What the product has in place and what's missing."], ["Readiness", "#/readiness", "Whether jobs can run here: AI, machines, sign-ins, build tools and checks."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
+         ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["App delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
+         ["Onboarding checklist", "#/checkup", "What the product has in place and what's missing."], ["Readiness", "#/readiness", "Whether jobs can run here: AI, machines, sign-ins, build tools and checks."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
     </div></section>
     <section class="card mb-16"><div class="card-h"><h2>Words we use</h2></div><div class="card-b"><dl class="help-terms">
@@ -4080,10 +4425,13 @@ function productStripHtml(p) {
 }
 
 pages.product = async (_, query) => {
-  let [p, integrationsData] = await Promise.all([
+  let [p, integrationsData, productsData] = await Promise.all([
     api("product"),
     api("integrations").catch(() => ({ integrations: [] })),
+    api("projects").catch(() => null),
   ]);
+  const products = (productsData?.projects || (state.project ? [{ ...state.project, active: true }] : []))
+    .slice().sort((a, b) => Number(b.active) - Number(a.active));
   let connectedApps = (integrationsData?.integrations || []).filter((i) => i.connected);
   const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1", section: query?.get("section") || "" };
   const sectionCard = (s) => {
@@ -4120,6 +4468,14 @@ pages.product = async (_, query) => {
       <div class="meta">${esc(ago(v.at))}${v.summary ? ` · ${esc(v.summary)}` : ""}</div><div class="prd-diff" hidden></div></div>
       <div class="side"><button type="button" class="btn small ghost" data-prd-diff="${esc(v.id)}">See changes</button>${i === 0 ? "" : `<button type="button" class="btn small" data-prd-restore="${esc(v.id)}">Restore</button>`}</div></div>`).join("");
   const render = () => `
+      <section class="card mb-16" aria-labelledby="current-products-title"><div class="card-h"><h2 id="current-products-title">Current products</h2><a href="#/projects">Manage</a></div>
+        <div class="card-b row gap-8 wrap">${products.map((product) => product.active
+          ? `<span class="chip"><strong>${esc(product.name)}</strong><span class="muted"> · Current</span></span>`
+          : `<button type="button" class="btn small" data-switch-project="${esc(product.root)}" data-then="#/product">${esc(product.name)}</button>`).join("") || `<span class="muted">No products added yet.</span>`}
+          ${!productsData ? `<span class="muted">Couldn't load the product list. <a href="#/projects">Try again</a></span>` : ""}</div></section>
+      <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2><div class="card-actions">
+        ${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button></div></div>
+        <div class="card-b"><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div></section>
       <div id="prd-panel"></div>
       ${p.sections.map(sectionCard).join("")}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
@@ -4143,9 +4499,9 @@ pages.product = async (_, query) => {
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
         <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
-    title: "Product requirements",
-    sub: `<a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.`,
-    actions: `${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button>`,
+    title: "Product",
+    sub: "",
+    actions: "",
     html: render(),
     after: () => {
       const panel = () => $("#prd-panel");
@@ -5056,20 +5412,22 @@ pages.git = async () => {
   const sync = g.upstream == null ? "No upstream yet — Push sets it."
     : `${g.ahead} to push · ${g.behind} to pull (vs ${g.upstream})`;
   return {
-    title: "Git",
+    title: "Git setup",
     sub: `<span class="status-line"><span class="mono">${esc(g.branch || "detached")}</span><span class="sep">·</span><span>${esc(sync)}</span></span>`,
     html: `
+      <section class="card git-branch-card">
+        <div class="card-h"><h2>Switch branch</h2></div>
+        <div class="card-b">
+          <select id="git-branch-select" name="branch" class="mono git-branch-select" aria-label="Switch branch">
+            ${g.branches.map((b) => branchOption(b, g.branch, g.elsewhere)).join("")}
+          </select>
+        </div>
+      </section>
       <section class="card"><div class="card-h git-sync-header"><h2>Sync branch</h2><div class="git-sync-actions">
         <button type="button" class="btn" id="git-pull">Pull</button><button type="button" class="btn primary" id="git-push">Push</button>
         ${moreMenu([["New branch…", act("git_new_branch")], ...(g.web_url ? [["Open repo on GitHub", `data-open="${esc(g.web_url)}"`]] : [])])}
       </div></div><div class="card-b stack">
         <div><div class="muted">Last commit</div><div>${esc(g.last_commit || "—")}</div></div>
-        <div>
-          <div class="muted">Switch branch</div>
-          <select id="git-branch-select" name="branch" class="mono" aria-label="Switch branch" style="margin-top: 4px; max-width: 200px;">
-            ${g.branches.map((b) => branchOption(b, g.branch, g.elsewhere)).join("")}
-          </select>
-        </div>
       </div></section>
       <section class="card"><div class="card-h"><h2>Uncommitted changes</h2><span class="count">${g.changes_total}</span></div>
         <div class="list">${g.changes.map((c) => `<div class="item"><span class="pill">${esc(c.status)}</span><span class="mono">${esc(c.path)}</span></div>`).join("") || `<div class="empty">Working tree clean.</div>`}</div>
@@ -5553,18 +5911,9 @@ const RECOMMENDED_MCPS = [
 ];
 
 function renderRecommendedInstalls() {
-  return `<section class="rec-section mt-24 stack" id="recommended-installs">
-    <div class="rec-section-header">
-      <h2 class="rec-section-title">Recommended installs</h2>
-      <p class="muted">Mobile tools and Model Context Protocol (MCP) servers to extend remote control and agent capabilities.</p>
-    </div>
-
-    <div class="rec-group mt-12">
-      <div class="rec-subhead">
-        <svg class="icon" aria-hidden="true" style="width:16px;height:16px"><use href="#i-phone"/></svg>
-        <h3>Mobile control</h3>
-        <span class="pill">iOS &amp; iPadOS</span>
-      </div>
+  return `<div class="stack" id="recommended-installs" aria-label="Recommended installs">
+    <section class="connections-section" id="connections-mobile" aria-labelledby="connections-mobile-title">
+      <h2 class="connections-section-title" id="connections-mobile-title">Mobile portals</h2>
       <p class="muted mb-12">Monitor runs, review logs, and trigger tasks directly from your iPhone or iPad.</p>
 
       <div class="conn-grid">
@@ -5587,14 +5936,10 @@ function renderRecommendedInstalls() {
           </section>
         `).join("")}
       </div>
-    </div>
+    </section>
 
-    <div class="rec-group mt-20">
-      <div class="rec-subhead">
-        <svg class="icon" aria-hidden="true" style="width:16px;height:16px"><use href="#i-terminal"/></svg>
-        <h3>Recommended MCP servers</h3>
-        <span class="pill">Model Context Protocol</span>
-      </div>
+    <section class="connections-section" id="connections-mcp" aria-labelledby="connections-mcp-title">
+      <h2 class="connections-section-title" id="connections-mcp-title">Recommended MCP servers</h2>
       <p class="muted mb-12">Model Context Protocol servers connect specialized tools, build automation, and live context directly to AI models.</p>
 
       <div class="rec-callout">
@@ -5626,8 +5971,8 @@ function renderRecommendedInstalls() {
           </section>
         `).join("")}
       </div>
-    </div>
-  </section>`;
+    </section>
+  </div>`;
 }
 
 pages.connections = async (_, query) => {
@@ -5639,14 +5984,14 @@ pages.connections = async (_, query) => {
   const owner = state.you?.role !== "member";
   const hook = owner ? (await api("config").catch(() => null))?.webhook : null;
   const analyticsData = await api("analytics").catch(() => null);
-  const analyticsConnected = Boolean(analyticsData?.provider && analyticsData?.key_set);
-  const analyticsPill = analyticsConnected
-    ? pill("done", `${analyticsData.provider_name} (${(analyticsData.region || "us").toUpperCase()})`)
-    : pill("", "Not connected");
-  return {
-    title: "Connections",
-    sub: "Link jobs to tickets, errors and designs, and get alerts in Slack",
-    html: `<div class="conn-grid">${list.map((p) => `
+  const pluginGroups = [
+    { id: "design", name: "Design", providers: ["figma"] },
+    { id: "planning", name: "Planning / tracking", providers: ["jira", "trello"] },
+    { id: "diagnostics", name: "Errors / diagnostics", providers: ["sentry"] },
+  ];
+  const knownPlugins = new Set(pluginGroups.flatMap((group) => group.providers));
+  pluginGroups.push({ id: "other", name: "Other plugins", providers: list.filter((p) => !knownPlugins.has(p.id)).map((p) => p.id) });
+  const integrationCard = (p) => `
       <section class="card conn-card" data-conn="${esc(p.id)}">
         <div class="card-b stack">
           <div class="row"><strong class="conn-name">${providerIcon(p.id)}${esc(p.name)}</strong>${connectionStatus(p)}</div>
@@ -5667,24 +6012,54 @@ pages.connections = async (_, query) => {
             : `<button class="btn small ${!p.connected || p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect" : p.rejected || p.expiry?.expired ? "Reconnect" : "Update"}</button>`}
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
-        </div></section>`).join("")}
-      <section class="card conn-card" data-conn="analytics">
-        <div class="card-b stack">
-          <div class="row"><strong class="conn-name">${providerIcon("analytics")}Product Analytics &amp; KPIs</strong>${analyticsPill}</div>
-          <div class="muted">Connect Mixpanel, Amplitude, or PostHog to judge features by real user metrics and tracking plans.</div>
-          ${analyticsConnected ? `<div class="mono conn-summary">${esc(analyticsData.provider_name)} connected</div>` : ""}
-          <div class="row">
-            ${(analyticsConnected && (analyticsData.dashboard_url || (analyticsData.provider === "mixpanel" ? (analyticsData.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project") : null))) ? `
-              <a href="${esc(analyticsData.dashboard_url || (analyticsData.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project"))}" target="_blank" rel="noopener" class="btn small">Open ${esc(analyticsData.provider_name)} project ↗</a>
-            ` : ""}
-            <a href="#/measure" class="btn small primary">Manage analytics &amp; KPIs ↗</a>
-          </div>
+        </div></section>`;
+  return {
+    title: "Connections",
+    sub: "Manage plugins, notifications, Git, analytics, mobile portals, and recommended MCP servers.",
+    html: `<div class="connections-sections stack">
+      <section class="connections-section" id="connections-plugins" aria-labelledby="connections-plugins-title">
+        <h2 class="connections-section-title" id="connections-plugins-title">Plugins</h2>
+        ${pluginGroups.map((group) => {
+          const providers = list.filter((p) => group.providers.includes(p.id));
+          return providers.length ? `<section class="connections-plugin-group" id="connections-plugins-${group.id}" aria-labelledby="connections-plugins-${group.id}-title">
+            <h3 id="connections-plugins-${group.id}-title">${esc(group.name)}</h3>
+            <div class="conn-grid">${providers.map(integrationCard).join("")}</div>
+          </section>` : "";
+        }).join("") || `<p class="muted">No plugins are available for this Orchestrator.</p>`}
+        <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>
+      </section>
+      <section class="connections-section" id="connections-alerts" aria-labelledby="connections-alerts-title">
+        <h2 class="connections-section-title" id="connections-alerts-title">Alerts / notifications</h2>
+        <div class="conn-grid">
+          ${hook ? ConfigurationPages.chatCard(hook) : `<div class="card"><div class="card-b muted">${owner ? "Slack alert settings are unavailable. Reload to try again." : "Slack alerts are managed by the project owner."}</div></div>`}
+          <section class="card conn-card" data-owner-only><div class="card-b stack">
+            <strong class="conn-name">Email alerts</strong>
+            <p class="muted">Choose who receives job updates and configure the account that sends them.</p>
+            <div><a class="btn small" href="#/config/email">Manage email alerts</a></div>
+          </div></section>
         </div>
       </section>
-    </div>
-      <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>
-      ${hook ? `<div class="mt-16">${ConfigurationPages.chatCard(hook)}</div>` : ""}
-      ${renderRecommendedInstalls()}`,
+      <section class="connections-section" id="connections-git" aria-labelledby="connections-git-title">
+        <h2 class="connections-section-title" id="connections-git-title">Git</h2>
+        <div class="conn-grid"><section class="card conn-card"><div class="card-b stack">
+          <strong class="conn-name">Repository &amp; branches</strong>
+          <p class="muted">Switch branches, sync commits, and review uncommitted changes.</p>
+          ${state.project?.branch ? `<div class="mono conn-summary">Current branch: ${esc(state.project.branch)}</div>` : ""}
+          <div><a class="btn small primary" href="#/git">Open Git setup</a></div>
+        </div></section></div>
+      </section>
+      <section class="connections-section" id="connections-analytics" aria-labelledby="connections-analytics-title">
+        <h2 class="connections-section-title" id="connections-analytics-title">Analytics</h2>
+        <div class="conn-grid">${analyticsData ? analyticsConnectionCards(analyticsData, true) : `<section class="card conn-card">
+        <div class="card-b stack">
+          <strong class="conn-name">${providerIcon("analytics")}Product Analytics &amp; KPIs</strong>
+          <div class="notice">Analytics connection status is unavailable. Try again from Measure.</div>
+          <a href="#/measure" class="btn small">Manage analytics &amp; KPIs ↗</a>
+        </div>
+      </section>`}</div>
+      </section>
+      ${renderRecommendedInstalls()}
+    </div>`,
     after: () => {
       ConfigurationPages.applyRole(state.you?.role || "owner", view);
       const onChat = async (event) => {
@@ -5712,6 +6087,10 @@ pages.connections = async (_, query) => {
       view.addEventListener("click", onChat);
       cleanup.push(() => view.removeEventListener("click", onChat));
       if (query?.get("card") === "chat") $("#chat-alerts")?.scrollIntoView({ block: "start" });
+      const section = query?.get("section");
+      if (["plugins", "alerts", "git", "analytics", "mobile", "mcp"].includes(section)) {
+        view.querySelector(`#connections-${section}`)?.scrollIntoView({ block: "start" });
+      }
       const onClick = async (ev) => {
         const connect = ev.target.closest("[data-conn-connect]"), disc = ev.target.closest("[data-conn-disconnect]");
         if (disc) {
@@ -6335,7 +6714,10 @@ function openImageModal({ title, src, authSrc, fullUrl }) {
       </div>
     </div>
   `;
-  hydrateAuthImages($("#dialog-body"));
+  hydrateAuthImages($("#dialog-body")).then(() => {
+    const image = $("#dialog-body .image-preview-modal-img"), link = $("#dialog-body .image-preview-modal-foot a");
+    if (link && image?.src?.startsWith("blob:")) link.href = image.src;
+  });
   $("#dialog-ok").textContent = "Close";
   $("#dialog-ok").className = "btn";
   dlg.addEventListener("close", () => {
@@ -6356,9 +6738,9 @@ function wireImagePreviews(root = document) {
       e.preventDefault();
       openImageModal({
         title: btn.dataset.previewTitle,
-        src: btn.dataset.previewImg,
+        src: btn.dataset.previewImg || btn.querySelector("img")?.src || "",
         authSrc: btn.dataset.previewAuth,
-        fullUrl: btn.dataset.previewImg,
+        fullUrl: btn.dataset.previewImg || btn.querySelector("img")?.src || "",
       });
     };
   });
@@ -6941,11 +7323,12 @@ async function tick() {
     return;
   }
   if (!LIVE.has(current.page) || $("#dialog").open || document.querySelector("details.more[open]")) return;
-  if (view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
+  if (current.page !== "ux-review" && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   const page = current.page, args = current.args.join();
   try {
     const result = await pages[page](current.args, current.query);
     if (current.page !== page || current.args.join() !== args) return;
+    if (page === "ux-review" && updateUxReviewWhileEditing(result)) return;
     if (signatureOf(result) !== current.rendered) apply(result);
   } catch { /* keep showing the last good render */ }
 }
@@ -6963,7 +7346,7 @@ const navigationDrawer = NavigationDrawer.mount({document, window});
 const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
-  ["Git", "#/git", "Branches and changes"], ["Delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Check-up", "#/checkup", "What the product has and what's missing"], ["Readiness", "#/readiness", "Can jobs run here: setup, build tools, checks"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
+  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Onboarding checklist", "#/checkup", "What the product has and what's missing"], ["Readiness", "#/readiness", "Can jobs run here: setup, build tools, checks"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
 const palette = { open: false, entries: [], shown: [], active: 0, opener: null };

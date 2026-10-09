@@ -242,7 +242,7 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
 .card-h { background: var(--panel-2); }
 .card > .card-h:first-child, .card > details:first-child > summary.card-h { border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
 .card > details:only-child:not([open]) > summary.card-h { border-radius: calc(var(--radius) - 1px); border-bottom: 0; }
-.card-h h2 { font-size: var(--text-lg); font-weight: 650; }
+.card-h h2 { font-size: var(--text-xl); font-weight: 650; }
 .card-h h2 .count { font-weight: 500; font-size: var(--text-md); margin-left: var(--space-1); }
 .card-actions { display: flex; align-items: center; gap: var(--space-2); flex: none; }
 /* Facts about the card's content (where a file lives, when it changed) sit in a caption under the header. */
@@ -312,6 +312,11 @@ div.import-option:hover { border-color: var(--border); background: var(--panel);
 .coverage-paths { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .brief-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
 .autopilot-option { padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+/* Keep branch selection prominent before sync and working-tree details. */
+.git-branch-card { border-color: var(--accent); }
+.git-branch-card > .card-h { background: var(--accent-soft); }
+.git-branch-card > .card-h h2 { color: var(--accent); }
+.git-branch-select { min-height: var(--control-lg); border-color: var(--accent); font-weight: 600; }
 .git-sync-actions { display: flex; align-items: center; gap: var(--space-2); }
 body[data-page="git"] .more-menu { position: absolute; top: calc(100% + var(--space-2)); bottom: auto; left: auto; right: 0; min-width: min(240px, calc(100vw - 2 * var(--space-6))); z-index: var(--z-menu); }
 body[data-page="git"] details.more[open] > summary::before { display: none; }
@@ -410,7 +415,7 @@ a.item:hover { background: var(--panel-2); }
 /* forms */
 form.stack, .stack { display: flex; flex-direction: column; gap: var(--space-4); }
 .field { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; max-width: 100%; }
-.field > span { font-weight: 560; font-size: var(--text-md); overflow-wrap: anywhere; word-break: break-word; }
+.field > span, .field > legend { font-weight: 560; font-size: var(--text-base); overflow-wrap: anywhere; word-break: break-word; }
 .field small, .hint-text { color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; word-break: break-word; }
 input[type=text], input[type=search], input[type=url], input[type=number], input[type=email], input[type=password], input[type=date], textarea, select {
   font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
@@ -1676,6 +1681,18 @@ dialog h2 {
 .setup-item .main-col { flex: 1; min-width: 0; }
 .setup-item .meta { color: var(--muted); font-size: var(--text-sm); }
 .setup-item.is-done .title { color: var(--muted); }
+.onboarding-list > .item, .onboarding-list > .setup-item {
+  display: grid; grid-template-columns: minmax(0, 9rem) minmax(0, 1fr) auto; align-items: start;
+}
+.onboarding-list > :is(.item, .setup-item) > :is(.pill, .setup-icon) { grid-column: 1; justify-self: start; white-space: normal; }
+.onboarding-list > :is(.item, .setup-item) > .main-col { grid-column: 2; overflow-wrap: anywhere; }
+.onboarding-list > :is(.item, .setup-item) :is(.title, .meta) { white-space: normal; overflow: visible; }
+.onboarding-list > :is(.item, .setup-item) > :is(.side, .btn) { grid-column: 3; }
+@media (max-width: 760px) {
+  .onboarding-list > .item, .onboarding-list > .setup-item { grid-template-columns: minmax(0, 7rem) minmax(0, 1fr); }
+  .onboarding-list > :is(.item, .setup-item) > :is(.side, .btn) { grid-column: 2; width: auto; justify-content: flex-start; justify-self: start; }
+  .onboarding-list .btn { max-width: 100%; white-space: normal; text-align: left; }
+}
 .setup-icon { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border); margin-top: var(--space-0); display: grid; place-items: center; font-size: var(--text-xs); }
 .setup-icon.todo { border-color: var(--accent); }
 .setup-icon.done { background: var(--ok-solid); border-color: var(--ok-solid); color: var(--ok-solid-ink); }
@@ -1813,7 +1830,7 @@ dialog h2 {
   background: var(--panel);
   box-shadow: var(--shadow);
 }
-.configuration-chooser-group h2 { margin-bottom: var(--space-3); font-size: var(--text-base); }
+.configuration-chooser-group h2 { margin-bottom: var(--space-3); font-size: var(--text-lg); }
 .configuration-chooser-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .configuration-choice {
   display: flex;
@@ -1859,8 +1876,18 @@ dialog h2 {
 }
 
 /* Connections + link picker */
+.connections-section { padding-top: var(--space-5); border-top: 1px solid var(--border); scroll-margin-top: var(--space-7); }
+.connections-sections > .connections-section:first-child { padding-top: 0; border-top: 0; }
+.connections-section-title { margin: 0 0 var(--space-4); font-size: var(--text-2xl); font-weight: 650; }
+.connections-plugin-group + .connections-plugin-group { margin-top: var(--space-5); }
+.connections-plugin-group > h3 { margin: 0 0 var(--space-3); font-size: var(--text-xl); font-weight: 600; }
+#connections-alerts .card-h { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .connections-section { scroll-margin-top: calc(80px + env(safe-area-inset-top)); }
+}
+
 .conn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--space-4); }
-.conn-name { font-size: var(--text-lg); margin-right: auto; display: inline-flex; align-items: center; gap: var(--space-2); }
+.conn-name { font-size: var(--text-xl); margin-right: auto; display: inline-flex; align-items: center; gap: var(--space-2); }
 .brand-icon { width: 14px; height: 14px; flex-shrink: 0; display: inline-block; vertical-align: -1px; border-radius: var(--r-xs); }
 .conn-name .brand-icon { width: 18px; height: 18px; }
 .conn-summary { font-size: var(--text-xs); color: var(--muted); word-break: break-all; }
@@ -2014,7 +2041,7 @@ body[data-page="connections"] .configuration-card .card-b {
   min-width: 0;
 }
 .np-section-legend {
-  font-size: var(--text-base);
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text);
   padding: 0 var(--space-2);
@@ -2577,7 +2604,7 @@ body[data-page="product"] .topbar-actions .btn:hover {
 
 /* Tests: suites grouped by folder */
 .suite-group + .suite-group { border-top: 1px solid var(--border); }
-.suite-group > summary h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; overflow-wrap: anywhere; }
+.suite-group > summary h3 { margin: 0; font-size: var(--text-md); font-weight: 600; overflow-wrap: anywhere; }
 
 /* Projects */
 .projects-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-4); }
@@ -2612,8 +2639,14 @@ body[data-page="product"] .topbar-actions .btn:hover {
 }
 
 /* UX review: screenshot strips and findings */
+.ux-check .main-col { white-space: normal; overflow-wrap: anywhere; }
+.ux-check .main-col p { margin: var(--space-1) 0 0; }
+.ux-check-evidence { font-size: var(--text-md); }
+.ux-review-progress { width: 100%; height: var(--space-2); accent-color: var(--accent); }
+.ux-review-stages { margin: 0; padding-left: var(--space-5); color: var(--muted); }
 .ux-screens { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space-3); }
 .ux-screen { margin: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.ux-screen-preview { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
 .ux-screen img { width: 100%; max-height: 260px; object-fit: cover; object-position: top; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
 .ux-screen figcaption { font-size: var(--text-xs); color: var(--muted); overflow-wrap: anywhere; }
 .ux-finding .main-col { display: flex; flex-direction: column; gap: var(--space-1); white-space: normal; }
@@ -2740,7 +2773,7 @@ body[data-page="run"] .topbar-actions {
 }
 .rail-h { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: var(--control-sm); }
 .rail-empty { margin: 0; padding: var(--space-3) var(--space-4); border: 1px dashed var(--border); border-radius: var(--radius); font-size: var(--text-sm); }
-.rail-card .card-h h2 { font-size: var(--text-md); }
+.rail-card .card-h h2 { font-size: var(--text-base); }
 .context-item { align-items: flex-start; }
 .context-item .main-col { white-space: normal; overflow-wrap: anywhere; }
 .context-thumb { width: 56px; height: 56px; object-fit: cover; flex: none; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
@@ -2767,6 +2800,7 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Phone header: menu and logo on the left, the current project's name centred */
 .mobile-header-start { display: flex; align-items: center; gap: var(--space-2); }
+.brand-home { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-lg); min-height: var(--control-lg); flex-shrink: 0; border-radius: var(--r-md); }
 .mobile-title { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-lg); font-weight: 650; }
 
 /* A task's ⋯ menu stays beside its title on phones instead of dropping to a row of its own */

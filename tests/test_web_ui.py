@@ -204,6 +204,7 @@ class SignInTests(ServerTestCase):
             ("/api/integrations/jira/options", {"options": {}}),
             ("/api/integrations/jira/disconnect", {}),
             ("/api/new-project/draft", {"name": "Private idea"}),
+            ("/api/delivery/release", {"tag": "v0.1.0", "commit": "a" * 40}),
         ):
             with self.subTest(path=path):
                 res, data = self.as_user(token, "POST", path, body=body, sources=member)
@@ -545,7 +546,7 @@ class ProjectTitleTests(unittest.TestCase):
         js, css, html = (static / "app.js").read_text(), (static / "style.css").read_text(), (static / "index.html").read_text()
         header = html[html.index('<header class="mobile-header">'):html.index("</header>")]
         self.assertIn('<span class="mobile-title" id="mobile-title"></span>', header)
-        self.assertIn('role="img" aria-label="Orchestrator"', header)  # the logo keeps the name for screen readers
+        self.assertIn('href="#/" aria-label="Orchestrator home"', header)  # the logo link names its Home destination for screen readers
         self.assertNotIn("<span>Orchestrator</span>", html)
         self.assertIn('mobileTitle.textContent = state.project?.name', js)
         self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
@@ -2900,6 +2901,30 @@ class TestCaseViewTests(ServerTestCase):
 
 
 class DeliveryEndpointTests(ServerTestCase):
+    def test_release_preview_and_creation_use_the_configured_base_branch(self):
+        with patch.object(ui.releases, "options", return_value={"suggested_tag": "v0.1.0"}) as preview:
+            res, out = self.request("GET", "/api/delivery/release")
+        self.assertEqual(res.status, 200)
+        preview.assert_called_once_with(self.root, "main")
+        result = {"tag": "v0.1.0", "commit": "a" * 40, "pushed": False, "created": True}
+        with patch.object(ui.releases, "create", return_value=result) as create:
+            res, out = self.request("POST", "/api/delivery/release", body={"tag": "v0.1.0", "commit": "a" * 40, "push": False}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        create.assert_called_once_with(self.root, "main", "v0.1.0", "a" * 40, push=False)
+        self.assertEqual(out["tag"], "v0.1.0")
+
+    def test_release_rejects_invalid_publish_flag_before_mutation(self):
+        with patch.object(ui.releases, "create") as create:
+            res, _ = self.request("POST", "/api/delivery/release", body={"tag": "v0.1.0", "commit": "a" * 40, "push": "yes"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        create.assert_not_called()
+
+    def test_release_conflict_is_reported_without_success(self):
+        with patch.object(ui.releases, "create", side_effect=ui.releases.ReleaseError("Base branch changed")):
+            res, out = self.request("POST", "/api/delivery/release", body={"tag": "v0.1.0", "commit": "a" * 40}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 409)
+        self.assertIn("Base branch changed", out["error"])
+
     def setUp(self):
         super().setUp()
         ui._GH_CACHE.clear()
@@ -3814,7 +3839,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("product/scaffold", self.js)  # no six documents to create
         self.assertNotIn("last-review", self.js)  # and no separate review job
         self.assertNotIn("Everything here is optional", page)
-        self.assertIn('title: "Product requirements"', page)
+        self.assertIn('title: "Product"', page)
+        self.assertIn("<h2>Product requirements</h2>", page)
         self.assertIn("Press Enter to add another feature", page)
         self.assertIn("prd-features-edit", page)
         self.assertIn("prd-link-input", page)
@@ -4234,6 +4260,8 @@ class UxReviewEndpointTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         self.assertEqual([p["id"] for p in data["passes"]], ["20261002-090000", "20261001-090000"])
         self.assertEqual(data["passes"][0]["counts"]["major"], 1)
+        self.assertIn("completed_at", data["passes"][0])
+        self.assertAlmostEqual(data["passes"][0]["completed_at"], (out / "20261002-090000" / "result.json").stat().st_mtime)
         _, detail = self.request("GET", "/api/ux-pass/20261002-090000")
         self.assertIn("Two primaries", detail["fix_text"])
         res, body = self.request("GET", "/api/ux-screens/pass/20261002-090000/home-390-light.png")
@@ -4267,6 +4295,19 @@ class UxReviewEndpointTests(ServerTestCase):
         self.assertEqual(detail["ux_review"]["screen_list"][0]["file"], "home-390-light.png")
         res, _ = self.request("GET", f"/api/ux-screens/job/{self.JOB}/home-390-light.png")
         self.assertEqual(res.status, 200)
+
+    def test_capture_gallery_includes_job_screens_without_a_completed_review(self):
+        folder = self.root / ".orchestrator/output" / self.JOB / "ux-review"
+        (folder / "screens").mkdir(parents=True)
+        (folder / "screens/home.png").write_bytes(self.PNG)
+        (folder / "screens.json").write_text(json.dumps({"at": "2026-10-09T12:00:00Z", "screens": [
+            {"file": "home.png", "route": "/", "width": 390, "dark": False}], "limits": ["Reviewer unavailable"]}))
+        res, data = self.request("GET", "/api/ux-pass")
+        self.assertEqual(res.status, 200)
+        capture = data["captures"][0]
+        self.assertEqual((capture["kind"], capture["id"]), ("job", self.JOB))
+        self.assertEqual(capture["screens"][0]["file"], "home.png")
+        self.assertIn("Reviewer unavailable", capture["limits"])
 
     def test_both_reviews_are_runnable_actions(self):
         self.assertIn("ux_review_run.py", " ".join(ui.ACTIONS["ux_pass"].build({}, self.root)))
@@ -5779,6 +5820,25 @@ class JobChangesTests(unittest.TestCase):
 
 
 class SetupActionEndpointTests(ServerTestCase):
+    def test_apple_delivery_prerequisites_report_missing_signing_fields(self):
+        (self.root / "Demo.xcodeproj").mkdir()
+        path = self.root / ".orchestrator/project.json"
+        path.write_text(json.dumps({"project_name": "Demo", "firebase_distribution": True}))
+        with patch.object(ui, "setup_checklist", return_value={"items": []}):
+            res, data = self.request("GET", "/api/setup")
+        self.assertEqual(res.status, 200)
+        signing = data["workflow_checks"][0]
+        self.assertEqual(signing["status"], "todo")
+        self.assertTrue(signing["selected"])
+        self.assertIn("development_team", signing["detail"])
+        self.assertIn("delivery_method", signing["detail"])
+
+    def test_plain_project_has_no_apple_signing_requirement(self):
+        with patch.object(ui, "setup_checklist", return_value={"items": []}):
+            res, data = self.request("GET", "/api/setup")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["workflow_checks"], [])
+
     def test_setup_git_init_endpoint(self):
         new_folder = Path(self.tmp.name) / "uninitialized_project"
         new_folder.mkdir()
@@ -5956,7 +6016,7 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
         css = (self.STATIC / "style.css").read_text()
         self.assertIn('id="recommended-installs"', js)
         self.assertIn("Recommended installs", js)
-        self.assertIn("Mobile control", js)
+        self.assertIn("Mobile portals", js)
         self.assertIn("Shellfish", js)
         self.assertIn("https://shellfish.app", js)
         self.assertIn("Shelldrop", js)

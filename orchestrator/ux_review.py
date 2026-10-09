@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -48,9 +49,10 @@ MAX_CONVENTIONS_CHARS = 12_000
 UI_EXTS = {".html", ".htm", ".css", ".scss", ".sass", ".less", ".jsx", ".tsx", ".vue", ".svelte", ".astro",
            ".xib", ".storyboard", ".xaml"}
 SCRIPT_EXTS = {".js", ".ts", ".mjs", ".dart", ".kt"}
+IMAGE_EXTS = {".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
 UI_DIRS = {"static", "public", "components", "pages", "views", "screens", "ui", "web", "frontend", "app", "routes",
            "layouts", "styles", "templates", "widgets"}
-SWIFT_UI = re.compile(r"(View|Screen|Cell|Controller|Sheet|Modal)\.swift$")
+SWIFT_UI = re.compile(r"(View|Screen|Cell|Controller|Sheet|Modal|App)\.swift$")
 
 
 def frontend_files(paths: list[str], extra_globs: list[str] | None = None) -> list[str]:
@@ -61,6 +63,7 @@ def frontend_files(paths: list[str], extra_globs: list[str] | None = None) -> li
         parts = {part.lower() for part in p.parts[:-1]}
         if (p.suffix.lower() in UI_EXTS
                 or (p.suffix.lower() in SCRIPT_EXTS and parts & UI_DIRS)
+                or (p.suffix.lower() in IMAGE_EXTS and parts & (UI_DIRS | {"assets", "images"}))
                 or (p.suffix == ".swift" and (SWIFT_UI.search(p.name) or parts & {"views", "ui", "screens"}))
                 or any(fnmatch.fnmatch(path, g) for g in extra_globs or [])):
             out.append(path)
@@ -119,6 +122,37 @@ def shot_name(route: str, width: int, dark: bool) -> str:
     return f"{slug[:50]}-{width}-{'dark' if dark else 'light'}.png"
 
 
+def capture_plan(cfg: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Merge a builder's changed-screen inventory with configured baseline pages."""
+    if not isinstance(manifest, dict):
+        raise ConfigError("ux-screens.json must be an object.")
+    routes, screens = manifest.get("routes", []), manifest.get("screens", [])
+    relative = lambda route: isinstance(route, str) and route.startswith(("/", "#", "?")) and not route.startswith("//")
+    if not isinstance(routes, list) or len(routes) > 40 or not all(relative(r) for r in routes):
+        raise ConfigError("Capture routes must be paths in the configured app, such as /settings or #/settings.")
+    if not isinstance(screens, list) or len(screens) > 40:
+        raise ConfigError("A capture plan can contain up to 40 screen states.")
+    if not isinstance(manifest.get("notes", []), list) or not all(isinstance(note, str) for note in manifest.get("notes", [])):
+        raise ConfigError("Capture notes must be a list of explanations for states that need manual review.")
+    clean = []
+    for screen in screens:
+        if not isinstance(screen, dict) or not relative(screen.get("route")):
+            raise ConfigError("Each capture screen needs a route in the configured app.")
+        actions = screen.get("actions", [])
+        if not isinstance(actions, list) or len(actions) > 10:
+            raise ConfigError("Each screen can contain up to 10 click or fill steps.")
+        for action in actions:
+            if not isinstance(action, dict) or not (set(action) == {"click"} or set(action) == {"fill", "value"}):
+                raise ConfigError("Capture actions support click selectors or fill selectors with a value.")
+            if not all(isinstance(v, str) and len(v) <= 2000 for v in action.values()):
+                raise ConfigError("Capture selectors and values must be short strings.")
+        clean.append({"route": screen["route"], "name": str(screen.get("name") or screen["route"])[:150], "actions": actions})
+    combined = list(dict.fromkeys([*cfg["routes"], *routes]))
+    if len(combined) > 40:
+        raise ConfigError("Configured pages and capture routes exceed the 40-page limit.")
+    return {**cfg, "routes": combined, "scenarios": clean}
+
+
 def find_browser() -> str | None:
     """A Chrome-family browser for headless screenshots: ORCHESTRATOR_BROWSER, then the usual places."""
     configured = os.environ.get("ORCHESTRATOR_BROWSER")
@@ -167,27 +201,32 @@ def capture_web(root: Path, cfg: dict[str, Any], out_dir: Path, *, widths: list[
         if not reachable(base):
             _stop(started)
             return [], f"Started the app, but {cfg['url']} still isn't answering after 90 seconds."
-    shots = []
+    shots, failures = [], []
     out_dir.mkdir(parents=True, exist_ok=True)
     schemes = [False, True] if (cfg["dark_mode"] if dark is None else dark) else [False]
     try:
         with tempfile.TemporaryDirectory(prefix="ux-review-browser-") as profile, Browser(browser, profile) as page:
-            for route in routes or cfg["routes"]:
-                for width in widths or cfg["widths"]:
+            targets = [{"route": r} for r in routes or cfg["routes"]] + cfg.get("scenarios", [])
+            targets = {json.dumps(screen, sort_keys=True): screen for screen in targets}.values()
+            for screen in targets:
+                route = screen["route"]
+                for width in dict.fromkeys(widths or cfg["widths"]):
                     for is_dark in schemes:
-                        target = out_dir / shot_name(route, width, is_dark)
+                        suffix = "--" + hashlib.sha256(json.dumps(screen, sort_keys=True).encode()).hexdigest()[:12]
+                        target = out_dir / (shot_name(route, width, is_dark).removesuffix(".png") + suffix + ".png")
                         try:
-                            target.write_bytes(page.screenshot(screen_url(base, route), width, is_dark))
-                            shots.append({"file": target.name, "route": route, "width": width, "dark": is_dark})
+                            target.write_bytes(page.screenshot(screen_url(base, route), width, is_dark, actions=screen.get("actions")))
+                            shots.append({"file": target.name, "route": route, "name": screen.get("name", ""), "width": width, "dark": is_dark})
                             log(f"  captured {route} at {width}px{' dark' if is_dark else ''}")
                         except BrowserError as exc:
+                            failures.append(f"{screen.get('name') or route} at {width}px{' dark' if is_dark else ''}")
                             log(f"  couldn't capture {route} at {width}px: {exc}")
     except BrowserError as exc:
         return shots, f"The browser couldn't be driven: {exc}"
     finally:
         if started:
             _stop(started)
-    return shots, "" if shots else "The browser ran but saved no screenshots."
+    return shots, ("Missing screenshots: " + ", ".join(failures)) if failures else "" if shots else "The browser ran but saved no screenshots."
 
 
 def _stop(process: subprocess.Popen) -> None:
@@ -270,13 +309,23 @@ class Browser:
                     raise BrowserError(f"{method}: {reply['error'].get('message')}")
                 return reply.get("result") or {}
 
-    def screenshot(self, url: str, width: int, dark: bool) -> bytes:
+    def screenshot(self, url: str, width: int, dark: bool, *, actions: list[dict] | None = None) -> bytes:
         phone = width < 700
         self.call("Emulation.setDeviceMetricsOverride", {"width": width, "height": VIEWPORT_HEIGHT[phone],
                                                          "deviceScaleFactor": 2 if phone else 1, "mobile": phone}, session=True)
         self.call("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "dark" if dark else "light"}]}, session=True)
-        self.call("Page.navigate", {"url": url}, session=True)
+        navigation = self.call("Page.navigate", {"url": url}, session=True)
+        if navigation.get("errorText"):
+            raise BrowserError(f"Navigation failed: {navigation['errorText']}")
         time.sleep(self.settle)  # single-page apps render after load; give them a moment
+        for action in actions or []:
+            selector = action.get("click") or action.get("fill")
+            operation = "element.click();" if "click" in action else f"Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set.call(element, {json.dumps(action['value'])}); element.dispatchEvent(new Event('input', {{bubbles:true}})); element.dispatchEvent(new Event('change', {{bubbles:true}}));"
+            expression = f"(() => {{ const element = document.querySelector({json.dumps(selector)}); if (!element) throw new Error('Capture element not found'); {operation} return true; }})()"
+            response = self.call("Runtime.evaluate", {"expression": expression, "returnByValue": True}, session=True)
+            if response.get("exceptionDetails"):
+                raise BrowserError("A capture interaction failed; check the screen's click/fill selectors.")
+            time.sleep(self.settle)
         data = self.call("Page.captureScreenshot", {"format": "png"}, session=True, timeout=60).get("data")
         if not data:
             raise BrowserError("no image came back")
