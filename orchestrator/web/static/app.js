@@ -5562,7 +5562,7 @@ pages.connections = async (_, query) => {
           </div>` : ""}
           <div class="row" data-owner-only>
             ${p.authorize_key && !p.connected ? `<button class="btn small primary" data-trello-authorize="${esc(p.authorize_key)}">Connect with Trello</button>
-              <button type="button" class="linklike" data-conn-connect="${esc(p.id)}">Use your own key instead</button>`
+              <button type="button" class="btn small" data-conn-connect="${esc(p.id)}">Manual key &amp; token (backup)</button>`
             : `<button class="btn small ${!p.connected || p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect" : p.rejected || p.expiry?.expired ? "Reconnect" : "Update"}</button>`}
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
@@ -5606,8 +5606,26 @@ pages.connections = async (_, query) => {
         } else if (connect) {
           const p = list.find((x) => x.id === connect.dataset.connConnect);
           const latest = p.token_max_days ? new Date(Date.now() + p.token_max_days * 86400000).toISOString().slice(0, 10) : "";
-          const v = await formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
-            ${p.token_url ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : ""}
+          const trelloOptionA = p.id === "trello" ? `
+            <div class="card stack mb-16 conn-auth-box">
+              <strong>Option A: Log in &amp; authorize with Trello</strong>
+              <p class="muted">Enter your API key below from <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up Admin ↗</a>, then click to sign in and approve in your browser with 1 click:</p>
+              <div><button type="button" class="btn small primary" id="trello-dialog-quick-btn">Log in &amp; authorize with Trello ↗</button></div>
+            </div>
+            <div class="conn-auth-divider mb-8"><strong>Option B: Enter key &amp; token manually (backup)</strong></div>` : "";
+          const jiraOptionA = p.id === "jira" ? `
+            <div class="card stack mb-16 conn-auth-box">
+              <strong>Option A: Log in with Atlassian</strong>
+              <p class="muted">Use your active Atlassian browser session to create an API token with 1 click:</p>
+              <div><a class="btn small primary" href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">Log in to Atlassian &amp; create token ↗</a></div>
+              <small class="hint-text">Click "Create API token", copy it, and paste it into the API token field below.</small>
+            </div>
+            <div class="conn-auth-divider mb-8"><strong>Option B: Enter credentials manually (backup)</strong></div>` : "";
+          const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : "";
+          const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
+            ${trelloOptionA}
+            ${jiraOptionA}
+            ${genericTokenLink}
             ${Object.keys(p.suggest || {}).length ? `<p class="muted">Filled in from the Sentry setup found in this project. Check it, then add a token.</p>` : ""}
             ${p.fields.map((f) => `
             <label class="field"><span>${esc(f.label)}</span>
@@ -5618,6 +5636,20 @@ pages.connections = async (_, query) => {
             ${p.token_max_days ? `<label class="field"><span>Token expires on</span><input type="date" name="expires" value="${esc(p.expiry?.on || latest)}" max="${latest}">
               <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}`,
             p.connected ? "Save" : "Connect");
+          const quickTrello = $("#trello-dialog-quick-btn");
+          if (quickTrello) {
+            quickTrello.addEventListener("click", () => {
+              const keyInput = $("#dialog-body input[name='key']");
+              const k = (keyInput?.value || p.authorize_key || "").trim();
+              if (!k) {
+                toast("Enter your API key below first, then click Log in & authorize", true);
+                keyInput?.focus();
+                return;
+              }
+              connectTrello(k);
+            });
+          }
+          const v = await dialogPromise;
           if (!v) return;
           const btn = connect; btn.disabled = true; btn.textContent = "Checking…";
           try { const r = await api(`integrations/${p.id}/connect`, { method: "POST", body: { values: v } }); toast(`${p.name} connected${r.who ? ` as ${r.who}` : ""}`); route(); }
