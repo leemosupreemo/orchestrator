@@ -3690,6 +3690,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("cov.total_lines", tests_src)
         self.assertIn("cov.total_lines.toLocaleString()", tests_src)
         self.assertNotIn("Coverage target (%)", tests_src)
+        self.assertIn('${measured ? "Recalculate" : "Calculate"}', tests_src)
+        self.assertNotIn("Measure again", tests_src)
+        self.assertNotIn("Measure coverage", tests_src)
         self.assertIn(".input-with-suffix", self.css)
         self.assertIn(".input-suffix", self.css)
 
