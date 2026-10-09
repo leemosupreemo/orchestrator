@@ -140,20 +140,37 @@ def project_display_name(root: Path) -> str:
     return data.get("project_name") or root.name
 
 
-def remember_project(root: Path, name: str | None = None, active: bool = True) -> None:
+def remember_project(
+    root: Path,
+    name: str | None = None,
+    active: bool = True,
+    source_type: str | None = None,
+    source_label: str | None = None,
+    github_repo: str | None = None,
+) -> None:
     root = safe_resolve(root.expanduser())
     display_name = name or project_display_name(root)
     data = load_recent_projects(prune_missing=True)
+    existing_entry = next((p for p in data.get("projects", []) if safe_resolve(Path(p.get("root", "")).expanduser()) == root), {})
     projects = [
         project for project in data.get("projects", [])
         if safe_resolve(Path(project.get("root", "")).expanduser()) != root
         and project.get("name") != display_name
     ]
-    projects.insert(0, {"name": display_name, "root": str(root)})
+    entry = dict(existing_entry)
+    entry.update({"name": display_name, "root": str(root)})
+    if source_type is not None:
+        entry["source_type"] = source_type
+    if source_label is not None:
+        entry["source_label"] = source_label
+    if github_repo is not None:
+        entry["github_repo"] = github_repo
+    projects.insert(0, entry)
     data["projects"] = projects[:20]
     if active:
         data["active"] = display_name
     save_recent_projects(data)
+
 
 
 def resolve_project_reference(reference: str | None) -> Path | None:

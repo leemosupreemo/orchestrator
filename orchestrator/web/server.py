@@ -443,11 +443,31 @@ def read_json_file(path: Path) -> dict[str, Any]:
         return {}
 
 
-def git(root: Path, *args: str) -> str:
+def git(root: Path, *args: str, timeout: float = 5.0) -> str:
     try:
-        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=5).stdout.strip()
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=timeout).stdout.strip()
     except Exception:
         return ""
+
+
+def _safe_read_json_file(path: Path, timeout: float = 0.3) -> dict[str, Any]:
+    """Read a JSON file with a hard timeout to avoid blocking indefinitely on evicted or remote files."""
+    try:
+        if not path.is_file():
+            return {}
+    except OSError:
+        return {}
+    res: list[dict[str, Any]] = [{}]
+    def worker() -> None:
+        try:
+            res[0] = read_json_file(path)
+        except Exception:
+            pass
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    return res[0]
+
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -1629,7 +1649,7 @@ def device_log_pulls(root: Path) -> list[dict[str, Any]]:
     return pulls
 
 
-def detect_project_source(root: Path, p_config: dict[str, Any] | None = None) -> tuple[str, str, str | None]:
+def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, git_timeout: float = 2.0) -> tuple[str, str, str | None]:
     """Determine if a project is GitHub tracked vs Local."""
     github_repo: str | None = None
     if isinstance(p_config, dict):
@@ -1639,7 +1659,7 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None) ->
 
     has_git = (root / ".git").exists()
     if not github_repo and has_git:
-        origin_url = git(root, "config", "--get", "remote.origin.url").strip()
+        origin_url = git(root, "config", "--get", "remote.origin.url", timeout=git_timeout).strip()
         if origin_url and "github.com" in origin_url:
             m = re.search(r"github\.com[:/]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)", origin_url)
             if m:
@@ -1650,6 +1670,7 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None) ->
     if github_repo:
         return "github", "GitHub Tracked", github_repo
     return "local", "Local", None
+
 
 
 GITHUB_LANG_COLORS: dict[str, str] = {
@@ -1737,7 +1758,7 @@ def scan_local_languages(root: Path) -> list[dict[str, Any]]:
         return []
 
 
-def get_project_languages(root: Path, github_repo: str | None = None) -> list[dict[str, Any]]:
+def get_project_languages(root: Path, github_repo: str | None = None, scan_local: bool = True) -> list[dict[str, Any]]:
     """Fetch or calculate language percentages for a project, with in-memory caching."""
     cache_key = github_repo or str(safe_resolve(root))
     now = time.time()
@@ -1775,12 +1796,14 @@ def get_project_languages(root: Path, github_repo: str | None = None) -> list[di
         except Exception:
             pass
 
-    # 2. If no GitHub data, fallback to local file extension scanning
-    if not langs and root.is_dir():
+    # 2. If no GitHub data, fallback to local file extension scanning (if requested)
+    if not langs and scan_local and root.is_dir():
         langs = scan_local_languages(root)
 
-    _LANG_CACHE[cache_key] = (now, langs)
+    if langs or scan_local:
+        _LANG_CACHE[cache_key] = (now, langs)
     return langs
+
 
 
 def is_mobile_app(root: Path, config: dict[str, Any]) -> bool:
@@ -1803,27 +1826,35 @@ def project_state(root: Path) -> dict[str, Any]:
     root_source_type, root_source_label, root_github_repo = detect_project_source(root, config)
     root_languages = get_project_languages(root, root_github_repo if root_source_type == "github" else None)
 
+    active_resolved = safe_resolve(root)
     recent_entries = []
     for p in recent:
         r_str = p.get("root")
-        s_type, s_label, s_repo = "local", "Local", None
-        langs_p = []
-        if r_str:
-            try:
-                p_r = safe_resolve(Path(r_str).expanduser())
-                p_cfg = read_json_file(runtime_dir(p_r) / "project.json") if (runtime_dir(p_r) / "project.json").is_file() else None
-                s_type, s_label, s_repo = detect_project_source(p_r, p_cfg)
-                langs_p = get_project_languages(p_r, s_repo if s_type == "github" else None)
-            except Exception:
-                pass
-        recent_entries.append({
-            "name": p.get("name"),
-            "root": p.get("root"),
-            "source_type": s_type,
-            "source_label": s_label,
-            "github_repo": s_repo,
-            "languages": langs_p,
-        })
+        if not r_str:
+            continue
+        try:
+            p_r = safe_resolve(Path(r_str).expanduser())
+        except Exception:
+            p_r = None
+
+        if p_r and p_r == active_resolved:
+            recent_entries.append({
+                "name": p.get("name") or project_display_name(root),
+                "root": str(p_r),
+                "source_type": root_source_type,
+                "source_label": root_source_label,
+                "github_repo": root_github_repo,
+                "languages": root_languages,
+            })
+        else:
+            recent_entries.append({
+                "name": p.get("name"),
+                "root": p.get("root"),
+                "source_type": p.get("source_type", "local"),
+                "source_label": p.get("source_label", "Local"),
+                "github_repo": p.get("github_repo"),
+                "languages": [],
+            })
 
     return {
         "machine_count": len(machines),
@@ -1867,24 +1898,41 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             continue
         seen.add(str(p_resolved))
         is_active = (p_resolved == active_resolved)
-        p_config = read_json_file(runtime_dir(p_resolved) / "project.json")
-        has_git = (p_resolved / ".git").exists()
-        p_status = git(p_resolved, "status", "--porcelain") if has_git else ""
-        p_branch = git(p_resolved, "branch", "--show-current") if has_git else None
+        if is_active:
+            p_config = read_json_file(runtime_dir(p_resolved) / "project.json")
+            has_git = (p_resolved / ".git").exists()
+            p_status = git(p_resolved, "status", "--porcelain") if has_git else ""
+            p_branch = git(p_resolved, "branch", "--show-current") if has_git else None
+            active_jobs_count = 0
+            needs_you_count = 0
+            if (runtime_dir(p_resolved) / "jobs").is_dir():
+                try:
+                    for job in list_jobs(p_resolved):
+                        active_jobs_count += 1
+                        if (job.get("state") or {}).get("group") == "needs_you":
+                            needs_you_count += 1
+                except Exception:
+                    pass
+            source_type, source_label, github_repo = detect_project_source(p_resolved, p_config)
+            p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None, scan_local=True)
+        else:
+            p_config = _safe_read_json_file(runtime_dir(p_resolved) / "project.json", timeout=0.2)
+            has_git = (p_resolved / ".git").exists()
+            p_status = git(p_resolved, "status", "--porcelain", timeout=0.3) if has_git else ""
+            p_branch = git(p_resolved, "branch", "--show-current", timeout=0.3) if has_git else None
+            active_jobs_count = 0
+            needs_you_count = 0
+            if (runtime_dir(p_resolved) / "jobs").is_dir():
+                try:
+                    for job in list_jobs(p_resolved):
+                        active_jobs_count += 1
+                        if (job.get("state") or {}).get("group") == "needs_you":
+                            needs_you_count += 1
+                except Exception:
+                    pass
+            source_type, source_label, github_repo = detect_project_source(p_resolved, p_config, git_timeout=0.3)
+            p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None, scan_local=False)
 
-        active_jobs_count = 0
-        needs_you_count = 0
-        if (runtime_dir(p_resolved) / "jobs").is_dir():
-            try:
-                for job in list_jobs(p_resolved):
-                    active_jobs_count += 1
-                    if (job.get("state") or {}).get("group") == "needs_you":
-                        needs_you_count += 1
-            except Exception:
-                pass
-
-        source_type, source_label, github_repo = detect_project_source(p_resolved, p_config)
-        p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None)
         results.append({
             "name": p.get("name") or project_display_name(p_resolved),
             "root": str(p_resolved),
@@ -1899,6 +1947,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             "github_repo": github_repo,
             "languages": p_languages,
         })
+
 
     if str(active_resolved) not in seen and active_resolved.is_dir():
         p_config = read_json_file(runtime_dir(active_resolved) / "project.json")
