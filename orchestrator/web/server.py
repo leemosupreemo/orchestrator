@@ -2188,7 +2188,7 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     summary_in = _text(params, "summary", required=True, limit=20_000 if job_type == "quick" else 500)
     fields = {"summary": summary_in, "details": _text(params, "spec", limit=200_000), "repro": _text(params, "repro", limit=20_000),
               "expected": _text(params, "expected", limit=20_000), "vibe": _text(params, "vibe", limit=200),
-              "subsystems": _text(params, "subsystems", limit=5_000)}
+              "subsystems": _text(params, "subsystems", limit=5_000), "test_cases": _text(params, "test_cases", limit=20_000)}
     try:
         summary, spec = new_job_form.compose(job_type, fields)
     except new_job_form.FormError as exc:
@@ -3235,7 +3235,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "test_cases", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),

@@ -2895,8 +2895,19 @@ pages.new = async (_, query) => {
   const skipKey = `orchestrator_skip_discovery:${state.project?.root || ""}`;
   const skipped = () => { try { return localStorage.getItem(skipKey) === "1"; } catch { return false; } };
   const wanted = query.get("type");
-  const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "bug", uploads: {}, uploading: 0, logs: new Set(), recent: null,
-    v: { summary: query.get("summary") || "", details: query.get("spec") || "", audience: "", outcome: "", acceptance: "", constraints: "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", url: "" } };
+  const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "bug", uploads: {}, uploading: 0, logs: new Set(), recent: null, testCases: null,
+    v: { summary: query.get("summary") || query.get("area") || "", details: query.get("spec") || "", audience: "", outcome: "", acceptance: "", constraints: "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", test_cases: query.get("test_cases") || "", url: "" } };
+
+  const loadTestCases = async () => {
+    if (st.testCases !== null) return st.testCases;
+    try {
+      const res = await api("test-cases");
+      st.testCases = res.cases || [];
+    } catch {
+      st.testCases = [];
+    }
+    return st.testCases;
+  };
 
   const field = (label, input, hint = "") => `<label class="field"><span>${label}</span>${input}${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
   const opt = (text) => ` <span class="muted">(${text})</span>`;
@@ -2954,10 +2965,23 @@ pages.new = async (_, query) => {
               `A Figma or other design link. <a href="#/connections">Connect Figma</a> to search your files here instead.`)}</fieldset>
           ${field(`Anything else?${opt("optional")}`, `<textarea name="spec" rows="2" placeholder="Constraints, accessibility needs, things to avoid">${esc(v.details)}</textarea>`)}` };
       }
-      case "coverage":
+      case "coverage": {
+        const cases = await loadTestCases();
+        const areas = [...new Set(cases.map((c) => c.area).filter(Boolean))];
         return { picker: null, html: `
-          ${field("What should be tested?", `<input type="text" name="summary" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. The lobby and seat assignment">`)}
-          ${field(`Specific parts${opt("optional")}`, `<input type="text" name="subsystems" maxlength="2000" value="${esc(v.subsystems)}" placeholder="e.g. SeatService, rejoin flow">`, "Leave blank to cover the whole area.")}` };
+          ${field("Choose area to test", `<input type="text" name="summary" list="nj-area-list" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. Lobby, Authentication, or Checkout">`, "Pick an existing area or type a new one to focus coverage on.")}
+          ${areas.length ? `<datalist id="nj-area-list">${areas.map((a) => `<option value="${esc(a)}">`).join("")}</datalist>` : ""}
+          ${field(`What should be covered?${opt("optional")}`, `<textarea name="spec" rows="3" maxlength="20000" placeholder="Describe scenarios, edge cases, failure modes, or specific behaviors to test...">${esc(v.details)}</textarea>`, "Be as descriptive as you like: scenarios, edge cases, or expected behaviors.")}
+          <div class="field">
+            <div class="row align-center justify-between">
+              <span>Specific test cases${opt("optional")}</span>
+              ${cases.length ? `<button type="button" class="btn small ghost" id="nj-import-tc-btn"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Import from test cases</button>` : ""}
+            </div>
+            <textarea name="test_cases" id="nj-test-cases" rows="3" maxlength="20000" placeholder="e.g. TC-1: Rejoin after timeout&#10;TC-4: Seat reservation failure">${esc(v.test_cases)}</textarea>
+            <small class="hint-text">List individual test cases to implement or expand, or import them from your test library.</small>
+          </div>
+          ${logPicker()}` };
+      }
       default:
         return { picker: null, html: `${field("What should change?", `<textarea name="summary" required rows="4" maxlength="20000" placeholder="e.g. Rename Foo to Bar everywhere and update the docs">${esc(v.summary)}</textarea>`, "This goes straight to the builder with no separate planning step.")}` };
     }
@@ -2968,7 +2992,7 @@ pages.new = async (_, query) => {
   const read = (name) => form()?.elements[name]?.value ?? undefined;
   const capture = () => { // remember what was typed before the fields are swapped
     const v = st.v;
-    for (const [key, name] of [["summary", "summary"], ["details", "spec"], ["audience", "audience"], ["outcome", "outcome"], ["acceptance", "acceptance"], ["constraints", "constraints"], ["repro", "repro"], ["expected", "expected"], ["vibe", "vibe"], ["customVibe", "customVibe"], ["subsystems", "subsystems"], ["url", "url"]]) {
+    for (const [key, name] of [["summary", "summary"], ["details", "spec"], ["audience", "audience"], ["outcome", "outcome"], ["acceptance", "acceptance"], ["constraints", "constraints"], ["repro", "repro"], ["expected", "expected"], ["vibe", "vibe"], ["customVibe", "customVibe"], ["subsystems", "subsystems"], ["test_cases", "test_cases"], ["url", "url"]]) {
       const val = read(name); if (val !== undefined) v[key] = val;
     }
   };
@@ -3016,11 +3040,55 @@ pages.new = async (_, query) => {
     }
     $("#nj-chips")?.addEventListener("click", (e) => { const b = e.target.closest("[data-nj-remove]"); if (b) { mine().splice(Number(b.dataset.njRemove), 1); chips(); } });
     $("select[name=vibe]")?.addEventListener("change", (e) => { $("#nj-custom-vibe").hidden = e.target.value !== "other"; });
+    $("#nj-import-tc-btn")?.addEventListener("click", async () => {
+      const cases = await loadTestCases();
+      if (!cases || !cases.length) {
+        toast("No test cases found in project library.", "warning");
+        return;
+      }
+      const currentVal = ($("#nj-test-cases")?.value || "").trim();
+      const bodyHtml = `
+        <div class="stack tc-import-dialog">
+          <p class="muted">Select test cases to add to this test job:</p>
+          <input type="search" id="nj-tc-filter" class="tc-import-filter" placeholder="Filter by ID, title, or area...">
+          <div id="nj-tc-dialog-list" class="list tc-import-list">
+            ${cases.map((c) => {
+              const itemText = `${c.id}: ${c.title}`;
+              const isSelected = currentVal.includes(c.id);
+              return `<label class="check tc-import-item" data-filter="${esc((c.id + ' ' + c.title + ' ' + (c.area || '')).toLowerCase())}">
+                <input type="checkbox" name="import_tc" value="${esc(itemText)}" ${isSelected ? "checked" : ""}>
+                <span><strong>${esc(c.id)}</strong>: ${esc(c.title)} <span class="badge tc-import-badge">${esc(c.area || "General")}</span></span>
+              </label>`;
+            }).join("")}
+          </div>
+        </div>
+      `;
+      const dialogPromise = formDialog("Import test cases", bodyHtml, "Add to job", { compact: false });
+      $("#nj-tc-filter")?.addEventListener("input", (ev) => {
+        const q = ev.target.value.toLowerCase();
+        document.querySelectorAll(".tc-import-item").forEach((item) => {
+          item.hidden = !item.dataset.filter.includes(q);
+        });
+      });
+      const result = await dialogPromise;
+      if (result) {
+        const checked = [...document.querySelectorAll('#dialog-form input[name="import_tc"]:checked')].map((cb) => cb.value);
+        if (checked.length) {
+          const existing = ($("#nj-test-cases")?.value || "").trim();
+          const existingLines = new Set(existing ? existing.split("\n").map((s) => s.trim()) : []);
+          const newItems = checked.filter((c) => !existingLines.has(c));
+          const combined = existing ? (newItems.length ? existing + "\n" + newItems.join("\n") : existing) : checked.join("\n");
+          st.v.test_cases = combined;
+          if ($("#nj-test-cases")) $("#nj-test-cases").value = combined;
+          toast(`Imported ${checked.length} test case${checked.length === 1 ? "" : "s"}.`);
+        }
+      }
+    });
     document.querySelectorAll("[data-nj-log]").forEach((box) => box.addEventListener("change", () => { box.checked ? st.logs.add(box.dataset.njLog) : st.logs.delete(box.dataset.njLog); }));
-    if (st.type === "bug" && st.recent === null) {
-      // only a log from the last day is likely to be about this bug, so only that one starts ticked
+    if ((st.type === "bug" || st.type === "coverage") && st.recent === null) {
+      // only a log from the last day is likely to be about this problem, so only that one starts ticked
       try { st.recent = (await api("recent-logs")).logs; if (st.logs.size === 0 && st.recent[0] && Date.now() / 1000 - st.recent[0].mtime < 86400) st.logs.add(st.recent[0].path);  } catch { st.recent = []; }
-      if (st.type === "bug") { capture(); await render(); }
+      if (st.type === "bug" || st.type === "coverage") { capture(); await render(); }
     }
   };
 
@@ -3071,7 +3139,7 @@ pages.new = async (_, query) => {
         if (st.type === "bug") Object.assign(params, { repro: v.repro, expected: v.expected, logs: [...st.logs] });
         if (st.type === "feature") params.spec = featureSpec(v);
         if (st.type === "design") Object.assign(params, { spec: v.details, vibe: v.vibe === "other" ? (v.customVibe.trim() || "minimalist") : v.vibe, urls: v.url.trim() ? [v.url.trim()] : [] });
-        if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems, spec: v.details, title: "Coverage expanding" });
+        if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems || v.summary, spec: v.details, test_cases: v.test_cases, logs: [...st.logs], title: "Coverage expanding" });
         runAction("new_job", params);
       });
     },

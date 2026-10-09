@@ -3765,7 +3765,7 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_new_job_asks_what_each_kind_needs_and_has_no_you_decide_toggle(self):
         form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
         for needle in ("How do I make it happen?", "What should happen instead?", "Look and feel", "Upload logs or screenshots",
-                       "What should be tested?", "What should change?", "recent-logs", "uploadFile(", "Pick a Figma design"):
+                       "Choose area to test", "What should change?", "recent-logs", "uploadFile(", "Pick a Figma design"):
             self.assertIn(needle, form, needle)
         self.assertNotIn("You decide the details", self.js)
         self.assertNotIn("recommend", form.lower().replace("recommended", ""))
@@ -5584,6 +5584,22 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("<strong>YOLO (Autopilot)</strong>", app_js)
         self.assertIn("<small>Runs without confirmations or review pauses.</small>", app_js)
         self.assertNotIn("Firebase releases to testers", app_js)
+
+    def test_coverage_job_form_area_cases_and_logs(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app_js = (static / "app.js").read_text()
+        # Non-redundant, descriptive area and scenarios fields
+        self.assertIn("Choose area to test", app_js)
+        self.assertIn("What should be covered?", app_js)
+        self.assertNotIn("What should be tested?", app_js)
+        self.assertNotIn("Specific parts", app_js)
+        # Specific test cases with import mechanism
+        self.assertIn("Specific test cases", app_js)
+        self.assertIn("Import from test cases", app_js)
+        self.assertIn("name=\"test_cases\"", app_js)
+        # Logs enabled for coverage jobs
+        self.assertIn('(st.type === "bug" || st.type === "coverage") && st.recent === null', app_js)
+        self.assertIn('if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems || v.summary, spec: v.details, test_cases: v.test_cases, logs: [...st.logs]', app_js)
 
 
 class JobDeleteEndpointTests(ServerTestCase):
