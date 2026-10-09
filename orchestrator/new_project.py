@@ -29,14 +29,13 @@ QUESTIONS: list[dict[str, Any]] = [
     {"key": "platform", "label": "What are you building it for?", "help": "Pick every platform you want, or let the AI recommend.", "kind": "multi", "required": True,
      "options": ["iOS app", "Android app", "macOS app", "Windows or Linux app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"], "section": "project"},
     {"key": "stack", "label": "Any technology you want, or want to avoid?", "help": "Optional. e.g. SwiftUI, no third-party UI kits.", "kind": "area", "required": False, "section": "pitch"},
-    {"key": "done", "label": "How will you know version 1 works?", "help": "Optional. The test you'd run to say \"yes, that's it\".", "kind": "area", "required": False, "section": "features"},
     {"key": "look", "label": "What should it look and feel like?", "help": "Optional. Visual style, design references, or sketch notes.", "kind": "area", "required": False, "section": "look"},
     {"key": "not", "label": "What should it NOT be or include?", "help": "Optional. Features to avoid, competitors not to copy, or anti-patterns.", "kind": "area", "required": False, "section": "not"},
 ]
 PRD_SECTIONS: list[dict[str, Any]] = [
     {"id": "pitch", "title": "Pitch", "keys": ["pitch", "problem", "stack"], "description": "What this product is, the problem it solves, and technical preferences."},
     {"id": "who", "title": "Who it's for", "keys": ["audience"], "description": "The ideal user, target audience, or context of use."},
-    {"id": "features", "title": "Core features", "keys": ["features", "done"], "description": "What it must do on day one, and completion criteria for version 1."},
+    {"id": "features", "title": "Core features", "keys": ["features"], "description": "What it must do on day one."},
     {"id": "look", "title": "Look and feel", "keys": ["look"], "description": "Visual style, design language, or reference apps."},
     {"id": "not", "title": "What to exclude", "keys": ["not"], "description": "What it should NOT be or do: features or anti-patterns to avoid."},
 ]
