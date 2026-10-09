@@ -135,6 +135,16 @@ class CoverageTests(unittest.TestCase):
         (root / "node_modules" / "x.js").write_text("ignore = 1\n")
         self.assertEqual(cov.count_source_lines(root), 3)
 
+    def test_stream_strips_noninteractive_env(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with patch.dict(os.environ, {"ORCHESTRATOR_NONINTERACTIVE": "1"}):
+                res = cov.stream([sys.executable, "-c", "import os; print(os.environ.get('ORCHESTRATOR_NONINTERACTIVE', 'none'))"], tmp_path)
+                self.assertEqual(res.returncode, 0)
+                self.assertIn("none", res.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

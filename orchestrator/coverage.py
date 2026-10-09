@@ -8,6 +8,7 @@ Xcode projects are measured by the console's xcodebuild path (scripts/dev_consol
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -65,7 +66,9 @@ def count_source_lines(root: Path) -> int:
 def stream(argv: list[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
     """Runs a command with its output shown as it happens (it lands in the run's log) and kept for parsing."""
     print(f"\033[90m$ {shlex.join(argv)}\033[0m", flush=True)
-    proc = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    child_env = dict(os.environ)
+    child_env.pop("ORCHESTRATOR_NONINTERACTIVE", None)
+    proc = subprocess.Popen(argv, cwd=cwd, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     lines = []
     for line in proc.stdout or []:
         sys.stdout.write(line)
