@@ -342,6 +342,13 @@ class PtySession:
         if not progress.get("models"):
             assigned: list[str] = []
             target_job = self.job_id or self.result_job
+            if not target_job and self.argv:
+                for arg in self.argv:
+                    if isinstance(arg, str) and arg.endswith(".json") and "job" in arg:
+                        candidate = Path(arg).stem
+                        if candidate:
+                            target_job = candidate
+                            break
             if target_job and getattr(self, "cwd", None):
                 job_file = jobs_dir(self.cwd) / f"{target_job}.json"
                 if job_file.is_file():
@@ -350,15 +357,24 @@ class PtySession:
                               job_data.get("planner"), job_data.get("reviewer")]:
                         if m and isinstance(m, str) and m not in assigned:
                             assigned.append(m)
-            if not assigned and self.argv:
-                for flag in ("--planner", "--model"):
+                    for m in job_data.get("allowed_models") or []:
+                        if m and isinstance(m, str) and m not in assigned:
+                            assigned.append(m)
+            if self.argv:
+                for flag in ("--planner", "--builder", "--reviewer", "--model", "--evaluator", "--verifier", "--allowed-models"):
                     if flag in self.argv:
                         try:
                             idx = self.argv.index(flag)
                             if idx + 1 < len(self.argv):
                                 val = self.argv[idx + 1]
                                 if val and not val.startswith("-"):
-                                    assigned.append(val)
+                                    if flag == "--allowed-models":
+                                        for m in val.split(","):
+                                            m = m.strip()
+                                            if m and m not in assigned:
+                                                assigned.append(m)
+                                    elif val not in assigned:
+                                        assigned.append(val)
                         except (ValueError, IndexError):
                             pass
             if assigned:
