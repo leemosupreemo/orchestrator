@@ -173,7 +173,17 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
         _item("prompts", "Custom role prompts", False, (runtime / "prompts").is_dir() and any((runtime / "prompts").iterdir()),
               "Tune how the planner, builder and reviewer behave", action=page("#/config/ai-instructions"), group="Optional"),
     ]
+    is_python = any((root / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt")) or bool(project.get("test_command") and ("python" in project.get("test_command") or "pytest" in project.get("test_command") or "unittest" in project.get("test_command")))
+    if is_python:
+        import sys
+        cov_check = _run([sys.executable, "-m", "coverage", "--version"], timeout=2)
+        cov_ok = bool(cov_check and cov_check.returncode == 0)
+        items.append(_item("coverage_py", "Test coverage (coverage.py)", False, cov_ok,
+                           "Installed and ready" if cov_ok else "Will be auto-installed on first test measurement",
+                           action={"type": "run", "action": "coverage", "label": "Measure"} if cov_ok else {"type": "run", "action": "coverage", "label": "Auto-add"},
+                           hint=None if cov_ok else "pip install coverage", group="Testing"))
     required = [i for i in items if i["required"]]
+
     return {
         "items": items,
         "required_total": len(required),

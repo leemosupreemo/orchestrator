@@ -118,6 +118,17 @@ class SetupChecklistTests(unittest.TestCase):
             items = _by_id(result)
             self.assertEqual(items["github_remote"]["action"], {"type": "github_create", "label": "Create repo"})
 
+    def test_python_project_includes_coverage_py_item(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root)
+            (root / "requirements.txt").write_text("pytest\n")
+            result = _checklist(root)
+            items = _by_id(result)
+            self.assertIn("coverage_py", items)
+            self.assertFalse(items["coverage_py"]["required"])
+            self.assertEqual(items["coverage_py"]["action"]["action"], "coverage")
+
 
 if __name__ == "__main__":
     unittest.main()

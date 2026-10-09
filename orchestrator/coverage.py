@@ -91,7 +91,19 @@ def _package_json(root: Path) -> dict[str, Any]:
 
 def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
     if not _python_module_works("coverage", run, root):
-        raise CoverageUnavailable("Python coverage needs coverage.py. Install it with `pip install coverage`, then measure again.")
+        print("\n=== STEP 1/2: SETTING UP COVERAGE.PY ===", flush=True)
+        print("coverage.py is not installed yet. Automatically setting up coverage.py...\n", flush=True)
+        install_res = run([sys.executable, "-m", "pip", "install", "coverage"], root)
+        if install_res.returncode != 0 or not _python_module_works("coverage", run, root):
+            raise CoverageUnavailable(
+                f"Attempted to auto-install coverage.py but installation failed (exit code {install_res.returncode}). "
+                "Install it manually with `pip install coverage`, then measure again."
+            )
+        print("\n✅ coverage.py installed successfully.\n", flush=True)
+        print("=== STEP 2/2: MEASURING CODE COVERAGE ===", flush=True)
+    else:
+        print("\n=== STEP 1/1: MEASURING CODE COVERAGE ===", flush=True)
+
     words = shlex.split(test_command or "python3 -m unittest discover")
     if words[:1] == ["pytest"]:
         target = ["-m", "pytest", *words[1:]]

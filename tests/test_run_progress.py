@@ -87,6 +87,17 @@ class RunProgressTests(unittest.TestCase):
         self.assertIsNone(status["total"])
         self.assertEqual(status["agents"], 0)
 
+    def test_coverage_step_headers_tracked(self):
+        progress = RunProgress()
+        progress.feed(b"\n=== STEP 1/2: SETTING UP COVERAGE.PY ===\n")
+        status = progress.snapshot()
+        self.assertEqual((status["step"], status["total"]), (1, 2))
+        self.assertEqual(status["label"], "Setting up coverage.py")
+        progress.feed(b"\n=== STEP 2/2: MEASURING CODE COVERAGE ===\n")
+        status = progress.snapshot()
+        self.assertEqual((status["step"], status["total"]), (2, 2))
+        self.assertEqual(status["label"], "Measuring code coverage")
+
 
 class RunStatusRenderingTests(unittest.TestCase):
     def test_home_job_row_shows_only_its_running_session_and_clears_on_finish(self):

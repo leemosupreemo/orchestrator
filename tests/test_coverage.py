@@ -53,6 +53,30 @@ class CoverageTests(unittest.TestCase):
         cov.measure(root, "pytest -q", pytest)
         self.assertIn([py, "-m", "coverage", "run", "-m", "pytest", "-q"], pytest.calls)
 
+    def test_python_auto_installs_coverage_py_when_not_installed(self):
+        root = self.project("pyproject.toml")
+        py = sys.executable
+        installed = [False]
+        calls = []
+
+        def custom_run(argv, cwd):
+            calls.append(argv)
+            cmd = " ".join(argv)
+            if cmd == f"{py} -m coverage --version":
+                return subprocess.CompletedProcess(argv, 0 if installed[0] else 1, "", "")
+            if cmd == f"{py} -m pip install coverage":
+                installed[0] = True
+                return subprocess.CompletedProcess(argv, 0, "Successfully installed coverage", "")
+            if cmd.startswith(f"{py} -m coverage json"):
+                Path(argv[-1]).write_text(json.dumps({"totals": {"percent_covered": 92.5}}))
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        m = cov.measure(root, "pytest", custom_run)
+        self.assertEqual((m.pct, m.tool), (92.5, "coverage.py"))
+        self.assertTrue(installed[0])
+        self.assertIn([py, "-m", "pip", "install", "coverage"], calls)
+
     def test_a_missing_tool_says_how_to_get_it_instead_of_guessing(self):
         py = sys.executable
         with self.assertRaisesRegex(cov.CoverageUnavailable, "pip install coverage"):

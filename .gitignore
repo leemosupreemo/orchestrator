@@ -9,6 +9,8 @@ __pycache__/
 venv/
 build/
 dist/
+.coverage
+.coverage.*
 
 # Logs and temporary test projects
 logs/

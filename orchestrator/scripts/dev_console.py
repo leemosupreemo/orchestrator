@@ -2564,11 +2564,11 @@ def project_uses_xcode() -> bool:
     return bool(PROJECT_CONFIG.uses_xcode)
 
 
-def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_models: list[str]) -> float | None:
+def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_models: list[str], interactive: bool = True) -> float | None:
     clear_screen()
     if not project_uses_xcode():
         pct = run_project_coverage()
-        if sys.stdin.isatty():
+        if interactive and sys.stdin.isatty():
             input("\n\033[1;96mTap Enter to return to menu...\033[0m")
         return pct
     print_header("Calculating Code Coverage")
@@ -2844,8 +2844,10 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             print(f"  \033[93m• Target simulator destination:\033[0m {diag.get('best_destination')}")
             print("  • Ensure the scheme's test target builds without compilation errors.")
 
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    if interactive and sys.stdin.isatty():
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
     return overall_pct
+
 
 def handle_test_frameworks_menu(session_allowed_machines: list[str], session_allowed_models: list[str]) -> None:
     error_msg = ""

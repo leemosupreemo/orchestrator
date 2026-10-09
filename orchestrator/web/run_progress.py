@@ -15,9 +15,10 @@ class RunProgress:
         "VERIFICATION": "Verifying changes", "REVIEW": "Reviewing changes",
         "PULL REQUEST": "Creating pull request", "DELIVERY": "Delivering build",
         "EXPORTING": "Exporting job", "CLEANUP": "Cleaning up", "COMPLETE": "Complete",
-        "DEBUG LOOP": "Debugging issue",
+        "DEBUG LOOP": "Debugging issue", "COVERAGE": "Measuring code coverage",
+        "MEASURING CODE COVERAGE": "Measuring code coverage",
     }
-    TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION"}
+    TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION", "COVERAGE"}
     ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[78])")
 
     def __init__(self) -> None:
@@ -35,14 +36,21 @@ class RunProgress:
         self._pending = lines.pop()[-16384:]
         for raw in lines:
             line = self.ANSI.sub(b"", raw).decode("utf-8", "replace").strip()
+            bracket = re.fullmatch(r"\[(\d+)/(\d+)\]\s*(.*)", line)
+            if bracket and 0 < int(bracket[1]) <= int(bracket[2]):
+                self.step, self.total = int(bracket[1]), int(bracket[2])
+                desc = bracket[3].strip()
+                self.task = desc.capitalize() if desc else ""
+                self.label = desc.capitalize() if desc else "Running step"
             header = re.fullmatch(r"=+\s*(.*?)\s*=+", line)
             if header:
                 title = re.sub(r"^[^\w]+", "", header[1]).strip()
-                task = re.fullmatch(r"SUB[- ]TASK (\d+)/(\d+)(?::\s*(.*))?", title, re.I)
+                task = re.fullmatch(r"(?:SUB[- ]TASK|STEP)\s*(\d+)/(\d+)(?::\s*(.*))?", title, re.I)
                 if task and 0 < int(task[1]) <= int(task[2]):
                     self.step, self.total = int(task[1]), int(task[2])
-                    self.task = (task[3] or "").capitalize()
-                    self.label = "Implementing task"
+                    desc = (task[3] or "").strip()
+                    self.task = desc.capitalize() if desc else ""
+                    self.label = desc.capitalize() if desc else "Running step"
                 else:
                     phase, _, detail = title.partition(":")
                     phase = phase.strip().replace("_", " ").upper()
@@ -51,6 +59,7 @@ class RunProgress:
                         if phase not in self.TASK_PHASES:
                             self.step = self.total = None
                             self.task = detail.strip().capitalize()
+
             start = re.fullmatch(r"- Running LLM \((.+), timeout=\d+s\)\.\.\.", line)
             if start:
                 model = start[1]

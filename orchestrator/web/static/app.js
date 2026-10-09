@@ -4645,15 +4645,17 @@ pages.tests = async (_, query) => {
         <div class="card-b stack"><p>Builds and launches your app in the simulator, then captures screenshots for you to review.</p>
           <p class="muted">Requires Xcode and an iOS simulator.</p>
           <div><button type="button" class="btn" ${act("visual_check")}>Capture screenshots</button></div></div></section>` : ""}
-      ${data.frameworks && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><details class="fold"><summary class="card-h"><h2>Test frameworks &amp; tools <span class="count">${Object.keys(data.frameworks).length}</span></h2></summary>
+      ${data.frameworks && Object.keys(data.frameworks).length > 0 ? `<section class="card"><details class="fold"><summary class="card-h"><h2>Test frameworks &amp; tools <span class="count">${Object.keys(data.frameworks).length}</span></h2></summary>
         <div class="card-b stack"><p class="muted">Detection checks your test source files and local tools. Expand an item to see what it does and how to get started.</p>
           <div class="framework-grid">${Object.entries(data.frameworks).map(([key, f]) => `<details class="framework"><summary class="framework-h"><strong>${esc(f.name)}</strong>
             <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Detected" : "Not detected"}</span></summary>
             <div class="framework-detail stack"><p>${esc(f.desc)}</p><p class="muted">${key === "xcbeautify" ? (f.installed ? "This formatter is installed on this computer. It makes Xcode build logs easier to read." : "This formatter was not found on this computer. It formats build logs; it does not add tests.")
               : key === "canary_suite" ? (f.installed ? "The generated sample test file exists in this project. Replace its examples with checks for your app." : "Generate a small sample Swift Testing suite, then replace its examples with checks for your app.")
+              : key === "coverage_py" ? (f.installed ? "coverage.py is installed and ready to measure statement coverage." : "coverage.py is not installed yet. Clicking Measure Coverage will automatically install it and calculate test coverage.")
               : f.installed ? "Usage was found in your test source files. This does not confirm every test passes; run your suites to check." : "No usage was found in your test source files. It may still be installed as a dependency. Create a test job to add relevant tests."}</p>
-              ${key === "canary_suite" && !f.installed ? `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>` : key !== "xcbeautify" && key !== "canary_suite" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`).join("")}</div>
+              ${key === "canary_suite" && !f.installed ? `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>` : key === "coverage_py" && !f.installed ? `<div><button type="button" class="btn small" ${act("coverage")}>Auto-add coverage.py</button></div>` : key !== "xcbeautify" && key !== "canary_suite" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`).join("")}</div>
         </div></details></section>` : ""}`,
+
     after: () => {
       $("#suite-filter").addEventListener("submit", (e) => {
         e.preventDefault();
@@ -5989,9 +5991,10 @@ function runStatus(r, vc = null) {
   const headline = `${numbered ? `Step ${p.step} of ${p.total}: ` : ""}${p.label || r.title || "Starting run"}`;
   const activeModels = p.active_models || [];
   const models = activeModels.length ? activeModels : p.models || [];
+  const showTask = p.task && p.task.toLowerCase() !== (p.label || "").toLowerCase();
   return `<section class="banner run-status ${stopping || r.waiting ? "attention" : "working"}" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${stopping || r.waiting ? "attention" : "working"}">${esc(status)}</span>
-      <strong>${esc(headline)}</strong>${p.task ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
+      <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
     <dl class="run-status-details">
       <div><dt>${activeModels.length ? "Models in use" : "Models used"}</dt><dd>${models.length ? models.map(esc).join(", ") : "None yet"}</dd></div>
       <div><dt>LLM agents</dt><dd>${Number.isInteger(p.agents) ? `${p.agents} active` : "Awaiting activity"}</dd></div>
@@ -6081,9 +6084,14 @@ function nextStep(r) {
   const text = failed ? "This run failed. The output below shows why."
     : r.result_job && !r.job ? "Job created."
     : target ? "Done. The job page shows where it stands now."
-    : r.action === "logs_pull" ? "Logs pulled." : "Done.";
-  const extra = !failed && r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>` : "";
+    : r.action === "logs_pull" ? "Logs pulled."
+    : r.action === "coverage" ? "Coverage measurement complete."
+    : "Done.";
+  const extra = !failed && r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
+    : !failed && r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
+    : "";
   return `<div class="banner ${failed ? "failed" : "done"}"><p>${esc(text)}</p>${extra}${open}</div>`;
+
 }
 
 async function finishRunStatus(run) {

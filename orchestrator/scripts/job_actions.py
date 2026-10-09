@@ -209,6 +209,24 @@ def frameworks_inventory() -> dict[str, Any]:
     tt = PROJECT_CONFIG.test_target or "AppTests"
     sample_canary_exists = (ROOT / tt / "SampleSwiftTestingTests.swift").exists() if PROJECT_CONFIG.test_target else False
 
+    is_python = any((ROOT / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt")) or bool(PROJECT_CONFIG.test_command and ("python" in PROJECT_CONFIG.test_command or "pytest" in PROJECT_CONFIG.test_command or "unittest" in PROJECT_CONFIG.test_command))
+    if is_python:
+        has_cov = False
+        try:
+            has_cov = subprocess.run([sys.executable, "-m", "coverage", "--version"], capture_output=True, timeout=2).returncode == 0
+        except Exception:
+            pass
+        has_pytest = False
+        try:
+            has_pytest = subprocess.run([sys.executable, "-m", "pytest", "--version"], capture_output=True, timeout=2).returncode == 0
+        except Exception:
+            pass
+        return {
+            "coverage_py": {"installed": bool(has_cov), "name": "coverage.py", "desc": "Statement & branch test coverage runner for Python (auto-installed on first measurement)"},
+            "pytest": {"installed": bool(has_pytest), "name": "pytest", "desc": "Python testing framework with rich assertion introspection"},
+            "unittest": {"installed": True, "name": "unittest (Standard Library)", "desc": "Built-in unit testing framework for Python"},
+        }
+
     return {
         "swift_testing": {"installed": bool(has_swift_testing), "name": "Swift Testing (Native)", "desc": "Core logic, ViewModels & async unit tests"},
         "snapshot_testing": {"installed": bool(has_snapshot_testing), "name": "SnapshotTesting", "desc": "Visual regressions (SwiftUI pixels, Dark Mode)"},
@@ -216,6 +234,7 @@ def frameworks_inventory() -> dict[str, Any]:
         "canary_suite": {"installed": bool(sample_canary_exists), "name": "Sample Canary Suite", "desc": f"1-click test suite generation in {tt}"},
         "xcbeautify": {"installed": bool(has_xcbeautify), "name": "xcbeautify Formatter", "desc": "Strip noisy xcodebuild output into 1-line logs"},
     }
+
 
 
 def scaffold_canary() -> int:
@@ -310,7 +329,8 @@ def run_plan(name: str) -> int:
 def coverage() -> int:
     from dev_console import run_calculate_coverage
 
-    return 0 if run_calculate_coverage([], []) is not None else 1
+    return 0 if run_calculate_coverage([], [], interactive=False) is not None else 1
+
 
 
 # --------------------------------------------------------------------------- CLI
