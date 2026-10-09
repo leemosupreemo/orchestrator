@@ -1,48 +1,54 @@
 (function (root) {
   "use strict";
 
+  // Grouped by what a setting affects, the way GitHub splits a repository's settings from your own: this project,
+  // the AI, the computers and who reaches them, and alerts. Each setting has one home: environment checks are on
+  // Readiness, Slack alerts on Connections, guides in Docs, archived jobs on Home, screen setup in UX review.
+  // Entries with `listed: false` are left out of menus; their routes still work.
   const registry = [
     {
-      id: "models-instructions",
-      label: "Models & instructions",
+      // Pages of their own, listed here so every setting is reached from one place (Settings in the sidebar).
+      id: "setup",
+      label: "Set up",
       entries: [
-        {id: "ai", label: "Add an AI", description: "Get an AI to do the work: free options first, with install and sign-in steps.", route: "#/config/ai", enabled: true, status: null},
-        {id: "models", label: "Models", description: "Choose the AI models available to jobs.", route: "#/config/models", enabled: true, status: null},
-        {id: "api-keys", label: "API Keys", description: "Connect AI providers without displaying saved secrets.", route: "#/config/api-keys", enabled: true, ownerOnly: true, status: null},
-        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about your project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
-      ],
-    },
-    {
-      id: "projects-machines",
-      label: "Projects & machines",
-      entries: [
-        {id: "base-branch", label: "Base Branch", description: "Choose the branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
+        {id: "readiness", label: "Readiness", description: "Whether jobs can run here: what's missing, build tools and checks.", route: "#/readiness", enabled: true, status: null},
+        {id: "connections", label: "Connections", description: "Jira, Trello, Sentry and Figma for jobs, and Slack alerts.", route: "#/connections", enabled: true, status: null},
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
-        {id: "archived-jobs", label: "Archived Jobs", description: "Review and restore completed work.", route: "#/config/archived-jobs", enabled: true, status: null},
-        {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, ownerOnly: true, status: null},
-        {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, status: null, hostedOnly: true},
-        {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
       ],
     },
     {
-      id: "delivery-notifications",
-      label: "Delivery & notifications",
+      id: "project",
+      label: "This project",
       entries: [
-        {id: "email", label: "Email Notifications", description: "Choose recipients and configure the sender.", route: "#/config/email", enabled: true, ownerOnly: true, status: null},
-        {id: "chat", label: "Slack & chat alerts", description: "Get pinged when something needs you, even with the tab closed.", route: "#/config/chat", enabled: true, ownerOnly: true, status: null},
+        {id: "base-branch", label: "Base branch", description: "The branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
         {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
-        {id: "xcode-cloud", label: "Xcode Cloud", description: "Configure cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
+        {id: "xcode-cloud", label: "Xcode Cloud", description: "Cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
       ],
     },
     {
-      id: "help-health",
-      label: "Help & health",
+      id: "ai",
+      label: "AI",
       entries: [
-        {id: "documentation", label: "Documentation", description: "Read Orchestrator and project guides.", route: "#/config/documentation", enabled: true, status: null},
-        {id: "setup-wizard", label: "Setup Wizard", description: "Walk through initial project setup.", route: "#/config/setup-wizard", enabled: true, ownerOnly: true, status: null},
-        {id: "audit", label: "Tool check", description: "Check the tools and machines jobs need are ready (prerequisite audit).", route: "#/config/audit", enabled: true, status: null},
-        {id: "self-tests", label: "Orchestrator health check", description: "Run Orchestrator's own self-tests to confirm it works on this machine.", route: "#/config/self-tests", enabled: true, status: null},
-        {id: "updates", label: "Updates", description: "Update Orchestrator on local and remote machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
+        {id: "ai", label: "AI & models", description: "Add AI tools and choose which model each role uses.", route: "#/config/ai", enabled: true, status: null},
+        {id: "models", label: "Models", description: "Which AI model each role (architect, planner, builder, reviewer) uses.", route: "#/config/models", enabled: true, listed: false, status: null},
+        {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about this project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
+      ],
+    },
+    {
+      id: "computers",
+      label: "Computers & access",
+      entries: [
+        {id: "fleet", label: "Machines & computers", description: "Manage build machines or switch between your computers.", route: "#/config/fleet", enabled: true, status: null},
+        {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, listed: false, hostedOnly: true},
+        {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
+        {id: "updates", label: "Updates", description: "Update Orchestrator on this and your other machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
+      ],
+    },
+    {
+      id: "alerts",
+      label: "Alerts",
+      entries: [
+        {id: "email", label: "Email alerts", description: "Who gets emails, and the account that sends them.", route: "#/config/email", enabled: true, ownerOnly: true, status: null},
       ],
     },
   ];
@@ -58,11 +64,17 @@
     return !entry.hostedOnly || Boolean(root.Account && root.Account.active());
   }
 
+  // What menus list. `resolve` and `find` also know the unlisted entries.
   function groups(role = "owner") {
     return registry.map((group) => ({
       id: group.id,
       label: group.label,
-      entries: group.entries.filter((entry) => shown(entry) && (role !== "member" || !entry.ownerOnly)).map(copyEntry),
+      entries: group.entries.filter((entry) => entry.listed !== false && shown(entry) && (role !== "member" || !entry.ownerOnly)).map((entry) => {
+        const item = copyEntry(entry);
+        // Members use this shared destination to switch their hosted computers; owners manage the build fleet.
+        if (item.id === "fleet" && role === "member" && root.Account && root.Account.active()) item.route = "#/computers";
+        return item;
+      }),
     })).filter((group) => group.entries.length);
   }
 
@@ -88,6 +100,7 @@
 
   function resolve(section, role = "owner") {
     const entry = find(section);
+    if (entry?.id === "fleet" && role === "member") return null;
     return entry && entry.enabled && !(role === "member" && entry.ownerOnly) && entry.route && entry.route.startsWith("#/config/") ? entry : null;
   }
 
@@ -174,7 +187,8 @@
     };
   }
 
-  function renderApiKeys(state) {
+  // API keys: a card on Add an AI (owners only; members' config has no keys).
+  function apiKeysCard(state) {
     const keys = Array.isArray(state.keys) ? state.keys : [];
     const rows = keys.map((key) => {
       const isOllama = key.id === "ollama_api_key";
@@ -191,20 +205,125 @@
         </div>
       </div>`;
     }).join("");
-    return {
-      title: "API Keys",
-      sub: "Connect AI providers. Saved key values are never displayed.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Provider keys</h2><span class="count">${keys.length}</span></div>
+    return `<section class="card configuration-card" id="api-keys">
+          <div class="card-h"><h2>API keys</h2><span class="count">${keys.length}</span></div>
+          <p class="card-b muted card-note">Use a provider through its API instead of its app. Saved key values are never shown.</p>
           <div class="configuration-setting-list">${rows || `<div class="empty">No providers are available.</div>`}</div>
-        </section>
-      </div>`,
-    };
+        </section>`;
   }
 
-  // Add an AI: each provider with its cost, whether it's ready here, and the exact install and sign-in steps.
+  const PROVIDER_MODELS = {
+    claude: [
+      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", tier: "Recommended", caps: ["Coding", "Speed", "Context"] },
+      { id: "claude-opus-4-8", name: "Claude Opus 4.8", tier: "Extreme", caps: ["Reasoning", "Coding", "Deep refactor"] },
+      { id: "claude-opus-4-7", name: "Claude Opus 4.7", tier: "Extreme", caps: ["Reasoning", "Coding", "Context"] },
+      { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", tier: "Fast", caps: ["Speed", "Quick edits"] },
+    ],
+    agy: [
+      { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", tier: "High", caps: ["Reasoning", "Coding", "Vision"] },
+      { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", tier: "Speed", caps: ["Speed", "Multimodal", "Context"] },
+      { id: "gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite", tier: "Fast", caps: ["Low latency", "Speed"] },
+      { id: "gemini-3.6-flash-high", name: "Gemini 3.6 Flash (High)", tier: "High", caps: ["Speed", "Coding", "Vision"] },
+      { id: "gemini-3.6-flash-medium", name: "Gemini 3.6 Flash (Med)", tier: "Medium", caps: ["Context", "Speed"] },
+      { id: "gemini-3.5-flash-high", name: "Gemini 3.5 Flash (High)", tier: "High", caps: ["Fast response", "Context"] },
+    ],
+    gemini: [
+      { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", tier: "High", caps: ["Reasoning", "Coding", "Vision"] },
+      { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", tier: "Speed", caps: ["Speed", "Multimodal", "Context"] },
+      { id: "gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite", tier: "Fast", caps: ["Low latency", "Speed"] },
+      { id: "gemini-3.6-flash-high", name: "Gemini 3.6 Flash (High)", tier: "High", caps: ["Speed", "Coding", "Vision"] },
+      { id: "gemini-3.6-flash-medium", name: "Gemini 3.6 Flash (Med)", tier: "Medium", caps: ["Context", "Speed"] },
+    ],
+    codex: [
+      { id: "gpt-4o", name: "GPT-4o", tier: "High", caps: ["Multimodal", "Coding", "Broad knowledge"] },
+      { id: "o3-mini", name: "o3-mini", tier: "High", caps: ["Reasoning", "STEM & Code logic"] },
+      { id: "o1", name: "o1", tier: "Extreme", caps: ["Deep deliberate reasoning"] },
+      { id: "o1-mini", name: "o1-mini", tier: "Fast", caps: ["Fast reasoning", "Coding"] },
+      { id: "gpt-4o-mini", name: "GPT-4o mini", tier: "Fast", caps: ["Fast utility", "Lightweight"] },
+      { id: "gpt-5.4", name: "GPT-5.4", tier: "Preview", caps: ["Frontier reasoning preview"] },
+      { id: "gpt-5.5", name: "GPT-5.5", tier: "Preview", caps: ["Frontier coding preview"] },
+    ],
+    opencode: [
+      { id: "opencode/big-pickle", name: "Big Pickle (Free)", tier: "Free", caps: ["General coding", "Zero cost"] },
+      { id: "opencode/deepseek-v4-flash-free", name: "DeepSeek V4 Flash (Free)", tier: "Free", caps: ["Fast reasoning", "Code"] },
+      { id: "opencode/qwen3.6-plus-free", name: "Qwen 3.6 Plus (Free)", tier: "Free", caps: ["Broad language", "Code"] },
+      { id: "opencode/minimax-m2.5-free", name: "MiniMax M2.5 (Free)", tier: "Free", caps: ["Long context", "Instruction"] },
+      { id: "opencode/nemotron-3-super-free", name: "Nemotron 3 Super (Free)", tier: "Free", caps: ["Refactoring", "Alignment"] },
+      { id: "opencode/laguna-s-2.1-free", name: "Laguna S 2.1 (Free)", tier: "Free", caps: ["Fast utility", "Scripts"] },
+    ],
+    ollama: [
+      { id: "deepseek", name: "DeepSeek Coder", tier: "Local", caps: ["Local private coding"] },
+      { id: "llama3.3", name: "Llama 3.3", tier: "Local", caps: ["General purpose local AI"] },
+      { id: "qwen2.5-coder", name: "Qwen 2.5 Coder", tier: "Local", caps: ["Local code intelligence"] },
+    ],
+  };
+
+  function modelTreeHtml(providerId, providerReady = false) {
+    const models = PROVIDER_MODELS[providerId] || [];
+    if (!models.length) return "";
+    return `<details class="fold model-tree" ${providerReady ? "open" : ""}>
+      <summary class="model-tree-summary">
+        <strong>Supported models</strong>
+        <span class="count">${models.length}</span>
+      </summary>
+      <div class="model-tree-content">
+        <ul class="model-tree-branch">
+          ${models.map((m, idx) => `
+            <li class="model-tree-item ${idx === models.length - 1 ? 'last-node' : ''}">
+              <div class="model-tree-row">
+                <strong class="mono model-id">${escapeHtml(m.id)}</strong>
+                ${m.name && m.name !== m.id ? `<span class="muted model-label">${escapeHtml(m.name)}</span>` : ""}
+                ${m.tier ? `<span class="pill ${m.tier === 'Recommended' ? 'done' : m.tier === 'Free' ? 'ok' : ''}">${escapeHtml(m.tier)}</span>` : ""}
+                ${m.caps?.length ? `<span class="model-caps muted">${escapeHtml(m.caps.join(" · "))}</span>` : ""}
+              </div>
+            </li>
+          `).join("")}
+        </ul>
+      </div>
+    </details>`;
+  }
+
+  function roleAssignmentsCard(state = {}) {
+    const modelsData = state.models || {};
+    const assignments = modelsData.assignments || {};
+    const available = modelsData.available && modelsData.available.length ? modelsData.available : [
+      {id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Recommended)", provider: "Anthropic"},
+      {id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "Anthropic"},
+      {id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", provider: "Google"},
+      {id: "gemini-3-flash-preview", name: "Gemini 3 Flash", provider: "Google"},
+      {id: "gpt-4o", name: "GPT-4o", provider: "OpenAI"},
+      {id: "o3-mini", name: "o3-mini", provider: "OpenAI"}
+    ];
+    const roles = [
+      {id: "architect", label: "Architect", desc: "Checks the plan and sets the standards it must meet"},
+      {id: "planner", label: "Planner", desc: "Turns a request into tasks after reading the code"},
+      {id: "builder", label: "Builder", desc: "Writes the code and the tests"},
+      {id: "reviewer", label: "Reviewer", desc: "Reads the changes and the test results, and looks for what could break"}
+    ];
+    const formRows = roles.map((role) => {
+      const currentVal = assignments[role.id] || "claude-sonnet-4-6";
+      const options = available.map((m) => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? " selected" : ""}>${escapeHtml(m.label || m.name || m.id)} (${escapeHtml(m.provider)})</option>`).join("");
+      return `<div class="configuration-setting-row">
+        <div class="main-col">
+          <strong>${escapeHtml(role.label)}</strong>
+          <small>${escapeHtml(role.desc)}</small>
+        </div>
+        <select name="${escapeHtml(role.id)}" class="model-select">${options}</select>
+      </div>`;
+    }).join("");
+    return `<section class="card configuration-card" id="team-models">
+      <div class="card-h"><h2>Team Role Assignments</h2></div>
+      <form class="card-b stack" id="config-models-form">
+        <p class="muted">Which AI model each role (architect, planner, builder, reviewer) uses by default.</p>
+        <div class="configuration-setting-list">${formRows}</div>
+        <div class="row end" style="margin-top:16px;">
+          <button class="btn primary" type="submit">Save model team</button>
+        </div>
+      </form>
+    </section>`;
+  }
+
+  // Combined Add an AI & Models: each provider with its cost, whether it's ready, expandable model tree, and role models.
   function renderAi(state) {
     const ai = state.ai || {providers: [], plugins: []};
     const copyable = (command) => command
@@ -213,23 +332,38 @@
       : p.installed ? `<span class="pill">Installed, not signed in</span>` : `<span class="pill">Not installed</span>`;
     const cards = ai.providers.map((p) => `<section class="card configuration-card ai-provider" data-provider="${escapeHtml(p.id)}">
         <div class="card-h"><h2>${escapeHtml(p.name)}</h2>${badge(p)}</div>
+        <div class="card-b stack">
         <p><strong>${escapeHtml(p.cost_label)}.</strong> ${escapeHtml(p.what)}</p>
         ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}${p.install_note ? `<small>${escapeHtml(p.install_note)}</small>` : ""}`}
           <p class="muted">${p.installed ? "Then" : "2."} ${escapeHtml(p.sign_in)}</p>`}
-        <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key ? ` · <a href="#/config/api-keys">Add an API key instead</a>` : ""}</p>
+        <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
+        ${modelTreeHtml(p.id, p.ready)}
+        </div>
       </section>`).join("");
-    const plugins = ai.plugins.map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
+    const plugins = (ai.plugins || []).map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {
       title: "Add an AI",
       sub: ai.any_ready ? "You have at least one AI ready. Add more to choose between them per job." : "Orchestrator needs at least one AI to plan, build and review. Free options are first.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
+        ${roleAssignmentsCard(state)}
+        <section class="card configuration-card">
+          <div class="card-h"><h2>AI Providers</h2></div>
+          <div class="card-b stack">
+            <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
+          </div>
+        </section>
         ${cards || `<div class="empty">Couldn't check the AI tools on this computer.</div>`}
+        ${Array.isArray(state.keys) ? apiKeysCard(state) : ""}
         <section class="card configuration-card">
           <div class="card-h"><h2>Helpful plugins for your AI tools</h2></div>
-          <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
-          <ul>${plugins}</ul>
+          <div class="card-b stack">
+            <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
+            <div class="row align-center gap-3">
+              <a href="#/connections?section=mcp" class="btn small">View recommended MCPs &amp; mobile tools ↗</a>
+              <a href="docs/recommended-mcp-plugins.md" target="_blank" rel="noopener" class="linklike">Plugin recommendations doc ↗</a>
+            </div>
+            ${plugins ? `<details class="fold mt-8"><summary class="muted">See installed plugins list</summary><ul class="plain-list mt-8">${plugins}</ul></details>` : ""}
+          </div>
         </section>
       </div>`,
     };
@@ -239,10 +373,9 @@
     const branches = Array.isArray(state.branches) ? state.branches : [];
     const options = branches.map((branch) => `<option value="${escapeHtml(branch)}"${branch === state.base_branch ? " selected" : ""}>${escapeHtml(branch)}</option>`).join("");
     return {
-      title: "Base Branch",
+      title: "Base branch",
       sub: "Choose the branch jobs use as their comparison point.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Comparison branch</h2></div>
           <form class="card-b stack" id="config-base-branch-form">
@@ -251,31 +384,6 @@
             </label>
             <div class="row end"><button class="btn primary" type="submit">Save base branch</button></div>
           </form>
-        </section>
-      </div>`,
-    };
-  }
-
-  function renderArchivedJobs(state) {
-    const archived = Array.isArray(state.archived) ? state.archived : [];
-    const rows = archived.map((job) => `<div class="configuration-setting-row">
-      <div class="main-col">
-        <strong><span class="mono">${escapeHtml(job.job_id)}</span> ${escapeHtml(job.title)}</strong>
-        <span class="configuration-status">${escapeHtml(job.status)}</span>
-        ${job.corrupt ? `<small>Corrupt archive data</small>` : ""}
-      </div>
-      ${job.corrupt
-        ? `<button type="button" class="btn small" disabled>Unavailable</button>`
-        : `<button type="button" class="btn small" data-config-action="archive-restore" data-id="${escapeHtml(job.id)}">Restore</button>`}
-    </div>`).join("");
-    return {
-      title: "Archived Jobs",
-      sub: "Restore completed work to the active jobs list.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Archived jobs</h2><span class="count">${archived.length}</span></div>
-          <div class="configuration-setting-list">${rows || `<div class="empty">No archived jobs</div>`}</div>
         </section>
       </div>`,
     };
@@ -296,10 +404,9 @@
       <button type="button" class="btn small danger" data-config-action="email-remove" data-email="${escapeHtml(recipient)}">Remove</button>
     </div>`).join("");
     return {
-      title: "Email Notifications",
+      title: "Email alerts",
       sub: "Choose who receives updates and how Orchestrator sends them.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Sender</h2><button type="button" class="btn small" data-config-action="email-sender">Configure sender</button></div>
           <div class="card-b stack">
@@ -320,27 +427,20 @@
     };
   }
 
-  function renderChat(state) {
-    const hook = state.webhook || {};
-    return {
-      title: "Slack & chat alerts",
-      sub: "A message when a job needs you, and when a run finishes or fails. Works with any Slack-compatible incoming webhook.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Webhook</h2><div class="row">
+  // Slack & chat alerts, shown on Connections with the other apps Orchestrator talks to (owners only).
+  function chatCard(hook = {}) {
+    return `<section class="card configuration-card" id="chat-alerts" data-owner-only>
+          <div class="card-h"><h2>Slack &amp; chat alerts</h2><div class="row">
             <button type="button" class="btn small" data-config-action="chat-set">${hook.set ? "Change" : "Add webhook"}</button>
             ${hook.set ? `<button type="button" class="btn small primary" data-config-action="chat-test">Send test message</button>
             <button type="button" class="btn small danger" data-config-action="chat-clear">Remove</button>` : ""}
           </div></div>
           <div class="card-b stack">
             <strong>${hook.set ? "Connected" : "Not set up"}</strong>
-            <span class="configuration-status">${hook.set ? `Sending to ${escapeHtml(hook.host)}. The full address is stored but not shown.` : "Paste an https:// incoming-webhook URL from Slack (or a compatible tool)."}</span>
-            <span class="muted">Runs while the Orchestrator web server is running. Browser alerts (sidebar button) and worker emails work separately.</span>
+            <span class="configuration-status">${hook.set ? `Sending to ${escapeHtml(hook.host)}. The full address is stored but not shown.` : "Paste a Slack webhook URL."}</span>
+            <span class="muted">Sends a message when a job needs you, or when a run finishes or fails.</span>
           </div>
-        </section>
-      </div>`,
-    };
+        </section>`;
   }
 
   const EMAIL_SOURCES = {
@@ -387,7 +487,6 @@
       title: "Who can sign in",
       sub: "People with these emails can sign in with Google and use this computer from anywhere. Each sign-in lasts 30 days.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Allowed emails</h2><button type="button" class="btn small" data-config-action="access-add">Add email</button></div>
           <div class="configuration-setting-list">${emailRows || `<div class="empty">No one yet, so sign-in is closed. The access token still works.</div>`}</div>
@@ -404,65 +503,12 @@
     };
   }
 
-  function renderDocumentation(state) {
-    const docs = Array.isArray(state.docs) ? state.docs : [];
-    const sections = ["Orchestrator docs", "Project docs"].map((section) => {
-      const entries = docs.filter((doc) => doc.section === section);
-      if (!entries.length) return "";
-      return `<section class="card configuration-card" aria-labelledby="configuration-docs-${section === "Orchestrator docs" ? "orchestrator" : "project"}">
-        <div class="card-h"><h2 id="configuration-docs-${section === "Orchestrator docs" ? "orchestrator" : "project"}">${escapeHtml(section)}</h2><span class="count">${entries.length}</span></div>
-        <ul class="configuration-document-list">${entries.map((doc) => `<li>
-          <span>${escapeHtml(doc.name)}</span>
-          <button type="button" class="btn small" data-config-action="document-read" data-id="${escapeHtml(doc.id)}">Read</button>
-        </li>`).join("")}</ul>
-      </section>`;
-    }).join("");
-    return {
-      title: "Documentation",
-      sub: "Read guides for Orchestrator and the active project.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        ${sections || `<div class="empty">No documentation is available.</div>`}
-      </div>`,
-    };
-  }
-
   function renderModels(state) {
-    const modelsData = state.models || {};
-    const assignments = modelsData.assignments || {};
-    const available = modelsData.available || [];
-    const roles = [
-      {id: "architect", label: "Senior Architect", desc: "Oversees plan, architecture standards, and design"},
-      {id: "planner", label: "Planner Agent", desc: "Decomposes requirements and investigates codebase"},
-      {id: "builder", label: "Builder Agent", desc: "Implements code changes, refactors, and fixes"},
-      {id: "reviewer", label: "Reviewer Agent", desc: "Reviews diffs, analyzes tests and regression risks"}
-    ];
-    const formRows = roles.map((role) => {
-      const currentVal = assignments[role.id] || "claude-sonnet-4-6";
-      const options = available.map((m) => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? " selected" : ""}>${escapeHtml(m.label)} (${escapeHtml(m.provider)})</option>`).join("");
-      return `<div class="configuration-setting-row">
-        <div class="main-col">
-          <strong>${escapeHtml(role.label)}</strong>
-          <small>${escapeHtml(role.desc)}</small>
-        </div>
-        <select name="${escapeHtml(role.id)}" class="model-select">${options}</select>
-      </div>`;
-    }).join("");
+    const combined = renderAi(state);
     return {
-      title: "AI Model Team",
-      sub: "Assign default AI models for each specialized role in the orchestrator team.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Team Role Assignments</h2></div>
-          <form class="card-b stack" id="config-models-form">
-            <div class="configuration-setting-list">${formRows}</div>
-            <div class="row end" style="margin-top:16px;">
-              <button class="btn primary" type="submit">Save model team</button>
-            </div>
-          </form>
-        </section>
-      </div>`,
+      ...combined,
+      title: "Models",
+      sub: "Which AI model each role uses by default, and supported provider models.",
     };
   }
 
@@ -485,7 +531,6 @@
       title: "Instructions for AI helpers",
       sub: "Customize system prompts and behavioral guidelines for each specialized agent role.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Specialized Agent Roles</h2><span class="count">${rolePrompts.length}</span></div>
           <div class="configuration-setting-list">${promptCards || `<div class="empty">No role prompts found.</div>`}</div>
@@ -514,11 +559,11 @@
       title: "Machines",
       sub: "Manage local and remote SSH machines for distributed builds, tests, and code generation.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h">
             <h2>Build & Test Machines</h2>
             <div class="row">
+              ${root.Account?.active?.() ? `<a class="btn small" href="#/computers">Your computers</a>` : ""}
               <button type="button" class="btn small" data-config-action="fleet-add">Add worker</button>
               <button type="button" class="btn small" data-config-action="fleet-check">Check health</button>
               <button type="button" class="btn small" data-config-action="fleet-sync">Sync code</button>
@@ -537,7 +582,6 @@
       title: "Tester builds (Firebase)",
       sub: "Configure automated beta releases and tester distribution.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Distribution Settings</h2><div class="row"><button type="button" class="btn small primary" data-config-action="distribute-now">Distribute current branch</button></div></div>
           <form class="card-b stack" id="config-firebase-form">
@@ -546,7 +590,7 @@
             </div>
             <label class="field"><span>Firebase App ID</span><input type="text" name="firebase_app_id" value="${escapeHtml(fb.app_id || "")}" placeholder="1:1234567890:ios:abcdef123456"><small>From Firebase Project Settings &gt; General &gt; Your apps.</small></label>
             <label class="field"><span>Tester Groups</span><input type="text" name="firebase_tester_groups" value="${escapeHtml(fb.tester_groups || "testers")}" placeholder="testers, qa-team"><small>Comma-separated tester group names configured in Firebase Console.</small></label>
-            <label class="field"><span>Tester invite link (optional)</span><input type="url" name="firebase_invite_url" value="${escapeHtml(fb.invite_url || "")}" placeholder="https://appdistribution.firebase.dev/i/…"><small>In Firebase Console &gt; App Distribution &gt; Testers &amp; Groups, open a group and copy its invite link. People who open it can join the group and install builds without you adding them one by one. Shown on the Delivery page to copy and share.</small></label>
+            <label class="field"><span>Tester invite link (optional)</span><input type="url" name="firebase_invite_url" value="${escapeHtml(fb.invite_url || "")}" placeholder="https://appdistribution.firebase.dev/i/…"><small>In Firebase Console &gt; App Distribution &gt; Testers &amp; Groups, open a group and copy its invite link. People who open it can join the group and install builds without you adding them one by one. Shown on the App delivery page to copy and share.</small></label>
             <label class="field"><span>Service Account Key Path (optional)</span><input type="text" name="firebase_service_account_path" value="${escapeHtml(fb.service_account_path || "")}" placeholder="~/.orchestrator/firebase-service-account.json"><small>Or set GOOGLE_APPLICATION_CREDENTIALS in your environment.</small></label>
             <div class="row end"><button class="btn primary" type="submit">Save settings</button></div>
           </form>
@@ -561,7 +605,6 @@
       title: "Xcode Cloud & CI",
       sub: "Configure continuous integration workflows with Xcode Cloud.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Xcode Cloud Integration</h2></div>
           <div class="card-b stack">
@@ -583,7 +626,6 @@
       title: "Updates",
       sub: "Keep Swift Orchestrator up to date across your local machine and fleet.",
       html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
         <section class="card configuration-card">
           <div class="card-h"><h2>Orchestrator Software Updates</h2></div>
           <div class="card-b stack">
@@ -598,72 +640,20 @@
     };
   }
 
-  function renderAudit(state) {
-    return {
-      title: "Tool check",
-      sub: "Verify developer tools, git, python, and environment readiness.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Are the tools ready?</h2><button type="button" class="btn primary small" data-config-action="run-audit">Run tool check</button></div>
-          <div class="card-b stack">
-            <p>Checks Xcode Command Line Tools, Python 3.10+, Git, GitHub CLI (gh), model API keys, and simulator runtimes.</p>
-          </div>
-        </section>
-      </div>`,
-    };
-  }
 
-  function renderSelfTests(state) {
-    return {
-      title: "Orchestrator health check",
-      sub: "Run validation suites to test Orchestrator functionality.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Self-tests</h2><button type="button" class="btn primary small" data-config-action="run-self-tests">Run All Self-Tests</button></div>
-          <div class="card-b stack">
-            <p>Runs the test suite across job scheduling, worker tools, stack detection, and model routing.</p>
-          </div>
-        </section>
-      </div>`,
-    };
-  }
 
-  function renderSetupWizard(state) {
-    return {
-      title: "Setup Wizard",
-      sub: "Walk through project configuration and environment setup.",
-      html: `<div class="configuration-page">
-        <a class="configuration-back" href="#/config">← All configuration</a>
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Interactive Setup Wizard</h2><button type="button" class="btn primary small" data-config-action="launch-wizard">Launch Wizard</button></div>
-          <div class="card-b stack">
-            <p>Walks step-by-step through Xcode project detection, scheme selection, test targets, API keys, and notification channels.</p>
-          </div>
-        </section>
-      </div>`,
-    };
-  }
 
   function render(section, state = {}) {
     if (section === "ai") return renderAi(state);
-    if (section === "api-keys") return renderApiKeys(state);
     if (section === "base-branch") return renderBaseBranch(state);
-    if (section === "archived-jobs") return renderArchivedJobs(state);
     if (section === "email") return renderEmail(state);
-    if (section === "chat") return renderChat(state);
     if (section === "access") return renderAccess(state);
-    if (section === "documentation") return renderDocumentation(state);
     if (section === "models") return renderModels(state);
     if (section === "ai-instructions") return renderAiInstructions(state);
     if (section === "fleet") return renderFleet(state);
     if (section === "firebase") return renderFirebase(state);
     if (section === "xcode-cloud") return renderXcodeCloud(state);
     if (section === "updates") return renderUpdates(state);
-    if (section === "audit") return renderAudit(state);
-    if (section === "self-tests") return renderSelfTests(state);
-    if (section === "setup-wizard") return renderSetupWizard(state);
     return renderChooser(state);
   }
 
@@ -706,5 +696,6 @@
     routeMatches,
     applyRole,
     canRunAction,
+    chatCard,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

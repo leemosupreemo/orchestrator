@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -21,7 +22,7 @@ class JsonRetryTests(unittest.TestCase):
     def run_llm(self, replies, role=ModelRole.PLANNER, allowed=None):
         prompts = []
 
-        def fake(model, prompt, cwd, timeout, role=None, session_id=None):
+        def fake(model, prompt, cwd, timeout, role=None, session_id=None, images=None):
             prompts.append(prompt)
             return replies.pop(0)
 
@@ -49,6 +50,41 @@ class JsonRetryTests(unittest.TestCase):
     def test_roles_that_do_not_need_json_are_left_alone(self):
         (out, _, _), prompts = self.run_llm([PROSE], role=ModelRole.REVIEWER)
         self.assertEqual((out, len(prompts)), (PROSE, 1))
+
+    def test_extract_json_block_prioritizes_dict_over_preceding_list_block(self):
+        text = (
+            "Here are the files I examined:\n"
+            "```json\n"
+            '["Tests/AuthTests.swift", "Sources/Auth.swift"]\n'
+            "```\n\n"
+            "Here is the plan:\n"
+            "```json\n"
+            '{"title": "Expand Auth Coverage", "summary": "Audit auth", "tasks": []}\n'
+            "```"
+        )
+        extracted = llm.extract_json_block(text)
+        self.assertIn('"title": "Expand Auth Coverage"', extracted)
+
+    def test_extract_json_block_balanced_braces_with_preceding_brackets(self):
+        text = (
+            "In [Tests/AppTests.swift] we found gaps.\n"
+            'Plan: {"title": "Coverage Plan", "summary": "Audit", "tasks": []}'
+        )
+        extracted = llm.extract_json_block(text)
+        self.assertEqual(extracted, '{"title": "Coverage Plan", "summary": "Audit", "tasks": []}')
+
+    def test_extract_json_block_strips_ansi_escapes(self):
+        # ANSI color codes and cursor movement codes (e.g. from Ollama or terminal output)
+        text = (
+            "\x1b[32m```json\n"
+            '{\x1b[1m"title"\x1b[0m: "Coverage Plan", "summary": "Audit persistence\x1b[3D\x1b[K and state", "tasks": []}\n'
+            "```\x1b[0m"
+        )
+        extracted = llm.extract_json_block(text)
+        self.assertNotIn("\x1b", extracted)
+        parsed = json.loads(extracted)
+        self.assertEqual(parsed["title"], "Coverage Plan")
+        self.assertEqual(parsed["summary"], "Audit persistence and state")
 
 
 if __name__ == "__main__":

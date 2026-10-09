@@ -557,6 +557,11 @@ class CliTests(unittest.TestCase):
         mock_run_script.assert_called_with("smoke_test_delivery.py", [])
         self.assertEqual(os.environ.get("DISTRIBUTION_RELEASE_NOTES"), "Quick test build")
 
+    @patch("orchestrator.connection_log.show", return_value=0)
+    def test_connection_log_command_dispatches_with_arguments(self, mock_show) -> None:
+        self.assertEqual(cli.main(["connection-log", "-n", "25", "-f"]), 0)
+        mock_show.assert_called_once_with(lines=25, follow=True)
+
     def test_audit_project_setup_detects_all_pillars_and_gaps(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orchestrator-audit-") as temp_dir:
             root = Path(temp_dir)

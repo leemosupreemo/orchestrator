@@ -183,9 +183,10 @@ xcodebuild test CLANG_MODULE_CACHE_PATH=$(pwd)/.clang-module-cache
         self.assertNotIn("select models", header)
 
     def test_header_string_keeps_parenthetical_helper_text_lowercase(self) -> None:
-        header = common.get_header_string(
-            "Load spec from a local file or web address? (useful for large multi-page docs)"
-        )
+        with patch("os.get_terminal_size", return_value=(120, 24)):
+            header = common.get_header_string(
+                "Load spec from a local file or web address? (useful for large multi-page docs)"
+            )
 
         self.assertIn("LOAD SPEC FROM A LOCAL FILE OR WEB ADDRESS?", header)
         self.assertIn("(useful for large multi-page docs)", header)

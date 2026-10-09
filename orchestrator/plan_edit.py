@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from orchestrator.scripts import test_cases as tc
+
 MAX_TITLE = 200
 MAX_TEXT = 2000
 MAX_LIST = 20
@@ -150,9 +152,7 @@ def add_case(job: dict[str, Any], fields: dict[str, Any], issue_number: Any = 0)
     expected = str(fields.get("expected") or "").strip()
     if not title or not expected:
         raise PlanEditError("Each test case needs a title and an expected result.")
-    case_type = str(fields.get("type") or "unit").lower()
-    if case_type not in ("unit", "integration", "ui", "manual"):
-        case_type = "unit"
+    case_type = tc.normalize_type(fields.get("type"))
     priority = str(fields.get("priority") or "medium").lower()
     if priority not in ("high", "medium", "low"):
         priority = "medium"
@@ -184,7 +184,7 @@ def add_case(job: dict[str, Any], fields: dict[str, Any], issue_number: Any = 0)
         "steps": _lines(fields.get("steps")),
         "expected": expected,
         "covers": _lines(fields.get("covers")),
-        "tests": _lines(fields.get("tests")) if case_type != "manual" else [],
+        "tests": _lines(fields.get("tests")) if case_type not in tc.MANUAL_TYPES else [],
         "task": task,
         "created": now,
         "updated": now,
@@ -212,9 +212,7 @@ def edit_case(job: dict[str, Any], case_id: str, fields: dict[str, Any]) -> dict
     if "area" in fields:
         case["area"] = str(fields["area"] or "General").strip() or "General"
     if "type" in fields:
-        t = str(fields["type"]).lower()
-        if t in ("unit", "integration", "ui", "manual"):
-            case["type"] = t
+        case["type"] = tc.normalize_type(fields["type"])
     if "priority" in fields:
         p = str(fields["priority"]).lower()
         if p in ("high", "medium", "low"):
@@ -230,7 +228,7 @@ def edit_case(job: dict[str, Any], case_id: str, fields: dict[str, Any]) -> dict
     for key in ("preconditions", "steps", "covers", "tests"):
         if key in fields:
             case[key] = _lines(fields[key])
-    if case.get("type") == "manual":
+    if tc.is_manual(case):
         case["tests"] = []
     case["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return case

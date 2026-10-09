@@ -13,15 +13,23 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any, Callable
 
 TIMEOUT = 15
+# Trello's "Allow" sign-in needs one app key (public, not a secret) from a Trello Power-Up registered for
+# Orchestrator, with the hosted app and http://127.0.0.1:8765 listed as allowed origins. Set it here once it exists,
+# or per computer with ORCHESTRATOR_TRELLO_APP_KEY (or `trello_app_key` in settings). Without it, Trello falls back to
+# pasting a key and token.
+TRELLO_APP_KEY = ""
+EXPIRY_WARN_DAYS = 14
 MAX_CONTEXT_CHARS = 20_000
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
@@ -58,11 +66,17 @@ def _request(url: str, headers: dict[str, str], secrets: list[str], method: str 
         reason = {400: "The service rejected the request.", 401: "The credentials were rejected.",
                   403: "That account isn't allowed to do this.", 404: "Not found. Check the address or id.",
                   429: "Rate limited. Try again shortly."}.get(exc.code, f"The service answered {exc.code}.")
+        if exc.code == 401:
+            raise RejectedCredentials(reason) from None
         raise IntegrationError(reason) from None
     except urllib.error.URLError as exc:
         raise IntegrationError(_scrub(f"Couldn't reach the service: {exc.reason}", secrets)) from None
     except TimeoutError:
         raise IntegrationError("The service took too long to answer.") from None
+
+
+class RejectedCredentials(IntegrationError):
+    """The service said the token is wrong or expired: the connection needs reconnecting."""
 
 
 def _scrub(text: str, secrets: list[str]) -> str:
@@ -168,6 +182,8 @@ class Provider:
     blurb = ""
     # (key, label, secret?, placeholder, help)
     fields: list[tuple[str, str, bool, str, str]] = []
+    token_url = ""                 # where to create the token, linked from the connect form
+    token_max_days: int | None = None  # tokens there expire after at most this many days (None: they don't)
 
     def __init__(self, creds: dict[str, str]):
         self.c = {k: str(v).strip() for k, v in creds.items() if v is not None}
@@ -208,6 +224,8 @@ class Jira(Provider):
         ("email", "Account email", False, "you@company.com", "The email you sign in to Atlassian with."),
         ("token", "API token", True, "", "Create one at id.atlassian.com → Security → API tokens."),
     ]
+    token_url = "https://id.atlassian.com/manage-profile/security/api-tokens"
+    token_max_days = 365
     KEY = re.compile(r"\b([A-Z][A-Z0-9_]+-\d+)\b")
 
     def _site(self) -> str:
@@ -302,6 +320,7 @@ class Trello(Provider):
         ("key", "API key", False, "", "From trello.com/power-ups/admin (create a Power-Up to get a key)."),
         ("token", "API token", True, "", "Generate a token from the same page."),
     ]
+    token_url = "https://trello.com/power-ups/admin"
     CARD = re.compile(r"trello\.com/c/([A-Za-z0-9]+)")
 
     def _get(self, path: str, **params: str) -> Any:
@@ -383,8 +402,10 @@ class Sentry(Provider):
         ("host", "Sentry address", False, "sentry.io", "Leave as sentry.io unless you self-host."),
         ("org", "Organization slug", False, "my-org", "From your Sentry URL: sentry.io/organizations/<slug>."),
         ("project", "Project slug (optional)", False, "my-app", "Limits the suggestion list to one project."),
-        ("token", "Auth token", True, "", "Settings → Developer Settings → Personal Tokens, with event:read and project:read."),
+        ("token", "Auth token", True, "", "A personal token with org:read, project:read, event:read and event:write "
+                                           "(event:write lets jobs comment on and resolve issues). Device logs use it too."),
     ]
+    token_url = "https://sentry.io/settings/account/api/auth-tokens/"
     ISSUE = re.compile(r"/issues/(\d+)")
 
     def _host(self) -> str:
@@ -485,6 +506,8 @@ class Figma(Provider):
     id, name = "figma", "Figma"
     blurb = "Turn a Figma frame into a text spec (and a PNG) the AI can build from."
     fields = [("token", "Personal access token", True, "", "Figma → Settings → Security → Personal access tokens (file read access).")]
+    token_url = "https://www.figma.com/settings"
+    token_max_days = 90
     URL = re.compile(r"figma\.com/(?:design|file|proto|board)/([A-Za-z0-9]+)")
 
     def _get(self, path: str) -> Any:
@@ -586,7 +609,24 @@ def writeback_options(options: dict[str, Any] | None) -> dict[str, Any]:
     return merged
 
 
-def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def trello_app_key(settings: dict[str, Any] | None = None) -> str:
+    return (os.environ.get("ORCHESTRATOR_TRELLO_APP_KEY") or str((settings or {}).get("trello_app_key") or "")
+            or TRELLO_APP_KEY).strip()
+
+
+def expiry_view(expires: str, today: date | None = None) -> dict[str, Any] | None:
+    """When a saved token stops working, and whether to warn: None when it doesn't expire (or wasn't recorded)."""
+    try:
+        when = date.fromisoformat(expires)
+    except (TypeError, ValueError):
+        return None
+    left = (when - (today or date.today())).days
+    return {"on": when.isoformat(), "days_left": left, "expired": left < 0, "soon": 0 <= left <= EXPIRY_WARN_DAYS}
+
+
+def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str, Any]] | None = None,
+                   *, status: dict[str, dict[str, Any]] | None = None, settings: dict[str, Any] | None = None,
+                   suggest: dict[str, dict[str, str]] | None = None) -> list[dict[str, Any]]:
     """What the UI shows: never any secret values."""
     out = []
     for pid, cls in PROVIDERS.items():
@@ -603,6 +643,11 @@ def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str
             "options": writeback_options((options or {}).get(pid)),
             "fields": [{"key": k, "label": label, "secret": secret, "placeholder": ph, "help": hlp}
                        for k, label, secret, ph, hlp in cls.fields],
+            "token_url": cls.token_url, "token_max_days": cls.token_max_days,
+            "expiry": expiry_view(creds.get("expires", "")) if connected else None,
+            "rejected": bool(connected and (status or {}).get(pid, {}).get("rejected_at")),
+            "suggest": (suggest or {}).get(pid) or {},
+            **({"authorize_key": trello_app_key(settings)} if pid == "trello" and trello_app_key(settings) else {}),
         })
     return out
 
@@ -621,6 +666,21 @@ def connect(provider_id: str, values: dict[str, str], previous: dict[str, str] |
             raise IntegrationError(f"{label} is required.")
         if value:
             creds[key] = value
+    if cls.token_max_days:
+        raw = str(values.get("expires") or "").strip()
+        latest = date.today() + timedelta(days=cls.token_max_days)
+        if raw:
+            try:
+                when = date.fromisoformat(raw)
+            except ValueError:
+                raise IntegrationError("Expires on must be a date, like 2027-01-31.") from None
+            if when < date.today():
+                raise IntegrationError("That token has already expired. Create a new one.")
+            creds["expires"] = min(when, latest).isoformat()
+        elif (previous or {}).get("expires") and not str(values.get("token") or "").strip():
+            creds["expires"] = previous["expires"]  # same token as before: same expiry
+        else:
+            creds["expires"] = latest.isoformat()  # the longest it can live; the person can set the real date
     provider = cls(creds)
     who = provider.test()
     # keep anything learned during the test (e.g. display name), minus nothing secret
@@ -642,7 +702,9 @@ def build_context(links: list[dict[str, str]], saved: dict[str, dict[str, str]],
         try:
             contexts.append(fetch(provider, ref) if fetch else provider.lookup(ref))
         except IntegrationError as exc:
-            raise IntegrationError(f"{PROVIDERS[pid].name}: {exc}") from None
+            err = type(exc)(f"{PROVIDERS[pid].name}: {exc}")  # keeps RejectedCredentials a RejectedCredentials
+            err.provider = pid
+            raise err from None
     return contexts
 
 

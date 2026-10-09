@@ -6,7 +6,9 @@ import shutil
 import io
 import json
 import os
+import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,15 @@ def make_project(root: Path) -> None:
     out = runtime / "output" / "20260922-bug-1"
     out.mkdir(parents=True)
     (out / "brief.md").write_text("# Brief\n")
+
+
+def isolate_state(test: unittest.TestCase) -> None:
+    """Point ~/.orchestrator at a throwaway folder for this test."""
+    tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)  # a reader thread may still be writing its log
+    test.addCleanup(tmp.cleanup)
+    env = patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": tmp.name})
+    env.start()
+    test.addCleanup(env.stop)
 
 
 class ServerTestCase(unittest.TestCase):
@@ -193,6 +204,7 @@ class SignInTests(ServerTestCase):
             ("/api/integrations/jira/options", {"options": {}}),
             ("/api/integrations/jira/disconnect", {}),
             ("/api/new-project/draft", {"name": "Private idea"}),
+            ("/api/delivery/release", {"tag": "v0.1.0", "commit": "a" * 40}),
         ):
             with self.subTest(path=path):
                 res, data = self.as_user(token, "POST", path, body=body, sources=member)
@@ -491,7 +503,7 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
 
     def test_project_select_change_navigates_to_home(self):
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        start = app_js.index('matches("#project-select, .project-select-inline")')
+        start = app_js.index('matches("#project-select")')
         end = app_js.index("showSigningIn", start)
         handler_code = app_js[start:end]
         self.assertIn('location.hash = "#/";', handler_code)
@@ -517,18 +529,28 @@ class FakeTunnelProcess:
 
 
 class ProjectTitleTests(unittest.TestCase):
-    def test_home_title_is_the_project_switcher_and_branch_is_labelled(self):
-        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        home = js[js.index("  return {\n    title: p.name,"):][:700]
-        self.assertIn('<span class="label">Project</span>', home)
-        self.assertIn('class="project-select-inline title-project-select"', home)  # the existing switch handler covers it
-        self.assertNotIn("project-inline", js)  # the second project picker under the branch is gone
+    def test_home_names_the_project_without_a_second_switcher_and_branch_is_labelled(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, css, html = (static / "app.js").read_text(), (static / "style.css").read_text(), (static / "index.html").read_text()
+        home = js[js.index("  return {\n    title: p.name,"):][:400]
+        self.assertNotIn("select", home)  # switching projects lives in the menu's picker and on Projects
+        self.assertNotIn("project-select-inline", js + css)
         status = js[js.index("function statusLine"):][:1600]
         self.assertIn('<span class="status-branch"><span class="label">Branch</span>', status)
         header = js[js.index("function setHeader"):][:600]
-        self.assertIn("heading.dataset.title = title", header)  # the tab title stays the name, not every option's text
+        self.assertIn("heading.dataset.title = title", header)  # the tab title stays the name
         self.assertIn('$("#page-title")?.dataset.title', js)
-        self.assertNotIn('$("#page-title")?.textContent', js)
+
+    def test_the_phone_header_centres_the_project_name_with_the_logo_and_no_wordmark(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, css, html = (static / "app.js").read_text(), (static / "style.css").read_text(), (static / "index.html").read_text()
+        header = html[html.index('<header class="mobile-header">'):html.index("</header>")]
+        self.assertIn('<span class="mobile-title" id="mobile-title"></span>', header)
+        self.assertIn('href="#/" aria-label="Orchestrator home"', header)  # the logo link names its Home destination for screen readers
+        self.assertNotIn("<span>Orchestrator</span>", html)
+        self.assertIn('mobileTitle.textContent = state.project?.name', js)
+        self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
+        self.assertIn('body[data-page="home"] #page-title { display: none; }', css)  # not said twice on phones
 
 
 class ProductStripTests(unittest.TestCase):
@@ -538,6 +560,23 @@ class ProductStripTests(unittest.TestCase):
         self.assertIn('<h2><a class="card-title-link" href="#/product">Product</a></h2>', strip)
         self.assertIn('<a class="product-pitch" href="#/product"', strip)
         self.assertNotIn(">Open</a>", strip)  # no separate Open link
+
+    def test_product_strip_and_settings_include_model_dropdown(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('id="prd-home-model-select"', js)
+        self.assertIn('id="prd-update-model-select"', js)
+        self.assertIn('prd-model-picker', js)
+        self.assertIn('api("product/model"', js)
+        self.assertNotIn('id="prd-start-draft"', js)
+
+    def test_product_strip_includes_manage_llms_option(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        strip = js[js.index("function productStripHtml"):js.index("pages.product =")]
+        self.assertIn("<hr>", strip)
+        self.assertIn('<option value="__manage_llms__">⚙️ Manage LLMs</option>', strip)
+        home = js[js.index("pages.home ="):js.index("function jobHeaderActions(")]
+        self.assertIn('next === "__manage_llms__"', home)
+        self.assertIn('location.hash = "#/config/models"', home)
 
 
 class UiShutdownTests(unittest.TestCase):
@@ -586,6 +625,9 @@ raise SystemExit(server.main(["--no-open", "--tunnel", "--port", "0"]))
 
 
 class TunnelKeeperTests(unittest.TestCase):
+    def setUp(self):
+        isolate_state(self)  # cloudflared's output is copied to the state folder's logs
+
     def keeper(self, results, **kwargs):
         """A keeper whose starter hands out `results` in order: (process, address) pairs."""
         self.calls = []
@@ -676,6 +718,29 @@ class TunnelKeeperTests(unittest.TestCase):
 
 
 class AccountUiTests(unittest.TestCase):
+    def test_mac_setup_requires_a_complete_https_release_and_preserves_pairing(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const release = {version: '0.2.0', build: 2, commit: 'a'.repeat(40), minimum_macos: '13.0',
+ arm64: {url: 'https://example.com/arm.dmg', sha256: 'a'.repeat(64)},
+ x86_64: {url: 'https://example.com/intel.dmg', sha256: 'b'.repeat(64)}};
+process.stdout.write(JSON.stringify({
+ good: A.macRelease(release),
+ bad: [null, {}, {...release, x86_64: null}, {...release, arm64: {...release.arm64, url: 'javascript:alert(1)'}},
+ {...release, arm64: {...release.arm64, url: 'https://user:password@example.com/app.dmg'}},
+ {...release, arm64: {...release.arm64, sha256: '0'.repeat(64)}}].map(A.macRelease),
+ ready: A.renderMacSetup(release), missing: A.renderMacSetup(null)
+}));""")
+        self.assertEqual(result['good']['version'], '0.2.0')
+        self.assertEqual(result['bad'], [None] * 6)
+        self.assertIn('Apple Silicon', result['ready'])
+        self.assertIn('https://example.com/intel.dmg', result['ready'])
+        self.assertIn('Applications', result['ready'])
+        self.assertNotIn('download href=', result['missing'])
+        self.assertIn('not available yet', result['missing'])
+        self.assertIn('data-account-form="code"', result['missing'])
+        self.assertIn('<details', result['missing'])
+
     def run_account_script(self, source: str, preload: str = ""):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         result = subprocess.run(
@@ -750,16 +815,28 @@ process.stdout.write(JSON.stringify({
         self.assertIn("&lt;Mac&gt;", result["pair"])
         self.assertIn('data-account-action="claim"', result["pair"])
 
-    def test_your_computers_is_listed_only_on_the_hosted_app(self):
+    def test_an_unreachable_computer_names_its_host_in_a_wrapping_address(self):
+        endpoint = "https://very-long-generated-name-for-a-quick-tunnel.trycloudflare.com/x?token=secret"
+        result = self.run_account_script(f"""
+const html = globalThis.Account.renderMachines([], {{troubleshoot: {{error: "Load failed", endpoint: "{endpoint}", machine: {{id: "m1", name: "Mac"}}}}}});
+process.stdout.write(JSON.stringify({{html}}));""")
+        self.assertIn('<code class="account-address" title="', result["html"])
+        self.assertIn(">very-long-generated-name-for-a-quick-tunnel.trycloudflare.com</code>", result["html"])  # the host, not the token
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".account-card code.account-address { white-space: normal; overflow-wrap: anywhere; }", css)
+
+    def test_machines_and_computers_share_one_menu_entry(self):
         source = """
-const ids = globalThis.ConfigurationPages.groups().flatMap((g) => g.entries.map((e) => e.id));
-process.stdout.write(JSON.stringify({ids, menu: globalThis.ConfigurationPages.renderMenu().includes("#/computers")}));"""
+const entries = globalThis.ConfigurationPages.groups().flatMap((g) => g.entries);
+const menu = globalThis.ConfigurationPages.renderMenu();
+process.stdout.write(JSON.stringify({ids: entries.map((e) => e.id), menu}));"""
         local = self.run_account_script(source)
-        self.assertNotIn("computers", local["ids"])
-        self.assertFalse(local["menu"])
         hosted = self.run_account_script(source, preload='globalThis.location = {origin: "https://swift-orch-web-20260923.web.app", search: ""};')
-        self.assertIn("computers", hosted["ids"])
-        self.assertTrue(hosted["menu"])
+        for result in (local, hosted):
+            self.assertIn("fleet", result["ids"])
+            self.assertNotIn("computers", result["ids"])
+            self.assertIn("Machines &amp; computers", result["menu"])
+            self.assertNotIn("Your computers</span>", result["menu"])
 
     def test_the_hosted_app_can_be_installed_and_receive_push(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -989,8 +1066,9 @@ const ai = {checked: "October 2026", any_ready: false, plugins: [{name: "Playwri
   {id: "claude", name: "Claude Code", cost_label: "Subscription", what: "Plans", install: "y", install_alt: "", sign_in: "z",
    link: "https://docs.claude.com", installed: true, ready: true},
 ]};
-const page = P.render("ai", {ai});
-process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: page.html, entry: P.resolve("ai", "member")?.route || null}));
+const page = P.render("ai", {ai, keys: []});
+const member = P.render("ai", {ai});  // members' config carries no keys
+process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: page.html, member: member.html, entry: P.resolve("ai", "member")?.route || null}));
 """)
         html = result["html"]
         self.assertEqual(result["title"], "Add an AI")
@@ -1001,6 +1079,8 @@ process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: pag
         self.assertIn("Installed, not signed in", codex)
         self.assertNotIn("Install it", codex)  # already installed: only the sign-in step
         self.assertIn("Add an API key instead", codex)
+        self.assertNotIn("Add an API key instead", result["member"])
+        self.assertNotIn('id="api-keys"', result["member"])
         claude = html[html.index('data-provider="claude"'):]
         self.assertIn("Ready", claude)
         self.assertNotIn("Run", claude.split("</section>")[0])
@@ -1062,29 +1142,25 @@ process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]),
 
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
-const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
-process.stdout.write(JSON.stringify(Object.fromEntries(entries.map((entry) => [entry.id, entry]))));
+const pages = globalThis.ConfigurationPages;
+const ids = ["ai", "base-branch", "projects", "email"];
+process.stdout.write(JSON.stringify(Object.fromEntries(ids.map((id) => [id, pages.find(id)]))));
 """)
-        self.assertEqual({key: entries[key]["route"] for key in (
-            "api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"
-        )}, {
-            "api-keys": "#/config/api-keys",
-            "base-branch": "#/config/base-branch",
-            "projects": "#/projects",
-            "archived-jobs": "#/config/archived-jobs",
-            "email": "#/config/email",
-            "documentation": "#/config/documentation",
-        })
-        self.assertTrue(all(entries[key]["enabled"] for key in (
-            "api-keys", "base-branch", "projects", "archived-jobs", "email", "documentation"
-        )))
+        self.assertEqual({key: entry["route"] for key, entry in entries.items()}, {
+            "ai": "#/config/ai", "base-branch": "#/config/base-branch", "projects": "#/projects", "email": "#/config/email"})
+        self.assertTrue(all(entry["enabled"] for entry in entries.values()))
+
+    def test_settings_that_moved_are_gone_from_configuration(self):
+        found = self.run_configuration_script("""
+const ids = ["api-keys", "archived-jobs", "documentation", "chat", "audit", "self-tests", "setup-wizard", "ui-review"];
+process.stdout.write(JSON.stringify(ids.filter((id) => globalThis.ConfigurationPages.find(id))));
+""")
+        self.assertEqual(found, [])  # each has one home now; routes.js sends their old addresses there
 
     def test_registry_exposes_all_configuration_entries_enabled(self):
         result = self.run_configuration_script("""
-const entries = globalThis.ConfigurationPages.groups().flatMap((group) => group.entries);
-const ids = ['models', 'ai-instructions', 'fleet', 'firebase', 'xcode-cloud',
-  'setup-wizard', 'audit', 'self-tests', 'updates'];
-const active = Object.fromEntries(ids.map((id) => [id, entries.find((entry) => entry.id === id)]));
+const ids = ['models', 'ai-instructions', 'fleet', 'firebase', 'xcode-cloud', 'updates'];
+const active = Object.fromEntries(ids.map((id) => [id, globalThis.ConfigurationPages.resolve(id)]));
 process.stdout.write(JSON.stringify({active, menu: globalThis.ConfigurationPages.renderMenu()}));
 """)
         for entry_id, entry in result["active"].items():
@@ -1101,9 +1177,9 @@ const pages = globalThis.ConfigurationPages;
 const ids = pages.groups('member').flatMap((group) => group.entries.map((entry) => entry.id));
 process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), access: pages.resolve('access', 'member')}));
 """)
-        for entry_id in ("api-keys", "ai-instructions", "fleet", "access", "email", "chat", "firebase", "updates"):
+        for entry_id in ("ai-instructions", "fleet", "access", "email", "firebase", "updates"):
             self.assertNotIn(entry_id, result["ids"])
-        for entry_id in ("models", "base-branch", "archived-jobs", "documentation", "audit", "self-tests"):
+        for entry_id in ("ai", "models", "base-branch", "xcode-cloud"):
             self.assertIn(entry_id, result["ids"])
         self.assertNotIn("Who can sign in", result["menu"])
         self.assertIsNone(result["access"])
@@ -1113,10 +1189,10 @@ process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), acce
 const page = globalThis.ConfigurationPages.render(undefined, {viewer: {role: 'member'}});
 process.stdout.write(JSON.stringify(page.html));
 """)
-        self.assertNotIn("API Keys", html)
+        self.assertNotIn("Instructions for AI helpers", html)
         self.assertNotIn("Who can sign in", html)
-        self.assertIn("Base Branch", html)
-        self.assertIn("Documentation", html)
+        self.assertIn("Base branch", html)
+        self.assertIn("Add an AI", html)
 
     def test_role_ui_hides_owner_controls_and_can_restore_them(self):
         result = self.run_configuration_script("""
@@ -1178,13 +1254,13 @@ process.stdout.write(JSON.stringify(page.html));
         result = self.run_configuration_script("""
 const pages = globalThis.ConfigurationPages;
 process.stdout.write(JSON.stringify({
-  enabled: pages.resolve('api-keys'),
+  enabled: pages.resolve('email'),
   models: pages.resolve('models'),
   external: pages.resolve('projects'),
   unknown: pages.resolve('unknown')
 }));
 """)
-        self.assertEqual(result["enabled"]["route"], "#/config/api-keys")
+        self.assertEqual(result["enabled"]["route"], "#/config/email")
         self.assertEqual(result["models"]["route"], "#/config/models")
         self.assertIsNone(result["external"])
         self.assertIsNone(result["unknown"])
@@ -1268,20 +1344,24 @@ const page = globalThis.ConfigurationPages.render(undefined, {});
 process.stdout.write(JSON.stringify(page));
 """)
         self.assertEqual(result["title"], "Configuration")
-        for group in ("Models &amp; instructions", "Projects &amp; machines",
-                      "Delivery &amp; notifications", "Help &amp; health"):
+        for group in ("This project", ">AI<", "Computers &amp; access", "Alerts"):
             self.assertIn(group, result["html"])
-        for route in ("#/config/api-keys", "#/config/base-branch", "#/projects",
-                      "#/config/archived-jobs", "#/config/email", "#/config/documentation",
+        self.assertNotIn("Troubleshooting", result["html"])  # its checks are on Readiness now
+        for route in ("#/config/ai", "#/config/base-branch", "#/config/email", "#/config/ai-instructions",
                       "#/config/models", "#/config/fleet", "#/config/firebase"):
             self.assertIn(route, result["html"])
+        for route in ("#/readiness", "#/connections", "#/projects"):  # pages of their own, reached from Settings
+            self.assertIn(route, result["html"])
+        for route in ("#/config/documentation", "#/config/setup-wizard", "#/config/audit", "#/ux-review"):
+            self.assertNotIn(route, result["html"])  # reachable elsewhere, not repeated
         self.assertEqual(result["html"].count(" disabled"), 0)
         self.assertNotIn("Coming next", result["html"])
         self.assertNotIn('data-action="config_menu"', result["html"])
 
     def test_api_keys_page_shows_status_without_rendering_secrets(self):
         result = self.run_configuration_script("""
-const page = globalThis.ConfigurationPages.render('api-keys', {
+const page = globalThis.ConfigurationPages.render('ai', {
+  ai: {providers: [], plugins: []},
   keys: [
     {id: 'anthropic_api_key', label: 'Anthropic', saved: true, env: true, value: 'sk-do-not-render'},
     {id: 'openai_api_key', label: 'OpenAI', saved: false, env: true},
@@ -1291,7 +1371,8 @@ const page = globalThis.ConfigurationPages.render('api-keys', {
 });
 process.stdout.write(JSON.stringify(page));
 """)
-        self.assertEqual(result["title"], "API Keys")
+        self.assertEqual(result["title"], "Add an AI")
+        self.assertIn('id="api-keys"', result["html"])  # the keys card, on the page for adding an AI
         for label in ("Anthropic", "OpenAI", "Ollama", "Saved", "From environment", "Not set"):
             self.assertIn(label, result["html"])
         self.assertNotIn("sk-do-not-render", result["html"])
@@ -1354,31 +1435,20 @@ const page = globalThis.ConfigurationPages.render('base-branch', {
 });
 process.stdout.write(JSON.stringify(page));
 """)
-        self.assertEqual(result["title"], "Base Branch")
+        self.assertEqual(result["title"], "Base branch")
         self.assertIn('<option value="feature/one" selected>', result["html"])
         self.assertIn('&quot;&gt;&lt;script&gt;bad()&lt;/script&gt;', result["html"])
         self.assertNotIn('<script>bad()</script>', result["html"])
         self.assertNotIn("develop", result["html"])
 
-    def test_archived_jobs_page_marks_corrupt_entries_and_empty_state(self):
-        result = self.run_configuration_script("""
-const populated = globalThis.ConfigurationPages.render('archived-jobs', {
-  archived: [
-    {id: 'job-1', job_id: 'JOB-1', title: 'Ready <now>', status: 'completed', corrupt: false},
-    {id: 'broken', job_id: 'BROKEN', title: 'Unreadable', status: 'unknown', corrupt: true}
-  ]
-});
-const empty = globalThis.ConfigurationPages.render('archived-jobs', {archived: []});
-process.stdout.write(JSON.stringify({populated, empty}));
-""")
-        html = result["populated"]["html"]
-        self.assertEqual(result["populated"]["title"], "Archived Jobs")
-        for text in ("JOB-1", "Ready &lt;now&gt;", "completed", "BROKEN", "Corrupt"):
-            self.assertIn(text, html)
-        self.assertIn('data-config-action="archive-restore"', html)
-        self.assertIn('data-id="job-1"', html)
-        self.assertRegex(html, r'BROKEN[\s\S]*?<button[^>]*disabled')
-        self.assertIn("No archived jobs", result["empty"]["html"])
+    def test_archived_jobs_are_a_filter_on_home_with_restore(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
+        self.assertIn('href="#/?filter=archived"', home)
+        self.assertIn("data-restore-job", home)
+        self.assertIn('api("config/archived-restore"', home)
+        self.assertIn("this archive can't be read", home)  # a corrupt archive is listed, without Restore
+        self.assertIn("No archived jobs", home)
 
     def test_email_page_reports_sender_readiness_without_secret_values(self):
         result = self.run_configuration_script("""
@@ -1401,7 +1471,7 @@ process.stdout.write(JSON.stringify({gmail, resend, empty}));
         gmail = result["gmail"]["html"]
         resend = result["resend"]["html"]
         empty = result["empty"]["html"]
-        self.assertEqual(result["gmail"]["title"], "Email Notifications")
+        self.assertEqual(result["gmail"]["title"], "Email alerts")
         self.assertIn("Gmail is ready", gmail)
         self.assertIn("App password saved", gmail)
         self.assertIn("person&lt;one&gt;@example.com", gmail)
@@ -1413,36 +1483,19 @@ process.stdout.write(JSON.stringify({gmail, resend, empty}));
         self.assertIn("No recipients yet", empty)
         self.assertNotIn('data-config-action="email-test"', empty)
 
-    def test_documentation_page_groups_allowlisted_opaque_documents(self):
+    def test_orchestrator_guides_are_on_the_docs_page_and_settings_have_no_terminal_handoff(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        docs = app[app.index("pages.docs = async"):app.index("pages.product = async")]
+        self.assertIn('g.section === "Orchestrator docs"', docs)
+        self.assertIn("Orchestrator guides", docs)
+        self.assertIn("config/doc?id=", docs)  # read by opaque id: no path is ever sent or shown
         result = self.run_configuration_script("""
-const grouped = globalThis.ConfigurationPages.render('documentation', {docs: [
-  {id: '0', name: 'Getting <Started>.md', section: 'Orchestrator docs', path: '/must/not/render'},
-  {id: '7', name: 'Project Guide.md', section: 'Project docs'}
-]});
-const oneGroup = globalThis.ConfigurationPages.render('documentation', {docs: [
-  {id: '2', name: 'Only.md', section: 'Orchestrator docs'}
-]});
-const pages = [
-  globalThis.ConfigurationPages.render(undefined, {}),
-  globalThis.ConfigurationPages.render('api-keys', {keys: []}),
-  globalThis.ConfigurationPages.render('base-branch', {branches: []}),
-  globalThis.ConfigurationPages.render('archived-jobs', {archived: []}),
-  globalThis.ConfigurationPages.render('email', {email: {recipients: []}}),
-  grouped
-];
-process.stdout.write(JSON.stringify({grouped, oneGroup, allHtml: pages.map((page) => page.html).join('')}));
+const R = globalThis.ConfigurationPages.render;
+const pages = [R(undefined, {}), R('ai', {ai: {providers: [], plugins: []}, keys: []}), R('base-branch', {branches: []}), R('email', {email: {recipients: []}})];
+process.stdout.write(JSON.stringify(pages.map((page) => page.html).join('')));
 """)
-        grouped = result["grouped"]["html"]
-        self.assertEqual(result["grouped"]["title"], "Documentation")
-        self.assertIn("Orchestrator docs", grouped)
-        self.assertIn("Project docs", grouped)
-        self.assertIn("Getting &lt;Started&gt;.md", grouped)
-        self.assertIn('data-id="0"', grouped)
-        self.assertIn('data-id="7"', grouped)
-        self.assertNotIn("/must/not/render", grouped)
-        self.assertNotIn("Project docs", result["oneGroup"]["html"])
-        for terminal_handoff in ('data-action="config_menu"', "data-scroll-to", "Open Full CLI Menu"):
-            self.assertNotIn(terminal_handoff, result["allHtml"])
+        for terminal_handoff in ('data-action="config_menu"', "Open Full CLI Menu"):
+            self.assertNotIn(terminal_handoff, result)
 
 
 class PlanRunApiTests(ServerTestCase):
@@ -2090,8 +2143,9 @@ class JobStateTests(unittest.TestCase):
             "executing": ("working", "working", None),
             "completed": ("done", "done", None),
         }
+        alive = {"worker_pid": os.getpid(), "worker_host": socket.gethostname()}  # "executing" means building only while a worker runs
         for status, (group, tone, action) in cases.items():
-            st = self.state(status=status)
+            st = self.state(status=status, **(alive if status == "executing" else {}))
             self.assertEqual((st["group"], st["tone"], st["next"] and st["next"]["action"]), (group, tone, action), status)
 
     def test_review_needed_offers_merge_with_a_pr_and_mark_complete_without(self):
@@ -2352,6 +2406,13 @@ class RunApiTests(ServerTestCase):
         time.sleep(1.2)
         _, runs = self.request("GET", "/api/runs")
         self.assertEqual(runs["runs"][0]["result_job"], "new-1")
+
+    def test_coverage_job_run_is_titled_coverage_expanding(self):
+        fake = ui.Action("New job", lambda p, r: [sys.executable, "-c", "import time; time.sleep(0.1)"])
+        with patch.dict(ui.ACTIONS, {"new_job": fake}):
+            _, data = self.request("POST", "/api/runs", body={"action": "new_job", "params": {"type": "coverage", "summary": "Improve test coverage"}}, headers=UI_HEADERS)
+        self.assertEqual(data["run"]["title"], "Coverage expanding")
+        self.wait_finished(data["run"]["id"])
 
     def test_jobs_list_marks_jobs_with_a_running_run(self):
         sleeper = ui.Action("Run fix", lambda p, r: [sys.executable, "-c", "import time; time.sleep(30)"], fields=["job"])
@@ -2763,7 +2824,10 @@ class TestCaseViewTests(ServerTestCase):
         summary = view["summary"]
         self.assertEqual((summary["covered"], summary["planned"], summary["unassigned"], summary["manual"], summary["automated"]), (2, 1, 1, 1, 4))
         self.assertEqual(summary["covered_pct"], 50.0)
-        self.assertEqual(summary["by_type"], {"unit": 2, "integration": 1, "ui": 1, "manual": 1})
+        # Cases saved with the older unit/integration/ui/manual names read as the eight standard categories.
+        self.assertEqual({t: n for t, n in summary["by_type"].items() if n},
+                         {"functionality": 2, "integration": 1, "user-interface": 1, "user-acceptance": 1})
+        self.assertEqual(len(summary["by_type"]), 8)
         covered = next(c for c in view["cases"] if c["id"] == "TC-1-01")
         self.assertTrue(covered["found_in"][0].endswith("test_seat.py"))
 
@@ -2839,6 +2903,30 @@ class TestCaseViewTests(ServerTestCase):
 
 
 class DeliveryEndpointTests(ServerTestCase):
+    def test_release_preview_and_creation_use_the_configured_base_branch(self):
+        with patch.object(ui.releases, "options", return_value={"suggested_tag": "v0.1.0"}) as preview:
+            res, out = self.request("GET", "/api/delivery/release")
+        self.assertEqual(res.status, 200)
+        preview.assert_called_once_with(self.root, "main")
+        result = {"tag": "v0.1.0", "commit": "a" * 40, "pushed": False, "created": True}
+        with patch.object(ui.releases, "create", return_value=result) as create:
+            res, out = self.request("POST", "/api/delivery/release", body={"tag": "v0.1.0", "commit": "a" * 40, "push": False}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        create.assert_called_once_with(self.root, "main", "v0.1.0", "a" * 40, push=False)
+        self.assertEqual(out["tag"], "v0.1.0")
+
+    def test_release_rejects_invalid_publish_flag_before_mutation(self):
+        with patch.object(ui.releases, "create") as create:
+            res, _ = self.request("POST", "/api/delivery/release", body={"tag": "v0.1.0", "commit": "a" * 40, "push": "yes"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        create.assert_not_called()
+
+    def test_release_conflict_is_reported_without_success(self):
+        with patch.object(ui.releases, "create", side_effect=ui.releases.ReleaseError("Base branch changed")):
+            res, out = self.request("POST", "/api/delivery/release", body={"tag": "v0.1.0", "commit": "a" * 40}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 409)
+        self.assertIn("Base branch changed", out["error"])
+
     def setUp(self):
         super().setUp()
         ui._GH_CACHE.clear()
@@ -2933,6 +3021,9 @@ class MeasureEndpointTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         _, data = self.request("GET", "/api/analytics")
         self.assertEqual((data["provider"], data["provider_name"], data["key_set"], data["region"]), ("mixpanel", "Mixpanel", True, "eu"))
+        self.assertEqual(data.get("dashboard_url"), "https://eu.mixpanel.com/project")
+        self.assertIsInstance(data.get("mixpanel_mcp"), list)
+        self.assertIn("mixpanel", data.get("provider_mcp", {}))
         self.assertNotIn("SECRET-TOKEN", json.dumps(data))
         self.post("/api/config/analytics", {"op": "set", "provider": "mixpanel", "key": "", "region": "us"})
         self.assertEqual(ui.read_settings(self.root)["analytics_key"], "SECRET-TOKEN")
@@ -3048,6 +3139,293 @@ class HealthEndpointTests(ServerTestCase):
         self.assertEqual(self.items(data)["platforms"]["status"], "warn")
 
 
+class NavigationDrawerTests(unittest.TestCase):
+    def run_drawer(self, scenario):
+        script = """
+const assert = require('node:assert/strict');
+class Element {
+  constructor(name) {
+    this.name = name; this.listeners = {}; this.attrs = {}; this.inert = false;
+    this.hidden = false; this.disabled = false; this.style = {overflow: 'auto'};
+    const classes = new Set();
+    this.classList = {contains: c => classes.has(c), add: c => classes.add(c),
+      remove: c => classes.delete(c), toggle: (c, on) => on ? classes.add(c) : classes.delete(c)};
+  }
+  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  emit(type, event = {}) { for (const fn of this.listeners[type] || []) fn(event); }
+  setAttribute(k, v) { this.attrs[k] = v; }
+  removeAttribute(k) { delete this.attrs[k]; }
+  focus() { document.activeElement = this; }
+  getClientRects() { return this.hidden ? [] : [{}]; }
+  closest(selector) {
+    if (selector.includes('[data-action]') && this.attrs['data-action']) return this;
+    if (selector.includes('#lock-btn') && this.name === 'lock') return this;
+    if (selector.includes('#search-btn') && this.name === 'search') return this;
+    return null;
+  }
+}
+const app = new Element('app'), sidebar = new Element('sidebar');
+const toggle = new Element('toggle'), close = new Element('close'), backdrop = new Element('backdrop');
+const main = new Element('main'), plus = new Element('plus'), header = new Element('header');
+const link = new Element('link'), actionBtn = new Element('action');
+actionBtn.attrs['data-action'] = 'true';
+const lockBtn = new Element('lock'), searchBtn = new Element('search');
+const elements = {'.app': app, '#sidebar': sidebar, '#nav-toggle': toggle,
+  '#nav-close': close, '#sidebar-backdrop': backdrop, '#lock-btn': lockBtn, '#search-btn': searchBtn};
+const document = new Element('document');
+document.body = new Element('body');
+document.querySelector = selector => {
+  if (selector === 'dialog[open]') return document.dialogOpen || null;
+  return elements[selector] || null;
+};
+document.querySelectorAll = () => [main, plus, header];
+sidebar.items = [close, link];
+sidebar.querySelectorAll = () => sidebar.items;
+sidebar.contains = el => sidebar.items.includes(el);
+const media = new Element('media'); media.matches = true;
+class MutationObserver {
+  constructor(cb) { this.cb = cb; }
+  observe() {}
+  trigger() { this.cb(); }
+}
+const window = new Element('window'); window.matchMedia = () => media;
+window.MutationObserver = MutationObserver;
+require(process.argv[1]);
+const controller = globalThis.NavigationDrawer.mount({document, window});
+function key(key, shiftKey = false) {
+  const event = {key, shiftKey, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }};
+  document.emit('keydown', event);
+  return event;
+}
+""" + scenario
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/navigation.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_drawer_blocks_background_and_restores_focus_and_scroll_on_dismissal(self):
+        self.run_drawer("""
+assert.equal(sidebar.inert, true);
+toggle.emit('click');
+assert.equal(sidebar.inert, false);
+assert.equal(sidebar.attrs['aria-modal'], 'true');
+assert.equal(toggle.attrs['aria-expanded'], 'true');
+assert.equal(backdrop.hidden, false);
+assert.equal(main.inert, true);
+assert.equal(plus.inert, true);
+assert.equal(document.body.style.overflow, 'hidden');
+assert.equal(document.activeElement, close);
+assert.equal(key('Escape').defaultPrevented, true);
+assert.equal(sidebar.inert, true);
+assert.equal(backdrop.hidden, true);
+assert.equal(main.inert, false);
+assert.equal(plus.inert, false);
+assert.equal(document.body.style.overflow, 'auto');
+assert.equal(document.activeElement, toggle);
+toggle.emit('click'); backdrop.emit('click');
+assert.equal(toggle.attrs['aria-expanded'], 'false');
+""")
+
+    def test_drawer_keeps_keyboard_focus_inside_and_closes_after_navigation(self):
+        self.run_drawer("""
+toggle.emit('click');
+close.focus(); assert.equal(key('Tab', true).defaultPrevented, true);
+assert.equal(document.activeElement, link);
+assert.equal(key('Tab').defaultPrevented, true);
+assert.equal(document.activeElement, close);
+window.emit('hashchange');
+assert.equal(sidebar.inert, true);
+assert.equal(main.inert, false);
+toggle.emit('click');
+const target = {closest: selector => selector.includes('a[href]') ? link : null};
+sidebar.emit('click', {target});
+assert.equal(backdrop.hidden, true);
+""")
+
+    def test_resizing_to_desktop_clears_modal_state_and_locked_sessions_cannot_open(self):
+        self.run_drawer("""
+toggle.emit('click');
+media.matches = false; media.emit('change');
+assert.equal(sidebar.inert, false);
+assert.equal(main.inert, false);
+assert.equal(backdrop.hidden, true);
+assert.equal(sidebar.attrs['aria-modal'], undefined);
+assert.equal(document.body.style.overflow, 'auto');
+toggle.emit('click'); assert.equal(backdrop.hidden, true);
+media.matches = true; media.emit('change');
+assert.equal(sidebar.inert, true);
+app.classList.add('session-locked');
+toggle.emit('click'); assert.equal(backdrop.hidden, true);
+""")
+
+    def test_selecting_the_current_configuration_page_dismisses_the_drawer(self):
+        self.run_drawer("""
+toggle.emit('click');
+// Selecting the current route emits no hashchange; the click still dismisses navigation.
+const target = {closest: selector => selector.includes('[data-config-route]') ? link : null};
+sidebar.emit('click', {target});
+assert.equal(backdrop.hidden, true);
+assert.equal(main.inert, false);
+""")
+
+    def test_selecting_project_or_action_buttons_dismisses_the_drawer(self):
+        self.run_drawer("""
+sidebar.items = [close, link, actionBtn, lockBtn, searchBtn];
+toggle.emit('click');
+assert.equal(backdrop.hidden, false);
+sidebar.emit('click', {target: actionBtn});
+assert.equal(backdrop.hidden, true);
+
+toggle.emit('click');
+sidebar.emit('click', {target: lockBtn});
+assert.equal(backdrop.hidden, true);
+
+toggle.emit('click');
+sidebar.emit('click', {target: searchBtn});
+assert.equal(backdrop.hidden, true);
+
+toggle.emit('click');
+sidebar.emit('change', {target: {id: 'project-select'}});
+assert.equal(backdrop.hidden, true);
+""")
+
+    def test_open_dialog_prevents_escape_dismissal(self):
+        self.run_drawer("""
+toggle.emit('click');
+assert.equal(backdrop.hidden, false);
+document.dialogOpen = new Element('dialog');
+assert.equal(key('Escape').defaultPrevented, false);
+assert.equal(backdrop.hidden, false);
+document.dialogOpen = null;
+assert.equal(key('Escape').defaultPrevented, true);
+assert.equal(backdrop.hidden, true);
+""")
+
+
+class ConnectionLogFrontendTests(unittest.TestCase):
+    def run_node_test(self, scenario):
+        script = """
+const fs = require('fs');
+const assert = require('node:assert/strict');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+const match = code.match(/const ConnectionLog = \\(\\(\\) => \\{[\\s\\S]*?\\n\\}\\)\\(\\);/);
+assert(match, 'ConnectionLog not found in app.js');
+
+const storage = {};
+const localStorage = {
+  getItem: k => storage[k] || null,
+  setItem: (k, v) => { storage[k] = String(v); },
+  removeItem: k => { delete storage[k]; }
+};
+const navigator = { onLine: true, userAgent: 'test', connection: { effectiveType: '4g' } };
+const document = { visibilityState: 'visible', hidden: false, addEventListener: () => {} };
+const window = { addEventListener: () => {} };
+
+let apiCalls = [];
+let apiStatusToThrow = null;
+async function api(path, opts) {
+  apiCalls.push({ path, opts });
+  if (apiStatusToThrow) {
+    const err = new Error('HTTP error');
+    err.status = apiStatusToThrow;
+    throw err;
+  }
+  return { ok: true };
+}
+
+eval(match[0].replace('const ConnectionLog =', 'globalThis.ConnectionLog ='));
+""" + scenario
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_connection_log_adds_records_and_caps_at_max(self):
+        self.run_node_test("""
+ConnectionLog.add('test_event', { detail_key: 'val' });
+let stored = JSON.parse(storage['orchestrator_connection_log']);
+assert.equal(stored.length, 1);
+assert.equal(stored[0].kind, 'test_event');
+assert.equal(stored[0].online, true);
+assert.equal(stored[0].visible, 'visible');
+assert.equal(stored[0].connection, '4g');
+assert.equal(stored[0].detail_key, 'val');
+
+for (let i = 0; i < 250; i++) {
+  ConnectionLog.add(`event_${i}`);
+}
+stored = JSON.parse(storage['orchestrator_connection_log']);
+assert.equal(stored.length, 200);
+assert.equal(stored[0].kind, 'event_50');
+assert.equal(stored[199].kind, 'event_249');
+""")
+
+    def test_connection_log_flush_and_handles_404(self):
+        self.run_node_test("""
+(async () => {
+  for (let i = 0; i < 150; i++) ConnectionLog.add(`event_${i}`);
+  await ConnectionLog.flush();
+  assert.equal(apiCalls.length, 1);
+  assert.equal(apiCalls[0].path, 'client-log');
+  assert.equal(apiCalls[0].opts.body.events.length, 100);
+  let stored = JSON.parse(storage['orchestrator_connection_log']);
+  assert.equal(stored.length, 50);
+
+  apiStatusToThrow = 404;
+  await ConnectionLog.flush();
+  stored = JSON.parse(storage['orchestrator_connection_log']);
+  assert.equal(stored.length, 0);
+})();
+""")
+
+    def test_last_login_method_persistence(self):
+        script = """
+const fs = require('fs');
+const assert = require('node:assert/strict');
+const appJs = fs.readFileSync(process.argv[1], 'utf8');
+
+const storage = {};
+globalThis.localStorage = {
+  getItem: (k) => storage[k] || null,
+  setItem: (k, v) => { storage[k] = String(v); },
+  removeItem: (k) => { delete storage[k]; },
+};
+globalThis.document = { cookie: '' };
+globalThis.window = { firebase: { auth: () => ({ currentUser: null }) } };
+
+const fnMatch = appJs.match(/(const LAST_LOGIN_KEY = [\\s\\S]*?function setLastLoginMethod[\\s\\S]*?\\n\\})/);
+assert.ok(fnMatch, 'helpers found');
+eval(fnMatch[0]);
+
+assert.equal(getLastLoginMethod(), '');
+
+setLastLoginMethod('google');
+assert.equal(storage['orchestrator_last_login_method'], 'google');
+assert.ok(document.cookie.includes('orchestrator_last_login_method=google'));
+assert.equal(getLastLoginMethod(), 'google');
+
+delete storage['orchestrator_last_login_method'];
+assert.equal(getLastLoginMethod(), 'google');
+
+document.cookie = '';
+assert.equal(getLastLoginMethod(), '');
+window.firebase.auth = () => ({ currentUser: { providerData: [{ providerId: 'github.com' }] } });
+assert.equal(getLastLoginMethod(), 'github');
+
+setLastLoginMethod('token');
+assert.equal(getLastLoginMethod(), 'token');
+assert.equal(storage['orchestrator_last_login_method'], 'token');
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+
 class AccessibilityStaticTests(unittest.TestCase):
     STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
 
@@ -3070,10 +3448,76 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_the_whole_view_is_not_a_live_region(self):
         self.assertNotIn('id="view" class="view" aria-live', self.html)
 
-    def test_phone_layout_keeps_every_page_reachable_through_more(self):
-        for href in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/git", "#/connections", "#/config", "#/devlogs"):
-            self.assertIn(f'"{href}"', self.js[self.js.index("const MORE_LINKS"):][:400], href)
-        self.assertIn('id="nav-more"', self.html)
+    def test_phone_drawer_reuses_the_full_sidebar(self):
+        from html.parser import HTMLParser
+
+        class SidebarParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.sidebar = False
+                self.links = []
+                self.controls = []
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "aside" and attrs.get("id") == "sidebar":
+                    self.sidebar = True
+                if self.sidebar:
+                    if tag == "a":
+                        self.links.append(attrs.get("href"))
+                    if attrs.get("id"):
+                        self.controls.append(attrs["id"])
+
+            def handle_endtag(self, tag):
+                if tag == "aside":
+                    self.sidebar = False
+
+        sidebar = SidebarParser()
+        sidebar.feed(self.html)
+        for href in ("#/", "#/activity", "#/product", "#/tests", "#/delivery", "#/git", "#/devlogs", "#/checkup", "#/ux-review",
+                     "#/measure", "#/docs", "#/readiness", "#/help"):
+            self.assertIn(href, sidebar.links)
+        for href in ("#/connections", "#/projects"):  # set once: under Settings (Configuration), not the sidebar
+            self.assertNotIn(href, sidebar.links)
+        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "lock-btn"):
+            self.assertIn(control, sidebar.controls)
+
+    def test_copy_stays_plain_and_consistent(self):
+        """Words casual users understand, one case style, real plurals (docs/web-ui-github-audit.md #21)."""
+        import re
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app = (static / "app.js").read_text()
+        config = (static / "configuration.js").read_text()
+        for jargon in ("Next execution", "Pending execution", "Decomposed", "Parallel subtask", "AI Worker active",
+                       "Your action needed", "Phase: ", "Tracked Projects", "Open Dashboard", "PRD · ", "Something went wrong"):
+            self.assertNotIn(jargon, app, jargon)
+        counted = r"\b(?:job|test|suite|file|feature|build|item|case|KPI|machine|model|run|task|change|project)\(s\)"
+        self.assertEqual(re.findall(counted, re.sub(r"//[^\n]*", "", app)), [], "write the plural, not (s)")
+        self.assertNotIn("confirm(", app, "use formDialog with a specific verb, not OK/Cancel")
+        labels = re.findall(r'label: "([^"]+)"', config)
+        title_case = [l for l in labels if re.search(r" [A-Z][a-z]", l) and not re.search(r"AI|Firebase|Xcode|Slack|Orchestrator|API", l)]
+        self.assertEqual(title_case, [], "Configuration labels use sentence case")
+
+    def test_design_tokens_hold(self):
+        """The design system's tokens are the only source of sizes, layers and colours (docs/web-ui-github-audit.md #20)."""
+        import re
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        scripts = "".join((static / name).read_text() for name in ("app.js", "configuration.js"))
+        defined = set(re.findall(r"(--[a-z0-9-]+):", css))
+        used = set(re.findall(r"var\((--[a-z0-9-]+)", css + scripts))
+        self.assertEqual(used - defined, set(), "every var(--x) must be defined")
+        self.assertEqual(re.findall(r"z-index: ?\d", css), [], "use the --z-* layers")
+        self.assertEqual(re.findall(r"min-height: ?(?:28|32|36|38|40|44|48)px", css), [], "use the --control-* heights")
+        self.assertLessEqual(len(set(re.findall(r"box-shadow:[^;]+", css))), 10, "use --shadow, --shadow-2, --shadow-3")
+        # A ratchet: inline styles in app.js may only go down. Lower this number when you remove one.
+        self.assertLessEqual((static / "app.js").read_text().count('style="'), 62)
+
+    def test_brand_mark_uses_app_icon(self):
+        self.assertIn('.brand-mark {', self.css)
+        self.assertIn('url("icon-192.png")', self.css)
+        block = self.css[self.css.index('.brand-mark {'):self.css.index('.project-switch {')]
+        self.assertNotIn('background: var(--accent);', block)
 
     def test_badges_use_ink_tokens_not_hardcoded_white(self):
         for selector in (".badge {", ".pill-badge.needs-badge {", ".pill-badge.active-badge {"):
@@ -3102,7 +3546,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("notify(level", toast)
         self.assertIn("Errors.explain(message)", toast)  # errors still say what to do about them
         css = self.css[self.css.index(".messages {"):]
-        for part in ("position: fixed", "top: calc(var(--space-4) + env(safe-area-inset-top))", "z-index: 1000", "pointer-events: none", "prefers-reduced-motion"):
+        for part in ("position: fixed", "top: calc(var(--space-4) + env(safe-area-inset-top))", "z-index: var(--z-toast)", "pointer-events: none", "prefers-reduced-motion"):
             self.assertIn(part, css, part)
         for kind in ("success", "info", "warning", "error"):
             self.assertIn(f".msg-{kind} {{ --kind:", css)  # one colour per kind, from the design tokens
@@ -3129,8 +3573,9 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_help_covers_every_page_it_names_and_the_undo_window(self):
         start = self.js.index("pages.help = async")
         help_page = self.js[start:self.js.index("pages.devlogs = async")]
-        for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config", "#/config/documentation"):
-            self.assertIn(f'"{route}"' if route != "#/config/documentation" else route, help_page, route)
+        for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/readiness", "#/projects", "#/activity", "#/config"):
+            self.assertIn(f'"{route}"', help_page, route)
+        self.assertIn('href="#/docs"', help_page)
         self.assertIn("10 seconds", help_page)
         for page in ("features", "tests", "delivery", "measure", "checkup"):
             self.assertIn(f"pages.{page} = async", self.js)
@@ -3150,14 +3595,18 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('aria-activedescendant', self.js)
 
     def test_sidebar_tools_are_grouped_by_purpose(self):
-        for label in ("Build &amp; ship", "Learn &amp; improve", "Set up"):
+        for label in ("Build &amp; ship", "Review", "Settings"):
             self.assertIn(f'<span class="label">{label}</span>', self.html)
 
     def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
         config = (self.STATIC / "configuration.js").read_text()
-        for label, old in (("Machines", "fleet"), ("Tool check", "prerequisite audit"), ("Orchestrator health check", "self-tests"), ("Tester builds (Firebase)", "firebase app distribution")):
+        for label, old in (("Machines", "fleet"), ("Tester builds (Firebase)", "firebase app distribution")):
             line = next(l for l in config.splitlines() if f'label: "{label}"' in l)
             self.assertIn(old, line.lower(), label)
+        app = (self.STATIC / "app.js").read_text()
+        checks = app[app.index("const READINESS_CHECKS"):app.index("pages.readiness = async")]
+        for label, old in (("Tools and logins", "prerequisite audit"), ("Orchestrator health check", "self-tests")):
+            self.assertIn(old, checks[checks.index(label):].split("]")[0].lower(), label)
         for jargon in ('label: "Machine Fleet"', 'label: "Prerequisite Audit"', 'label: "Self-Tests"'):
             self.assertNotIn(jargon, config)
 
@@ -3177,7 +3626,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('<script src="errors.js">', self.html)
         self.assertIn("Notify me when done", self.html + self.js)  # browser alerts
         config = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "configuration.js").read_text()
-        self.assertIn('label: "Slack & chat alerts"', config)  # the webhook, in the Configuration menu
+        self.assertIn("Slack &amp; chat alerts", config)  # the webhook card
+        self.assertIn("ConfigurationPages.chatCard(hook)", self.js)  # shown on Connections, for owners
 
     def test_there_is_no_separate_inbox_page_and_a_job_waiting_on_you_is_just_a_job_in_the_list(self):
         self.assertNotIn('data-route="inbox"', self.html)
@@ -3255,19 +3705,107 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("showSigningIn(\"Unlocking…\")", js)  # the token form too
 
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
-        self.assertIn('["Build", act("build")', self.js)  # Tests
-        self.assertIn('Will this computer build it?', self.js)  # Check-up: probes
-        self.assertIn('Setup tools', self.js)  # Check-up: the setup checks and wizard
-        for action in ("check", "check_config", "worker_check", "wizard"):
-            self.assertIn(f'["{action}", ', self.js)
+        self.assertIn('Run all tests', self.js)  # Tests
+        self.assertIn('Expand coverage', self.js)
+        self.assertNotIn('["Build", act("build")', self.js)
+        readiness = self.js[self.js.index("const READINESS_CHECKS"):self.js.index("pages.help = async")]
+        self.assertIn('Will this computer build it?', readiness)  # Readiness: probes
+        for action in ("check", "check_config", "worker_check", "test"):  # and every environment check, in one place
+            self.assertIn(f'["{action}", ', readiness)
+        self.assertIn('href="#/readiness"', self.js[self.js.index("pages.checkup = async"):])  # Check-up points there
         self.assertIn('act("distribute")', self.js)  # Delivery
         self.assertIn('act("logs_pull")', self.js)  # Device logs
         self.assertIn("Open full console", self.html + self.js)
 
+    def test_test_menu_actions_and_button_widths(self):
+        tests_src = self.js[self.js.index("pages.tests = async"):self.js.index("pages.git = async")]
+        self.assertIn("Run all tests", tests_src)
+        self.assertIn("Expand coverage", tests_src)
+        self.assertNotIn("moreMenu", tests_src)
+        self.assertNotIn('act("build")', tests_src)
+        self.assertNotIn("Refresh list", tests_src)
+        self.assertIn('body[data-page="tests"] .topbar-actions > .test-run-all-btn { flex: 2 1 0;', self.css)
+        self.assertIn('body[data-page="tests"] .topbar-actions > .test-expand-coverage-btn {', self.css)
+        self.assertIn('flex: 1 1 0;', self.css)
+        self.assertIn("cov.total_lines", tests_src)
+        self.assertIn("cov.total_lines.toLocaleString()", tests_src)
+        self.assertNotIn("Coverage target (%)", tests_src)
+        self.assertIn('${measured ? "Recalculate" : "Calculate"}', tests_src)
+        self.assertNotIn("Measure again", tests_src)
+        self.assertNotIn("Measure coverage", tests_src)
+        self.assertIn(".input-with-suffix", self.css)
+        self.assertIn(".input-suffix", self.css)
+
+    def test_run_screen_stop_button_in_same_row_as_title(self):
+        # Stop button on in-progress screens is placed on the right side, same row as the title
+        self.assertIn('.topbar:has(> .topbar-actions > [data-stop])', self.css)
+        self.assertIn('body[data-page="run"] .topbar', self.css)
+        self.assertIn('"title actions"', self.css)
+        self.assertIn('.topbar:has(> .topbar-actions > [data-stop]) .topbar-actions', self.css)
+        self.assertIn('grid-area: actions;', self.css)
+
+    def test_stop_job_confirmation_modal_spinner_and_toast(self):
+        # Tapping stop has a confirmation modal using formDialog
+        self.assertIn("async function stopJob(", self.js)
+        self.assertIn('formDialog(title, body, okLabel, { danger: true, compact: true })', self.js)
+        self.assertIn('"Stop this job?"', self.js)
+        self.assertIn('"Stop job"', self.js)
+        # Shows loading spinner overlay over job card while in progress
+        self.assertIn('live-run-overlay', self.js)
+        self.assertIn('role="status"', self.js)
+        self.assertIn('aria-busy="true"', self.js)
+        self.assertIn('Stopping…', self.js)
+        # Toast confirms once stopped
+        self.assertIn('toast(hasJob ? "Job stopped" : "Run stopped")', self.js)
+        # CSS rules for card overlay and spinner
+        self.assertIn('.live-run { position: relative;', self.css)
+        self.assertIn('.live-run.stopping { pointer-events: none; }', self.css)
+        self.assertIn('.live-run-overlay {', self.css)
+        self.assertIn('.live-run-overlay .spinner {', self.css)
+
+
+    def test_back_button_chevron_beside_title_without_text(self):
+        # Back button is a chevron icon only, placed on the same row to the left of the title
+        self.assertIn('<div class="topbar-title-row">', self.html)
+        self.assertIn('<a class="back-link" id="back-link" href="#/" aria-label="Back" title="Back" hidden><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></a>', self.html)
+        self.assertNotIn('>Back<', self.html)
+        self.assertIn('.topbar-title-row {', self.css)
+        self.assertIn('.back-link .icon {', self.css)
+        self.assertIn('width: 22px;', self.css)
+        self.assertIn('height: 22px;', self.css)
+        self.assertIn('stroke-width: 2.5;', self.css)
+        self.assertIn('transform: rotate(180deg);', self.css)
+
+    def test_product_topbar_buttons_color_background_and_centered(self):
+        # Product topbar buttons (Draft, Import) use color background and are centered; file link is larger
+        self.assertNotIn('id="prd-view"', self.js)
+        self.assertNotIn('>View .md<', self.js)
+        self.assertIn('<button class="btn primary" id="prd-draft">Draft with AI</button>', self.js)
+        self.assertIn('<button class="btn primary" id="prd-import">Import PRD</button>', self.js)
+        self.assertIn('prd-file-link', self.js)
+        self.assertIn('.prd-file-link', self.css)
+        self.assertIn('body[data-page="product"] .topbar {', self.css)
+        self.assertIn('body[data-page="product"] .topbar-actions {', self.css)
+        self.assertIn('body[data-page="product"] .topbar-actions .btn {', self.css)
+        self.assertIn('background: var(--accent);', self.css)
+        self.assertIn('color: var(--accent-ink);', self.css)
+
+    def test_visual_check_done_container_thumbnails_and_lightbox(self):
+        # Visual check results are shown as thumbnails in the done container and can be opened
+        self.assertIn('.visual-check-banner', self.css)
+        self.assertIn('.visual-check-grid', self.css)
+        self.assertIn('.visual-check-thumb-card', self.css)
+        self.assertIn('dialog.dialog-image-viewer', self.css)
+        self.assertIn('getVisualCheckForRun(', self.js)
+        self.assertIn('openImageModal(', self.js)
+        self.assertIn('wireImagePreviews(', self.js)
+        self.assertIn('visual-check-banner', self.js)
+        self.assertIn('data-preview-img', self.js)
+
     def test_new_job_asks_what_each_kind_needs_and_has_no_you_decide_toggle(self):
         form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
-        for needle in ("How do I make it happen?", "What should happen instead?", "Look and feel", "Upload logs or screenshots",
-                       "What should be tested?", "What should change?", "recent-logs", "uploadFile(", "Pick a Figma design"):
+        for needle in ("Describe repro steps 1 line at a time.", "What should happen instead?", "Look and feel", "Upload logs or screenshots",
+                       "Choose area to test", "What should change?", "recent-logs", "uploadFile(", "Pick a Figma design"):
             self.assertIn(needle, form, needle)
         self.assertNotIn("You decide the details", self.js)
         self.assertNotIn("recommend", form.lower().replace("recommended", ""))
@@ -3295,17 +3833,100 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_the_product_page_is_one_document_with_five_sections_you_can_edit_import_and_restore(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
         for part in ('data-prd-edit', 'api("product/settings"', 'api("product/revert"', 'product/history/', '"product/import"', '"product/design"', 'product/reference',
-                     'api("product/draft"', "Update this automatically when jobs finish", "Import PRD", "Nothing is saved until you accept"):
+                     'api("product/draft"', "Update this automatically when jobs finish", "Import PRD"):
             self.assertIn(part, page, part)
         self.assertNotIn("Help me with this", self.js)  # removed
         self.assertNotIn("product/refine", self.js)
         self.assertNotIn("Import a PRD", self.js)  # the button just says Import PRD
         self.assertNotIn("product/scaffold", self.js)  # no six documents to create
         self.assertNotIn("last-review", self.js)  # and no separate review job
-        self.assertNotIn(">Optional<", page)  # every section is optional, so none is singled out
-        self.assertIn("Everything here is optional", page)
+        self.assertNotIn("Everything here is optional", page)
+        self.assertIn('title: "Product"', page)
+        self.assertIn("<h2>Product requirements</h2>", page)
+        self.assertIn("Press Enter to add another feature", page)
+        self.assertIn("prd-features-edit", page)
+        self.assertIn("prd-link-input", page)
         # Look and feel takes uploads, a pasted link, and an item picked from a connected app (Figma).
         self.assertIn("linkPickerHtml({ prefer: [\"figma\"]", page)
+
+    def test_prd_markdown_rendered_flat_on_docs_page(self):
+        docs = self.js[self.js.index("pages.docs = async"):self.js.index("pages.product = async")]
+        prd_section = docs[docs.index('kind === "product"'):docs.index('kind === "job"')]
+        self.assertIn('Markdown.render(p.text)', prd_section)
+        self.assertNotIn('<pre class="file">${esc(p.text)}</pre>', prd_section)
+        self.assertIn('actions: ""', prd_section)
+        self.assertIn('class="card-h"', prd_section)
+        self.assertIn('class="card-actions"', prd_section)
+        self.assertIn('id="prd-download">Download</button>', prd_section)
+        self.assertIn('id="prd-copy-path"', prd_section)
+
+    def test_connected_apps_subsection_of_import_lists_apps_and_links_to_connections(self):
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        self.assertIn('reference-imports', page)
+        self.assertIn('id="prd-link-form"', page)
+        self.assertIn('id="prd-link-input"', page)
+        self.assertNotIn('id="prd-add-link"', page)
+        self.assertIn('connected-apps-list', page)
+        self.assertIn('providerIcon(a.id)', page)
+        self.assertIn('href="#/connections"', page)
+        self.assertIn('Connect more', page)
+        self.assertIn('${connectedApps.length ? `<button type="button" class="btn small primary" id="prd-add-app">Choose reference</button>` : ""}', page)
+        self.assertNotIn('disabled title="Connect an app first"', page)
+        self.assertIn('.brand-icon', self.css)
+        picker = self.js[self.js.index("async function linkPickerHtml"):self.js.index("async function attachToJob")]
+        self.assertIn('Connected apps:', picker)
+        self.assertIn('href="#/connections"', picker)
+
+    def test_hosted_self_healing_and_reconnection(self):
+        # Hosted app auto-reconnects and relocates without locking user into sign-in gate
+        self.assertIn("authResolved = true", self.js)
+        self.assertIn("relocateMachine().catch", self.js)
+        self.assertIn("Account.pickMachine(machines, remembered)", self.js)
+        self.assertIn("https://${stored}", self.js)
+
+    def test_last_used_login_method_highlight_and_tag(self):
+        # Last used login method is tracked and visually tagged in the sign-in gate
+        self.assertIn("getLastLoginMethod()", self.js)
+        self.assertIn("setLastLoginMethod(", self.js)
+        self.assertIn("orchestrator_last_login_method", self.js)
+        self.assertIn(".last-used-tag", self.css)
+        self.assertIn(".sso-btn.last-used", self.css)
+        self.assertIn("Last used", self.js)
+
+    def test_signin_modal_sso_icons_alignment_and_assets(self):
+        # SSO button icons align in a fixed column, use official 24x24 assets, and backgrounds match
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn(".sso-btn .icon {", css)
+        self.assertIn("position: absolute;", css)
+        self.assertIn("left: var(--space-4);", css)
+        self.assertIn("top: 50%;", css)
+        self.assertIn("transform: translateY(-50%);", css)
+        self.assertIn(".sso-btn.apple-btn,", css)
+        self.assertIn(".sso-btn.github-btn {", css)
+        self.assertNotIn(".sso-btn.apple-btn {\n  background: #000;", css)
+        index_html = (self.STATIC / "index.html").read_text()
+        self.assertIn('<symbol id="i-google" viewBox="0 0 48 48">', index_html)
+        self.assertIn('<symbol id="i-apple" viewBox="17 14 22 22">', index_html)
+        self.assertIn('<symbol id="i-github" viewBox="0 0 24 24">', index_html)
+        self.assertIn(".signin-wrap {", css)
+        self.assertIn("align-items: flex-start;", css)
+        self.assertNotIn("min-height: calc(100vh - 120px);", css)
+        self.assertIn(".app.session-locked .topbar {", css)
+
+    def test_signin_modal_omits_orchestrator_icon_and_title(self):
+        # Sign-in modal card begins directly with heading without redundant app brand mark or title
+        gate = self.js[self.js.index("function showSignInGate"):self.js.index("function showSignInGate") + 2500]
+        self.assertNotIn("signin-brand", gate)
+        self.assertNotIn("brand-mark", gate)
+        signing_in = self.js[self.js.index("function showSigningIn"):self.js.index("function cpApi")]
+        self.assertNotIn("signin-brand", signing_in)
+        self.assertNotIn("brand-mark", signing_in)
+
+    def test_home_new_job_button_is_sticky(self):
+        # The + new job button stays in place when scrolling
+        self.assertIn(".home-new-job-btn {", self.css)
+        self.assertIn("position: fixed;", self.css)
+        self.assertIn(".topbar-actions:has(.home-new-job-btn)", self.css)
 
     def test_slow_model_work_is_started_and_polled_not_held_open(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
@@ -3324,18 +3945,49 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("var(--accent)", css)  # in the accent colour, on its soft tint
         self.assertIn("var(--accent-soft)", css)
 
-    def test_import_takes_a_dropped_file_and_starts_reading_at_once(self):
+    def test_draft_with_ai_button_and_cancellation(self):
+        # Button label is "Draft with AI" across all PRD entry points
+        self.assertIn('>Draft with AI</a>', self.js)
+        self.assertIn('id="prd-draft">Draft with AI</button>', self.js)
+        self.assertNotIn('id="prd-start-draft"', self.js)
+        self.assertNotIn('>Draft PRD<', self.js)
+        # Busy indicator says it can take a few minutes and provides a cancel/stop option
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        self.assertIn("This can take a few minutes.", page)
+        self.assertIn('id="prd-busy-cancel"', page)
+        self.assertIn('method: "DELETE"', page)
+        self.assertIn('toast("Draft cancelled", "cancel")', page)
+        self.assertIn(".msg-cancel { --kind: var(--warn); }", self.css)
+        # Proposed view shows subsections with revert and edit buttons, auto-saving without top approve/discard
+        self.assertNotIn('id="prd-approve-all"', page)
+        self.assertNotIn('id="prd-discard"', page)
+        self.assertNotIn('data-approve-sec=', page)
+        self.assertIn('data-revert-sec=', page)
+        self.assertIn('data-edit-sec=', page)
+        self.assertIn('id="prd-proposal-done"', page)
+        self.assertIn('proposal-sections', page)
+        self.assertIn('proposal-summary', page)
+        proposal_fn = page[page.index("const proposalView"):page.index("const busy")]
+        self.assertNotIn('<pre class="diff"', proposal_fn)
+        self.assertNotIn('Read the whole proposed document', proposal_fn)
+
+    def test_import_takes_a_dropped_file_and_waits_for_submit(self):
         page = self.js[self.js.index("const importPanel"):self.js.index("An existing project: read what is there")]
-        for part in ('id="prd-drop"', '"dragover"', '"drop"', "e.dataTransfer?.files?.[0]", "readPrd({ file: f })", "e.preventDefault()", 'zone.addEventListener("keydown"'):
+        for part in ('id="prd-drop"', '"dragover"', '"drop"', "e.dataTransfer?.files?.[0]", "if (f) setFile(f)", "e.preventDefault()", 'zone.addEventListener("keydown"'):
             self.assertIn(part, page, part)
+        self.assertIn('id="prd-import-go" disabled>Submit</button>', page)
+        self.assertIn("goBtn.disabled = !picked && !textEl.value.trim()", page)
         read = self.js[self.js.index("const readPrd"):self.js.index("const importPanel")]
         self.assertIn("NJ_UPLOAD_LIMIT", read)  # a dropped file is checked like a chosen one
         self.assertIn("md|markdown|txt|docx|pdf", read)
         self.assertIn(".prd-drop.over", self.css)
         self.assertIn("pointer: coarse", self.css)  # phones have nothing to drag, so they are not told to
+        self.assertIn("filePickerContent(", page)
+        self.assertIn("Browse files", self.js)
+        self.assertNotIn("click to choose one", page)
 
     def test_home_shows_what_the_product_is_without_the_section_buttons(self):
-        card = self.js[self.js.index("function productStripHtml"):][:1500]
+        card = self.js[self.js.index("function productStripHtml"):self.js.index("pages.product =")]
         self.assertNotIn("doc-chip", card)
         self.assertNotIn("p.sections.map", card)
         self.assertIn("Import PRD", card)
@@ -3368,6 +4020,16 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(".job-hero.tone-attention { border-color: var(--warn); background: var(--warn-soft); }", self.css)
         self.assertIn(".banner { display: flex; align-items: center; gap: var(--space-3) var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--border);", self.css)
         self.assertIn(".notice { padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--warn);", self.css)
+
+    def test_setup_checklist_js_handles_git_init_and_github_create(self):
+        self.assertIn('api("setup/git-init"', self.js)
+        self.assertIn('api("setup/github-create"', self.js)
+        self.assertIn("Create GitHub repository", self.js)
+
+    def test_console_stopped_message_in_js(self):
+        self.assertIn("Console connection was stopped.", self.js)
+        fn = self.js[self.js.index("function nextStep(r)"):self.js.index("pages.run =")]
+        self.assertIn('r.action === "console"', fn)
 
 
 class ScopeEndpointTests(ServerTestCase):
@@ -3544,6 +4206,206 @@ class UndoEndpointTests(ServerTestCase):
         self.assertEqual(restored["status"], "review-needed")
         self.assertNotIn("restore_status", restored)
         self.assertNotIn("completed_at", restored)
+
+    def test_archiving_jobs_hides_them_and_restore_brings_them_back_unchanged(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        before = json.loads((jobs / f"{self.JOB}.json").read_text())
+        res, data = self.post("/api/jobs/archive", {"ids": [self.JOB]})
+        self.assertEqual((res.status, data["archived"]), (200, [self.JOB]))
+        self.assertFalse((jobs / f"{self.JOB}.json").exists())
+        _, listed = self.request("GET", "/api/jobs")
+        self.assertNotIn(self.JOB, [j["id"] for j in listed["jobs"]])
+        self.post("/api/config/archived-restore", {"id": self.JOB})
+        self.assertEqual(json.loads((jobs / f"{self.JOB}.json").read_text())["status"], before.get("status"))
+
+    def test_archive_validates_and_skips_running_jobs(self):
+        for body in ({}, {"ids": []}, {"ids": "x"}, {"ids": ["../x"]}):
+            res, _ = self.post("/api/jobs/archive", body)
+            self.assertEqual(res.status, 400, body)
+        with patch.object(self.server.sessions, "running_job_ids", return_value=[self.JOB]):
+            res, data = self.post("/api/jobs/archive", {"ids": [self.JOB]})
+        self.assertEqual((res.status, data["archived"]), (200, []))
+
+
+class RunHistoryTests(ServerTestCase):
+    """Activity lists earlier runs from their saved logs, so the list survives a restart."""
+
+    def test_earlier_runs_are_read_from_saved_logs_newest_first(self):
+        logs = self.root / ".orchestrator" / "logs" / "ui"
+        logs.mkdir(parents=True)
+        (logs / "20260101-090000-abc123-test.log").write_text("ok")
+        (logs / "20260102-090000-def456-new_job.log").write_text("ok")
+        (logs / "notes.txt").write_text("not a run")
+        res, data = self.request("GET", "/api/runs/history")
+        self.assertEqual(res.status, 200)
+        self.assertEqual([r["id"] for r in data["runs"]], ["20260102-090000-def456", "20260101-090000-abc123"])
+        self.assertEqual(data["runs"][0]["title"], ui.ACTIONS["new_job"].title)
+        self.assertEqual(data["runs"][1]["log"], "logs/ui/20260101-090000-abc123-test.log")
+
+
+class UxReviewEndpointTests(ServerTestCase):
+    """The UX and design review: passes, their screenshots, the screens setting and a job's check."""
+    JOB = "20260922-bug-1"
+    PNG = b"\x89PNG\r\n\x1a\nfake"
+
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def test_passes_are_listed_newest_first_with_their_screens(self):
+        out = self.root / ".orchestrator" / "output" / "ux-pass"
+        for stamp, findings in (("20261001-090000", []), ("20261002-090000", [{"area": "ux", "severity": 3, "problem": "Two primaries"}])):
+            (out / stamp / "screens").mkdir(parents=True)
+            (out / stamp / "result.json").write_text(json.dumps({"at": "2026-10-02T09:00:00", "summary": "S", "findings": findings, "checklist": []}))
+        (out / "20261002-090000" / "screens" / "home-390-light.png").write_bytes(self.PNG)
+        (out / "notes").mkdir()
+        res, data = self.request("GET", "/api/ux-pass")
+        self.assertEqual(res.status, 200)
+        self.assertEqual([p["id"] for p in data["passes"]], ["20261002-090000", "20261001-090000"])
+        self.assertEqual(data["passes"][0]["counts"]["major"], 1)
+        self.assertIn("completed_at", data["passes"][0])
+        self.assertAlmostEqual(data["passes"][0]["completed_at"], (out / "20261002-090000" / "result.json").stat().st_mtime)
+        _, detail = self.request("GET", "/api/ux-pass/20261002-090000")
+        self.assertIn("Two primaries", detail["fix_text"])
+        res, body = self.request("GET", "/api/ux-screens/pass/20261002-090000/home-390-light.png")
+        self.assertEqual((res.status, body), (200, self.PNG))
+        for bad in ("/api/ux-screens/pass/20261002-090000/..%2Fresult.json", "/api/ux-screens/pass/../x.png",
+                    "/api/ux-screens/other/20261002-090000/home-390-light.png", "/api/ux-pass/..%2Fjobs"):
+            self.assertEqual(self.request("GET", bad)[0].status, 404, bad)
+
+    def test_screens_to_review_are_saved_into_project_json_and_validated(self):
+        res, data = self.post("/api/ui-review", {"url": "http://localhost:3000", "routes": "/\n/settings\n", "widths": "390, 1440",
+                                                 "dark_mode": True, "review_changes": True})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["settings"]["routes"], ["/", "/settings"])
+        project = json.loads((self.root / ".orchestrator" / "project.json").read_text())
+        self.assertEqual((project["project_name"], project["ui_review"]["widths"]), ("Demo", [390, 1440]))  # nothing else changed
+        for body in ({"url": "localhost"}, {"widths": "wide"}, {"widths": "100"}):
+            self.assertEqual(self.post("/api/ui-review", body)[0].status, 400, body)
+
+    def test_a_jobs_check_comes_with_its_detail(self):
+        jobs = self.root / ".orchestrator" / "jobs"
+        job = json.loads((jobs / f"{self.JOB}.json").read_text())
+        job["ux_review"] = {"at": "2026-10-04T10:00:00", "counts": {"findings": 1, "major": 1}, "files": ["web/app.js"], "screens": 1}
+        (jobs / f"{self.JOB}.json").write_text(json.dumps(job))
+        review = self.root / ".orchestrator" / "output" / self.JOB / "ux-review"
+        (review / "screens").mkdir(parents=True)
+        (review / "screens" / "home-390-light.png").write_bytes(self.PNG)
+        (review / "result.json").write_text(json.dumps({"findings": [{"area": "ux", "severity": 3, "problem": "P"}], "checklist": [],
+                                                        "screens": [{"file": "home-390-light.png", "route": "/", "width": 390, "dark": False}]}))
+        _, detail = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertEqual((detail["ux_review"]["screens"], detail["ux_review"]["findings"][0]["problem"]), (1, "P"))
+        self.assertEqual(detail["ux_review"]["screen_list"][0]["file"], "home-390-light.png")
+        res, _ = self.request("GET", f"/api/ux-screens/job/{self.JOB}/home-390-light.png")
+        self.assertEqual(res.status, 200)
+
+    def test_capture_gallery_includes_job_screens_without_a_completed_review(self):
+        folder = self.root / ".orchestrator/output" / self.JOB / "ux-review"
+        (folder / "screens").mkdir(parents=True)
+        (folder / "screens/home.png").write_bytes(self.PNG)
+        (folder / "screens.json").write_text(json.dumps({"at": "2026-10-09T12:00:00Z", "screens": [
+            {"file": "home.png", "route": "/", "width": 390, "dark": False}], "limits": ["Reviewer unavailable"]}))
+        res, data = self.request("GET", "/api/ux-pass")
+        self.assertEqual(res.status, 200)
+        capture = data["captures"][0]
+        self.assertEqual((capture["kind"], capture["id"]), ("job", self.JOB))
+        self.assertEqual(capture["screens"][0]["file"], "home.png")
+        self.assertIn("Reviewer unavailable", capture["limits"])
+
+    def test_both_reviews_are_runnable_actions(self):
+        self.assertIn("ux_review_run.py", " ".join(ui.ACTIONS["ux_pass"].build({}, self.root)))
+        argv = ui.ACTIONS["ux_review_job"].build({"job": self.JOB}, self.root)
+        self.assertEqual(argv[-2:][0], "job")
+
+
+class PageLoadBacklogTests(unittest.TestCase):
+    def test_the_listen_backlog_takes_a_whole_page_load(self):
+        # A first page load in Chrome reset connections for scripts (ERR_CONNECTION_RESET on messages.js, app.js…)
+        # with socketserver's default backlog of 5, leaving the app blank in about 1 load in 4. A local socket burst
+        # doesn't reproduce it, so this checks the setting itself.
+        self.assertGreaterEqual(ui.UIServer.request_queue_size, 64)
+
+class JobContextTests(ServerTestCase):
+    """A job's attachments are grouped by what they are to the job (ticket, designs, what went wrong), not by source."""
+    JOB = "20260922-bug-1"
+
+    def post(self, path, body):
+        return self.request("POST", path, body=body, headers=UI_HEADERS)
+
+    def set_job(self, **fields):
+        path = self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json"
+        job = json.loads(path.read_text())
+        job.update(fields)
+        path.write_text(json.dumps(job))
+
+    def test_items_are_grouped_by_role_whatever_their_source(self):
+        uploads = self.root / ".orchestrator" / "ui" / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "20260101-000000-abcdef-mock.png").write_bytes(b"\x89PNG")
+        self.set_job(type="feature-plan", external_links=[
+            {"provider": "jira", "ref": "ABC-1", "title": "Lobby seats", "url": "https://x.atlassian.net/browse/ABC-1"},
+            {"provider": "figma", "ref": "f1", "title": "Lobby screen"},
+            {"provider": "sentry", "ref": "S-9", "title": "Crash on rejoin"}],
+            reference_artifacts=[{"path": ".orchestrator/ui/uploads/20260101-000000-abcdef-mock.png", "type": "image_reference"},
+                                 {"url": "https://www.figma.com/file/x", "type": "figma_url"}])
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        ctx = data["context"]
+        self.assertEqual([t["ref"] for t in ctx["ticket"]], ["ABC-1"])
+        self.assertEqual([d["source"] for d in ctx["designs"]], ["Figma", "Upload", "Link"])  # one place for designs
+        self.assertEqual(ctx["designs"][1]["image"], ".orchestrator/ui/uploads/20260101-000000-abcdef-mock.png")
+        self.assertEqual([p["title"] for p in ctx["problem"]], ["Crash on rejoin"])
+        self.assertFalse(ctx["problem_first"])
+
+    def test_on_a_bug_job_a_screenshot_is_evidence_and_comes_first(self):
+        self.set_job(type="bug", reference_artifacts=[{"path": ".orchestrator/ui/uploads/x-shot.png", "type": "image_reference"}])
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertEqual((len(data["context"]["problem"]), len(data["context"]["designs"]), data["context"]["problem_first"]), (1, 0, True))
+
+    def test_attaching_only_attaches_and_is_read_back_by_role(self):
+        res, data = self.post(f"/api/jobs/{self.JOB}/attach", {"role": "problem", "text": "Fatal: seat index out of range", "note": "From TestFlight"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["context"]["problem"][0]["title"], "From TestFlight")
+        res, data = self.post(f"/api/jobs/{self.JOB}/attach", {"role": "design", "url": "https://www.figma.com/file/abc"})
+        self.assertEqual(data["context"]["designs"][0]["url"], "https://www.figma.com/file/abc")
+        job = json.loads((self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json").read_text())
+        pasted = self.root / job["reference_artifacts"][0]["path"]
+        self.assertEqual(pasted.read_text(), "Fatal: seat index out of range")  # the AI reads it on its next step
+        self.assertEqual(self.server.sessions.list(), [])  # nothing ran
+        for body in ({"role": "other", "url": "https://x"}, {"role": "design"}, {"role": "design", "url": "ftp://x"},
+                     {"role": "design", "upload": "../../etc/passwd"}):
+            self.assertEqual(self.post(f"/api/jobs/{self.JOB}/attach", body)[0].status, 400, body)
+
+    def test_thumbnails_are_served_only_for_attached_images(self):
+        uploads = self.root / ".orchestrator" / "ui" / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "a.png").write_bytes(b"\x89PNG")
+        (self.root / "secret.png").write_bytes(b"\x89PNG")
+        self.assertEqual(self.request("GET", "/api/job-image?path=.orchestrator/ui/uploads/a.png")[0].status, 200)
+        for bad in ("secret.png", ".orchestrator/project.json", ".orchestrator/ui/uploads/../../secret.png"):
+            self.assertEqual(self.request("GET", f"/api/job-image?path={bad}")[0].status, 404, bad)
+
+
+class BuildingMeansActiveTests(unittest.TestCase):
+    """"Building" is said only while a worker is actually running; a stopped build is Paused, with Resume."""
+    PLAN = {"tasks": [{"title": "a"}, {"title": "b"}, {"title": "c"}]}
+
+    def state(self, **job):
+        return ui.job_state({"status": "executing", "type": "feature-plan", "plan": self.PLAN, "completed_tasks": [0], **job})
+
+    def test_a_stopped_build_is_paused_with_resume(self):
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        st = self.state(worker_pid=dead.pid, worker_host=socket.gethostname())
+        self.assertEqual((st["label"], st["group"], st["next"]["action"]), ("Paused", "needs_you", "resume"))
+        self.assertIn("1 of 3 tasks done", st["reason"])
+
+    def test_no_worker_recorded_is_not_building(self):
+        self.assertEqual(self.state()["label"], "Paused")
+
+    def test_a_running_worker_is_building(self):
+        self.assertEqual(self.state(worker_pid=os.getpid(), worker_host=socket.gethostname())["label"], "Building")
+
+    def test_a_worker_on_another_machine_is_trusted(self):
+        self.assertEqual(self.state(worker_pid=1, worker_host="some-other-mac")["label"], "Building")
 
 
 class KeepAliveBodyTests(ServerTestCase):
@@ -3735,7 +4597,7 @@ class ErrorHintTests(unittest.TestCase):
     def test_known_failures_say_what_to_do_next(self):
         self.assertEqual(self.explain("Failed to fetch"), "Can't reach Orchestrator. Check that it's running and that you're online.")  # the browser's own wording is replaced, not repeated
         self.assertEqual(self.explain("Couldn't save: Load failed"), "Can't reach Orchestrator. Check that it's running and that you're online.")
-        self.assertIn("Archived Jobs", self.explain("Job not found"))
+        self.assertIn("Archived jobs", self.explain("Job not found"))
         self.assertIn("Measure page", self.explain("Amplitude rejected the key (401)"))
         self.assertIn("incoming webhook", self.explain("The webhook answered 404"))
         self.assertIn("gh auth login", self.explain("Not signed in to GitHub yet."))
@@ -4212,6 +5074,71 @@ class ProductEndpointTests(ServerTestCase):
         self.assertIn("only you can say", p["summary"])
         self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())  # nothing is saved until they accept
 
+    def test_in_flight_draft_task_can_be_cancelled(self):
+        (self.root / "README.md").write_text("# Word Duel\n\nA word game for two friends.")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=self.root, check=True)
+
+        def slow_call(*a, **k):
+            time.sleep(5)
+            return "{}"
+
+        with patch.object(ui.UIHandler, "_model_call", slow_call):
+            res, data = self.post("/api/product/draft", {})
+            self.assertEqual(res.status, 202)
+            task_id = data["task"]
+
+            # Cancel via DELETE with UI_HEADERS
+            res_del, data_del = self.request("DELETE", f"/api/product/task/{task_id}", headers=UI_HEADERS)
+            self.assertEqual(res_del.status, 200)
+            self.assertEqual(data_del.get("status"), "canceled")
+
+            # Polling task status returns canceled
+            _, task = self.request("GET", f"/api/product/task/{task_id}")
+            self.assertEqual(task["status"], "canceled")
+
+            # POST /cancel route also works
+            res_post, data_post = self.post(f"/api/product/task/{task_id}/cancel", {})
+            self.assertEqual(res_post.status, 200)
+            self.assertEqual(data_post.get("status"), "canceled")
+
+    def test_product_overview_returns_model_and_available_models(self):
+        _, data = self.request("GET", "/api/product")
+        self.assertEqual(data["model"], "claude-sonnet-4-6")
+        self.assertTrue(isinstance(data["available_models"], list))
+        self.assertTrue(any(m["id"] == "claude-sonnet-4-6" for m in data["available_models"]))
+
+    def test_switching_product_model_persists_and_updates_subsequent_reads(self):
+        res, data = self.post("/api/product/model", {"model": "gemini-3.1-pro-preview"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data, {"ok": True, "model": "gemini-3.1-pro-preview"})
+        _, get_data = self.request("GET", "/api/product")
+        self.assertEqual(get_data["model"], "gemini-3.1-pro-preview")
+
+        # Rejects empty or invalid model
+        self.assertEqual(self.post("/api/product/model", {"model": ""})[0].status, 400)
+        self.assertEqual(self.post("/api/product/model", {})[0].status, 400)
+
+    def test_drafting_forwards_selected_model_to_model_call(self):
+        (self.root / "README.md").write_text("# Word Duel\n\nA word game.")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=self.root, check=True)
+        seen_models = []
+
+        def fake_call(self_, root, prompt, model="", timeout=150):
+            seen_models.append(model)
+            return json.dumps({"summary": "Drafted", "markdown": prd_mod.template()})
+
+        with patch.object(ui.UIHandler, "_model_call", fake_call):
+            # 1. Draft with explicit model in body
+            self.finish(self.post("/api/product/draft", {"model": "gpt-4o"}))
+            self.assertEqual(seen_models[-1], "gpt-4o")
+
+            # 2. Draft without model uses the persisted model
+            self.post("/api/product/model", {"model": "claude-opus-4-8"})
+            self.finish(self.post("/api/product/draft", {}))
+            self.assertEqual(seen_models[-1], "claude-opus-4-8")
+
     def test_model_calls_get_an_empty_scratch_folder_never_the_project(self):
         calls = []
         real = ui.subprocess.run
@@ -4510,6 +5437,25 @@ class JobDetailPrinciplesTests(unittest.TestCase):
     def test_no_action_tile_grid(self):
         self.assertNotIn("action-tile", self.job_page)
 
+    def test_context_is_grouped_by_role_with_one_way_to_attach(self):
+        self.assertNotIn("Linked tickets, errors", self.source)  # no by-source junk drawer
+        self.assertNotIn("Attached References", self.source)
+        self.assertIn('group("Designs"', self.source)
+        self.assertIn('group("What went wrong"', self.source)
+        self.assertIn('class="ticket-chip"', self.job_page)  # the ticket is in the header
+        self.assertNotIn('act("link_logs"', self.source)  # attaching never starts a fix run
+        self.assertNotIn('act("attach_mockup"', self.source)
+        attach = self.source[self.source.index("async function attachToJob"):self.source.index("// ---------------------------------------------------------------- start a new project")]
+        self.assertIn('api(`jobs/${encodeURIComponent(jobId)}/attach`', attach)
+        self.assertNotIn("runAction", attach)
+
+    def test_a_plan_waiting_for_approval_is_shown_under_the_decision(self):
+        self.assertIn('id="plan-section"', self.source)
+        self.assertIn("${reviewingPlan ? planCardHtml : \"\"}", self.job_page)  # in the top section, by the hero
+        self.assertIn('data-scroll-to="#plan-section">the plan below</button>', self.job_page)
+        self.assertIn("!ctx.planShown &&", self.source)  # no second Revise plan in More while the card offers it
+        self.assertIn("tasks.length && !reviewingPlan ? fold(\"Tasks\"", self.job_page)  # one task list, not two
+
     def test_each_secondary_action_appears_once(self):
         for action in ("revise", "select_models", "ask_ai", "link_logs", "attach_mockup", "discard_job"):
             self.assertLessEqual(self.source.count(f'act("{action}", j)') + self.job_page.count(f'data-action="{action}"'), 1, action)
@@ -4534,7 +5480,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("drawFeatureLinks", self.source)
         self.assertIn("job.plan?.slice_warnings", self.job_page)
         self.assertIn('matchMedia("(max-width: 760px)")', self.job_page)
-        for title in ("Tasks Checklist", "Activity & Runs", "Logs", "Output files"):
+        for title in ("Tasks", "Activity & Runs", "Output files"):  # logs live under "What went wrong" now
             self.assertIn(f'fold("{title}"', self.job_page, title)
         self.assertIn("pages.help = async", self.source)
         self.assertIn('href="#/help"', (static / "index.html").read_text())
@@ -4562,13 +5508,22 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertNotIn("Discard job and revert changes", header_actions_fn)
         self.assertNotIn('act("discard_job"', header_actions_fn)
 
-    def test_delete_button_added_to_job_detail_top_right(self):
+    def test_delete_is_last_in_the_job_menu_after_archive_not_a_top_level_button(self):
         start = self.source.index("function jobHeaderActions")
         end = self.source.index('document.addEventListener("click", async (e)', start)
         header_actions_fn = self.source[start:end]
-        self.assertIn("btn danger", header_actions_fn)
-        self.assertIn('act("delete_job", j)', header_actions_fn)
-        self.assertIn(">Delete</button>", header_actions_fn)
+        self.assertIn('["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"]', header_actions_fn)
+        self.assertLess(header_actions_fn.index('["Archive"'), header_actions_fn.index('["Delete…"'))
+        self.assertNotIn(">Delete</button>", header_actions_fn)
+        self.assertIn('items.push("---", ...ending)', header_actions_fn)  # ending the job: last and apart
+        self.assertIn("return moreMenu(items, { compact: true });", header_actions_fn)
+
+    def test_job_menu_is_grouped_one_line_each_with_one_fix_item(self):
+        fn = self.source[self.source.index("function jobHeaderActions"):self.source.index('document.addEventListener("click", async (e)', self.source.index("function jobHeaderActions"))]
+        for title in ('["This job", [', '["Share", [', '["Open", [', '["Settings", [', 'items.push(["header", title]'):
+            self.assertIn(title, fn)
+        self.assertNotIn("Still broken?", fn)  # one way to ask for a fix
+        self.assertIn('["Run a fix…", act("debug", j)', fn)
 
     def test_delete_job_dialog_flow_defined(self):
         start = self.source.index("async delete_job(params)")
@@ -4584,14 +5539,16 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         html = (static / "index.html").read_text()
         css = (static / "style.css").read_text()
-        self.assertIn('href="#/test-cases" data-route="test-cases"', html)
+        self.assertNotIn('href="#/test-cases"', html)  # under Tests now, not its own sidebar entry
         self.assertIn('pages["test-cases"] = async', self.source)
+        self.assertIn('parts[0] === "tests" && parts[1] === "cases") return { page: "test-cases"', self.source)
+        self.assertIn('"test-cases": "tests/cases"', (static / "routes.js").read_text())  # old links still work
         self.assertIn('function testCaseForm(', self.source)
-        self.assertIn('["Test cases", "#/test-cases"', self.source)
+        self.assertIn('["Test cases", "#/tests/cases"', self.source)
         self.assertIn('data-job-tc-op="add"', self.job_page)
         self.assertIn('plan-test-cases', self.job_page)
         self.assertIn('.tc-actions { display: flex; gap: var(--space-2);', css)
-        self.assertIn('href="#/test-cases"', self.source)  # Linked from pages.tests
+        self.assertIn('href="#/tests/cases"', self.source)  # Linked from pages.tests
 
     def test_lifecycle_stepper_and_clarified_hero_in_job_page(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -4599,24 +5556,23 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn('<nav class="job-stepper"', self.job_page)
         self.assertIn(".job-stepper {", css)
         self.assertIn(".job-step-dot {", css)
-        self.assertIn('<div class="job-hero-badge-row">', self.job_page)
-        self.assertIn(".job-hero-badge-row {", css)
         self.assertIn(".job-hero-next-preview {", css)
         self.assertIn('job-hero-next-preview', self.job_page)
-        self.assertIn('job-hero-phase-label', self.job_page)
-        self.assertIn('currentPhaseLabel', self.job_page)
+        # The stepper shows the stage and the hero's title and button say what's needed: no badge row repeating them.
+        self.assertNotIn("job-hero-badge-row", self.job_page)
 
     def test_brief_section_positioned_near_top_and_editable(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         css = (static / "style.css").read_text()
         self.assertIn('id="brief-section"', self.job_page)
-        self.assertLess(self.job_page.index('id="brief-section"'), self.job_page.index('<h2>Test cases</h2>'))
+        self.assertLess(self.job_page.index('id="brief-section"'), self.job_page.index('<h2>Test cases'))
         self.assertIn('data-brief-edit', self.job_page)
         self.assertIn('brief-path-chip', self.job_page)
         self.assertIn('.brief-path-chip {', css)
         self.assertIn('brief-content', self.job_page)
         self.assertIn('.brief-content {', css)
-        self.assertIn('Raw file ↗', self.job_page)
+        self.assertIn('>Raw</a>', self.job_page)
+        self.assertIn('data-expandable="320"', self.job_page)  # long briefs fold behind Show more, not a scroll box
 
     def test_add_existing_project_modal_is_tabbed_with_mobile_exit_controls(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -4652,7 +5608,57 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn(".dialog-tab-btn {", css)
         self.assertIn(".dialog-tab-panel {", css)
         self.assertIn("max-height: calc(100dvh - 24px);", css)
-        self.assertIn("flex-direction: column-reverse;", css)
+        self.assertIn("flex-direction: row;", css)
+        self.assertIn("width: min(var(--dialog-width), calc(100% - 2 * var(--space-4))", css)
+        self.assertNotIn("width: calc(100vw - 2 * var(--space-3));", css)
+
+    def test_dialog_and_mobile_touch_highlight_prevention(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        app_js = (static / "app.js").read_text()
+
+        # Mobile tap highlight is disabled globally
+        self.assertIn("-webkit-tap-highlight-color: transparent", css)
+
+        # Dialog container suppresses default focus outline
+        self.assertIn("dialog:focus, dialog:focus-visible, #dialog:focus, #dialog:focus-visible { outline: none; }", css)
+
+        # Close button has no outline when not keyboard-focused, and only hovers on hover-capable pointers
+        self.assertIn(".dialog-close-btn:focus:not(:focus-visible)", css)
+        self.assertIn("@media (hover: hover) {\n  .dialog-close-btn:hover", css)
+
+        # Touch devices avoid sticky hover highlights on buttons and options
+        self.assertIn("@media (hover: none) and (pointer: coarse)", css)
+        self.assertIn(".import-option:hover:not(:active)", css)
+        self.assertIn(".dialog-close-btn:hover:not(:active)", css)
+
+        # In app.js, dialog sets tabIndex = -1 and formDialog manages focus so close button is not highlighted
+        self.assertIn("if (dlg) dlg.tabIndex = -1", app_js)
+        self.assertIn('if (document.activeElement === $("#dialog-close"))', app_js)
+
+    def test_yolo_autopilot_option_simplified(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app_js = (static / "app.js").read_text()
+        self.assertIn('name="yolo"', app_js)
+        self.assertIn("<strong>YOLO (Autopilot)</strong>", app_js)
+        self.assertIn("<small>Runs without confirmations or review pauses.</small>", app_js)
+        self.assertNotIn("Firebase releases to testers", app_js)
+
+    def test_coverage_job_form_area_cases_and_logs(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app_js = (static / "app.js").read_text()
+        # Non-redundant, descriptive area and scenarios fields
+        self.assertIn("Choose area to test", app_js)
+        self.assertIn("What should be covered?", app_js)
+        self.assertNotIn("What should be tested?", app_js)
+        self.assertNotIn("Specific parts", app_js)
+        # Specific test cases with import mechanism
+        self.assertIn("Specific test cases", app_js)
+        self.assertIn("Import from test cases", app_js)
+        self.assertIn("name=\"test_cases\"", app_js)
+        # Logs enabled for coverage jobs
+        self.assertIn('(st.type === "bug" || st.type === "coverage") && st.recent === null', app_js)
+        self.assertIn('if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems || v.summary, spec: v.details, test_cases: v.test_cases, logs: [...st.logs]', app_js)
 
 
 class JobDeleteEndpointTests(ServerTestCase):
@@ -4696,6 +5702,9 @@ class JobDeleteEndpointTests(ServerTestCase):
 
 
 class StableUrlAndTunnelTests(unittest.TestCase):
+    def setUp(self):
+        isolate_state(self)  # cloudflared's output is copied to the state folder's logs
+
     def test_silent_tunnel_discovery_has_a_real_deadline(self):
         import sys
         real_popen = subprocess.Popen
@@ -4784,5 +5793,240 @@ class StableUrlAndTunnelTests(unittest.TestCase):
         tmp.cleanup()
 
 
+class JobChangesTests(unittest.TestCase):
+    """A job's Changes card shows its own work: uncommitted edits count only while its branch is checked out."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=self.root, check=True, capture_output=True)
+        run("init", "-q", "-b", "main")
+        (self.root / "app.py").write_text("print(1)\n")
+        run("add", "app.py")
+        run("commit", "-q", "-m", "start")
+        run("branch", "ai/job-1")
+        (self.root / "app.py").write_text("print(2)\n")  # someone's own uncommitted edit, on main
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_uncommitted_edits_on_another_branch_are_not_the_jobs(self):
+        changes = ui.job_changes(self.root, {"branch": "ai/job-1", "base_branch": "main"})
+        self.assertEqual((changes["files"], changes["local_files"], changes["local_summary"]), ([], [], ""))
+
+    def test_uncommitted_edits_on_the_jobs_branch_are_its_own(self):
+        subprocess.run(["git", "checkout", "-q", "ai/job-1"], cwd=self.root, check=True)
+        changes = ui.job_changes(self.root, {"branch": "ai/job-1", "base_branch": "main"})
+        self.assertEqual(changes["local_files"], ["app.py"])
+        self.assertIn("app.py", changes["files"])
+
+
+class SetupActionEndpointTests(ServerTestCase):
+    def test_apple_delivery_prerequisites_report_missing_signing_fields(self):
+        (self.root / "Demo.xcodeproj").mkdir()
+        path = self.root / ".orchestrator/project.json"
+        path.write_text(json.dumps({"project_name": "Demo", "firebase_distribution": True}))
+        with patch.object(ui, "setup_checklist", return_value={"items": []}):
+            res, data = self.request("GET", "/api/setup")
+        self.assertEqual(res.status, 200)
+        signing = data["workflow_checks"][0]
+        self.assertEqual(signing["status"], "todo")
+        self.assertTrue(signing["selected"])
+        self.assertIn("development_team", signing["detail"])
+        self.assertIn("delivery_method", signing["detail"])
+
+    def test_plain_project_has_no_apple_signing_requirement(self):
+        with patch.object(ui, "setup_checklist", return_value={"items": []}):
+            res, data = self.request("GET", "/api/setup")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["workflow_checks"], [])
+
+    def test_setup_git_init_endpoint(self):
+        new_folder = Path(self.tmp.name) / "uninitialized_project"
+        new_folder.mkdir()
+        (new_folder / "file.txt").write_text("hello")
+        self.server.set_root(new_folder)
+        res, data = self.request("POST", "/api/setup/git-init", body={}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertTrue((new_folder / ".git").is_dir())
+
+    def test_setup_github_create_endpoint(self):
+        with patch("orchestrator.new_project.publish_to_github") as mock_pub:
+            mock_pub.return_value = {"ok": True, "name": "Create the GitHub repository", "detail": "user/repo", "url": "https://github.com/user/repo"}
+            res, data = self.request("POST", "/api/setup/github-create", body={"visibility": "private"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            mock_pub.assert_called_once()
+
+    def test_ptysession_records_stopped(self):
+        sess = ui.PtySession("test", "console", "Interactive console", ["echo", "1"], self.root, {})
+        self.assertFalse(sess.stopped)
+        sess.stop()
+        self.assertTrue(sess.stopped)
+        self.assertTrue(sess.summary()["stopped"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteAliasTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def node(self, source: str):
+        result = subprocess.run(["node", "-e", f"require(process.argv[1]);\n{source}", str(self.STATIC / "routes.js")],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_an_old_address_goes_to_where_the_page_lives_now_keeping_its_query(self):
+        out = self.node("""
+const R = globalThis.RouteAliases, map = {"test-cases": "tests/cases", "config/chat": "connections?card=chat"};
+process.stdout.write(JSON.stringify([
+  R.redirect("#/test-cases?q=login&type=security", map), R.redirect("#/test-cases/", map),
+  R.redirect("#/config/chat?card=x&y=1", map), R.redirect("#/tests", map), R.redirect("", map), R.redirect("#/nowhere"),
+]));""")
+        self.assertEqual(out, ["#/tests/cases?q=login&type=security", "#/tests/cases", "#/connections?card=chat&y=1", None, None, None])
+
+    def test_aliases_load_before_the_app_and_route_applies_them_first(self):
+        html = (self.STATIC / "index.html").read_text()
+        self.assertLess(html.index('src="routes.js"'), html.index('src="app.js"'))
+        app = (self.STATIC / "app.js").read_text()
+        body = app[app.index("async function route() {"):]
+        self.assertLess(body.index("RouteAliases.redirect(location.hash)"), body.index("resolveRoute()"))
+
+    def test_every_settings_link_the_server_sends_opens_a_real_setting(self):
+        import re as _re
+        sources = (PACKAGE_ROOT / "orchestrator").rglob("*.py")
+        routes = {m for p in sources for m in _re.findall(r'"#/config/([a-z0-9-]+)', p.read_text(encoding="utf-8"))}
+        self.assertTrue(routes)
+        out = subprocess.run(["node", "--require", HTML_JS, "-e",
+                              f"require(process.argv[1]); process.stdout.write(JSON.stringify({json.dumps(sorted(routes))}"
+                              ".filter((id) => !globalThis.ConfigurationPages.find(id))));",
+                              str(self.STATIC / "configuration.js")], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), [], "server links to settings that don't exist")
+
+
+class MenuParityTests(unittest.TestCase):
+    """The web Configuration menu and the terminal console's Configuration menu use the same groups and names."""
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+    # Settings both menus have: registry id -> the console letter that opens it.
+    SHARED = {"base-branch": "G", "firebase": "D", "xcode-cloud": "X", "models": "M", "ai-instructions": "I",
+              "fleet": "F", "updates": "U", "email": "E"}
+
+    def registry(self):
+        out = subprocess.run(["node", "--require", HTML_JS, "-e", "require(process.argv[1]); const P = globalThis.ConfigurationPages;"
+                              "process.stdout.write(JSON.stringify(P.groups('owner')))", str(self.STATIC / "configuration.js")],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def console_menu(self):
+        source = (PACKAGE_ROOT / "orchestrator" / "scripts" / "dev_console.py").read_text(encoding="utf-8")
+        start = source.index("def handle_configuration_menu(")
+        menu = source[start:source.index("get_choice_prompt(", start)]
+        return re.sub(r"\\033\[[0-9;]*m", "", menu)
+
+    def test_shared_settings_have_the_same_name_and_group_in_both_menus(self):
+        menu = self.console_menu()
+        headings = re.findall(r"--- (.+?) ---", menu)
+        for group in self.registry():
+            for entry in group["entries"]:
+                letter = self.SHARED.get(entry["id"])
+                if not letter:
+                    continue
+                self.assertIn(f"[{letter}] {entry['label']}", menu, entry["id"])
+                # ...under the same heading: the last heading printed before the option
+                before = menu[:menu.index(f"[{letter}] {entry['label']}")]
+                self.assertEqual(re.findall(r"--- (.+?) ---", before)[-1], group["label"].replace("&amp;", "&"), entry["id"])
+        shared_groups = {g["label"].replace("&amp;", "&") for g in self.registry() if any(e["id"] in self.SHARED for e in g["entries"])}
+        self.assertTrue(shared_groups <= set(headings))
+
+    def test_moved_settings_have_one_home_and_old_links_land_there(self):
+        aliases = (self.STATIC / "routes.js").read_text()
+        for old, new in (("setup-checklist", "readiness"), ("config/audit", "readiness"), ("config/self-tests", "readiness"),
+                         ("config/setup-wizard", "readiness"), ("config/chat", "connections?card=chat"), ("config/api-keys", "config/ai"),
+                         ("config/documentation", "docs"), ("config/archived-jobs", "?filter=archived"), ("test-cases", "tests/cases")):
+            self.assertIn(f'"{old}": "{new}"', aliases, old)
+        html = (self.STATIC / "index.html").read_text()
+        self.assertIn('href="#/readiness" data-route="readiness" id="nav-readiness" hidden', html)  # shown until setup is done
+        self.assertIn('navItem.hidden = !s || s.complete;', app := (self.STATIC / "app.js").read_text())
+        app = (self.STATIC / "app.js").read_text()
+        connections = app[app.index("pages.connections = async"):]
+        self.assertIn('const hook = owner ? (await api("config").catch(() => null))?.webhook : null;', connections)  # owners only
+        self.assertIn("data-owner-only", (self.STATIC / "configuration.js").read_text().split("function chatCard")[1][:200])
+
+
+class SidebarLayoutTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def test_most_used_pages_lead_and_set_once_settings_sit_under_settings(self):
+        html = (self.STATIC / "index.html").read_text()
+        main = html[html.index('<nav class="nav" id="nav"'):html.index("</nav>", html.index('<nav class="nav" id="nav"'))]
+        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["readiness", "home", "activity", "product"])
+        tabbar = html[html.index('<nav class="tabbar"'):]
+        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', tabbar[:tabbar.index("</nav>")]), ["home", "product", "new", "activity", "tests"])
+        out = subprocess.run(["node", "--require", HTML_JS, "-e", "require(process.argv[1]);"
+                              "process.stdout.write(JSON.stringify(globalThis.ConfigurationPages.groups('owner')[0]))",
+                              str(self.STATIC / "configuration.js")], capture_output=True, text=True)
+        first = json.loads(out.stdout)
+        self.assertEqual((first["label"], [e["route"] for e in first["entries"]]), ("Set up", ["#/readiness", "#/connections", "#/projects"]))
+
+
+class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def test_container_padding_design_standard_enforces_consistency(self):
+        css = (self.STATIC / "style.css").read_text()
+        # Canonical container padding tokens declared in :root
+        self.assertIn("--container-pad-x: var(--space-5);", css)
+        self.assertIn("--container-pad-y: var(--space-4);", css)
+        # Mobile responsive override for container padding tokens
+        self.assertIn("--container-pad-x: var(--space-4);", css)
+        self.assertIn("--container-pad-y: var(--space-3);", css)
+        # .card-b and card components use the container padding tokens
+        self.assertIn(".card-b { padding: var(--container-pad-y) var(--container-pad-x); }", css)
+        self.assertIn("padding: var(--space-3) var(--container-pad-x);", css)
+        # Home page job table and hero use container-pad tokens
+        self.assertIn(".job-hero {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: var(--space-3) var(--space-5);\n  flex-wrap: wrap;\n  padding: var(--container-pad-y) var(--container-pad-x);", css)
+        # Connections cards explicitly enforce container padding consistency
+        self.assertIn(".conn-card .card-b,", css)
+        self.assertIn('body[data-page="connections"] .card-b,', css)
+
+    def test_modal_on_mobile_is_contained_and_does_not_bleed_off_edges(self):
+        css = (self.STATIC / "style.css").read_text()
+        # Form inputs selector includes input[type=date] with min-width: 0 and box-sizing: border-box
+        self.assertIn("input[type=date]", css)
+        self.assertIn("min-width: 0;", css)
+        # Mobile dialog does not use narrow 12px margins that bleed off screen
+        self.assertNotIn("width: calc(100vw - 2 * var(--space-3));", css)
+        # Dialog is bounded by safe viewport margins and safe area insets
+        self.assertIn("calc(100vw - 2 * var(--space-5)", css)
+        self.assertIn("overflow-x: hidden;", css)
+        # Dialog body is constrained with box-sizing and overflow containment
+        self.assertIn("#dialog-body {\n  overflow-y: auto;\n  overflow-x: hidden;\n  min-height: 0;\n  min-width: 0;\n  max-width: 100%;", css)
+
+    def test_new_job_log_picker_label_is_attach_logs(self):
+        js = (self.STATIC / "app.js").read_text()
+        self.assertIn('<fieldset class="field nj-logs"><span>Attach logs</span>', js)
+        self.assertNotIn('<fieldset class="field nj-logs"><span>Logs', js)
+
+    def test_connections_page_includes_recommended_installs_section(self):
+        js = (self.STATIC / "app.js").read_text()
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn('id="recommended-installs"', js)
+        self.assertIn("Recommended installs", js)
+        self.assertIn("Mobile portals", js)
+        self.assertIn("Shellfish", js)
+        self.assertIn("https://shellfish.app", js)
+        self.assertIn("Shelldrop", js)
+        self.assertIn("https://shelldrop.app", js)
+        self.assertIn("Recommended MCP servers", js)
+        for mcp in ("superpowers", "context7", "openspec", "github", "xcodebuild", "xcodediagnostics", "swiftlens", "mcp-ssh-manager"):
+            self.assertIn(mcp, js)
+        self.assertIn("brew install node", js)
+        self.assertIn(".rec-section-header", css)
+        self.assertIn(".rec-callout", css)
+

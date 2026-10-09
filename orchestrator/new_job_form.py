@@ -83,6 +83,9 @@ def compose(job_type: str, f: dict[str, Any]) -> tuple[str, str]:
         spec = f"SUMMARY: {summary}\n\nREPRO STEPS:\n{_clean(f.get('repro'))}\n\nEXPECTED BEHAVIOR:\n{_clean(f.get('expected'))}"
     elif job_type == "coverage":
         spec = f"COVERAGE FOCUS: {summary}\n\nSUBSYSTEMS: {_clean(f.get('subsystems')) or summary}"
+        test_cases = _clean(f.get("test_cases"))
+        if test_cases:
+            spec += f"\n\nSPECIFIC TEST CASES:\n{test_cases}"
     elif job_type == "design":
         vibe = _clean(f.get("vibe")) or DEFAULT_VIBE
         spec = f"DESIGN VISION: {summary}\nPREFERRED VIBE: {vibe}"

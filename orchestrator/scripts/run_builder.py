@@ -258,6 +258,15 @@ Available Tests (use for selecting test_command):
 {yolo_context}
 
 {product_context}
+### UI screenshot evidence
+For every new screen or visible UI alteration, update `{OUTPUT_DIR / job['job_id'] / 'ux-screens.json'}` before finishing.
+List every changed page and interactive state, preserving entries from earlier tasks in this job. Use this JSON shape:
+{{"routes": ["/changed-page"], "screens": [{{"name": "Dialog open", "route": "/changed-page", "actions": [{{"click": "button.open-dialog"}}]}}], "notes": []}}
+Routes must be relative to the configured app. Actions support {{"click": "CSS selector"}} and {{"fill": "CSS selector", "value": "non-sensitive test value"}}.
+Use stable selectors and test data. Do not put credentials in the capture plan. For a state that cannot be reached automatically, add a clear explanation under notes.
+Ensure the app at ui_review.url serves this job's changes; use ui_review.start_command for a local app if needed.
+The runner captures configured pages plus this inventory at the configured phone/desktop widths and colour modes, and saves them in UX review.
+Screenshot capture is evidence, separate from whether the optional AI review is enabled. If no UI changes, no capture plan is needed.
 Brief:
 {brief}
 """

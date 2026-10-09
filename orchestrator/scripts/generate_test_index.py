@@ -6,7 +6,7 @@ from typing import Any, List, Optional
 
 from common import ROOT
 from orchestrator.project_config import PROJECT_CONFIG
-from dev_console import discover_test_suites
+from dev_console import discover_test_suites, test_command_for_suite
 
 
 def _format_test_entry(s: dict, project_config) -> str:
@@ -17,19 +17,12 @@ def _format_test_entry(s: dict, project_config) -> str:
     if lang == "swift":
         target = project_config.test_target or "Tests"
         return f"- {target}/{name} (in {rel_path})"
-    elif lang == "python":
-        test_cmd = project_config.test_command or ""
-        runner = "pytest" if "pytest" in test_cmd else "python3 -m unittest"
-        return f"- {runner} {rel_path}"
-    elif lang == "rust":
-        if rel_path.parts and rel_path.parts[0] == "tests":
-            return f"- cargo test --test {s['file_stem']}"
-        return "- cargo test"
-    elif lang == "go":
-        rel_dir = rel_path.parent
-        return f"- go test ./{rel_dir}"
-    else:
-        return f"- npm test -- {rel_path}"
+    # Every other language: the same command the Tests page's Run button uses for this suite.
+    try:
+        command = test_command_for_suite(s, project_config)
+        return f"- {command}" if str(rel_path) in command else f"- {command} (in {rel_path})"
+    except ValueError:
+        return f"- {project_config.test_command or 'run the test command'} ({rel_path})"
 
 
 def generate_test_index(

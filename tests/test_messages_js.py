@@ -108,6 +108,26 @@ console.log(JSON.stringify({ closed, none: store.dismiss("p") }));
 """)
         self.assertEqual(out, {"closed": 1, "none": None})
 
+    def test_cancel_kind_has_cross_icon_and_expires_after_four_seconds(self):
+        out = self.run_js("""
+const id = store.push({ kind: "cancel", text: "Draft cancelled" });
+const item = store.list()[0];
+const early = tick(3999);
+const late = tick(1);
+console.log(JSON.stringify({
+  icon: item.icon,
+  kindIcon: M.KINDS.cancel.icon,
+  role: M.KINDS.cancel.role,
+  early,
+  late,
+}));
+""")
+        self.assertEqual(out["icon"], "✕")
+        self.assertEqual(out["kindIcon"], "✕")
+        self.assertEqual(out["role"], "status")
+        self.assertEqual(out["early"], [])
+        self.assertEqual(out["late"], ["Draft cancelled"])
+
 
 if __name__ == "__main__":
     unittest.main()

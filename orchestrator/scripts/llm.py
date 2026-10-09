@@ -34,51 +34,98 @@ for m in all_m:
 DEFAULT_FALLBACKS = get_prioritized_models()
 
 def extract_json_block(text: str) -> str:
-    text = text.strip()
+    # Strip ANSI escape sequences (CSI, OSC, cursor controls) so they do not break JSON decoding
+    text = re.sub(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\^\[\[?[A-Za-z0-9_~]*', '', text).strip()
 
-    # 1. Try markdown fences
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    if fenced:
-        text = fenced.group(1).strip()
+    def _extract_balanced_span(s: str, opener: str, closer: str) -> tuple[str | None, int, int]:
+        start = s.find(opener)
+        if start == -1:
+            return None, -1, -1
+        stack = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(s)):
+            c = s[i]
+            if c == '"' and not escape:
+                in_string = not in_string
+            elif not in_string:
+                if c == opener:
+                    stack += 1
+                elif c == closer:
+                    stack -= 1
+                    if stack == 0:
+                        return s[start:i+1].strip(), start, i + 1
+            if c == '\\' and not escape:
+                escape = True
+            else:
+                escape = False
+        return None, -1, -1
+
+    # 1. Try markdown fences (all blocks)
+    fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fenced_blocks:
+        # Prioritize any fenced block that parses as a JSON dict
+        for b in fenced_blocks:
+            b_clean = re.sub(r"//.*$", "", b.strip(), flags=re.M).strip()
+            try:
+                parsed = json.loads(b_clean)
+                if isinstance(parsed, dict):
+                    return b_clean
+            except Exception:
+                pass
+        # Next, try any fenced block that parses as valid JSON (e.g. list)
+        for b in fenced_blocks:
+            b_clean = re.sub(r"//.*$", "", b.strip(), flags=re.M).strip()
+            try:
+                json.loads(b_clean)
+                return b_clean
+            except Exception:
+                pass
+        text = fenced_blocks[0].strip()
     else:
-        # 2. Stack-based extraction for the first full object or array
-        # This handles cases where models append garbage or closing braces after the valid JSON
-        first_brace = text.find('{')
-        first_bracket = text.find('[')
-        
-        start_idx = -1
-        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
-            start_idx = first_brace
-            opener, closer = '{', '}'
-        elif first_bracket != -1:
-            start_idx = first_bracket
-            opener, closer = '[', ']'
-        
-        if start_idx != -1:
-            stack = 0
-            in_string = False
-            escape = False
-            for i in range(start_idx, len(text)):
-                c = text[i]
-                if c == '"' and not escape:
-                    in_string = not in_string
-                elif not in_string:
-                    if c == opener:
-                        stack += 1
-                    elif c == closer:
-                        stack -= 1
-                        if stack == 0:
-                            text = text[start_idx:i+1].strip()
-                            break
-                if c == '\\' and not escape:
-                    escape = True
-                else:
-                    escape = False
+        # 2. Stack-based extraction:
+        dict_cand, dict_start, dict_end = _extract_balanced_span(text, '{', '}')
+        list_cand, list_start, list_end = _extract_balanced_span(text, '[', ']')
+
+        dict_valid = False
+        dict_clean = ""
+        if dict_cand:
+            dict_clean = re.sub(r"//.*$", "", dict_cand, flags=re.M).strip()
+            try:
+                if isinstance(json.loads(dict_clean), dict):
+                    dict_valid = True
+            except Exception:
+                pass
+
+        list_valid = False
+        list_clean = ""
+        if list_cand:
+            list_clean = re.sub(r"//.*$", "", list_cand, flags=re.M).strip()
+            try:
+                json.loads(list_clean)
+                list_valid = True
+            except Exception:
+                pass
+
+        # If list_cand encloses dict_cand and is valid JSON, the top-level structure is the list!
+        if list_valid and dict_valid and list_start <= dict_start and list_end >= dict_end:
+            return list_clean
+
+        # If dict_valid is true (e.g. dict after list, or no valid list), prioritize the dict
+        if dict_valid:
+            return dict_clean
+
+        # If only list_valid is true
+        if list_valid:
+            return list_clean
+
+        if dict_cand:
+            text = dict_cand
+        elif list_cand:
+            text = list_cand
 
     # 3. Strip single-line comments (// ...) which some models (like deepseek) hallucinate into JSON
-    # This is non-standard JSON but common in LLM "pseudo-JSON"
     text = re.sub(r"//.*$", "", text, flags=re.M)
-    
     return text.strip()
 
 
@@ -103,7 +150,7 @@ JSON_REMINDER = (
 )
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None) -> tuple[str, str, str]:
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model
@@ -132,20 +179,20 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id)
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images)
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
                 try:
-                    json.loads(extract_json_block(raw_output))
+                    json.loads(extract_json_block(raw_output), strict=False)
                 except json.JSONDecodeError as exc:
                     # Agentic models often do the work, then write the answer to a file or describe it in prose.
                     # Ask the SAME model once to restate it as plain JSON before moving on to another model;
                     # with only one model allowed (a free-only setup) there is no other to move on to.
                     print(f"⚠️  {current_model} produced invalid JSON. Asking it to restate the answer as plain JSON...")
                     try:
-                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id)
-                        json.loads(extract_json_block(raw_output))
+                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images)
+                        json.loads(extract_json_block(raw_output), strict=False)
                     except json.JSONDecodeError as exc2:
                         print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
                         last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc2}")
@@ -174,7 +221,27 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
 import selectors
 
-def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None) -> str:
+def image_args(cmd_base: str, images: list[Path] | None) -> str:
+    """Flags that let a model CLI see screenshots: attached where the CLI can attach images, otherwise their folder is
+    opened to its file tools (the prompt lists the paths). CLIs without either (Ollama) get nothing and the prompt
+    asks the model to say it couldn't look."""
+    if not images:
+        return ""
+    files = [shlex.quote(str(p)) for p in images]
+    folders = sorted({shlex.quote(str(Path(p).parent)) for p in images})
+    program = cmd_base.split(" ", 1)[0]
+    if program == "codex":
+        return "".join(f" -i {f}" for f in files)
+    if program == "opencode":
+        return "".join(f" -f {f}" for f in files)
+    if program in ("claude", "agy"):
+        return "".join(f" --add-dir {d}" for d in folders)
+    if " --prompt - " in cmd_base:  # the Gemini CLI
+        return "".join(f" --include-directories {d}" for d in folders)
+    return ""
+
+
+def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None) -> str:
     # Resolve actual model ID
     m_meta = get_model(model)
     model_id = m_meta.id if m_meta else model
@@ -228,9 +295,9 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         if session_id:
             cmd_base += f" --session-id {session_id}"
     elif model_id == "deepseek":
-        cmd_base = "ollama run deepseek-coder"
+        cmd_base = "ollama run deepseek-coder --nowordwrap"
     elif m_meta and ("ollama" in m_meta.required_clis or m_meta.family == "ollama" or m_meta.family == "qwen"):
-        cmd_base = f"ollama run {model_id}"
+        cmd_base = f"ollama run {model_id} --nowordwrap"
     elif model_id == "copilot":
         cmd_base = "gh copilot"
     elif model_id.startswith("opencode/"):
@@ -242,7 +309,7 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
     else:
         cmd_base = f"{model_id}"
 
-    return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}'
+    return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}{image_args(cmd_base, images)}'
 
 
 def get_llm_env() -> dict[str, str]:
@@ -289,7 +356,7 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
-def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None) -> str:
+def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
         prompt = f"[SOURCE: {source}]\n\n{prompt}"
@@ -299,7 +366,7 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
         prompt_file = f.name
 
     actual_session_id = session_id or str(uuid.uuid4())
-    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id)
+    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id, images=images)
     env = get_llm_env()
 
     prompt_chars = len(prompt)

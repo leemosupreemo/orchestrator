@@ -1894,6 +1894,23 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
             print("Full tool and worker checks were not requested; run orchestrator check when ready.")
         remember_project(root, project_display_name(root), active=True)
         status_bar.reset_scroll_region()
+        try:
+            from orchestrator import analytics
+            machines_data = read_json(machines_file).get("machines", []) if machines_file.exists() else []
+            analytics.track_wizard(
+                must_do_total=7,
+                must_do_completed=7,
+                optional_total=len(options) if "options" in locals() else 4,
+                optional_completed=len(optional_tools) if "optional_tools" in locals() else 0,
+                optional_items=optional_tools if "optional_tools" in locals() else [],
+                machines_count=len(machines_data),
+                llms_count=len(models),
+                llms_list=models,
+                mode="non-interactive" if args.non_interactive else "interactive",
+                runtime_root=runtime_dir,
+            )
+        except Exception:
+            pass
         print(f"\n\033[1;92m{'='*20} Wizard Complete {'='*20}\033[0m")
         print("Configuration saved. Review these files before creating jobs:")
         for path in dict.fromkeys([*review_paths, project_file, machines_file, settings_file]):
@@ -2410,6 +2427,9 @@ def _main(argv: list[str] | None = None) -> int:
     distribute_parser = subparsers.add_parser("distribute", help="Quickly build and distribute current project to Firebase")
     distribute_parser.add_argument("--project", help="Recent project name or project root path")
     distribute_parser.add_argument("--notes", help="Release notes for this build")
+    distribute_parser.add_argument("--branch", help="Git branch to distribute")
+    distribute_parser.add_argument("--groups", help="Firebase tester groups (comma-separated)")
+    distribute_parser.add_argument("--testers", help="Firebase tester emails (comma-separated)")
 
     fix_parser = subparsers.add_parser("fix", help="Fast 1-line bug fix / feedback for active or new job")
     fix_parser.add_argument("feedback", help="Description of what is broken or what to fix")
@@ -2456,6 +2476,11 @@ def _main(argv: list[str] | None = None) -> int:
     logs_parser.add_argument("logs_args", nargs=argparse.REMAINDER,
                              help="setup | sessions | pull [--latest|--session ID] | tail")
 
+    connection_parser = subparsers.add_parser(
+        "connection-log", help="Why the web app lost its connection: server requests, browser failures and tunnel output")
+    connection_parser.add_argument("-f", "--follow", action="store_true", help="Keep printing new lines as they arrive")
+    connection_parser.add_argument("-n", "--lines", type=int, default=40, help="Recent lines to show from each log (default 40)")
+
     passthrough = subparsers.add_parser("script")
     passthrough.add_argument("--project", help="Recent project name or project root path")
     passthrough.add_argument("script_name")
@@ -2477,6 +2502,12 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         if getattr(args, "notes", None):
             os.environ["DISTRIBUTION_RELEASE_NOTES"] = args.notes
+        if getattr(args, "branch", None):
+            os.environ["DISTRIBUTION_BRANCH"] = args.branch
+        if getattr(args, "groups", None):
+            os.environ["FIREBASE_GROUPS"] = args.groups
+        if getattr(args, "testers", None):
+            os.environ["FIREBASE_TESTERS"] = args.testers
         return run_script("smoke_test_delivery.py", [])
     if args.command == "fix":
         return fix_command(args)
@@ -2546,6 +2577,9 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         return run_script("cloud_logs.py", args.logs_args or ["--help"])
+    if args.command == "connection-log":
+        from orchestrator import connection_log
+        return connection_log.show(lines=args.lines, follow=args.follow)
     if args.command == "script":
         if args.project and apply_project_env(args.project):
             return 1

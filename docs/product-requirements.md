@@ -54,7 +54,7 @@ The Product page (**Product** card on Home, then **Open**) offers these, most us
 
 - **Write it.** Click **Write** on a section and type. Every section is optional: write what you know and leave the rest. Anything written is enough for the document to start doing its job.
 - **Draft it from my project.** For a project that already has code (a README, notes, a manifest or source files), the app reads a bounded summary of it: the README, `AGENTS.md`/`CLAUDE.md`, a few files in `docs/`, manifests (`package.json`, `pyproject.toml`, `Package.swift`, …), the top-level layout, source files by type and the last 30 commit subjects. A model proposes a first PRD from that. It describes what the product does today, says what it inferred and what it couldn't tell, and writes `TBD:` questions for the rest. **It never writes "Not this"**: only the person can say what the product shouldn't be, and builders and reviewers treat that section as law.
-- **Import PRD.** Drag a file onto the drop zone (on a computer) or click to choose one. A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. It is rearranged into the five sections keeping the person's wording; what doesn't fit is summarised in a line or left out, and the proposal says which.
+- **Import PRD.** Drag a file onto the drop zone (on a computer) or browse files. A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. It is rearranged into the five sections keeping the person's wording; what doesn't fit is summarised in a line or left out, and the proposal says which.
 - **New project wizard.** The answers to the wizard's questions (name, one-sentence pitch, audience, problem, day-one features, platforms, technology preferences, how you'll know v1 works) write the first version. "Not sure: recommend for me" becomes a note telling the first plan to recommend platforms, with reasons.
 
 Drafts and imports are always shown as a diff with **Accept and save** / **Discard**. Nothing is written until the person accepts.
@@ -151,6 +151,7 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 | `POST /product/import` | A file (raw body, `?name=`) or `{text}`. Starts the work and returns `{task}` at once (202). |
 | `POST /product/draft` | Draft from the project. Starts the work and returns `{task}` at once (202). |
 | `GET /product/task/<id>` | How a started import or draft is getting on: `running`, `done` with the proposal and its diff (saves nothing), or `error` with why. 404 once it has expired (30 minutes). |
+| `DELETE /product/task/<id>` | Stop or cancel an in-flight background task (or `POST /product/task/<id>/cancel`). |
 | `POST /product/design?name=` | Upload a design (raw body, up to 25 MB). |
 | `GET /product/design/<name>` | A saved design: images inline, anything else as a download. |
 | `POST /product/reference` `{label, url}` or `{links}` | Add a link, or items picked from a connected app. |

@@ -14,7 +14,7 @@ from orchestrator.web import server as ui
 
 ANSWERS = {"name": "Word Duel", "pitch": "A turn-based word game.", "audience": "Friends who like games",
            "problem": "Async games are clunky.", "features": "- Start a match\n2) Take turns\n\nSee scores",
-           "platform": "iOS app", "stack": "SwiftUI", "done": "Two phones can finish a match"}
+           "platform": "iOS app", "stack": "SwiftUI"}
 GIT_ENV = {"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"}
 
 
@@ -42,15 +42,16 @@ class PrdTests(unittest.TestCase):
         self.assertIn("SwiftUI", parts["pitch"])
         self.assertIn("Friends who like games", parts["who"])
         self.assertEqual([l for l in parts["features"].splitlines() if l.startswith("- ")], ["- Start a match", "- Take turns", "- See scores"])
-        self.assertIn("Version 1 is done when: Two phones can finish a match", parts["features"])
 
     def test_sections_nothing_was_asked_about_keep_their_guidance_and_stay_empty(self):
-        parts = prd.split(np.render_prd({**ANSWERS, "stack": "", "done": ""}))
+        parts = prd.split(np.render_prd({**ANSWERS, "stack": ""}))
         self.assertFalse(prd.is_filled(parts["look"]))
         self.assertFalse(prd.is_filled(parts["not"]))
         self.assertNotIn("Technology preferences", parts["pitch"])
         self.assertNotIn("Version 1 is done when", parts["features"])
         self.assertIn("## Look and feel", np.render_prd(ANSWERS))  # the section is there to fill in later
+        self.assertNotIn("done", [q["key"] for q in np.QUESTIONS])
+        self.assertNotIn("How will you know version 1 works?", [q["label"] for q in np.QUESTIONS])
 
     def test_look_and_not_sections_populated_when_provided(self):
         answers = {**ANSWERS, "look": "Minimal, typography-driven style.", "not": "No social login, no ads."}

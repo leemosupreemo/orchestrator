@@ -78,7 +78,7 @@ def stage_source(source: Path, target: Path, version: str) -> None:
         relative = path.relative_to(source)
         if not path.is_file() or path.is_symlink() or "__pycache__" in relative.parts:
             continue
-        allowed = path.suffix == ".py" or (relative.parts[1] in ("config", "prompts", "templates") and path.suffix in (".json", ".md", ".sh", ".swift", ".yml")) or (relative.parts[1:3] == ("web", "static") and path.suffix in (".js", ".css", ".html", ".svg", ".woff2"))
+        allowed = path.suffix == ".py" or (relative.parts[1] in ("config", "prompts", "templates") and path.suffix in (".json", ".md", ".sh", ".swift", ".yml")) or (relative.parts[1:3] == ("web", "static") and path.suffix in (".js", ".css", ".html", ".svg", ".woff2", ".png", ".gif", ".json", ".webmanifest"))
         if allowed:
             destination = target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -139,6 +139,12 @@ def service_identity(integration: bool = False) -> tuple[dict, dict]:
     return info, agent
 
 
+def source_identity() -> tuple[str, bool]:
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True).strip())
+    return commit, dirty
+
+
 def build_bundle(architecture: str, output_dir: Path, manifest: Path, version: str, build_number: int, integration: bool = False) -> Path:
     if architecture not in ARCHES or not re.fullmatch(r"\d+\.\d+\.\d+(?:[a-z0-9.-]+)?", version) or type(build_number) is not int or build_number <= 0:
         raise ValueError("Choose arm64/x86_64, an explicit release version and a positive build number.")
@@ -150,6 +156,7 @@ def build_bundle(architecture: str, output_dir: Path, manifest: Path, version: s
     destination = output_dir / architecture / "Orchestrator.app"
     if destination.exists():
         raise ValueError("Output app already exists. Choose a new output directory.")
+    source_commit, source_dirty = source_identity()
     with tempfile.TemporaryDirectory(prefix="orchestrator-build-", dir=output_dir) as folder:
         stage = Path(folder)
         bundle = stage / "Orchestrator.app"
@@ -195,6 +202,9 @@ def build_bundle(architecture: str, output_dir: Path, manifest: Path, version: s
             run(["/usr/bin/install_name_tool", "-add_rpath", "@executable_path/../Frameworks", macos / "Orchestrator"])
         info, agent = service_identity(integration)
         info.update(CFBundleShortVersionString=version, CFBundleVersion=str(build_number), OrchestratorArchitecture=architecture, OrchestratorDevelopmentBuild=True)
+        final_commit, final_dirty = source_identity()
+        info["OrchestratorSourceCommit"] = source_commit
+        info["OrchestratorSourceDirty"] = source_dirty or final_dirty or final_commit != source_commit
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         agents = bundle / "Contents/Library/LaunchAgents"
         agents.mkdir(parents=True)

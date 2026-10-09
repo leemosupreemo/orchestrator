@@ -278,6 +278,35 @@ class MultiLanguageTestDiscoveryTests(unittest.TestCase):
         self.assertEqual(dev_console.test_command_for_suite(python_suite, python_config),
                          "pytest tests/test_api.py")
 
+        # unittest doesn't take a path: `discover tests tests/test_api.py` would run nothing
+        unittest_config = make_config(Path("/repo"), xcode_project=None, scheme=None, test_target="",
+                                      build_command="python3 -m compileall .", test_command="python3 -m unittest discover tests")
+        self.assertEqual(dev_console.test_command_for_suite(python_suite, unittest_config),
+                         "python3 -m unittest discover -s tests -p test_api.py")
+
+    def test_kotlin_and_java_suites_are_found_and_run_with_the_build_tool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unit = root / "app" / "src" / "test" / "kotlin" / "com" / "x"
+            unit.mkdir(parents=True)
+            (unit / "LobbyTest.kt").write_text("class LobbyTest {\n  @Test\n  fun keepsSeat() {}\n  @Test fun `rejoins after a drop`() {}\n}\n")
+            java = root / "lib" / "src" / "test" / "java"
+            java.mkdir(parents=True)
+            (java / "ParserTests.java").write_text("public class ParserTests {\n  @Test\n  public void parses() {}\n}\n")
+            (root / "app" / "src" / "main").mkdir(parents=True)
+            (root / "app" / "src" / "main" / "Lobby.kt").write_text("class Lobby { fun seat() {} }\n")
+            suites = {s["name"]: s for s in dev_console.discover_test_suites(root)}
+            self.assertEqual(set(suites), {"LobbyTest", "ParserTests"})
+            self.assertEqual((suites["LobbyTest"]["language"], suites["LobbyTest"]["test_count"]), ("kotlin", 2))
+            self.assertEqual(suites["ParserTests"]["language"], "java")
+
+            (root / "gradlew").write_text("")
+            config = make_config(root, xcode_project=None, scheme=None, test_target="", build_command="./gradlew build",
+                                 test_command="./gradlew test")
+            self.assertEqual(dev_console.test_command_for_suite(suites["LobbyTest"], config), "./gradlew test --tests LobbyTest")
+            (root / "pom.xml").write_text("")
+            self.assertEqual(dev_console.test_command_for_suite(suites["ParserTests"], config), "mvn -q test -Dtest=ParserTests")
+
 
 if __name__ == "__main__":
     unittest.main()

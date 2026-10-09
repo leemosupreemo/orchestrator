@@ -54,7 +54,8 @@ class ReleaseValidationTests(unittest.TestCase):
             subprocess.run(["clang", "-arch", binary_arch or arch, "-o", str(contents / "MacOS" / name), str(source)], check=True)
         (contents / "Info.plist").write_bytes(plistlib.dumps({
             "CFBundleExecutable": "Orchestrator", "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "7",
-            "LSMinimumSystemVersion": minimum, "OrchestratorArchitecture": arch, "OrchestratorDevelopmentBuild": True}))
+            "LSMinimumSystemVersion": minimum, "OrchestratorArchitecture": arch, "OrchestratorDevelopmentBuild": True,
+            "OrchestratorSourceCommit": "a" * 40, "OrchestratorSourceDirty": False}))
         dist = contents / "Resources/runtime/lib/python3.12/site-packages/orchestrator-0.1.0.dist-info"
         dist.mkdir(parents=True)
         (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: orchestrator\nVersion: {python_version}\n")
@@ -162,7 +163,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_hosted_page_offers_no_download_until_real_releases_exist(self):
         account = (REPO / "orchestrator/web/static/account.js").read_text()
-        self.assertNotIn(".dmg", account)
+        self.assertNotRegex(account, r'https://[^\s"\x27]+\.dmg')  # URLs must come from published release metadata.
+        self.assertFalse((REPO / "orchestrator/web/static/releases/macos.json").exists())
 
 
 if __name__ == "__main__":

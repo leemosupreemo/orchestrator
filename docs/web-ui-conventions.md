@@ -20,11 +20,62 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   confirmation dialog when the action can be reversed; keep the confirmation when it can't
   (Discard job deletes a branch).
 
+## Cards
+
+- The header is a title bar (tinted, `--text-lg` heading): the title on the left, a count may sit beside it, actions on
+  the right.
+- At most two visible actions, as small buttons, the secondary one first and the main one last; anything else goes in a
+  More menu.
+- Labels are one verb when the card names the object: **Edit**, **Raw**, **Add**, **Attach…**, **Run**. Name the object
+  only when it would be unclear next to the title ("Edit" on the Brief card, not "Edit brief"). The button's tooltip
+  can say it in full.
+- Facts about the content (where a file lives, when it changed) go in a `.card-caption` strip under the header, never
+  loose in the header.
+- In a folding card the header is the toggle, so its actions go at the bottom inside the fold.
+- Long content shows up to a height and then **Show more**, centred under it, grows the card to fit
+  (`data-expandable="<px>"`, wired by `wireExpandables`). No inner scroll boxes; diffs, logs and terminals are the
+  exception.
+
+- Group by what things are to the person, not where they came from. A job's context is its **ticket** (a chip in the
+  header), its **designs** and **what went wrong**, whatever app or upload each came from. Empty groups don't show. A
+  title joined with "&" usually means two groups.
+- One way to attach: **Attach…** asks what it is, then where it comes from (a connected app, a link, a file, pasted
+  text). Attaching never starts a run.
+
+- A decision shows what it decides. While a plan waits for approval (or to start), it sits right under the job's
+  hero as "The plan to approve": summary, assumptions and risks, and each task with what "done" means and the files it
+  touches, editable in place, with **Revise…** beside it. Once approved it folds back to Tasks.
+
+- A More menu groups its items under headings (on a job: This job, Share, Open, Settings), one line each with the
+  description in the tooltip (`moreMenu(items, { compact: true })`), only what fits the current stage, and ending
+  actions (close, archive, delete) last below a divider. It fits without scrolling; on phones it opens as a sheet over
+  a dimmed page.
+
+- Nothing the app starts waits at a terminal. Runs from the app carry `ORCHESTRATOR_NONINTERACTIVE=1`
+  (`child_env()`); in them, menus take their defaults, "press Enter" pauses don't wait, and a question that needs
+  typed input ends that step with a clear line instead (`scripts/common.py`: `web_run()`, `interactive()`). Questions
+  for you go to the job's page (Answer). Each action passes everything its script needs (Revise passes the job's
+  models, machines and branch mode). The only terminal tools are the console, wizard and configuration menus
+  (`TERMINAL_ACTIONS`), and the app reaches only the console, from the sidebar; setup, GitHub sign-in and device
+  logs have app pages.
+
+## Navigation and fields
+
+- A page one level down (a job, a run, a document, a setting, a form) shows **Back** above its title. It returns to
+  the previous page in the app, or to the page's parent when opened directly (`routeParent` in `app.js`). Pages don't
+  add their own back links.
+- A field's label sits above its control. Paired fields (Home's project and branch) are the same size and sit side by
+  side, with `--space-3` between them.
+
 ## Words
 
 - **Job**: one piece of work with a plan, a branch and a status. **Run**: one command that was
   executed. **Task**: one step inside a job's plan. A job has tasks and runs; a run is never "a job".
 - **Feature**: something a user would name. Jobs belong to features.
+- Plain words a casual user knows: "Needs you", "Planning", "Split into jobs", never "execution", "decomposed" or
+  upper-case type ids. Sentence case for every label and title. Counts are words: `plural(n, "job")`, never "job(s)".
+- Ask before something can't be undone with `formDialog`, and name the action on its button ("Remove machine"), never
+  `confirm()`. `test_copy_stays_plain_and_consistent` checks these.
 - Status labels come from the server's job state (`state.label`, `state.reason`, `state.next`).
   Pages never invent their own status words.
 - Plain names first, the older technical term in the description ("Machines", "fleet").
@@ -37,10 +88,15 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 
 ## Every page
 
+- A change to the interface is checked by the UX and design review (`orchestrator/prompts/ux_reviewer.md`) after the
+  code review. Its checklist ids (`ux.one-primary`, `design.overlap`, …) are the vocabulary for UI findings.
+
 - One `h1` (the header). It takes focus on navigation so screen readers announce the page.
 - Interactive targets are at least about 32px tall (44px on phones for primary controls).
 - It works at 390px: nothing overflows, and anything reachable on desktop is reachable from the
-  bottom bar or the More sheet.
+  phone tab bar (Home, Product, New job, Activity, Projects) or the drawer behind the menu button, which holds
+  everything else. New job is the tab bar's centre button on phones and Home's header button on wider screens; there
+  is no floating button.
 - Errors show what happened and what to do next (`errors.js`).
 - It is reachable from the command palette (`Cmd/Ctrl+K`): add it to `PALETTE_PAGES`.
 
@@ -53,6 +109,12 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 | Spacing | `--space-0` 2, `--space-1` 4, `--space-2` 8, `--space-3` 12, `--space-4` 16, `--space-5` 20, `--space-6` 24, `--space-7` 32, `--space-8` 40 |
 | Type | `--text-2xs` 11, `--text-xs` 12, `--text-sm` 13, `--text-md` 14, `--text-base` 15, `--text-lg` 16, `--text-xl` 18, `--text-2xl` 22, `--text-3xl` 28 |
 | Radius | `--r-xs` 4, `--r-sm` 6, `--r-md` 8, `--r-lg` 12 (cards; `--radius`), `--r-pill` |
+| Control height | `--control-xs` 28 (inline), `--control-sm` 32 (small buttons), `--control-md` 38 (default), `--control-lg` 44 (touch), `--control-xl` 48 |
+| Shadow | `--shadow` (cards), `--shadow-2` (menus, popovers), `--shadow-3` (dialogs, drawers) |
+| Layer | `--z-raised`, `--z-inner`, `--z-sticky`, `--z-float`, `--z-header`, `--z-palette`, `--z-drawer`, `--z-menu`, `--z-toast`; a backdrop is its layer minus one |
+
+Every `var(--x)` must be defined; `test_design_tokens_hold` checks this, the layers, the control heights and the shadows,
+and ratchets the number of inline styles in `app.js` down.
 
 Rules checked on every page at 360, 430 and 1440 px, light and dark:
 - No horizontal scroll. A control that sizes itself to its content (a select, a long path) needs `max-width` and its parents `min-width: 0`.
@@ -76,7 +138,7 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
 - **Job lifecycle stepper & next step clarity**:
   - Every job detail page presents a 4-phase lifecycle stepper (`.job-stepper`): `1. Plan` → `2. Build` → `3. Verify` → `4. Review`.
   - Active steps use `var(--accent)` (or `var(--warn)`/`var(--bad)` when attention/fix is needed), completed steps use `var(--ok)` with `✓`, upcoming steps are muted.
-  - The hero card clarifies **who has the ball** (`.job-hero-badge-row`: e.g. "Your action needed" vs "AI Worker active") and previews the exact automated builder task that will run upon taking the primary action (`.job-hero-next-preview`).
+  - The hero card leads with its title (what's needed, e.g. "Approve plan"), says why and what to look at, and previews what happens after the primary action (`.job-hero-next-preview`). No badge row above the title: the stepper shows the stage, and the title and button already say whose move it is.
   - The **Progress** card clearly separates task completion count, active/next builder task, remaining tasks, and verification status.
 - **Job Brief**:
   - Positioned near the top of the Job Detail page immediately following Progress (before Test Cases and technical changes).
@@ -86,7 +148,10 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
 ## Home
 
 - One list of jobs. A job that needs you is a job in an earlier status: it sorts first and its status says what it needs ("Approve plan"). The whole row is one link to the job, where the next step is the primary action; rows carry no buttons. There is no second "waiting" list; "Needs you" is a filter.
-- Actions belong to the page for what they act on (Tests: run, build, coverage; Delivery: send a build; Device logs: pull; Check-up: environment checks and the setup wizard). Home has no menu of them.
+- Actions belong to the page for what they act on (Tests: run, build, coverage; Delivery: send a build; Device logs: pull; Readiness: environment checks and the setup checklist). Home has no menu of them.
+- The sidebar leads with what people open most (Home, Activity, Product), then Build & ship (Tests, Delivery, Git, Device logs) and Review (Check-up, UX review, Measure, Docs). Settings is one entry: Configuration, whose "Set up" group holds Readiness, Connections and Projects. "Finish setup" sits at the top of the sidebar only until the required setup is done. The phone tab bar is Home, Product, New job, Activity, Tests.
+- One home per setting. Check-up is about the product; Readiness is about whether jobs can run here (setup checklist, build tools, tool and health checks); Slack alerts are on Connections; Orchestrator's guides are in Docs; archived jobs are a filter on Home; the test case library is under Tests (`#/tests/cases`). The terminal console's Configuration menu uses the same groups and names (checked by `MenuParityTests`).
+- A route that moves keeps its old address working: add it to `routes.js`, which sends old links to the new place with their query.
 - Things that are not jobs go where they belong: the Product card (what the product is, and a notice when the AI updated it), other projects' waiting jobs as one line under the list.
 
 ## Sign-in

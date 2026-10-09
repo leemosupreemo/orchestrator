@@ -49,7 +49,7 @@ Alerts reach a person's phones and browsers even with Orchestrator closed. They 
 - **From the control plane.** The heartbeat includes how many runs are going. A scheduled function (`sweep`, every 5 minutes) alerts the owner once when a computer stops reporting while runs were going. An idle computer going to sleep is not news.
 - **What passes through.** The event's title (with the project name) and one line of text, on their way to the push service. Only each device's push token is stored, and tokens a push service reports as gone are dropped.
 - Pushes are data-only and shown by the app's service worker (`firebase-messaging-sw.js`). Each carries the same tag as the alert an open tab shows for that event, so the two replace each other instead of doubling up.
-- Slack webhooks are still sent by the computer itself (Configuration → Slack & chat alerts).
+- Slack webhooks are still sent by the computer itself (Connections → Slack & chat alerts).
 
 ## Deploying
 

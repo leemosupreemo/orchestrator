@@ -105,68 +105,86 @@ def _item(id: str, title: str, required: bool, done: bool, detail: str, *, actio
             "action": action, "hint": hint, "group": group}
 
 
-def setup_checklist(root: Path, runtime: Path) -> dict[str, Any]:
+def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str, Any]:
+    if fresh:
+        _cache.pop("gh", None)
+        _cache.pop("llm", None)
     project = _read_json(runtime / "project.json")
     settings = _read_json(runtime / "config" / "settings.json")
     machines = [m for m in _read_json(runtime / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
-    wizard = {"type": "run", "action": "wizard"}
-    menu = lambda name: {"type": "run", "action": "config_menu", "params": {"menu": name}}  # noqa: E731
+    # Every fix is a page in the app (or the in-app GitHub sign-in), never a terminal menu or the terminal wizard.
+    page = lambda to: {"type": "route", "to": to}  # noqa: E731
 
     is_git = (root / ".git").exists()
     origin = (_run(["git", "remote", "get-url", "origin"], cwd=root) or subprocess.CompletedProcess([], 1, "", "")).stdout.strip() if is_git else ""
     from orchestrator.code_host import host_kind, resolve_mode
     github = resolve_mode(project.get("code_host"), origin) == "github"
-    gh = github_cli_state() if github else {"installed": bool(shutil.which("gh")), "user": None}
+    gh = github_cli_state()
     providers = ready_llm_providers(settings)
-    models = list(dict.fromkeys(m for mach in machines if mach.get("enabled", True) for m in mach.get("models", [])))
+    enabled_machines = [m for m in machines if m.get("enabled", True)]
+    ssh_machines = sum(1 for m in enabled_machines if m.get("execution_mode") == "ssh")
+    models = list(dict.fromkeys(m for mach in enabled_machines for m in mach.get("models", [])))
 
     items = [
         _item("project", "Project configured", True, bool(project), "Name, build and test settings" if project else "No .orchestrator/project.json yet",
-              action=wizard, group="Project"),
+              action=page("#/setup"), group="Project"),
         _item("git", "Git repository", True, is_git, "Initialized" if is_git else "This folder isn't a git repository",
+              action=None if is_git else {"type": "git_init", "label": "Initialize"},
               hint=None if is_git else "git init", group="GitHub" if github else "Git"),
     ]
     if github:
         items += [
             _item("github_remote", "GitHub remote (origin)", True, bool(GITHUB_REMOTE.search(origin)),
                   origin if GITHUB_REMOTE.search(origin) else ("origin isn't a GitHub URL" if origin else "No origin remote"),
+                  action={"type": "github_create", "label": "Create repo"} if (not GITHUB_REMOTE.search(origin) and gh.get("user")) else None,
                   hint=None if GITHUB_REMOTE.search(origin) else "gh repo create --source . --push", group="GitHub"),
             _item("github_cli", "GitHub CLI signed in", True, bool(gh["user"]),
                   f"Signed in as {gh['user']}" if gh["user"] else ("Installed, not signed in" if gh["installed"] else "GitHub CLI (gh) isn't installed"),
-                  action=menu("github") if gh["installed"] and not gh["user"] else None,
+                  action={"type": "github"} if gh["installed"] and not gh["user"] else None,
                   hint=None if gh["installed"] else "brew install gh", group="GitHub"),
         ]
     else:
         host = {"gitlab": "GitLab", "bitbucket": "Bitbucket", "azure": "Azure DevOps", "github": "GitHub"}.get(host_kind(origin), "")
+        remote_action = {"type": "github_create", "label": "Create repo"} if (is_git and not origin and gh.get("user")) else None
         items.append(_item("remote", "Git remote (origin)", False, bool(origin),
                            f"{host + ': ' if host else ''}{origin}. Finished jobs are pushed here as branches." if origin
                            else "None: finished work stays on this computer as branches.",
+                           action=remote_action,
                            hint=None if origin else "git remote add origin <url>", group="Git"))
     items += [
         _item("llm", "An AI provider is ready", True, bool(providers),
               ", ".join(providers[:4]) if providers else "No AI is set up yet. Free options are available.",
               action={"type": "route", "to": "#/config/ai"}, group="AI"),
-        _item("machines", "A machine to run jobs on", True, bool(machines),
-              f"{len(machines)} configured" if machines else "machines.json is missing or empty",
-              action=wizard, group="AI"),
+        _item("machines", "A machine to run jobs on", True, bool(enabled_machines),
+              (f"{len(enabled_machines)} enabled, {ssh_machines} remote over SSH" if ssh_machines else f"{len(enabled_machines)} enabled. Add other Macs to run jobs side by side.")
+              if enabled_machines else "No enabled machines. Add or enable a machine.",
+              action=page("#/config/fleet"), group="AI"),
         _item("models", "At least one model selected", True, bool(models),
               f"{len(models)} selected" if models else "No models are assigned to a machine",
-              action=wizard, group="AI"),
+              action=page("#/config/models"), group="AI"),
         _item("docs", "Grounding docs (AGENTS.md, docs/)", False,
               (root / "AGENTS.md").exists() and (root / "docs" / "architecture.md").exists(),
-              "Give the AI the project's rules and architecture", action={"type": "route", "to": "#/config"}, group="Recommended"),
+              "Give the AI the project's rules and architecture", action=page("#/config/ai-instructions"), group="Recommended"),
         _item("connections", "Connect Jira, Trello, Sentry or Figma", False, bool(settings.get("integrations")),
               "Tie jobs to tickets, pull in error logs and designs", action={"type": "route", "to": "#/connections"}, group="Optional"),
         _item("firebase", "Firebase delivery to testers", False, bool(project.get("firebase_distribution")),
-              "Send builds to testers after a job", action=menu("firebase"), group="Optional"),
+              "Send builds to testers after a job", action=page("#/config/firebase"), group="Optional"),
         _item("email", "Email notifications", False, bool(settings.get("notification_emails")),
-              "Get told when a job finishes or needs you", action={"type": "route", "to": "#/config"}, group="Optional"),
-        _item("workers", "Remote SSH workers", False, any(m.get("execution_mode") == "ssh" for m in machines),
-              "Run jobs on other Macs", action=menu("fleet"), group="Optional"),
+              "Get told when a job finishes or needs you", action=page("#/config/email"), group="Optional"),
         _item("prompts", "Custom role prompts", False, (runtime / "prompts").is_dir() and any((runtime / "prompts").iterdir()),
-              "Tune how the planner, builder and reviewer behave", action=wizard, group="Optional"),
+              "Tune how the planner, builder and reviewer behave", action=page("#/config/ai-instructions"), group="Optional"),
     ]
+    is_python = any((root / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt")) or bool(project.get("test_command") and ("python" in project.get("test_command") or "pytest" in project.get("test_command") or "unittest" in project.get("test_command")))
+    if is_python:
+        import sys
+        cov_check = _run([sys.executable, "-m", "coverage", "--version"], timeout=2)
+        cov_ok = bool(cov_check and cov_check.returncode == 0)
+        items.append(_item("coverage_py", "Test coverage (coverage.py)", False, cov_ok,
+                           "Installed and ready" if cov_ok else "Will be auto-installed on first test measurement",
+                           action={"type": "run", "action": "coverage", "label": "Measure"} if cov_ok else {"type": "run", "action": "coverage", "label": "Auto-add"},
+                           hint=None if cov_ok else "pip install coverage", group="Testing"))
     required = [i for i in items if i["required"]]
+
     return {
         "items": items,
         "required_total": len(required),

@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from orchestrator.project_config import ProjectConfig
+
+
+def _ui_review_errors(project_file: Path) -> list[str]:
+    """`ui_review` (screens for the UX and design review) is read raw: ProjectConfig doesn't model it."""
+    from orchestrator import ux_review
+    try:
+        ux_review.settings(json.loads(project_file.read_text(encoding="utf-8")) if project_file.is_file() else {})
+    except (ValueError, ux_review.ConfigError) as exc:
+        return [f"ui_review: {exc}"] if isinstance(exc, ux_review.ConfigError) else []
+    return []
 
 
 def validate_project_config(config: ProjectConfig) -> list[str]:
@@ -41,6 +52,7 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
         errors.append(f"visual_app_path does not exist: {config.visual_app_path}")
     if config.visual_app_path and not config.app_bundle_id:
         errors.append("visual_app_path requires app_bundle_id for simulator launch.")
+    errors += _ui_review_errors(config.runtime_dir / "project.json")
     remote_logs = getattr(config, "remote_logs", None) or {}
     if remote_logs:
         if remote_logs.get("provider", "sentry") != "sentry":

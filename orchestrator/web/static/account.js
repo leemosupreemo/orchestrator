@@ -146,6 +146,10 @@
   function machineStatus(m, now) {
     if (m.reachable && outdated(m.api_version)) return {tone: "warn", text: `Online, but running an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`};
     if (m.reachable) return {tone: "good", text: "Online"};
+    if (m.updatable) {
+      if (m.online) return {tone: "warn", text: "Connecting for remote access. Check that Remote access is on in the Orchestrator menu on this Mac."};
+      return {tone: "muted", text: "Offline. Wake this Mac and open Orchestrator from Applications. Keep it running to use it from here."};
+    }
     if (m.online) return {tone: "warn", text: "Online, but not reachable from the web yet. Restart it with `orchestrator ui --tunnel`."};
     if (m.last_seen) return {tone: "muted", text: `Offline · last seen ${ago(m.last_seen, now)}. Start \`orchestrator ui --tunnel\` on it.`};
     return {tone: "muted", text: "Waiting for it to start. Run `orchestrator ui --tunnel` on it."};
@@ -155,13 +159,9 @@
     return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
   }
 
-  function brand() {
-    return `<div class="signin-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></div>`;
-  }
-
-  function addSteps(pendingCodeValue = "") {
+  function addSteps(pendingCodeValue = "", installCommand = INSTALL_COMMAND) {
     return `<ol class="account-steps">
-        <li>Install Orchestrator on the computer with your projects:<pre class="mono">${escapeHtml(INSTALL_COMMAND)}</pre></li>
+        <li>Install Orchestrator on the computer with your projects:<pre class="mono" data-cli-install>${escapeHtml(installCommand)}</pre></li>
         <li>On that computer, run <code>orchestrator connect</code>. It shows a code.</li>
         <li>Enter the code here:
           <form class="row gap-10 account-code-form" data-account-form="code">
@@ -171,6 +171,53 @@
           </form></li>
         <li>Then start it with <code>orchestrator ui --tunnel</code>. It appears here as online.</li>
       </ol>`;
+  }
+
+  // A download is offered only for a complete, versioned release, never a guessed URL.
+  function macRelease(value) {
+    if (!value || !/^\d+\.\d+\.\d+$/.test(value.version || "") || !Number.isSafeInteger(value.build) || value.build < 1
+        || !/^[a-f0-9]{40}$/.test(value.commit || "") || !/^\d+\.\d+$/.test(value.minimum_macos || "")) return null;
+    for (const arch of ["arm64", "x86_64"]) {
+      const artifact = value[arch];
+      if (!artifact || !/^[a-f0-9]{64}$/.test(artifact.sha256 || "") || artifact.sha256 === "0".repeat(64)) return null;
+      try {
+        const url = new URL(artifact.url);
+        if (url.protocol !== "https:" || url.username || url.password || !url.pathname.endsWith(".dmg")) return null;
+      } catch { return null; }
+    }
+    return value;
+  }
+
+  function renderMacSetup(value) {
+    const release = macRelease(value);
+    return `<div class="stack mac-setup">
+      <h3>Set up your Mac</h3>
+      <p>Install the Orchestrator app on your Mac, then use this website from your computer or phone.</p>
+      <p class="muted">On a phone or tablet? Complete installation on your Mac first. Windows and Linux app setup is not available yet.</p>
+      <ol class="account-steps">
+        <li><strong>Download Orchestrator</strong>
+          <div data-mac-downloads>${release ? `<p>Requires macOS ${escapeHtml(release.minimum_macos)} or later. Version ${escapeHtml(release.version)}.</p>
+            <div class="row gap-10"><a class="btn primary" href="${escapeHtml(release.arm64.url)}">Download for Apple Silicon</a>
+            <a class="btn" href="${escapeHtml(release.x86_64.url)}">Download for Intel</a></div>
+            <p class="muted">Not sure which? Open Apple menu → About This Mac. “Chip” means Apple Silicon; “Processor: Intel” means Intel.</p>`
+            : `<p class="notice">The Mac app download is not available yet. You can connect an app you already have, or use the advanced setup below.</p>`}</div>
+        </li>
+        <li><strong>Open the download</strong><p>Drag Orchestrator to Applications, then open it from Applications. The app includes its own Python and connection software.</p></li>
+        <li><strong>Connect this Mac</strong><p>Choose <strong>Connect this Mac</strong> in the app. Your browser opens so you can confirm the connection. Keep the app running while you use Orchestrator.</p></li>
+      </ol>
+      <details class="account-add"><summary>Already have the app? Enter a connection code</summary>
+        <p>Choose Connect this Mac in the app, then enter the code it shows.</p>
+        <form class="row gap-10 account-code-form" data-account-form="code">
+          <input name="code" required autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9"
+            placeholder="ABCD-2345" aria-label="Connection code" class="mono">
+          <button type="submit" class="btn primary">Connect Mac</button>
+        </form>
+      </details>
+      <details class="account-add"><summary>Advanced: command-line installation</summary>
+        <p>This path requires Python 3.11 or later, Git, pipx, and cloudflared for remote access. Install and configure those tools first.</p>
+        ${addSteps("", release ? `pipx install "git+https://github.com/leemosupreemo/orchestrator.git@v${release.version}"` : INSTALL_COMMAND)}
+      </details>
+    </div>`;
   }
 
   function shellQuote(value) {
@@ -202,43 +249,50 @@
       <button type="button" class="btn small ghost" data-account-action="copy-enroll">Copy</button>`;
   }
 
+  // The host is what identifies a tunnel; the full URL (with any path) stays in the tooltip.
+  function hostOf(url) {
+    try { return new URL(url).host; } catch { return url || ""; }
+  }
+
   function renderTroubleshoot(t) {
     if (!t) return "";
     const isLoadFailed = (t.error || "").includes("Load failed");
     const endpoint = t.endpoint || t.machine?.endpoint || "";
     const machineId = t.machine?.id || "";
     const machineName = t.machine?.name || "your computer";
+    const desktopApp = t.machine?.updatable === true;
     return `<div class="account-troubleshoot card-b stack">
       <div class="account-troubleshoot-header row">
         <strong>⚠️ Couldn't connect to ${escapeHtml(machineName)}</strong>
         <span class="spacer"></span>
         <span class="pill fail">${escapeHtml(isLoadFailed ? "Load failed" : "Unreachable")}</span>
       </div>
-      <p class="muted">Your browser could not reach <code>${escapeHtml(endpoint || "tunnel endpoint")}</code>.</p>
+      <p class="muted">Your browser could not reach <code class="account-address" title="${escapeHtml(endpoint)}">${escapeHtml(hostOf(endpoint) || "the tunnel")}</code>.</p>
       <div class="row gap-10">
         ${machineId ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(machineId)}">Retry</button>` : ""}
         ${endpoint ? `<a class="btn small" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open tunnel URL ↗</a>` : ""}
         ${machineId ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(machineId)}" data-name="${escapeHtml(machineName)}">Reset tunnel</button>` : ""}
-        <button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy restart command</button>
+        ${desktopApp ? "" : `<button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy restart command</button>`}
       </div>
+      ${desktopApp ? `<p>Wake this Mac, open Orchestrator from Applications, and check that <strong>Remote access</strong> is enabled in its menu. Keep the Mac awake, then choose Retry.</p>` : ""}
       <details class="account-troubleshoot-details">
         <summary>Why did this happen? (Troubleshooting tips)</summary>
         <ul>
           <li><strong>Mac asleep or lid closed:</strong> Cloudflare quick tunnels pause when a Mac sleeps. Wake the Mac, wait a few seconds, and click Retry.</li>
           <li><strong>Ad Blocker / Privacy DNS:</strong> Safari Content Blockers, AdGuard, NextDNS, or Brave often block <code>*.trycloudflare.com</code>. Try opening the tunnel URL directly or disabling content blockers for this site.</li>
-          <li><strong>Stale tunnel session:</strong> Click <em>Reset tunnel</em> above or restart <code>orchestrator ui --tunnel</code> in your terminal.</li>
+          <li><strong>Connection needs restarting:</strong> Click <em>Reset tunnel</em> above${desktopApp ? " and then Retry." : " or restart <code>orchestrator ui --tunnel</code> in your terminal."}</li>
         </ul>
       </details>
     </div>`;
   }
 
-  function renderMachines(machines, {email = "", message = "", troubleshoot = null, now, macAppReleased = MAC_APP_RELEASED, idea} = {}) {
+  function renderMachines(machines, {email = "", message = "", troubleshoot = null, now, macAppReleased = MAC_APP_RELEASED, idea, release = null} = {}) {
     const list = machines || [];
     if (idea === undefined) idea = list.length ? null : pendingIdea();
     const askIdea = !list.length && !idea;
     const ideaRecap = !list.length && idea ? `<p class="account-idea">${idea.existing ? "You're bringing code you already have." : `Your idea: <strong>${escapeHtml(idea.pitch)}</strong>`}
         <button type="button" class="linklike" data-account-action="idea-change">Change</button></p>
-        <p class="muted">Next, set up the computer it runs on. Your code and the AI work stay on that computer.</p>` : "";
+        <p class="muted">Next, set up the computer it runs on. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there.</p>` : "";
     const rows = list.map((m) => {
       const s = machineStatus(m, now);
       const progress = UPDATE_PROGRESS[m.update_state] || "";
@@ -249,29 +303,44 @@
           <span class="muted">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</span>
           <span class="account-status ${s.tone}">${code(s.text)}</span>
           ${progress && m.update_state !== "current" ? `<span class="muted account-update">${escapeHtml(progress)}</span>` : ""}
+          ${!m.reachable ? `<div class="account-start-guide stack">
+            ${!m.updatable ? `<div class="row gap-6 account-cmd-box">
+              <span class="muted">To start:</span>
+              <code class="mono">orchestrator ui --tunnel</code>
+              <button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel" title="Copy command">Copy</button>
+            </div>` : ""}
+            <span class="account-listening"><span class="dot" aria-hidden="true"></span>Waiting for connection — opens automatically once started</span>
+            ${!m.updatable ? `<details class="account-more-options">
+              <summary>More ways to run</summary>
+              <ul>
+                <li><strong>Run at login in background:</strong> <code>orchestrator service install</code></li>
+                <li><strong>Working on this computer right now?</strong> Run <code>orchestrator ui</code> in Terminal to open locally at <code>localhost:8000</code>.</li>
+              </ul>
+            </details>` : ""}
+          </div>` : ""}
           ${readinessFixes(m.readiness).length ? `<details class="account-readiness"><summary>To run unattended, ${readinessFixes(m.readiness).length === 1 ? "one setting needs" : `${readinessFixes(m.readiness).length} settings need`} changing</summary>
             <ul>${readinessFixes(m.readiness).map((fix) => `<li>${code(fix)}</li>`).join("")}</ul></details>` : ""}
         </div>
         <div class="row gap-10">
-          ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : ""}
+          ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : (!m.updatable ? `<button type="button" class="btn small primary" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy start command</button>` : "")}
           ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}" title="Restart tunnel if connection is stale">Reset tunnel</button>` : ""}
           ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update</button>` : ""}
           <button type="button" class="btn small ghost" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove</button>
         </div>
       </div>`;
     }).join("");
+    const anyReachable = list.some((m) => m.reachable);
     return `<div class="signin-wrap"><div class="signin-card account-card">
-      ${brand()}
       <div>
         <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
         <p class="muted account-sub">${list.length
-          ? "Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
+          ? "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
           : askIdea ? "Say it in a sentence. It becomes the start of your product's plan, and you can change it any time."
-          : "Orchestrator does the work on your own computer, so your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
-        ${troubleshoot ? renderTroubleshoot(troubleshoot) : (message ? `<p class="account-message" role="alert">${code(message)}</p>` : "")}
+          : "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
+        ${troubleshoot ? renderTroubleshoot(troubleshoot) : (message ? `<p class="account-message" role="alert">${code(message)}</p>` : (list.length && !anyReachable ? `<div class="account-offline-notice row gap-8"><span class="dot" aria-hidden="true"></span><span>Waiting for your computer to connect. Start Orchestrator on it to open your workspace.</span></div>` : ""))}
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
-        <details class="account-add"><summary>Add another computer</summary>${addSteps()}</details>` : askIdea ? ideaStep() : ideaRecap + addSteps()}
+        <details class="account-add"><summary>Add another computer</summary>${renderMacSetup(release)}</details>` : askIdea ? ideaStep() : ideaRecap + renderMacSetup(release)}
       ${macAppReleased ? `<details class="account-add"><summary>Add a Mac nobody sits at</summary>${addMacSteps()}</details>` : ""}
       <p class="muted account-foot">Signed in as ${escapeHtml(email)} · <button type="button" class="linklike" data-account-action="refresh">Refresh</button> · <button type="button" class="linklike" data-account-action="sign-out">Sign out</button></p>
     </div></div>`;
@@ -279,7 +348,6 @@
 
   function renderPair(preview, codeValue, {email = ""} = {}) {
     return `<div class="signin-wrap"><div class="signin-card account-card">
-      ${brand()}
       <div>
         <h2 class="account-title">Add this computer?</h2>
         <p class="muted account-sub">Code <span class="mono">${escapeHtml(formatCode(codeValue))}</span></p>
@@ -289,7 +357,7 @@
         <span class="muted">${escapeHtml([preview.os, preview.version && `Orchestrator ${preview.version}`].filter(Boolean).join(" · "))}</span>
       </div></div>
       <p class="muted">It will be added to <strong>${escapeHtml(email)}</strong>, and you'll be able to open it from anywhere you sign in.
-        Only add a computer you just ran <code>orchestrator connect</code> on yourself.</p>
+        Only connect a computer where you just chose <strong>Connect this Mac</strong> in Orchestrator or started command-line pairing yourself.</p>
       <div class="row gap-10">
         <button type="button" class="btn primary" data-account-action="claim">Add computer</button>
         <button type="button" class="btn ghost" data-account-action="cancel-pair">Cancel</button>
@@ -299,7 +367,7 @@
 
   root.Account = {
     HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
-    enrollCommand, renderEnroll, outdated,
+    enrollCommand, renderEnroll, outdated, macRelease, renderMacSetup,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
     renderMachines, renderPair, providerSignInWorks, pendingIdea, saveIdea, clearIdea, ideaRoute,
   };

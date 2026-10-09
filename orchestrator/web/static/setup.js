@@ -31,7 +31,8 @@ window.DesktopSetup = {
           ${fields.map(([key,label]) => `<label>${label}<input name="${key}" value="${esc(values[key] || "")}" ${key === "project_name" ? "required" : ""}></label>`).join("")}
           <label>AI models (comma-separated)<input name="models" value="codex" required></label>
           <p>AI tools, GitHub and project build tools have their own installation and sign-in requirements. You can review these in Setup after applying.</p>
-          <button class="btn primary" type="submit">Apply and open project</button>
+          <p>Next, follow the setup checklist to connect an AI provider and check the tools this project needs. Saving this form does not mean those tools are ready yet.</p>
+          <button class="btn primary" type="submit">Save and continue setup</button>
         </form>` : ""}
         <div id="desktop-setup-error" class="notice bad" role="alert" hidden></div>
       </section>`,

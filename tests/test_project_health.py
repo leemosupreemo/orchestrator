@@ -76,8 +76,8 @@ class EvaluateTests(unittest.TestCase):
         written = lambda **kw: by_id(H.evaluate({**HEALTHY, "prd_sections": {"pitch": False, "who": False, "features": False, "look": False, "not": False, **kw}}))["prd"]
         nothing = written()
         self.assertEqual((nothing["status"], nothing["route"]), ("todo", "#/product"))
-        self.assertIn("Optional", nothing["detail"])
-        self.assertIn("draft it from the project", nothing["detail"])
+        self.assertEqual(nothing["label"], "Define your product")
+        self.assertIn("generate a draft", nothing["detail"])
         one = written(look=True)  # no pitch needed
         self.assertEqual(one["status"], "ok")
         self.assertIn("1 of 5", one["detail"])

@@ -173,6 +173,12 @@ def revise(path: Path, change: str, where: str, done_when: str) -> int:
     job = read_json(path)
     args = [replan_type(job), "--no-dispatch", "--update", str(path),
             "--feedback", revision_feedback(change, where, done_when)]
+    # Keep the job's own choices, so re-planning never stops to ask for models, machines or a branch mode.
+    if job.get("allowed_models"):
+        args += ["--allowed-models", ",".join(job["allowed_models"])]
+    if job.get("allowed_machines"):
+        args += ["--allowed-machines", ",".join(job["allowed_machines"])]
+    args += ["--branch-mode", job.get("branch_mode") or ("current" if job.get("branch") else "new")]
     if job.get("design_spec") or job.get("status") == "designing" or "design" in str(job.get("type", "")):
         args.append("--stitch")
     print("Revising the plan with your feedback...\n")
@@ -203,6 +209,24 @@ def frameworks_inventory() -> dict[str, Any]:
     tt = PROJECT_CONFIG.test_target or "AppTests"
     sample_canary_exists = (ROOT / tt / "SampleSwiftTestingTests.swift").exists() if PROJECT_CONFIG.test_target else False
 
+    is_python = any((ROOT / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt")) or bool(PROJECT_CONFIG.test_command and ("python" in PROJECT_CONFIG.test_command or "pytest" in PROJECT_CONFIG.test_command or "unittest" in PROJECT_CONFIG.test_command))
+    if is_python:
+        has_cov = False
+        try:
+            has_cov = subprocess.run([sys.executable, "-m", "coverage", "--version"], capture_output=True, timeout=2).returncode == 0
+        except Exception:
+            pass
+        has_pytest = False
+        try:
+            has_pytest = subprocess.run([sys.executable, "-m", "pytest", "--version"], capture_output=True, timeout=2).returncode == 0
+        except Exception:
+            pass
+        return {
+            "coverage_py": {"installed": bool(has_cov), "name": "coverage.py", "desc": "Statement & branch test coverage runner for Python (auto-installed on first measurement)"},
+            "pytest": {"installed": bool(has_pytest), "name": "pytest", "desc": "Python testing framework with rich assertion introspection"},
+            "unittest": {"installed": True, "name": "unittest (Standard Library)", "desc": "Built-in unit testing framework for Python"},
+        }
+
     return {
         "swift_testing": {"installed": bool(has_swift_testing), "name": "Swift Testing (Native)", "desc": "Core logic, ViewModels & async unit tests"},
         "snapshot_testing": {"installed": bool(has_snapshot_testing), "name": "SnapshotTesting", "desc": "Visual regressions (SwiftUI pixels, Dark Mode)"},
@@ -210,6 +234,7 @@ def frameworks_inventory() -> dict[str, Any]:
         "canary_suite": {"installed": bool(sample_canary_exists), "name": "Sample Canary Suite", "desc": f"1-click test suite generation in {tt}"},
         "xcbeautify": {"installed": bool(has_xcbeautify), "name": "xcbeautify Formatter", "desc": "Strip noisy xcodebuild output into 1-line logs"},
     }
+
 
 
 def scaffold_canary() -> int:
@@ -257,15 +282,21 @@ struct SampleSwiftTestingTests {{
 
 def test_inventory() -> dict[str, Any]:
     from dev_console import ROOT, PROJECT_CONFIG, discover_test_suites, get_coverage_data
+    from orchestrator.coverage import count_source_lines
 
     suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
     plans_root = ROOT / (PROJECT_CONFIG.test_target or "") / "TestPlans"
     plans = sorted(plans_root.glob("*.xctestplan")) if PROJECT_CONFIG.test_target and plans_root.exists() else []
+    cov = get_coverage_data()
+    if cov and not cov.get("total_lines"):
+        lines_cnt = count_source_lines(ROOT)
+        if lines_cnt > 0:
+            cov["total_lines"] = lines_cnt
     return {
         "suites": [{"name": s["name"], "tests": s["test_count"], "path": str(s.get("rel_path") or ""),
                     "language": s.get("language", "swift")} for s in suites],
         "plans": [p.stem for p in plans],
-        "coverage": get_coverage_data(),
+        "coverage": cov,
         "frameworks": frameworks_inventory(),
     }
 
@@ -298,7 +329,8 @@ def run_plan(name: str) -> int:
 def coverage() -> int:
     from dev_console import run_calculate_coverage
 
-    return 0 if run_calculate_coverage([], []) is not None else 1
+    return 0 if run_calculate_coverage([], [], interactive=False) is not None else 1
+
 
 
 # --------------------------------------------------------------------------- CLI

@@ -7,7 +7,7 @@
     [/failed to fetch|networkerror|load failed|network request failed/i, "Can't reach Orchestrator. Check that it's running and that you're online."],
   ];
   const HINTS = [
-    [/job not found|archived job not found/i, "It may have been archived or discarded. Archived jobs can be restored from Configuration > Archived Jobs."],
+    [/job not found|archived job not found/i, "It may have been archived or discarded. Archived jobs can be restored from the Archived filter on Home."],
     [/rejected the key|didn't accept the token/i, "Check the key and the region on the Measure page."],
     [/webhook answered 40[134]/i, "The address may have been revoked or mistyped. Create a new incoming webhook and paste it again."],
     [/couldn't reach|temporary failure|timed out|took too long/i, "Check your connection and try again. If it keeps happening, the service may be down."],

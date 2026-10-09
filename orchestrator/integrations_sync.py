@@ -71,7 +71,7 @@ def writeback(job: dict[str, Any], event: str, settings: dict[str, Any], *,
             try:
                 entry.update(ok=True, message=run())
             except ig.IntegrationError as exc:
-                entry.update(ok=False, message=str(exc))
+                entry.update(ok=False, message=str(exc), **({"rejected": True} if isinstance(exc, ig.RejectedCredentials) else {}))
             except Exception as exc:  # never let a sync problem break the job flow
                 entry.update(ok=False, message=f"{type(exc).__name__}: {exc}")
             log.append(entry)
@@ -90,6 +90,14 @@ def notify_job_event(job: dict[str, Any], event: str, settings_path: Path, job_p
     if not job.get("external_links") or not settings.get("integrations"):
         return []
     new = writeback(job, event, settings, pr_url=pr_url, pr_number=pr_number)
+    rejected = {e["provider"] for e in new if e.get("rejected")}
+    if rejected:  # the saved token stopped working: Connections shows "Reconnect"
+        try:
+            for pid in rejected:
+                settings.setdefault("integration_status", {})[pid] = {"rejected_at": datetime.now().isoformat(timespec="seconds")}
+            settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            pass
     if new and job_path is not None and job_path.exists():
         try:  # persist now, touching only the log, in case the caller doesn't write soon
             on_disk = json.loads(job_path.read_text(encoding="utf-8"))

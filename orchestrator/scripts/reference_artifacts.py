@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from common import OUTPUT_DIR, ROOT
 
-TEXT_EXTENSIONS = {".html", ".htm", ".md", ".txt", ".css", ".json"}
+TEXT_EXTENSIONS = {".html", ".htm", ".md", ".txt", ".css", ".json", ".log", ".crash", ".ips"}  # logs attached to a job are read too
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS | {".pdf", ".fig"}
 MAX_REFERENCE_PREVIEW_CHARS = 20_000

@@ -231,7 +231,7 @@ MODELS = [
         id="copilot",
         family="copilot",
         tier=ModelTier.HIGH,
-        capabilities=[ModelCapability.CODING, ModelCapability.SPEED],
+        capabilities=[ModelCapability.CODING, ModelCapability.REASONING, ModelCapability.SPEED],
         cost_factor=0.0,
         required_clis=["gh"]
     ),

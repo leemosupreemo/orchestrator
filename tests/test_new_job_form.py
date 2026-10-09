@@ -28,6 +28,10 @@ class ComposeTests(unittest.TestCase):
     def test_coverage_and_feature(self):
         self.assertEqual(N.compose("coverage", {"summary": "Lobby", "subsystems": "Seat service"})[1], "COVERAGE FOCUS: Lobby\n\nSUBSYSTEMS: Seat service")
         self.assertIn("SUBSYSTEMS: Lobby", N.compose("coverage", {"summary": "Lobby"})[1])
+        _, spec = N.compose("coverage", {"summary": "Lobby", "test_cases": "TC-1: Rejoin\nTC-4: Seat timeout", "details": "Verify network recovery"})
+        self.assertIn("COVERAGE FOCUS: Lobby", spec)
+        self.assertIn("SPECIFIC TEST CASES:\nTC-1: Rejoin\nTC-4: Seat timeout", spec)
+        self.assertIn("ADDITIONAL DETAILS:\nVerify network recovery", spec)
         _, spec = N.compose("feature", {"summary": "Add rematch", "details": "Either player can ask"})
         self.assertEqual(spec, "VISION: Add rematch\n\nADDITIONAL DETAILS:\nEither player can ask")
 

@@ -32,7 +32,25 @@ from pathlib import Path
 from typing import Any, Iterable
 
 DEFAULT_LIBRARY = "docs/test-cases"
-CASE_TYPES = ("unit", "integration", "ui", "manual")
+# The eight standard kinds of test case. Usability and user-acceptance are judged by a person, so they are checked by
+# hand; the other six need an automated test.
+CASE_TYPES = ("functionality", "user-interface", "performance", "integration", "usability", "database", "security",
+              "user-acceptance")
+CASE_TYPE_LABELS = {"functionality": "Functionality", "user-interface": "User interface", "performance": "Performance",
+                    "integration": "Integration", "usability": "Usability", "database": "Database",
+                    "security": "Security", "user-acceptance": "User acceptance"}
+MANUAL_TYPES = ("usability", "user-acceptance")
+# Older libraries and planners used unit/integration/ui/manual; these still read correctly.
+_TYPE_ALIASES = {
+    "unit": "functionality", "functional": "functionality", "feature": "functionality", "regression": "functionality",
+    "ui": "user-interface", "gui": "user-interface", "interface": "user-interface", "visual": "user-interface",
+    "perf": "performance", "load": "performance", "speed": "performance",
+    "e2e": "integration", "end-to-end": "integration", "api": "integration",
+    "ux": "usability", "accessibility": "usability",
+    "db": "database", "data": "database", "migration": "database",
+    "auth": "security", "authorization": "security", "permissions": "security",
+    "manual": "user-acceptance", "acceptance": "user-acceptance", "uat": "user-acceptance",
+}
 PRIORITIES = ("high", "medium", "low")
 CASE_ID_RE = re.compile(r"\bTC-\d+-\d{2,}\b")
 # Where test code lives, by convention across the stacks the orchestrator supports.
@@ -59,6 +77,20 @@ def _list(value: Any) -> list[str]:
     if isinstance(value, str):
         value = [v.strip() for v in value.splitlines() if v.strip()]
     return [_text(v) for v in (value or []) if _text(v)]
+
+
+def normalize_type(value: Any) -> str:
+    """One of the eight categories; older names and near-misses map across, anything else is functionality."""
+    key = re.sub(r"[\s_]+", "-", _text(value).lower())
+    key = re.sub(r"-?test-?cases?$", "", key).strip("-")
+    if key in CASE_TYPES:
+        return key
+    return _TYPE_ALIASES.get(key, "functionality")
+
+
+def is_manual(case: dict[str, Any]) -> bool:
+    """Checked by a person rather than by an automated test."""
+    return normalize_type(case.get("type")) in MANUAL_TYPES
 
 
 def slug(area: str) -> str:
@@ -88,9 +120,7 @@ def normalize_cases(raw: Any, issue_number: Any, source_job: str | None = None,
         expected = _text(item.get("expected"))
         if not title or not expected:
             raise TestCaseError("each test case needs a title and an expected result")
-        case_type = _text(item.get("type")).lower() or "unit"
-        if case_type not in CASE_TYPES:
-            case_type = "integration" if case_type in ("e2e", "end-to-end", "functional") else "unit"
+        case_type = normalize_type(item.get("type"))
         priority = _text(item.get("priority")).lower()
         case_id = _text(item.get("id"))
         if not case_id.startswith(prefix):
@@ -108,7 +138,7 @@ def normalize_cases(raw: Any, issue_number: Any, source_job: str | None = None,
             "expected": expected,
             "covers": _list(item.get("covers")),
             # Unit/integration test(s) or test group (suite, test plan) that cover this case.
-            "tests": _list(item.get("tests")) if case_type != "manual" else [],
+            "tests": _list(item.get("tests")) if case_type not in MANUAL_TYPES else [],
             "task": task if isinstance(task, int) and task > 0 else None,
             "source_job": source_job or item.get("source_job"),
             "created": item.get("created") or now,
@@ -163,12 +193,13 @@ def plan_problems(plan: dict[str, Any]) -> list[str]:
         problems.append("These acceptance criteria are not covered by any test case (list them in a case's `covers`):\n"
                         + "\n".join(f"- {c}" for c in uncovered))
     unassigned = [c.get("title") for c in raw if isinstance(c, dict)
-                  and _text(c.get("type")).lower() != "manual" and not _list(c.get("tests"))]
+                  and not is_manual(c) and not _list(c.get("tests"))]
     if unassigned:
         problems.append("These automated test cases have no `tests` assigned (name the suite, test, or test plan "
                         "that will cover each one):\n" + "\n".join(f"- {t}" for t in unassigned))
-    if all(c.get("type") == "manual" for c in raw if isinstance(c, dict)):
-        problems.append("Every test case is `manual`; at least the core behaviour must have an automated case.")
+    if all(is_manual(c) for c in raw if isinstance(c, dict)):
+        problems.append("Every test case is usability or user-acceptance (checked by hand); at least the core "
+                        "behaviour must have an automated case, such as functionality or integration.")
     return problems
 
 
@@ -206,6 +237,7 @@ def load_library(root: Path) -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(case, dict) and case.get("id"):
+            case["type"] = normalize_type(case.get("type"))
             case["_file"] = str(path.relative_to(root))
             cases.append(case)
     return cases
@@ -240,11 +272,7 @@ def create_or_update_library_case(root: Path, case_data: dict[str, Any], is_new:
     if not title or not expected:
         raise TestCaseError("Each test case needs a title and an expected result.")
     area = _text(case_data.get("area")) or "General"
-    case_type = _text(case_data.get("type")).lower() or "unit"
-    if case_type not in CASE_TYPES:
-        case_type = "unit"
-    priority = _text(case_data.get("priority")).lower()
-    priority = priority if priority in PRIORITIES else "medium"
+    case_type = normalize_type(case_data.get("type"))
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     case_id = _text(case_data.get("id"))
@@ -255,6 +283,11 @@ def create_or_update_library_case(root: Path, case_data: dict[str, Any], is_new:
         case_id = f"TC-0-{next_num:02d}"
 
     old_case = next((c for c in existing if c.get("id") == case_id), None)
+    # The form only asks for title, type, preconditions, steps and expected result; keep what it doesn't show.
+    priority = _text(case_data.get("priority") or (old_case or {}).get("priority")).lower()
+    priority = priority if priority in PRIORITIES else "medium"
+    if "area" not in case_data and old_case:
+        area = old_case.get("area") or area
     created = (old_case or {}).get("created") or now
 
     cleaned = {
@@ -266,8 +299,9 @@ def create_or_update_library_case(root: Path, case_data: dict[str, Any], is_new:
         "preconditions": _list(case_data.get("preconditions")),
         "steps": _list(case_data.get("steps")),
         "expected": expected,
-        "covers": _list(case_data.get("covers")),
-        "tests": _list(case_data.get("tests")) if case_type != "manual" else [],
+        "covers": _list(case_data["covers"] if "covers" in case_data else (old_case or {}).get("covers")),
+        "tests": (_list(case_data["tests"] if "tests" in case_data else (old_case or {}).get("tests"))
+                  if case_type not in MANUAL_TYPES else []),
         "created": created,
         "updated": now,
     }
@@ -296,7 +330,11 @@ What this project must be tested for, one JSON file per case under `<area>/<id>.
 Cases are written by the orchestrator's planner for every feature, bug fix and
 coverage job and reviewed in that job's pull request.
 
-- `type`: `unit`, `integration`, `ui` (automated) or `manual` (a person checks it on a device).
+- `type`: one of the eight standard categories: `functionality`, `user-interface`, `performance`, `integration`,
+  `usability`, `database`, `security`, `user-acceptance`. Usability and user-acceptance cases are checked by a
+  person; every other category needs an automated test.
+- `title`, `preconditions`, `steps` and `expected` say what is tested, what must be true first, how to do it
+  (numbered actions) and what should happen.
 - A case is **covered** when its id (for example `TC-141-01`) appears in a comment in
   the test that implements it. The orchestrator checks this after every build and sends
   the job back to be fixed if an automated case has no test.
@@ -396,7 +434,7 @@ def resolve_test_ref(ref: str, index: dict[str, Any]) -> str | None:
 
 
 def case_status(case: dict[str, Any], index: dict[str, Any]) -> dict[str, Any]:
-    if case.get("type") == "manual":
+    if is_manual(case):
         return {"status": "manual", "tests": [], "assigned": case.get("tests") or []}
     assigned = [t for t in case.get("tests") or [] if str(t).strip()]
     found = [f"{ref} → {where}" for ref in assigned if (where := resolve_test_ref(str(ref), index))]
@@ -430,7 +468,8 @@ def cases_by_test(cases: list[dict[str, Any]], cov: dict[str, dict[str, Any]]) -
 
 
 def job_cases(job: dict[str, Any]) -> list[dict[str, Any]]:
-    return [c for c in (job.get("plan") or {}).get("test_cases") or [] if isinstance(c, dict) and c.get("id")]
+    return [dict(c, type=normalize_type(c.get("type")))
+            for c in (job.get("plan") or {}).get("test_cases") or [] if isinstance(c, dict) and c.get("id")]
 
 
 def due_cases(job: dict[str, Any]) -> list[dict[str, Any]]:
@@ -447,7 +486,7 @@ def due_cases(job: dict[str, Any]) -> list[dict[str, Any]]:
 
 def missing_tests(root: Path, job: dict[str, Any]) -> list[dict[str, Any]]:
     """Due automated cases that aren't covered, each with its status attached."""
-    due = [c for c in due_cases(job) if c.get("type") != "manual"]
+    due = [c for c in due_cases(job) if not is_manual(c)]
     if not due:
         return []
     cov = coverage(root, due)
@@ -470,14 +509,14 @@ TEST_CASE_SCHEMA = """  "test_cases": [
     {
       "id": "string (OPTIONAL: keep the id when revising an existing case; omit for new cases)",
       "area": "string (feature area, e.g. Lobby, Checkout; reuse an existing area name when one fits)",
-      "title": "string (what is being verified, one line)",
-      "type": "unit|integration|ui|manual",
+      "title": "string (what are you testing? short and action-oriented, e.g. \"Log in with valid password\")",
+      "type": "functionality|user-interface|performance|integration|usability|database|security|user-acceptance",
       "priority": "high|medium|low",
-      "preconditions": ["string"],
-      "steps": ["string"],
-      "expected": "string (the observable result that makes this pass)",
+      "preconditions": ["string (what is needed before starting, e.g. \"User has an active account\")"],
+      "steps": ["string (the exact actions, one per item, in order, e.g. \"Enter email\", \"Enter password\", \"Click submit\")"],
+      "expected": "string (what should happen at the end, e.g. \"The dashboard loads\")",
       "covers": ["string (the acceptance criterion text this case verifies, copied verbatim)"],
-      "tests": ["string (REQUIRED unless manual: the unit/integration test or test group that covers it — a suite like LobbyRejoinTests, a test like LobbyRejoinTests/testKeepsSeat, or a test plan like Multiplayer; existing or to be written, following the project's naming)"],
+      "tests": ["string (REQUIRED unless usability or user-acceptance: the unit/integration test or test group that covers it — a suite like LobbyRejoinTests, a test like LobbyRejoinTests/testKeepsSeat, or a test plan like Multiplayer; existing or to be written, following the project's naming)"],
       "task": "integer (OPTIONAL, feature plans only: 1-based number of the task that implements it)"
     }
   ]"""
@@ -491,11 +530,18 @@ Rules:
 - Every acceptance criterion must be covered by at least one case; put the criterion's exact text in `covers`.
 - Cover the happy path, edge cases (empty, limits, timing, concurrency) and failure/error paths. For a bug, include a
   regression case that fails before the fix and passes after.
-- Prefer automated types (`unit`, `integration`, `ui`) that fit the project's existing test framework. Use `manual`
-  only for what cannot be automated (real devices, hardware, subjective visuals); manual cases need clear steps.
-- Tie every automated case to real unit or integration tests via `tests`: reuse an existing suite or test when it
-  already covers the behaviour, otherwise name the new test the builder should write (in the suite it belongs to).
-  Unit cases go in unit suites; integration cases in integration suites/test plans.
+- Every case has exactly one `type`, one of these eight standard categories:
+  `functionality` (the feature does what it should), `user-interface` (screens, layout, controls),
+  `performance` (speed, load, resource use), `integration` (parts or services working together),
+  `usability` (ease of use; checked by a person), `database` (stored data, queries, migrations),
+  `security` (access control, input handling, secrets) and `user-acceptance` (the user's own sign-off; checked by
+  a person). Choose the category that best fits; cover the categories that matter for this change.
+- Each case is written as four plain things: a short, action-oriented `title`; `preconditions` (what is needed
+  before starting); numbered-in-order `steps` (the exact actions); and the `expected` result. Nothing else is needed
+  to read it.
+- Only `usability` and `user-acceptance` cases are checked by hand; give them clear steps. Every other category
+  must be tied to real automated tests via `tests`: reuse an existing suite or test when it already covers the
+  behaviour, otherwise name the new test the builder should write (in the suite it belongs to).
 - Keep cases concrete and independently checkable; the builder implements or extends the assigned tests.
 - Plans without adequate test cases are sent back to you.
 """
@@ -503,7 +549,8 @@ Rules:
 VERIFIER_INSTRUCTIONS = """
 ### TEST CASE REVIEW
 The plan's `test_cases` define what will be tested. Check that they cover every acceptance criterion, include edge and
-failure cases, are realistic for this codebase's test setup, and aren't `manual` when they could be automated. Raise
+failure cases, are realistic for this codebase's test setup, and aren't usability or user-acceptance when they could be automated, and use the standard categories
+(functionality, user-interface, performance, integration, usability, database, security, user-acceptance). Raise
 `concerns` (with the missing cases in `suggested_additions`) when coverage is inadequate.
 """
 
@@ -513,7 +560,7 @@ def prompt_block(cases: list[dict[str, Any]]) -> str:
     if not cases:
         return ""
     lines = ["Test cases to implement (from the test case library):",
-             "Write an automated test for every case not marked manual, and put its id in a comment on that test "
+             "Write an automated test for every case that isn't usability or user-acceptance, and put its id in a comment on that test "
              "(e.g. `// TC-141-01` or `# TC-141-01`). The orchestrator checks for these ids after the build.", ""]
     for c in cases:
         lines.append(f"- {c['id']} [{c['type']}, {c['priority']}] {c['title']}")
@@ -532,7 +579,7 @@ def issue_section(cases: list[dict[str, Any]]) -> list[str]:
         return []
     lines = ["", "## Test Cases"]
     for c in cases:
-        tests = f" — _tests:_ {', '.join(c['tests'])}" if c.get("tests") else (" — ⚠️ _no test assigned_" if c["type"] != "manual" else "")
+        tests = f" — _tests:_ {', '.join(c['tests'])}" if c.get("tests") else (" — ⚠️ _no test assigned_" if not is_manual(c) else "")
         lines.append(f"- **{c['id']}** ({c['type']}, {c['priority']}) {c['title']} — _expected:_ {c['expected']}{tests}")
     return lines
 
@@ -592,7 +639,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(case, indent=2))
         return 0
     if args.action == "manual":
-        for c in (c for c in cases if c.get("type") == "manual"):
+        for c in (c for c in cases if is_manual(c)):
             print(f"[ ] {c['id']}  {c['title']}")
             for step in c.get("steps", []):
                 print(f"      - {step}")
@@ -605,7 +652,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(rows))
         return 0
     for c in rows:
-        tests = ", ".join(c["coverage"]["assigned"]) or ("—" if c.get("type") == "manual" else "NO TEST ASSIGNED")
+        tests = ", ".join(c["coverage"]["assigned"]) or ("—" if is_manual(c) else "NO TEST ASSIGNED")
         print(f"{c['id']:12} {c['coverage']['status']:10} {c.get('area', ''):16} {c['title']}  [{tests}]")
     totals = summarize(cases, cov)
     print(f"\n{totals['total']} cases: {totals['covered']} covered, {totals['planned']} with a test still to write, "

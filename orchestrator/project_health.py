@@ -16,14 +16,19 @@ def _item(id_: str, title: str, status: str, detail: str, **action: Any) -> dict
     return {"id": id_, "title": title, "status": status, "detail": detail, **action}
 
 
+def _n(count: int, word: str, plural: str | None = None) -> str:
+    """"1 feature", "3 features": counts read as words, never "feature(s)"."""
+    return f"{count} {word if count == 1 else plural or word + 's'}"
+
+
 def evaluate(f: dict[str, Any]) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
 
     sections = f.get("prd_sections") or {}
     written = [k for k, v in sections.items() if v]
     if not written:
-        items.append(_item("prd", "Product requirements", "todo", "Optional, but nothing says what this product is for, so every job guesses. Describe it in a few sentences, draft it from the project, or import a PRD.",
-                           route="#/product", label="Add it"))
+        items.append(_item("prd", "Product requirements", "todo", "Tell the AI what you're building. Write a short description, generate a draft, or import a PRD.",
+                           route="#/product", label="Define your product"))
     else:
         updates = "It updates itself as jobs finish." if f.get("prd_auto_update") else "Automatic updates are off."
         items.append(_item("prd", "Product requirements", "ok", f"{len(written)} of 5 sections written. {updates}"))
@@ -50,18 +55,18 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
         items.append(_item("repo", "Git and GitHub", "todo", "This folder isn't a git repository.", hint="git init"))
 
     if f["features"] == 0:
-        items.append(_item("features", "Features", "todo", "Group the work into features in product requirements.", route="#/product", label="Product requirements"))
+        items.append(_item("features", "Features", "todo", "List what it has to do under Core features, so jobs can be grouped.", route="#/product?section=features", label="Add features"))
     elif f["jobs_unassigned"]:
-        items.append(_item("features", "Features", "warn", f"{f['features']} feature(s); {f['jobs_unassigned']} open job(s) aren't in one.", route="#/product", label="Product requirements"))
+        items.append(_item("features", "Features", "warn", f"{_n(f['features'], 'feature')}; " + (f"1 open job isn't in one." if f["jobs_unassigned"] == 1 else f"{f['jobs_unassigned']} open jobs aren't in one."), route="#/", label="See jobs"))
     else:
-        items.append(_item("features", "Features", "ok", f"{f['features']} feature(s), every open job assigned."))
+        items.append(_item("features", "Features", "ok", f"{_n(f['features'], 'feature')}, every open job assigned."))
 
     if f["suites"] == 0:
         items.append(_item("tests", "Tests", "todo", "No tests found. Every job should add some.", route="#/new?type=coverage", label="Add tests"))
     elif f["cases_gap"]:
-        items.append(_item("tests", "Tests", "warn", f"{f['cases_gap']} planned automated case(s) have no test yet.", route="#/tests?cases=unassigned", label="See them"))
+        items.append(_item("tests", "Tests", "warn", f"{_n(f['cases_gap'], 'planned automated case')} {'has' if f['cases_gap'] == 1 else 'have'} no test yet.", route="#/tests?cases=unassigned", label="See them"))
     else:
-        items.append(_item("tests", "Tests", "ok", f"{f['suites']} suite(s); every planned case is covered." if f["cases_total"] else f"{f['suites']} suite(s) found."))
+        items.append(_item("tests", "Tests", "ok", f"{_n(f['suites'], 'test file')}; every planned case is covered." if f["cases_total"] else f"{_n(f['suites'], 'test file')} found."))
 
     if not f["ci"]:
         items.append(_item("ci", "Automated builds (CI)", "todo", "Nothing runs your tests on every push.",
@@ -76,21 +81,22 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
     elif not f["builds_sent"]:
         items.append(_item("delivery", "Getting builds to testers", "todo", "Set up, but nothing has been sent to testers yet.", route="#/delivery", label="Send a build"))
     else:
-        items.append(_item("delivery", "Getting builds to testers", "ok", f"{f['builds_sent']} build(s) sent."))
+        items.append(_item("delivery", "Getting builds to testers", "ok", f"{_n(f['builds_sent'], 'build')} sent."))
 
     if not f["tag"]:
-        items.append(_item("release", "Releases", "todo", "No release tagged yet, so \"what's live\" has no anchor.", hint="git tag v0.1.0 && git push --tags"))
+        items.append(_item("release", "Releases", "todo", "Mark a version as released so you can track changes since it shipped.",
+                           release=True, route="#/delivery", label="Create release tag"))
     elif f["unreleased"] is not None and f["unreleased"] > UNRELEASED_WARN:
         items.append(_item("release", "Releases", "warn", f"{f['unreleased']} changes since {f['tag']}. Time for a release?", route="#/delivery", label="See what's live"))
     else:
         items.append(_item("release", "Releases", "ok", f"Last release {f['tag']}."))
 
     if f["features_needing_kpis"]:
-        items.append(_item("kpis", "Measuring it", "todo", f"{f['features_needing_kpis']} feature(s) with work in them have no KPI, so you can't tell if they worked.", route="#/measure", label="Add KPIs"))
+        items.append(_item("kpis", "Measuring it", "todo", f"{_n(f['features_needing_kpis'], 'feature')} with work in {'it has' if f['features_needing_kpis'] == 1 else 'them have'} no KPI, so you can't tell if {'it' if f['features_needing_kpis'] == 1 else 'they'} worked.", route="#/measure", label="Add KPIs"))
     elif f["kpis_total"] and not f["kpis_measured"]:
         items.append(_item("kpis", "Measuring it", "warn", "KPIs are defined but no results are logged yet.", route="#/measure", label="Log a result"))
     elif f["kpis_total"]:
-        items.append(_item("kpis", "Measuring it", "ok", f"{f['kpis_measured']} of {f['kpis_total']} KPI(s) have results."))
+        items.append(_item("kpis", "Measuring it", "ok", f"{f['kpis_measured']} of {_n(f['kpis_total'], 'KPI')} {'has' if f['kpis_measured'] == 1 else 'have'} results."))
     else:
         items.append(_item("kpis", "Measuring it", "todo", "No KPIs yet.", route="#/measure", label="Set up measuring"))
 

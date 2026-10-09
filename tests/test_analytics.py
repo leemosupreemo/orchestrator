@@ -156,6 +156,77 @@ class ProviderTests(unittest.TestCase):
         ids = [p["id"] for p in A.public_providers()]
         self.assertEqual(ids, ["mixpanel", "amplitude", "posthog"])
 
+    def test_format_event_payload_mixpanel(self):
+        url, payload = A.format_event_payload("mixpanel", "MY_TOKEN", "https://api.mixpanel.com", "job_started", {"job_id": "123", "distinct_id": "u1"}, 1700000000)
+        self.assertEqual(url, "https://api.mixpanel.com/track?verbose=1")
+        self.assertEqual(payload[0]["event"], "job_started")
+        self.assertEqual(payload[0]["properties"]["token"], "MY_TOKEN")
+        self.assertEqual(payload[0]["properties"]["job_id"], "123")
+        self.assertEqual(payload[0]["properties"]["distinct_id"], "u1")
+
+    def test_track_event_with_runtime_root(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = Path(tmpdir)
+            cfg = runtime / "config"
+            cfg.mkdir(parents=True)
+            (cfg / "settings.json").write_text(json.dumps({"analytics_provider": "mixpanel", "analytics_key": "TOKEN", "analytics_region": "us"}))
+
+            seen = []
+            class Resp:
+                status = 200
+                def read(self): return b'{"status":1}'
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+
+            def fake_opener(req, timeout=5):
+                seen.append((req.full_url, json.loads(req.data.decode("utf-8"))))
+                return Resp()
+
+            ok = A.track_event("job_completed", {"status": "succeeded"}, runtime_root=runtime, async_send=False, opener=fake_opener)
+            self.assertTrue(ok)
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0][0], "https://api.mixpanel.com/track?verbose=1")
+            self.assertEqual(seen[0][1][0]["event"], "job_completed")
+            self.assertEqual(seen[0][1][0]["properties"]["status"], "succeeded")
+
+            # Test track_session and track_signin
+            A.track_session(distinct_id="u1", source="web", runtime_root=runtime, async_send=False, opener=fake_opener) if hasattr(A.track_session, "__code__") else None
+            A.track_signin(method="token", distinct_id="u1", runtime_root=runtime)
+            A.track_wizard(7, 7, 5, 2, ["docs"], machines_count=2, llms_count=3, llms_list=["codex"], runtime_root=runtime)
+            A.track_job_run("j1", "feature-plan", "started", planner_model="codex", job_seq=1, runtime_root=runtime)
+            A.track_job_run("j1", "feature-plan", "succeeded", duration_s=45.2, planner_model="codex", job_seq=1, runtime_root=runtime)
+            A.track_job_run("j2", "bug-fix", "failed", failure_reason="compile_err", job_seq=2, runtime_root=runtime)
+            self.assertGreater(len(seen), 1)
+
+    def test_probe_mixpanel_mcp_returns_llm_orgs(self):
+        mcps = A.probe_mixpanel_mcp()
+        self.assertIsInstance(mcps, list)
+        self.assertGreaterEqual(len(mcps), 5)
+        ids = {m["id"] for m in mcps}
+        self.assertTrue({"google", "anthropic", "openai", "opencode", "ollama"}.issubset(ids))
+        for m in mcps:
+            self.assertIn("org", m)
+            self.assertIn("cli", m)
+            self.assertIn("installed", m)
+            self.assertIn("cmd", m)
+            self.assertIsInstance(m["installed"], bool)
+
+    def test_probe_provider_mcp_all_providers(self):
+        for pid in ("mixpanel", "amplitude", "posthog"):
+            mcps = A.probe_provider_mcp(pid)
+            self.assertEqual(len(mcps), 5)
+            self.assertTrue(all(pid in m["cmd"] for m in mcps))
+
+    def test_public_providers_includes_dashboards(self):
+        providers = {p["id"]: p for p in A.public_providers()}
+        self.assertIn("mixpanel", providers)
+        self.assertEqual(providers["mixpanel"]["dashboards"], {"us": "https://mixpanel.com/project", "eu": "https://eu.mixpanel.com/project"})
+        self.assertIn("amplitude", providers)
+        self.assertEqual(providers["amplitude"]["dashboards"], {"us": "https://analytics.amplitude.com", "eu": "https://analytics.eu.amplitude.com"})
+        self.assertIn("posthog", providers)
+        self.assertEqual(providers["posthog"]["dashboards"], {"us": "https://us.posthog.com", "eu": "https://eu.posthog.com"})
+
 
 if __name__ == "__main__":
     unittest.main()

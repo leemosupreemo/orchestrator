@@ -46,7 +46,8 @@ class GenericChecks(unittest.TestCase):
         r = self.go({"build_command": "cargo build", "test_command": "cargo test"}, installed=("gh",))
         self.assertEqual((r["build-tool"]["status"], r["test-tool"]["status"]), ("fail", "fail"))
         self.assertIn("cargo", r["build-tool"]["detail"])
-        self.assertEqual(r["build-tool"]["route"], "#/config/project")
+        self.assertEqual(r["build-tool"]["route"], "")  # no page edits the build command; the fix says where it lives
+        self.assertIn("build_command", r["build-tool"]["fix"])
 
     def test_installed_tools_pass(self):
         r = self.go({"build_command": "cargo build"}, installed=("cargo", "gh"))

@@ -31,6 +31,8 @@ import os
 import queue
 import re
 import secrets
+import select
+import socket
 import shutil
 import zipfile
 import signal
@@ -56,12 +58,15 @@ import urllib.request
 
 from orchestrator import account
 from orchestrator import audit
+from orchestrator import connection_log
 from orchestrator import integrations
 from orchestrator import analytics
 from orchestrator import delivery as delivery_view
+from orchestrator import releases
 from orchestrator import features as feature_store
 from orchestrator import feature_map
 from orchestrator import plan_run
+from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
 from orchestrator import task_revert
 from orchestrator import preflight
@@ -78,6 +83,7 @@ from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.runtime_control import ActivityGate, BusyError, InstanceLease
+from orchestrator.web.run_progress import RunProgress
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
@@ -156,16 +162,31 @@ class BackgroundTasks:
         def run() -> None:
             try:
                 result = work()
-                item.update(status="done", result=result)
+                with self._lock:
+                    if item.get("status") != "canceled":
+                        item.update(status="done", result=result)
             except UIError as exc:
-                item.update(status="error", error=str(exc), code=int(exc.status))
+                with self._lock:
+                    if item.get("status") != "canceled":
+                        item.update(status="error", error=str(exc), code=int(exc.status))
             except Exception as exc:  # whatever went wrong, the page gets a message rather than a task that never ends
-                item.update(status="error", error=str(exc)[:300] or "Something went wrong.", code=500)
+                with self._lock:
+                    if item.get("status") != "canceled":
+                        item.update(status="error", error=str(exc)[:300] or "Something went wrong.", code=500)
             finally:
                 release()
 
         threading.Thread(target=run, daemon=True).start()
         return task_id
+
+    def cancel(self, task_id: str) -> bool:
+        with self._lock:
+            item = self._items.get(task_id)
+            if item is None:
+                return False
+            if item.get("status") == "running":
+                item.update(status="canceled", error="Draft cancelled.")
+            return True
 
     def get(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -188,13 +209,16 @@ class PtySession:
         self.action = action
         self.title = title
         self.argv = argv
+        self.cwd = cwd
         self.job_id: str | None = None
         self.result_job: str | None = None
         self.started = time.time()
         self.last_output = self.started
         self.ended: float | None = None
         self.exit_code: int | None = None
+        self.stopped: bool = False
         self._buffer = bytearray()
+        self._progress = RunProgress()
         self._base = 0  # absolute offset of _buffer[0]
         self._cond = threading.Condition()
         self._transcript = transcript.open("ab") if transcript else None
@@ -251,6 +275,7 @@ class PtySession:
         with self._cond:
             self.last_output = time.time()
             self._buffer.extend(chunk)
+            self._progress.feed(chunk)
             overflow = len(self._buffer) - MAX_BUFFER_BYTES
             if overflow > 0:
                 del self._buffer[:overflow]
@@ -295,6 +320,7 @@ class PtySession:
     def stop(self) -> None:
         if not self.running:
             return
+        self.stopped = True
         try:
             os.killpg(self._proc.pid, signal.SIGTERM)
         except OSError:
@@ -312,14 +338,58 @@ class PtySession:
 
     def summary(self) -> dict[str, Any]:
         idle = time.time() - self.last_output if self.running else 0
+        with self._cond:
+            progress = self._progress.snapshot(running=self.running)
+        if not progress.get("models"):
+            assigned: list[str] = []
+            target_job = self.job_id or self.result_job
+            if not target_job and self.argv:
+                for arg in self.argv:
+                    if isinstance(arg, str) and arg.endswith(".json") and "job" in arg:
+                        candidate = Path(arg).stem
+                        if candidate:
+                            target_job = candidate
+                            break
+            if target_job and getattr(self, "cwd", None):
+                job_file = jobs_dir(self.cwd) / f"{target_job}.json"
+                if job_file.is_file():
+                    job_data = read_json_file(job_file)
+                    for m in [job_data.get("actual_builder_used") or job_data.get("builder"),
+                              job_data.get("planner"), job_data.get("reviewer")]:
+                        if m and isinstance(m, str) and m not in assigned:
+                            assigned.append(m)
+                    for m in job_data.get("allowed_models") or []:
+                        if m and isinstance(m, str) and m not in assigned:
+                            assigned.append(m)
+            if self.argv:
+                for flag in ("--planner", "--builder", "--reviewer", "--model", "--evaluator", "--verifier", "--allowed-models"):
+                    if flag in self.argv:
+                        try:
+                            idx = self.argv.index(flag)
+                            if idx + 1 < len(self.argv):
+                                val = self.argv[idx + 1]
+                                if val and not val.startswith("-"):
+                                    if flag == "--allowed-models":
+                                        for m in val.split(","):
+                                            m = m.strip()
+                                            if m and m not in assigned:
+                                                assigned.append(m)
+                                    elif val not in assigned:
+                                        assigned.append(val)
+                        except (ValueError, IndexError):
+                            pass
+            if assigned:
+                progress["assigned_models"] = assigned
         return {
             "id": self.id, "action": self.action, "title": self.title,
             "command": " ".join(_display_argv(self.argv)), "started": self.started,
             "ended": self.ended, "running": self.running, "exit_code": self.exit_code,
+            "stopped": self.stopped,
             "job": self.job_id, "result_job": self.result_job,
             # Quiet for a while with a prompt-shaped last line: probably waiting on you.
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
             "last_line": self._last_line(), "idle": int(idle),
+            "progress": progress,
         }
 
     def _last_line(self) -> str:
@@ -415,11 +485,31 @@ def read_json_file(path: Path) -> dict[str, Any]:
         return {}
 
 
-def git(root: Path, *args: str) -> str:
+def git(root: Path, *args: str, timeout: float = 5.0) -> str:
     try:
-        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=5).stdout.strip()
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=timeout).stdout.strip()
     except Exception:
         return ""
+
+
+def _safe_read_json_file(path: Path, timeout: float = 0.3) -> dict[str, Any]:
+    """Read a JSON file with a hard timeout to avoid blocking indefinitely on evicted or remote files."""
+    try:
+        if not path.is_file():
+            return {}
+    except OSError:
+        return {}
+    res: list[dict[str, Any]] = [{}]
+    def worker() -> None:
+        try:
+            res[0] = read_json_file(path)
+        except Exception:
+            pass
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    return res[0]
+
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -509,6 +599,29 @@ def job_task_list(job: dict[str, Any]) -> list[Any]:
     return job["tasks"] if isinstance(job.get("tasks"), list) else []
 
 
+def worker_alive(job: dict[str, Any]) -> bool | None:
+    """Is the job's worker running? True or False when it can be checked here; None when it runs on another machine.
+    A job that says it's building but whose worker is gone (stopped, killed, crashed) isn't building."""
+    host = job.get("worker_host")
+    if host and host != socket.gethostname():
+        return None
+    try:
+        pid = int(job.get("worker_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # alive, run by another user
+    except OSError:
+        return False
+    return True
+
+
 def job_state(job: dict[str, Any]) -> dict[str, Any]:
     """What the job is waiting on, in plain words, and the one action that moves
     it forward. `group` is needs_you | working | done; `tone` drives colour:
@@ -531,7 +644,11 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
     if status == "human-needed":
         if job.get("human_clarification_question"):
             return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
-        return state("needs_you", "attention", "Action required", "Waiting on a decision in the console.", "console", "Open in console")
+        error = str(job.get("last_error") or "").strip()
+        reason = f"It stopped with an error: {error}" if error else "It stopped before finishing."
+        if remaining:
+            return state("needs_you", "failed" if error else "attention", "Stopped", reason, "resume", "Try again")
+        return state("needs_you", "failed" if error else "attention", "Stopped", reason, "debug", "Run a fix")
     if status == "designing":
         return state("needs_you", "attention", "Design ready", "Approve the design to plan its implementation, or ask for changes.", "approve", "Approve design")
     if status == "planned":
@@ -554,6 +671,10 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
+    if status in {"executing", "running", "in-progress"} and worker_alive(job) is False:
+        done = len(tasks) - remaining if tasks else 0
+        progress = f": {done} of {len(tasks)} tasks done" if tasks else ""
+        return state("needs_you", "attention", "Paused", f"Stopped before it finished{progress}.", "resume", "Resume")  # the page says where Resume picks up
     if status in {"executing", "running", "in-progress", "decomposed"}:
         return state("working", "working", "Building", "A worker is implementing this.")
     if status == "completed":
@@ -674,7 +795,7 @@ def gh_cached(root: Path, args: list[str]) -> str | None:
     return out
 
 
-def delivery_overview(root: Path) -> dict[str, Any]:
+def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     settings = read_settings(root)
     config = read_json_file(runtime_dir(root) / "project.json")
     jobs = list_jobs(root)
@@ -686,14 +807,53 @@ def delivery_overview(root: Path) -> dict[str, Any]:
     data = delivery_view.overview(lambda *a: git(root, *a), lambda argv: gh_cached(root, argv), runtime_dir(root),
                                   base_branch(root, settings), jobs, firebase, ci)
     data["web_url"] = repo_web_url(root)
+
+    all_branches = [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200]
+    current_git_branch = git(root, "branch", "--show-current") or base_branch(root, settings)
+    target_branch = branch if branch and branch in all_branches else (current_git_branch if current_git_branch in all_branches else (all_branches[0] if all_branches else "main"))
+
+    commit_parts = git(root, "log", "-1", "--format=%h%x09%s%x09%cr%x09%an", target_branch).split("\t") if target_branch else []
+    branch_commit = {
+        "commit": commit_parts[0] if len(commit_parts) > 0 else "",
+        "subject": commit_parts[1] if len(commit_parts) > 1 else "",
+        "when": commit_parts[2] if len(commit_parts) > 2 else "",
+        "author": commit_parts[3] if len(commit_parts) > 3 else "",
+    }
+
+    matching_jobs = [j for j in jobs if j.get("branch") == target_branch] + [j for j in archived_feature_jobs(root) if j.get("branch") == target_branch]
+    matching_jobs.sort(key=lambda j: j.get("updated", 0), reverse=True)
+    latest_job = None
+    if matching_jobs:
+        lj = matching_jobs[0]
+        latest_job = {
+            "id": lj.get("id"),
+            "title": lj.get("title") or lj.get("id"),
+            "status": lj.get("status"),
+            "updated": lj.get("updated"),
+        }
+
+    auth_sources = allowed_auth_sources(root)
+    user_email = next(iter(auth_sources), "")
+
+    data["branches"] = all_branches
+    data["current_branch"] = current_git_branch
+    data["selected_branch"] = target_branch
+    data["branch_commit"] = branch_commit
+    data["latest_job"] = latest_job
+    data["user_email"] = user_email
     return data
 
 
 def analytics_overview(root: Path) -> dict[str, Any]:
     state = analytics_state(read_settings(root))
     provider = analytics.PROVIDERS.get(state["provider"], {})
+    region = state.get("region", "us")
+    dashboard_url = provider.get("dashboards", {}).get(region, "")
     return {**state, "provider_name": provider.get("name"), "key_label": provider.get("key_label"),
-            "features": feature_store.rollup(feature_store.load(runtime_dir(root)), [])}
+            "dashboard_url": dashboard_url,
+            "features": feature_store.rollup(feature_store.load(runtime_dir(root)), []),
+            "mixpanel_mcp": analytics.probe_mixpanel_mcp(),
+            "provider_mcp": {p: analytics.probe_provider_mcp(p) for p in analytics.PROVIDERS}}
 
 
 def project_facts(root: Path) -> dict[str, Any]:
@@ -717,7 +877,7 @@ def project_facts(root: Path) -> dict[str, Any]:
     gaps = 0
     if cases:
         cov = test_case_lib.coverage(root, cases, test_index(root))
-        gaps = sum(1 for c in cases if c.get("type") != "manual" and cov[c["id"]]["status"] in ("unassigned", "planned"))
+        gaps = sum(1 for c in cases if not test_case_lib.is_manual(c) and cov[c["id"]]["status"] in ("unassigned", "planned"))
     kpis = [k for f in features for k in f.get("kpis") or []]
     pipeline = delivery_view.pipeline(lambda argv: gh_cached(root, argv), base_branch(root, settings))
     base_runs = [r for r in pipeline["runs"] if r["on_base"]]
@@ -729,7 +889,7 @@ def project_facts(root: Path) -> dict[str, Any]:
         "tag": live["tag"] if live else None, "unreleased": live["unreleased"] if live else None,
         "jobs_total": len(jobs) + len(archived_feature_jobs(root)), "jobs_open": sum(1 for j in jobs if j["state"]["group"] != "done"),
         "jobs_unassigned": sum(1 for j in jobs if not j.get("feature") and j["state"]["group"] != "done"),
-        "features": len(features), "suites": len(test_index(root)["suites"]), "cases_total": len(cases), "cases_gap": gaps,
+        "features": len(features), "suites": len(set(test_index(root)["suites"].values())), "cases_total": len(cases), "cases_gap": gaps,
         "kpis_total": len(kpis), "kpis_measured": sum(1 for k in kpis if k.get("measurements")),
         "features_needing_kpis": sum(1 for f in features if f["id"] in with_jobs and not f.get("kpis")),
         "ci": workflows.is_dir() and any(workflows.glob("*.y*ml")) or (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists(),
@@ -780,6 +940,45 @@ def resolve_job_path(root: Path, job_id: str) -> Path:
     if not path.is_file():
         raise UIError("Job not found", HTTPStatus.NOT_FOUND)
     return path
+
+
+RUN_LOG = re.compile(r"(\d{8}-\d{6})-([0-9a-f]{6})-([a-z0-9_]+)\.log")
+
+
+def run_history(root: Path, limit: int = 50) -> list[dict[str, Any]]:
+    """Runs started from the web app, read back from their saved transcripts, so the list outlives a restart."""
+    folder = runtime_dir(root) / "logs" / "ui"
+    runs = []
+    for path in folder.glob("*.log") if folder.is_dir() else []:
+        match = RUN_LOG.fullmatch(path.name)
+        if not match:
+            continue
+        stamp, token, action = match.groups()
+        runs.append({"id": f"{stamp}-{token}", "action": action,
+                     "title": ACTIONS[action].title if action in ACTIONS else action.replace("_", " ").capitalize(),
+                     "started": datetime.strptime(stamp, "%Y%m%d-%H%M%S").timestamp(),
+                     "log": f"logs/ui/{path.name}", "size": path.stat().st_size})
+    return sorted(runs, key=lambda r: r["started"], reverse=True)[:limit]
+
+
+def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]:
+    """Put jobs away without touching their branch or files: the job file moves to the archive and remembers its
+    status, so Home's Archived filter can restore it exactly. Running jobs are left alone."""
+    archived = []
+    folder = jobs_dir(root) / "archive"
+    for job_id in job_ids:
+        if job_id in running:
+            continue
+        job_path = resolve_job_path(root, job_id)
+        job = read_json_file(job_path)
+        job["restore_status"] = job.get("status")
+        job["status"] = "archived"
+        job["completed_at"] = datetime.now().isoformat()
+        folder.mkdir(parents=True, exist_ok=True)
+        write_json_file(job_path, job)
+        shutil.move(str(job_path), str(folder / job_path.name))
+        archived.append(job_id)
+    return archived
 
 
 def delete_job(root: Path, job_id: str, revert: bool = False) -> None:
@@ -851,7 +1050,7 @@ def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | 
     rows = []
     for c in cases:
         c_cov = cov[c["id"]]
-        rows.append({"id": c["id"], "area": c.get("area") or "General", "title": c.get("title", ""), "type": c.get("type", "unit"),
+        rows.append({"id": c["id"], "area": c.get("area") or "General", "title": c.get("title", ""), "type": test_case_lib.normalize_type(c.get("type")),
                      "priority": c.get("priority", "medium"), "preconditions": c.get("preconditions") or [], "steps": c.get("steps") or [],
                      "expected": c.get("expected", ""), "covers": c.get("covers") or [], "task": c.get("task"),
                      "status": c_cov["status"], "found_in": c_cov["tests"], "assigned": c_cov["assigned"],
@@ -944,6 +1143,8 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
         free = None
     machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
     found = run_check.blockers(job, machines, free, run_check.MIN_DISK_GB, run_check.model_names_overlap)
+    if job.get("status") in run_check.CHECKED_STATUSES and run_check.switches_branches(job) and run_check.runs_from(root):
+        found.insert(0, {"id": "self_checkout", "text": run_check.SELF_CHECKOUT_TEXT, "fix": "", "route": ""})
     if job.get("status") in run_check.CHECKED_STATUSES:
         have = {b["id"] for b in found}
         for item in preflight.failures(preflight_overview(root)):
@@ -953,6 +1154,216 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
+TICKET_APPS, DESIGN_APPS, PROBLEM_APPS = {"jira", "trello"}, {"figma"}, {"sentry"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def is_bug_job(job: dict[str, Any]) -> bool:
+    return str(job.get("type") or "").startswith(("bug", "debug"))
+
+
+def reference_role(ref: dict[str, Any], bug: bool) -> str:
+    """What a reference is to the job: design (what it should look like) or problem (evidence of what's wrong).
+    Newer references say so; older ones are inferred from the file, and on a bug job a screenshot is evidence."""
+    if ref.get("role") in ("design", "problem", "ticket"):
+        return ref["role"]
+    target = str(ref.get("path") or ref.get("url") or "").lower()
+    suffix = PurePosixPath(target.split("?")[0]).suffix
+    if suffix in (".log", ".txt", ".crash", ".ips", ".json") or ref.get("type") == "text_reference":
+        return "problem"
+    if suffix in IMAGE_SUFFIXES:
+        return "problem" if bug else "design"
+    return "design"
+
+
+def job_context(root: Path, job: dict[str, Any]) -> dict[str, Any]:
+    """Everything attached to a job, grouped by what it is to the job rather than where it came from: the ticket
+    (why the work exists), designs (what it should look like) and what went wrong (errors, logs, screenshots of the
+    problem). A design is a design whether it came from Figma or an upload."""
+    bug = is_bug_job(job)
+    out: dict[str, list[dict[str, Any]]] = {"ticket": [], "designs": [], "problem": []}
+    for link in job.get("external_links") or []:
+        provider = str(link.get("provider") or "")
+        item = {"title": link.get("title") or link.get("ref") or "", "ref": link.get("ref") or "", "url": link.get("url") or "",
+                "source": provider.capitalize(), "detail": link.get("detail") or ""}
+        out["designs" if provider in DESIGN_APPS else "problem" if provider in PROBLEM_APPS else "ticket"].append(item)
+    for ref in job.get("reference_artifacts") or []:
+        path, url = str(ref.get("path") or ""), str(ref.get("url") or "")
+        name = ref.get("name") or (PurePosixPath(path).name if path else url)
+        source = "Link" if url else "Pasted" if name == "Pasted log" else "Upload"
+        item = {"title": ref.get("note") or name, "url": url, "source": source, "detail": name if ref.get("note") and source != "Pasted" else ""}
+        if path:
+            suffix = PurePosixPath(path).suffix.lower()
+            if suffix in IMAGE_SUFFIXES:
+                item["image"] = path
+            runtime_rel = PurePosixPath(path).relative_to(DEFAULT_RUNTIME_DIRNAME) if path.startswith(DEFAULT_RUNTIME_DIRNAME + "/") else None
+            if runtime_rel and suffix not in IMAGE_SUFFIXES:
+                item["file"] = str(runtime_rel)
+        role = reference_role(ref, bug)
+        out["designs" if role == "design" else "problem" if role == "problem" else "ticket"].append(item)
+    for ref in linked_logs(job):
+        entry = resolve_linked_log(root, ref)
+        out["problem"].append({"title": entry.get("label") or ref, "source": "Log", "files": entry.get("files") or [], "url": ""})
+    return {**out, "problem_first": bug, "updates": list(reversed(job.get("integration_log") or []))[:20]}
+
+
+def attach_to_job(root: Path, job_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Attach one thing to a job by what it is. It only attaches: nothing runs. The AI reads it on its next step."""
+    role = str(body.get("role") or "")
+    if role not in ("design", "problem", "ticket"):
+        raise UIError("Say what you're attaching: a ticket, a design, or a log or error.")
+    job_path = resolve_job_path(root, job_id)
+    job = read_json_file(job_path)
+    note = _text(body, "note", limit=1000)
+    url = _text(body, "url", limit=2000)
+    upload = _text(body, "upload", limit=500)
+    text = _text(body, "text", limit=200_000)
+    if url:
+        if not re.fullmatch(r"https?://\S+", url):
+            raise UIError("A link starts with http:// or https://")
+        ref = {"url": url, "name": url, "type": "figma_url" if "figma.com" in urlparse(url).netloc else "url_reference"}
+    elif upload:
+        path = runtime_file(root, upload)  # only files under the runtime folder (where uploads are saved)
+        ref = {"path": str(path.relative_to(safe_resolve(root))), "name": upload_display_name(path), "type": new_job_form.reference_type(upload)}
+    elif text and role == "problem":
+        saved = save_upload(root, "pasted.log", text.encode("utf-8"))
+        ref = {"path": saved["path"], "name": "Pasted log", "type": "text_reference"}
+    else:
+        raise UIError("Add a link, a file, or (for a log) paste the text.")
+    ref.update({"role": role, "added_at": datetime.now().isoformat(), **({"note": note} if note else {})})
+    job.setdefault("reference_artifacts", []).append(ref)
+    write_json_file(job_path, job)
+    return job_context(root, job)
+
+
+def job_image(root: Path, rel: str) -> Path | None:
+    """An image attached to a job, for its thumbnail: only uploads and job output under the runtime folder."""
+    if PurePosixPath(rel).suffix.lower() not in IMAGE_SUFFIXES:
+        return None
+    base = safe_resolve(runtime_dir(root))
+    target = safe_resolve(root / rel)
+    allowed = (base / "ui" / "uploads", base / "output")
+    return target if target.is_file() and any(a in target.parents for a in allowed) else None
+
+
+def job_ux_review(root: Path, job_id: str, job: dict[str, Any]) -> dict[str, Any] | None:
+    """The job's UX and design check: the summary the worker recorded plus the full result, if there is one."""
+    record = job.get("ux_review")
+    if not record:
+        return None
+    result = read_json_file(runtime_dir(root) / "output" / job_id / "ux-review" / "result.json")
+    if not result:
+        evidence = read_json_file(runtime_dir(root) / "output" / job_id / "ux-review" / "screens.json")
+        return {**record, "screen_list": evidence.get("screens", record.get("screen_list", [])),
+                "capture_limits": evidence.get("limits", record.get("capture_limits", []))}
+    clean = ux_review.parse_result(json.dumps(result))  # the same shape, however the file was written
+    return {**record, **{k: clean[k] for k in ("checklist", "findings", "limits")}, "screen_list": result.get("screens") or []}
+
+
+UX_PASS_RE = re.compile(r"^\d{8}-\d{6}$")
+
+
+def ux_passes(root: Path) -> list[dict[str, Any]]:
+    """Product UX and design passes, newest first, each with its counts."""
+    folder = runtime_dir(root) / "output" / "ux-pass"
+    out = []
+    for child in sorted(folder.iterdir() if folder.is_dir() else [], reverse=True):
+        result = read_json_file(child / "result.json") if UX_PASS_RE.match(child.name) else {}
+        if result:
+            out.append({"id": child.name, "at": result.get("at"), "completed_at": (child / "result.json").stat().st_mtime,
+                        "summary": result.get("summary", ""),
+                        "counts": ux_review.counts(ux_review.parse_result(json.dumps(result)))})
+    return out
+
+
+def ux_pass_detail(root: Path, pass_id: str) -> dict[str, Any]:
+    if not UX_PASS_RE.match(pass_id or ""):
+        raise UIError("Unknown pass", HTTPStatus.NOT_FOUND)
+    result = read_json_file(runtime_dir(root) / "output" / "ux-pass" / pass_id / "result.json")
+    if not result:
+        raise UIError("Unknown pass", HTTPStatus.NOT_FOUND)
+    clean = ux_review.parse_result(json.dumps(result))
+    return {"id": pass_id, **result, **{k: clean[k] for k in ("checklist", "findings", "limits", "summary")},
+            "counts": ux_review.counts(clean), "fix_text": ux_review.fix_job_text(clean["findings"])}
+
+
+def ux_captures(root: Path) -> list[dict[str, Any]]:
+    """Recent screenshot evidence from product passes, jobs, and simulator visual checks."""
+    out = runtime_dir(root) / "output"
+    sources = [("pass", p.name, p) for p in (out / "ux-pass").glob("*") if UX_PASS_RE.fullmatch(p.name)]
+    sources += [("job", p.parent.name, p) for p in out.glob("*/ux-review") if VISUAL_RUN_RE.fullmatch(p.parent.name)]
+    captures = []
+    for kind, ident, folder in sources:
+        if not folder.resolve().is_relative_to(out.resolve()):
+            continue
+        archived = sorted((folder / "captures").glob("*.json"), reverse=True)
+        paths = archived or [folder / "screens.json" if (folder / "screens.json").is_file() else folder / "result.json"]
+        for path in paths:
+            if not path.resolve().is_relative_to(out.resolve()):
+                continue
+            record = read_json_file(path)
+            if not record:
+                continue
+            listed = record.get("screens", [])
+            screens = [s for s in (listed if isinstance(listed, list) else []) if isinstance(s, dict) and isinstance(s.get("file"), str)
+                       and ux_screen(root, kind, ident, s["file"])]
+            captures.append({"kind": kind, "id": ident, "capture_id": record.get("capture_id", ""),
+                "title": record.get("title") or ("Whole-product review" if kind == "pass" else ident),
+                "at": record.get("at") or datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(),
+                "completed_at": path.stat().st_mtime, "screens": screens, "limits": record.get("limits") or [],
+                "branch": record.get("branch", "")})
+    for visual in visual_checks_inventory(root):
+        if visual["screenshots"]:
+            captures.append({"kind": "visual", "id": visual["id"], "capture_id": "", "title": "Simulator visual check",
+                "at": visual["created_at"], "completed_at": datetime.fromisoformat(visual["created_at"]).timestamp(), "limits": [],
+                "screens": [{"file": name, "route": "Simulator", "width": 0, "dark": False} for name in visual["screenshots"]]})
+    return sorted(captures, key=lambda c: c["completed_at"], reverse=True)[:50]
+
+
+def ux_screen(root: Path, kind: str, ident: str, name: str) -> Path | None:
+    """A screenshot from a pass (`pass/<id>`) or a job's check (`job/<job id>`), or None. Every part is validated."""
+    if not VISUAL_RUN_RE.match(ident) or ident.startswith(".") or not VISUAL_RUN_RE.match(name) or not name.endswith(".png"):
+        return None
+    out = runtime_dir(root) / "output"
+    folder = {"pass": out / "ux-pass" / ident / "screens", "job": out / ident / "ux-review" / "screens"}.get(kind)
+    if not folder:
+        return None
+    candidate = (folder / name).resolve()
+    return candidate if candidate.parent == folder.resolve() and candidate.is_relative_to(out.resolve()) and candidate.is_file() else None
+
+
+def ui_review_settings(root: Path) -> dict[str, Any]:
+    raw = read_json_file(runtime_dir(root) / "project.json").get("ui_review") or {}
+    try:
+        cfg, error = ux_review.settings({"ui_review": raw}), ""
+    except ux_review.ConfigError as exc:
+        cfg, error = None, str(exc)
+    return {"saved": raw, "settings": cfg, "error": error, "browser": bool(ux_review.find_browser())}
+
+
+def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Screens to review, from the Configuration page, into project.json (the only key this writes)."""
+    lines = lambda key: [x.strip() for x in str(body.get(key) or "").splitlines() if x.strip()]
+    try:
+        widths = [int(w) for w in str(body.get("widths") or "").replace(",", " ").split()] or list(ux_review.DEFAULT_WIDTHS)
+    except ValueError:
+        raise UIError("Widths are numbers in pixels, like 390 1440.")
+    raw = {"url": _text(body, "url", limit=500), "start_command": _text(body, "start_command", limit=500),
+           "routes": lines("routes") or ["/"], "widths": widths, "dark_mode": bool(body.get("dark_mode")),
+           "simulator": bool(body.get("simulator")), "review_changes": bool(body.get("review_changes")),
+           "conventions": _text(body, "conventions", limit=300)}
+    raw = {k: v for k, v in raw.items() if v not in ("", None)}
+    try:
+        ux_review.settings({"ui_review": raw})
+    except ux_review.ConfigError as exc:
+        raise UIError(str(exc))
+    path = runtime_dir(root) / "project.json"
+    project = read_json_file(path)
+    project["ui_review"] = raw
+    write_json_file(path, project)
+    return ui_review_settings(root)
+
+
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
@@ -960,7 +1371,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     outputs = []
     if out_dir.is_dir():
         for f in sorted(out_dir.rglob("*"), key=lambda p: p.stat().st_mtime, reverse=True)[:60]:
-            if f.is_file():
+            if f.is_file() and "ux-review" not in f.relative_to(out_dir).parts:  # shown in its own card
                 outputs.append({"path": str(f.relative_to(runtime_dir(root))), "size": f.stat().st_size,
                                 "mtime": f.stat().st_mtime})
 
@@ -1001,6 +1412,8 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "links": github_links(root, job),
         "test_summary": test_summary,
         "scope": job_scope(root, job),
+        "ux_review": job_ux_review(root, job_id, job),
+        "context": job_context(root, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
@@ -1080,8 +1493,10 @@ def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         summary_line = git(root, "diff", "--shortstat", f"{base}...{branch}", "--")
         changed_files = [f for f in git(root, "diff", "--name-only", f"{base}...{branch}", "--").splitlines() if f.strip()]
 
-    local_summary = git(root, "diff", "--shortstat", "HEAD", "--")
-    local_files = [f for f in git(root, "diff", "--name-only", "HEAD", "--").splitlines() if f.strip()]
+    # Uncommitted edits belong to this job only while its branch is checked out; otherwise they're someone else's work.
+    on_job_branch = bool(branch) and git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    local_summary = git(root, "diff", "--shortstat", "HEAD", "--") if on_job_branch else ""
+    local_files = [f for f in git(root, "diff", "--name-only", "HEAD", "--").splitlines() if f.strip()] if on_job_branch else []
 
     # Orchestrator's own state (jobs, receipts, config) isn't part of the work being reviewed.
     all_impacted = sorted(f for f in set(changed_files + local_files + [str(f) for f in files]) if not f.startswith(".orchestrator/"))
@@ -1317,7 +1732,7 @@ def device_log_pulls(root: Path) -> list[dict[str, Any]]:
     return pulls
 
 
-def detect_project_source(root: Path, p_config: dict[str, Any] | None = None) -> tuple[str, str, str | None]:
+def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, git_timeout: float = 2.0) -> tuple[str, str, str | None]:
     """Determine if a project is GitHub tracked vs Local."""
     github_repo: str | None = None
     if isinstance(p_config, dict):
@@ -1327,7 +1742,7 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None) ->
 
     has_git = (root / ".git").exists()
     if not github_repo and has_git:
-        origin_url = git(root, "config", "--get", "remote.origin.url").strip()
+        origin_url = git(root, "config", "--get", "remote.origin.url", timeout=git_timeout).strip()
         if origin_url and "github.com" in origin_url:
             m = re.search(r"github\.com[:/]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)", origin_url)
             if m:
@@ -1338,6 +1753,7 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None) ->
     if github_repo:
         return "github", "GitHub Tracked", github_repo
     return "local", "Local", None
+
 
 
 GITHUB_LANG_COLORS: dict[str, str] = {
@@ -1425,7 +1841,7 @@ def scan_local_languages(root: Path) -> list[dict[str, Any]]:
         return []
 
 
-def get_project_languages(root: Path, github_repo: str | None = None) -> list[dict[str, Any]]:
+def get_project_languages(root: Path, github_repo: str | None = None, scan_local: bool = True) -> list[dict[str, Any]]:
     """Fetch or calculate language percentages for a project, with in-memory caching."""
     cache_key = github_repo or str(safe_resolve(root))
     now = time.time()
@@ -1463,12 +1879,14 @@ def get_project_languages(root: Path, github_repo: str | None = None) -> list[di
         except Exception:
             pass
 
-    # 2. If no GitHub data, fallback to local file extension scanning
-    if not langs and root.is_dir():
+    # 2. If no GitHub data, fallback to local file extension scanning (if requested)
+    if not langs and scan_local and root.is_dir():
         langs = scan_local_languages(root)
 
-    _LANG_CACHE[cache_key] = (now, langs)
+    if langs or scan_local:
+        _LANG_CACHE[cache_key] = (now, langs)
     return langs
+
 
 
 def is_mobile_app(root: Path, config: dict[str, Any]) -> bool:
@@ -1491,27 +1909,35 @@ def project_state(root: Path) -> dict[str, Any]:
     root_source_type, root_source_label, root_github_repo = detect_project_source(root, config)
     root_languages = get_project_languages(root, root_github_repo if root_source_type == "github" else None)
 
+    active_resolved = safe_resolve(root)
     recent_entries = []
     for p in recent:
         r_str = p.get("root")
-        s_type, s_label, s_repo = "local", "Local", None
-        langs_p = []
-        if r_str:
-            try:
-                p_r = safe_resolve(Path(r_str).expanduser())
-                p_cfg = read_json_file(runtime_dir(p_r) / "project.json") if (runtime_dir(p_r) / "project.json").is_file() else None
-                s_type, s_label, s_repo = detect_project_source(p_r, p_cfg)
-                langs_p = get_project_languages(p_r, s_repo if s_type == "github" else None)
-            except Exception:
-                pass
-        recent_entries.append({
-            "name": p.get("name"),
-            "root": p.get("root"),
-            "source_type": s_type,
-            "source_label": s_label,
-            "github_repo": s_repo,
-            "languages": langs_p,
-        })
+        if not r_str:
+            continue
+        try:
+            p_r = safe_resolve(Path(r_str).expanduser())
+        except Exception:
+            p_r = None
+
+        if p_r and p_r == active_resolved:
+            recent_entries.append({
+                "name": p.get("name") or project_display_name(root),
+                "root": str(p_r),
+                "source_type": root_source_type,
+                "source_label": root_source_label,
+                "github_repo": root_github_repo,
+                "languages": root_languages,
+            })
+        else:
+            recent_entries.append({
+                "name": p.get("name"),
+                "root": p.get("root"),
+                "source_type": p.get("source_type", "local"),
+                "source_label": p.get("source_label", "Local"),
+                "github_repo": p.get("github_repo"),
+                "languages": [],
+            })
 
     return {
         "machine_count": len(machines),
@@ -1555,24 +1981,41 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             continue
         seen.add(str(p_resolved))
         is_active = (p_resolved == active_resolved)
-        p_config = read_json_file(runtime_dir(p_resolved) / "project.json")
-        has_git = (p_resolved / ".git").exists()
-        p_status = git(p_resolved, "status", "--porcelain") if has_git else ""
-        p_branch = git(p_resolved, "branch", "--show-current") if has_git else None
+        if is_active:
+            p_config = read_json_file(runtime_dir(p_resolved) / "project.json")
+            has_git = (p_resolved / ".git").exists()
+            p_status = git(p_resolved, "status", "--porcelain") if has_git else ""
+            p_branch = git(p_resolved, "branch", "--show-current") if has_git else None
+            active_jobs_count = 0
+            needs_you_count = 0
+            if (runtime_dir(p_resolved) / "jobs").is_dir():
+                try:
+                    for job in list_jobs(p_resolved):
+                        active_jobs_count += 1
+                        if (job.get("state") or {}).get("group") == "needs_you":
+                            needs_you_count += 1
+                except Exception:
+                    pass
+            source_type, source_label, github_repo = detect_project_source(p_resolved, p_config)
+            p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None, scan_local=True)
+        else:
+            p_config = _safe_read_json_file(runtime_dir(p_resolved) / "project.json", timeout=0.2)
+            has_git = (p_resolved / ".git").exists()
+            p_status = git(p_resolved, "status", "--porcelain", timeout=0.3) if has_git else ""
+            p_branch = git(p_resolved, "branch", "--show-current", timeout=0.3) if has_git else None
+            active_jobs_count = 0
+            needs_you_count = 0
+            if (runtime_dir(p_resolved) / "jobs").is_dir():
+                try:
+                    for job in list_jobs(p_resolved):
+                        active_jobs_count += 1
+                        if (job.get("state") or {}).get("group") == "needs_you":
+                            needs_you_count += 1
+                except Exception:
+                    pass
+            source_type, source_label, github_repo = detect_project_source(p_resolved, p_config, git_timeout=0.3)
+            p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None, scan_local=False)
 
-        active_jobs_count = 0
-        needs_you_count = 0
-        if (runtime_dir(p_resolved) / "jobs").is_dir():
-            try:
-                for job in list_jobs(p_resolved):
-                    active_jobs_count += 1
-                    if (job.get("state") or {}).get("group") == "needs_you":
-                        needs_you_count += 1
-            except Exception:
-                pass
-
-        source_type, source_label, github_repo = detect_project_source(p_resolved, p_config)
-        p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None)
         results.append({
             "name": p.get("name") or project_display_name(p_resolved),
             "root": str(p_resolved),
@@ -1587,6 +2030,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             "github_repo": github_repo,
             "languages": p_languages,
         })
+
 
     if str(active_resolved) not in seen and active_resolved.is_dir():
         p_config = read_json_file(runtime_dir(active_resolved) / "project.json")
@@ -1706,6 +2150,8 @@ class Action:
     # Shown in a confirm dialog before running: set for anything outward-facing.
     confirm: str | None = None
     fields: list[str] = field(default_factory=list)
+    # Extra environment for the run (a secret that mustn't appear in the command line).
+    env: Callable[[dict[str, Any]], dict[str, str]] | None = None
 
 
 def orchestrator_argv(*args: str) -> list[str]:
@@ -1784,7 +2230,7 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     summary_in = _text(params, "summary", required=True, limit=20_000 if job_type == "quick" else 500)
     fields = {"summary": summary_in, "details": _text(params, "spec", limit=200_000), "repro": _text(params, "repro", limit=20_000),
               "expected": _text(params, "expected", limit=20_000), "vibe": _text(params, "vibe", limit=200),
-              "subsystems": _text(params, "subsystems", limit=5_000)}
+              "subsystems": _text(params, "subsystems", limit=5_000), "test_cases": _text(params, "test_cases", limit=20_000)}
     try:
         summary, spec = new_job_form.compose(job_type, fields)
     except new_job_form.FormError as exc:
@@ -1941,7 +2387,19 @@ def build_logs_tail(params: dict[str, Any], root: Path) -> list[str]:
 
 def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
     notes = _text(params, "notes", limit=4000)
-    return orchestrator_argv("distribute", *(["--notes", notes] if notes else []))
+    branch = _text(params, "branch", limit=200)
+    group = _text(params, "group", limit=200)
+    testers = _text(params, "testers", limit=500)
+    argv = orchestrator_argv("distribute")
+    if notes:
+        argv += ["--notes", notes]
+    if branch:
+        argv += ["--branch", branch]
+    if group:
+        argv += ["--groups", group]
+    if testers:
+        argv += ["--testers", testers]
+    return argv
 
 
 def build_answer(params: dict[str, Any], root: Path) -> list[str]:
@@ -2106,10 +2564,10 @@ def visual_check_image(root: Path, run_id: str, name: str) -> Path | None:
 
 def get_role_prompts(root: Path) -> list[dict[str, Any]]:
     roles = [
-        {"id": "architect", "name": "Senior Architect", "file": "agent_lead.md", "desc": "Reviews proposals, sets architecture standards & acceptance criteria"},
-        {"id": "planner", "name": "Planner Agent", "file": "planner_feature.md", "desc": "Breaks down requirements, investigates codebase, designs task plans"},
-        {"id": "builder", "name": "Builder Agent", "file": "builder_feature_task.md", "desc": "Implements code changes, tests, and resolves compilation errors"},
-        {"id": "reviewer", "name": "Reviewer Agent", "file": "reviewer.md", "desc": "Evaluates diffs, checks test coverage and regression risks"},
+        {"id": "architect", "name": "Architect", "file": "agent_lead.md", "desc": "Reviews proposals, sets architecture standards & acceptance criteria"},
+        {"id": "planner", "name": "Planner", "file": "planner_feature.md", "desc": "Breaks down requirements, investigates codebase, designs task plans"},
+        {"id": "builder", "name": "Builder", "file": "builder_feature_task.md", "desc": "Implements code changes, tests, and resolves compilation errors"},
+        {"id": "reviewer", "name": "Reviewer", "file": "reviewer.md", "desc": "Evaluates diffs, checks test coverage and regression risks"},
     ]
     prompts_dir = runtime_dir(root) / "prompts"
     results = []
@@ -2149,6 +2607,14 @@ ORCHESTRATOR_DOCS = ["getting-started.md", "user-guide.md", "recommended-mcp-plu
 # Console menus the Configuration page can open in a terminal (see scripts/config_menu.py).
 CONFIG_MENUS = ["github", "models", "keys", "instructions", "fleet", "project", "archived", "firebase",
                 "xcode", "email", "audit", "selftests", "update", "all"]
+AVAILABLE_MODELS = [
+    {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (Recommended)", "provider": "Anthropic"},
+    {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "provider": "Anthropic"},
+    {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "provider": "Google"},
+    {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "provider": "Google"},
+    {"id": "gpt-4o", "label": "GPT-4o", "provider": "OpenAI"},
+    {"id": "o3-mini", "label": "o3-mini", "provider": "OpenAI"},
+]
 
 
 def settings_path(root: Path) -> Path:
@@ -2257,14 +2723,7 @@ def config_state(root: Path) -> dict[str, Any]:
                 "builder": "claude-sonnet-4-6",
                 "reviewer": "claude-sonnet-4-6",
             }),
-            "available": [
-                {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (Recommended)", "provider": "Anthropic"},
-                {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "provider": "Anthropic"},
-                {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "provider": "Google"},
-                {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "provider": "Google"},
-                {"id": "gpt-4o", "label": "GPT-4o", "provider": "OpenAI"},
-                {"id": "o3-mini", "label": "o3-mini", "provider": "OpenAI"},
-            ],
+            "available": AVAILABLE_MODELS,
             **settings.get("default_models", {
                 "architect": "claude-sonnet-4-6",
                 "planner": "claude-sonnet-4-6",
@@ -2481,6 +2940,67 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
     return {"ok": True}
 
 
+GH_CODE = re.compile(r"one-time code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})")
+GH_URL = re.compile(r"https://github\.com/login/device")
+
+
+def github_user() -> str:
+    """Who `gh` is signed in as on github.com, or "" when it isn't."""
+    gh = shutil.which("gh")
+    if not gh:
+        return ""
+    res = subprocess.run([gh, "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=20, check=False)
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def start_github_login(server: Any) -> dict[str, Any]:
+    """GitHub sign-in without a terminal: start the device flow and hand back its code and link. The process keeps
+    waiting for the approval in the background; github_login_status() says when it's done."""
+    user = github_user()
+    if user:
+        return {"signed_in": True, "user": user}
+    gh = shutil.which("gh")
+    if not gh:
+        raise UIError("The GitHub CLI isn't installed on this computer. Install it (`brew install gh`), then try again.")
+    old = getattr(server, "gh_login", None)
+    if old and old.poll() is None:
+        old.terminate()
+    proc = subprocess.Popen([gh, "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    server.gh_login = proc
+    code, url, deadline = "", "", time.time() + 20
+    while time.time() < deadline and proc.poll() is None and not (code and url):
+        ready, _, _ = select.select([proc.stdout], [], [], max(0.1, deadline - time.time()))
+        if not ready:
+            break
+        line = proc.stdout.readline()
+        code = code or (GH_CODE.search(line).group(1) if GH_CODE.search(line) else "")
+        url = url or (GH_URL.search(line).group(0) if GH_URL.search(line) else "")
+    if not code:
+        proc.terminate()
+        raise UIError("GitHub didn't give a sign-in code. Check this computer is online, then try again.")
+    threading.Thread(target=lambda: (proc.stdout.read(), proc.wait()), daemon=True).start()  # drain until approved
+    return {"signed_in": False, "code": code, "url": url or "https://github.com/login/device"}
+
+
+def github_login_status(server: Any) -> dict[str, Any]:
+    proc = getattr(server, "gh_login", None)
+    user = github_user()
+    return {"signed_in": bool(user), "user": user, "waiting": bool(proc and proc.poll() is None)}
+
+
+def build_logs_setup(params: dict[str, Any], root: Path) -> list[str]:
+    """Device logs setup from the app's form: no prompts. The token (if given) arrives in the environment and is saved."""
+    argv = orchestrator_argv("logs", "setup", "--no-prompt")
+    for key, flag in (("dsn", "--dsn"), ("org", "--org"), ("project", "--project"), ("api_base", "--api-base")):
+        value = _text(params, key, limit=500)
+        if value:
+            argv += [flag, value]
+    if str(params.get("token") or "").strip():
+        argv.append("--save-token")
+    return argv
+
+
 def build_config_menu(params: dict[str, Any], root: Path) -> list[str]:
     menu = _choice(params, "menu", CONFIG_MENUS)
     if not menu:
@@ -2502,8 +3022,36 @@ def saved_integrations(root: Path) -> dict[str, dict[str, str]]:
     return data if isinstance(data, dict) else {}
 
 
-def integration_error(exc: "integrations.IntegrationError") -> UIError:
+def integration_error(exc: "integrations.IntegrationError", root: Path | None = None, provider_id: str | None = None) -> UIError:
+    """A connected app's error, in words. A turned-down token also marks the connection, so Connections says Reconnect."""
+    pid = provider_id or getattr(exc, "provider", None)
+    if root is not None and pid in integrations.PROVIDERS and isinstance(exc, integrations.RejectedCredentials):
+        settings = read_settings(root)
+        settings.setdefault("integration_status", {})[pid] = {"rejected_at": datetime.now().isoformat(timespec="seconds")}
+        write_settings(root, settings)
+        name = integrations.PROVIDERS[pid].name
+        return UIError(f"{name} turned down the saved token; it may have expired. Reconnect {name} under Connections.",
+                       HTTPStatus.BAD_GATEWAY)
     return UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+
+
+_SENTRY_SUGGEST: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def sentry_suggestion(root: Path) -> dict[str, str]:
+    """Sentry's address, org and project from the DSN in the project's code, to fill in the connect form.
+    Cached for a few minutes: it walks the project's files."""
+    from orchestrator import sentry_dsn
+    key = str(root)
+    cached = _SENTRY_SUGGEST.get(key)
+    if cached and time.time() - cached[0] < 300:
+        return cached[1]
+    found = sentry_dsn.detect_dsn(root)
+    coords = sentry_dsn.parse_dsn(found[0]) if found else {}
+    value = {k: v for k, v in {"host": (coords.get("api_base") or "").replace("https://", ""), "org": coords.get("org") or "",
+                               "project": coords.get("project") or ""}.items() if v}
+    _SENTRY_SUGGEST[key] = (time.time(), value)
+    return value
 
 
 def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -2514,6 +3062,7 @@ def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) ->
         raise integration_error(exc)
     settings = read_settings(root)
     settings.setdefault("integrations", {})[provider_id] = creds
+    (settings.get("integration_status") or {}).pop(provider_id, None)  # a working token again
     write_settings(root, settings)
     return {"ok": True, "who": who}
 
@@ -2546,7 +3095,7 @@ def search_integration(root: Path, provider_id: str, query: str) -> list[dict[st
     try:
         return [i.as_dict() for i in integrations.provider_for(provider_id, saved[provider_id]).search(query[:200])]
     except integrations.IntegrationError as exc:
-        raise integration_error(exc)
+        raise integration_error(exc, root, provider_id)
 
 
 def _clean_links(raw: Any) -> list[dict[str, str]]:
@@ -2575,7 +3124,7 @@ def context_for_new_job(root: Path, links: list[dict[str, str]]) -> tuple[str, l
     try:
         contexts = integrations.build_context(links, saved_integrations(root))
     except integrations.IntegrationError as exc:
-        raise integration_error(exc)
+        raise integration_error(exc, root)
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     extra = []
     for ctx in contexts:
@@ -2591,7 +3140,7 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
     try:
         contexts = integrations.build_context(links, saved_integrations(root))
     except integrations.IntegrationError as exc:
-        raise integration_error(exc)
+        raise integration_error(exc, root)
     job = read_json_file(path)
     refs_dir = runtime_dir(root) / "output" / job_id / "references"
     refs_dir.mkdir(parents=True, exist_ok=True)
@@ -2614,6 +3163,146 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
     tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
     os.replace(tmp, path)
     return existing
+
+
+# --------------------------------------------------------------------------- feedback
+
+
+def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """Store and dispatch user feedback to support@thejauntcompany.com."""
+    user_name = str(payload.get("userName") or payload.get("playerName") or "User").strip()
+    feedback_text = str(payload.get("feedbackText") or "").strip()
+    if not feedback_text:
+        raise UIError("Feedback text is required", HTTPStatus.BAD_REQUEST)
+    platform = str(payload.get("platform") or "Web").strip()
+    app_version = str(payload.get("appVersion") or account.package_version() or "1.0.0").strip()
+    attempt = int(payload.get("attemptNumber") or 1)
+    created_at = datetime.now().astimezone().isoformat()
+
+    feedback_id = secrets.token_hex(12)
+    record = {
+        "id": feedback_id,
+        "userName": user_name,
+        "feedbackText": feedback_text,
+        "platform": platform,
+        "appVersion": app_version,
+        "attemptNumber": attempt,
+        "targetEmail": "support@thejauntcompany.com",
+        "createdAt": created_at,
+        "status": "new",
+    }
+
+    # 1. Local append to runtime feedback folder so no feedback is ever lost
+    try:
+        feedback_dir = runtime_dir(root) / "feedback"
+        feedback_dir.mkdir(parents=True, exist_ok=True)
+        with open(feedback_dir / "feedback.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+    # 2. Dispatch email via Resend
+    email_sent = False
+    email_error = None
+    target_email = "support@thejauntcompany.com"
+    fallback_email = "enmeskin@gmail.com"
+    subject = f"[Orchestrator Feedback] User Feedback - {user_name}"
+
+    email_body = "\n".join([
+        f"User: {user_name}",
+        f"Platform: {platform}",
+        f"App version: {app_version}",
+        f"Attempt: {attempt}",
+        f"Date: {created_at}",
+        "",
+        "Feedback:",
+        feedback_text,
+    ])
+
+    settings = read_settings(root)
+    api_key = os.environ.get("RESEND_API_KEY") or settings.get("resend_api_key")
+    if not api_key:
+        ref_env = Path("/Users/leemosupreemo/Projects/spot-difference-game/functions/.env")
+        if ref_env.is_file():
+            try:
+                for line in ref_env.read_text().splitlines():
+                    if line.startswith("RESEND_API_KEY="):
+                        api_key = line.split("=", 1)[1].strip()
+                        break
+            except Exception:
+                pass
+
+    if api_key:
+        resend_payload = {
+            "from": "Orchestrator <onboarding@resend.dev>",
+            "to": [target_email],
+            "subject": subject,
+            "text": email_body,
+        }
+        try:
+            req = urllib.request.Request(
+                "https://api.resend.com/emails",
+                data=json.dumps(resend_payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Swift-Orchestrator",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    email_sent = True
+        except urllib.error.HTTPError as he:
+            try:
+                err_data = json.loads(he.read().decode("utf-8"))
+                if he.code == 403 and "own email address" in err_data.get("message", ""):
+                    resend_payload["to"] = [fallback_email]
+                    resend_payload["subject"] = f"[Orchestrator Feedback] (Forward to Support) - {user_name}"
+                    req2 = urllib.request.Request(
+                        "https://api.resend.com/emails",
+                        data=json.dumps(resend_payload).encode("utf-8"),
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                            "User-Agent": "Swift-Orchestrator",
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req2, timeout=10) as resp2:
+                        if 200 <= resp2.status < 300:
+                            email_sent = True
+                else:
+                    email_error = str(he)
+            except Exception as e2:
+                email_error = str(e2)
+        except Exception as e:
+            email_error = str(e)
+
+    # 3. Telemetry tracking
+    try:
+        from orchestrator import analytics
+        analytics.track_event(
+            "feedback_submitted",
+            {
+                "chars": len(feedback_text),
+                "platform": platform,
+                "delivered": email_sent,
+                "queued": not email_sent,
+            },
+            runtime_root=runtime_dir(root),
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "success": True,
+        "id": feedback_id,
+        "delivered": email_sent,
+        "queued": not email_sent,
+        "error": email_error,
+    }
 
 
 # --------------------------------------------------------------------------- new project
@@ -2661,9 +3350,66 @@ def publish_known_project(root_str: str, visibility: str) -> dict[str, Any]:
     return step
 
 
+def init_git_repo(root: Path | None) -> dict[str, Any]:
+    if root is None:
+        raise UIError("No project selected")
+    if (root / ".git").exists():
+        return {"ok": True, "already_initialized": True}
+    res = subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, capture_output=True, text=True)
+    if res.returncode != 0:
+        res = subprocess.run(["git", "init", "-q"], cwd=root, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise UIError(f"Failed to initialize git: {(res.stderr or res.stdout).strip()}")
+    subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+    diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root)
+    if diff.returncode != 0:
+        subprocess.run(["git", "commit", "-q", "-m", "Start project"], cwd=root, capture_output=True)
+    return {"ok": True}
+
+
+def create_github_repo_for_project(root: Path | None, visibility: str, name: str | None = None) -> dict[str, Any]:
+    if root is None:
+        raise UIError("No project selected")
+    if not (root / ".git").exists():
+        init_git_repo(root)
+    from orchestrator.setup_checklist import GITHUB_REMOTE
+    origin = git(root, "remote", "get-url", "origin")
+    if origin and GITHUB_REMOTE.search(origin):
+        raise UIError("This project already has a GitHub remote")
+
+    # Ensure there is at least one commit so --push succeeds
+    has_commit = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=root, capture_output=True).returncode == 0
+    if not has_commit:
+        subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root)
+        if diff.returncode != 0:
+            subprocess.run(["git", "commit", "-q", "-m", "Start project"], cwd=root, capture_output=True)
+        else:
+            subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "Initial commit"], cwd=root, capture_output=True)
+
+    proj_file = runtime_dir(root) / "project.json"
+    proj = read_json_file(proj_file) if proj_file.exists() else {}
+    repo_name = (name or "").strip() or proj.get("name") or proj.get("project_name") or root.name
+    step = new_project.publish_to_github(root, repo_name, "public" if visibility == "public" else "private")
+    if not step.get("ok"):
+        raise UIError(step.get("detail") or "Failed to create GitHub repository")
+    if proj_file.exists():
+        proj["code_host"] = "github"
+        if step.get("url"):
+            proj["git_remote"] = step["url"]
+        write_json_file(proj_file, proj)
+    remember_project(root, repo_name, active=True)
+    return {"ok": True, "step": step}
+
+
 def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
     return lambda params, root: orchestrator_argv("script", "manual_run.py", mode)
 
+
+# Terminal tools: the only runs someone is expected to type into. Everything else runs non-interactive, and the web
+# app never sends people into a terminal menu: each of these has an app page (the console stays as a deliberate,
+# clearly labelled escape hatch in the sidebar).
+TERMINAL_ACTIONS = {"console", "wizard", "config_menu"}
 
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
@@ -2671,7 +3417,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "summary", "spec", "repro", "expected", "vibe", "subsystems", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "test_cases", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
@@ -2694,17 +3440,19 @@ ACTIONS: dict[str, Action] = {
                       confirm="Reverts the files this job changed, deletes its AI branch and archives the job. This can't be undone.", fields=["job"]),
     "delete_job": Action("Delete job", build_delete_job, fields=["job", "keep_changes"]),
     "complete": Action("Mark complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "complete", _job_path(p, r)),
-                       confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from Configuration > Archived jobs.", fields=["job"]),
+                       confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from the Archived filter on Home.", fields=["job"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
     "test": Action("Run all tests", build_manual("test")),
-    "distribute": Action("Distribute current branch", build_distribute,
-                         confirm="Builds whatever branch is checked out now and sends a real Firebase release to your testers.",
-                         fields=["notes"]),
+    "distribute": Action("Distribute build for testing", build_distribute,
+                         confirm="Builds and sends a test build to Firebase App Distribution.",
+                         fields=["notes", "branch", "group", "testers"]),
     "config_menu": Action("Configuration", build_config_menu, fields=["menu"]),
     "test_email": Action("Send test email", build_test_email),
-    "logs_setup": Action("Device logs setup", lambda p, r: orchestrator_argv("logs", "setup")),
+    "logs_setup": Action("Device logs setup", lambda p, r: build_logs_setup(p, r),
+                         fields=["dsn", "org", "project", "api_base", "token"],
+                         env=lambda p: {"SENTRY_AUTH_TOKEN": str(p.get("token") or "").strip()} if str(p.get("token") or "").strip() else {}),
     "logs_pull": Action("Pull device logs", build_logs_pull, fields=["session", "level", "query"]),
     "logs_tail": Action("Follow device logs", build_logs_tail, fields=["session"]),
     "splinter": Action("Splinter into sub-jobs", build_splinter,
@@ -2717,6 +3465,9 @@ ACTIONS: dict[str, Action] = {
     "fleet_llm_check": Action("Fleet LLM latency & quota check", lambda p, r: orchestrator_argv("script", "fleet_llm_check.py")),
     "update_local": Action("Update Orchestrator (local)", lambda p, r: orchestrator_argv("update")),
     "update_fleet": Action("Update Orchestrator (fleet-wide)", lambda p, r: orchestrator_argv("update", "--fleet")),
+    "ux_pass": Action("UX and design pass", lambda p, r: orchestrator_argv("script", "ux_review_run.py", "pass")),
+    "ux_review_job": Action("UX and design check", lambda p, r: orchestrator_argv("script", "ux_review_run.py", "job", _job_path(p, r)),
+                            fields=["job"]),
     "scaffold_canary": Action("Scaffold canary test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "scaffold-canary")),
 }
 
@@ -2838,7 +3589,18 @@ def get_or_create_ui_token(supplied: str | None = None) -> str:
 
 class UIServer(ThreadingHTTPServer):
     daemon_threads = True
+    # A page load opens a burst of connections (index, ~16 scripts, styles, the first API calls). The socketserver
+    # default backlog of 5 overflowed on first load and the extra connections were reset, so a script never loaded
+    # and the app stayed blank until a reload.
+    request_queue_size = 128
     allow_reuse_address = True
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        import sys
+        exc = sys.exception()
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
     def __init__(self, address: tuple[str, int], root: Path | None, token: str | None = None,
                  bootstrap_mode: bool = False, desktop_listener: bool = False, shared: UIServer | None = None):
@@ -2860,6 +3622,8 @@ class UIServer(ThreadingHTTPServer):
         self.allowed_origins = set(HOSTED_ORIGINS) | {
             o.strip().rstrip("/") for o in os.environ.get("ORCHESTRATOR_ALLOWED_ORIGINS", "").split(",") if o.strip()}
         self.audit = audit.AuditLog(user_state_dir() / "audit.jsonl")
+        self.requests_log = connection_log.requests_log()
+        self.client_log = connection_log.client_log()
         self._email_sources: tuple[float, Path, dict[str, str]] | None = None
         self._used_tickets: dict[str, float] = {}
         self._ticket_lock = threading.Lock()
@@ -2874,7 +3638,7 @@ class UIServer(ThreadingHTTPServer):
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
-            for name in ("token", "sign_ins", "audit", "gate", "sessions", "tasks", "_used_tickets",
+            for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
                          "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel"):
                 setattr(self, name, getattr(shared, name))
 
@@ -3093,8 +3857,14 @@ class UIServer(ThreadingHTTPServer):
                     print(f"  Notifications: {exc}", flush=True)
         return events
 
-    def child_env(self) -> dict[str, str]:
+    def child_env(self, terminal: bool = False) -> dict[str, str]:
+        """Environment for what the web app runs. Unless it's a terminal tool (the console), nobody can type into it:
+        prompts take their defaults or hand the question to the app (scripts/common.py: interactive())."""
         env = dict(os.environ)
+        if terminal:
+            env.pop("ORCHESTRATOR_NONINTERACTIVE", None)
+        else:
+            env["ORCHESTRATOR_NONINTERACTIVE"] = "1"
         env["ORCHESTRATOR_PROJECT_ROOT"] = str(self.root)
         env.pop("ORCHESTRATOR_CONFIG", None)
         # Actions run with the project as cwd, where `python -m orchestrator` would pick up the
@@ -3108,9 +3878,22 @@ class UIServer(ThreadingHTTPServer):
 class UIHandler(BaseHTTPRequestHandler):
     server: UIServer
     protocol_version = "HTTP/1.1"
+    timeout = 30
 
     def log_message(self, fmt: str, *args: Any) -> None:  # keep the terminal quiet
         return
+
+    def log_request(self, code: Any = "-", size: Any = "-") -> None:
+        # Every API answer goes to requests.jsonl (see connection_log), so a page that says it lost the connection can be
+        # checked against what the server actually sent. The path only: the query can carry a token.
+        path = urlparse(self.path).path
+        if not path.startswith("/api/"):
+            return
+        started = getattr(self, "_started", None)
+        self.server.requests_log.record(
+            "request", (getattr(self, "_principal", None) or {}).get("email") or "", method=self.command, path=path,
+            status=int(code) if isinstance(code, int) else code,
+            ms=round((time.monotonic() - started) * 1000) if started else None, ip=self._client_ip())
 
     # -- plumbing
 
@@ -3236,6 +4019,7 @@ class UIHandler(BaseHTTPRequestHandler):
     # -- routing
 
     def do_OPTIONS(self) -> None:
+        self._started = time.monotonic()
         origin = self.headers.get("Origin", "")
         if not origin or not self._origin_allowed(origin):
             self.send_response(HTTPStatus.FORBIDDEN)
@@ -3264,6 +4048,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        self._started = time.monotonic()
         self._body_read = False
         self._principal: dict[str, Any] | None = None  # set per request: a kept-alive connection reuses this handler
         try:
@@ -3297,7 +4082,13 @@ class UIHandler(BaseHTTPRequestHandler):
         doc.migrate_legacy()
         try:
             if method == "GET" and parts == ["product"]:
-                self._json(doc.overview())
+                settings = read_settings(root)
+                models_cfg = settings.get("default_models", {})
+                current_model = models_cfg.get("reviewer") or "claude-sonnet-4-6"
+                resp = doc.overview()
+                resp["model"] = current_model
+                resp["available_models"] = AVAILABLE_MODELS
+                self._json(resp)
             elif method == "GET" and len(parts) == 3 and parts[1] == "design":
                 name = parts[2]
                 folder = root / prd_doc.DESIGNS_DIR
@@ -3340,7 +4131,7 @@ class UIHandler(BaseHTTPRequestHandler):
                     try:
                         contexts = integrations.build_context(picked, saved_integrations(root))
                     except integrations.IntegrationError as exc:
-                        raise integration_error(exc)
+                        raise integration_error(exc, root)
                     for ctx in contexts:
                         doc.add_reference(f"{PROVIDER_NAMES.get(ctx.item.provider, ctx.item.provider)}: {ctx.item.title}", ctx.item.url or ctx.item.ref)
                         img = _save_image(root, root / prd_doc.DESIGNS_DIR, ctx)
@@ -3364,13 +4155,34 @@ class UIHandler(BaseHTTPRequestHandler):
                 if task is None:
                     raise UIError("That request is no longer around. Start it again.", HTTPStatus.NOT_FOUND)
                 self._json(task)
+            elif ((method == "DELETE" and len(parts) == 3 and parts[1] == "task") or
+                  (method == "POST" and len(parts) == 4 and parts[1] == "task" and parts[3] in ("cancel", "stop"))):
+                task = self.server.tasks.get(parts[2])
+                if task is None:
+                    raise UIError("That request is no longer around.", HTTPStatus.NOT_FOUND)
+                self.server.tasks.cancel(parts[2])
+                self._json({"ok": True, "task": parts[2], "status": "canceled"})
+            elif method == "POST" and parts == ["product", "model"]:
+                body = self._body()
+                new_model = _text(body, "model", required=True, limit=100)
+                settings = read_settings(root)
+                if "default_models" not in settings or not isinstance(settings["default_models"], dict):
+                    settings["default_models"] = {}
+                settings["default_models"]["reviewer"] = new_model
+                write_settings(root, settings)
+                self._json({"ok": True, "model": new_model})
             elif method == "POST" and parts == ["product", "draft"]:
                 if not prd_doc.can_draft(root):
                     raise UIError("There's nothing in this project to read yet (no README, notes or code). Describe it in your own words instead.")
+                body = self._body() if (self.headers.get("Content-Type") or "").startswith("application/json") else {}
                 commits = git(root, "log", "--format=%s", "-n", "30").splitlines()
                 current = doc.read() or prd_doc.template()
                 digest = prd_doc.project_digest(root, commits)
-                self._start_proposal(root, current, prd_doc.draft_prompt(digest, current), lambda reply: prd_doc.parse_draft(reply, current), 270)
+                settings = read_settings(root)
+                models_cfg = settings.get("default_models", {})
+                req_model = _text(body, "model", limit=100) if body.get("model") else ""
+                chosen_model = req_model or models_cfg.get("reviewer") or ""
+                self._start_proposal(root, current, prd_doc.draft_prompt(digest, current), lambda reply: prd_doc.parse_draft(reply, current), 270, model=chosen_model)
             elif method == "POST" and parts == ["product", "import"]:
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
                     body = self._body()
@@ -3387,15 +4199,19 @@ class UIHandler(BaseHTTPRequestHandler):
         except prd_doc.PrdError as exc:
             raise UIError(str(exc), HTTPStatus.BAD_GATEWAY if "model" in str(exc).lower() else HTTPStatus.BAD_REQUEST)
 
-    def _start_proposal(self, root: Path, current: str, prompt: str, parse: Callable[[str], dict[str, str]], timeout: int) -> None:
+    def _start_proposal(self, root: Path, current: str, prompt: str, parse: Callable[[str], dict[str, str]], timeout: int, model: str = "") -> None:
         """Ask the model for a proposed document in the background; the page polls /api/product/task/<id> for the diff."""
         def work() -> dict[str, Any]:
             try:
-                proposal = parse(self._model_call(root, prompt, timeout=timeout))
+                proposal = parse(self._model_call(root, prompt, model=model, timeout=timeout))
             except prd_doc.PrdError:
                 # Models sometimes answer in prose or break the JSON. Say what format is needed and ask once more before giving up.
-                proposal = parse(self._model_call(root, prompt + prd_doc.FORMAT_REMINDER, timeout=timeout))
-            return {**proposal, "diff": prd_doc.unified_diff(current, proposal["markdown"])}
+                proposal = parse(self._model_call(root, prompt + prd_doc.FORMAT_REMINDER, model=model, timeout=timeout))
+            return {
+                **proposal,
+                "sections": prd_doc.sections_view(proposal["markdown"]),
+                "diff": prd_doc.unified_diff(current, proposal["markdown"]),
+            }
 
         self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
 
@@ -3506,8 +4322,18 @@ class UIHandler(BaseHTTPRequestHandler):
                 except UIError as exc:
                     if exc.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.CONFLICT):
                         self._audit("sign_in_refused", who=self._attempted or "unknown", how=self._attempted_how, reason=str(exc))
+                        try:
+                            from orchestrator import analytics
+                            analytics.track_event("sign_in_failed", {"method": str(self._attempted_how or "unknown"), "reason": str(exc)}, runtime_root=runtime_dir(self.server.root))
+                        except Exception:
+                            pass
                     raise
                 self._audit("sign_in", who=authed_email or "access token", how=how)
+                try:
+                    from orchestrator import analytics
+                    analytics.track_signin(method=how, distinct_id=authed_email or "access_token", runtime_root=runtime_dir(self.server.root))
+                except Exception:
+                    pass
                 self._json({"ok": True, "token": issued, "email": authed_email}, extra={
                     "Set-Cookie": f"{COOKIE_NAME}={issued}; HttpOnly; SameSite=Strict; Path=/"
                 })
@@ -3530,8 +4356,9 @@ class UIHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.CONFLICT, str(exc))
         except UIError as exc:
             self._error(exc.status, str(exc))
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            self.server.requests_log.record("dropped", "", method=method, path=url.path, error=type(exc).__name__,
+                                            ms=round((time.monotonic() - self._started) * 1000), ip=self._client_ip())
         except Exception as exc:  # surface, don't crash the handler thread
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
@@ -3551,6 +4378,12 @@ class UIHandler(BaseHTTPRequestHandler):
         return res.stdout.split(marker, 1)[1]
 
     def _static(self, path: str, query: dict[str, list[str]]) -> None:
+        if path in ("/", "/index.html"):
+            try:
+                from orchestrator import analytics
+                analytics.track_session(source="web", runtime_root=runtime_dir(self.server.root))
+            except Exception:
+                pass
         token = (query.get("token") or [""])[0]
         if path in ("/", "/index.html") and token:
             if not hmac.compare_digest(token, self.server.token):
@@ -3590,7 +4423,13 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         root = self.server.root
 
-        if method == "GET" and parts == ["state"]:
+        if method == "POST" and parts == ["client-log"]:
+            # What the page saw go wrong while it couldn't reach this computer, sent once it can (see connection_log).
+            body = self._body()
+            kept = connection_log.record_client_events(self.server.client_log, body.get("events"),
+                                                       self._principal.get("email") or "access token", self._client_ip())
+            self._json({"ok": True, "kept": kept})
+        elif method == "GET" and parts == ["state"]:
             visible_runs = self._sessions_view()
             self._json({"project": project_state(root), "runs": visible_runs,
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
@@ -3610,6 +4449,11 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True}, extra={
                 "Set-Cookie": f"{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
             })
+        elif method == "POST" and parts == ["feedback"]:
+            body = self._body()
+            res = dispatch_feedback(root, body)
+            self._audit("feedback_submitted", who=body.get("userName") or "User", chars=len(body.get("feedbackText") or ""), delivered=res.get("delivered", False))
+            self._json(res)
         elif method == "GET" and parts == ["projects"]:
             self._json({"projects": all_projects_info(root), "active": str(safe_resolve(root))})
         elif method == "POST" and parts == ["projects", "scan"]:
@@ -3711,7 +4555,40 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["preflight"]:
             self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
         elif method == "GET" and parts == ["delivery"]:
-            self._json(delivery_overview(root))
+            self._json(delivery_overview(root, branch=(query.get("branch") or [None])[0]))
+        elif parts == ["delivery", "release"] and method in {"GET", "POST"}:
+            self._require_owner("create release tags")
+            base = base_branch(root, read_settings(root))
+            try:
+                if method == "GET":
+                    self._json(releases.options(root, base))
+                else:
+                    body = self._body()
+                    if not isinstance(body.get("push", False), bool):
+                        raise UIError("'push' must be true or false")
+                    result = releases.create(root, base, _text(body, "tag", required=True, limit=120),
+                        _text(body, "commit", required=True, limit=64), push=body.get("push", False))
+                    self._audit("release_tag", tag=result["tag"], commit=result["commit"], pushed=result["pushed"])
+                    self._json(result)
+            except releases.ReleaseError as exc:
+                raise UIError(str(exc), HTTPStatus.CONFLICT) from exc
+        elif method == "POST" and parts == ["delivery", "group"]:
+            body = self._body()
+            name = _text(body, "name", required=True, limit=100).strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                raise UIError("Group name should only contain letters, numbers, hyphens, and underscores.")
+            settings = read_settings(root)
+            current_groups = [g.strip() for g in str(settings.get("firebase_tester_groups", "")).split(",") if g.strip()]
+            if name not in current_groups:
+                current_groups.append(name)
+                settings["firebase_tester_groups"] = ", ".join(current_groups)
+                write_settings(root, settings)
+            if shutil.which("firebase"):
+                try:
+                    subprocess.run(["firebase", "appdistribution:group:create", name, name], cwd=root, capture_output=True, timeout=15)
+                except Exception:
+                    pass
+            self._json({"ok": True, "groups": current_groups, "created": name})
         elif method == "POST" and parts == ["delivery", "rerun"]:
             run_id = self._body().get("run_id")
             if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
@@ -3961,6 +4838,11 @@ class UIHandler(BaseHTTPRequestHandler):
             job["updated_at"] = datetime.now().isoformat()
             write_json_file(job_path, job)
             self._json({"ok": True, "commit": commit, "completed": job.get("completed_task_indices", [])})
+        elif method == "POST" and parts == ["jobs", "archive"]:
+            ids = self._body().get("ids")
+            if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids) or len(ids) > 500:
+                raise UIError("Choose the jobs to archive")
+            self._json({"archived": archive_jobs(root, ids, set(self.server.sessions.running_job_ids()))})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
@@ -3982,6 +4864,16 @@ class UIHandler(BaseHTTPRequestHandler):
             detail = job_detail(root, parts[1])
             detail["runs"] = self._sessions_view(job_id=parts[1])
             self._json(detail)
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "attach":
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("This job is running right now. Attach things once it stops.", HTTPStatus.CONFLICT)
+            self._json({"context": attach_to_job(root, parts[1], self._body())})
+        elif method == "GET" and parts == ["job-image"]:
+            target = job_image(root, (query.get("path") or [""])[0])
+            if not target:
+                self._error(HTTPStatus.NOT_FOUND, "Image not found")
+                return
+            self._send(HTTPStatus.OK, target.read_bytes(), mimetypes.guess_type(target.name)[0] or "image/png", {})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reference":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
@@ -4072,7 +4964,11 @@ class UIHandler(BaseHTTPRequestHandler):
             body = self._body()
             self._json({"step": publish_known_project(str(body.get("root") or ""), str(body.get("visibility") or "private"))})
         elif method == "GET" and parts == ["integrations"]:
-            self._json({"integrations": integrations.public_catalog(saved_integrations(root), read_settings(root).get("integration_options"))})
+            settings = read_settings(root)
+            saved = saved_integrations(root)
+            self._json({"integrations": integrations.public_catalog(
+                saved, settings.get("integration_options"), status=settings.get("integration_status"), settings=settings,
+                suggest={} if "sentry" in saved else {"sentry": sentry_suggestion(root)})})
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "options":
             self._require_owner("change connected app settings")
             self._json({"options": save_integration_options(root, parts[1], self._body().get("options"))})
@@ -4094,7 +4990,31 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError("This job is running right now. Attach context once it stops.", HTTPStatus.CONFLICT)
             self._json({"links": attach_links_to_job(root, parts[1], _clean_links(self._body().get("links")))})
         elif method == "GET" and parts == ["setup"]:
-            self._json(setup_checklist(root, runtime_dir(root)))
+            setup = setup_checklist(root, runtime_dir(root), fresh=bool(query.get("refresh")))
+            config = read_json_file(runtime_dir(root) / "project.json")
+            setup["workflow_checks"] = []
+            if config.get("xcode_project") or config.get("xcode_workspace") or any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace")):
+                from orchestrator.project_config import load_project_config
+                errors = load_project_config(root).validate_distribution_config()
+                setup["workflow_checks"].append({"id": "apple-signing", "title": "Apple signing and distribution",
+                    "selected": bool(config.get("firebase_distribution") or config.get("delivery_provider") or config.get("delivery_method")),
+                    "status": "todo" if errors else "ok", "detail": " ".join(errors) if errors else "Signing configuration is present. Certificates and account access are checked when distributing.",
+                    "route": "#/delivery", "label": "Review app delivery"})
+            self._json(setup)
+        elif method == "POST" and parts == ["setup", "git-init"]:
+            self._require_owner("initialize git repository")
+            self._body()
+            result = init_git_repo(root)
+            self._audit("git_initialized", root=str(root))
+            self._json(result)
+        elif method == "POST" and parts == ["setup", "github-create"]:
+            self._require_owner("create a GitHub repository")
+            body = self._body()
+            visibility = _choice(body, "visibility", ["private", "public"], default="private")
+            name = _text(body, "name", limit=80)
+            result = create_github_repo_for_project(root, visibility, name=name)
+            self._audit("github_repo_created", root=str(root), visibility=visibility)
+            self._json(result)
         elif method == "GET" and parts == ["ai-providers"]:
             self._json(ai_providers_state(root))
         elif method == "GET" and parts == ["config"]:
@@ -4168,6 +5088,24 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, data, "application/zip", {
                 "Content-Disposition": f'attachment; filename="{job_id}-export.zip"'
             })
+        elif parts == ["github", "login"] and method in ("GET", "POST"):
+            self._require_owner("sign in to GitHub on this computer")
+            if method == "POST":
+                self._body()
+            self._json(start_github_login(self.server) if method == "POST" else github_login_status(self.server))
+        elif method == "GET" and parts == ["ux-pass"]:
+            self._json({"passes": ux_passes(root), "captures": ux_captures(root), **ui_review_settings(root)})
+        elif method == "GET" and len(parts) == 2 and parts[0] == "ux-pass":
+            self._json(ux_pass_detail(root, parts[1]))
+        elif method == "GET" and len(parts) == 4 and parts[0] == "ux-screens":
+            target = ux_screen(root, parts[1], parts[2], parts[3])
+            if not target:
+                self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
+                return
+            self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+        elif method == "POST" and parts == ["ui-review"]:
+            self._require_owner("change which screens are reviewed")
+            self._json(save_ui_review(root, self._body()))
         elif method == "GET" and parts == ["visual-checks"]:
             self._json({"checks": visual_checks_inventory(root)})
         elif method == "GET" and len(parts) >= 4 and parts[0] == "visual-checks" and parts[2] == "screenshots":
@@ -4180,6 +5118,10 @@ class UIHandler(BaseHTTPRequestHandler):
             self._switch_project(self._body())
         elif method == "GET" and parts == ["runs"]:
             self._json({"runs": self._sessions_view()})
+        elif method == "GET" and parts == ["runs", "history"]:
+            self._require_owner("read earlier run logs")
+            live = {r["id"] for r in self._sessions_view()}
+            self._json({"runs": [r for r in run_history(root) if r["id"] not in live]})
         elif method == "POST" and parts == ["runs"]:
             self._start_run(self._body(), root)
         elif len(parts) == 3 and parts[0] == "runs":
@@ -4201,11 +5143,16 @@ class UIHandler(BaseHTTPRequestHandler):
             data = None
         if data is None:
             return {"suites": [], "plans": [], "coverage": None, "error": "Couldn't list tests; try the console's Test menu."}
+        if data.get("coverage") and not data["coverage"].get("total_lines"):
+            from orchestrator.coverage import count_source_lines
+            cnt = count_source_lines(root)
+            if cnt > 0:
+                data["coverage"]["total_lines"] = cnt
         self.server.tests_cache = (root, time.time(), data)
         return data
 
     def _device_sessions(self, root: Path) -> dict[str, Any]:
-        if not read_json_file(runtime_dir(root) / "project.json").get("remote_logs"):
+        if not read_json_file(runtime_dir(root) / "project.json").get("remote_logs") and not saved_integrations(root).get("sentry", {}).get("org"):
             return {"configured": False, "items": [], "error": None}
         try:
             result = subprocess.run(orchestrator_argv("logs", "sessions", "--json", "--limit", "15"),
@@ -4253,11 +5200,18 @@ class UIHandler(BaseHTTPRequestHandler):
         if job_id:
             job_title = job_summary(resolve_job_path(root, job_id), read_json_file(resolve_job_path(root, job_id)))["title"]
             title = f"{action.title} · {job_title}"
+        elif params.get("title") and isinstance(params.get("title"), str) and str(params.get("title")).strip():
+            title = str(params["title"]).strip()
+        elif key == "new_job" and str(params.get("type") or "") == "coverage":
+            title = "Coverage expanding"
         try:
             cols, rows = int(body.get("cols") or 110), int(body.get("rows") or 32)
         except (TypeError, ValueError):
             raise UIError("cols/rows must be numbers")
-        session = self.server.sessions.start(key, title, argv, root, self.server.child_env(),
+        env = self.server.child_env(terminal=key in TERMINAL_ACTIONS)
+        if action.env:
+            env.update(action.env(params))
+        session = self.server.sessions.start(key, title, argv, root, env,
                                              runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
         session.job_id = job_id
         self._audit("run_started", action=key, job=job_id)
@@ -4406,15 +5360,27 @@ def get_tailscale_info() -> tuple[str | None, str | None]:
         return None, None
 
 
-def _drain(proc: subprocess.Popen) -> None:
-    """cloudflared logs to the pipe we gave it. Once nobody reads it the pipe fills (about 64 KB) and cloudflared blocks,
-    so a tunnel left running for hours would stop carrying traffic. Read and discard it."""
-    def pump() -> None:
+def _copy_to(sink: Any, line: str) -> None:
+    if sink is not None:
         try:
-            for _ in proc.stdout or ():
-                pass
+            sink.write(line)
         except (OSError, ValueError):
             pass
+
+
+def _drain(proc: subprocess.Popen) -> None:
+    """cloudflared logs to the pipe we gave it. Once nobody reads it the pipe fills (about 64 KB) and cloudflared blocks,
+    so a tunnel left running for hours would stop carrying traffic. Read it, keeping a copy in cloudflared.log."""
+    def pump() -> None:
+        sink = connection_log.open_tunnel_log()
+        try:
+            for line in proc.stdout or ():
+                _copy_to(sink, line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if sink is not None:
+                sink.close()
     threading.Thread(target=pump, daemon=True, name="cloudflared-output").start()
 
 
@@ -4444,11 +5410,13 @@ def start_tunnel(port: int, token: str | None = None, discovery_timeout: float =
         return None, None
     found: queue.Queue[str] = queue.Queue(maxsize=1)
     def discover_and_drain() -> None:
+        sink = connection_log.open_tunnel_log()
         try:
             while proc.stdout:
                 line = proc.stdout.readline()
                 if not line:
                     break
+                _copy_to(sink, line)
                 match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
                 if match:
                     try:
@@ -4457,6 +5425,9 @@ def start_tunnel(port: int, token: str | None = None, discovery_timeout: float =
                         pass
         except (OSError, ValueError, StopIteration):
             pass
+        finally:
+            if sink is not None:
+                sink.close()
     threading.Thread(target=discover_and_drain, daemon=True, name="cloudflared-output").start()
     deadline = time.monotonic() + discovery_timeout
     while time.monotonic() < deadline:
@@ -4571,6 +5542,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args: argparse.Namespace, root: Path) -> int:
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = min(10240, hard) if hard > 0 else 10240
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except Exception:
+        pass
     remember_project(root)
 
     settings_file = runtime_dir(root) / "config" / "settings.json"
@@ -4620,10 +5599,17 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     def reachable_url() -> str:
         return reach["url"].rstrip("/") if reach["url"].startswith("https://") else ""
 
+    paired = account.load_machine() is not None
+
     def announce(label: str, address: str) -> None:
         reach["url"] = address
         hosted_url = f"{HOSTED_APP_URL}/?backend={address}&token={server.token}"
         PUBLIC_URL["url"] = hosted_url
+        if paired and address.startswith("https://"):
+            # The hosted app is the address to use: it never changes and finds this computer through the account.
+            # The tunnel's own address changes whenever a quick tunnel restarts, so it's only a fallback.
+            print(f"  Direct link (changes when the tunnel restarts): {address}/?token={server.token}")
+            return
         print(f"  \033[92m✓ {label}:\033[0m   {address}/?token={server.token}")
         print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
 
@@ -4645,7 +5631,8 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     machine = account.load_machine()
     if machine:
         if reachable_url():
-            print(f"  \033[92m✓ Account:\033[0m {machine.get('owner_email')} can sign in at {HOSTED_APP_URL}")
+            print(f"  \033[92m✓ Open from anywhere:\033[0m {HOSTED_APP_URL}  (always this address; sign in as "
+                  f"{machine.get('owner_email')} and it finds this computer)")
         else:
             print(f"  Account: connected to {machine.get('owner_email')}, but not reachable from {HOSTED_APP_URL} "
                   "until it has an https address (--tunnel, or --public-url https://…).")

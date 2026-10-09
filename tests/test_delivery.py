@@ -96,5 +96,34 @@ class ReadyToShipTests(unittest.TestCase):
         self.assertEqual(out[0]["next"], {"action": "merge"})
 
 
+class BuildDistributeTests(unittest.TestCase):
+    def test_build_distribute_includes_all_flags(self):
+        from orchestrator.web import server
+        root = Path("/tmp")
+        argv = server.build_distribute({
+            "branch": "feature/my-branch",
+            "group": "qa-testers",
+            "testers": "user@example.com",
+            "notes": "Testing notes",
+        }, root)
+        self.assertIn("--branch", argv)
+        self.assertIn("feature/my-branch", argv)
+        self.assertIn("--groups", argv)
+        self.assertIn("qa-testers", argv)
+        self.assertIn("--testers", argv)
+        self.assertIn("user@example.com", argv)
+        self.assertIn("--notes", argv)
+        self.assertIn("Testing notes", argv)
+
+    def test_build_distribute_empty_optional_fields(self):
+        from orchestrator.web import server
+        root = Path("/tmp")
+        argv = server.build_distribute({}, root)
+        self.assertNotIn("--branch", argv)
+        self.assertNotIn("--groups", argv)
+        self.assertNotIn("--testers", argv)
+        self.assertNotIn("--notes", argv)
+
+
 if __name__ == "__main__":
     unittest.main()

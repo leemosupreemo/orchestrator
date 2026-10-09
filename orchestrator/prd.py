@@ -44,12 +44,12 @@ SECTIONS: list[dict[str, Any]] = [
     {"id": "pitch", "title": "Pitch", "optional": True,
      "hint": "Say what you have in mind as briefly as you can, the way you'd explain it to a friend. Rough is fine."},
     {"id": "who", "title": "Who it's for", "optional": True,
-     "hint": "Do you have an ideal user in mind, or some situations it's for? If you don't know yet, say so; we'll fill in the blanks and refine as we go."},
+     "hint": "Do you have an ideal user in mind, or some situations it's for?"},
     {"id": "features", "title": "Core features", "optional": True,
      "hint": "The things it has to do. One per line. If it helps, write each as a story: \"As a ..., I can ... so that ...\"."},
     {"id": "look", "title": "Look and feel", "optional": True,
      "hint": "What should it look and feel like? Describe it (\"feels like Google Docs\"), or add designs, sketches or Figma items."},
-    {"id": "not", "title": "Not this", "optional": True,
+    {"id": "not", "title": "What to exclude", "optional": True,
      "hint": "Anything it should not be or include: features you don't want, competitors not to copy exactly."},
 ]
 BY_ID = {s["id"]: s for s in SECTIONS}
@@ -76,6 +76,7 @@ def split(text: str) -> dict[str, str]:
     found: dict[str, list[str]] = {}
     current: str | None = None
     by_heading = {s["title"].lower(): s["id"] for s in SECTIONS}
+    by_heading["not this"] = "not"
     for line in (text or "").splitlines():
         m = re.match(r"^##\s+(.*?)\s*$", line)
         if m:
@@ -511,7 +512,7 @@ How to write it:
 - On the "Built for:" line of the Pitch, list the platforms the project clearly targets.
 - {SHAPE}
 
-Reply with ONLY JSON: {{"summary": "what you inferred, how sure you are, and what you could not tell", "markdown": "the complete document"}}"""
+Reply with ONLY JSON: {{"summary": "bulleted and succinct: what was inferred, and any gaps or low-confidence guesses that were hard to figure out", "markdown": "the complete document"}}"""
 
 
 def parse_draft(reply: str, current: str = "") -> dict[str, str]:
@@ -519,7 +520,20 @@ def parse_draft(reply: str, current: str = "") -> dict[str, str]:
     proposal = parse_proposal(reply)
     mine = split(current or "").get("not", "")
     proposal["markdown"] = replace_section(proposal["markdown"], "not", mine)
-    proposal["summary"] = (proposal["summary"] + " I left \"Not this\" for you: only you can say what it shouldn't be.").strip()
+    raw_summary = (proposal.get("summary") or "").strip()
+    if raw_summary:
+        lines = [line.strip() for line in raw_summary.splitlines() if line.strip()]
+        if not any(l.startswith(("-", "*", "•")) for l in lines):
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", raw_summary) if s.strip()]
+            lines = [f"- {s}" for s in sentences]
+        else:
+            lines = [l if l.startswith(("-", "*", "•")) else f"- {l}" for l in lines]
+        guardrail = "- Left \"Not this\" for you: only you can say what it shouldn't be."
+        if "only you can say" not in "\n".join(lines).lower():
+            lines.append(guardrail)
+        proposal["summary"] = "\n".join(lines)
+    else:
+        proposal["summary"] = "- Inferred from project files and layout.\n- Left \"Not this\" for you: only you can say what it shouldn't be."
     return proposal
 
 

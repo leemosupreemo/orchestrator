@@ -29,8 +29,14 @@ class DevConsoleTests(unittest.TestCase):
         dev_console.ROOT = self.temp_root
         dev_console.CONFIG_DIR = self.temp_root / ".orchestrator" / "config"
         dev_console.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.patcher_stdin_tty = patch("sys.stdin.isatty", return_value=False)
+        self.patcher_stdout_tty = patch("sys.stdout.isatty", return_value=False)
+        self.patcher_stdin_tty.start()
+        self.patcher_stdout_tty.start()
 
     def tearDown(self) -> None:
+        self.patcher_stdin_tty.stop()
+        self.patcher_stdout_tty.stop()
         dev_console.ROOT = self.old_root
         import shutil
         if self.temp_root.exists():
@@ -1123,7 +1129,8 @@ class AppFeatureTests_{i}: XCTestCase {{
         status_bar_context.__enter__.return_value = status_bar_instance
         mock_status_bar.return_value = status_bar_context
 
-        pct = dev_console.run_calculate_coverage(["local"], ["gemini"])
+        with patch.object(dev_console, "project_uses_xcode", return_value=True):
+            pct = dev_console.run_calculate_coverage(["local"], ["gemini"])  # the xcodebuild path
 
         mock_progress_indicator.assert_called_once()
         self.assertIn("Thinking", mock_progress_indicator.call_args[1].get("label", ""))
