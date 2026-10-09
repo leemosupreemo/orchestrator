@@ -4478,7 +4478,7 @@ pages.product = async (_, query) => {
             goBtn.click();
           }
         });
-        $("#prd-import-cancel").addEventListener("click", () => { showStartHere(); });
+        $("#prd-import-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
         goBtn.addEventListener("click", () => {
           if (picked) return readPrd({ file: picked });
           const text = textEl.value.trim();
@@ -4496,7 +4496,7 @@ pages.product = async (_, query) => {
           abortCtrl.abort();
           if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
           toast("Draft cancelled", "cancel");
-          showStartHere();
+          panel().innerHTML = "";
         };
         const modelLabel = p.available_models?.find((m) => m.id === p.model)?.label || p.model || "";
         const busyText = modelLabel
@@ -4512,61 +4512,10 @@ pages.product = async (_, query) => {
           }
           const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
           if (canceled) return;
-          await proposalView(taskResult, { source: "draft", label: modelLabel ? `Drafted with ${modelLabel}` : "Drafted from your project", onDone: () => showStartHere() });
+          await proposalView(taskResult, { source: "draft", label: modelLabel ? `Drafted with ${modelLabel}` : "Drafted from your project", onDone: () => { panel().innerHTML = ""; } });
         } catch (e) {
           if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
           toast(e.message, true);
-          showStartHere();
-        }
-      };
-
-      const showStartHere = () => {
-        if (!p.sections.some((x) => x.filled) && !p.history.length) {
-          const existing = p.can_draft; // there is already a project to read
-          const models = p.available_models || [
-            { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Recommended)" },
-            { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
-            { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
-            { id: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
-            { id: "gpt-4o", label: "GPT-4o" },
-            { id: "o3-mini", label: "o3-mini" },
-          ];
-          const currentModel = p.model || "claude-sonnet-4-6";
-          const modelOptions = models.map((m) => `<option value="${esc(m.id)}"${m.id === currentModel ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")
-            + `<hr><option value="__manage_llms__">⚙️ Manage LLMs</option>`;
-          const modelPicker = existing ? `
-            <div class="prd-model-picker">
-              <span class="muted">Model:</span>
-              <select id="prd-model-select" class="prd-model-select" aria-label="AI model for draft">
-                ${modelOptions}
-              </select>
-            </div>` : "";
-          panel().innerHTML = `<section class="card mb-16"><div class="card-b stack"><strong>Start here</strong>
-            <div>${existing ? "This project already exists, so we can read it and draft a first version for you to correct. Or say what you have in mind in the pitch below." : "Say what you have in mind in the pitch below."}</div>
-            <div class="row gap-10 align-center wrap">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft with AI</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button>${modelPicker}</div></div></section>`;
-          $("#prd-start-draft")?.addEventListener("click", () => draftPanel());
-          $("#prd-start-import")?.addEventListener("click", () => importPanel());
-          const startModelSelect = $("#prd-model-select");
-          if (startModelSelect) {
-            startModelSelect.dataset.previous = startModelSelect.value;
-            startModelSelect.addEventListener("change", async (e) => {
-              const next = e.target.value;
-              if (next === "__manage_llms__") {
-                e.target.value = startModelSelect.dataset.previous || p.model || "claude-sonnet-4-6";
-                location.hash = "#/config/models";
-                return;
-              }
-              startModelSelect.dataset.previous = next;
-              p.model = next;
-              try {
-                await api("product/model", { method: "POST", body: { model: next } });
-                toast("Draft model updated");
-              } catch (err) {
-                toast(err.message, true);
-              }
-            });
-          }
-        } else {
           panel().innerHTML = "";
         }
       };
@@ -4575,7 +4524,6 @@ pages.product = async (_, query) => {
       hydrateAuthImages();
       if (open.imp) importPanel();
       else if (open.draft && p.can_draft) draftPanel();
-      else showStartHere();
     },
   };
 };

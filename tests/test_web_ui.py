@@ -560,12 +560,13 @@ class ProductStripTests(unittest.TestCase):
         self.assertIn('<a class="product-pitch" href="#/product"', strip)
         self.assertNotIn(">Open</a>", strip)  # no separate Open link
 
-    def test_product_strip_and_start_here_include_model_dropdown(self):
+    def test_product_strip_and_settings_include_model_dropdown(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertIn('id="prd-home-model-select"', js)
-        self.assertIn('id="prd-model-select"', js)
+        self.assertIn('id="prd-update-model-select"', js)
         self.assertIn('prd-model-picker', js)
         self.assertIn('api("product/model"', js)
+        self.assertNotIn('id="prd-start-draft"', js)
 
     def test_product_strip_includes_manage_llms_option(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -3914,7 +3915,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         # Button label is "Draft with AI" across all PRD entry points
         self.assertIn('>Draft with AI</a>', self.js)
         self.assertIn('id="prd-draft">Draft with AI</button>', self.js)
-        self.assertIn('id="prd-start-draft">Draft with AI</button>', self.js)
+        self.assertNotIn('id="prd-start-draft"', self.js)
         self.assertNotIn('>Draft PRD<', self.js)
         # Busy indicator says it can take a few minutes and provides a cancel/stop option
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
