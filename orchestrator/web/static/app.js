@@ -3117,7 +3117,7 @@ pages.new = async (_, query) => {
       <div class="autopilot-option">
         <label class="check risky"><input type="checkbox" name="yolo"><span><strong>YOLO (Autopilot)</strong><small>Runs without confirmations or review pauses.</small></span></label>
       </div>
-      <details class="advanced"><summary>Options</summary>
+      <details class="advanced"><summary>Advanced</summary>
         <div class="stack">
           <label class="field"><span>Where to work</span>
             <select name="branch_mode">
@@ -3761,7 +3761,7 @@ pages["ux-review"] = async (_, query) => {
             <small class="hint-text">Where it runs while you develop. A sign-in token can come from an environment variable: <code class="nowrap">?token=$MY_TOKEN</code>.</small></label>
           <label class="field"><span>Pages to capture <span class="muted">(one per line)</span></span><textarea name="routes" rows="4" spellcheck="false">${esc((saved.routes || ["/"]).join("\n"))}</textarea></label>
           <label class="field"><span>Widths <span class="muted">(pixels)</span></span><input type="text" name="widths" value="${esc((saved.widths || [390, 1440]).join(" "))}"></label>
-          <details class="np-more"><summary class="np-section-legend">More options</summary><div class="stack">
+          <details class="np-more"><summary class="np-section-legend">Advanced</summary><div class="stack">
             <label class="field"><span>Command that starts the app <span class="muted">(optional)</span></span><input type="text" name="start_command" value="${esc(saved.start_command || "")}" placeholder="npm run dev" spellcheck="false">
               <small class="hint-text">Used only when the address isn't answering; stopped afterwards.</small></label>
             <label class="field"><span>Your UI conventions file <span class="muted">(optional)</span></span><input type="text" name="conventions" value="${esc(saved.conventions || "")}" placeholder="docs/ui-conventions.md" spellcheck="false">
