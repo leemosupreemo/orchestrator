@@ -51,18 +51,20 @@ def public_providers() -> list[dict[str, Any]]:
              "dashboards": v.get("dashboards", {})} for k, v in PROVIDERS.items()]
 
 
-def probe_mixpanel_mcp() -> list[dict[str, Any]]:
+def probe_provider_mcp(provider_id: str) -> list[dict[str, Any]]:
     home = Path.home()
     results: list[dict[str, Any]] = []
+    pid = provider_id.lower()
+    pkg = f"{pid}-mcp"
 
     # Google (Antigravity CLI / Gemini)
-    agy_dir = home / ".gemini" / "antigravity-cli" / "mcp" / "mixpanel"
+    agy_dir = home / ".gemini" / "antigravity-cli" / "mcp" / pid
     gemini_settings = home / ".gemini" / "settings.json"
     google_installed = agy_dir.is_dir()
-    detected_via = "~/.gemini/antigravity-cli/mcp/mixpanel" if google_installed else None
+    detected_via = f"~/.gemini/antigravity-cli/mcp/{pid}" if google_installed else None
     if not google_installed and gemini_settings.exists():
         try:
-            if "mixpanel" in gemini_settings.read_text(encoding="utf-8").lower():
+            if pid in gemini_settings.read_text(encoding="utf-8").lower():
                 google_installed = True
                 detected_via = "~/.gemini/settings.json"
         except Exception:
@@ -73,7 +75,7 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
         "cli": "agy",
         "installed": google_installed,
         "detected_via": detected_via,
-        "cmd": "agy mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+        "cmd": f"agy mcp add {pid} -- npx -y {pkg}",
     })
 
     # Anthropic (Claude Code)
@@ -89,7 +91,7 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
             try:
                 cdata = json.loads(cp.read_text(encoding="utf-8"))
                 servers = cdata.get("mcpServers", {}) or {}
-                if "mixpanel" in servers or any("mixpanel" in str(k).lower() for k in servers):
+                if pid in servers or any(pid in str(k).lower() for k in servers):
                     claude_installed = True
                     detected_claude = f"~/{cp.name}"
                     break
@@ -101,7 +103,7 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
         "cli": "claude",
         "installed": claude_installed,
         "detected_via": detected_claude,
-        "cmd": "claude mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+        "cmd": f"claude mcp add {pid} -- npx -y {pkg}",
     })
 
     # OpenAI (Codex)
@@ -110,7 +112,7 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
     detected_codex = None
     if codex_cfg.exists():
         try:
-            if "mixpanel" in codex_cfg.read_text(encoding="utf-8").lower():
+            if pid in codex_cfg.read_text(encoding="utf-8").lower():
                 codex_installed = True
                 detected_codex = "~/.codex/config.toml"
         except Exception:
@@ -121,7 +123,7 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
         "cli": "codex",
         "installed": codex_installed,
         "detected_via": detected_codex,
-        "cmd": "codex mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+        "cmd": f"codex mcp add {pid} -- npx -y {pkg}",
     })
 
     # OpenCode
@@ -130,7 +132,7 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
     detected_opencode = None
     if opencode_cfg.exists():
         try:
-            if "mixpanel" in opencode_cfg.read_text(encoding="utf-8").lower():
+            if pid in opencode_cfg.read_text(encoding="utf-8").lower():
                 opencode_installed = True
                 detected_opencode = "~/.opencode/mcp.json"
         except Exception:
@@ -141,7 +143,7 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
         "cli": "opencode",
         "installed": opencode_installed,
         "detected_via": detected_opencode,
-        "cmd": "opencode mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+        "cmd": f"opencode mcp add {pid} -- npx -y {pkg}",
     })
 
     # Ollama
@@ -151,10 +153,14 @@ def probe_mixpanel_mcp() -> list[dict[str, Any]]:
         "cli": "ollama",
         "installed": False,
         "detected_via": None,
-        "cmd": "npx -y @modelcontextprotocol/server-mixpanel",
+        "cmd": f"npx -y {pkg}",
     })
 
     return results
+
+
+def probe_mixpanel_mcp() -> list[dict[str, Any]]:
+    return probe_provider_mcp("mixpanel")
 
 
 def event_name(raw: str) -> str:

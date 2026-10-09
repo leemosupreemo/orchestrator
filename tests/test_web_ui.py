@@ -2996,6 +2996,7 @@ class MeasureEndpointTests(ServerTestCase):
         self.assertEqual((data["provider"], data["provider_name"], data["key_set"], data["region"]), ("mixpanel", "Mixpanel", True, "eu"))
         self.assertEqual(data.get("dashboard_url"), "https://eu.mixpanel.com/project")
         self.assertIsInstance(data.get("mixpanel_mcp"), list)
+        self.assertIn("mixpanel", data.get("provider_mcp", {}))
         self.assertNotIn("SECRET-TOKEN", json.dumps(data))
         self.post("/api/config/analytics", {"op": "set", "provider": "mixpanel", "key": "", "region": "us"})
         self.assertEqual(ui.read_settings(self.root)["analytics_key"], "SECRET-TOKEN")

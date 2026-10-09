@@ -212,12 +212,20 @@ class ProviderTests(unittest.TestCase):
             self.assertIn("cmd", m)
             self.assertIsInstance(m["installed"], bool)
 
+    def test_probe_provider_mcp_all_providers(self):
+        for pid in ("mixpanel", "amplitude", "posthog"):
+            mcps = A.probe_provider_mcp(pid)
+            self.assertEqual(len(mcps), 5)
+            self.assertTrue(all(pid in m["cmd"] for m in mcps))
+
     def test_public_providers_includes_dashboards(self):
         providers = {p["id"]: p for p in A.public_providers()}
         self.assertIn("mixpanel", providers)
         self.assertEqual(providers["mixpanel"]["dashboards"], {"us": "https://mixpanel.com/project", "eu": "https://eu.mixpanel.com/project"})
         self.assertIn("amplitude", providers)
+        self.assertEqual(providers["amplitude"]["dashboards"], {"us": "https://analytics.amplitude.com", "eu": "https://analytics.eu.amplitude.com"})
         self.assertIn("posthog", providers)
+        self.assertEqual(providers["posthog"]["dashboards"], {"us": "https://us.posthog.com", "eu": "https://eu.posthog.com"})
 
 
 if __name__ == "__main__":

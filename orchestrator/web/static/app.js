@@ -3462,18 +3462,19 @@ pages.measure = async () => {
     amplitude: "Behavioral analytics and digital optimization. Stream feature KPI events into your Amplitude workspace.",
     posthog: "Product analytics and feature metrics. Connects to PostHog Cloud or self-hosted instances."
   };
-  const mixpanelMcpTree = (list) => {
+  const providerMcpTree = (providerId, providerName, list) => {
+    const pkg = `${providerId}-mcp`;
     const items = list && list.length ? list : [
-      { id: "google", org: "Google (Antigravity / Gemini)", installed: false, cmd: "agy mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
-      { id: "anthropic", org: "Anthropic (Claude Code)", installed: false, cmd: "claude mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
-      { id: "openai", org: "OpenAI (Codex)", installed: false, cmd: "codex mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
-      { id: "opencode", org: "OpenCode", installed: false, cmd: "opencode mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
-      { id: "ollama", org: "Ollama (Local models)", installed: false, cmd: "npx -y @modelcontextprotocol/server-mixpanel" }
+      { id: "google", org: "Google (Antigravity / Gemini)", installed: false, cmd: `agy mcp add ${providerId} -- npx -y ${pkg}` },
+      { id: "anthropic", org: "Anthropic (Claude Code)", installed: false, cmd: `claude mcp add ${providerId} -- npx -y ${pkg}` },
+      { id: "openai", org: "OpenAI (Codex)", installed: false, cmd: `codex mcp add ${providerId} -- npx -y ${pkg}` },
+      { id: "opencode", org: "OpenCode", installed: false, cmd: `opencode mcp add ${providerId} -- npx -y ${pkg}` },
+      { id: "ollama", org: "Ollama (Local models)", installed: false, cmd: `npx -y ${pkg}` }
     ];
     const count = items.filter((m) => m.installed).length;
     return `<details class="fold model-tree mt-12" ${count > 0 ? "open" : ""}>
       <summary class="model-tree-summary">
-        <strong>Mixpanel MCP by LLM organization</strong>
+        <strong>${esc(providerName)} MCP by LLM organization</strong>
         <span class="count">${count} / ${items.length} installed</span>
       </summary>
       <div class="model-tree-content">
@@ -3517,9 +3518,10 @@ pages.measure = async () => {
                 ? pill("failed", "Key missing")
                 : pill("", "Not connected");
               const dashboardUrl = isReady
-                ? (p.dashboards?.[data.region || "us"] || (p.id === "mixpanel" ? (data.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project") : null))
+                ? (p.dashboards?.[data.region || "us"] || (p.dashboards?.us) || (isCurrent && data.dashboard_url ? data.dashboard_url : null))
                 : null;
-              const mixpanelExpanded = p.id === "mixpanel" ? mixpanelMcpTree(data.mixpanel_mcp) : "";
+              const mcpList = data.provider_mcp?.[p.id] || (p.id === "mixpanel" ? data.mixpanel_mcp : null);
+              const mcpTree = providerMcpTree(p.id, p.name, mcpList);
               return `<section class="card conn-card" data-analytics-p="${esc(p.id)}">
                 <div class="card-b stack">
                   <div class="row">
@@ -3539,7 +3541,7 @@ pages.measure = async () => {
                       <button type="button" class="btn small primary" data-analytics-action="connect" data-analytics-p="${esc(p.id)}">Connect ${esc(p.name)}</button>
                     `}
                   </div>
-                  ${mixpanelExpanded}
+                  ${mcpTree}
                 </div>
               </section>`;
             }).join("")}
@@ -5672,8 +5674,8 @@ pages.connections = async (_, query) => {
           <div class="muted">Connect Mixpanel, Amplitude, or PostHog to judge features by real user metrics and tracking plans.</div>
           ${analyticsConnected ? `<div class="mono conn-summary">${esc(analyticsData.provider_name)} connected</div>` : ""}
           <div class="row">
-            ${(analyticsConnected && analyticsData.provider === "mixpanel") ? `
-              <a href="${esc(analyticsData.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project")}" target="_blank" rel="noopener" class="btn small">Open Mixpanel project ↗</a>
+            ${(analyticsConnected && (analyticsData.dashboard_url || (analyticsData.provider === "mixpanel" ? (analyticsData.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project") : null))) ? `
+              <a href="${esc(analyticsData.dashboard_url || (analyticsData.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project"))}" target="_blank" rel="noopener" class="btn small">Open ${esc(analyticsData.provider_name)} project ↗</a>
             ` : ""}
             <a href="#/measure" class="btn small primary">Manage analytics &amp; KPIs ↗</a>
           </div>

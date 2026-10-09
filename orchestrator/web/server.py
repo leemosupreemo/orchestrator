@@ -851,7 +851,8 @@ def analytics_overview(root: Path) -> dict[str, Any]:
     return {**state, "provider_name": provider.get("name"), "key_label": provider.get("key_label"),
             "dashboard_url": dashboard_url,
             "features": feature_store.rollup(feature_store.load(runtime_dir(root)), []),
-            "mixpanel_mcp": analytics.probe_mixpanel_mcp()}
+            "mixpanel_mcp": analytics.probe_mixpanel_mcp(),
+            "provider_mcp": {p: analytics.probe_provider_mcp(p) for p in analytics.PROVIDERS}}
 
 
 def project_facts(root: Path) -> dict[str, Any]:
