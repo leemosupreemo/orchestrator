@@ -825,16 +825,18 @@ process.stdout.write(JSON.stringify({{html}}));""")
         css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
         self.assertIn(".account-card code.account-address { white-space: normal; overflow-wrap: anywhere; }", css)
 
-    def test_your_computers_is_listed_only_on_the_hosted_app(self):
+    def test_machines_and_computers_share_one_menu_entry(self):
         source = """
-const ids = globalThis.ConfigurationPages.groups().flatMap((g) => g.entries.map((e) => e.id));
-process.stdout.write(JSON.stringify({ids, menu: globalThis.ConfigurationPages.renderMenu().includes("#/computers")}));"""
+const entries = globalThis.ConfigurationPages.groups().flatMap((g) => g.entries);
+const menu = globalThis.ConfigurationPages.renderMenu();
+process.stdout.write(JSON.stringify({ids: entries.map((e) => e.id), menu}));"""
         local = self.run_account_script(source)
-        self.assertNotIn("computers", local["ids"])
-        self.assertFalse(local["menu"])
         hosted = self.run_account_script(source, preload='globalThis.location = {origin: "https://swift-orch-web-20260923.web.app", search: ""};')
-        self.assertIn("computers", hosted["ids"])
-        self.assertTrue(hosted["menu"])
+        for result in (local, hosted):
+            self.assertIn("fleet", result["ids"])
+            self.assertNotIn("computers", result["ids"])
+            self.assertIn("Machines &amp; computers", result["menu"])
+            self.assertNotIn("Your computers</span>", result["menu"])
 
     def test_the_hosted_app_can_be_installed_and_receive_push(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"

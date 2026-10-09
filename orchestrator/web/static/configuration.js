@@ -29,8 +29,8 @@
       id: "ai",
       label: "AI",
       entries: [
-        {id: "ai", label: "Add an AI", description: "Get an AI to do the work: free options first, with install and sign-in steps or an API key.", route: "#/config/ai", enabled: true, status: null},
-        {id: "models", label: "Models", description: "Which AI model each role (architect, planner, builder, reviewer) uses.", route: "#/config/models", enabled: true, status: null},
+        {id: "ai", label: "AI & models", description: "Add AI tools and choose which model each role uses.", route: "#/config/ai", enabled: true, status: null},
+        {id: "models", label: "Models", description: "Which AI model each role (architect, planner, builder, reviewer) uses.", route: "#/config/models", enabled: true, listed: false, status: null},
         {id: "ai-instructions", label: "Instructions for AI helpers", description: "What AI helpers should know about this project, and how each role behaves.", route: "#/config/ai-instructions", enabled: true, ownerOnly: true, status: null},
       ],
     },
@@ -38,8 +38,8 @@
       id: "computers",
       label: "Computers & access",
       entries: [
-        {id: "fleet", label: "Machines", description: "Where jobs run: add and manage build machines (the fleet).", route: "#/config/fleet", enabled: true, ownerOnly: true, status: null},
-        {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, status: null, hostedOnly: true},
+        {id: "fleet", label: "Machines & computers", description: "Manage build machines or switch between your computers.", route: "#/config/fleet", enabled: true, status: null},
+        {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, listed: false, hostedOnly: true},
         {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
         {id: "updates", label: "Updates", description: "Update Orchestrator on this and your other machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
       ],
@@ -69,7 +69,12 @@
     return registry.map((group) => ({
       id: group.id,
       label: group.label,
-      entries: group.entries.filter((entry) => entry.listed !== false && shown(entry) && (role !== "member" || !entry.ownerOnly)).map(copyEntry),
+      entries: group.entries.filter((entry) => entry.listed !== false && shown(entry) && (role !== "member" || !entry.ownerOnly)).map((entry) => {
+        const item = copyEntry(entry);
+        // Members use this shared destination to switch their hosted computers; owners manage the build fleet.
+        if (item.id === "fleet" && role === "member" && root.Account && root.Account.active()) item.route = "#/computers";
+        return item;
+      }),
     })).filter((group) => group.entries.length);
   }
 
@@ -95,6 +100,7 @@
 
   function resolve(section, role = "owner") {
     const entry = find(section);
+    if (entry?.id === "fleet" && role === "member") return null;
     return entry && entry.enabled && !(role === "member" && entry.ownerOnly) && entry.route && entry.route.startsWith("#/config/") ? entry : null;
   }
 
@@ -557,6 +563,7 @@
           <div class="card-h">
             <h2>Build & Test Machines</h2>
             <div class="row">
+              ${root.Account?.active?.() ? `<a class="btn small" href="#/computers">Your computers</a>` : ""}
               <button type="button" class="btn small" data-config-action="fleet-add">Add worker</button>
               <button type="button" class="btn small" data-config-action="fleet-check">Check health</button>
               <button type="button" class="btn small" data-config-action="fleet-sync">Sync code</button>
