@@ -567,6 +567,15 @@ class ProductStripTests(unittest.TestCase):
         self.assertIn('prd-model-picker', js)
         self.assertIn('api("product/model"', js)
 
+    def test_product_strip_includes_manage_llms_option(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        strip = js[js.index("function productStripHtml"):js.index("pages.product =")]
+        self.assertIn("<hr>", strip)
+        self.assertIn('<option value="__manage_llms__">⚙️ Manage LLMs</option>', strip)
+        home = js[js.index("pages.home ="):js.index("function jobHeaderActions(")]
+        self.assertIn('next === "__manage_llms__"', home)
+        self.assertIn('location.hash = "#/config/models"', home)
+
 
 class UiShutdownTests(unittest.TestCase):
     """Stopping `orchestrator ui` the way a service manager or `kill` does must close its tunnel, as Ctrl-C does."""
@@ -3943,7 +3952,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("click to choose one", page)
 
     def test_home_shows_what_the_product_is_without_the_section_buttons(self):
-        card = self.js[self.js.index("function productStripHtml"):][:1500]
+        card = self.js[self.js.index("function productStripHtml"):self.js.index("pages.product =")]
         self.assertNotIn("doc-chip", card)
         self.assertNotIn("p.sections.map", card)
         self.assertIn("Import PRD", card)

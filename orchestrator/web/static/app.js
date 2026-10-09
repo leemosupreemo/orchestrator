@@ -2239,15 +2239,25 @@ pages.home = async (_, query) => {
         ${elsewhereLine(waiting.elsewhere)}
       </section>`,
     after: () => {
-      view.querySelector("#prd-home-model-select")?.addEventListener("change", async (e) => {
-        const next = e.target.value;
-        try {
-          await api("product/model", { method: "POST", body: { model: next } });
-          toast("Draft model updated");
-        } catch (err) {
-          toast(err.message, true);
-        }
-      });
+      const homeModelSelect = view.querySelector("#prd-home-model-select");
+      if (homeModelSelect) {
+        homeModelSelect.dataset.previous = homeModelSelect.value;
+        homeModelSelect.addEventListener("change", async (e) => {
+          const next = e.target.value;
+          if (next === "__manage_llms__") {
+            e.target.value = homeModelSelect.dataset.previous || product?.model || "claude-sonnet-4-6";
+            location.hash = "#/config/models";
+            return;
+          }
+          homeModelSelect.dataset.previous = next;
+          try {
+            await api("product/model", { method: "POST", body: { model: next } });
+            toast("Draft model updated");
+          } catch (err) {
+            toast(err.message, true);
+          }
+        });
+      }
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
         try { await api("config/archived-restore", { method: "POST", body: { id: b.dataset.restoreJob } }); toast("Job restored"); route(); }
@@ -3963,6 +3973,8 @@ function productStripHtml(p) {
       <span class="muted">Model:</span>
       <select id="prd-home-model-select" class="prd-model-select" aria-label="AI model for draft">
         ${models.map((m) => `<option value="${esc(m.id)}"${m.id === currentModel ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}
+        <hr>
+        <option value="__manage_llms__">⚙️ Manage LLMs</option>
       </select>
     </div>` : "";
 
@@ -4024,6 +4036,8 @@ pages.product = async (_, query) => {
               { id: "gpt-4o", label: "GPT-4o" },
               { id: "o3-mini", label: "o3-mini" },
             ]).map((m) => `<option value="${esc(m.id)}"${m.id === (p.model || "claude-sonnet-4-6") ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}
+            <hr>
+            <option value="__manage_llms__">⚙️ Manage LLMs</option>
           </select>
         </div>
         <div class="muted">After feature or design jobs, AI updates clear changes, keeps your wording, and notifies you. Review or undo any update in History.</div></div></section>
@@ -4161,16 +4175,26 @@ pages.product = async (_, query) => {
           }, reload);
         }));
         $("#prd-auto")?.addEventListener("change", async (e) => { try { p = await api("product/settings", { method: "POST", body: { auto_update: e.target.checked } }); toast(p.auto_update ? "It will keep itself up to date" : "Automatic updates are off"); } catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); } });
-        $("#prd-update-model-select")?.addEventListener("change", async (e) => {
-          const next = e.target.value;
-          p.model = next;
-          try {
-            await api("product/model", { method: "POST", body: { model: next } });
-            toast("Product model updated");
-          } catch (err) {
-            toast(err.message, true);
-          }
-        });
+        const updateModelSelect = $("#prd-update-model-select");
+        if (updateModelSelect) {
+          updateModelSelect.dataset.previous = updateModelSelect.value;
+          updateModelSelect.addEventListener("change", async (e) => {
+            const next = e.target.value;
+            if (next === "__manage_llms__") {
+              e.target.value = updateModelSelect.dataset.previous || p.model || "claude-sonnet-4-6";
+              location.hash = "#/config/models";
+              return;
+            }
+            updateModelSelect.dataset.previous = next;
+            p.model = next;
+            try {
+              await api("product/model", { method: "POST", body: { model: next } });
+              toast("Product model updated");
+            } catch (err) {
+              toast(err.message, true);
+            }
+          });
+        }
         view.querySelectorAll("[data-prd-diff]").forEach((btn) => btn.addEventListener("click", async () => {
           const box = btn.closest(".prd-version").querySelector(".prd-diff");
           if (!box.hidden) { box.hidden = true; btn.textContent = "See changes"; return; }
@@ -4508,7 +4532,8 @@ pages.product = async (_, query) => {
             { id: "o3-mini", label: "o3-mini" },
           ];
           const currentModel = p.model || "claude-sonnet-4-6";
-          const modelOptions = models.map((m) => `<option value="${esc(m.id)}"${m.id === currentModel ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("");
+          const modelOptions = models.map((m) => `<option value="${esc(m.id)}"${m.id === currentModel ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")
+            + `<hr><option value="__manage_llms__">⚙️ Manage LLMs</option>`;
           const modelPicker = existing ? `
             <div class="prd-model-picker">
               <span class="muted">Model:</span>
@@ -4521,16 +4546,26 @@ pages.product = async (_, query) => {
             <div class="row gap-10 align-center wrap">${existing ? `<button type="button" class="btn small primary" id="prd-start-draft">Draft with AI</button>` : ""}<button type="button" class="btn small ${existing ? "" : "primary"}" id="prd-start-import">Import PRD</button>${modelPicker}</div></div></section>`;
           $("#prd-start-draft")?.addEventListener("click", () => draftPanel());
           $("#prd-start-import")?.addEventListener("click", () => importPanel());
-          $("#prd-model-select")?.addEventListener("change", async (e) => {
-            const next = e.target.value;
-            p.model = next;
-            try {
-              await api("product/model", { method: "POST", body: { model: next } });
-              toast("Draft model updated");
-            } catch (err) {
-              toast(err.message, true);
-            }
-          });
+          const startModelSelect = $("#prd-model-select");
+          if (startModelSelect) {
+            startModelSelect.dataset.previous = startModelSelect.value;
+            startModelSelect.addEventListener("change", async (e) => {
+              const next = e.target.value;
+              if (next === "__manage_llms__") {
+                e.target.value = startModelSelect.dataset.previous || p.model || "claude-sonnet-4-6";
+                location.hash = "#/config/models";
+                return;
+              }
+              startModelSelect.dataset.previous = next;
+              p.model = next;
+              try {
+                await api("product/model", { method: "POST", body: { model: next } });
+                toast("Draft model updated");
+              } catch (err) {
+                toast(err.message, true);
+              }
+            });
+          }
         } else {
           panel().innerHTML = "";
         }
