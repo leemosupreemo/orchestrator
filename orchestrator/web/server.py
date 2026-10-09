@@ -208,6 +208,7 @@ class PtySession:
         self.action = action
         self.title = title
         self.argv = argv
+        self.cwd = cwd
         self.job_id: str | None = None
         self.result_job: str | None = None
         self.started = time.time()
@@ -338,6 +339,30 @@ class PtySession:
         idle = time.time() - self.last_output if self.running else 0
         with self._cond:
             progress = self._progress.snapshot(running=self.running)
+        if not progress.get("models"):
+            assigned: list[str] = []
+            target_job = self.job_id or self.result_job
+            if target_job and getattr(self, "cwd", None):
+                job_file = jobs_dir(self.cwd) / f"{target_job}.json"
+                if job_file.is_file():
+                    job_data = read_json_file(job_file)
+                    for m in [job_data.get("actual_builder_used") or job_data.get("builder"),
+                              job_data.get("planner"), job_data.get("reviewer")]:
+                        if m and isinstance(m, str) and m not in assigned:
+                            assigned.append(m)
+            if not assigned and self.argv:
+                for flag in ("--planner", "--model"):
+                    if flag in self.argv:
+                        try:
+                            idx = self.argv.index(flag)
+                            if idx + 1 < len(self.argv):
+                                val = self.argv[idx + 1]
+                                if val and not val.startswith("-"):
+                                    assigned.append(val)
+                        except (ValueError, IndexError):
+                            pass
+            if assigned:
+                progress["assigned_models"] = assigned
         return {
             "id": self.id, "action": self.action, "title": self.title,
             "command": " ".join(_display_argv(self.argv)), "started": self.started,

@@ -19,7 +19,7 @@ class RunProgress:
         "MEASURING CODE COVERAGE": "Measuring code coverage",
     }
     TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION", "COVERAGE"}
-    ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[78])")
+    ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])")
 
     def __init__(self) -> None:
         self._pending = b""
@@ -60,20 +60,26 @@ class RunProgress:
                             self.step = self.total = None
                             self.task = detail.strip().capitalize()
 
-            start = re.fullmatch(r"- Running LLM \((.+), timeout=\d+s\)\.\.\.", line)
+            start = re.search(r"Running LLM \(([^,)]+)", line)
             if start:
-                model = start[1]
+                model = start[1].strip()
                 self.active.append(model)
                 if model not in self.models:
                     self.models.append(model)
-            elif re.fullmatch(r"\[output\] Received \d+ chars in [\d.]+s", line):
+            elif re.search(r"\[output\] Received \d+ chars in [\d.]+s", line):
                 if self.active:
                     self.active.pop(0)
             elif "Attempting fallback..." in line:
-                for model in self.active:
-                    if line.startswith(f"⚠️  {model} timed out.") or line.startswith(f"⚠️  {model} failed ("):
+                for model in list(self.active):
+                    if model in line or line.startswith(f"⚠️  {model} timed out.") or line.startswith(f"⚠️  {model} failed ("):
                         self.active.remove(model)
                         break
+            else:
+                using_match = re.search(r"(?:using|Consulting)\s+([a-zA-Z0-9_\-\./]+)\.\.\.", line)
+                if using_match:
+                    model = using_match[1].strip()
+                    if model and model not in self.models and ("/" in model or "." in model or any(k in model for k in ("gpt", "claude", "gemini", "qwen", "deepseek", "nemotron", "codex", "llama"))):
+                        self.models.append(model)
 
     def snapshot(self, running: bool = True) -> dict:
         active = self.active if running else []

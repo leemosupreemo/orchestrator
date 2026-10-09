@@ -102,6 +102,11 @@ class RunProgressTests(unittest.TestCase):
         self.assertEqual((status["step"], status["total"]), (5, 5))
         self.assertEqual(status["label"], "Coverage measurement complete")
 
+    def test_planning_header_prepopulates_model(self):
+        progress = RunProgress()
+        progress.feed(b"[1/3] Planning feature (Stitch AI Mode: Off) using opencode/nemotron-3-ultra-free...\n")
+        self.assertEqual(progress.snapshot()["models"], ["opencode/nemotron-3-ultra-free"])
+
 
 class RunStatusRenderingTests(unittest.TestCase):
     def test_home_job_row_shows_only_its_running_session_and_clears_on_finish(self):
@@ -208,6 +213,11 @@ assert.match(completedCov, /pill done/);
 assert.match(completedCov, /Completed/);
 assert.match(completedCov, /Step 5 of 5/);
 assert.match(completedCov, /View coverage/);
+assert.match(completedCov, /None \(local run\)/);
+assert.match(html, /Models &amp; agents|Models & agents/);
+assert.match(runStatus({...run, action: 'coverage', progress: {step: 1, total: 5}}), /None \(local run\)/);
+assert.match(runStatus({...run, progress: {label: 'Building', models: ['provider/model-a'], active_models: []}}), /provider\/model-a \(idle\)/);
+assert.match(runStatus({...run, progress: {label: 'Building', assigned_models: ['provider/model-b'], models: [], active_models: []}}), /provider\/model-b \(assigned\)/);
 let replacements = 0;
 const clock = {textContent: ''};
 const panel = {set innerHTML(value) { replacements++; this.html = value; },

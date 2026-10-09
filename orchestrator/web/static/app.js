@@ -6013,8 +6013,47 @@ function runStatus(r, vc = null) {
     : failed ? (p.label ? `${p.label} failed` : "Run failed")
     : (p.label || r.title || "Starting run");
   const headline = `${stepPrefix}${headlineLabel}`;
+  const nonAiActions = new Set([
+    "coverage", "build", "test", "test_suite", "test_plan",
+    "git_pull", "git_push", "git_checkout", "stash_checkout", "git_new_branch",
+    "logs_pull", "logs_tail", "logs_setup",
+    "check", "check_config", "wizard", "worker_check", "worker_install",
+    "console", "distribute", "deliver"
+  ]);
+
   const activeModels = p.active_models || [];
-  const models = activeModels.length ? activeModels : p.models || [];
+  const recordedModels = p.models || [];
+  const assignedModels = p.assigned_models || [];
+  const displayModels = activeModels.length ? activeModels
+    : recordedModels.length ? recordedModels
+    : assignedModels;
+  const activeCount = Number.isInteger(p.agents) ? p.agents : activeModels.length;
+
+  let modelsText = "";
+  if (displayModels.length) {
+    const list = displayModels.map(esc).join(", ");
+    if (r.running) {
+      if (activeCount > 0) {
+        modelsText = `${list} (${activeCount} active)`;
+      } else if (recordedModels.length) {
+        modelsText = `${list} (idle)`;
+      } else {
+        modelsText = `${list} (assigned)`;
+      }
+    } else {
+      modelsText = list;
+    }
+  } else if (r.running && activeCount > 0) {
+    modelsText = `${activeCount} active`;
+  } else if (nonAiActions.has(r.action)) {
+    modelsText = "None (local run)";
+  } else if (done) {
+    modelsText = "None used";
+  } else if (r.running) {
+    modelsText = "Awaiting activity";
+  } else {
+    modelsText = "None";
+  }
   const showTask = !done && p.task && p.task.toLowerCase() !== (p.label || "").toLowerCase();
   const progressVal = done && numbered ? totalSteps : (numbered ? p.step - 1 : 0);
   const progressMax = numbered ? totalSteps : 1;
@@ -6028,8 +6067,7 @@ function runStatus(r, vc = null) {
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
       <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}</div>
     <dl class="run-status-details">
-      <div><dt>${activeModels.length ? "Models in use" : "Models used"}</dt><dd>${models.length ? models.map(esc).join(", ") : "None yet"}</dd></div>
-      <div><dt>LLM agents</dt><dd>${done ? "0 active" : (Number.isInteger(p.agents) ? `${p.agents} active` : "Awaiting activity")}</dd></div>
+      <div><dt>Models & agents</dt><dd>${modelsText}</dd></div>
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
     </dl>
     ${numbered ? `<progress class="run-status-progress" value="${progressVal}" max="${progressMax}" aria-label="Completed steps">${progressVal} of ${progressMax}</progress>` : ""}
