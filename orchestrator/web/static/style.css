@@ -1893,6 +1893,68 @@ body[data-page="connections"] .configuration-card .card-b {
   max-width: calc(100% - 60px);
 }
 
+/* Model Tree (expandable tree-style hierarchy) */
+.model-tree {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.model-tree-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+  user-select: none;
+}
+.model-tree-content {
+  padding: var(--space-2) 0 var(--space-1) var(--space-1);
+}
+.model-tree-branch {
+  list-style: none;
+  padding: 0 0 0 var(--space-3);
+  margin: 0 0 0 var(--space-1);
+  border-left: 2px solid var(--border);
+}
+.model-tree-item {
+  position: relative;
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+}
+.model-tree-item::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-3) - 2px);
+  top: 50%;
+  width: var(--space-3);
+  height: 2px;
+  background: var(--border);
+}
+.model-tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+}
+.model-tree-row .model-id {
+  font-size: var(--text-xs);
+}
+.model-tree-row .model-label {
+  font-size: var(--text-xs);
+}
+.model-tree-row .model-caps {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  margin-left: auto;
+}
+@media (max-width: 600px) {
+  .model-tree-row .model-caps {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
 /* Home header: branch on its own row, stats + language mix beneath it */
 .status-line.status-stack { flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 .status-stack .status-stats { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }

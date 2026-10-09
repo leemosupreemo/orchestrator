@@ -5175,7 +5175,7 @@ pages.config = async (args = []) => {
       },
     };
   }
-  if (section === "models") {
+  if (section === "models" || section === "ai") {
     return {
       ...result,
       after: () => {
@@ -5194,6 +5194,32 @@ pages.config = async (args = []) => {
         };
         form?.addEventListener("submit", onSubmit);
         cleanup.push(() => form?.removeEventListener("submit", onSubmit));
+
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button || button.disabled) return;
+          const {configAction, id, label} = button.dataset;
+          if (configAction === "key-set") {
+            const isOllama = id === "ollama_api_key";
+            showConfigMutationDialog(
+              `${label} key`,
+              `<label class="field"><span>API key</span><input type="password" name="value" required autocomplete="off"></label>
+               ${isOllama ? `<label class="field"><span>Host URL (optional)</span><input type="url" name="host" value="${esc(config.ollama_host || "")}" placeholder="https://my-ollama:11434"></label>` : ""}`,
+              "Save",
+              (values) => ({part: "keys", body: {id, ...values}}),
+              "Key saved",
+            );
+          } else if (configAction === "key-clear") {
+            const confirmed = await formDialog(
+              `Clear ${label} key?`,
+              `<p>This removes the saved key from this project's settings.</p>`,
+              "Clear",
+            );
+            if (confirmed) await runConfigMutation(button, {part: "keys", body: {id, clear: true}}, "Key cleared");
+          }
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
       },
     };
   }
@@ -5308,39 +5334,7 @@ pages.config = async (args = []) => {
       },
     };
   }
-  if (section !== "ai") return result;
-
-  // Add an AI: its API keys card
-  return {
-    ...result,
-    after: () => {
-      const onClick = async (event) => {
-        const button = event.target.closest("[data-config-action]");
-        if (!button || button.disabled) return;
-        const {configAction, id, label} = button.dataset;
-        if (configAction === "key-set") {
-          const isOllama = id === "ollama_api_key";
-          showConfigMutationDialog(
-            `${label} key`,
-            `<label class="field"><span>API key</span><input type="password" name="value" required autocomplete="off"></label>
-             ${isOllama ? `<label class="field"><span>Host URL (optional)</span><input type="url" name="host" value="${esc(config.ollama_host || "")}" placeholder="https://my-ollama:11434"></label>` : ""}`,
-            "Save",
-            (values) => ({part: "keys", body: {id, ...values}}),
-            "Key saved",
-          );
-        } else if (configAction === "key-clear") {
-          const confirmed = await formDialog(
-            `Clear ${label} key?`,
-            `<p>This removes the saved key from this project's settings.</p>`,
-            "Clear",
-          );
-          if (confirmed) await runConfigMutation(button, {part: "keys", body: {id, clear: true}}, "Key cleared");
-        }
-      };
-      view.addEventListener("click", onClick);
-      cleanup.push(() => view.removeEventListener("click", onClick));
-    },
-  };
+  return result;
 };
 
 // ---------------------------------------------------------------- connections (Jira, Trello, Sentry, Figma)

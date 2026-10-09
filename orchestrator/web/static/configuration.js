@@ -206,7 +206,118 @@
         </section>`;
   }
 
-  // Add an AI: each provider with its cost, whether it's ready here, and the exact install and sign-in steps.
+  const PROVIDER_MODELS = {
+    claude: [
+      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", tier: "Recommended", caps: ["Coding", "Speed", "Context"] },
+      { id: "claude-opus-4-8", name: "Claude Opus 4.8", tier: "Extreme", caps: ["Reasoning", "Coding", "Deep refactor"] },
+      { id: "claude-opus-4-7", name: "Claude Opus 4.7", tier: "Extreme", caps: ["Reasoning", "Coding", "Context"] },
+      { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", tier: "Fast", caps: ["Speed", "Quick edits"] },
+    ],
+    agy: [
+      { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", tier: "High", caps: ["Reasoning", "Coding", "Vision"] },
+      { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", tier: "Speed", caps: ["Speed", "Multimodal", "Context"] },
+      { id: "gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite", tier: "Fast", caps: ["Low latency", "Speed"] },
+      { id: "gemini-3.6-flash-high", name: "Gemini 3.6 Flash (High)", tier: "High", caps: ["Speed", "Coding", "Vision"] },
+      { id: "gemini-3.6-flash-medium", name: "Gemini 3.6 Flash (Med)", tier: "Medium", caps: ["Context", "Speed"] },
+      { id: "gemini-3.5-flash-high", name: "Gemini 3.5 Flash (High)", tier: "High", caps: ["Fast response", "Context"] },
+    ],
+    gemini: [
+      { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", tier: "High", caps: ["Reasoning", "Coding", "Vision"] },
+      { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", tier: "Speed", caps: ["Speed", "Multimodal", "Context"] },
+      { id: "gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite", tier: "Fast", caps: ["Low latency", "Speed"] },
+      { id: "gemini-3.6-flash-high", name: "Gemini 3.6 Flash (High)", tier: "High", caps: ["Speed", "Coding", "Vision"] },
+      { id: "gemini-3.6-flash-medium", name: "Gemini 3.6 Flash (Med)", tier: "Medium", caps: ["Context", "Speed"] },
+    ],
+    codex: [
+      { id: "gpt-4o", name: "GPT-4o", tier: "High", caps: ["Multimodal", "Coding", "Broad knowledge"] },
+      { id: "o3-mini", name: "o3-mini", tier: "High", caps: ["Reasoning", "STEM & Code logic"] },
+      { id: "o1", name: "o1", tier: "Extreme", caps: ["Deep deliberate reasoning"] },
+      { id: "o1-mini", name: "o1-mini", tier: "Fast", caps: ["Fast reasoning", "Coding"] },
+      { id: "gpt-4o-mini", name: "GPT-4o mini", tier: "Fast", caps: ["Fast utility", "Lightweight"] },
+      { id: "gpt-5.4", name: "GPT-5.4", tier: "Preview", caps: ["Frontier reasoning preview"] },
+      { id: "gpt-5.5", name: "GPT-5.5", tier: "Preview", caps: ["Frontier coding preview"] },
+    ],
+    opencode: [
+      { id: "opencode/big-pickle", name: "Big Pickle (Free)", tier: "Free", caps: ["General coding", "Zero cost"] },
+      { id: "opencode/deepseek-v4-flash-free", name: "DeepSeek V4 Flash (Free)", tier: "Free", caps: ["Fast reasoning", "Code"] },
+      { id: "opencode/qwen3.6-plus-free", name: "Qwen 3.6 Plus (Free)", tier: "Free", caps: ["Broad language", "Code"] },
+      { id: "opencode/minimax-m2.5-free", name: "MiniMax M2.5 (Free)", tier: "Free", caps: ["Long context", "Instruction"] },
+      { id: "opencode/nemotron-3-super-free", name: "Nemotron 3 Super (Free)", tier: "Free", caps: ["Refactoring", "Alignment"] },
+      { id: "opencode/laguna-s-2.1-free", name: "Laguna S 2.1 (Free)", tier: "Free", caps: ["Fast utility", "Scripts"] },
+    ],
+    ollama: [
+      { id: "deepseek", name: "DeepSeek Coder", tier: "Local", caps: ["Local private coding"] },
+      { id: "llama3.3", name: "Llama 3.3", tier: "Local", caps: ["General purpose local AI"] },
+      { id: "qwen2.5-coder", name: "Qwen 2.5 Coder", tier: "Local", caps: ["Local code intelligence"] },
+    ],
+  };
+
+  function modelTreeHtml(providerId, providerReady = false) {
+    const models = PROVIDER_MODELS[providerId] || [];
+    if (!models.length) return "";
+    return `<details class="fold model-tree" ${providerReady ? "open" : ""}>
+      <summary class="model-tree-summary">
+        <strong>Supported models</strong>
+        <span class="count">${models.length}</span>
+      </summary>
+      <div class="model-tree-content">
+        <ul class="model-tree-branch">
+          ${models.map((m, idx) => `
+            <li class="model-tree-item ${idx === models.length - 1 ? 'last-node' : ''}">
+              <div class="model-tree-row">
+                <strong class="mono model-id">${escapeHtml(m.id)}</strong>
+                ${m.name && m.name !== m.id ? `<span class="muted model-label">${escapeHtml(m.name)}</span>` : ""}
+                ${m.tier ? `<span class="pill ${m.tier === 'Recommended' ? 'done' : m.tier === 'Free' ? 'ok' : ''}">${escapeHtml(m.tier)}</span>` : ""}
+                ${m.caps?.length ? `<span class="model-caps muted">${escapeHtml(m.caps.join(" · "))}</span>` : ""}
+              </div>
+            </li>
+          `).join("")}
+        </ul>
+      </div>
+    </details>`;
+  }
+
+  function roleAssignmentsCard(state = {}) {
+    const modelsData = state.models || {};
+    const assignments = modelsData.assignments || {};
+    const available = modelsData.available && modelsData.available.length ? modelsData.available : [
+      {id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Recommended)", provider: "Anthropic"},
+      {id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "Anthropic"},
+      {id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", provider: "Google"},
+      {id: "gemini-3-flash-preview", name: "Gemini 3 Flash", provider: "Google"},
+      {id: "gpt-4o", name: "GPT-4o", provider: "OpenAI"},
+      {id: "o3-mini", name: "o3-mini", provider: "OpenAI"}
+    ];
+    const roles = [
+      {id: "architect", label: "Architect", desc: "Checks the plan and sets the standards it must meet"},
+      {id: "planner", label: "Planner", desc: "Turns a request into tasks after reading the code"},
+      {id: "builder", label: "Builder", desc: "Writes the code and the tests"},
+      {id: "reviewer", label: "Reviewer", desc: "Reads the changes and the test results, and looks for what could break"}
+    ];
+    const formRows = roles.map((role) => {
+      const currentVal = assignments[role.id] || "claude-sonnet-4-6";
+      const options = available.map((m) => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? " selected" : ""}>${escapeHtml(m.label || m.name || m.id)} (${escapeHtml(m.provider)})</option>`).join("");
+      return `<div class="configuration-setting-row">
+        <div class="main-col">
+          <strong>${escapeHtml(role.label)}</strong>
+          <small>${escapeHtml(role.desc)}</small>
+        </div>
+        <select name="${escapeHtml(role.id)}" class="model-select">${options}</select>
+      </div>`;
+    }).join("");
+    return `<section class="card configuration-card" id="team-models">
+      <div class="card-h"><h2>Team Role Assignments</h2></div>
+      <form class="card-b stack" id="config-models-form">
+        <p class="muted">Which AI model each role (architect, planner, builder, reviewer) uses by default.</p>
+        <div class="configuration-setting-list">${formRows}</div>
+        <div class="row end" style="margin-top:16px;">
+          <button class="btn primary" type="submit">Save model team</button>
+        </div>
+      </form>
+    </section>`;
+  }
+
+  // Combined Add an AI & Models: each provider with its cost, whether it's ready, expandable model tree, and role models.
   function renderAi(state) {
     const ai = state.ai || {providers: [], plugins: []};
     const copyable = (command) => command
@@ -220,21 +331,32 @@
         ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}${p.install_note ? `<small>${escapeHtml(p.install_note)}</small>` : ""}`}
           <p class="muted">${p.installed ? "Then" : "2."} ${escapeHtml(p.sign_in)}</p>`}
         <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
+        ${modelTreeHtml(p.id, p.ready)}
         </div>
       </section>`).join("");
-    const plugins = ai.plugins.map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
+    const plugins = (ai.plugins || []).map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {
       title: "Add an AI",
       sub: ai.any_ready ? "You have at least one AI ready. Add more to choose between them per job." : "Orchestrator needs at least one AI to plan, build and review. Free options are first.",
       html: `<div class="configuration-page">
-        <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
+        ${roleAssignmentsCard(state)}
+        <section class="card configuration-card">
+          <div class="card-h"><h2>AI Providers</h2></div>
+          <div class="card-b stack">
+            <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
+          </div>
+        </section>
         ${cards || `<div class="empty">Couldn't check the AI tools on this computer.</div>`}
         ${Array.isArray(state.keys) ? apiKeysCard(state) : ""}
         <section class="card configuration-card">
           <div class="card-h"><h2>Helpful plugins for your AI tools</h2></div>
           <div class="card-b stack">
             <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
-            <ul class="plain-list">${plugins}</ul>
+            <div class="row align-center gap-3">
+              <a href="#/connections#recommended-installs" class="btn small">View recommended MCPs &amp; mobile tools ↗</a>
+              <a href="docs/recommended-mcp-plugins.md" target="_blank" rel="noopener" class="linklike">Plugin recommendations doc ↗</a>
+            </div>
+            ${plugins ? `<details class="fold mt-8"><summary class="muted">See installed plugins list</summary><ul class="plain-list mt-8">${plugins}</ul></details>` : ""}
           </div>
         </section>
       </div>`,
@@ -376,40 +498,11 @@
   }
 
   function renderModels(state) {
-    const modelsData = state.models || {};
-    const assignments = modelsData.assignments || {};
-    const available = modelsData.available || [];
-    const roles = [
-      {id: "architect", label: "Architect", desc: "Checks the plan and sets the standards it must meet"},
-      {id: "planner", label: "Planner", desc: "Turns a request into tasks after reading the code"},
-      {id: "builder", label: "Builder", desc: "Writes the code and the tests"},
-      {id: "reviewer", label: "Reviewer", desc: "Reads the changes and the test results, and looks for what could break"}
-    ];
-    const formRows = roles.map((role) => {
-      const currentVal = assignments[role.id] || "claude-sonnet-4-6";
-      const options = available.map((m) => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? " selected" : ""}>${escapeHtml(m.label)} (${escapeHtml(m.provider)})</option>`).join("");
-      return `<div class="configuration-setting-row">
-        <div class="main-col">
-          <strong>${escapeHtml(role.label)}</strong>
-          <small>${escapeHtml(role.desc)}</small>
-        </div>
-        <select name="${escapeHtml(role.id)}" class="model-select">${options}</select>
-      </div>`;
-    }).join("");
+    const combined = renderAi(state);
     return {
+      ...combined,
       title: "Models",
-      sub: "Which AI model each role uses by default.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Team Role Assignments</h2></div>
-          <form class="card-b stack" id="config-models-form">
-            <div class="configuration-setting-list">${formRows}</div>
-            <div class="row end" style="margin-top:16px;">
-              <button class="btn primary" type="submit">Save model team</button>
-            </div>
-          </form>
-        </section>
-      </div>`,
+      sub: "Which AI model each role uses by default, and supported provider models.",
     };
   }
 

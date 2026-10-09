@@ -12,6 +12,7 @@
     "config/setup-wizard": "readiness",
     "config/chat": "connections?card=chat",
     "config/api-keys": "config/ai",
+    "config/models": "config/ai",
     "config/documentation": "docs",
     "config/archived-jobs": "?filter=archived",
   };
