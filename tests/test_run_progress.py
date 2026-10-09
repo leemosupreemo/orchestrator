@@ -102,6 +102,23 @@ class RunProgressTests(unittest.TestCase):
         self.assertEqual((status["step"], status["total"]), (5, 5))
         self.assertEqual(status["label"], "Coverage measurement complete")
 
+    def test_coverage_step_not_hijacked_by_child_test_output(self):
+        progress = RunProgress()
+        progress.feed(b"\n=== STEP 1/5: CHECKING COVERAGE ENVIRONMENT ===\n")
+        progress.feed(b"\n=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===\n")
+        # Subprocess running wizard e2e tests emits bracket lines:
+        progress.feed(b"[1/5] Project\n")
+        progress.feed(b"[2/5] AI setup\n")
+        progress.feed(b"[5/5] Verify and finish\n")
+        status = progress.snapshot()
+        # Must stay on step 3 of 5, NOT jump to step 5 or step 1
+        self.assertEqual((status["step"], status["total"]), (3, 5))
+        self.assertEqual(status["label"], "Running test suite with coverage")
+        progress.feed(b"\n=== STEP 4/5: GENERATING COVERAGE REPORT ===\n")
+        status = progress.snapshot()
+        self.assertEqual((status["step"], status["total"]), (4, 5))
+        self.assertEqual(status["label"], "Generating coverage report")
+
     def test_planning_header_prepopulates_model(self):
         progress = RunProgress()
         progress.feed(b"[1/3] Planning feature (Stitch AI Mode: Off) using opencode/nemotron-3-ultra-free...\n")

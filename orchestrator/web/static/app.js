@@ -6000,9 +6000,9 @@ function runStatus(r, vc = null) {
   const done = Boolean(!r.running && r.exit_code === 0);
   const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : "Completed";
   const tone = stopping || r.waiting ? "attention" : r.running ? "working" : failed ? "failed" : "done";
-  const numbered = Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total;
-  const currentStep = done && numbered ? p.total : (p.step || 1);
-  const totalSteps = numbered ? p.total : 1;
+  const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
+  const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
+  const totalSteps = numbered ? (p.total || 5) : 1;
   const stepPrefix = numbered ? `Step ${currentStep} of ${totalSteps}: ` : "";
   const completionLabel = r.action === "coverage" ? "Coverage measurement complete"
     : r.action === "logs_pull" ? "Logs pulled"
@@ -6078,6 +6078,9 @@ function updateRunStatus(r) {
   const container = $("#next-step");
   if (!container) return;
   if (!r.running) {
+    if (typeof setHeader === "function" && typeof runHeader === "function") {
+      setHeader(runHeader(r));
+    }
     // Polling also detects completion if the terminal's event stream disconnects.
     if (r.action === "visual_check" || /visual check/i.test(r.title)) {
       if (!container.runResultPending) {
@@ -6179,6 +6182,7 @@ async function finishRunStatus(run) {
   if (!container || $("#next-step") !== container || current.page !== "run" || current.args[0] !== run.id) return;
   setHeader(runHeader(run));
   container.innerHTML = (run.action === "visual_check" || /visual check/i.test(run.title)) ? nextStep(run, vc) : runStatus(run, vc);
+  container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.title]);
   hydrateAuthImages(container);
   wireImagePreviews(container);
   $("#keybar").hidden = true;
@@ -6224,6 +6228,11 @@ pages.run = async ([id]) => {
           if (latest.running && Date.now() - lastPoll > 2000) {
             lastPoll = Date.now();
             await refreshState();
+            const updated = state.runs.find((r) => r.id === id);
+            if (updated) updateRunStatus(updated);
+          }
+          if (!latest.running) {
+            clearInterval(statusTimer);
           }
         }
       }, 1000);

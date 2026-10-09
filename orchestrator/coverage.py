@@ -120,7 +120,7 @@ def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
     print(f"Configured test runner target: {' '.join(target)}\n", flush=True)
 
     print("=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
-    print("Executing tests under coverage instrumentation...\n", flush=True)
+    print("Executing test suite under coverage instrumentation (this may take 2-3 minutes)...\n", flush=True)
     if run([sys.executable, "-m", "coverage", "run", *target], root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
 

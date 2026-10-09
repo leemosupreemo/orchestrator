@@ -18,7 +18,7 @@ class RunProgress:
         "DEBUG LOOP": "Debugging issue", "COVERAGE": "Measuring code coverage",
         "MEASURING CODE COVERAGE": "Measuring code coverage",
     }
-    TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION", "COVERAGE"}
+    TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION", "COVERAGE", "MEASURING CODE COVERAGE"}
     ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])")
 
     def __init__(self) -> None:
@@ -29,6 +29,7 @@ class RunProgress:
         self.total: int | None = None
         self.models: list[str] = []
         self.active: list[str] = []
+        self.is_coverage = False
 
     def feed(self, chunk: bytes) -> None:
         # PTY reads can split a UTF-8 character or ANSI sequence. Decode complete lines only.
@@ -36,15 +37,11 @@ class RunProgress:
         self._pending = lines.pop()[-16384:]
         for raw in lines:
             line = self.ANSI.sub(b"", raw).decode("utf-8", "replace").strip()
-            bracket = re.fullmatch(r"\[(\d+)/(\d+)\]\s*(.*)", line)
-            if bracket and 0 < int(bracket[1]) <= int(bracket[2]):
-                self.step, self.total = int(bracket[1]), int(bracket[2])
-                desc = bracket[3].strip()
-                self.task = desc.capitalize() if desc else ""
-                self.label = desc.capitalize() if desc else "Running step"
             header = re.fullmatch(r"=+\s*(.*?)\s*=+", line)
             if header:
                 title = re.sub(r"^[^\w]+", "", header[1]).strip()
+                if "COVERAGE" in title.upper():
+                    self.is_coverage = True
                 task = re.fullmatch(r"(?:SUB[- ]TASK|STEP)\s*(\d+)/(\d+)(?::\s*(.*))?", title, re.I)
                 if task and 0 < int(task[1]) <= int(task[2]):
                     self.step, self.total = int(task[1]), int(task[2])
@@ -59,6 +56,18 @@ class RunProgress:
                         if phase not in self.TASK_PHASES:
                             self.step = self.total = None
                             self.task = detail.strip().capitalize()
+            else:
+                in_sub_runner = self.is_coverage or self.label in (
+                    "Running test suite with coverage",
+                    "Running tests",
+                    "Building project",
+                )
+                bracket = re.fullmatch(r"\[(\d+)/(\d+)\]\s*(.*)", line)
+                if bracket and not in_sub_runner and 0 < int(bracket[1]) <= int(bracket[2]):
+                    self.step, self.total = int(bracket[1]), int(bracket[2])
+                    desc = bracket[3].strip()
+                    self.task = desc.capitalize() if desc else ""
+                    self.label = desc.capitalize() if desc else "Running step"
 
             start = re.search(r"Running LLM \(([^,)]+)", line)
             if start:
