@@ -3457,35 +3457,83 @@ pages.measure = async () => {
   };
   const card = (f) => `<section class="card mb-16"><div class="card-h"><h2>${esc(f.name)}</h2><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div>
     <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working?</div>`}</div></section>`;
+  const ANALYTICS_BLURBS = {
+    mixpanel: "Event tracking and product analytics. Events and KPI metrics are streamed directly to your Mixpanel project.",
+    amplitude: "Behavioral analytics and digital optimization. Stream feature KPI events into your Amplitude workspace.",
+    posthog: "Product analytics and feature metrics. Connects to PostHog Cloud or self-hosted instances."
+  };
   return {
     title: "Measure",
     sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
     actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
     html: `
-      <section class="card mb-16"><div class="card-h"><h2>Analytics</h2>
-        <div class="row" data-owner-only><button class="btn small ${connected ? "" : "primary"}" id="analytics-set">${data.provider ? "Change" : "Connect"}</button>
-        ${connected ? `<button class="btn small" id="analytics-test">Send test event</button><button class="btn small danger" id="analytics-clear">Disconnect</button>` : ""}</div></div>
-        <div class="card-b stack"><strong>${connected ? `${esc(data.provider_name)} (${esc(data.region.toUpperCase())})` : data.provider ? `${esc(data.provider_name)}: key missing` : "Not connected"}</strong>
-          <span class="muted">${connected ? "New work for a feature is told to send its KPI events here. The key is stored, never shown." : "Optional. Mixpanel, Amplitude or PostHog. Connect one so new work knows where events go, and verify it with a test event."}</span></div></section>
+      <section class="card mb-16">
+        <div class="card-h"><h2>Analytics Connections</h2></div>
+        <div class="card-b stack">
+          <p class="muted">Connect an analytics provider so new jobs stream their KPI events directly to your tracking dashboard. Connect one to verify ingestion with a test event.</p>
+          <div class="conn-grid">
+            ${(data.providers || []).map((p) => {
+              const isCurrent = data.provider === p.id;
+              const isReady = isCurrent && data.key_set;
+              const statusPill = isReady
+                ? pill("done", `Connected (${(data.region || "us").toUpperCase()})`)
+                : isCurrent && !data.key_set
+                ? pill("failed", "Key missing")
+                : pill("", "Not connected");
+              return `<section class="card conn-card" data-analytics-p="${esc(p.id)}">
+                <div class="card-b stack">
+                  <div class="row">
+                    <strong class="conn-name">${providerIcon(p.id)}${esc(p.name)}</strong>
+                    ${statusPill}
+                  </div>
+                  <div class="muted">${esc(ANALYTICS_BLURBS[p.id] || "Product analytics and event tracking.")}</div>
+                  <div class="muted text-sm">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
+                  <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a></p>
+                  <div class="row" data-owner-only>
+                    ${isReady ? `
+                      <button type="button" class="btn small" data-analytics-action="change" data-analytics-p="${esc(p.id)}">Update</button>
+                      <button type="button" class="btn small" data-analytics-action="test" data-analytics-p="${esc(p.id)}">Send test event</button>
+                      <button type="button" class="btn small danger" data-analytics-action="clear" data-analytics-p="${esc(p.id)}">Disconnect</button>
+                    ` : `
+                      <button type="button" class="btn small primary" data-analytics-action="connect" data-analytics-p="${esc(p.id)}">Connect ${esc(p.name)}</button>
+                    `}
+                  </div>
+                </div>
+              </section>`;
+            }).join("")}
+          </div>
+        </div>
+      </section>
       ${features.map(card).join("") || `<div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div>`}`,
     after: () => {
       const reload = () => route();
       const call = async (path, body, ok) => { try { await api(path, { method: "POST", body }); if (ok) toast(ok); reload(); } catch (e) { toast(e.message, true); } };
-      $("#analytics-set").addEventListener("click", async () => {
-        const v = await formDialog("Connect analytics", `<label class="field"><span>Provider</span><select name="provider">${data.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === data.provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-          <label class="field"><span>Project token or API key</span><input type="password" name="key" autocomplete="off" placeholder="${data.key_set ? "Saved. Leave blank to keep" : ""}"></label>
-          <label class="field"><span>Region</span><select name="region"><option value="us" ${data.region !== "eu" ? "selected" : ""}>US</option><option value="eu" ${data.region === "eu" ? "selected" : ""}>EU</option></select></label>`, "Save");
-        if (v) {
-          try {
-            await api("config/analytics", { method: "POST", body: { op: "set", ...v } });
-            try { await api("config/analytics", { method: "POST", body: { op: "test" } }); toast("Saved and tested: a test event was sent. Check the provider's live view."); }
-            catch (e) { toast(`Saved, but the test event failed: ${e.message}`, true); }
-            reload();
-          } catch (e) { toast(e.message, true); }
-        }
+      view.querySelectorAll("[data-analytics-action]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const action = btn.dataset.analyticsAction;
+          const pid = btn.dataset.analyticsP;
+          const p = (data.providers || []).find((x) => x.id === pid) || data.providers[0];
+          const isCurrent = data.provider === p.id;
+          if (action === "test") {
+            call("config/analytics", { op: "test" }, "Test event sent. Check the provider's live view.");
+          } else if (action === "clear") {
+            call("config/analytics", { op: "clear" }, "Disconnected");
+          } else {
+            const v = await formDialog(`Connect ${p.name}`, `
+              <input type="hidden" name="provider" value="${esc(p.id)}">
+              <label class="field"><span>${esc(p.key_label)}</span><input type="password" name="key" autocomplete="off" placeholder="${isCurrent && data.key_set ? "Saved. Leave blank to keep" : ""}"></label>
+              <label class="field"><span>Region</span><select name="region"><option value="us" ${(!isCurrent || data.region !== "eu") ? "selected" : ""}>US</option><option value="eu" ${isCurrent && data.region === "eu" ? "selected" : ""}>EU</option></select></label>`, "Save");
+            if (v) {
+              try {
+                await api("config/analytics", { method: "POST", body: { op: "set", ...v } });
+                try { await api("config/analytics", { method: "POST", body: { op: "test" } }); toast("Saved and tested: a test event was sent. Check the provider's live view."); }
+                catch (e) { toast(`Saved, but the test event failed: ${e.message}`, true); }
+                reload();
+              } catch (e) { toast(e.message, true); }
+            }
+          }
+        });
       });
-      $("#analytics-test")?.addEventListener("click", () => call("config/analytics", { op: "test" }, "Test event sent. Check the provider's live view."));
-      $("#analytics-clear")?.addEventListener("click", () => call("config/analytics", { op: "clear" }, "Disconnected"));
       $("#export-plan")?.addEventListener("click", async () => { try { const r = await api("analytics/plan", { method: "POST", body: {} }); toast(`Wrote ${r.path}. Commit it with your next change.`); } catch (e) { toast(e.message, true); } });
       view.querySelectorAll("[data-kpi]").forEach((btn) => btn.addEventListener("click", async () => {
         const fid = btn.dataset.f, f = features.find((x) => x.id === fid), k = f?.kpis.find((x) => x.id === btn.dataset.k), op = btn.dataset.kpi;
@@ -5352,6 +5400,10 @@ const PROVIDER_ICONS = {
   jira: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#0052CC" d="M11.5 2.5a9.5 9.5 0 0 0-9.5 9.5h9.5V2.5z"/><path fill="#2684FF" d="M12.5 12a9.5 9.5 0 0 0 9.5-9.5H12.5V12z"/><path fill="#0052CC" d="M11.5 12H2a9.5 9.5 0 0 0 9.5 9.5V12z"/></svg>`,
   trello: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#0079BF"/><rect x="4.5" y="4.5" width="6" height="11" rx="1.5" fill="#ffffff"/><rect x="13.5" y="4.5" width="6" height="7.5" rx="1.5" fill="#ffffff"/></svg>`,
   sentry: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#E1567C" d="M13.2 2.2a1.5 1.5 0 0 0-2.4 0L1.8 19.3a1.5 1.5 0 0 0 1.2 2.3h18a1.5 1.5 0 0 0 1.2-2.3L13.2 2.2zm-1.2 6.3 4.2 8.7H7.8L12 8.5z"/></svg>`,
+  mixpanel: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#7856FF"/><path d="M6 16.5V7.5L10 13.5L14 7.5V16.5H12V11L10 14L8 11V16.5H6Z" fill="#ffffff"/></svg>`,
+  amplitude: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#1E61F0"/><path d="M7 17L12 7L17 17H14.5L12 11.5L9.5 17H7Z" fill="#ffffff"/></svg>`,
+  posthog: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#F54E00"/><circle cx="9" cy="12" r="3" fill="#ffffff"/><circle cx="15" cy="12" r="3" fill="#ffffff"/></svg>`,
+  analytics: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 
 function providerIcon(id) {
@@ -5542,6 +5594,11 @@ pages.connections = async (_, query) => {
   }
   const owner = state.you?.role !== "member";
   const hook = owner ? (await api("config").catch(() => null))?.webhook : null;
+  const analyticsData = await api("analytics").catch(() => null);
+  const analyticsConnected = Boolean(analyticsData?.provider && analyticsData?.key_set);
+  const analyticsPill = analyticsConnected
+    ? pill("done", `${analyticsData.provider_name} (${(analyticsData.region || "us").toUpperCase()})`)
+    : pill("", "Not connected");
   return {
     title: "Connections",
     sub: "Link jobs to tickets, errors and designs, and get alerts in Slack",
@@ -5566,7 +5623,18 @@ pages.connections = async (_, query) => {
             : `<button class="btn small ${!p.connected || p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect" : p.rejected || p.expiry?.expired ? "Reconnect" : "Update"}</button>`}
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
-        </div></section>`).join("")}</div>
+        </div></section>`).join("")}
+      <section class="card conn-card" data-conn="analytics">
+        <div class="card-b stack">
+          <div class="row"><strong class="conn-name">${providerIcon("analytics")}Product Analytics &amp; KPIs</strong>${analyticsPill}</div>
+          <div class="muted">Connect Mixpanel, Amplitude, or PostHog to judge features by real user metrics and tracking plans.</div>
+          ${analyticsConnected ? `<div class="mono conn-summary">${esc(analyticsData.provider_name)} connected</div>` : ""}
+          <div class="row">
+            <a href="#/measure" class="btn small primary">Manage analytics &amp; KPIs ↗</a>
+          </div>
+        </div>
+      </section>
+    </div>
       <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>
       ${hook ? `<div class="mt-16">${ConfigurationPages.chatCard(hook)}</div>` : ""}
       ${renderRecommendedInstalls()}`,
