@@ -91,7 +91,7 @@ def _package_json(root: Path) -> dict[str, Any]:
 
 def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
     if not _python_module_works("coverage", run, root):
-        print("\n=== STEP 1/2: SETTING UP COVERAGE.PY ===", flush=True)
+        print("\n=== STEP 1/5: SETTING UP COVERAGE.PY ===", flush=True)
         print("coverage.py is not installed yet. Automatically setting up coverage.py...\n", flush=True)
         install_res = run([sys.executable, "-m", "pip", "install", "coverage"], root)
         if install_res.returncode != 0 or not _python_module_works("coverage", run, root):
@@ -100,10 +100,11 @@ def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
                 "Install it manually with `pip install coverage`, then measure again."
             )
         print("\n✅ coverage.py installed successfully.\n", flush=True)
-        print("=== STEP 2/2: MEASURING CODE COVERAGE ===", flush=True)
     else:
-        print("\n=== STEP 1/1: MEASURING CODE COVERAGE ===", flush=True)
+        print("\n=== STEP 1/5: CHECKING COVERAGE ENVIRONMENT ===", flush=True)
+        print("Verified coverage.py is installed and ready.\n", flush=True)
 
+    print("=== STEP 2/5: PREPARING TEST RUNNER ===", flush=True)
     words = shlex.split(test_command or "python3 -m unittest discover")
     if words[:1] == ["pytest"]:
         target = ["-m", "pytest", *words[1:]]
@@ -112,10 +113,19 @@ def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
     else:
         raise CoverageUnavailable(f"Couldn't see how to measure coverage for the test command `{test_command}`. "
                                   "Use pytest or `python3 -m unittest`, or run coverage.py yourself.")
+
+    print(f"Configured test runner target: {' '.join(target)}\n", flush=True)
+
+    print("=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
+    print("Executing tests under coverage instrumentation...\n", flush=True)
     if run([sys.executable, "-m", "coverage", "run", *target], root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
+
+    print("\n=== STEP 4/5: GENERATING COVERAGE REPORT ===", flush=True)
     report = out / "coverage.json"
     run([sys.executable, "-m", "coverage", "json", "-o", str(report)], root)
+
+    print("\n=== STEP 5/5: ANALYZING COVERAGE METRICS ===", flush=True)
     totals = json.loads(report.read_text(encoding="utf-8"))["totals"]
     total_stmts = int(totals["num_statements"]) if "num_statements" in totals else None
     covered = int(totals["covered_lines"]) if "covered_lines" in totals else (int(totals["covered_statements"]) if "covered_statements" in totals else None)
@@ -123,43 +133,59 @@ def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
 
 
 def go(root: Path, run: Run, out: Path) -> Measurement:
+    print("\n=== STEP 1/5: CHECKING GO TEST ENVIRONMENT ===", flush=True)
     profile = out / "cover.out"
+    print("\n=== STEP 2/5: PREPARING COVERAGE PROFILE ===", flush=True)
+    print("\n=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
     if run(["go", "test", f"-coverprofile={profile}", "./..."], root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
+    print("\n=== STEP 4/5: GENERATING COVERAGE REPORT ===", flush=True)
     summary = run(["go", "tool", "cover", f"-func={profile}"], root).stdout
     m = re.search(r"^total:\s+\(statements\)\s+([\d.]+)%", summary, re.M)
     if not m:
         raise CoverageUnavailable("Go didn't report a coverage total.")
+    print("\n=== STEP 5/5: ANALYZING COVERAGE METRICS ===", flush=True)
     return Measurement(float(m.group(1)), "go test -cover", "statements")
 
 
 def rust(root: Path, run: Run, out: Path) -> Measurement:
+    print("\n=== STEP 1/5: CHECKING CARGO-LLVM-COV TOOL ===", flush=True)
     try:
         installed = run(["cargo", "llvm-cov", "--version"], root).returncode == 0
     except OSError:
         installed = False
     if not installed:
         raise CoverageUnavailable("Rust coverage needs cargo-llvm-cov. Install it with `cargo install cargo-llvm-cov`, then measure again.")
+    print("\n=== STEP 2/5: PREPARING RUST COVERAGE ENVIRONMENT ===", flush=True)
     report = out / "llvm-cov.json"
+    print("\n=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
     if run(["cargo", "llvm-cov", "--json", "--summary-only", "--output-path", str(report)], root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
+    print("\n=== STEP 4/5: GENERATING COVERAGE REPORT ===", flush=True)
     totals = json.loads(report.read_text(encoding="utf-8"))["data"][0]["totals"]
+    print("\n=== STEP 5/5: ANALYZING COVERAGE METRICS ===", flush=True)
     total_lines = int(totals["lines"]["count"]) if "lines" in totals and "count" in totals["lines"] else None
     covered_lines = int(totals["lines"]["covered"]) if "lines" in totals and "covered" in totals["lines"] else None
     return Measurement(round(float(totals["lines"]["percent"]), 1), "cargo llvm-cov", "lines", total_lines=total_lines, covered_lines=covered_lines)
 
 
 def swift_package(root: Path, run: Run, out: Path) -> Measurement:
+    print("\n=== STEP 1/5: CHECKING SWIFT PACKAGE CONFIGURATION ===", flush=True)
+    print("\n=== STEP 2/5: PREPARING TEST RUNNER ===", flush=True)
+    print("\n=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
     if run(["swift", "test", "--enable-code-coverage"], root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
+    print("\n=== STEP 4/5: EXPORTING COVERAGE REPORT ===", flush=True)
     path = run(["swift", "test", "--show-codecov-path"], root).stdout.strip().splitlines()[-1]
     totals = json.loads(Path(path).read_text(encoding="utf-8"))["data"][0]["totals"]
+    print("\n=== STEP 5/5: ANALYZING COVERAGE METRICS ===", flush=True)
     total_lines = int(totals["lines"]["count"]) if "lines" in totals and "count" in totals["lines"] else None
     covered_lines = int(totals["lines"]["covered"]) if "lines" in totals and "covered" in totals["lines"] else None
     return Measurement(round(float(totals["lines"]["percent"]), 1), "swift test (llvm-cov)", "lines", total_lines=total_lines, covered_lines=covered_lines)
 
 
 def javascript(root: Path, run: Run, out: Path) -> Measurement:
+    print("\n=== STEP 1/5: CHECKING NODE TEST RUNNER AND COVERAGE TOOL ===", flush=True)
     pkg = _package_json(root)
     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
     script = str(pkg.get("scripts", {}).get("test", ""))
@@ -174,9 +200,13 @@ def javascript(root: Path, run: Run, out: Path) -> Measurement:
     else:
         raise CoverageUnavailable("Coverage is measured for Jest and Vitest. This project's test tool isn't one of them, "
                                   "so its coverage can't be measured here yet.")
+    print("\n=== STEP 2/5: PREPARING COVERAGE OUTPUT DIRECTORY ===", flush=True)
+    print("\n=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
     if run(argv, root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
+    print("\n=== STEP 4/5: GENERATING COVERAGE REPORT ===", flush=True)
     total = json.loads((out / "coverage-summary.json").read_text(encoding="utf-8"))["total"]
+    print("\n=== STEP 5/5: ANALYZING COVERAGE METRICS ===", flush=True)
     total_lines = int(total["lines"]["total"]) if "lines" in total and "total" in total["lines"] else None
     covered_lines = int(total["lines"]["covered"]) if "lines" in total and "covered" in total["lines"] else None
     return Measurement(round(float(total["lines"]["pct"]), 1), tool, "lines", total_lines=total_lines, covered_lines=covered_lines)

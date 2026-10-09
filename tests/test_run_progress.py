@@ -89,14 +89,18 @@ class RunProgressTests(unittest.TestCase):
 
     def test_coverage_step_headers_tracked(self):
         progress = RunProgress()
-        progress.feed(b"\n=== STEP 1/2: SETTING UP COVERAGE.PY ===\n")
+        progress.feed(b"\n=== STEP 1/5: CHECKING COVERAGE ENVIRONMENT ===\n")
         status = progress.snapshot()
-        self.assertEqual((status["step"], status["total"]), (1, 2))
-        self.assertEqual(status["label"], "Setting up coverage.py")
-        progress.feed(b"\n=== STEP 2/2: MEASURING CODE COVERAGE ===\n")
+        self.assertEqual((status["step"], status["total"]), (1, 5))
+        self.assertEqual(status["label"], "Checking coverage environment")
+        progress.feed(b"\n=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===\n")
         status = progress.snapshot()
-        self.assertEqual((status["step"], status["total"]), (2, 2))
-        self.assertEqual(status["label"], "Measuring code coverage")
+        self.assertEqual((status["step"], status["total"]), (3, 5))
+        self.assertEqual(status["label"], "Running test suite with coverage")
+        progress.feed(b"\n=== STEP 5/5: COVERAGE MEASUREMENT COMPLETE ===\n")
+        status = progress.snapshot()
+        self.assertEqual((status["step"], status["total"]), (5, 5))
+        self.assertEqual(status["label"], "Coverage measurement complete")
 
 
 class RunStatusRenderingTests(unittest.TestCase):
@@ -199,6 +203,11 @@ assert.doesNotMatch(planning, /Step .* of|undefined|NaN/);
 assert.match(runStatus({...run, running: false, exit_code: 1}), /banner failed/);
 assert.match(runStatus({...run, running: false, exit_code: 0}), /banner done/);
 assert.match(runStatus({...run, running: false, stopped: true}), /Run was stopped/);
+const completedCov = runStatus({...run, action: 'coverage', running: false, exit_code: 0, progress: {step: 5, total: 5, label: 'Coverage measurement complete'}});
+assert.match(completedCov, /pill done/);
+assert.match(completedCov, /Completed/);
+assert.match(completedCov, /Step 5 of 5/);
+assert.match(completedCov, /View coverage/);
 let replacements = 0;
 const clock = {textContent: ''};
 const panel = {set innerHTML(value) { replacements++; this.html = value; },

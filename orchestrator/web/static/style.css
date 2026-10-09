@@ -366,6 +366,13 @@ a.item:hover { background: var(--panel-2); }
 .run-status-progress::-webkit-progress-bar { background: var(--border); border-radius: var(--r-pill); }
 .run-status-progress::-webkit-progress-value { background: var(--accent); border-radius: var(--r-pill); }
 .run-status-progress::-moz-progress-bar { background: var(--accent); border-radius: var(--r-pill); }
+.banner.done .run-status-progress { accent-color: var(--ok); }
+.banner.done .run-status-progress::-webkit-progress-value { background: var(--ok); }
+.banner.done .run-status-progress::-moz-progress-bar { background: var(--ok); }
+.banner.failed .run-status-progress { accent-color: var(--bad); }
+.banner.failed .run-status-progress::-webkit-progress-value { background: var(--bad); }
+.banner.failed .run-status-progress::-moz-progress-bar { background: var(--bad); }
+.run-status-actions { margin-left: auto; display: inline-flex; align-items: center; gap: var(--space-2); }
 
 /* forms */
 form.stack, .stack { display: flex; flex-direction: column; gap: var(--space-4); }

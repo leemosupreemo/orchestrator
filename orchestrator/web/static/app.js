@@ -5983,24 +5983,56 @@ function runDuration(started) {
 }
 
 function runStatus(r, vc = null) {
-  if (!r.running) return nextStep(r, vc);
+  if (r.action === "console") {
+    return `<div class="banner"><p>Console connection was stopped.</p></div>`;
+  }
+  if (!r.running && (r.action === "visual_check" || /visual check/i.test(r.title)) && vc?.screenshots?.length) {
+    return nextStep(r, vc);
+  }
+  if (!r.running && r.stopped) {
+    const target = r.result_job || r.job;
+    const open = target ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(target)}">Open job</a>` : "";
+    return `<div class="banner failed attention run-status"><p>Run was stopped.</p>${open}</div>`;
+  }
   const p = r.progress || {};
   const stopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
-  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : "Running";
+  const failed = Boolean(!r.running && r.exit_code !== 0);
+  const done = Boolean(!r.running && r.exit_code === 0);
+  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : "Completed";
+  const tone = stopping || r.waiting ? "attention" : r.running ? "working" : failed ? "failed" : "done";
   const numbered = Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total;
-  const headline = `${numbered ? `Step ${p.step} of ${p.total}: ` : ""}${p.label || r.title || "Starting run"}`;
+  const currentStep = done && numbered ? p.total : (p.step || 1);
+  const totalSteps = numbered ? p.total : 1;
+  const stepPrefix = numbered ? `Step ${currentStep} of ${totalSteps}: ` : "";
+  const completionLabel = r.action === "coverage" ? "Coverage measurement complete"
+    : r.action === "logs_pull" ? "Logs pulled"
+    : r.result_job && !r.job ? "Job created"
+    : (r.job || r.result_job) ? "Job execution complete"
+    : "Run complete";
+  const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : (p.label || completionLabel))
+    : failed ? (p.label ? `${p.label} failed` : "Run failed")
+    : (p.label || r.title || "Starting run");
+  const headline = `${stepPrefix}${headlineLabel}`;
   const activeModels = p.active_models || [];
   const models = activeModels.length ? activeModels : p.models || [];
-  const showTask = p.task && p.task.toLowerCase() !== (p.label || "").toLowerCase();
-  return `<section class="banner run-status ${stopping || r.waiting ? "attention" : "working"}" aria-label="Run status">
-    <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${stopping || r.waiting ? "attention" : "working"}">${esc(status)}</span>
-      <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
+  const showTask = !done && p.task && p.task.toLowerCase() !== (p.label || "").toLowerCase();
+  const progressVal = done && numbered ? totalSteps : (numbered ? p.step - 1 : 0);
+  const progressMax = numbered ? totalSteps : 1;
+  const duration = runDuration(r.started, r.ended);
+  const actionBtn = done ? (r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
+    : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
+    : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
+    : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "") : "";
+
+  return `<section class="banner ${tone} run-status" aria-label="Run status">
+    <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
+      <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}</div>
     <dl class="run-status-details">
       <div><dt>${activeModels.length ? "Models in use" : "Models used"}</dt><dd>${models.length ? models.map(esc).join(", ") : "None yet"}</dd></div>
-      <div><dt>LLM agents</dt><dd>${Number.isInteger(p.agents) ? `${p.agents} active` : "Awaiting activity"}</dd></div>
-      <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(runDuration(r.started))}</dd></div>
+      <div><dt>LLM agents</dt><dd>${done ? "0 active" : (Number.isInteger(p.agents) ? `${p.agents} active` : "Awaiting activity")}</dd></div>
+      <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
     </dl>
-    ${numbered ? `<progress class="run-status-progress" value="${p.step - 1}" max="${p.total}" aria-label="Completed steps">${p.step - 1} of ${p.total}</progress>` : ""}
+    ${numbered ? `<progress class="run-status-progress" value="${progressVal}" max="${progressMax}" aria-label="Completed steps">${progressVal} of ${progressMax}</progress>` : ""}
   </section>`;
 }
 
@@ -6009,15 +6041,17 @@ function updateRunStatus(r) {
   if (!container) return;
   if (!r.running) {
     // Polling also detects completion if the terminal's event stream disconnects.
-    if (container.querySelector(".run-status")) {
-      if (r.action === "visual_check" || /visual check/i.test(r.title)) {
-        if (!container.runResultPending) {
-          container.runResultPending = true;
-          finishRunStatus(r).finally(() => { container.runResultPending = false; });
-        }
-        return;
+    if (r.action === "visual_check" || /visual check/i.test(r.title)) {
+      if (!container.runResultPending) {
+        container.runResultPending = true;
+        finishRunStatus(r).finally(() => { container.runResultPending = false; });
       }
+      return;
+    }
+    const signature = JSON.stringify([r.running, r.exit_code, r.progress, r.title]);
+    if (container.runStatusSignature !== signature) {
       container.innerHTML = runStatus(r);
+      container.runStatusSignature = signature;
       if ($("#keybar")) $("#keybar").hidden = true;
       if ($("#term-input")) $("#term-input").hidden = true;
     }
@@ -6106,7 +6140,7 @@ async function finishRunStatus(run) {
   }
   if (!container || $("#next-step") !== container || current.page !== "run" || current.args[0] !== run.id) return;
   setHeader(runHeader(run));
-  container.innerHTML = nextStep(run, vc);
+  container.innerHTML = (run.action === "visual_check" || /visual check/i.test(run.title)) ? nextStep(run, vc) : runStatus(run, vc);
   hydrateAuthImages(container);
   wireImagePreviews(container);
   $("#keybar").hidden = true;
@@ -6144,9 +6178,16 @@ pages.run = async ([id]) => {
       </div>`,
     after: () => {
       attachTerminal(id);
-      const statusTimer = setInterval(() => {
+      let lastPoll = Date.now();
+      const statusTimer = setInterval(async () => {
         const latest = state.runs.find((r) => r.id === id);
-        if (latest) updateRunStatus(latest);
+        if (latest) {
+          updateRunStatus(latest);
+          if (latest.running && Date.now() - lastPoll > 2000) {
+            lastPoll = Date.now();
+            await refreshState();
+          }
+        }
       }, 1000);
       cleanup.push(() => clearInterval(statusTimer));
       if (!run.running) {

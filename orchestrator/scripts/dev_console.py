@@ -2557,6 +2557,7 @@ def run_project_coverage() -> float | None:
         "targets": [], "total_tests": sum(s["test_count"] for s in suites), "total_suites": len(suites),
     })
     print(f"\n\033[1;92m✅ {result.pct:.1f}% of {result.metric} covered (measured with {result.tool}).\033[0m")
+    print("\n=== STEP 5/5: COVERAGE MEASUREMENT COMPLETE ===\n", flush=True)
     return result.pct
 
 
@@ -2572,6 +2573,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             input("\n\033[1;96mTap Enter to return to menu...\033[0m")
         return pct
     print_header("Calculating Code Coverage")
+    print("\n=== STEP 1/5: CONFIGURING BUILD DESTINATION ===", flush=True)
     print("Running test suite with code coverage enabled (-enableCodeCoverage YES)...\n")
     
     scheme = PROJECT_CONFIG.scheme or PROJECT_CONFIG.project_name or ROOT.name
@@ -2627,6 +2629,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.set_scroll_region()
             status_bar.render(at_bottom=True, force=True, activity=indicator)
 
+        print("\n=== STEP 2/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
         proc = None
         try:
             proc = subprocess.Popen(
@@ -2695,6 +2698,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             print(f"\n⚠️ Xcode test execution failed: {e}")
 
         # Extract coverage using xcrun xccov
+        print("\n=== STEP 3/5: EXPORTING COVERAGE REPORT ===", flush=True)
         overall_pct = None
         targets_cov = []
         if result_bundle.exists():
@@ -2760,6 +2764,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
         prev_tests = prev_cov_record.get("total_tests") if prev_cov_record else None
 
         # Discover total test suites and tests count in workspace
+        print("\n=== STEP 4/5: ANALYZING COVERAGE METRICS ===", flush=True)
         if show_status_bar:
             indicator.label = "Thinking: Analyzing test suite health"
             status_bar.render(at_bottom=True, force=True, activity=indicator)
@@ -2777,6 +2782,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
         record_coverage_failure("Xcode didn't report coverage. Check that the scheme's tests build and run, then measure again.")
 
     if overall_pct is not None:
+        print("\n=== STEP 5/5: SAVING COVERAGE BASELINE ===", flush=True)
         cov_delta = (overall_pct - prev_pct) if prev_pct is not None else None
         tests_delta = (total_tests - prev_tests) if prev_tests is not None else None
 
@@ -2823,6 +2829,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                 print(f"     \033[90m- {t.get('name')}:\033[0m \033[1;95m{t.get('coverage_pct')}%\033[0m")
         print(f"   \033[1;36m• End-User Value:\033[0m        \033[97mVerifies critical user workflows, eliminates regression bugs, and ensures UI/data reliability.\033[0m")
         print(f"\033[1;92m" + "=" * 58 + "\033[0m")
+        print("\n=== STEP 5/5: COVERAGE MEASUREMENT COMPLETE ===\n", flush=True)
     else:
         diag = get_simulator_diagnostic()
         print("\n\033[1;91m❌ Failed to calculate code coverage.\033[0m")
