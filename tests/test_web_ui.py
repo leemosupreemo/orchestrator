@@ -3777,7 +3777,7 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_new_job_asks_what_each_kind_needs_and_has_no_you_decide_toggle(self):
         form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
-        for needle in ("How do I make it happen?", "What should happen instead?", "Look and feel", "Upload logs or screenshots",
+        for needle in ("Describe repro steps 1 line at a time.", "What should happen instead?", "Look and feel", "Upload logs or screenshots",
                        "Choose area to test", "What should change?", "recent-logs", "uploadFile(", "Pick a Figma design"):
             self.assertIn(needle, form, needle)
         self.assertNotIn("You decide the details", self.js)
