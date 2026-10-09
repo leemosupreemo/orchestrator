@@ -2929,7 +2929,7 @@ pages.new = async (_, query) => {
   const logPicker = () => {
     const rows = (st.recent || []).map((l, i) => `<label class="check"><input type="checkbox" data-nj-log="${esc(l.path)}" ${st.logs.has(l.path) ? "checked" : ""}>
       <span>${esc(l.label)}<small>${esc(ago(l.mtime))} · ${esc(formatBytes(l.size))}${l.kind === "device" ? " · from a phone" : ""}${i === 0 ? " · newest" : ""}</small></span></label>`).join("");
-    return `<fieldset class="field nj-logs"><span>Logs${opt("optional")}</span>
+    return `<fieldset class="field nj-logs"><span>Attach logs</span>
       ${st.recent === null ? `<small class="muted">Looking for recent logs…</small>` : rows || `<small class="muted">No recent logs found. Upload one below, or pull device logs first.</small>`}
       ${uploadBox("Upload logs or screenshots", "A crash log, a console dump, a screenshot of the problem. We read the end of each log.", "image/*,.log,.txt,.json,.md,.crash,.ips")}</fieldset>`;
   };
@@ -5380,6 +5380,166 @@ function connectionStatus(p) {
   return pill("done", "Connected");
 }
 
+const MOBILE_CONTROL_TOOLS = [
+  {
+    id: "shellfish",
+    name: "Shellfish",
+    badge: "iOS & iPadOS",
+    blurb: "Full-featured SSH terminal and SFTP client with deep iOS Files app integration. Monitor Orchestrator runs, check live build logs, and access job worktrees from iPhone or iPad.",
+    cmd: "orchestrator ui --tunnel",
+    url: "https://shellfish.app",
+    actionLabel: "Get Shellfish ↗",
+  },
+  {
+    id: "shelldrop",
+    name: "Shelldrop",
+    badge: "iOS Share Sheet",
+    blurb: "Companion drag-and-drop tool for Shellfish. Send code patches, build logs, and shell scripts directly from the iOS Share sheet to your Mac terminal sessions.",
+    cmd: null,
+    hintText: "Drop files & scripts via iOS Share sheet",
+    url: "https://shelldrop.app",
+    actionLabel: "Get Shelldrop ↗",
+  },
+];
+
+const RECOMMENDED_MCPS = [
+  {
+    id: "superpowers",
+    name: "superpowers",
+    badge: "Agent skills",
+    blurb: "Autonomous coding skills for disciplined test-driven development (TDD), systematic debugging, code review, and multi-step plan execution.",
+    cmd: "npx -y superpowers-mcp",
+  },
+  {
+    id: "context7",
+    name: "context7",
+    badge: "Live docs",
+    blurb: "Real-time, version-specific library documentation lookup from Upstash Context7, eliminating stale API hallucinations in agent tasks.",
+    cmd: "npx ctx7 setup",
+  },
+  {
+    id: "openspec",
+    name: "openspec",
+    badge: "Spec-driven",
+    blurb: "Spec-Driven Development (SDD) schema and specification tools to define, track, and validate technical contracts and proposals.",
+    cmd: "npx -y @openspec/mcp",
+  },
+  {
+    id: "github",
+    name: "github",
+    badge: "Source control",
+    icon: `<svg class="brand-icon" style="width:18px;height:18px" aria-hidden="true"><use href="#i-github"/></svg>`,
+    blurb: "Official GitHub Model Context Protocol server for inspecting repositories, issues, PR diffs, commits, and automating code reviews.",
+    cmd: "npx -y @modelcontextprotocol/server-github",
+  },
+  {
+    id: "xcodebuild",
+    name: "xcodebuild",
+    badge: "Build runner",
+    blurb: "Xcode build and simulator automation. Build schemes, execute unit and UI test suites, and inspect build output without flaky shell scripts.",
+    cmd: "npx -y xcodebuildmcp",
+  },
+  {
+    id: "xcodediagnostics",
+    name: "xcodediagnostics",
+    badge: "Diagnostics",
+    blurb: "Automated triage and error diagnosis for Swift compiler failures, linker errors, and Xcode build issue logs.",
+    cmd: "npx -y xcodebuildmcp --diagnostics",
+  },
+  {
+    id: "swiftlens",
+    name: "swiftlens",
+    badge: "Code intelligence",
+    blurb: "Semantic Swift code intelligence powered by Apple's SourceKit-LSP for deep compiler-grade symbol navigation and protocol understanding.",
+    cmd: "npx -y swiftlens-mcp",
+  },
+  {
+    id: "mcp-ssh-manager",
+    name: "mcp-ssh-manager",
+    badge: "Fleet & SSH",
+    blurb: "Manage remote SSH connections, secure command execution, and file transfer across your build fleet with host verification.",
+    cmd: "npx -y mcp-ssh-manager",
+  },
+];
+
+function renderRecommendedInstalls() {
+  return `<section class="rec-section mt-24 stack" id="recommended-installs">
+    <div class="rec-section-header">
+      <h2 class="rec-section-title">Recommended installs</h2>
+      <p class="muted">Mobile tools and Model Context Protocol (MCP) servers to extend remote control and agent capabilities.</p>
+    </div>
+
+    <div class="rec-group mt-12">
+      <div class="rec-subhead">
+        <svg class="icon" aria-hidden="true" style="width:16px;height:16px"><use href="#i-phone"/></svg>
+        <h3>Mobile control</h3>
+        <span class="pill">iOS &amp; iPadOS</span>
+      </div>
+      <p class="muted mb-12">Monitor runs, review logs, and trigger tasks directly from your iPhone or iPad.</p>
+
+      <div class="conn-grid">
+        ${MOBILE_CONTROL_TOOLS.map((t) => `
+          <section class="card conn-card" data-rec-tool="${esc(t.id)}">
+            <div class="card-b stack">
+              <div class="row align-center">
+                <strong class="conn-name">${esc(t.name)}</strong>
+                <span class="pill done">${esc(t.badge)}</span>
+              </div>
+              <div class="muted">${esc(t.blurb)}</div>
+              ${t.cmd ? `<div class="setup-hint">
+                <code>${esc(t.cmd)}</code>
+                <button type="button" class="btn small ghost" data-setup-copy="${esc(t.cmd)}" title="Copy command">Copy</button>
+              </div>` : (t.hintText ? `<div class="setup-hint"><small class="muted">${esc(t.hintText)}</small></div>` : "")}
+              <div class="row mt-8">
+                <a href="${esc(t.url)}" target="_blank" rel="noopener" class="btn small">${esc(t.actionLabel)}</a>
+              </div>
+            </div>
+          </section>
+        `).join("")}
+      </div>
+    </div>
+
+    <div class="rec-group mt-20">
+      <div class="rec-subhead">
+        <svg class="icon" aria-hidden="true" style="width:16px;height:16px"><use href="#i-terminal"/></svg>
+        <h3>Recommended MCP servers</h3>
+        <span class="pill">Model Context Protocol</span>
+      </div>
+      <p class="muted mb-12">Model Context Protocol servers connect specialized tools, build automation, and live context directly to AI models.</p>
+
+      <div class="rec-callout">
+        <div class="rec-callout-title">
+          <span>Runtime requirement: Node.js (<code>npx</code>)</span>
+          <span class="pill attention">Prerequisite</span>
+        </div>
+        <p class="muted mb-8">Most MCP servers run on-demand using <code>npx</code>. Node.js is not checked in the setup wizard, so make sure it's installed on your Mac or runner host:</p>
+        <div class="setup-hint">
+          <code>brew install node</code>
+          <button type="button" class="btn small ghost" data-setup-copy="brew install node" title="Copy command">Copy</button>
+        </div>
+      </div>
+
+      <div class="conn-grid">
+        ${RECOMMENDED_MCPS.map((m) => `
+          <section class="card conn-card" data-rec-mcp="${esc(m.id)}">
+            <div class="card-b stack">
+              <div class="row align-center">
+                <strong class="conn-name">${m.icon || ""}${esc(m.name)}</strong>
+                <span class="pill">${esc(m.badge)}</span>
+              </div>
+              <div class="muted">${esc(m.blurb)}</div>
+              <div class="setup-hint">
+                <code>${esc(m.cmd)}</code>
+                <button type="button" class="btn small ghost" data-setup-copy="${esc(m.cmd)}" title="Copy command">Copy</button>
+              </div>
+            </div>
+          </section>
+        `).join("")}
+      </div>
+    </div>
+  </section>`;
+}
+
 pages.connections = async (_, query) => {
   let list;
   try { list = (await api("integrations")).integrations; } catch (err) {
@@ -5414,7 +5574,8 @@ pages.connections = async (_, query) => {
           </div>
         </div></section>`).join("")}</div>
       <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>
-      ${hook ? `<div class="mt-16">${ConfigurationPages.chatCard(hook)}</div>` : ""}`,
+      ${hook ? `<div class="mt-16">${ConfigurationPages.chatCard(hook)}</div>` : ""}
+      ${renderRecommendedInstalls()}`,
     after: () => {
       ConfigurationPages.applyRole(state.you?.role || "owner", view);
       const onChat = async (event) => {

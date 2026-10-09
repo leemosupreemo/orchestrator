@@ -1866,6 +1866,33 @@ body[data-page="connections"] .configuration-card .card-b {
   padding: var(--container-pad-y) var(--container-pad-x);
 }
 
+/* Recommended installs section */
+.rec-section-header { margin-top: var(--space-6); margin-bottom: var(--space-3); }
+.rec-section-title { font-size: var(--text-xl); font-weight: 600; margin: 0; }
+.rec-subhead { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-5); margin-bottom: var(--space-2); }
+.rec-subhead h3 { margin: 0; font-size: var(--text-md); font-weight: 600; }
+.rec-callout {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.rec-callout-title { font-weight: 600; display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
+.conn-card .setup-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-2);
+}
+.conn-card .setup-hint code {
+  word-break: break-all;
+  max-width: calc(100% - 60px);
+}
+
 /* Home header: branch on its own row, stats + language mix beneath it */
 .status-line.status-stack { flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 .status-stack .status-stats { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }

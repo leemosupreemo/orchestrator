@@ -5942,3 +5942,26 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
         self.assertIn("overflow-x: hidden;", css)
         # Dialog body is constrained with box-sizing and overflow containment
         self.assertIn("#dialog-body {\n  overflow-y: auto;\n  overflow-x: hidden;\n  min-height: 0;\n  min-width: 0;\n  max-width: 100%;", css)
+
+    def test_new_job_log_picker_label_is_attach_logs(self):
+        js = (self.STATIC / "app.js").read_text()
+        self.assertIn('<fieldset class="field nj-logs"><span>Attach logs</span>', js)
+        self.assertNotIn('<fieldset class="field nj-logs"><span>Logs', js)
+
+    def test_connections_page_includes_recommended_installs_section(self):
+        js = (self.STATIC / "app.js").read_text()
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn('id="recommended-installs"', js)
+        self.assertIn("Recommended installs", js)
+        self.assertIn("Mobile control", js)
+        self.assertIn("Shellfish", js)
+        self.assertIn("https://shellfish.app", js)
+        self.assertIn("Shelldrop", js)
+        self.assertIn("https://shelldrop.app", js)
+        self.assertIn("Recommended MCP servers", js)
+        for mcp in ("superpowers", "context7", "openspec", "github", "xcodebuild", "xcodediagnostics", "swiftlens", "mcp-ssh-manager"):
+            self.assertIn(mcp, js)
+        self.assertIn("brew install node", js)
+        self.assertIn(".rec-section-header", css)
+        self.assertIn(".rec-callout", css)
+
