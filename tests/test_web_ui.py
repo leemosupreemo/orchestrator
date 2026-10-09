@@ -5577,6 +5577,14 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("if (dlg) dlg.tabIndex = -1", app_js)
         self.assertIn('if (document.activeElement === $("#dialog-close"))', app_js)
 
+    def test_yolo_autopilot_option_simplified(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app_js = (static / "app.js").read_text()
+        self.assertIn('name="yolo"', app_js)
+        self.assertIn("<strong>YOLO (Autopilot)</strong>", app_js)
+        self.assertIn("<small>Runs without confirmations or review pauses.</small>", app_js)
+        self.assertNotIn("Firebase releases to testers", app_js)
+
 
 class JobDeleteEndpointTests(ServerTestCase):
     JOB = "20260922-bug-1"

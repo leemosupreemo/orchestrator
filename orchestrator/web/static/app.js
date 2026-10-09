@@ -3037,7 +3037,7 @@ pages.new = async (_, query) => {
       <div class="stack" id="nj-fields"></div>
       ${featureSelect()}
       <div class="autopilot-option">
-        <label class="check risky"><input type="checkbox" name="yolo"><span><strong>Autopilot</strong><small>Runs without confirmations, including follow-up steps and Firebase releases to testers. Leave off to review decisions.</small></span></label>
+        <label class="check risky"><input type="checkbox" name="yolo"><span><strong>YOLO (Autopilot)</strong><small>Runs without confirmations or review pauses.</small></span></label>
       </div>
       <details class="advanced"><summary>Options</summary>
         <div class="stack">
