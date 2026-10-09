@@ -3462,6 +3462,42 @@ pages.measure = async () => {
     amplitude: "Behavioral analytics and digital optimization. Stream feature KPI events into your Amplitude workspace.",
     posthog: "Product analytics and feature metrics. Connects to PostHog Cloud or self-hosted instances."
   };
+  const mixpanelMcpTree = (list) => {
+    const items = list && list.length ? list : [
+      { id: "google", org: "Google (Antigravity / Gemini)", installed: false, cmd: "agy mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
+      { id: "anthropic", org: "Anthropic (Claude Code)", installed: false, cmd: "claude mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
+      { id: "openai", org: "OpenAI (Codex)", installed: false, cmd: "codex mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
+      { id: "opencode", org: "OpenCode", installed: false, cmd: "opencode mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel" },
+      { id: "ollama", org: "Ollama (Local models)", installed: false, cmd: "npx -y @modelcontextprotocol/server-mixpanel" }
+    ];
+    const count = items.filter((m) => m.installed).length;
+    return `<details class="fold model-tree mt-12" ${count > 0 ? "open" : ""}>
+      <summary class="model-tree-summary">
+        <strong>Mixpanel MCP by LLM organization</strong>
+        <span class="count">${count} / ${items.length} installed</span>
+      </summary>
+      <div class="model-tree-content">
+        <p class="muted text-sm mb-8">Model Context Protocol lets AI agents query funnels, retention, and events live during jobs.</p>
+        <ul class="model-tree-branch">
+          ${items.map((m, idx) => `
+            <li class="model-tree-item ${idx === items.length - 1 ? 'last-node' : ''}">
+              <div class="model-tree-row">
+                <strong class="model-id">${esc(m.org)}</strong>
+                ${m.installed ? pill("done", "Installed") : pill("", "Not configured")}
+                ${m.detected_via ? `<span class="model-caps muted">${esc(m.detected_via)}</span>` : ""}
+              </div>
+              ${!m.installed && m.cmd ? `
+                <div class="setup-hint mt-8">
+                  <code>${esc(m.cmd)}</code>
+                  <button type="button" class="btn small ghost" data-setup-copy="${esc(m.cmd)}" title="Copy command">Copy</button>
+                </div>
+              ` : ""}
+            </li>
+          `).join("")}
+        </ul>
+      </div>
+    </details>`;
+  };
   return {
     title: "Measure",
     sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
@@ -3480,6 +3516,10 @@ pages.measure = async () => {
                 : isCurrent && !data.key_set
                 ? pill("failed", "Key missing")
                 : pill("", "Not connected");
+              const dashboardUrl = isReady
+                ? (p.dashboards?.[data.region || "us"] || (p.id === "mixpanel" ? (data.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project") : null))
+                : null;
+              const mixpanelExpanded = p.id === "mixpanel" ? mixpanelMcpTree(data.mixpanel_mcp) : "";
               return `<section class="card conn-card" data-analytics-p="${esc(p.id)}">
                 <div class="card-b stack">
                   <div class="row">
@@ -3488,9 +3528,10 @@ pages.measure = async () => {
                   </div>
                   <div class="muted">${esc(ANALYTICS_BLURBS[p.id] || "Product analytics and event tracking.")}</div>
                   <div class="muted text-sm">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
-                  <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a></p>
+                  <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a>${dashboardUrl ? ` · <a href="${esc(dashboardUrl)}" target="_blank" rel="noopener">Open ${esc(p.name)} project ↗</a>` : ""}</p>
                   <div class="row" data-owner-only>
                     ${isReady ? `
+                      ${dashboardUrl ? `<a href="${esc(dashboardUrl)}" target="_blank" rel="noopener" class="btn small">Open project ↗</a>` : ""}
                       <button type="button" class="btn small" data-analytics-action="change" data-analytics-p="${esc(p.id)}">Update</button>
                       <button type="button" class="btn small" data-analytics-action="test" data-analytics-p="${esc(p.id)}">Send test event</button>
                       <button type="button" class="btn small danger" data-analytics-action="clear" data-analytics-p="${esc(p.id)}">Disconnect</button>
@@ -3498,6 +3539,7 @@ pages.measure = async () => {
                       <button type="button" class="btn small primary" data-analytics-action="connect" data-analytics-p="${esc(p.id)}">Connect ${esc(p.name)}</button>
                     `}
                   </div>
+                  ${mixpanelExpanded}
                 </div>
               </section>`;
             }).join("")}
@@ -5630,6 +5672,9 @@ pages.connections = async (_, query) => {
           <div class="muted">Connect Mixpanel, Amplitude, or PostHog to judge features by real user metrics and tracking plans.</div>
           ${analyticsConnected ? `<div class="mono conn-summary">${esc(analyticsData.provider_name)} connected</div>` : ""}
           <div class="row">
+            ${(analyticsConnected && analyticsData.provider === "mixpanel") ? `
+              <a href="${esc(analyticsData.region === "eu" ? "https://eu.mixpanel.com/project" : "https://mixpanel.com/project")}" target="_blank" rel="noopener" class="btn small">Open Mixpanel project ↗</a>
+            ` : ""}
             <a href="#/measure" class="btn small primary">Manage analytics &amp; KPIs ↗</a>
           </div>
         </div>

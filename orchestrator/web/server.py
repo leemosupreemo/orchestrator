@@ -846,8 +846,12 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
 def analytics_overview(root: Path) -> dict[str, Any]:
     state = analytics_state(read_settings(root))
     provider = analytics.PROVIDERS.get(state["provider"], {})
+    region = state.get("region", "us")
+    dashboard_url = provider.get("dashboards", {}).get(region, "")
     return {**state, "provider_name": provider.get("name"), "key_label": provider.get("key_label"),
-            "features": feature_store.rollup(feature_store.load(runtime_dir(root)), [])}
+            "dashboard_url": dashboard_url,
+            "features": feature_store.rollup(feature_store.load(runtime_dir(root)), []),
+            "mixpanel_mcp": analytics.probe_mixpanel_mcp()}
 
 
 def project_facts(root: Path) -> dict[str, Any]:

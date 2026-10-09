@@ -199,6 +199,26 @@ class ProviderTests(unittest.TestCase):
             A.track_job_run("j2", "bug-fix", "failed", failure_reason="compile_err", job_seq=2, runtime_root=runtime)
             self.assertGreater(len(seen), 1)
 
+    def test_probe_mixpanel_mcp_returns_llm_orgs(self):
+        mcps = A.probe_mixpanel_mcp()
+        self.assertIsInstance(mcps, list)
+        self.assertGreaterEqual(len(mcps), 5)
+        ids = {m["id"] for m in mcps}
+        self.assertTrue({"google", "anthropic", "openai", "opencode", "ollama"}.issubset(ids))
+        for m in mcps:
+            self.assertIn("org", m)
+            self.assertIn("cli", m)
+            self.assertIn("installed", m)
+            self.assertIn("cmd", m)
+            self.assertIsInstance(m["installed"], bool)
+
+    def test_public_providers_includes_dashboards(self):
+        providers = {p["id"]: p for p in A.public_providers()}
+        self.assertIn("mixpanel", providers)
+        self.assertEqual(providers["mixpanel"]["dashboards"], {"us": "https://mixpanel.com/project", "eu": "https://eu.mixpanel.com/project"})
+        self.assertIn("amplitude", providers)
+        self.assertIn("posthog", providers)
+
 
 if __name__ == "__main__":
     unittest.main()

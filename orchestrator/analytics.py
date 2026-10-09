@@ -35,16 +35,126 @@ class AnalyticsError(ValueError):
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "mixpanel": {"name": "Mixpanel", "key_label": "Project token", "hosts": {"us": "https://api.mixpanel.com", "eu": "https://api-eu.mixpanel.com"},
-                 "docs": "https://docs.mixpanel.com/docs/tracking-methods/sdks"},
+                 "docs": "https://docs.mixpanel.com/docs/tracking-methods/sdks",
+                 "dashboards": {"us": "https://mixpanel.com/project", "eu": "https://eu.mixpanel.com/project"}},
     "amplitude": {"name": "Amplitude", "key_label": "API key", "hosts": {"us": "https://api2.amplitude.com", "eu": "https://api.eu.amplitude.com"},
-                  "docs": "https://amplitude.com/docs/sdks"},
+                  "docs": "https://amplitude.com/docs/sdks",
+                  "dashboards": {"us": "https://analytics.amplitude.com", "eu": "https://analytics.eu.amplitude.com"}},
     "posthog": {"name": "PostHog", "key_label": "Project API key", "hosts": {"us": "https://us.i.posthog.com", "eu": "https://eu.i.posthog.com"},
-                "docs": "https://posthog.com/docs/libraries"},
+                "docs": "https://posthog.com/docs/libraries",
+                "dashboards": {"us": "https://us.posthog.com", "eu": "https://eu.posthog.com"}},
 }
 
 
 def public_providers() -> list[dict[str, Any]]:
-    return [{"id": k, "name": v["name"], "key_label": v["key_label"], "regions": list(v["hosts"]), "docs": v["docs"]} for k, v in PROVIDERS.items()]
+    return [{"id": k, "name": v["name"], "key_label": v["key_label"], "regions": list(v["hosts"]), "docs": v["docs"],
+             "dashboards": v.get("dashboards", {})} for k, v in PROVIDERS.items()]
+
+
+def probe_mixpanel_mcp() -> list[dict[str, Any]]:
+    home = Path.home()
+    results: list[dict[str, Any]] = []
+
+    # Google (Antigravity CLI / Gemini)
+    agy_dir = home / ".gemini" / "antigravity-cli" / "mcp" / "mixpanel"
+    gemini_settings = home / ".gemini" / "settings.json"
+    google_installed = agy_dir.is_dir()
+    detected_via = "~/.gemini/antigravity-cli/mcp/mixpanel" if google_installed else None
+    if not google_installed and gemini_settings.exists():
+        try:
+            if "mixpanel" in gemini_settings.read_text(encoding="utf-8").lower():
+                google_installed = True
+                detected_via = "~/.gemini/settings.json"
+        except Exception:
+            pass
+    results.append({
+        "id": "google",
+        "org": "Google (Antigravity / Gemini)",
+        "cli": "agy",
+        "installed": google_installed,
+        "detected_via": detected_via,
+        "cmd": "agy mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+    })
+
+    # Anthropic (Claude Code)
+    claude_installed = False
+    detected_claude = None
+    claude_paths = [
+        home / ".claude.json",
+        home / ".claude" / "claude_desktop_config.json",
+        home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
+    ]
+    for cp in claude_paths:
+        if cp.exists():
+            try:
+                cdata = json.loads(cp.read_text(encoding="utf-8"))
+                servers = cdata.get("mcpServers", {}) or {}
+                if "mixpanel" in servers or any("mixpanel" in str(k).lower() for k in servers):
+                    claude_installed = True
+                    detected_claude = f"~/{cp.name}"
+                    break
+            except Exception:
+                pass
+    results.append({
+        "id": "anthropic",
+        "org": "Anthropic (Claude Code)",
+        "cli": "claude",
+        "installed": claude_installed,
+        "detected_via": detected_claude,
+        "cmd": "claude mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+    })
+
+    # OpenAI (Codex)
+    codex_cfg = home / ".codex" / "config.toml"
+    codex_installed = False
+    detected_codex = None
+    if codex_cfg.exists():
+        try:
+            if "mixpanel" in codex_cfg.read_text(encoding="utf-8").lower():
+                codex_installed = True
+                detected_codex = "~/.codex/config.toml"
+        except Exception:
+            pass
+    results.append({
+        "id": "openai",
+        "org": "OpenAI (Codex)",
+        "cli": "codex",
+        "installed": codex_installed,
+        "detected_via": detected_codex,
+        "cmd": "codex mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+    })
+
+    # OpenCode
+    opencode_cfg = home / ".opencode" / "mcp.json"
+    opencode_installed = False
+    detected_opencode = None
+    if opencode_cfg.exists():
+        try:
+            if "mixpanel" in opencode_cfg.read_text(encoding="utf-8").lower():
+                opencode_installed = True
+                detected_opencode = "~/.opencode/mcp.json"
+        except Exception:
+            pass
+    results.append({
+        "id": "opencode",
+        "org": "OpenCode",
+        "cli": "opencode",
+        "installed": opencode_installed,
+        "detected_via": detected_opencode,
+        "cmd": "opencode mcp add mixpanel -- npx -y @modelcontextprotocol/server-mixpanel",
+    })
+
+    # Ollama
+    results.append({
+        "id": "ollama",
+        "org": "Ollama (Local models)",
+        "cli": "ollama",
+        "installed": False,
+        "detected_via": None,
+        "cmd": "npx -y @modelcontextprotocol/server-mixpanel",
+    })
+
+    return results
 
 
 def event_name(raw: str) -> str:
