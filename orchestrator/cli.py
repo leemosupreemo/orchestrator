@@ -1894,6 +1894,23 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
             print("Full tool and worker checks were not requested; run orchestrator check when ready.")
         remember_project(root, project_display_name(root), active=True)
         status_bar.reset_scroll_region()
+        try:
+            from orchestrator import analytics
+            machines_data = read_json(machines_file).get("machines", []) if machines_file.exists() else []
+            analytics.track_wizard(
+                must_do_total=7,
+                must_do_completed=7,
+                optional_total=len(options) if "options" in locals() else 4,
+                optional_completed=len(optional_tools) if "optional_tools" in locals() else 0,
+                optional_items=optional_tools if "optional_tools" in locals() else [],
+                machines_count=len(machines_data),
+                llms_count=len(models),
+                llms_list=models,
+                mode="non-interactive" if args.non_interactive else "interactive",
+                runtime_root=runtime_dir,
+            )
+        except Exception:
+            pass
         print(f"\n\033[1;92m{'='*20} Wizard Complete {'='*20}\033[0m")
         print("Configuration saved. Review these files before creating jobs:")
         for path in dict.fromkeys([*review_paths, project_file, machines_file, settings_file]):

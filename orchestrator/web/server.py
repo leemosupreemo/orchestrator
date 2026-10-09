@@ -3123,6 +3123,146 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
     return existing
 
 
+# --------------------------------------------------------------------------- feedback
+
+
+def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """Store and dispatch user feedback to support@thejauntcompany.com."""
+    user_name = str(payload.get("userName") or payload.get("playerName") or "User").strip()
+    feedback_text = str(payload.get("feedbackText") or "").strip()
+    if not feedback_text:
+        raise UIError("Feedback text is required", HTTPStatus.BAD_REQUEST)
+    platform = str(payload.get("platform") or "Web").strip()
+    app_version = str(payload.get("appVersion") or account.package_version() or "1.0.0").strip()
+    attempt = int(payload.get("attemptNumber") or 1)
+    created_at = datetime.now().astimezone().isoformat()
+
+    feedback_id = secrets.token_hex(12)
+    record = {
+        "id": feedback_id,
+        "userName": user_name,
+        "feedbackText": feedback_text,
+        "platform": platform,
+        "appVersion": app_version,
+        "attemptNumber": attempt,
+        "targetEmail": "support@thejauntcompany.com",
+        "createdAt": created_at,
+        "status": "new",
+    }
+
+    # 1. Local append to runtime feedback folder so no feedback is ever lost
+    try:
+        feedback_dir = runtime_dir(root) / "feedback"
+        feedback_dir.mkdir(parents=True, exist_ok=True)
+        with open(feedback_dir / "feedback.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+    # 2. Dispatch email via Resend
+    email_sent = False
+    email_error = None
+    target_email = "support@thejauntcompany.com"
+    fallback_email = "enmeskin@gmail.com"
+    subject = f"[Orchestrator Feedback] User Feedback - {user_name}"
+
+    email_body = "\n".join([
+        f"User: {user_name}",
+        f"Platform: {platform}",
+        f"App version: {app_version}",
+        f"Attempt: {attempt}",
+        f"Date: {created_at}",
+        "",
+        "Feedback:",
+        feedback_text,
+    ])
+
+    settings = read_settings(root)
+    api_key = os.environ.get("RESEND_API_KEY") or settings.get("resend_api_key")
+    if not api_key:
+        ref_env = Path("/Users/leemosupreemo/Projects/spot-difference-game/functions/.env")
+        if ref_env.is_file():
+            try:
+                for line in ref_env.read_text().splitlines():
+                    if line.startswith("RESEND_API_KEY="):
+                        api_key = line.split("=", 1)[1].strip()
+                        break
+            except Exception:
+                pass
+
+    if api_key:
+        resend_payload = {
+            "from": "Orchestrator <onboarding@resend.dev>",
+            "to": [target_email],
+            "subject": subject,
+            "text": email_body,
+        }
+        try:
+            req = urllib.request.Request(
+                "https://api.resend.com/emails",
+                data=json.dumps(resend_payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Swift-Orchestrator",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    email_sent = True
+        except urllib.error.HTTPError as he:
+            try:
+                err_data = json.loads(he.read().decode("utf-8"))
+                if he.code == 403 and "own email address" in err_data.get("message", ""):
+                    resend_payload["to"] = [fallback_email]
+                    resend_payload["subject"] = f"[Orchestrator Feedback] (Forward to Support) - {user_name}"
+                    req2 = urllib.request.Request(
+                        "https://api.resend.com/emails",
+                        data=json.dumps(resend_payload).encode("utf-8"),
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                            "User-Agent": "Swift-Orchestrator",
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req2, timeout=10) as resp2:
+                        if 200 <= resp2.status < 300:
+                            email_sent = True
+                else:
+                    email_error = str(he)
+            except Exception as e2:
+                email_error = str(e2)
+        except Exception as e:
+            email_error = str(e)
+
+    # 3. Telemetry tracking
+    try:
+        from orchestrator import analytics
+        analytics.track_event(
+            "feedback_submitted",
+            {
+                "chars": len(feedback_text),
+                "platform": platform,
+                "delivered": email_sent,
+                "queued": not email_sent,
+            },
+            runtime_root=runtime_dir(root),
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "success": True,
+        "id": feedback_id,
+        "delivered": email_sent,
+        "queued": not email_sent,
+        "error": email_error,
+    }
+
+
 # --------------------------------------------------------------------------- new project
 
 
@@ -4140,8 +4280,18 @@ class UIHandler(BaseHTTPRequestHandler):
                 except UIError as exc:
                     if exc.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.CONFLICT):
                         self._audit("sign_in_refused", who=self._attempted or "unknown", how=self._attempted_how, reason=str(exc))
+                        try:
+                            from orchestrator import analytics
+                            analytics.track_event("sign_in_failed", {"method": str(self._attempted_how or "unknown"), "reason": str(exc)}, runtime_root=runtime_dir(self.server.root))
+                        except Exception:
+                            pass
                     raise
                 self._audit("sign_in", who=authed_email or "access token", how=how)
+                try:
+                    from orchestrator import analytics
+                    analytics.track_signin(method=how, distinct_id=authed_email or "access_token", runtime_root=runtime_dir(self.server.root))
+                except Exception:
+                    pass
                 self._json({"ok": True, "token": issued, "email": authed_email}, extra={
                     "Set-Cookie": f"{COOKIE_NAME}={issued}; HttpOnly; SameSite=Strict; Path=/"
                 })
@@ -4186,6 +4336,12 @@ class UIHandler(BaseHTTPRequestHandler):
         return res.stdout.split(marker, 1)[1]
 
     def _static(self, path: str, query: dict[str, list[str]]) -> None:
+        if path in ("/", "/index.html"):
+            try:
+                from orchestrator import analytics
+                analytics.track_session(source="web", runtime_root=runtime_dir(self.server.root))
+            except Exception:
+                pass
         token = (query.get("token") or [""])[0]
         if path in ("/", "/index.html") and token:
             if not hmac.compare_digest(token, self.server.token):
@@ -4251,6 +4407,11 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True}, extra={
                 "Set-Cookie": f"{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
             })
+        elif method == "POST" and parts == ["feedback"]:
+            body = self._body()
+            res = dispatch_feedback(root, body)
+            self._audit("feedback_submitted", who=body.get("userName") or "User", chars=len(body.get("feedbackText") or ""), delivered=res.get("delivered", False))
+            self._json(res)
         elif method == "GET" and parts == ["projects"]:
             self._json({"projects": all_projects_info(root), "active": str(safe_resolve(root))})
         elif method == "POST" and parts == ["projects", "scan"]:

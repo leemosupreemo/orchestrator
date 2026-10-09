@@ -349,6 +349,7 @@ def unpack_builder_result(result):
 
 
 def execute_job(job_path: Path, resume: bool = False) -> None:
+    start_epoch = time.time()
     remove_task_views(job_path)  # left over from a run that was stopped part way
     job = read_json(job_path)
 
@@ -422,6 +423,21 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         machine_name = os.environ.get("MACHINE_NAME", "local")
         start_msg = f"🚀 **Worker Started** on `{machine_name}`\n\n- **Job ID**: `{job['job_id']}`\n- **Branch**: `{branch}`"
         gh_comment(issue_number, start_msg)
+        try:
+            from orchestrator import analytics
+            all_jobs_count = len(list(job_path.parent.glob("*.json")))
+            analytics.track_job_run(
+                job_id=job.get("job_id", ""),
+                job_type=job.get("type", "feature-plan"),
+                status="started",
+                planner_model=job.get("planner"),
+                builder_model=job.get("builder"),
+                reviewer_model=job.get("reviewer"),
+                job_seq=max(1, all_jobs_count),
+                runtime_root=job_path.parent.parent,
+            )
+        except Exception:
+            pass
 
         # Capture state before builder
         pre_state = get_repo_state()
@@ -820,6 +836,23 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             f"Implementation successful for {job_label}.\n" + (f"PR: #{pr_number}" if pr_number else f"Branch: {branch}") + f"\nTitle: {job['title']}",
             summary=job_summary
         )
+        try:
+            from orchestrator import analytics
+            all_jobs_count = len(list(job_path.parent.glob("*.json")))
+            duration_s = time.time() - start_epoch if "start_epoch" in locals() else None
+            analytics.track_job_run(
+                job_id=job.get("job_id", ""),
+                job_type=job.get("type", "feature-plan"),
+                status="succeeded",
+                duration_s=duration_s,
+                planner_model=job.get("planner"),
+                builder_model=job.get("builder"),
+                reviewer_model=job.get("reviewer"),
+                job_seq=max(1, all_jobs_count),
+                runtime_root=job_path.parent.parent,
+            )
+        except Exception:
+            pass
 
         # YOLO MODE: Automatically continue to next task
         if job.get("is_yolo", False):
@@ -910,6 +943,24 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             f"Critical error during execution for {job_label}.\nError: {e}\nTitle: {job['title']}",
             summary=job_summary
         )
+        try:
+            from orchestrator import analytics
+            all_jobs_count = len(list(job_path.parent.glob("*.json")))
+            duration_s = time.time() - start_epoch if "start_epoch" in locals() else None
+            analytics.track_job_run(
+                job_id=job.get("job_id", ""),
+                job_type=job.get("type", "feature-plan"),
+                status="failed",
+                duration_s=duration_s,
+                failure_reason=str(e)[:200],
+                planner_model=job.get("planner"),
+                builder_model=job.get("builder"),
+                reviewer_model=job.get("reviewer"),
+                job_seq=max(1, all_jobs_count),
+                runtime_root=job_path.parent.parent,
+            )
+        except Exception:
+            pass
 
         # Re-raise so the user still gets the full traceback for debugging
         raise

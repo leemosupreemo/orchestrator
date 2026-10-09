@@ -33,6 +33,7 @@
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-feedback" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
   </svg>
   <div class="app">
     <header class="mobile-header">
@@ -81,6 +82,7 @@
       <!-- Occasional actions: quiet rows at the foot, not buttons competing with the navigation. -->
       <div class="sidebar-footer">
         <a class="btn ghost help-btn" href="#/help" data-route="help">Help</a>
+        <button type="button" class="btn ghost feedback-btn" id="feedback-btn" aria-label="Feedback"><svg class="icon" aria-hidden="true"><use href="#i-feedback"/></svg><span>Feedback</span></button>
         <button class="btn ghost console-btn" data-action="console" data-owner-only><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>Open full console</button>
         <button class="btn ghost" id="notify-btn" hidden></button>
         <button class="btn ghost lock-btn" id="lock-btn"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Lock session</button>
@@ -132,6 +134,7 @@
       </div>
     </form>
   </dialog>
+  <dialog id="feedback-dialog" class="feedback-dialog"></dialog>
   <div id="messages" class="messages" popover="manual" role="region" aria-label="Messages" hidden></div>
 
   <script src="html.js"></script>
@@ -154,6 +157,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js"></script>
   <script src="account.js"></script>
   <script src="setup.js"></script>
+  <script src="feedback.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

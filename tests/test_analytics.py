@@ -156,6 +156,49 @@ class ProviderTests(unittest.TestCase):
         ids = [p["id"] for p in A.public_providers()]
         self.assertEqual(ids, ["mixpanel", "amplitude", "posthog"])
 
+    def test_format_event_payload_mixpanel(self):
+        url, payload = A.format_event_payload("mixpanel", "MY_TOKEN", "https://api.mixpanel.com", "job_started", {"job_id": "123", "distinct_id": "u1"}, 1700000000)
+        self.assertEqual(url, "https://api.mixpanel.com/track?verbose=1")
+        self.assertEqual(payload[0]["event"], "job_started")
+        self.assertEqual(payload[0]["properties"]["token"], "MY_TOKEN")
+        self.assertEqual(payload[0]["properties"]["job_id"], "123")
+        self.assertEqual(payload[0]["properties"]["distinct_id"], "u1")
+
+    def test_track_event_with_runtime_root(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = Path(tmpdir)
+            cfg = runtime / "config"
+            cfg.mkdir(parents=True)
+            (cfg / "settings.json").write_text(json.dumps({"analytics_provider": "mixpanel", "analytics_key": "TOKEN", "analytics_region": "us"}))
+
+            seen = []
+            class Resp:
+                status = 200
+                def read(self): return b'{"status":1}'
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+
+            def fake_opener(req, timeout=5):
+                seen.append((req.full_url, json.loads(req.data.decode("utf-8"))))
+                return Resp()
+
+            ok = A.track_event("job_completed", {"status": "succeeded"}, runtime_root=runtime, async_send=False, opener=fake_opener)
+            self.assertTrue(ok)
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0][0], "https://api.mixpanel.com/track?verbose=1")
+            self.assertEqual(seen[0][1][0]["event"], "job_completed")
+            self.assertEqual(seen[0][1][0]["properties"]["status"], "succeeded")
+
+            # Test track_session and track_signin
+            A.track_session(distinct_id="u1", source="web", runtime_root=runtime, async_send=False, opener=fake_opener) if hasattr(A.track_session, "__code__") else None
+            A.track_signin(method="token", distinct_id="u1", runtime_root=runtime)
+            A.track_wizard(7, 7, 5, 2, ["docs"], machines_count=2, llms_count=3, llms_list=["codex"], runtime_root=runtime)
+            A.track_job_run("j1", "feature-plan", "started", planner_model="codex", job_seq=1, runtime_root=runtime)
+            A.track_job_run("j1", "feature-plan", "succeeded", duration_s=45.2, planner_model="codex", job_seq=1, runtime_root=runtime)
+            A.track_job_run("j2", "bug-fix", "failed", failure_reason="compile_err", job_seq=2, runtime_root=runtime)
+            self.assertGreater(len(seen), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

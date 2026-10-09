@@ -3762,7 +3762,16 @@ pages.help = async () => ({
       <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from the <a href="#/?filter=archived">Archived</a> filter on Home.</p></details>
       <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends alerts to this device. Turned on in the hosted app, they arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run (on iPhone, add it to your Home Screen first). For Slack, add a webhook under <a href="#/connections?card=chat">Connections</a>.</p></details>
       <details><summary>Where are the full guides?</summary><p><a href="#/docs">Docs</a> has the project's own files and Orchestrator's guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
+    </div></section>
+    <section class="card"><div class="card-h"><h2>Have feedback?</h2></div><div class="card-b">
+      <p class="muted mb-12">Tell us what felt off or share ideas to make Orchestrator better. We read every message.</p>
+      <button type="button" class="btn small" id="help-feedback-btn">Send feedback</button>
     </div></section>`,
+  after: () => {
+    $("#help-feedback-btn")?.addEventListener("click", () => {
+      Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" });
+    });
+  }
 });
 
 // ---------------------------------------------------------------- docs hub
@@ -6659,6 +6668,7 @@ function paletteBase() {
   const entries = PALETTE_PAGES.filter(([, hash]) => !(hash === "#/devlogs" && state.project?.mobile_app === false) && !(hash === "#/new-project" && state.you?.role === "member")).map(([label, hash, hint]) => ({ label, hint, group: "Pages", order: 1, run: go(hash) }));
   const act_ = (label, hint, fn) => entries.push({ label, hint, group: "Actions", order: 0, run: fn });
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
+  act_("Send feedback", "Tell us what could be better or share ideas", () => Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" }));
   act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());
   if (Notifications.supported()) act_(Notifications.enabled() ? "Turn off browser alerts" : "Turn on browser alerts", "Alerts when a run finishes or needs you", () => $("#notify-btn")?.click());
   return entries;
@@ -6802,6 +6812,12 @@ renderNotifyBtn();
 const lockBtn = $("#lock-btn");
 if (lockBtn) {
   lockBtn.addEventListener("click", lockSession);
+}
+const feedbackBtn = $("#feedback-btn");
+if (feedbackBtn) {
+  feedbackBtn.addEventListener("click", () => {
+    Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" });
+  });
 }
 // A tapped alert opens the computer it came from (?machine=…), at the page it is about (the hash).
 (function followAlertLink() {
