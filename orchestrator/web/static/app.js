@@ -4005,7 +4005,14 @@ pages.product = async (_, query) => {
       </div>
       ${s.id === "look" ? `<div class="reference-imports"><div class="label">Import references</div><div class="import-options">
         <button type="button" class="prd-drop file-picker reference-file-picker" id="prd-add-file">${filePickerContent("Add design references", "Designs, sketches, images or PDFs")}</button>
-        <button type="button" class="import-option" id="prd-add-link"><strong>Paste a link</strong><span>A design or site to use as a reference</span></button>
+        <div class="import-option import-option-link" id="prd-link-section">
+          <strong>Paste a link</strong>
+          <span>A design or site to use as a reference</span>
+          <form class="import-link-form row gap-8 mt-4" id="prd-link-form">
+            <input type="url" id="prd-link-input" placeholder="https://" required aria-label="Reference link">
+            <button type="submit" class="btn small primary" id="prd-link-submit">Add</button>
+          </form>
+        </div>
         <div class="import-option import-option-apps" id="prd-apps-section">
           <strong>Connected apps</strong>
           <div class="connected-apps-list">${connectedApps.length ? connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("") : `<span class="muted text-sm">None connected</span>`}</div>
@@ -4230,17 +4237,30 @@ pages.product = async (_, query) => {
           }
           file.value = ""; await reload();
         });
-        let addingLink = false;
-        $("#prd-add-link")?.addEventListener("click", async () => {
-          if (addingLink || $("#dialog")?.open) return;
-          addingLink = true;
+        const linkForm = view.querySelector("#prd-link-form");
+        const linkInput = view.querySelector("#prd-link-input");
+        linkForm?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          let raw = (linkInput?.value || "").trim();
+          if (!raw) return;
+          if (!/^https?:\/\//i.test(raw)) raw = "https://" + raw;
+          let label = raw;
           try {
-            const v = await formDialog("Add a link", `<label class="field"><span>What is it?</span><input type="text" name="label" maxlength="120" placeholder="e.g. Figma: onboarding flow"></label>
-              <label class="field"><span>Link</span><input type="url" name="url" required placeholder="https://"></label>`, "Add", { compact: true });
-            if (!v) return;
-            try { await api("product/reference", { method: "POST", body: { label: v.label, url: v.url } }); await reload(); } catch (e) { toast(e.message, true); }
+            const u = new URL(raw);
+            label = u.hostname.replace(/^www\./, "") + (u.pathname !== "/" ? u.pathname : "");
+            if (label.length > 60) label = label.slice(0, 57) + "…";
+          } catch {}
+          const submitBtn = view.querySelector("#prd-link-submit");
+          if (submitBtn) submitBtn.disabled = true;
+          try {
+            await api("product/reference", { method: "POST", body: { label, url: raw } });
+            toast("Reference link added");
+            if (linkInput) linkInput.value = "";
+            await reload();
+          } catch (err) {
+            toast(err.message, true);
           } finally {
-            addingLink = false;
+            if (submitBtn) submitBtn.disabled = false;
           }
         });
         $("#prd-add-app")?.addEventListener("click", async () => {

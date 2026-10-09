@@ -3814,7 +3814,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('title: "Product requirements"', page)
         self.assertIn("Press Enter to add another feature", page)
         self.assertIn("prd-features-edit", page)
-        self.assertIn("compact: true", page)
+        self.assertIn("prd-link-input", page)
         # Look and feel takes uploads, a pasted link, and an item picked from a connected app (Figma).
         self.assertIn("linkPickerHtml({ prefer: [\"figma\"]", page)
 
@@ -3832,6 +3832,9 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_connected_apps_subsection_of_import_lists_apps_and_links_to_connections(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
         self.assertIn('reference-imports', page)
+        self.assertIn('id="prd-link-form"', page)
+        self.assertIn('id="prd-link-input"', page)
+        self.assertNotIn('id="prd-add-link"', page)
         self.assertIn('connected-apps-list', page)
         self.assertIn('providerIcon(a.id)', page)
         self.assertIn('href="#/connections"', page)
