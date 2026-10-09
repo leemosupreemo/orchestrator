@@ -45,9 +45,14 @@ assert.match(job.spec, /prioriti[sz]e/i);
 const automatic = coverageJobParams(inventory, cases, { target: '', execution: 'automatic' });
 assert.equal(automatic.no_dispatch, false);
 assert.doesNotMatch(automatic.spec, /NaN/);
+assert.match(automatic.spec, /100%/);
+assert.equal(automatic.summary, 'Improve test coverage toward 100%');
 const inventoryWithLines = { coverage: { overall_coverage_pct: 42, total_lines: 12450, metric: 'lines', timestamp: '2026-10-01' } };
 const jobWithLines = coverageJobParams(inventoryWithLines, cases, { target: '75', execution: 'review' });
 assert.match(jobWithLines.spec, /12,450 lines/);
+const defaultJob = coverageJobParams(inventory, cases, {});
+assert.match(defaultJob.spec, /100%/);
+assert.equal(defaultJob.summary, 'Improve test coverage toward 100%');
 
 """)
 

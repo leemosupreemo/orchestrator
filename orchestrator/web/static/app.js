@@ -4584,20 +4584,20 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
 }
 
 function coverageJobParams(data, caseView, values = {}) {
-  const rawTarget = (values.target || "").replace(/%/g, "").trim();
-  const target = rawTarget ? Number(rawTarget) : null;
-  if (target !== null && (!Number.isFinite(target) || target <= 0 || target > 100)) throw new Error("Choose a coverage target between 1 and 100%.");
+  const rawTarget = values.target !== undefined && values.target !== "" ? String(values.target).replace(/%/g, "").trim() : "100";
+  const target = rawTarget ? Number(rawTarget) : 100;
+  if (!Number.isFinite(target) || target <= 0 || target > 100) throw new Error("Choose a coverage target between 1 and 100%.");
   const cov = data.coverage;
   const measured = cov?.overall_coverage_pct != null && !cov.estimated;
   const gaps = (caseView.cases || []).filter((c) => c.status === "unassigned" || c.status === "planned").slice(0, 30);
   const spec = [
     "Analyze the project's existing tests and source code. Identify and prioritise coverage gaps by user impact and regression risk.",
     measured ? `Last measured coverage: ${cov.overall_coverage_pct}% of ${cov.total_lines ? `${cov.total_lines.toLocaleString()} ` : ""}${cov.metric || "lines"} (${cov.timestamp || "date unknown"}). Verify with a fresh measurement.` : "Coverage is not measured yet. Establish a baseline using the project's coverage tooling.",
-    target !== null ? `Aim for ${target}% measured coverage. Explain if the target is impractical or coverage tooling is unavailable; do not invent a percentage.` : "Increase measured coverage with meaningful tests for the highest-risk gaps.",
+    `Aim for ${target}% measured coverage. Explain if ${target === 100 ? "100% coverage" : "the target"} is impractical or coverage tooling is unavailable; do not invent a percentage.`,
     "In the plan, explain which gaps to address and why. Then implement the recommended tests, run the affected suites, measure coverage again, and report the before/after results. Keep production behavior unchanged and use the project's existing test frameworks.",
     gaps.length ? "Known missing automated test cases:\n" + gaps.map((c) => `- ${c.id}: ${c.title} (${c.area || "General"})`).join("\n") : "",
   ].filter(Boolean).join("\n\n");
-  return { type: "coverage", title: "Coverage expanding", summary: target !== null ? `Improve test coverage toward ${target}%` : "Find and address the highest-risk test coverage gaps",
+  return { type: "coverage", title: "Coverage expanding", summary: `Improve test coverage toward ${target}%`,
     subsystems: "Project-wide: prioritise missing coverage", spec, branch_mode: "current", no_dispatch: values.execution === "review", yolo: false, free: values.free === "on" };
 }
 
@@ -4670,13 +4670,7 @@ pages.tests = async (_, query) => {
         const choice = await choicePromise;
         $("#dialog-ok").hidden = false;
         if (!choice) return;
-        const values = await formDialog("Improve coverage with AI", `<p>AI inspects your code and tests, ranks gaps, and creates a coverage job.</p>
-          <label class="field"><span>Coverage target (%) <span class="muted">(optional)</span></span>
-            <div class="input-with-suffix">
-              <input type="number" name="target" min="1" max="100" step="any" placeholder="80" aria-label="Coverage target percentage">
-              <span class="input-suffix">%</span>
-            </div>
-            <small class="hint-text">Leave blank to focus on the most valuable missing tests.</small></label>
+        const values = await formDialog("Improve coverage with AI", `<p>AI inspects your code and tests, ranks gaps, and creates a coverage job aiming for 100% test coverage.</p>
           <fieldset class="field"><legend>After the analysis</legend>
             <label class="check"><input type="radio" name="execution" value="automatic" checked><span>Add tests automatically<small>Plan, implement and measure the result.</small></span></label>
             <label class="check"><input type="radio" name="execution" value="review"><span>Review advice first<small>Stop at the plan. Start implementation from the job when ready.</small></span></label></fieldset>

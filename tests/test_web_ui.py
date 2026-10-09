@@ -3689,7 +3689,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('flex: 1 1 0;', self.css)
         self.assertIn("cov.total_lines", tests_src)
         self.assertIn("cov.total_lines.toLocaleString()", tests_src)
-        self.assertIn("Coverage target (%)", tests_src)
+        self.assertNotIn("Coverage target (%)", tests_src)
         self.assertIn(".input-with-suffix", self.css)
         self.assertIn(".input-suffix", self.css)
 
