@@ -106,7 +106,10 @@
   }
 }
 
-* { box-sizing: border-box; }
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
@@ -271,6 +274,15 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
 .import-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
 .import-option { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: var(--space-1); padding: var(--space-4); min-height: var(--control-xl); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .import-option:hover { border-color: var(--accent); background: var(--accent-soft); }
+.btn:active { transform: translateY(1px); }
+.import-option:active { border-color: var(--accent); background: var(--accent-soft); }
+@media (hover: none) and (pointer: coarse) {
+  .btn:hover:not(:active) { background: var(--panel); border-color: var(--border); }
+  .btn.primary:hover:not(:active) { filter: none; background: var(--accent); border-color: var(--accent); }
+  .btn.ghost:hover:not(:active) { background: transparent; }
+  .import-option:hover:not(:active) { border-color: var(--border); background: var(--panel); }
+  .dialog-close-btn:hover:not(:active) { background: transparent; color: var(--muted); }
+}
 .import-option span { color: var(--muted); font-size: var(--text-sm); }
 div.import-option { cursor: default; justify-content: flex-start; }
 div.import-option:hover { border-color: var(--border); background: var(--panel); }
@@ -412,6 +424,7 @@ option.manage-projects-option {
 }
 textarea { min-height: 110px; resize: vertical; }
 input:focus, textarea:focus, select:focus, .btn:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:focus:not(:focus-visible), .btn:focus:not(:focus-visible), .import-option:focus:not(:focus-visible), summary:focus:not(:focus-visible) { outline: none; }
 .segmented { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: var(--space-2); }
 .segmented label {
   border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--space-3) var(--space-3); cursor: pointer; background: var(--panel);
@@ -470,6 +483,7 @@ dialog {
   box-sizing: border-box;
   overflow: hidden;
 }
+dialog:focus, dialog:focus-visible, #dialog:focus, #dialog:focus-visible { outline: none; }
 dialog::backdrop { background: var(--backdrop); }
 dialog form {
   padding: var(--dialog-padding);
@@ -530,9 +544,26 @@ dialog h2 {
   min-height: var(--control-md);
   transition: color 0.15s ease, background-color 0.15s ease;
 }
-.dialog-close-btn:hover, .dialog-close-btn:focus-visible {
+.dialog-close-btn:focus:not(:focus-visible) {
+  outline: none;
+  background: transparent;
+  color: var(--muted);
+}
+@media (hover: hover) {
+  .dialog-close-btn:hover {
+    color: var(--text);
+    background: var(--panel-2);
+  }
+}
+.dialog-close-btn:active {
   color: var(--text);
   background: var(--panel-2);
+}
+.dialog-close-btn:focus-visible {
+  color: var(--text);
+  background: var(--panel-2);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 #dialog-body {
   overflow-y: auto;

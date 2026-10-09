@@ -337,6 +337,7 @@ async function runAction(action, params = {}, { skipConfirm = false } = {}) {
 
 function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact = false } = {}) {
   const dlg = $("#dialog");
+  if (dlg) dlg.tabIndex = -1;
   if (compact) dlg.classList.add("dialog-compact");
   else dlg.classList.remove("dialog-compact");
   $("#dialog-cancel").hidden = false;
@@ -348,8 +349,15 @@ function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact 
   $("#dialog-ok").className = danger ? "btn danger" : "btn primary";
   dlg.returnValue = "";
   if (!dlg.open) dlg.showModal();
-  const first = $("#dialog-body textarea, #dialog-body input, #dialog-body select");
-  if (first) first.focus();
+  const first = $("#dialog-body textarea, #dialog-body input:not([type=hidden]):not([type=checkbox]):not([type=radio]), #dialog-body select");
+  if (first) {
+    first.focus();
+  } else {
+    if (document.activeElement === $("#dialog-close")) {
+      $("#dialog-close")?.blur?.();
+    }
+    dlg?.focus?.({ preventScroll: true });
+  }
   return new Promise((resolve) => {
     dlg.addEventListener("close", () => {
       dlg.classList.remove("dialog-compact");
@@ -361,6 +369,7 @@ function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact 
 }
 
 const globalDialog = $("#dialog");
+if (globalDialog) globalDialog.tabIndex = -1;
 const closeGlobalDialog = (event) => {
   if (event && (event.type === "pointerdown" || event.type === "touchstart")) {
     event.preventDefault();
@@ -581,8 +590,13 @@ function addProjectsDialog(trackedProjects) {
   body.addEventListener("click", onClick);
   body.addEventListener("keydown", onKeydown);
   dlg.addEventListener("cancel", onCancel);
+  if (dlg) dlg.tabIndex = -1;
   dlg.returnValue = "";
   dlg.showModal();
+  if (document.activeElement === $("#dialog-close")) {
+    $("#dialog-close")?.blur?.();
+  }
+  dlg?.focus?.({ preventScroll: true });
   showScanResults();
 
   return new Promise((resolve) => {
@@ -4933,10 +4947,18 @@ function showConfigMutationDialog(title, bodyHtml, okLabel, buildRequest, succes
   $("#dialog-cancel").hidden = false;
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = bodyHtml;
-  ok.textContent = okLabel;
+  if (dlg) dlg.tabIndex = -1;
   dlg.returnValue = "";
   dlg.showModal();
-  $("#dialog-body input, #dialog-body select")?.focus();
+  const firstInput = $("#dialog-body input, #dialog-body select");
+  if (firstInput) {
+    firstInput.focus();
+  } else {
+    if (document.activeElement === $("#dialog-close")) {
+      $("#dialog-close")?.blur?.();
+    }
+    dlg?.focus?.({ preventScroll: true });
+  }
 
   const onSubmit = async (event) => {
     if (event.submitter !== ok) return;
@@ -5938,7 +5960,12 @@ function openImageModal({ title, src, authSrc, fullUrl }) {
     dlg.classList.remove("dialog-compact");
     dlg.classList.remove("dialog-image-viewer");
   }, { once: true });
+  if (dlg) dlg.tabIndex = -1;
   if (!dlg.open) dlg.showModal();
+  if (document.activeElement === $("#dialog-close")) {
+    $("#dialog-close")?.blur?.();
+  }
+  dlg?.focus?.({ preventScroll: true });
 }
 
 function wireImagePreviews(root = document) {

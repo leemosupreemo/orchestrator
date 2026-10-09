@@ -5553,6 +5553,30 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("width: min(var(--dialog-width), calc(100% - 2 * var(--space-4))", css)
         self.assertNotIn("width: calc(100vw - 2 * var(--space-3));", css)
 
+    def test_dialog_and_mobile_touch_highlight_prevention(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        app_js = (static / "app.js").read_text()
+
+        # Mobile tap highlight is disabled globally
+        self.assertIn("-webkit-tap-highlight-color: transparent", css)
+
+        # Dialog container suppresses default focus outline
+        self.assertIn("dialog:focus, dialog:focus-visible, #dialog:focus, #dialog:focus-visible { outline: none; }", css)
+
+        # Close button has no outline when not keyboard-focused, and only hovers on hover-capable pointers
+        self.assertIn(".dialog-close-btn:focus:not(:focus-visible)", css)
+        self.assertIn("@media (hover: hover) {\n  .dialog-close-btn:hover", css)
+
+        # Touch devices avoid sticky hover highlights on buttons and options
+        self.assertIn("@media (hover: none) and (pointer: coarse)", css)
+        self.assertIn(".import-option:hover:not(:active)", css)
+        self.assertIn(".dialog-close-btn:hover:not(:active)", css)
+
+        # In app.js, dialog sets tabIndex = -1 and formDialog manages focus so close button is not highlighted
+        self.assertIn("if (dlg) dlg.tabIndex = -1", app_js)
+        self.assertIn('if (document.activeElement === $("#dialog-close"))', app_js)
+
 
 class JobDeleteEndpointTests(ServerTestCase):
     JOB = "20260922-bug-1"
