@@ -48,10 +48,10 @@ class CoverageTests(unittest.TestCase):
         run = FakeRun({f"{py} -m coverage json": (0, "", lambda a: Path(a[-1]).write_text(json.dumps({"totals": {"percent_covered": 81.234}})))})
         m = cov.measure(root, "python3 -m unittest discover tests", run)
         self.assertEqual((m.pct, m.tool, m.metric), (81.2, "coverage.py", "statements"))
-        self.assertIn([py, "-m", "coverage", "run", "-m", "unittest", "discover", "tests"], run.calls)
+        self.assertIn([py, "-m", "coverage", "run", "--source=.", "--omit=tests/*,*/tests/*,test_*.py,*/test_*.py,.venv/*,venv/*,build/*", "-m", "unittest", "discover", "tests"], run.calls)
         pytest = FakeRun({f"{py} -m coverage json": (0, "", lambda a: Path(a[-1]).write_text(json.dumps({"totals": {"percent_covered": 50}})))})
         cov.measure(root, "pytest -q", pytest)
-        self.assertIn([py, "-m", "coverage", "run", "-m", "pytest", "-q"], pytest.calls)
+        self.assertIn([py, "-m", "coverage", "run", "--source=.", "--omit=tests/*,*/tests/*,test_*.py,*/test_*.py,.venv/*,venv/*,build/*", "-m", "pytest", "-q"], pytest.calls)
 
     def test_python_auto_installs_coverage_py_when_not_installed(self):
         root = self.project("pyproject.toml")
@@ -89,6 +89,28 @@ class CoverageTests(unittest.TestCase):
             cov.measure(self.project(package={"devDependencies": {"mocha": "1"}}), "npm test", FakeRun({}))
         with self.assertRaisesRegex(cov.CoverageUnavailable, "JaCoCo"):
             cov.measure(self.project("build.gradle.kts"), "./gradlew test", FakeRun({}))
+
+    @unittest.skipUnless(sys.platform != "win32", "requires a terminal fixture")
+    def test_test_runner_does_not_inherit_web_terminal_input(self):
+        import os
+        import pty
+        master, slave = pty.openpty()
+        try:
+            code = ("import sys; from pathlib import Path; from orchestrator.coverage import stream; "
+                    "stream([sys.executable, '-c', 'import sys; print(sys.stdin.isatty())'], Path.cwd())")
+            result = subprocess.run([sys.executable, '-c', code], stdin=slave,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines()[-1], "False")
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_missing_report_is_a_measurement_failure(self):
+        py = sys.executable
+        with self.assertRaises(cov.CoverageUnavailable):
+            cov.measure(self.project("pyproject.toml"), "pytest", FakeRun({
+                f"{py} -m coverage json": (1, "report failed", None)}))
 
     def test_failing_tests_record_no_number(self):
         with self.assertRaisesRegex(cov.CoverageUnavailable, "tests failed"):

@@ -7,6 +7,7 @@ Xcode projects are measured by the console's xcodebuild path (scripts/dev_consol
 """
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import re
@@ -68,11 +69,13 @@ def stream(argv: list[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
     print(f"\033[90m$ {shlex.join(argv)}\033[0m", flush=True)
     child_env = dict(os.environ)
     child_env.pop("ORCHESTRATOR_NONINTERACTIVE", None)
-    proc = subprocess.Popen(argv, cwd=cwd, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    proc = subprocess.Popen(argv, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     lines = []
-    for line in proc.stdout or []:
-        sys.stdout.write(line)
-        lines.append(line)
+    if proc.stdout is not None:
+        with proc.stdout:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                lines.append(line)
     proc.wait()
     return subprocess.CompletedProcess(argv, proc.returncode, "".join(lines), "")
 
@@ -90,6 +93,39 @@ def _package_json(root: Path) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def python_scope_options(root: Path) -> list[str]:
+    """Include unimported project files by default; respect explicit coverage scope."""
+    import tomllib
+
+    settings = {}
+    configured = os.environ.get("COVERAGE_RCFILE")
+    candidates = [Path(configured)] if configured else [root / name for name in
+                                                         (".coveragerc", "setup.cfg", "tox.ini", "pyproject.toml")]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        if path.suffix == ".toml":
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            coverage_config = data.get("tool", {}).get("coverage")
+            if coverage_config is None:
+                continue
+            settings = coverage_config.get("run", {})
+        else:
+            config = configparser.ConfigParser(interpolation=None)
+            config.read(path)
+            section = "run" if path.name == ".coveragerc" or configured else "coverage:run"
+            if not config.has_section(section):
+                continue
+            settings = dict(config[section])
+        break
+    options = []
+    if not any(settings.get(key) for key in ("source", "source_pkgs", "source_dirs", "include")):
+        options.append("--source=.")
+    if not settings.get("omit"):
+        options.append("--omit=tests/*,*/tests/*,test_*.py,*/test_*.py,.venv/*,venv/*,build/*")
+    return options
 
 
 def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
@@ -121,12 +157,13 @@ def python(root: Path, test_command: str, run: Run, out: Path) -> Measurement:
 
     print("=== STEP 3/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
     print("Executing test suite under coverage instrumentation (this may take 2-3 minutes)...\n", flush=True)
-    if run([sys.executable, "-m", "coverage", "run", *target], root).returncode != 0:
+    if run([sys.executable, "-m", "coverage", "run", *python_scope_options(root), *target], root).returncode != 0:
         raise CoverageUnavailable("The tests failed, so coverage wasn't recorded. Fix the failing tests and measure again.")
 
     print("\n=== STEP 4/5: GENERATING COVERAGE REPORT ===", flush=True)
     report = out / "coverage.json"
-    run([sys.executable, "-m", "coverage", "json", "-o", str(report)], root)
+    if run([sys.executable, "-m", "coverage", "json", "-o", str(report)], root).returncode != 0:
+        raise CoverageUnavailable("Coverage report generation failed. Check the test output and measure again.")
 
     print("\n=== STEP 5/5: ANALYZING COVERAGE METRICS ===", flush=True)
     totals = json.loads(report.read_text(encoding="utf-8"))["totals"]
@@ -216,6 +253,14 @@ def javascript(root: Path, run: Run, out: Path) -> Measurement:
 
 
 def measure(root: Path, test_command: str | None, run: Run = stream) -> Measurement:
+    """Return a measured result or an actionable failure, including tool/report errors."""
+    try:
+        return _measure(root, test_command, run)
+    except (OSError, ValueError, KeyError, IndexError, configparser.Error) as exc:
+        raise CoverageUnavailable(f"Coverage tool or report failed: {exc}") from exc
+
+
+def _measure(root: Path, test_command: str | None, run: Run) -> Measurement:
     """Coverage for a project that isn't built with Xcode, by the language's own tool."""
     with tempfile.TemporaryDirectory(prefix="orchestrator-coverage-") as tmp:
         out = Path(tmp)

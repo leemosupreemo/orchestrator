@@ -1854,7 +1854,12 @@ def get_coverage_data() -> dict[str, Any] | None:
     cov_path = ROOT / ".orchestrator" / "state" / "coverage.json"
     if cov_path.exists():
         try:
-            return read_json(cov_path)
+            record = read_json(cov_path)
+            if record.get("estimated"):
+                for key in ("overall_coverage_pct", "targets", "total_lines", "covered_lines", "tool", "metric", "timestamp"):
+                    record.pop(key, None)
+                record["last_error"] = "Previous coverage was estimated, not measured. Measure again for a real result."
+            return record
         except Exception:
             return None
     return None
@@ -2535,7 +2540,8 @@ def record_coverage_failure(message: str) -> None:
     """Keeps the last real measurement and notes why this attempt didn't produce one."""
     record = {k: v for k, v in (get_coverage_data() or {}).items() if k != "estimated"}
     if (get_coverage_data() or {}).get("estimated"):  # an old guess from the test count is not a measurement
-        record.pop("overall_coverage_pct", None)
+        for key in ("overall_coverage_pct", "targets", "total_lines", "covered_lines", "tool", "metric", "timestamp"):
+            record.pop(key, None)
     save_coverage_data({**record, "last_error": message, "last_error_at": now_iso()})
 
 
@@ -2546,9 +2552,10 @@ def run_project_coverage() -> float | None:
     print_header("Measuring code coverage")
     try:
         result = cov.measure(ROOT, PROJECT_CONFIG.test_command)
-    except cov.CoverageUnavailable as exc:
-        print(f"\n\033[1;93m⚠️  {exc}\033[0m")
-        record_coverage_failure(str(exc))
+    except (cov.CoverageUnavailable, OSError, ValueError, KeyError, IndexError) as exc:
+        message = f"Coverage measurement failed: {exc}"
+        print(f"\n\033[1;93m⚠️  {message}\033[0m")
+        record_coverage_failure(message)
         return None
     suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
     save_coverage_data({
@@ -2696,6 +2703,16 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             return None
         except Exception as e:
             print(f"\n⚠️ Xcode test execution failed: {e}")
+
+        if proc is None or proc.returncode != 0:
+            message = f"Coverage measurement failed: Xcode tests did not succeed (exit {getattr(proc, 'returncode', 'unavailable')})."
+            record_coverage_failure(message)
+            print(f"\n❌ {message}", flush=True)
+            if show_status_bar:
+                indicator.clear()
+                status_bar.clear_footer()
+                status_bar.reset_scroll_region()
+            return None
 
         # Extract coverage using xcrun xccov
         print("\n=== STEP 3/5: EXPORTING COVERAGE REPORT ===", flush=True)
