@@ -57,7 +57,10 @@ process.stdout.write(JSON.stringify(Account.renderMachines(machines, {
     def test_failed_connection_is_shown_on_only_the_affected_computer(self):
         screen = self.render()
         failed, healthy = screen.cards
-        self.assertIn("Can’t connect", " ".join(failed["text"]))
+        self.assertIn("Web connection unavailable", " ".join(failed["text"]))
+        self.assertIn("this browser couldn’t reach its web connection", " ".join(failed["text"]))
+        self.assertIn("SSH uses a separate connection", " ".join(failed["all_text"]))
+        self.assertNotIn("Make sure Orchestrator is running", " ".join(failed["text"]))
         self.assertNotIn("Online", " ".join(failed["text"]))
         self.assertIn("Retry", " ".join(failed["text"]))
         self.assertIn("Running", " ".join(healthy["text"]))

@@ -259,7 +259,7 @@
     const endpoint = t.endpoint || t.machine?.endpoint || "";
     const desktopApp = t.machine?.updatable === true;
     return `<div class="account-connection-help">
-      <p>${desktopApp ? "Open Orchestrator on your Mac and turn on Remote access." : "Run <code>orchestrator ui --tunnel</code> on this computer."}</p>
+      <p>${t.error && t.machine?.online ? "SSH uses a separate connection and may still work. Try Reconnect to renew the web connection." : desktopApp ? "Open Orchestrator on your Mac and turn on Remote access." : "Run <code>orchestrator ui --tunnel</code> on this computer."}</p>
       <ul>
         <li>Keep the computer awake and connected to the internet.</li>
         <li>If it still won’t connect, check your browser’s content blockers.</li>
@@ -279,7 +279,7 @@
         <p class="muted">Next, set up the computer it runs on. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there.</p>` : "";
     const rows = list.map((m) => {
       const failed = troubleshoot?.machine?.id === m.id;
-      const status = failed ? "Can’t connect" : m.reachable ? "Running" : m.online ? "Connecting" : "Offline";
+      const status = failed ? "Web connection unavailable" : m.reachable ? "Running" : m.online ? "Connecting" : "Offline";
       const tone = failed ? "warn" : "muted";
       const progress = UPDATE_PROGRESS[m.update_state] || "";
       const canUpdate = m.updatable && m.online && !UPDATE_BUSY.includes(m.update_state);
@@ -288,10 +288,10 @@
       return `<article class="account-machine">
         <div class="account-machine-heading">
           <strong>${escapeHtml(m.name)}</strong>
-          <span class="account-status ${tone}" title="${failed ? "The browser could not reach this computer." : "Reported by this computer. Open checks the connection from your browser."}">${status}</span>
+          <span class="account-status ${tone}" title="${failed ? "This browser could not reach Orchestrator’s web connection. Other connections, such as SSH, may still work." : "Reported by this computer. Open checks the connection from your browser."}">${status}</span>
         </div>
         <p class="muted account-machine-meta">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</p>
-        ${failed ? `<p class="account-connection-error" role="alert">Make sure Orchestrator is running, then retry.</p>` : ""}
+        ${failed ? `<p class="account-connection-error" role="alert">${m.online ? "Orchestrator is running, but this browser couldn’t reach its web connection." : "This browser couldn’t reach Orchestrator’s web connection."}</p>` : ""}
         ${progress && m.update_state !== "current" ? `<p class="muted account-update">${escapeHtml(progress)}</p>` : ""}
         <div class="account-machine-actions">
           <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">${failed || !m.reachable ? "Retry" : "Open"}</button>
