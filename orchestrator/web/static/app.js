@@ -1089,10 +1089,13 @@ const LIVE = new Set(["home", "jobs", "job", "activity", "git"]);
 
 let setupState = null;
 let setupFetched = 0;
+const setupDismissedRoots = new Set();
 async function loadSetup(force = false) {
   if (!force && Date.now() - setupFetched < 15000) return setupState;
+  const projectRoot = state.project?.root;
   setupFetched = Date.now();
   try { setupState = await api("setup"); } catch { setupState = null; } // older servers have no /api/setup
+  if (setupState && setupDismissedRoots.has(projectRoot)) setupState.seen = true;
   renderSetupFab();
   if (setupState?.complete && !setupState.seen) {
     setupState.seen = true;
@@ -1131,7 +1134,15 @@ function setupPage(s) {
       <section class="card">${setupListHtml(s)}</section>
       ${s.complete ? `<div class="row" style="margin-top:16px"><button class="btn primary big" id="setup-done">Continue to Home</button></div>` : ""}</div>`,
     after: () => {
-      const seen = async () => { try { await api("config/setup-seen", { method: "POST", body: {} }); } catch {} if (setupState) setupState.seen = true; route(); };
+      const seen = () => {
+        setupDismissedRoots.add(state.project?.root);
+        if (setupState) setupState.seen = true;
+        apply({ title: "Home", sub: "", actions: "", html: `<div class="empty">Loading Home…</div>` });
+        route();
+        api("config/setup-seen", { method: "POST", body: {} }).catch(() => {
+          toast("Couldn't save your setup dismissal. Setup may appear again after reloading.", true);
+        });
+      };
       $("#setup-skip")?.addEventListener("click", seen);
       $("#setup-done")?.addEventListener("click", seen);
     },
@@ -1157,10 +1168,16 @@ function renderSetupPanel() {
 
 async function openSetupPanel() {
   const panel = $("#setup-panel");
-  await loadSetup(true);
-  if (!setupState) return toast("The setup checklist isn't available yet. It will appear after your next Orchestrator update.", true);
-  renderSetupPanel();
+  if (setupState) renderSetupPanel();
+  else panel.innerHTML = `<div class="setup-panel-b" role="status">Checking setup…</div>`;
   panel.hidden = false;
+  await loadSetup(true);
+  if (panel.hidden) return;
+  if (!setupState) {
+    closeSetupPanel();
+    return toast("The setup checklist isn't available yet. It will appear after your next Orchestrator update.", true);
+  }
+  renderSetupPanel();
 }
 const closeSetupPanel = () => { const p = $("#setup-panel"); if (p) p.hidden = true; };
 
@@ -2641,7 +2658,7 @@ async function route() {
 async function tick() {
   if (document.hidden) return;
   await refreshState();
-  loadSetup();
+  await loadSetup();
   if (current.page === "run") {
     const run = state.runs.find((r) => r.id === current.args[0]);
     if (run) setHeader(runHeader(run)); // keeps Stop / waiting status current while you watch
@@ -2658,6 +2675,11 @@ async function tick() {
 }
 
 window.addEventListener("hashchange", route);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  setupFetched = 0;
+  tick().catch(() => {}); // retry on the next poll if the connection is unavailable
+});
 const connBtn = $("#backend-settings-btn");
 if (connBtn) {
   connBtn.addEventListener("click", () => showSignInGate());
