@@ -801,11 +801,11 @@ process.stdout.write(JSON.stringify({
   empty: A.renderMachines([], {email: "a@x.com", message: "Run `orchestrator connect`", idea: {pitch: "A word game", name: "", existing: false}}),
   pair: A.renderPair({name: "<Mac>", os: "macOS", version: "1"}, "ABCD2345", {email: "a@x.com"}),
 }));""")
-        self.assertEqual(result["list"].count('data-account-action="open"'), 1)  # only the reachable one opens
+        self.assertEqual(result["list"].count('data-account-action="open"'), 3)  # Open or Retry, once per computer
         self.assertEqual(result["list"].count('data-account-action="remove"'), 3)
         self.assertIn("&lt;Studio&gt;", result["list"])
         self.assertNotIn("<Studio>", result["list"])
-        self.assertIn("not reachable from the web", result["list"])
+        self.assertIn("Connecting", result["list"])
         self.assertIn("<code>orchestrator ui --tunnel</code>", result["list"])
         self.assertIn("Set up where it runs", result["empty"])  # once they've said what they're building
         self.assertIn("pipx install", result["empty"])

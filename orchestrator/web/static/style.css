@@ -2529,7 +2529,7 @@ body[data-page="product"] .topbar-actions .btn:hover {
 @media (prefers-reduced-motion: reduce) { .msg-new { animation: none; } }
 
 /* account (hosted app): your computers and adding one */
-.account-card { max-width: 560px; }
+.account-card { max-width: 640px; gap: var(--space-5); }
 .account-title { margin: 0; font-size: var(--text-xl); font-weight: 700; }
 .account-sub { margin: var(--space-2) 0 0; }
 .account-message { margin: var(--space-3) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
@@ -2575,9 +2575,33 @@ body[data-page="product"] .topbar-actions .btn:hover {
   margin-bottom: var(--space-2);
   line-height: 1.4;
 }
-.account-machines { display: flex; flex-direction: column; gap: var(--space-2); }
-.account-machine { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;
-  padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+.account-machines { display: flex; flex-direction: column; gap: var(--space-4); }
+.account-machine { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-3);
+  padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel-2); }
+.account-machine-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.account-machine-heading strong { overflow-wrap: anywhere; min-width: 0; }
+.account-machine-meta, .account-connection-error, .account-machine .account-update { margin: 0; font-size: var(--text-sm); line-height: 1.5; }
+.account-connection-error { color: var(--warn); }
+.account-machine-actions { display: flex; align-items: flex-start; gap: var(--space-2); margin-top: var(--space-1); }
+.account-machine-more { position: relative; }
+.account-machine-more > summary { cursor: pointer; min-width: 80px; }
+.account-machine-more[open] > summary::before { position: static; inset: auto; z-index: auto; background: transparent; cursor: inherit; }
+.account-machine-menu { position: absolute; z-index: var(--z-menu); top: calc(100% + var(--space-2)); left: 0;
+  width: min(320px, calc(100vw - 120px)); display: flex; flex-direction: column; align-items: stretch; gap: var(--space-3);
+  padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); box-shadow: var(--shadow-2); }
+.account-machine-menu > .btn { justify-content: flex-start; }
+.account-machine-menu summary { cursor: pointer; font-size: var(--text-sm); }
+.account-machine-menu p, .account-machine-menu ul { margin: var(--space-3) 0 0; font-size: var(--text-sm); line-height: 1.5; }
+.account-machine-menu ul { padding-left: var(--space-4); }
+.account-connection-help { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
+.account-machine-menu .account-remove { border-top: 1px solid var(--border); border-radius: 0; padding-top: var(--space-3); color: var(--bad); }
+.account-add { border-top: 1px solid var(--border); padding-top: var(--space-4); }
+.account-foot { border-top: 1px solid var(--border); padding-top: var(--space-4); overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .account-machine { padding: var(--space-4); }
+  .account-machine-actions > .btn { flex: 1; }
+  .account-machine-menu { left: auto; right: 0; width: min(320px, calc(100vw - 96px)); }
+}
 .account-machine-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .account-status { font-size: var(--text-sm); color: var(--muted); }
 .account-status.good { color: var(--ok); }

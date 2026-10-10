@@ -256,33 +256,17 @@
 
   function renderTroubleshoot(t) {
     if (!t) return "";
-    const isLoadFailed = (t.error || "").includes("Load failed");
     const endpoint = t.endpoint || t.machine?.endpoint || "";
-    const machineId = t.machine?.id || "";
-    const machineName = t.machine?.name || "your computer";
     const desktopApp = t.machine?.updatable === true;
-    return `<div class="account-troubleshoot card-b stack">
-      <div class="account-troubleshoot-header row">
-        <strong>⚠️ Couldn't connect to ${escapeHtml(machineName)}</strong>
-        <span class="spacer"></span>
-        <span class="pill fail">${escapeHtml(isLoadFailed ? "Load failed" : "Unreachable")}</span>
-      </div>
-      <p class="muted">Your browser could not reach <code class="account-address" title="${escapeHtml(endpoint)}">${escapeHtml(hostOf(endpoint) || "the tunnel")}</code>.</p>
-      <div class="row gap-10">
-        ${machineId ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(machineId)}">Retry</button>` : ""}
-        ${endpoint ? `<a class="btn small" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open tunnel URL ↗</a>` : ""}
-        ${machineId ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(machineId)}" data-name="${escapeHtml(machineName)}">Reset tunnel</button>` : ""}
-        ${desktopApp ? "" : `<button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy restart command</button>`}
-      </div>
-      ${desktopApp ? `<p>Wake this Mac, open Orchestrator from Applications, and check that <strong>Remote access</strong> is enabled in its menu. Keep the Mac awake, then choose Retry.</p>` : ""}
-      <details class="account-troubleshoot-details">
-        <summary>Why did this happen? (Troubleshooting tips)</summary>
-        <ul>
-          <li><strong>Mac asleep or lid closed:</strong> Cloudflare quick tunnels pause when a Mac sleeps. Wake the Mac, wait a few seconds, and click Retry.</li>
-          <li><strong>Ad Blocker / Privacy DNS:</strong> Safari Content Blockers, AdGuard, NextDNS, or Brave often block <code>*.trycloudflare.com</code>. Try opening the tunnel URL directly or disabling content blockers for this site.</li>
-          <li><strong>Connection needs restarting:</strong> Click <em>Reset tunnel</em> above${desktopApp ? " and then Retry." : " or restart <code>orchestrator ui --tunnel</code> in your terminal."}</li>
-        </ul>
-      </details>
+    return `<div class="account-connection-help">
+      <p>${desktopApp ? "Open Orchestrator on your Mac and turn on Remote access." : "Run <code>orchestrator ui --tunnel</code> on this computer."}</p>
+      <ul>
+        <li>Keep the computer awake and connected to the internet.</li>
+        <li>If it still won’t connect, check your browser’s content blockers.</li>
+      </ul>
+      ${endpoint ? `<p><code class="account-address" title="${escapeHtml(endpoint)}">${escapeHtml(hostOf(endpoint))}</code></p>
+        <a class="btn small ghost" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open connection ↗</a>` : ""}
+      ${desktopApp ? "" : `<button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy start command</button>`}
     </div>`;
   }
 
@@ -294,55 +278,54 @@
         <button type="button" class="linklike" data-account-action="idea-change">Change</button></p>
         <p class="muted">Next, set up the computer it runs on. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there.</p>` : "";
     const rows = list.map((m) => {
-      const s = machineStatus(m, now);
+      const failed = troubleshoot?.machine?.id === m.id;
+      const status = failed ? "Can’t connect" : m.reachable ? "Running" : m.online ? "Connecting" : "Offline";
+      const tone = failed ? "warn" : "muted";
       const progress = UPDATE_PROGRESS[m.update_state] || "";
       const canUpdate = m.updatable && m.online && !UPDATE_BUSY.includes(m.update_state);
-      return `<div class="account-machine">
-        <div class="account-machine-main">
+      const fixes = readinessFixes(m.readiness);
+      const help = failed ? troubleshoot : {machine: m, endpoint: m.endpoint};
+      return `<article class="account-machine">
+        <div class="account-machine-heading">
           <strong>${escapeHtml(m.name)}</strong>
-          <span class="muted">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</span>
-          <span class="account-status ${s.tone}">${code(s.text)}</span>
-          ${progress && m.update_state !== "current" ? `<span class="muted account-update">${escapeHtml(progress)}</span>` : ""}
-          ${!m.reachable ? `<div class="account-start-guide stack">
-            ${!m.updatable ? `<div class="row gap-6 account-cmd-box">
-              <span class="muted">To start:</span>
-              <code class="mono">orchestrator ui --tunnel</code>
-              <button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel" title="Copy command">Copy</button>
-            </div>` : ""}
-            <span class="account-listening"><span class="dot" aria-hidden="true"></span>Waiting for connection — opens automatically once started</span>
-            ${!m.updatable ? `<details class="account-more-options">
-              <summary>More ways to run</summary>
-              <ul>
-                <li><strong>Run at login in background:</strong> <code>orchestrator service install</code></li>
-                <li><strong>Working on this computer right now?</strong> Run <code>orchestrator ui</code> in Terminal to open locally at <code>localhost:8000</code>.</li>
-              </ul>
-            </details>` : ""}
-          </div>` : ""}
-          ${readinessFixes(m.readiness).length ? `<details class="account-readiness"><summary>To run unattended, ${readinessFixes(m.readiness).length === 1 ? "one setting needs" : `${readinessFixes(m.readiness).length} settings need`} changing</summary>
-            <ul>${readinessFixes(m.readiness).map((fix) => `<li>${code(fix)}</li>`).join("")}</ul></details>` : ""}
+          <span class="account-status ${tone}" title="${failed ? "The browser could not reach this computer." : "Reported by this computer. Open checks the connection from your browser."}">${status}</span>
         </div>
-        <div class="row gap-10">
-          ${m.reachable ? `<button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>` : (!m.updatable ? `<button type="button" class="btn small primary" data-account-action="copy-cmd" data-cmd="orchestrator ui --tunnel">Copy start command</button>` : "")}
-          ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}" title="Restart tunnel if connection is stale">Reset tunnel</button>` : ""}
-          ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update</button>` : ""}
-          <button type="button" class="btn small ghost" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove</button>
+        <p class="muted account-machine-meta">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</p>
+        ${failed ? `<p class="account-connection-error" role="alert">Make sure Orchestrator is running, then retry.</p>` : ""}
+        ${progress && m.update_state !== "current" ? `<p class="muted account-update">${escapeHtml(progress)}</p>` : ""}
+        <div class="account-machine-actions">
+          <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">${failed || !m.reachable ? "Retry" : "Open"}</button>
+          <details class="more account-machine-more" data-account-expansion="${escapeHtml(m.id)}:more">
+            <summary class="btn small ghost" aria-label="More options for ${escapeHtml(m.name)}">More</summary>
+            <div class="account-machine-menu">
+              ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
+              ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
+              <details class="account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
+                ${m.reachable && outdated(m.api_version) ? `<p class="muted">${code(`This computer runs an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`)}</p>` : ""}
+                ${renderTroubleshoot(help)}
+              </details>
+              ${fixes.length ? `<details class="account-readiness" data-account-expansion="${escapeHtml(m.id)}:readiness"><summary>To run unattended, ${fixes.length === 1 ? "one setting needs" : `${fixes.length} settings need`} changing</summary>
+                <ul>${fixes.map((fix) => `<li>${code(fix)}</li>`).join("")}</ul></details>` : ""}
+              <button type="button" class="btn small ghost account-remove" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove computer</button>
+            </div>
+          </details>
         </div>
-      </div>`;
+      </article>`;
     }).join("");
-    const anyReachable = list.some((m) => m.reachable);
+    const unmatchedTrouble = troubleshoot && !list.some((m) => troubleshoot.machine?.id === m.id);
     return `<div class="signin-wrap"><div class="signin-card account-card">
       <div>
         <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
         <p class="muted account-sub">${list.length
-          ? "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there."
+          ? "Your code stays on your computer."
           : askIdea ? "Say it in a sentence. It becomes the start of your product's plan, and you can change it any time."
           : "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
-        ${troubleshoot ? renderTroubleshoot(troubleshoot) : (message ? `<p class="account-message" role="alert">${code(message)}</p>` : (list.length && !anyReachable ? `<div class="account-offline-notice row gap-8"><span class="dot" aria-hidden="true"></span><span>Waiting for your computer to connect. Start Orchestrator on it to open your workspace.</span></div>` : ""))}
+        ${unmatchedTrouble ? renderTroubleshoot(troubleshoot) : (message && !troubleshoot ? `<p class="account-message" role="alert">${code(message)}</p>` : "")}
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
-        <details class="account-add"><summary>Add another computer</summary>${renderMacSetup(release)}</details>` : askIdea ? ideaStep() : ideaRecap + renderMacSetup(release)}
+        <details class="account-add" data-account-expansion="add"><summary>Add computer</summary>${renderMacSetup(release)}</details>` : askIdea ? ideaStep() : ideaRecap + renderMacSetup(release)}
       ${macAppReleased ? `<details class="account-add"><summary>Add a Mac nobody sits at</summary>${addMacSteps()}</details>` : ""}
-      <p class="muted account-foot">Signed in as ${escapeHtml(email)} · <button type="button" class="linklike" data-account-action="refresh">Refresh</button> · <button type="button" class="linklike" data-account-action="sign-out">Sign out</button></p>
+      <p class="muted account-foot">Signed in as ${escapeHtml(email)} · <button type="button" class="linklike" data-account-action="sign-out">Sign out</button></p>
     </div></div>`;
   }
 

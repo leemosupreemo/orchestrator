@@ -1289,7 +1289,9 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
   let macRelease = null;
   const render = (list, msg, tb) => {
     if (view.contains(document.activeElement) && document.activeElement.matches("input")) return; // not while typing a code
+    const expanded = new Set(Array.from(view.querySelectorAll("details[data-account-expansion][open]"), (el) => el.dataset.accountExpansion));
     view.innerHTML = Account.renderMachines(list, { email, message: msg, troubleshoot: tb, release: macRelease });
+    view.querySelectorAll("details[data-account-expansion]").forEach((el) => { el.open = expanded.has(el.dataset.accountExpansion); });
   };
   render(machines, message, troubleshoot);
   fetch("/releases/macos.json", {cache: "no-store"})
