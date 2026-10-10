@@ -1199,13 +1199,14 @@ function showSigningIn(label = "Signing you in…") {
 // ---------------------------------------------------------------- account (hosted app)
 
 // The control plane, served by the hosted app at /cp: your computers and the one-time tickets that open them.
-async function cpApi(path, { method = "GET", body } = {}) {
+async function cpApi(path, { method = "GET", body, signal } = {}) {
   const user = window.firebase?.auth?.().currentUser;
   if (!user) throw Object.assign(new Error("Sign in first."), { status: 401 });
   const res = await fetch(`/cp/${path}`, {
     method,
     headers: { Authorization: `Bearer ${await user.getIdToken()}`, ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || `${res.status} ${res.statusText}`), { status: res.status });
@@ -1456,24 +1457,92 @@ async function showPairScreen(code) {
 }
 
 // Open one computer: the control plane signs a ticket only it accepts, and it trades that for a sign-in of its own.
+const machineRepairAttempts = new Map();
+function isWebConnectionFailure(error) {
+  return [502, 503, 504, 530].includes(error.status) ||
+    (!error.status && ["TypeError", "AbortError", "TimeoutError"].includes(error.name));
+}
+
+async function signInToMachine(machine, deadline = Date.now() + 16000) {
+  const signal = () => AbortSignal.timeout(Math.max(1, Math.min(8000, deadline - Date.now())));
+  const { endpoint, ticket } = await cpApi("machine/ticket", {
+    method: "POST", body: { machine_id: machine.id }, signal: signal(),
+  });
+  localStorage.setItem("orchestrator_backend", endpoint);
+  localStorage.setItem(Account.MACHINE_KEY, machine.id);
+  localStorage.removeItem("orchestrator_token");
+  try {
+    return await api("auth", { method: "POST", body: { ticket }, signal: signal() });
+  } catch (error) {
+    error.endpoint = endpoint;
+    error.webConnectionFailed = isWebConnectionFailure(error);
+    throw error;
+  }
+}
+
+async function claimMachineRepair(machine) {
+  const key = `orchestrator_tunnel_repair_${machine.id}`;
+  const claim = () => {
+    if (navigator.onLine === false) return false;
+    let lastAttempt = machineRepairAttempts.get(key) || 0;
+    try { lastAttempt = Math.max(lastAttempt, Number(localStorage.getItem(key)) || 0); } catch { /* storage blocked */ }
+    if (lastAttempt && Date.now() - lastAttempt < 300000) return false;
+    machineRepairAttempts.set(key, Date.now());
+    try { localStorage.setItem(key, String(Date.now())); } catch { /* keep the in-memory limit */ }
+    return true;
+  };
+  // Serialize the claim across tabs sharing this account and tunnel.
+  return navigator.locks?.request ? navigator.locks.request(key, claim) : claim();
+}
+
+async function repairMachineConnection(machine, failure) {
+  if (!failure.webConnectionFailed || navigator.onLine === false) throw failure;
+  // A previous restart may already have replaced the saved address. Try that before asking for another.
+  const { machines } = await cpApi("machines", { signal: AbortSignal.timeout(8000) });
+  const current = (machines || []).find((item) => item.id === machine.id);
+  if (!current?.online || !current.endpoint) throw failure;
+  if (current.endpoint !== failure.endpoint) {
+    try { return await signInToMachine(current); }
+    catch (error) {
+      if (!error.webConnectionFailed) throw error;
+      failure = error;
+    }
+  }
+  if (!await claimMachineRepair(machine) || navigator.onLine === false) throw failure;
+  showSigningIn(`Reconnecting to ${machine.name}… This may take a minute.`);
+  const deadline = Date.now() + 90000;
+  await cpApi("machines/reset-tunnel", {
+    method: "POST", body: { machine_id: machine.id }, signal: AbortSignal.timeout(8000),
+  });
+  let lastTried = `${current.endpoint}:${current.last_seen}`;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(3000, deadline - Date.now())));
+    if (navigator.onLine === false || Date.now() >= deadline) break;
+    const { machines: updated } = await cpApi("machines", {
+      signal: AbortSignal.timeout(Math.max(1, Math.min(8000, deadline - Date.now()))),
+    });
+    const next = (updated || []).find((item) => item.id === machine.id);
+    if (!next?.online) break;
+    const revision = `${next.endpoint}:${next.last_seen}`;
+    if (!next.endpoint || revision === lastTried) continue;
+    lastTried = revision;
+    try { return await signInToMachine(next, deadline); }
+    catch (error) {
+      if (!error.webConnectionFailed) throw error;
+      failure = error;
+    }
+  }
+  throw failure;
+}
+
 async function enterMachine(machine) {
   stopAccountPoll();
   signingIn = true;
   showSigningIn(`Opening ${machine.name}…`);
-  let endpoint = "";
   try {
-    const resTicket = await cpApi("machine/ticket", { method: "POST", body: { machine_id: machine.id } });
-    endpoint = resTicket.endpoint;
-    const ticket = resTicket.ticket;
-    localStorage.setItem("orchestrator_backend", endpoint);
-    localStorage.setItem(Account.MACHINE_KEY, machine.id);
-    localStorage.removeItem("orchestrator_token");
     let res;
-    try {
-      res = await api("auth", { method: "POST", body: { ticket } });
-    } catch (err) {
-      throw new Error(`Couldn't reach ${machine.name} (${err.message}). ${machine.updatable ? "Wake the Mac, open Orchestrator and check that Remote access is on in its menu." : "Check that `orchestrator ui --tunnel` is still running on it."}`);
-    }
+    try { res = await signInToMachine(machine); }
+    catch (error) { res = await repairMachineConnection(machine, error); }
     // An idea from before this computer was set up: go and start it (or add the code they already have).
     const idea = Account.pendingIdea();
     if (idea) {
@@ -1482,7 +1551,8 @@ async function enterMachine(machine) {
     }
     await unlockWith(res.token, `Opened ${machine.name}`);
   } catch (err) {
-    openAccount({ list: true, message: err.message, troubleshoot: { machine, endpoint, error: err.message } });
+    openAccount({ list: true, message: err.message,
+      troubleshoot: { machine, endpoint: err.endpoint || machine.endpoint || "", error: err.message } });
   }
 }
 
@@ -1510,7 +1580,7 @@ async function relocateMachine() {
       }
       return;
     }
-    if (endpoint !== getBackendUrl() || !state.project || !getToken()) {
+    if (endpoint !== getBackendUrl() || !state.project || !getToken() || pollFailures >= 2) {
       ConnectionLog.add("relocated", { backend: new URL(endpoint).host });
       await enterMachine(machine);
     }

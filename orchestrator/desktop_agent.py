@@ -112,6 +112,7 @@ class DesktopAgent:
         self._endpoint = ""
         self._remote_state = "connecting"
         self._remote_generation = 0
+        self._reset_tunnel_requested = False
         self._retry_at = self._beat_at = 0.0
         self._beat_thread = None
         self._last_error = ""
@@ -399,6 +400,13 @@ class DesktopAgent:
                 self.local.selected_root = self.local.root
                 self.local.root = None
                 self._remote_generation += 1
+            if self._reset_tunnel_requested:
+                self._reset_tunnel_requested = False
+                if self.remote_enabled and self.local.root and machine and not legacy_running:
+                    # Invalidate an in-flight launch as well as the current tunnel. Local work keeps running.
+                    self._remote_generation += 1
+                    self._stop_remote()
+                    self._retry_at = 0
             if not self.remote_enabled or not self.local.root or not machine or legacy_running:
                 if self._tunnel_proc or self._endpoint:
                     self._remote_generation += 1
@@ -430,6 +438,9 @@ class DesktopAgent:
         except Exception:
             self._last_error = "heartbeat_failed"
             return
+        if isinstance(reply, dict) and reply.get("reset_tunnel") is True:
+            with self._lock:
+                self._reset_tunnel_requested = True
         if isinstance(reply, dict) and reply.get("update_requested") is True:
             with self._lock:
                 self._update_request = True

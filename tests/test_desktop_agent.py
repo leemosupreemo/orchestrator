@@ -261,6 +261,45 @@ class DesktopAgentTests(unittest.TestCase):
         self.assertIsNone(self.agent._tunnel_proc)
         self.assertEqual(self.request("status")["result"]["remote_access"], "unavailable")
 
+    def test_tunnel_reset_renews_address_without_stopping_local_work(self):
+        from unittest.mock import Mock
+        processes = [Mock(), Mock()]
+        for proc in processes:
+            proc.poll.return_value = None
+        launches = []
+        stopped = []
+        def connect(port):
+            index = len(launches)
+            launches.append(port)
+            return processes[index], f"https://tunnel-{index}.trycloudflare.com"
+        self.dependencies.tunnel_start = connect
+        self.dependencies.tunnel_stop = stopped.append
+        self.project()
+        self.start()
+        self.wait(lambda: "https://tunnel-0.trycloudflare.com" in self.beats)
+        done = threading.Event()
+        task = self.agent.local.tasks.start(lambda: done.wait(5))
+        try:
+            self.reply = {"ok": True, "reset_tunnel": True}
+            self.agent._heartbeat(account.load_machine(), self.agent._endpoint, 0, "", {})
+            self.wait(lambda: "https://tunnel-1.trycloudflare.com" in self.beats)
+            self.assertIn(processes[0], stopped)
+            self.assertEqual(self.request("status")["result"]["remote_access"], "connected")
+            self.assertEqual(self.agent.local.tasks.get(task)["status"], "running")
+            self.assertEqual(len(launches), 2)
+        finally:
+            done.set()
+
+    def test_tunnel_reset_does_not_turn_remote_access_back_on(self):
+        self.project()
+        self.agent.remote_enabled = False
+        self.start()
+        self.reply = {"ok": True, "reset_tunnel": True}
+        self.agent._heartbeat(account.load_machine(), "", 0, "", {})
+        time.sleep(.3)
+        self.assertEqual(self.request("status")["result"]["remote_access"], "off")
+        self.assertIsNone(self.agent._tunnel_proc)
+
     def test_project_removed_while_tunnel_connects_cannot_enable_remote(self):
         from unittest.mock import Mock
         proc = Mock()
