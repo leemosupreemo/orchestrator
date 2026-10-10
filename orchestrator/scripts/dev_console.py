@@ -1854,7 +1854,12 @@ def get_coverage_data() -> dict[str, Any] | None:
     cov_path = ROOT / ".orchestrator" / "state" / "coverage.json"
     if cov_path.exists():
         try:
-            return read_json(cov_path)
+            record = read_json(cov_path)
+            if record.get("estimated"):
+                for key in ("overall_coverage_pct", "targets", "total_lines", "covered_lines", "tool", "metric", "timestamp"):
+                    record.pop(key, None)
+                record["last_error"] = "Previous coverage was estimated, not measured. Measure again for a real result."
+            return record
         except Exception:
             return None
     return None
@@ -2490,9 +2495,51 @@ def rename_test_suite(suite: dict[str, Any], root: Path) -> bool:
         input("\n\033[1;96mTap Enter to continue...\033[0m")
         return False
 
-def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_models: list[str]) -> float | None:
+def record_coverage_failure(message: str) -> None:
+    """Keeps the last real measurement and notes why this attempt didn't produce one."""
+    record = {k: v for k, v in (get_coverage_data() or {}).items() if k != "estimated"}
+    if (get_coverage_data() or {}).get("estimated"):  # an old guess from the test count is not a measurement
+        for key in ("overall_coverage_pct", "targets", "total_lines", "covered_lines", "tool", "metric", "timestamp"):
+            record.pop(key, None)
+    save_coverage_data({**record, "last_error": message, "last_error_at": now_iso()})
+
+
+def run_project_coverage() -> float | None:
+    """Coverage for a project not built with Xcode, by its language's own tool (orchestrator/coverage.py)."""
+    from orchestrator import coverage as cov
+
+    print_header("Measuring code coverage")
+    try:
+        result = cov.measure(ROOT, PROJECT_CONFIG.test_command)
+    except (cov.CoverageUnavailable, OSError, ValueError, KeyError, IndexError) as exc:
+        message = f"Coverage measurement failed: {exc}"
+        print(f"\n\033[1;93m⚠️  {message}\033[0m")
+        record_coverage_failure(message)
+        return None
+    suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
+    save_coverage_data({
+        "timestamp": now_iso(), "overall_coverage_pct": result.pct, "tool": result.tool, "metric": result.metric,
+        "total_lines": result.total_lines, "covered_lines": result.covered_lines,
+        "targets": [], "total_tests": sum(s["test_count"] for s in suites), "total_suites": len(suites),
+    })
+    print(f"\n\033[1;92m✅ {result.pct:.1f}% of {result.metric} covered (measured with {result.tool}).\033[0m")
+    print("\n=== STEP 5/5: COVERAGE MEASUREMENT COMPLETE ===\n", flush=True)
+    return result.pct
+
+
+def project_uses_xcode() -> bool:
+    return bool(PROJECT_CONFIG.uses_xcode)
+
+
+def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_models: list[str], interactive: bool = True) -> float | None:
     clear_screen()
+    if not project_uses_xcode():
+        pct = run_project_coverage()
+        if interactive and sys.stdin.isatty():
+            input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        return pct
     print_header("Calculating Code Coverage")
+    print("\n=== STEP 1/5: CONFIGURING BUILD DESTINATION ===", flush=True)
     print("Running test suite with code coverage enabled (-enableCodeCoverage YES)...\n")
     
     scheme = PROJECT_CONFIG.scheme or PROJECT_CONFIG.project_name or ROOT.name
@@ -2548,6 +2595,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.set_scroll_region()
             status_bar.render(at_bottom=True, force=True, activity=indicator)
 
+        print("\n=== STEP 2/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
         proc = None
         try:
             proc = subprocess.Popen(
@@ -2615,7 +2663,18 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
         except Exception as e:
             print(f"\n⚠️ Xcode test execution failed: {e}")
 
+        if proc is None or proc.returncode != 0:
+            message = f"Coverage measurement failed: Xcode tests did not succeed (exit {getattr(proc, 'returncode', 'unavailable')})."
+            record_coverage_failure(message)
+            print(f"\n❌ {message}", flush=True)
+            if show_status_bar:
+                indicator.clear()
+                status_bar.clear_footer()
+                status_bar.reset_scroll_region()
+            return None
+
         # Extract coverage using xcrun xccov
+        print("\n=== STEP 3/5: EXPORTING COVERAGE REPORT ===", flush=True)
         overall_pct = None
         targets_cov = []
         if result_bundle.exists():
@@ -2648,7 +2707,12 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                         "Firebase", "Google", "GUL", "GTM", "FBL", "AppAuth", "gRPC", "abseil", "absl", "nanopb",
                         "leveldb", "Promises", "GTMSessionFetcher", "SnapshotTesting", "Quick", "Nimble", "Pods-", "openssl"
                     ])
-                    entry = {"name": t_name, "coverage_pct": t_cov}
+                    entry = {
+                        "name": t_name,
+                        "coverage_pct": t_cov,
+                        "total_lines": t.get("executableLines", 0),
+                        "covered_lines": t.get("coveredLines", 0),
+                    }
                     if is_app_target:
                         app_targets.insert(0, entry)
                     elif is_third_party:
@@ -2661,8 +2725,12 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                     primary_target = app_targets[0]
                     overall_pct = primary_target["coverage_pct"]
                     targets_cov = app_targets + third_party_targets
+                    total_lines = primary_target.get("total_lines") or cov_json.get("executableLines", 0)
+                    covered_lines = primary_target.get("covered_lines") or cov_json.get("coveredLines", 0)
                 else:
                     targets_cov = third_party_targets
+                    total_lines = cov_json.get("executableLines", 0)
+                    covered_lines = cov_json.get("coveredLines", 0)
             except Exception as e:
                 print(f"\n⚠️ Could not parse .xcresult coverage: {e}")
 
@@ -2672,6 +2740,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
         prev_tests = prev_cov_record.get("total_tests") if prev_cov_record else None
 
         # Discover total test suites and tests count in workspace
+        print("\n=== STEP 4/5: ANALYZING COVERAGE METRICS ===", flush=True)
         if show_status_bar:
             indicator.label = "Thinking: Analyzing test suite health"
             status_bar.render(at_bottom=True, force=True, activity=indicator)
@@ -2684,25 +2753,25 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.clear_footer()
             status_bar.reset_scroll_region()
 
-    # Fallback simulation/estimation if xcresult couldn't be parsed or was empty (e.g. test environment)
-    estimated = overall_pct is None
+    # No number unless Xcode measured one: a guess from the test count would read as a fact.
     if overall_pct is None:
-        if total_tests > 0:
-            overall_pct = min(95.0, round(float(total_tests * 8.5), 1))
-            targets_cov = [{"name": PROJECT_CONFIG.scheme or "App", "coverage_pct": overall_pct}]
+        record_coverage_failure("Xcode didn't report coverage. Check that the scheme's tests build and run, then measure again.")
 
     if overall_pct is not None:
+        print("\n=== STEP 5/5: SAVING COVERAGE BASELINE ===", flush=True)
         cov_delta = (overall_pct - prev_pct) if prev_pct is not None else None
         tests_delta = (total_tests - prev_tests) if prev_tests is not None else None
 
         cov_record = {
             "timestamp": now_iso(),
             "overall_coverage_pct": overall_pct,
+            "total_lines": total_lines,
+            "covered_lines": covered_lines,
             "targets": targets_cov,
             "total_tests": total_tests,
             "total_suites": total_suites,
-            # True when the number is a rough estimate from the test count, not measured.
-            "estimated": estimated,
+            "tool": "Xcode (xccov)",
+            "metric": "lines",
         }
         save_coverage_data(cov_record)
 
@@ -2718,10 +2787,11 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             color = "\033[1;92m" if tests_delta > 0 else "\033[1;91m"
             tests_delta_str = f" ({color}{sign}{tests_delta} test(s) added\033[0m)"
 
+        lines_detail_str = f" of {total_lines:,} lines ({covered_lines:,} covered)" if total_lines else ""
         print(f"\n\033[1;92m" + "=" * 58 + "\033[0m")
         print(f"   \033[1;92m🧪 CODE COVERAGE & TEST HEALTH REPORT\033[0m")
         print(f"\033[1;92m" + "=" * 58 + "\033[0m")
-        print(f"   \033[1;36m• Overall Coverage:\033[0m      \033[1;97m{overall_pct:.1f}%\033[0m{cov_delta_str}")
+        print(f"   \033[1;36m• Overall Coverage:\033[0m      \033[1;97m{overall_pct:.1f}%{lines_detail_str}\033[0m{cov_delta_str}")
         print(f"   \033[1;36m• Test Suite Breakdown:\033[0m  \033[97m{total_tests} test(s) across {total_suites} suite(s)\033[0m{tests_delta_str}")
         if suites:
             print(f"   \033[1;36m• Active Suites:\033[0m")
@@ -2735,6 +2805,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                 print(f"     \033[90m- {t.get('name')}:\033[0m \033[1;95m{t.get('coverage_pct')}%\033[0m")
         print(f"   \033[1;36m• End-User Value:\033[0m        \033[97mVerifies critical user workflows, eliminates regression bugs, and ensures UI/data reliability.\033[0m")
         print(f"\033[1;92m" + "=" * 58 + "\033[0m")
+        print("\n=== STEP 5/5: COVERAGE MEASUREMENT COMPLETE ===\n", flush=True)
     else:
         diag = get_simulator_diagnostic()
         print("\n\033[1;91m❌ Failed to calculate code coverage.\033[0m")
@@ -2756,8 +2827,10 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             print(f"  \033[93m• Target simulator destination:\033[0m {diag.get('best_destination')}")
             print("  • Ensure the scheme's test target builds without compilation errors.")
 
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    if interactive and sys.stdin.isatty():
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
     return overall_pct
+
 
 def handle_test_frameworks_menu(session_allowed_machines: list[str], session_allowed_models: list[str]) -> None:
     error_msg = ""

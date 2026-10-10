@@ -184,7 +184,7 @@ def run_plan(name: str) -> int:
 def coverage() -> int:
     from dev_console import run_calculate_coverage
 
-    return 0 if run_calculate_coverage([], []) is not None else 1
+    return 0 if run_calculate_coverage([], [], interactive=False) is not None else 1
 
 
 # --------------------------------------------------------------------------- CLI
