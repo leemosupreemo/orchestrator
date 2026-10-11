@@ -93,6 +93,45 @@ class CoverageExecutionTests(unittest.TestCase):
         self.assertNotIn('overall_coverage_pct', record)
         self.assertIn('last_error', record)
 
+    def successful_xcode(self, report):
+        self.failed_xcode()
+        child = MagicMock(stdout=iter(['Test Suite passed\n']), returncode=0)
+        child.wait.return_value = 0
+        def launch(argv, *args, **kwargs):
+            Path(argv[argv.index('-resultBundlePath') + 1]).mkdir()
+            return child
+        self.stack.enter_context(patch.object(dev_console.subprocess, 'Popen', side_effect=launch))
+        self.stack.enter_context(patch.object(dev_console.subprocess, 'check_output', return_value=json.dumps(report).encode()))
+
+    def test_successful_xcode_records_app_coverage_and_ignores_test_bundles(self):
+        self.successful_xcode({'lineCoverage': 0.60, 'executableLines': 200, 'coveredLines': 120, 'targets': [
+            {'name': 'ExampleTests.xctest', 'lineCoverage': 1.0},
+            {'name': 'FirebaseCore', 'lineCoverage': 0.50},
+            {'name': 'Helper', 'lineCoverage': 0.70},
+            {'name': 'Example.app', 'lineCoverage': 0.80, 'executableLines': 100, 'coveredLines': 80},
+        ]})
+        self.assertEqual(job_actions.coverage(), 0)
+        record = dev_console.get_coverage_data()
+        self.assertEqual((record['overall_coverage_pct'], record['total_lines'], record['covered_lines']), (80.0, 100, 80))
+        self.assertEqual([target['name'] for target in record['targets']], ['Example.app', 'Helper', 'FirebaseCore'])
+        self.assertEqual(record['tool'], 'Xcode (xccov)')
+        self.pause.assert_not_called()
+
+    def test_xcode_without_a_coverage_metric_does_not_record_zero(self):
+        self.successful_xcode({'targets': []})
+        self.assertEqual(job_actions.coverage(), 1)
+        self.assertNotIn('overall_coverage_pct', dev_console.get_coverage_data())
+
+    def test_xcode_without_primary_target_coverage_does_not_record_zero(self):
+        self.successful_xcode({'lineCoverage': 0.80, 'targets': [{'name': 'Example.app'}]})
+        self.assertEqual(job_actions.coverage(), 1)
+        self.assertNotIn('overall_coverage_pct', dev_console.get_coverage_data())
+
+    def test_malformed_xcode_targets_do_not_save_a_partial_coverage_result(self):
+        self.successful_xcode({'lineCoverage': 0.95, 'targets': [None]})
+        self.assertEqual(job_actions.coverage(), 1)
+        self.assertNotIn('overall_coverage_pct', dev_console.get_coverage_data())
+
     def test_web_python_coverage_uses_real_runner_and_exits_without_menu_pause(self):
         self.configure(False)
         self.stack.enter_context(patch.object(dev_console.sys.stdin, 'isatty', return_value=True))
