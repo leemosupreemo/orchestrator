@@ -28,7 +28,7 @@ try:
 except:
     pass
 
-from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence
+from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence, is_ai_branch, merge_branch_locally
 from llm import SUPPORTED_MODELS, DEFAULT_FALLBACKS, run_llm, extract_json_block
 from model_router import ModelRole
 from model_registry import get_all_models, ModelTier
@@ -2050,11 +2050,12 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
     IGNORED_DIRS = {
         ".git", ".build", ".orchestrator", ".swiftpm", ".cache", ".venv", ".tox",
         "build", "DerivedData", "Pods", "Carthage", "node_modules", "vendor",
-        "xcuserdata", "fastlane", ".idea", ".vscode", "dist", "target", "__pycache__"
+        "xcuserdata", "fastlane", ".idea", ".vscode", "dist", "target", "__pycache__",
+        "venv", "site-packages",  # installed libraries ship their own tests; they are not the project's
     }
 
     candidate_files: list[Path] = []
-    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx")
+    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx", ".kt", ".java")
     
     # Walk the directory tree to find test files across supported languages
     for current_root, dirnames, filenames in os.walk(root):
@@ -2182,7 +2183,31 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
                 "language": "go",
             })
 
-        # 5. JavaScript / TypeScript
+        # 5. Kotlin / Java (JUnit, Android): files under src/test or src/androidTest, or named *Test / *Tests
+        elif file_path.suffix in (".kt", ".java"):
+            in_jvm_tests = bool(re.search(r'(?:^|[/\\])src[/\\](?:test|androidTest)[/\\]', rel_path_str))
+            is_test_filename = bool(re.search(r'(?:Test|Tests|IT)\.(?:kt|java)$', file_path.name))
+            if not (in_jvm_tests or is_test_filename):
+                continue
+            test_funcs = ["".join(m) for m in re.findall(
+                r'@(?:Test|ParameterizedTest)\b(?:\([^)]*\))?\s*(?:@\w+(?:\([^)]*\))?\s*)*'
+                r'(?:(?:public|private|internal|protected|override|suspend|open|final)\s+)*(?:fun|void)\s+(?:`([^`]+)`|([A-Za-z_]\w*))\s*\(',
+                raw_content)]
+            if not test_funcs:
+                continue
+            class_match = re.search(r'\bclass\s+([A-Za-z_][A-Za-z0-9_]*)', raw_content)
+            seen_paths.add(file_path)
+            suites.append({
+                "path": file_path,
+                "rel_path": rel_path,
+                "name": class_match.group(1) if class_match else file_path.stem,
+                "file_stem": file_path.stem,
+                "test_count": len(test_funcs),
+                "test_funcs": test_funcs,
+                "language": "kotlin" if file_path.suffix == ".kt" else "java",
+            })
+
+        # 6. JavaScript / TypeScript
         elif any(file_path.name.endswith(ext) for ext in (".test.js", ".test.ts", ".test.jsx", ".test.tsx", ".spec.js", ".spec.ts", ".spec.jsx", ".spec.tsx")) or (is_in_test_dir and file_path.suffix in (".js", ".ts", ".jsx", ".tsx")):
             test_cases = re.findall(r'(?:it|test)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
             desc_match = re.search(r'describe\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
@@ -2212,7 +2237,23 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
     base_command = project_config.test_command or ""
 
     if language == "python":
+        words = shlex.split(base_command)
+        if "unittest" in words:
+            # unittest doesn't take a file path (`discover tests tests/test_x.py` runs nothing); discover just that
+            # file in its folder, which works with or without an __init__.py there
+            python = words[0] if words else "python3"
+            folder = shlex.quote(str(rel_path.parent))
+            return f"{python} -m unittest discover -s {folder} -p {shlex.quote(rel_path.name)}"
         return f"{base_command} {quoted_path}".strip()
+    if language in {"kotlin", "java"}:
+        root = Path(getattr(project_config, "root", ".") or ".")
+        suite_class = shlex.quote(str(suite["name"]))
+        if (root / "pom.xml").exists():
+            return f"mvn -q test -Dtest={suite_class}"
+        gradle = "./gradlew" if (root / "gradlew").exists() else "gradle"
+        if "androidTest" in rel_path.parts:  # instrumented tests need a device or emulator, and run as one set
+            return f"{gradle} connectedAndroidTest"
+        return f"{gradle} test --tests {suite_class}"
     if language == "rust":
         if rel_path.parts and rel_path.parts[0] == "tests":
             return f"cargo test --test {shlex.quote(suite['file_stem'])}"
@@ -3951,12 +3992,13 @@ def perform_job_revert(job: dict[str, Any]) -> int:
                 count += 1
     return count
 
-def handle_discard_job(job: dict[str, Any]):
+def handle_discard_job(job: dict[str, Any], confirmed: bool = False):
+    """`confirmed` is for callers that already asked (the web UI): no prompts."""
     print_header(f"Discarding & Reverting Job: {job.get('job_id')}")
 
     warning = "\033[1;91m⚠️  WARNING: THIS WILL PERMANENTLY DELETE ALL LOCAL PROGRESS & CODE CHANGES.\033[0m\n"
     warning += "Are you sure you want to DISCARD this job and REVERT its changes?"
-    if not prompt_confirm(warning, default=False):
+    if not confirmed and not prompt_confirm(warning, default=False):
         return
 
     # 1. Surgical File Revert
@@ -3966,6 +4008,8 @@ def handle_discard_job(job: dict[str, Any]):
 
     # 2. Branch Management
     branch = job.get("branch")
+    ai_modified = job.get("ai_modified_files", [])
+    ai_untracked = job.get("ai_untracked_files", [])
 
     if branch:
         try:
@@ -3973,7 +4017,7 @@ def handle_discard_job(job: dict[str, Any]):
         except:
             curr = ""
             
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - AI-managed branch detected: {branch}")
             if curr == branch:
                 base_branch = job.get("base_branch", PROJECT_CONFIG.base_branch)
@@ -3990,13 +4034,17 @@ def handle_discard_job(job: dict[str, Any]):
     # Archive with discarded status
     archive_path = archive_job(job, status="discarded")
     print(f"\n✅ Job discarded and AI changes surgically reverted.")
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    if not confirmed:
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_merge_cleanup(job: dict[str, Any]):
     pr_number = job.get("pr_number")
     branch = job.get("branch")
 
     if not pr_number:
+        if branch and job.get("code_host") == "git":
+            handle_local_merge(job)
+            return
         print("!!! Error: No PR number found for this job.")
         return
 
@@ -4027,7 +4075,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
 
     # 3. Local branch cleanup (ONLY if merge succeeded and AI-managed)
     if branch:
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - Deleting local branch: {branch}...")
             # Check current branch first
             try:
@@ -4041,10 +4089,41 @@ def handle_merge_cleanup(job: dict[str, Any]):
         else:
             print(f"      - Note: Branch '{branch}' is not AI-managed. Preserving local branch.")
 
-    # 4. Archive Job
+    # 4. Tell linked tickets/cards/issues (best effort), then archive the job with that log
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None,
+                         pr_number=pr_number)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+
+    # 5. Archive Job
     archive_path = archive_job(job)
 
     print(f"\n✅ Successfully merged and archived to {archive_path.name}")
+    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+
+def handle_local_merge(job: dict[str, Any]):
+    """Merge & complete without a pull request (plain git): merge the job's branch into its base on this computer."""
+    branch = job["branch"]
+    base = job.get("base_branch") or PROJECT_CONFIG.base_branch
+    print_header(f"Merging {branch} into {base}")
+    ok, message = merge_branch_locally(branch, base, f"Merge {branch}: {job.get('title', job.get('job_id'))}")
+    print(f"      - {message}")
+    if not ok:
+        print("\n\033[1;91m!!! Merge didn't happen. The job is still ready for review.\033[0m")
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        return
+    if is_ai_branch(branch):
+        print(f"      - Deleting local branch: {branch}...")
+        subprocess.run(["git", "branch", "-d", branch], cwd=str(ROOT), capture_output=True)
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+    archive_path = archive_job(job)
+    print(f"\n✅ Merged and archived to {archive_path.name}")
     input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_archived_jobs_menu(session_allowed_machines, session_allowed_models):
@@ -6970,28 +7049,33 @@ def handle_configuration_menu(session_allowed_machines: list[str], session_allow
                 except:
                     pass
 
-            print("  \033[1;96m--- Models & Instructions ---\033[0m")
-            print_wrapped_option("[\033[93mM\033[0m] LLM Models (Session Defaults)")
-            print_wrapped_option("[\033[93mK\033[0m] Manage LLM API Keys")
-            print_wrapped_option("[\033[93mI\033[0m] AI Instruction Settings (.md files)")
+            # Same groups and names as the web app's Configuration menu (configuration.js); the letters stay as they were.
+            print("  \033[1;96m--- This project ---\033[0m")
+            print_wrapped_option(f"[\033[93mG\033[0m] Base branch (\033[97m{global_base}\033[0m)")
+            print_wrapped_option("[\033[93mC\033[0m] Projects (switch project)")
+            print_wrapped_option("[\033[93mA\033[0m] Archived jobs")
+            print_wrapped_option("[\033[93mD\033[0m] Tester builds (Firebase)")
+            print_wrapped_option("[\033[93mX\033[0m] Xcode Cloud")
 
-            print("\n  \033[1;96m--- Machine Fleet & Project Config ---\033[0m")
-            print_wrapped_option("[\033[93mF\033[0m] Manage Machine Fleet")
-            print_wrapped_option(f"[\033[93mG\033[0m] Select Base Branch (\033[97m{global_base}\033[0m)")
-            print_wrapped_option("[\033[93mC\033[0m] Change Target Project")
-            print_wrapped_option("[\033[93mA\033[0m] Manage Archived Jobs")
+            print("\n  \033[1;96m--- AI ---\033[0m")
+            print_wrapped_option("[\033[93mM\033[0m] Models")
+            print_wrapped_option("[\033[93mK\033[0m] API keys")
+            print_wrapped_option("[\033[93mI\033[0m] Instructions for AI helpers")
 
-            print("\n  \033[1;96m--- Delivery & Notifications ---\033[0m")
-            print_wrapped_option("[\033[93mD\033[0m] Firebase App Distro (Delivery)")
-            print_wrapped_option("[\033[93mX\033[0m] Xcode Cloud & CI Workflows (ci_scripts)")
-            print_wrapped_option("[\033[93mE\033[0m] Email Notification Settings")
+            print("\n  \033[1;96m--- Computers & access ---\033[0m")
+            print_wrapped_option("[\033[93mF\033[0m] Machines & computers")
+            print_wrapped_option("[\033[93mU\033[0m] Updates")
 
-            print("\n  \033[1;96m--- Setup, Health & Documentation ---\033[0m")
-            print_wrapped_option("[\033[93mW\033[0m] Setup Wizard (Full Project & Tools Setup)")
-            print_wrapped_option("[\033[93mP\033[0m] Run Prerequisite Audit")
-            print_wrapped_option("[\033[93mS\033[0m] Documentation & Architecture Guides")
-            print_wrapped_option("[\033[93mT\033[0m] Orchestrator Self-Tests")
-            print_wrapped_option("[\033[93mU\033[0m] Update Orchestrator (Local & Fleet)")
+            print("\n  \033[1;96m--- Alerts ---\033[0m")
+            print_wrapped_option("[\033[93mE\033[0m] Email alerts")
+
+            print("\n  \033[1;96m--- Readiness ---\033[0m")
+            print_wrapped_option("[\033[93mW\033[0m] Setup wizard")
+            print_wrapped_option("[\033[93mP\033[0m] Tools and logins (prerequisite audit)")
+            print_wrapped_option("[\033[93mT\033[0m] Orchestrator health check")
+
+            print("\n  \033[1;96m--- Docs ---\033[0m")
+            print_wrapped_option("[\033[93mS\033[0m] Orchestrator guides")
             print()
             print_wrapped_option("[\033[1;91mB\033[0m] Back", indent_size=4, subsequent_indent_size=4)
             # Anchor prompt to bottom

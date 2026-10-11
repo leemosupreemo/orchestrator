@@ -79,7 +79,7 @@ This document catalogs the complete test matrix for Swift Orchestrator and its W
 | **TC-JOB-01** | Canonical Job Status Labels | BFT | Jobs in various states (`completed`, `review-needed`, `debugging`, `planned`) | Open Home jobs table | Badges display canonical terminology (`Completed`, `Review needed`, `Debugging`, `Planned`) with correct color tones. | Automated (`test_kind_labels_are_plain_language`) |
 | **TC-JOB-02** | Filter Empty State Clarity | BFT | Filter with 0 jobs vs. brand new project with 0 jobs | Switch filter to "Action required" when none waiting | Table displays `No jobs match this filter.` when filtered; displays onboarding description when completely empty. | Manual / E2E |
 | **TC-JOB-03** | Sorting by Last Modified and Status | BFT | Multiple jobs in list | Click `Status` and `Last modified` column headers | Table sorts in ascending/descending order; active sort direction arrow reflects state. | Manual / E2E |
-| **TC-JOB-04** | One-Click "Fix Something" / Quick Fix | BFT | Active project loaded | Click "Fix something" hero button, enter issue description, submit | Creates run with action `fix`, launches live terminal stream, opens run view immediately. | Automated (`test_new_job_validates_input`) |
+| **TC-JOB-04** | "Still broken?" Quick Fix | BFT | A job exists that did not fix the problem | Open the job, choose "Still broken?", enter what you saw, submit | Creates run with action `fix`, launches live terminal stream, opens run view immediately. | Automated (`test_new_job_validates_input`) |
 | **TC-JOB-05** | New Job Creation (`#/new`) | BFT | Active project loaded | Navigate to `#/new`, enter title, prompt, select model, submit | Backend writes job spec to `.orchestrator/jobs/`, launches planner run, links run to job ID. | Automated (`test_new_job_writes_spec_file_and_passes_flags`) |
 | **TC-JOB-06** | Active Run Indicator on Job Row | BFT | A job has an active running process | View Home jobs list | Job row displays flashing green dot `<span class="dot"></span>Working` badge. | Automated (`test_jobs_list_marks_jobs_with_a_running_run`) |
 | **TC-JOB-07** | Human Clarification Prompt | BFT / POV | Job enters `human-needed` with clarification question | View job in list and job detail view | Job grouped under "Action required" with primary "Answer" button; clicking opens dialog displaying question. | Automated (`test_question_needs_an_answer`) |
@@ -172,7 +172,7 @@ This document catalogs the complete test matrix for Swift Orchestrator and its W
 - **Journey**:
   1. Morgan lands on Home dashboard; sees job marked `Debugging` in red.
   2. Clicks job row; reads test audit failure output and error trace.
-  3. Clicks "Fix something" hero button; types `Fix lobby seat index out of bounds`.
+  3. Clicks "Still broken?" on the job; types `Fix lobby seat index out of bounds`.
   4. Watches real-time streaming PTY output as the agent applies fix and verifies tests.
   5. Job status updates to `Completed` with green badge.
 - **Success Criteria**: Entire cycle completed from web UI; live feedback during execution; clear next-action buttons.

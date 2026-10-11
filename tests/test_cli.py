@@ -31,6 +31,50 @@ class CliTests(unittest.TestCase):
             os.environ["ORCHESTRATOR_USER_STATE_DIR"] = self.old_state_dir
         self.state_dir.cleanup()
 
+    def run_update(self, *, pipx_install: bool, git_checkout: bool = False, which: str | None = "/usr/bin/pipx", returncode: int = 0):
+        ran: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            ran.append(list(argv))
+            return MagicMock(returncode=returncode)
+
+        pkg = Path(tempfile.mkdtemp(prefix="orchestrator-pkg-"))
+        if git_checkout:
+            (pkg / ".git").mkdir()
+        out = io.StringIO()
+        with patch.object(cli, "installed_with_pipx", return_value=pipx_install), \
+             patch("orchestrator.project_config.PACKAGE_ROOT", pkg / "orchestrator"), \
+             patch.object(cli.shutil, "which", return_value=which), \
+             patch.object(cli.subprocess, "run", side_effect=fake_run), redirect_stdout(out):
+            code = cli.update_command(argparse.Namespace(fleet=False))
+        return code, ran, out.getvalue()
+
+    def test_update_reinstalls_pipx_installs_instead_of_trusting_the_version_number(self) -> None:
+        from orchestrator import account
+        code, ran, out = self.run_update(pipx_install=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran, [["/usr/bin/pipx", "install", "--force", account.INSTALL_SPEC]])
+        self.assertIn("Restart `orchestrator ui`", out)
+
+    def test_update_says_so_when_pipx_fails_or_is_missing(self) -> None:
+        code, _, out = self.run_update(pipx_install=True, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertIn("didn't finish", out)
+        code, ran, out = self.run_update(pipx_install=True, which=None)
+        self.assertEqual((code, ran), (1, []))
+        self.assertIn("pipx install --force", out)
+
+    def test_update_pulls_a_git_checkout(self) -> None:
+        code, ran, _ = self.run_update(pipx_install=False, git_checkout=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran[0], ["git", "pull"])
+
+    def test_pipx_installs_are_recognized_by_their_virtualenv(self) -> None:
+        with patch.object(cli.sys, "prefix", "/Users/me/.local/pipx/venvs/orchestrator"):
+            self.assertTrue(cli.installed_with_pipx())
+        with patch.object(cli.sys, "prefix", "/Library/Frameworks/Python.framework/Versions/3.14"):
+            self.assertFalse(cli.installed_with_pipx())
+
     def test_init_project_scaffolds_runtime_config(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orchestrator-init-") as temp_dir:
             root = Path(temp_dir)
@@ -512,6 +556,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(cli.main(["distribute", "--notes", "Quick test build"]), 0)
         mock_run_script.assert_called_with("smoke_test_delivery.py", [])
         self.assertEqual(os.environ.get("DISTRIBUTION_RELEASE_NOTES"), "Quick test build")
+
+    @patch("orchestrator.connection_log.show", return_value=0)
+    def test_connection_log_command_dispatches_with_arguments(self, mock_show) -> None:
+        self.assertEqual(cli.main(["connection-log", "-n", "25", "-f"]), 0)
+        mock_show.assert_called_once_with(lines=25, follow=True)
 
     def test_audit_project_setup_detects_all_pillars_and_gaps(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orchestrator-audit-") as temp_dir:

@@ -31,6 +31,18 @@ class JobActionsTests(unittest.TestCase):
         self.assertEqual(argv[2:6], ["bug", "--no-dispatch", "--update", str(path.resolve())])
         self.assertIn("Four players", argv[-1])
 
+    def test_a_failed_replan_puts_the_question_back_so_the_job_is_not_stuck(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"status": "human-needed", "type": "feature-plan", "human_clarification_question": "Count punctuation?"}))
+            with patch("job_actions.subprocess.call", return_value=1):
+                self.assertEqual(job_actions.main(["answer", str(path), "--answer", "No"]), 1)
+            job = json.loads(path.read_text())
+            self.assertEqual(job["human_clarification_question"], "Count punctuation?")
+            self.assertEqual(job.get("clarification_history", []), [])
+            with patch("job_actions.subprocess.call", return_value=0):  # and it can be answered again
+                self.assertEqual(job_actions.main(["answer", str(path), "--answer", "No"]), 0)
+
     def test_answer_refuses_when_no_question_is_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "job.json"
@@ -47,6 +59,37 @@ class JobActionsTests(unittest.TestCase):
                 self.assertEqual(job_actions.main(["merge", str(path)]), 0)
         job = merge.call_args[0][0]
         self.assertEqual((job["pr_number"], job["_path"]), (141, path.resolve()))
+    def test_complete_archives_a_job_without_a_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"status": "review-needed", "branch": "ai/issue-3"}))
+            with patch("dev_console.archive_job") as archive:
+                self.assertEqual(job_actions.main(["complete", str(path)]), 0)
+        archive.assert_called_once()
+        self.assertEqual(archive.call_args.kwargs["status"], "completed")
+        self.assertEqual(archive.call_args[0][0]["restore_status"], "review-needed")  # lets the web UI undo it
+
+    def test_complete_refuses_a_job_with_a_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"status": "review-needed", "pr_number": 7}))
+            with patch("dev_console.archive_job") as archive:
+                self.assertEqual(job_actions.main(["complete", str(path)]), 1)
+        archive.assert_not_called()
+
+
+class ArchivingTests(unittest.TestCase):
+    def test_a_completed_and_a_discarded_job_are_both_archived(self):
+        import dev_console
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "archive").mkdir()
+            for status, jid in (("completed", "j-done"), ("discarded", "j-gone")):
+                job_file = root / f"{jid}.json"
+                job_file.write_text(json.dumps({"job_id": jid, "title": f"Title {jid}", "status": "review-needed"}))
+                with patch.object(dev_console, "ROOT", root), patch.object(dev_console, "ARCHIVE_DIR", root / "archive"):
+                    dev_console.archive_job({"job_id": jid, "title": f"Title {jid}", "_path": job_file}, status=status)
+            self.assertEqual(sorted(p.name for p in (root / "archive").glob("*.json")), ["j-done.json", "j-gone.json"])
 
 
 class ApproveReviseTests(unittest.TestCase):
@@ -76,8 +119,15 @@ class ApproveReviseTests(unittest.TestCase):
                "verification": {"status": "concerns", "comments": "Add tests", "suggested_additions": ["Unit test"]}}
         _, _, argv, _ = self.run_action(job, "approve")
         self.assertEqual(argv[2], "bug")
-        self.assertIn("Add tests", argv[-1])
-        self.assertIn("- Unit test", argv[-1])
+        feedback = argv[argv.index("--feedback") + 1]
+        self.assertIn("Add tests", feedback)
+        self.assertIn("- Unit test", feedback)
+
+    def test_accepting_the_architects_suggestions_does_not_ask_the_architect_again(self):
+        # Otherwise a verifier that always finds something would hold the job in "concerns" forever.
+        job = {"status": "human-needed", "type": "bug-fix", "verification": {"status": "concerns", "comments": "Add tests"}}
+        _, _, argv, _ = self.run_action(job, "approve")
+        self.assertIn("--skip-verify", argv)
 
     def test_approve_refuses_other_states(self):
         code, _, argv, _ = self.run_action({"status": "completed"}, "approve")

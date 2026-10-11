@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import plistlib
 import re
 import shlex
@@ -80,6 +81,7 @@ def screenshot_report_block(idx: int, path: Path) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build, launch, and screenshot the iOS simulator for visual UI review.")
     parser.add_argument("--no-build", action="store_true", help="Skip xcodebuild and reuse the existing built app.")
+    parser.add_argument("--job", default="", help="Job id this check belongs to (shown on that job's page).")
     parser.add_argument("--bundle-id", default=DEFAULT_BUNDLE_ID, help="Bundle identifier to launch.")
     parser.add_argument("--app-path", default=str(DEFAULT_APP_PATH), help="Built .app path to install.")
     parser.add_argument("--wait", type=float, default=3.0, help="Seconds to wait after launch before the first screenshot.")
@@ -91,6 +93,8 @@ def main() -> None:
     manual_base = OUTPUT_DIR / "manual"
     out_dir = manual_base / f"{timestamp()}-visual-check"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.job:
+        write_text(out_dir / "meta.json", json.dumps({"job_id": args.job}))
 
     latest_link = manual_base / "latest"
     if latest_link.exists() or latest_link.is_symlink():

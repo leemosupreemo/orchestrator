@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from common import (
     write_text,
     timestamp,
 )
+from orchestrator.project_config import PROJECT_CONFIG
 
 def create_subtask_issue(title: str, body: str, parent_issue: int) -> int:
     labels = ["job:bug", "source:splinter", "status:planned"]
@@ -47,7 +49,8 @@ def splinter_job(job_path: Path) -> list[str]:
         return []
 
     parent_id = job["job_id"]
-    parent_issue = job["issue_number"]
+    parent_issue = job.get("issue_number")
+    github = PROJECT_CONFIG.uses_github and bool(parent_issue)
     tasks = job["plan"]["tasks"]
     
     print(f"\n--- Splintering Parent Job: {parent_id} ({len(tasks)} tasks) ---")
@@ -76,9 +79,13 @@ def splinter_job(job_path: Path) -> list[str]:
         sub_body = f"## Description\n{task['description']}\n\n## Acceptance Criteria\n"
         sub_body += "\n".join([f"- {ac}" for x in task["acceptance_criteria"] for ac in (x if isinstance(x, list) else [x])])
         
-        sub_issue_number = create_subtask_issue(sub_title, sub_body, parent_issue)
-        
-        sub_job_id = f"{timestamp()}-task-{sub_issue_number}"
+        if github:
+            sub_issue_number = create_subtask_issue(sub_title, sub_body, parent_issue)
+            sub_ref = str(sub_issue_number)
+        else:  # plain git: no sub-issues, a local reference names each sub-job
+            sub_issue_number, sub_ref = None, secrets.token_hex(3)
+
+        sub_job_id = f"{timestamp()}-task-{sub_ref}"
         paths = make_job_paths(sub_job_id)
         
         sub_job = {
@@ -87,6 +94,8 @@ def splinter_job(job_path: Path) -> list[str]:
             "type": "bug-fix", # Treat sub-tasks as bug-fixes for implementation consistency
             "source": "splinter",
             "issue_number": sub_issue_number,
+            "job_ref": sub_ref,
+            "code_host": "github" if sub_issue_number else "git",
             "title": sub_title,
             "status": "planned",
             "planner": job["planner"],
@@ -106,7 +115,7 @@ def splinter_job(job_path: Path) -> list[str]:
         write_text(paths.brief_file, build_bug_issue_body(sub_plan))
         
         subtask_ids.append(sub_job_id)
-        print(f"        ✅ Created job: {sub_job_id} (# {sub_issue_number})")
+        print(f"        ✅ Created job: {sub_job_id}" + (f" (#{sub_issue_number})" if sub_issue_number else ""))
 
     # Mark parent as decomposed
     job["status"] = "decomposed"

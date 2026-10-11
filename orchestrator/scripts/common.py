@@ -146,6 +146,9 @@ def ensure_keychain_unlocked(prompt_if_missing: bool = False) -> tuple[bool, str
     if res.returncode == 0:
         return True, "Keychain is already unlocked."
         
+    if prompt_if_missing and web_run():
+        return False, ("The macOS login keychain is locked. Unlock it on the Mac (log in, or run "
+                       "`security unlock-keychain`), then try again.")
     if prompt_if_missing:
         print("\n\033[1;93m🔑 macOS Login Keychain is locked.\033[0m")
         print("\033[90mTo avoid pausing or failing during build archiving/distribution, please enter your keychain password now:\033[0m")
@@ -858,18 +861,48 @@ def get_repo_state() -> dict[str, list[str]]:
         return {"modified": modified, "untracked": untracked}
     except: return {"modified": [], "untracked": []}
 
+# Branches Orchestrator creates for jobs: `ai/issue-<n>-…` with GitHub, `ai/job-<ref>-…` with plain git. Only these
+# are deleted when a job is merged or discarded; a branch you named yourself is kept.
+AI_BRANCH_PREFIXES = ("ai/issue-", "ai/job-")
+
+
+def is_ai_branch(branch: str | None) -> bool:
+    return bool(branch) and branch.startswith(AI_BRANCH_PREFIXES)
+
+
+def merge_branch_locally(branch: str, base: str, message: str) -> tuple[bool, str]:
+    """Merge `branch` into `base` in this repository (plain git's Merge & complete). Never pushes.
+    Refuses with uncommitted changes, and leaves the repository as it was when the merge conflicts."""
+    git = lambda *args: subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True, text=True)  # noqa: E731
+    if git("status", "--porcelain").stdout.strip():
+        return False, "There are uncommitted changes in the project. Commit or stash them, then merge again."
+    if git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode != 0:
+        return False, f"The branch {branch} isn't in this repository."
+    start = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    switched = git("checkout", base)
+    if switched.returncode != 0:
+        return False, f"Couldn't switch to {base}: {(switched.stderr or '').strip()}"
+    merged = git("merge", "--no-ff", "-m", message, branch)
+    if merged.returncode != 0:
+        git("merge", "--abort")
+        if start and start != base:
+            git("checkout", start)
+        return False, f"{branch} doesn't merge cleanly into {base} (conflicts). Nothing was changed; resolve it by hand or ask the job to rebase."
+    return True, f"Merged {branch} into {base} on this computer. Push {base} when you're ready: git push origin {base}"
+
+
 def gh_json(*args: str) -> Any:
     return json.loads(run(["gh", *args], cwd=ROOT).stdout)
 
 def gh_text(*args: str) -> str:
     return run(["gh", *args], cwd=ROOT).stdout.strip()
 
-def gh_comment(issue_number: int, body: str) -> None:
-    if not shutil.which("gh"): return
+def gh_comment(issue_number: int | None, body: str) -> None:
+    if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
     run(["gh", "issue", "comment", str(issue_number), "--body", body], cwd=ROOT, check=False)
 
-def update_issue_status(issue_number: int, labels_to_add: str | list[str], labels_to_remove: str | list[str] | None = None) -> None:
-    if not shutil.which("gh"): return
+def update_issue_status(issue_number: int | None, labels_to_add: str | list[str], labels_to_remove: str | list[str] | None = None) -> None:
+    if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
     
     cmd = ["gh", "issue", "edit", str(issue_number)]
     
@@ -1138,7 +1171,7 @@ def _split_option_description(option: str) -> tuple[str, str | None]:
     return title, "; ".join(descriptions)
 
 def prompt_radio(label: str, options: list[str], default: str | None = None, clear_screen: bool = True, status_bar: StatusBar | None = None, description: str | list[str] | None = None) -> str:
-    if web_run():
+    if web_run():  # nobody to choose: the default, as pressing Enter would
         return default if default in options else (options[0] if options else "")
     """Displays interactive radio buttons navigated by arrow keys."""
     if not sys.stdin.isatty():
@@ -1669,7 +1702,7 @@ def _build_checkbox_hint(allow_bulk_select: bool, extra_keys: list[str], has_fre
     return f"\033[1;90m({', '.join(parts)})\033[0m"
 
 def prompt_checkbox(label: str, options: list[str], defaults: list[str] | None = None, extra_keys: list[str] | None = None, footer: str | None = None, details_map: dict[str, list[str]] | None = None, status_bar: StatusBar | None = None, clear_screen: bool = True, max_selections: int | None = None, footer_actions: list[str] | None = None, details_title: str | None = None, allow_bulk_select: bool = True) -> list[str]:
-    if web_run():
+    if web_run():  # nobody to choose: what's pre-selected, as confirming would
         return [o for o in options if o in (defaults or [])]
     """Displays interactive checkboxes navigated by arrow keys, toggled by space (vertical)."""
     if not sys.stdin.isatty():

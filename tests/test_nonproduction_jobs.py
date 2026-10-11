@@ -20,7 +20,7 @@ import schedule_job
 
 
 class NonproductionJobTests(unittest.TestCase):
-    def run_job(self, root, kind, files, command=None, dirty=()):
+    def run_job(self, root, kind, files, command=None, dirty=(), result=None):
         out = root / '.orchestrator' / 'output'
         job_path = root / 'job.json'
         if not job_path.exists():
@@ -29,7 +29,7 @@ class NonproductionJobTests(unittest.TestCase):
 
         def answer(*args, **kwargs):
             self.assertEqual(kwargs['protected_paths'], [root])
-            return json.dumps({'summary': 'Scoped result', 'files': files}), 'fake', 'session'
+            return json.dumps(result if result is not None else {'summary': 'Scoped result', 'files': files}), 'fake', 'session'
 
         with ExitStack() as stack:
             stack.enter_context(patch.multiple(runner, ROOT=root, OUTPUT_DIR=out, PROJECT_CONFIG=config))
@@ -162,6 +162,78 @@ assert os.environ['PYTHONPATH'].split(os.pathsep)[0] == str(work / 'orchestrator
             with patch.dict('os.environ', inherited):
                 job = self.run_job(root, 'test-audit', [{'path': 'tests/test_app.py', 'content': '# test'}], command)
             self.assertEqual(job['status'], 'review-needed', job.get('last_error'))
+
+    def test_clarification_and_malformed_outputs_stop_for_human_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            job = self.run_job(root, "feature-design", [], result={"clarification_needed": "Which screen?"})
+            self.assertEqual(job["human_clarification_question"], "Which screen?")
+            self.assertEqual(job["status"], "human-needed")
+            self.assertIsNone(job["worker_pid"])
+            job = self.run_job(root, "feature-design", [], result={"files": None})
+            self.assertIn("must return", job["last_error"])
+
+    def test_uppercase_visual_outputs_remain_valid_design_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            job = self.run_job(root, "feature-design", [{"path": "SCREEN.HTML", "content": "mockup"}])
+            self.assertEqual(job["status"], "review-needed")
+            self.assertEqual(job["design_artifacts"], ["docs/product/designs/job-1/SCREEN.HTML"])
+            self.assertEqual(len(job["reference_artifacts"]), 1)
+            self.assertEqual(job["reference_artifacts"][0]["role"], "design")
+
+    @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
+    def test_validation_copies_configuration_dependencies_and_coverage_reports(self):
+        import os
+        import shlex
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / ".orchestrator").mkdir()
+            (root / ".orchestrator/project.json").write_text('{"name": "demo"}')
+            (root / "node_modules").mkdir()
+            (root / "node_modules/package.txt").write_text("dependency")
+            (root / "nested").mkdir()
+            (root / "nested/fixture.txt").write_text("fixture")
+            code = 'import os\nfrom pathlib import Path\nassert Path(".orchestrator/project.json").is_file()\nassert Path("node_modules").is_symlink()\nassert Path("node_modules/package.txt").read_text() == "dependency"\nassert Path("nested/fixture.txt").read_text() == "fixture"\nPath(os.environ["COVERAGE_FILE"]).write_text("coverage database")\nPath("coverage.xml").write_text("xml report")\nPath("lcov.info").write_text("lcov report")\nPath("coverage").mkdir()\nPath("coverage/lcov.info").write_text("nested lcov report")\n'
+            command = shlex.join([sys.executable, "-c", code])
+            with patch("common.extract_commands", return_value=("unused", command)), \
+                 patch.dict(os.environ, {"PYTHONPATH": ""}):
+                job = self.run_job(root, "test-audit", [{"path": "tests/test_new.py", "content": "# test"}])
+            self.assertEqual(job["status"], "review-needed", job.get("last_error"))
+            reports = root / ".orchestrator/output/job-1/coverage"
+            self.assertEqual((reports / ".coverage").read_text(), "coverage database")
+            self.assertEqual((reports / "coverage.xml").read_text(), "xml report")
+            self.assertEqual((reports / "lcov.info").read_text(), "nested lcov report")
+
+    @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
+    def test_tracked_tests_and_missing_owned_output_are_recorded(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            runner.subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "tests").mkdir()
+            (root / "tests/test_app.py").write_text("# previous")
+            runner.subprocess.run(["git", "add", "tests/test_app.py"], cwd=root, check=True)
+            job_path = root / "job.json"
+            job_path.write_text(json.dumps({"job_id": "job-1", "type": "test-audit", "title": "Tests", "builder": "fake",
+                                            "output_digests": {"tests/missing.py": "old-digest"}}))
+            job = self.run_job(root, "test-audit", [{"path": "tests/test_app.py", "content": "# replacement"}],
+                               shlex.join([sys.executable, "-c", "pass"]))
+            self.assertEqual(job["status"], "review-needed", job.get("last_error"))
+            self.assertEqual(job["ai_modified_files"], ["tests/test_app.py"])
+            self.assertEqual(job["ai_untracked_files"], [])
+
+    def test_worker_routes_scoped_jobs_before_the_production_pipeline(self):
+        import worker_run
+        for kind in ("feature-design", "test-audit", "design", "coverage"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "job.json"
+                path.write_text(json.dumps({"type": kind}))
+                with patch.object(runner, "execute_nonproduction_job") as execute, \
+                     patch.object(worker_run, "run_builder") as builder:
+                    worker_run.execute_job(path)
+                execute.assert_called_once_with(path)
+                builder.assert_not_called()
 
     def test_generic_builder_refuses_nonproduction_jobs(self):
         for kind in ('feature-design', 'test-audit'):

@@ -4,7 +4,24 @@ from __future__ import annotations
 from pathlib import Path
 
 from common import OUTPUT_DIR, ROOT, gh_json, gh_text, read_json, run
+from orchestrator.code_host import review_request_url
 from orchestrator.project_config import PROJECT_CONFIG
+
+
+def push_branch_for_review(job: dict) -> str:
+    """Plain git: push the job's branch to origin when there is one, and return a link that opens a merge or pull
+    request on the host ("" when there's no remote or the host has no known link)."""
+    branch = job.get("branch")
+    remote = PROJECT_CONFIG.git_remote or ""
+    if not branch or not remote:
+        return ""
+    try:
+        run(["git", "push", "-u", "origin", branch], cwd=ROOT)
+    except Exception as e:
+        print(f"Warning: git push failed: {e}")
+        return ""
+    base = (job.get("base_branch") or PROJECT_CONFIG.base_branch or "main").strip()
+    return review_request_url(remote, branch, base)
 
 
 def open_or_update_pr(job_path: Path) -> tuple[int | None, str | None]:

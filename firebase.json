@@ -6,6 +6,15 @@
       "**/.*",
       "**/node_modules/**"
     ],
+    "rewrites": [
+      {
+        "source": "/cp/**",
+        "function": {
+          "functionId": "cp",
+          "region": "us-central1"
+        }
+      }
+    ],
     "headers": [
       {
         "source": "**",
@@ -17,5 +26,20 @@
         ]
       }
     ]
+  },
+  "functions": [
+    {
+      "source": "cloud/functions",
+      "codebase": "control-plane",
+      "runtime": "python312",
+      "ignore": [
+        "venv",
+        "__pycache__",
+        ".pytest_cache"
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.rules"
   }
 }

@@ -176,7 +176,9 @@ const source = fs.readFileSync(process.argv[1], 'utf8');
 let skip;
 const context = vm.createContext({
   state: { project: { root: '/project' } }, Date,
-  $: () => ({ addEventListener: (name, handler) => { skip = handler; } }),
+  $: selector => ({ addEventListener: (name, handler) => {
+    if (selector === '#setup-skip') skip = handler;
+  } }),
   setupListHtml: () => '', renderSetupFab: () => {}, apply: () => {}, route: () => {},
   api: path => path === 'config/setup-seen' ? new Promise(() => {}) : Promise.resolve({seen: false, complete: false}),
 });

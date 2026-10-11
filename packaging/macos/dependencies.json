@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "arm64": {
+    "python": {"version": "3.12.11+20250918", "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250918/cpython-3.12.11%2B20250918-aarch64-apple-darwin-install_only.tar.gz", "sha256": "f7bd4b224b5257a2530a9f798612239d9f95043a8432d44c93761a01c58492e9", "license": "PSF-2.0 and bundled third-party licences", "license_url": "https://github.com/astral-sh/python-build-standalone/blob/20250918/docs/licensing.rst"},
+    "cloudflared": {"version": "2025.9.1", "url": "https://github.com/cloudflare/cloudflared/releases/download/2025.9.1/cloudflared-darwin-arm64.tgz", "sha256": "106e375d6e0f8ee77eab9ba5abc8aef93962c066bd0bf240ab8a8b21a1b58c9f", "license": "Apache-2.0", "license_url": "https://github.com/cloudflare/cloudflared/blob/2025.9.1/LICENSE"}
+  },
+  "x86_64": {
+    "python": {"version": "3.12.11+20250918", "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250918/cpython-3.12.11%2B20250918-x86_64-apple-darwin-install_only.tar.gz", "sha256": "2fa58b2877effd507b481f69be6fe9f1a7a4bcb5b9dc8ab2e8acc02b927b8e19", "license": "PSF-2.0 and bundled third-party licences", "license_url": "https://github.com/astral-sh/python-build-standalone/blob/20250918/docs/licensing.rst"},
+    "cloudflared": {"version": "2025.9.1", "url": "https://github.com/cloudflare/cloudflared/releases/download/2025.9.1/cloudflared-darwin-amd64.tgz", "sha256": "a678196af2e0f870a9ab95b5696af38f74586c2db642884e14ea29adc424bec5", "license": "Apache-2.0", "license_url": "https://github.com/cloudflare/cloudflared/blob/2025.9.1/LICENSE"}
+  },
+  "certificates": {"version": "2026-09-25", "url": "https://curl.se/ca/cacert-2026-09-25.pem", "sha256": "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505", "license": "MPL-2.0", "license_url": "https://curl.se/docs/caextract.html"}
+}

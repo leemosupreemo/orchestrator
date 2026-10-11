@@ -73,6 +73,38 @@ class JobScopeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 job_scope.write_files(root, 'feature-design', 'job-1', [{'path': 'app.py', 'content': 'production'}])
 
+    def test_invalid_batches_preserve_existing_files(self):
+        cases = [
+            ("feature-plan", "job-1", [{"path": "tests/test_x.py", "content": "x"}]),
+            ("test-audit", "../bad", [{"path": "tests/test_x.py", "content": "x"}]),
+            ("test-audit", "job-1", None), ("test-audit", "job-1", []),
+            ("test-audit", "job-1", [None]),
+            ("test-audit", "job-1", [{"path": 1, "content": "x"}]),
+            ("test-audit", "job-1", [{"path": "tests/test_x.py", "content": None}]),
+            ("feature-design", "job-1", [{"path": "nested/screen.html", "content": "x"}]),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for kind, job_id, proposals in cases:
+                with self.subTest(proposals=proposals), self.assertRaises(ValueError):
+                    job_scope.write_files(root, kind, job_id, proposals)
+            self.assertEqual(list(root.iterdir()), [])
+            proposal = {"path": "tests/test_x.py", "content": "x"}
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                job_scope.write_files(root, "test-audit", "job-1", [proposal, proposal])
+            target = root / "tests/test_x.py"
+            target.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "not a file"):
+                job_scope.write_files(root, "test-audit", "job-1", [proposal])
+
+    def test_linux_sandbox_quotes_command_and_deduplicates_roots(self):
+        import shlex
+        with patch.object(job_scope.platform, "system", return_value="Linux"), \
+             patch.object(job_scope.shutil, "which", return_value="/bin/bwrap"):
+            args = shlex.split(job_scope.protect_command("echo 'hello world'", [Path("/project"), Path("/project")]))
+        self.assertEqual(args, ["/bin/bwrap", "--die-with-parent", "--bind", "/", "/",
+                                "--ro-bind", "/project", "/project", "--", "/bin/sh", "-c", "echo 'hello world'"])
+
     def test_missing_sandbox_refuses_to_run(self):
         with patch.object(job_scope.shutil, 'which', return_value=None):
             with self.assertRaises(RuntimeError):

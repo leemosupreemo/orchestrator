@@ -147,6 +147,9 @@ def inspect_progress(job: dict) -> bool:
 
 def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]:
     job = read_json(job_path)
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        raise RuntimeError("The production builder is disabled for Design and Tests jobs.")
     if "type" not in job:
         if "repro_steps" in job.get("plan", {}):
             job["type"] = "bug-fix"
@@ -241,6 +244,8 @@ If you are unsure between two valid approaches, pick the safest, most convention
 
         from test_cases import prompt_block
         test_case_block = prompt_block(job.get("plan", {}).get("test_cases") or [])
+        from orchestrator import prd
+        product_context = prd.context_block(ROOT, "builder")
 
         full_prompt = f"""{prompt_template}
 
@@ -255,6 +260,16 @@ Available Tests (use for selecting test_command):
 {test_case_block}{debug_context}
 {yolo_context}
 
+{product_context}
+### UI screenshot evidence
+For every new screen or visible UI alteration, update `{OUTPUT_DIR / job['job_id'] / 'ux-screens.json'}` before finishing.
+List every changed page and interactive state, preserving entries from earlier tasks in this job. Use this JSON shape:
+{{"routes": ["/changed-page"], "screens": [{{"name": "Dialog open", "route": "/changed-page", "actions": [{{"click": "button.open-dialog"}}]}}], "notes": []}}
+Routes must be relative to the configured app. Actions support {{"click": "CSS selector"}} and {{"fill": "CSS selector", "value": "non-sensitive test value"}}.
+Use stable selectors and test data. Do not put credentials in the capture plan. For a state that cannot be reached automatically, add a clear explanation under notes.
+Ensure the app at ui_review.url serves this job's changes; use ui_review.start_command for a local app if needed.
+The runner captures configured pages plus this inventory at the configured phone/desktop widths and colour modes, and saves them in UX review.
+Screenshot capture is evidence, separate from whether the optional AI review is enabled. If no UI changes, no capture plan is needed.
 Brief:
 {brief}
 """

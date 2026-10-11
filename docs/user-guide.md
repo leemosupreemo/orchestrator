@@ -36,7 +36,7 @@ orchestrator --help
 The package has no Python runtime dependencies outside the standard library. Some workflows require external command-line tools:
 
 - Xcode project build/test: `xcodebuild`, `xcrun`
-- GitHub issue and pull request workflow: `gh`
+- GitHub issue and pull request workflow: `gh` (not needed for GitLab, Bitbucket or plain git; see [Code hosts](code-hosts.md))
 - Remote workers: `ssh`, `scp`, `rsync`
 - AI providers: at least one of `codex`, `antigravity`, `claude`, `opencode`, `ollama`, or matching API key configuration
 - Firebase delivery: `firebase` plus a project-local distribution script
@@ -405,6 +405,50 @@ Visual checks require an app bundle and bundle identifier. Configure:
 
 If `visual_app_path` is omitted, the visual check flow searches the configured derived data path for a built `.app`.
 
+## UX And Design Review
+
+A checklist review of your product's screens, in two parts: **UX** (how it works: status, wording, one primary action,
+progressive disclosure, navigation and a way back from every detail page, empty states, errors, forms, short action
+labels, long content behind "Show more") and **Design** (how it looks: hierarchy, tokens, spacing, alignment, sizes,
+section headers that read as titles, one header layout, consistent field labels, no unstyled browser controls,
+overlap, responsiveness, contrast, dark mode, focus). The checklist is
+`orchestrator/prompts/ux_reviewer.md`; your own UI conventions file, if you have one, takes precedence over it.
+
+- **Product pass.** Web UI > UX review > Run a pass, or `orchestrator script ux_review_run.py pass`. It captures every
+  configured screen, runs a UX pass and a design pass (two model calls), and writes one report with findings ranked by
+  severity, the checklist, and the screenshots, under `.orchestrator/output/ux-pass/<when>/`. "Create a job to fix"
+  turns the findings into a job.
+- **Change check.** After the code review, every job whose diff touches interface files (HTML, CSS, JSX/TSX, Vue,
+  Svelte, SwiftUI views, storyboards, scripts in UI folders, or anything matching `ui_review.paths`) gets the same
+  checklist on just what it changed. The job page shows a "UX and design check" card, and the hero warns before you
+  merge when something major was found. It is a prompt to look, never a gate.
+
+Screens come from `ui_review` in `.orchestrator/project.json` (or Web UI > Configuration > Screens to review):
+
+```json
+"ui_review": {
+  "url": "http://localhost:3000",
+  "routes": ["/", "/settings"],
+  "widths": [390, 1440],
+  "dark_mode": true,
+  "start_command": "npm run dev",
+  "simulator": false,
+  "review_changes": true,
+  "conventions": "docs/ui-conventions.md",
+  "paths": ["lib/theme/**"]
+}
+```
+
+Web screens are captured with a headless Chrome, Chromium or Edge (set `ORCHESTRATOR_BROWSER` to choose one) using
+device emulation, so 390 px is a real phone viewport, and dark mode through `prefers-color-scheme`. `$VARIABLES` in the
+URL are read from the environment, so a sign-in token needn't be written into the file. `start_command` runs only if
+the URL isn't answering, and is stopped afterwards. `simulator: true` adds the iOS simulator check's screenshots.
+Without screens, the review works from the code and says what it couldn't judge. Screens are first-load views: no
+scrolling, signing in or interaction.
+
+Models see the screenshots as attachments (Codex, opencode) or through their file tools (Claude, Gemini, agy); a model
+that can't open images says so in the report's limits.
+
 ## Firebase Delivery
 
 Firebase delivery is opt-in:
@@ -429,6 +473,10 @@ For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://s
 
 ## Web UI
 
+> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have, or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. See [Product requirements](product-requirements.md).
+
+> **Docs.** The **Docs** page (under *Review*) is the project's documentation in one place: the product requirements, a page for every feature and every job (what it is, what was decided, what was built, how it was tested, what the review said), and the project's own `README`, `AGENTS.md` and `docs/` files. Job and feature pages are generated from the live project, so they can't go stale. Search them, and **Download everything** gives one markdown file. See [Product requirements](product-requirements.md) for the PRD.
+
 `orchestrator ui` starts a local web interface for the current project and opens it in your browser:
 
 ```bash
@@ -436,7 +484,7 @@ orchestrator ui                  # http://127.0.0.1:8765/?token=...
 orchestrator ui --project Thirteen --port 9000 --no-open
 ```
 
-- **Home** shows what **needs you**: a question from the planner, a plan to approve, failing tests to fix, or a PR ready to merge. Each item has the one button that moves it forward. Below that are jobs in progress and recently finished ones. **New job** and **Fix something** are always one tap away, and less frequent actions (pull device logs, build, test, distribute the current branch, setup check, full console) sit under **More**.
+- **Home** shows what **needs you**: a question from the planner, a plan to approve, failing tests to fix, or a PR ready to merge. Each item has the one button that moves it forward. Below that are jobs in progress and recently finished ones. **New job** is always one tap away, and less frequent actions (pull device logs, build, test, distribute the current branch, setup check, full console) sit under **More**.
 - **Jobs** filters by Needs you / In progress / Done. A job page states what it's waiting on, shows one primary action for its status (Start, Run now, Answer, Run fix, Merge & complete), and puts everything else under More. **Deliver to testers** builds *that job's* branch. **Merge & complete** merges the PR, deletes the AI branch and archives the job, the same as in the console.
 - **Device logs** lists recent app launches from the log store, with Pull and Follow buttons (see [Device Logs](#device-logs)).
 - A job page also has the approvals the planning loop needs (**Approve plan**, **Approve design**, **Accept suggestions** from the architect review), **Revise plan** to re-plan with requested changes, the job's **Changes** (why, the files it touched, and a diffstat against the base branch), its **Brief** / builder summary / investigations, and links to its issue and PR on GitHub.
@@ -449,11 +497,26 @@ Pages refresh themselves every few seconds, but never while you're typing, have 
 
 Every action runs the same CLI command you would type, inside a real terminal that is shown in the page. Prompts that need you (y/n, menus, pasted logs, passwords) appear there, and you answer them by typing into the terminal. On a phone, use the key bar under it (Enter, Esc, arrows, y/n/q, Ctrl-C, Ctrl-D). **Open full console** runs the regular `orchestrator console` in the browser for what has no page of its own: Ask AI about changes, reset & rerun, discard & revert, export context, model and API-key settings, the machine fleet, email recipients, Xcode Cloud and archived jobs. Each run's output is also saved to `.orchestrator/logs/ui/`.
 
+Use it from anywhere:
+
+1. On the computer with your projects, run `orchestrator connect`. It shows a code and a link.
+2. Open the link (or go to https://swift-orch-web-20260923.web.app and enter the code), sign in with Google, and confirm. The computer is now on your account.
+3. Start `orchestrator ui --tunnel` on it. Signing in to the hosted app from any browser opens it; with more than one computer you choose which. **Configuration → Your computers** switches between them.
+
+`orchestrator connect --status` shows which account the computer is on, and `orchestrator disconnect` removes it. See [Control plane](control-plane.md) for how it works.
+
 Access and security:
 
-- The server listens on `127.0.0.1` only. The printed URL carries a random per-start token. Opening it once stores the token in a cookie, and every API call needs it.
+- The server listens on `127.0.0.1` only. The printed URL carries the access token, kept in `~/.orchestrator/ui_token` (delete the file and restart to change it). Opening the URL once stores the token in a cookie, and every API call needs it. The access token is the owner's key: anyone holding it can do everything, so don't share it.
+- Signing in with Google (or another provider) works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page where it can be ended, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
+- Browsers can call the server only from its own pages, pages on this computer, and the hosted app. Add other origins (a custom domain, say) with `ORCHESTRATOR_ALLOWED_ORIGINS`, comma-separated.
 - The browser can only start a fixed set of actions. It never sends a command line, and file reads are limited to `.orchestrator/`.
-- From a phone, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
+- **One address from anywhere:** connect this computer to your account once (`orchestrator connect`) and run
+  `orchestrator ui --tunnel`. Then https://swift-orch-web-20260923.web.app is the address to use on any device: it
+  never changes, and after you sign in it finds this computer, because the computer reports its current tunnel address
+  every 60 seconds. The tunnel's own `trycloudflare.com` link changes on every restart; the startup output lists it as
+  a fallback.
+- From a phone without an account, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
 - Stopping the server (Ctrl-C) also stops the commands it started.
 
 ## Device Logs
@@ -512,7 +575,7 @@ Common issues:
 - `No AI providers found`: authenticate a provider CLI or export a supported API key.
 - SSH worker is `NOT READY`: run `orchestrator worker-install --machine NAME`, then rerun `worker-check`.
 - Remote worker imports fail after package changes: rerun `worker-install` to refresh the source copy.
-- GitHub actions fail: install `gh` and run `gh auth login`.
+- GitHub actions fail: install `gh` and run `gh auth login`, or set `"code_host": "git"` to work without GitHub ([Code hosts](code-hosts.md)).
 - `orchestrator logs` reports `Sentry refused the token (403)`: the token lacks `org:read`, `project:read` or `event:read`. Create a new one and rerun `orchestrator logs setup`.
 - `No app sessions found`: the build predates remote logging, the app was never opened, or it is an App Store build (errors only). Open the app, wait a few seconds, and retry.
 

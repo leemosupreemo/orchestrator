@@ -65,11 +65,10 @@ def execute_nonproduction_job(job_path: Path) -> None:
         write_text(out / "builder_summary.md", job["builder_summary"] + "\n\nFiles:\n" + "\n".join(f"- {path}" for path in written))
         if design:
             for path in written:
-                # References open in the job's sandboxed visual preview.
-                if path.endswith((".html", ".svg")):
-                    ref = attach_reference_artifact(job, path, note="Generated visual mockup")
-                    ref["role"] = "design"
-                    job.setdefault("reference_artifacts", []).append(ref)
+                # write_files has validated every design output as an HTML or SVG mockup.
+                ref = attach_reference_artifact(job, path, note="Generated visual mockup")
+                ref["role"] = "design"
+                job.setdefault("reference_artifacts", []).append(ref)
             job["design_artifacts"] = written
         else:
             command = PROJECT_CONFIG.test_command or PROJECT_CONFIG.stack.test_command

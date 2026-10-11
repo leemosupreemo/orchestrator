@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, gh_text, write_text
+from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, gh_text, run, write_text
 from llm import run_llm
 from model_router import ModelRole
 
@@ -59,21 +59,39 @@ def load_pr_diff(pr_number: int, pr_json: str) -> str:
     return diff_text
 
 
+def load_branch_diff(branch: str, base: str) -> tuple[str, str]:
+    """For a job without a pull request (plain git): (metadata, diff) of the branch against its base, from this repo."""
+    stat = run(["git", "diff", "--stat", f"{base}...{branch}"], cwd=ROOT).stdout
+    commits = run(["git", "log", "--oneline", f"{base}..{branch}"], cwd=ROOT).stdout
+    diff_text = run(["git", "diff", f"{base}...{branch}"], cwd=ROOT).stdout
+    if len(diff_text) > MAX_DIFF_CHARS:
+        diff_text = diff_text[:MAX_DIFF_CHARS] + f"\n\n...[review_ready truncated diff: {len(diff_text) - MAX_DIFF_CHARS} chars omitted]..."
+    return f"Branch {branch} against {base}\n\nCommits:\n{commits}\nFiles:\n{stat}", diff_text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("pr_number", type=int)
+    parser.add_argument("pr_number", type=int, nargs="?", help="The pull request to review (GitHub)")
+    parser.add_argument("--branch", help="Review this branch against --base instead of a pull request (plain git)")
+    parser.add_argument("--base", default="main")
     parser.add_argument("--reviewer", default="gemini")
     parser.add_argument("--brief-file", required=True)
     parser.add_argument("--job-file", help="Path to job JSON file to update")
     args = parser.parse_args()
 
+    if args.pr_number is None and not args.branch:
+        parser.error("Give a pull request number, or --branch to review a branch.")
     brief = Path(args.brief_file).read_text(encoding="utf-8")
-    pr_json = gh_text("pr", "view", str(args.pr_number), "--json", "title,body,files,commits,url")
-    diff_text = load_pr_diff(args.pr_number, pr_json)
+    if args.pr_number is not None:
+        pr_json = gh_text("pr", "view", str(args.pr_number), "--json", "title,body,files,commits,url")
+        diff_text = load_pr_diff(args.pr_number, pr_json)
+    else:
+        pr_json, diff_text = load_branch_diff(args.branch, args.base)
     reviewer_prompt = (PROMPTS_DIR / "reviewer.md").read_text(encoding="utf-8")
 
+    from orchestrator import prd
     prompt = f"""{reviewer_prompt}
-
+{prd.context_block(ROOT, "reviewer")}
 Brief:
 {brief}
 
@@ -85,6 +103,7 @@ Diff:
 """
 
     allowed_models = None
+    job: dict = {}  # without --job-file there is no job to update, but the session bookkeeping below still runs
     if args.job_file:
         from common import now_iso, read_json, write_json
         job_path = Path(args.job_file)
@@ -110,7 +129,7 @@ Diff:
         job["updated_at"] = now_iso()
         write_json(job_path, job)
 
-    out_dir = OUTPUT_DIR / f"pr-{args.pr_number}"
+    out_dir = OUTPUT_DIR / (f"pr-{args.pr_number}" if args.pr_number is not None else f"branch-{args.branch.replace('/', '-')}")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "review.md"
     write_text(out_path, review)
@@ -118,8 +137,9 @@ Diff:
     print(review)
     print(f"\nSaved review to {out_path}")
 
-    print(f"Posting review to PR #{args.pr_number}...")
-    gh_text("pr", "comment", str(args.pr_number), "--body", review)
+    if args.pr_number is not None:
+        print(f"Posting review to PR #{args.pr_number}...")
+        gh_text("pr", "comment", str(args.pr_number), "--body", review)
     print("Done.")
 
 
