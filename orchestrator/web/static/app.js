@@ -4610,9 +4610,11 @@ pages.product = async (_, query) => {
           ? `<span class="chip"><strong>${esc(product.name)}</strong><span class="muted"> · Current</span></span>`
           : `<button type="button" class="btn small" data-switch-project="${esc(product.root)}" data-then="#/product">${esc(product.name)}</button>`).join("") || `<span class="muted">No products added yet.</span>`}
           ${!productsData ? `<span class="muted">Couldn't load the product list. <a href="#/projects">Try again</a></span>` : ""}</div></section>
-      <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2><div class="card-actions">
-        ${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button></div></div>
-        <div class="card-b"><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div></section>
+      <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2></div>
+        <div class="card-b stack">
+          <div class="row gap-10 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button></div>
+          <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div>
+        </div></section>
       <div id="prd-panel"></div>
       ${p.sections.map(sectionCard).join("")}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
