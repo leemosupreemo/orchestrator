@@ -42,3 +42,15 @@ python3 packaging/macos/smoke.py --bundle dist/macos/arm64/Orchestrator.app --st
 ```
 
 Building, development images and releases are covered in `docs/macos-desktop.md`.
+
+## Coverage measurement module
+
+The coverage runner's unit tests must cover 100% of its lines and branches.
+This focused gate does not represent whole-project coverage; run the full suite above as well.
+
+```bash
+python3 -m coverage run --branch --source=orchestrator.coverage --data-file=.orchestrator/state/coverage-unit -m unittest discover -s tests -p 'test_coverage*.py'
+python3 -m coverage report --data-file=.orchestrator/state/coverage-unit --fail-under=100
+```
+
+The commands require coverage.py (`python3 -m pip install coverage`).

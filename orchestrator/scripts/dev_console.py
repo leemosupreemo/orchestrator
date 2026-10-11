@@ -2728,14 +2728,14 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                     stderr=subprocess.DEVNULL
                 ).decode("utf-8")
                 cov_json = json.loads(xccov_out)
-                raw_line_cov = cov_json.get("lineCoverage", 0.0)
+                raw_line_cov = cov_json["lineCoverage"]
                 overall_pct = round(raw_line_cov * 100.0, 1)
 
                 app_targets = []
                 third_party_targets = []
                 for t in cov_json.get("targets", []):
                     t_name = t.get("name", "")
-                    t_cov = round(t.get("lineCoverage", 0.0) * 100.0, 1)
+                    t_cov = round(t["lineCoverage"] * 100.0, 1)
 
                     # Exclude test bundles themselves
                     if t_name.endswith((".xctest", "Tests", "UITests", "Tests.xctest")):
@@ -2773,6 +2773,8 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                     total_lines = cov_json.get("executableLines", 0)
                     covered_lines = cov_json.get("coveredLines", 0)
             except Exception as e:
+                overall_pct = None
+                targets_cov = []
                 print(f"\n⚠️ Could not parse .xcresult coverage: {e}")
 
         # Check prior coverage record for delta comparison
