@@ -3721,12 +3721,20 @@ class UIServer(ThreadingHTTPServer):
         if account.load_machine() is None:
             return None
 
+        last_sync = [0.0]
+
         def beat() -> bool:
             machine = account.load_machine()
             if machine is None:
                 return False
             try:
                 reply = account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")))
+                if time.time() - last_sync[0] >= 300:
+                    try:
+                        account.sync_snapshot(machine, root=self.root)
+                        last_sync[0] = time.time()
+                    except Exception:
+                        pass
                 if isinstance(reply, dict) and reply.get("reset_tunnel") and self.on_reset_tunnel:
                     if self.on_reset_tunnel():
                         try:

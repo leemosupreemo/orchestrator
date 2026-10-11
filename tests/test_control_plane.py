@@ -576,6 +576,53 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(res.status, 409)
         self.assertIn("orchestrator connect", data["error"])
 
+    def test_snapshot_sync_and_retrieval(self):
+        machine, _ = self.connect_as()
+        jobs_dir = self.root / ".orchestrator" / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        job_data = {
+            "job_id": "job-101",
+            "title": "Build Offline View",
+            "type": "feature-plan",
+            "status": "completed",
+            "plan": {
+                "summary": "State sync architecture",
+                "tasks": [{"title": "Task 1", "status": "done"}]
+            }
+        }
+        (jobs_dir / "job-101.json").write_text(json.dumps(job_data))
+
+        # Build snapshot locally
+        snapshot = account.build_snapshot(root=self.root)
+        self.assertEqual(len(snapshot["projects"]), 1)
+        self.assertEqual(len(snapshot["recent_jobs"]), 1)
+        self.assertEqual(snapshot["recent_jobs"][0]["job_id"], "job-101")
+
+        # Sync snapshot to control plane
+        res = account.sync_snapshot(machine, snapshot)
+        self.assertTrue(res["ok"])
+
+        # Check that machine view shows has_snapshot
+        status, listed = self.plane.handle("GET", "/cp/machines", {"authorization": "Bearer alice-token"}, {}, verify_user)
+        self.assertEqual(status, 200)
+        target_machine = next(m for m in listed["machines"] if m["id"] == machine["machine_id"])
+        self.assertTrue(target_machine["has_snapshot"])
+        self.assertIsNotNone(target_machine["snapshot_synced_at"])
+
+        # Fetch snapshot as owner
+        status, got = self.plane.handle("POST", "/cp/machine/snapshot", {"authorization": "Bearer alice-token"},
+                                        {"machine_id": machine["machine_id"]}, verify_user)
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(got["snapshot"])
+        self.assertEqual(got["snapshot"]["machine_id"], machine["machine_id"])
+        self.assertEqual(got["snapshot"]["recent_jobs"][0]["title"], "Build Offline View")
+
+        # Non-owner cannot fetch snapshot
+        status, _ = self.plane.handle("POST", "/cp/machine/snapshot", {"authorization": "Bearer bob-token"},
+                                      {"machine_id": machine["machine_id"]}, verify_user)
+        self.assertEqual(status, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
+

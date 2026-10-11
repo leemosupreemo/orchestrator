@@ -299,6 +299,24 @@ class ControlPlane:
         self._remove(machine_id)
         return {"ok": True}
 
+    def sync_snapshot(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        projects = body.get("projects") if isinstance(body.get("projects"), list) else []
+        recent_jobs = body.get("recent_jobs") if isinstance(body.get("recent_jobs"), list) else []
+        now = self.now()
+        snapshot = {
+            "machine_id": machine_id,
+            "machine_name": machine["name"],
+            "owner_uid": machine["owner_uid"],
+            "synced_at": now,
+            "projects": projects[:50],
+            "recent_jobs": recent_jobs[:100],
+            "metadata": body.get("metadata") or {},
+        }
+        self.store.set("machine_snapshots", machine_id, snapshot)
+        self.store.update("machines", machine_id, {"has_snapshot": True, "snapshot_synced_at": now})
+        return {"ok": True, "synced_at": now}
+
     # -- the person, once paired
 
     def _view(self, machine_id: str, machine: dict[str, Any]) -> dict[str, Any]:
@@ -307,6 +325,8 @@ class ControlPlane:
                 "api_version": machine.get("api_version", 0),
                 "endpoint": machine.get("endpoint", ""), "last_seen": machine.get("last_seen") or 0, "online": online,
                 "reachable": online and bool(machine.get("endpoint")),
+                "has_snapshot": bool(machine.get("has_snapshot")),
+                "snapshot_synced_at": machine.get("snapshot_synced_at"),
                 "added_with_command": self.now() - (machine.get("enrolled") or -ADDED_MARK_SECONDS) < ADDED_MARK_SECONDS,
                 "updatable": bool(machine.get("updatable")), "update_state": machine.get("update_state", ""),
                 "readiness": machine.get("readiness") or {}}
@@ -331,6 +351,12 @@ class ControlPlane:
     def _remove(self, machine_id: str) -> None:
         self.store.delete("machine_secrets", machine_id)
         self.store.delete("machines", machine_id)
+        self.store.delete("machine_snapshots", machine_id)
+
+    def get_snapshot(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        snapshot = self.store.get("machine_snapshots", machine_id)
+        return {"snapshot": snapshot, "machine": self._view(machine_id, machine)}
 
     def issue_ticket(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         email = _require_email(user)
@@ -429,6 +455,7 @@ class ControlPlane:
                 ("POST", "/machine/heartbeat"): lambda: self.heartbeat(headers.get("authorization", ""), body),
                 ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
                 ("POST", "/machine/events"): lambda: self.machine_events(headers.get("authorization", ""), body),
+                ("POST", "/machine/sync"): lambda: self.sync_snapshot(headers.get("authorization", ""), body),
                 ("POST", "/enroll/redeem"): lambda: self.redeem_enrollment(body),
             }.get((method, route))
             if computer:
@@ -439,6 +466,7 @@ class ControlPlane:
                 ("GET", "/machines"): lambda user, _body: self.list_machines(user),
                 ("POST", "/machines/remove"): self.remove_machine,
                 ("POST", "/machine/ticket"): self.issue_ticket,
+                ("POST", "/machine/snapshot"): self.get_snapshot,
                 ("POST", "/push/register"): self.register_device,
                 ("POST", "/push/unregister"): self.unregister_device,
                 ("POST", "/push/test"): self.test_push,

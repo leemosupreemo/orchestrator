@@ -290,16 +290,18 @@
           <strong>${escapeHtml(m.name)}</strong>
           <span class="account-status ${tone}" title="${failed ? "This browser could not reach Orchestrator’s web connection. Other connections, such as SSH, may still work." : "Reported by this computer. Open checks the connection from your browser."}">${status}</span>
         </div>
-        <p class="muted account-machine-meta">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command"].filter(Boolean).join(" · "))}</p>
+        <p class="muted account-machine-meta">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command", m.has_snapshot && m.snapshot_synced_at && `Snapshot cached ${ago(m.snapshot_synced_at, now)}`].filter(Boolean).join(" · "))}</p>
         ${failed ? `<p class="account-connection-error" role="alert">${m.online ? "Orchestrator is running, but this browser couldn’t reach its web connection." : "This browser couldn’t reach Orchestrator’s web connection."}</p>` : ""}
         ${progress && m.update_state !== "current" ? `<p class="muted account-update">${escapeHtml(progress)}</p>` : ""}
         <div class="account-machine-actions">
-          <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">${failed || !m.reachable ? "Retry" : "Open"}</button>
+          <button type="button" class="btn small ${(!failed && m.reachable) || !m.has_snapshot ? "primary" : "ghost"}" data-account-action="open" data-id="${escapeHtml(m.id)}">${failed || !m.reachable ? "Retry" : "Open"}</button>
+          ${m.has_snapshot ? `<button type="button" class="btn small ${failed || !m.reachable ? "primary" : "ghost"}" data-account-action="view-snapshot" data-id="${escapeHtml(m.id)}">View offline snapshot</button>` : ""}
           <details class="more account-machine-more" data-account-expansion="${escapeHtml(m.id)}:more">
             <summary class="btn small ghost" aria-label="More options for ${escapeHtml(m.name)}">More</summary>
             <div class="account-machine-menu">
               ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
               ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
+              ${m.has_snapshot ? `<button type="button" class="btn small ghost" data-account-action="view-snapshot" data-id="${escapeHtml(m.id)}">View offline snapshot</button>` : ""}
               <details class="account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
                 ${m.reachable && outdated(m.api_version) ? `<p class="muted">${code(`This computer runs an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`)}</p>` : ""}
                 ${renderTroubleshoot(help)}
@@ -329,6 +331,71 @@
     </div></div>`;
   }
 
+  function renderSnapshot(snapshot, { now } = {}) {
+    if (!snapshot) return "";
+    const name = snapshot.machine_name || "Computer";
+    const synced = snapshot.synced_at ? ago(snapshot.synced_at, now) : "unknown";
+    const meta = snapshot.metadata || {};
+    const metaStr = [meta.os, meta.version && `Orchestrator ${meta.version}`].filter(Boolean).join(" · ");
+    const projects = Array.isArray(snapshot.projects) ? snapshot.projects : [];
+    const jobs = Array.isArray(snapshot.recent_jobs) ? snapshot.recent_jobs : [];
+
+    const projectCards = projects.length ? projects.map((p) => {
+      const latest = p.latest_job;
+      return `<article class="account-machine">
+        <div class="account-machine-heading">
+          <strong>${escapeHtml(p.name)}</strong>
+          <span class="muted">${escapeHtml(String(p.jobs_count || 0))} job${p.jobs_count === 1 ? "" : "s"}</span>
+        </div>
+        <p class="muted mono" style="font-size: var(--text-xs); overflow-wrap: anywhere;">${escapeHtml(p.root || "")}</p>
+        ${latest ? `<p class="account-machine-meta">Latest: <strong>${escapeHtml(latest.title || latest.job_id)}</strong> <span class="badge ${latest.status === "completed" || latest.status === "done" ? "ok" : latest.status === "failed" ? "bad" : "muted"}">${escapeHtml(latest.status || "planned")}</span></p>` : ""}
+      </article>`;
+    }).join("") : `<p class="muted">No recent projects found in this snapshot.</p>`;
+
+    const jobCards = jobs.length ? jobs.map((j) => {
+      const statusTone = j.status === "completed" || j.status === "done" ? "ok" : j.status === "failed" ? "bad" : "muted";
+      const tasks = Array.isArray(j.tasks) ? j.tasks : [];
+      return `<article class="account-machine">
+        <div class="account-machine-heading">
+          <strong>${escapeHtml(j.title || j.job_id)}</strong>
+          <span class="badge ${statusTone}">${escapeHtml(j.status || "planned")}</span>
+        </div>
+        <p class="muted account-machine-meta">${escapeHtml([j.project, j.type, j.updated_at || j.created_at].filter(Boolean).join(" · "))}</p>
+        ${j.summary ? `<p style="font-size: var(--text-sm); margin: 0;">${escapeHtml(j.summary)}</p>` : ""}
+        ${tasks.length ? `<details class="more">
+          <summary class="muted" style="cursor: pointer; font-size: var(--text-xs);">${tasks.length} task${tasks.length === 1 ? "" : "s"}</summary>
+          <ul style="margin: var(--space-2) 0 0; padding-left: var(--space-4); font-size: var(--text-sm);">
+            ${tasks.map((t) => `<li>${t.status === "done" || t.status === "completed" ? "✓" : "○"} ${escapeHtml(t.title || "Task")}</li>`).join("")}
+          </ul>
+        </details>` : ""}
+      </article>`;
+    }).join("") : `<p class="muted">No recent jobs found in this snapshot.</p>`;
+
+    return `<div class="signin-wrap"><div class="signin-card account-card">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2);">
+        <button type="button" class="btn small ghost" data-account-action="back-machines">← All computers</button>
+        <span class="badge muted">Offline snapshot</span>
+      </div>
+      <div>
+        <h2 class="account-title">${escapeHtml(name)}</h2>
+        <p class="muted account-sub">Snapshot synced ${escapeHtml(synced)}${metaStr ? ` · ${escapeHtml(metaStr)}` : ""}</p>
+      </div>
+      <div class="notice">
+        This is a read-only snapshot synced from your Mac. To run new tasks or edit code, wake your computer and open Orchestrator.
+      </div>
+      <div class="stack" style="gap: var(--space-4);">
+        <h3 style="margin: 0; font-size: var(--text-base);">Projects (${projects.length})</h3>
+        <div class="account-machines">${projectCards}</div>
+        <h3 style="margin: var(--space-2) 0 0; font-size: var(--text-base);">Recent Jobs (${jobs.length})</h3>
+        <div class="account-machines">${jobCards}</div>
+      </div>
+      <div class="row gap-10" style="margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border);">
+        <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
+        <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
+      </div>
+    </div></div>`;
+  }
+
   function renderPair(preview, codeValue, {email = ""} = {}) {
     return `<div class="signin-wrap"><div class="signin-card account-card">
       <div>
@@ -352,6 +419,6 @@
     HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
     enrollCommand, renderEnroll, outdated, macRelease, renderMacSetup,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
-    renderMachines, renderPair, providerSignInWorks, pendingIdea, saveIdea, clearIdea, ideaRoute,
+    renderMachines, renderPair, renderSnapshot, providerSignInWorks, pendingIdea, saveIdea, clearIdea, ideaRoute,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

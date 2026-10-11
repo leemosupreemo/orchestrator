@@ -993,6 +993,60 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(result["existingRoute"], "#/projects")
         self.assertIsNone(result["cleared"])
 
+    def test_render_snapshot_and_offline_view_actions(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const snapshot = {
+  machine_id: "m_123",
+  machine_name: "<Leemos Mac>",
+  synced_at: 100,
+  metadata: {os: "macOS 15.1", version: "0.2.0"},
+  projects: [
+    {name: "<DemoApp>", root: "/Users/dev/<app>", jobs_count: 2, latest_job: {job_id: "j1", title: "<Fix auth>", status: "completed"}}
+  ],
+  recent_jobs: [
+    {job_id: "j1", project: "DemoApp", title: "<Fix auth>", type: "bug", status: "completed", summary: "Fixed login <token>",
+     tasks: [{title: "Write <test>", status: "done"}, {title: "Deploy", status: "planned"}]}
+  ]
+};
+const machines = [
+  {id: "m_offline", name: "Offline Mac", reachable: false, online: false, has_snapshot: true, snapshot_synced_at: 100},
+  {id: "m_online", name: "Online Mac", reachable: true, online: true, has_snapshot: true, snapshot_synced_at: 100},
+  {id: "m_plain", name: "Plain Mac", reachable: false, online: false, has_snapshot: false}
+];
+process.stdout.write(JSON.stringify({
+  rendered: A.renderSnapshot(snapshot, {now: 160}),
+  empty: A.renderSnapshot(null),
+  machines: A.renderMachines(machines, {now: 160, email: "u@x.com"}),
+}));""")
+        # Snapshot rendering checks
+        rendered = result["rendered"]
+        self.assertIn("&lt;Leemos Mac&gt;", rendered)
+        self.assertIn("Offline snapshot", rendered)
+        self.assertIn("macOS 15.1 · Orchestrator 0.2.0", rendered)
+        self.assertIn("&lt;DemoApp&gt;", rendered)
+        self.assertIn("/Users/dev/&lt;app&gt;", rendered)
+        self.assertIn("&lt;Fix auth&gt;", rendered)
+        self.assertIn("Fixed login &lt;token&gt;", rendered)
+        self.assertIn("Write &lt;test&gt;", rendered)
+        self.assertIn('data-account-action="back-machines"', rendered)
+        self.assertIn('data-account-action="open" data-id="m_123"', rendered)
+        self.assertEqual(result["empty"], "")
+
+        # Machine list rendering with snapshot buttons
+        mac_html = result["machines"]
+        self.assertIn('data-account-action="view-snapshot" data-id="m_offline"', mac_html)
+        self.assertIn('data-account-action="view-snapshot" data-id="m_online"', mac_html)
+        self.assertNotIn('data-account-action="view-snapshot" data-id="m_plain"', mac_html)
+        self.assertIn("Snapshot cached", mac_html)
+
+        # App.js wiring checks
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('async function showSnapshotScreen(machineId, machine)', js)
+        self.assertIn('cpApi("machine/snapshot"', js)
+        self.assertIn('Account.renderSnapshot(snapshot)', js)
+        self.assertIn('machine.has_snapshot', js)
+
     def test_new_project_form_starts_from_a_pending_idea_without_overwriting_a_draft(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         page = js[js.index('pages["new-project"]'):][:5000]

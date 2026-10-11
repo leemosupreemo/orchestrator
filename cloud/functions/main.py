@@ -81,8 +81,8 @@ def sweep(event: scheduler_fn.ScheduledEvent) -> None:
 
 @https_fn.on_request(region="us-central1", max_instances=10, memory=options.MemoryOption.MB_256)
 def cp(req: https_fn.Request) -> https_fn.Response:
-    plane = _get_plane()
-    if req.method == "POST" and req.content_length and req.content_length > 16_384:
+    max_body = 524_288 if "/machine/sync" in req.path else 16_384
+    if req.method == "POST" and req.content_length and req.content_length > max_body:
         return _json(413, {"error": "Request too large"})
     try:
         body = (req.get_json(silent=True) or {}) if req.method == "POST" else {}

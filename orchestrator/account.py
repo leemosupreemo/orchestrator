@@ -192,6 +192,81 @@ def send_events(machine: dict[str, Any], events: list[dict[str, Any]], project: 
                                             "path": e["path"]} for e in events]}, machine=machine)
 
 
+def build_snapshot(root: Path | None = None) -> dict[str, Any]:
+    """Assemble lightweight offline view of recent projects and jobs for the hosted app."""
+    from orchestrator.project_config import find_project_root, load_recent_projects
+
+    recent_data = load_recent_projects(prune_missing=False)
+    projects_list = []
+    jobs_list = []
+    roots_to_check = []
+    if root:
+        roots_to_check.append(root)
+    for p in recent_data.get("projects", []):
+        r_str = p.get("root")
+        if r_str:
+            r_path = Path(r_str).expanduser()
+            if r_path not in roots_to_check and r_path.is_dir():
+                roots_to_check.append(r_path)
+
+    if not roots_to_check:
+        try:
+            curr_root = find_project_root()
+            if curr_root.is_dir():
+                roots_to_check.append(curr_root)
+        except Exception:
+            pass
+
+    for proj_root in roots_to_check[:10]:
+        jobs_dir = proj_root / ".orchestrator" / "jobs"
+        proj_jobs = []
+        if jobs_dir.is_dir():
+            for jpath in sorted(jobs_dir.glob("*.json"), reverse=True)[:20]:
+                try:
+                    jdata = json.loads(jpath.read_text(encoding="utf-8"))
+                    if isinstance(jdata, dict) and jdata.get("job_id"):
+                        plan_obj = jdata.get("plan") or {}
+                        tasks_raw = plan_obj.get("tasks") or []
+                        proj_jobs.append({
+                            "job_id": jdata.get("job_id"),
+                            "project": proj_root.name,
+                            "title": jdata.get("title") or plan_obj.get("title") or jdata.get("job_id"),
+                            "type": jdata.get("type", "generic"),
+                            "status": jdata.get("status", "planned"),
+                            "created_at": jdata.get("created_at"),
+                            "updated_at": jdata.get("updated_at"),
+                            "issue_number": jdata.get("issue_number"),
+                            "pr_number": jdata.get("pr_number"),
+                            "summary": plan_obj.get("summary") or "",
+                            "tasks_count": len(tasks_raw),
+                            "tasks": [{"title": t.get("title"), "status": t.get("status")}
+                                      for t in tasks_raw if isinstance(t, dict)][:10],
+                        })
+                except Exception:
+                    continue
+        latest_job = proj_jobs[0] if proj_jobs else None
+        projects_list.append({
+            "name": proj_root.name,
+            "root": str(proj_root),
+            "jobs_count": len(proj_jobs),
+            "latest_job": latest_job,
+        })
+        jobs_list.extend(proj_jobs)
+
+    jobs_list.sort(key=lambda j: str(j.get("updated_at") or j.get("created_at") or ""), reverse=True)
+    return {
+        "projects": projects_list,
+        "recent_jobs": jobs_list[:50],
+        "metadata": {"os": os_label(), "version": package_version()},
+    }
+
+
+def sync_snapshot(machine: dict[str, Any], snapshot: dict[str, Any] | None = None, root: Path | None = None) -> dict[str, Any]:
+    """Sync offline project & job metadata to the control plane for browsing when this computer is offline."""
+    payload = snapshot if snapshot is not None else build_snapshot(root=root)
+    return call("machine/sync", payload, machine=machine)
+
+
 def disconnect() -> bool:
     """Remove this computer from its account (best effort online) and forget the pairing here."""
     machine = load_machine()

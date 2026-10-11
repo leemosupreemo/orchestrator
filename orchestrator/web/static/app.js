@@ -1354,6 +1354,10 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
     if (action === "open") {
       const machine = machines.find((m) => m.id === button.dataset.id);
       if (machine) enterMachine(machine);
+    } else if (action === "view-snapshot") {
+      const machineId = button.dataset.id;
+      const machine = machines.find((m) => m.id === machineId);
+      showSnapshotScreen(machineId, machine);
     } else if (action === "remove") {
       if (!await formDialog(`Remove ${button.dataset.name}?`, `<p>It leaves your account. To reconnect, choose Connect this Mac in Orchestrator on that computer. Command-line users can run <code>orchestrator connect</code>.</p>`, "Remove", { danger: true })) return;
       button.disabled = true;
@@ -1535,6 +1539,42 @@ async function repairMachineConnection(machine, failure) {
   throw failure;
 }
 
+async function showSnapshotScreen(machineId, machine) {
+  stopAccountPoll();
+  signingIn = true;
+  setHeader({ title: "", sub: "", actions: "" });
+  document.title = Notifications.tabTitle("Offline snapshot · Orchestrator", state.inbox_count || 0);
+  document.body.classList.add("signin-gate");
+  document.body.removeAttribute("data-page");
+  document.querySelector(".app")?.classList.add("session-locked");
+  view.innerHTML = `<div class="signin-wrap"><div class="signin-card account-card"><p class="muted">Loading snapshot…</p></div></div>`;
+  try {
+    const res = await cpApi("machine/snapshot", { method: "POST", body: { machine_id: machineId } });
+    const snapshot = res.snapshot;
+    if (!snapshot) {
+      toast("No snapshot has been synced for this computer yet.", "info");
+      return openAccount({ list: true });
+    }
+    view.innerHTML = Account.renderSnapshot(snapshot);
+    view.onsubmit = null;
+    view.onclick = async (event) => {
+      const btn = event.target.closest("[data-account-action]");
+      if (!btn || btn.disabled) return;
+      const act = btn.dataset.accountAction;
+      if (act === "back-machines") {
+        openAccount({ list: true });
+      } else if (act === "open") {
+        const targetId = btn.dataset.id || machineId;
+        const targetMachine = machine || { id: targetId, name: snapshot.machine_name || "Computer" };
+        enterMachine(targetMachine);
+      }
+    };
+  } catch (err) {
+    toast(err.message, true);
+    openAccount({ list: true });
+  }
+}
+
 async function enterMachine(machine) {
   stopAccountPoll();
   signingIn = true;
@@ -1551,6 +1591,10 @@ async function enterMachine(machine) {
     }
     await unlockWith(res.token, `Opened ${machine.name}`);
   } catch (err) {
+    if (machine.has_snapshot) {
+      toast(`${machine.name} is offline. Showing offline snapshot.`, "info");
+      return showSnapshotScreen(machine.id, machine);
+    }
     openAccount({ list: true, message: err.message,
       troubleshoot: { machine, endpoint: err.endpoint || machine.endpoint || "", error: err.message } });
   }
@@ -1576,6 +1620,10 @@ async function relocateMachine() {
     const endpoint = (machine?.endpoint || "").replace(/\/+$/, "");
     if (!machine?.reachable || !endpoint) {
       if (!state.project) {
+        if (machine?.has_snapshot) {
+          showSnapshotScreen(machine.id, machine);
+          return;
+        }
         showAccountScreen(machines, `${machine.name} is currently offline. Start \`orchestrator ui --tunnel\` on it.`);
       }
       return;
