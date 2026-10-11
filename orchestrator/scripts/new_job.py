@@ -245,7 +245,7 @@ def issue_payload_for_job(
         labels = ["job:coverage", "status:planned"]
         if clarification:
             labels = ["job:coverage", "status:human-needed"]
-        return title, body, labels, "coverage", plan.get("recommended_job_type") or "test-audit"
+        return title, body, labels, "coverage", "test-audit"
 
     if requested_job_type == "design" or stitch:
         title = plan.get("title") or "[Design] New design"
@@ -253,7 +253,7 @@ def issue_payload_for_job(
         labels = ["job:design", "status:designing"]
         if clarification:
             labels = ["job:design", "status:human-needed"]
-        return title, body, labels, "design", plan.get("recommended_job_type") or "feature-design"
+        return title, body, labels, "design", "feature-design"
 
     title = plan.get("title") or "[Feature] New feature"
     body = build_feature_issue_body(plan, verification, yolo)

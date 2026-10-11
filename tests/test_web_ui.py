@@ -1175,14 +1175,23 @@ process.stdout.write(JSON.stringify({active, menu: globalThis.ConfigurationPages
         result = self.run_configuration_script("""
 const pages = globalThis.ConfigurationPages;
 const ids = pages.groups('member').flatMap((group) => group.entries.map((entry) => entry.id));
-process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), access: pages.resolve('access', 'member')}));
+process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), access: pages.resolve('access', 'member'), models: pages.resolve('models', 'member')}));
 """)
         for entry_id in ("ai-instructions", "fleet", "access", "email", "firebase", "updates"):
             self.assertNotIn(entry_id, result["ids"])
-        for entry_id in ("ai", "models", "base-branch", "xcode-cloud"):
+        for entry_id in ("ai", "base-branch", "xcode-cloud"):
             self.assertIn(entry_id, result["ids"])
         self.assertNotIn("Who can sign in", result["menu"])
+        self.assertNotIn("models", result["ids"])  # models are part of the shared AI destination
         self.assertIsNone(result["access"])
+        self.assertEqual(result["models"]["route"], "#/config/models")  # existing links remain usable
+        hosted = self.run_configuration_script("""
+globalThis.Account = {active: () => true};
+const entries = globalThis.ConfigurationPages.groups('member').flatMap((group) => group.entries);
+process.stdout.write(JSON.stringify(entries.filter((entry) => entry.id === 'fleet')));
+""")
+        self.assertEqual(len(hosted), 1)
+        self.assertEqual(hosted[0]["route"], "#/computers")  # hosted members can switch their own computers
 
     def test_member_configuration_chooser_uses_the_filtered_registry(self):
         html = self.run_configuration_script("""
@@ -1192,7 +1201,8 @@ process.stdout.write(JSON.stringify(page.html));
         self.assertNotIn("Instructions for AI helpers", html)
         self.assertNotIn("Who can sign in", html)
         self.assertIn("Base branch", html)
-        self.assertIn("Add an AI", html)
+        self.assertIn("AI &amp; models", html)
+        self.assertNotIn("#/config/fleet", html)  # local members cannot manage the build fleet
 
     def test_role_ui_hides_owner_controls_and_can_restore_them(self):
         result = self.run_configuration_script("""
@@ -1348,8 +1358,9 @@ process.stdout.write(JSON.stringify(page));
             self.assertIn(group, result["html"])
         self.assertNotIn("Troubleshooting", result["html"])  # its checks are on Readiness now
         for route in ("#/config/ai", "#/config/base-branch", "#/config/email", "#/config/ai-instructions",
-                      "#/config/models", "#/config/fleet", "#/config/firebase"):
+                      "#/config/fleet", "#/config/firebase"):
             self.assertIn(route, result["html"])
+        self.assertNotIn("#/config/models", result["html"])  # models share the AI page
         for route in ("#/readiness", "#/connections", "#/projects"):  # pages of their own, reached from Settings
             self.assertIn(route, result["html"])
         for route in ("#/config/documentation", "#/config/setup-wizard", "#/config/audit", "#/ux-review"):
@@ -3600,7 +3611,7 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
         config = (self.STATIC / "configuration.js").read_text()
-        for label, old in (("Machines", "fleet"), ("Tester builds (Firebase)", "firebase app distribution")):
+        for label, old in (("Machines & computers", "fleet"), ("Tester builds (Firebase)", "firebase app distribution")):
             line = next(l for l in config.splitlines() if f'label: "{label}"' in l)
             self.assertIn(old, line.lower(), label)
         app = (self.STATIC / "app.js").read_text()

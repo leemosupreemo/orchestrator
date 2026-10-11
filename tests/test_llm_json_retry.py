@@ -73,6 +73,23 @@ class JsonRetryTests(unittest.TestCase):
         extracted = llm.extract_json_block(text)
         self.assertEqual(extracted, '{"title": "Coverage Plan", "summary": "Audit", "tasks": []}')
 
+    def test_json_comments_preserve_urls_and_source_inside_strings(self):
+        payload = {"files": [{"content": '<svg xmlns="http://www.w3.org/2000/svg"/> // literal'}]}
+        encoded = json.dumps(payload)
+        for text in (encoded, "```json\n" + encoded + "\n```", "Here is the output: " + encoded):
+            with self.subTest(text=text):
+                self.assertEqual(json.loads(llm.extract_json_block(text)), payload)
+        self.assertEqual(json.loads(llm.extract_json_block('{"url": "https://example.com", // comment\n "ok": true}')),
+                         {"url": "https://example.com", "ok": True})
+
+    def test_protected_paths_apply_to_the_json_restatement(self):
+        protected = [Path("/project")]
+        with patch.object(llm, "_run_llm_single", side_effect=[PROSE, PLAN]) as single:
+            llm.run_llm(MODEL, "PLAN IT", allowed_models=[MODEL], role=ModelRole.BUILDER,
+                        protected_paths=protected)
+        self.assertEqual(single.call_count, 2)
+        self.assertTrue(all(call.kwargs["protected_paths"] == protected for call in single.call_args_list))
+
     def test_extract_json_block_strips_ansi_escapes(self):
         # ANSI color codes and cursor movement codes (e.g. from Ollama or terminal output)
         text = (

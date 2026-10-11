@@ -38,7 +38,7 @@
       id: "computers",
       label: "Computers & access",
       entries: [
-        {id: "fleet", label: "Machines & computers", description: "Manage build machines or switch between your computers.", route: "#/config/fleet", enabled: true, status: null},
+        {id: "fleet", label: "Machines & computers", description: "Manage the build fleet or switch between your computers.", route: "#/config/fleet", enabled: true, status: null},
         {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, listed: false, hostedOnly: true},
         {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
         {id: "updates", label: "Updates", description: "Update Orchestrator on this and your other machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
@@ -69,7 +69,9 @@
     return registry.map((group) => ({
       id: group.id,
       label: group.label,
-      entries: group.entries.filter((entry) => entry.listed !== false && shown(entry) && (role !== "member" || !entry.ownerOnly)).map((entry) => {
+      entries: group.entries.filter((entry) => entry.listed !== false && shown(entry)
+        && (role !== "member" || !entry.ownerOnly)
+        && (entry.id !== "fleet" || role !== "member" || Boolean(root.Account && root.Account.active()))).map((entry) => {
         const item = copyEntry(entry);
         // Members use this shared destination to switch their hosted computers; owners manage the build fleet.
         if (item.id === "fleet" && role === "member" && root.Account && root.Account.active()) item.route = "#/computers";

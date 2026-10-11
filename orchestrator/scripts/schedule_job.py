@@ -379,6 +379,11 @@ def schedule_ready_group(
     job: dict[str, Any],
     machines: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        machines = [machine for machine in machines if machine.get("execution_mode") == "local"]
+        if not machines:
+            raise RuntimeError("Design and Tests jobs require a local worker.")
     groups = ready_groups(job)
 
     if not groups:
@@ -473,6 +478,9 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
         execute_job(job_path, resume=resume)
         return
 
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if read_json(job_path).get("type") in NONPRODUCTION_TYPES:
+        raise RuntimeError("Design and Tests jobs require a local worker.")
     remote_repo = machine["repo_path"]
     job_basename = job_path.name
     ssh_target = remote_probe.get("active_ssh_target") or machine.get("ssh_target")

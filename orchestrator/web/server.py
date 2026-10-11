@@ -4937,13 +4937,17 @@ class UIHandler(BaseHTTPRequestHandler):
             relative = target.relative_to(safe_resolve(runtime_dir(root)))
             if not self._is_owner() and (not relative.parts or relative.parts[0] not in {"jobs", "output"}):
                 self._require_owner("read private Orchestrator files")
-            if target.stat().st_size > MAX_FILE_BYTES:
+            truncated = target.stat().st_size > MAX_FILE_BYTES
+            if truncated:
                 with target.open("rb") as fh:
                     fh.seek(-MAX_FILE_BYTES, os.SEEK_END)
                     text = "[showing the last 2 MB]\n" + fh.read().decode("utf-8", "replace")
             else:
                 text = target.read_text(encoding="utf-8", errors="replace")
-            self._json({"path": str(target.relative_to(safe_resolve(runtime_dir(root)))), "text": text})
+            preview = (not truncated and len(relative.parts) == 4
+                       and relative.parts[0] == "output" and relative.parts[2] == "references"
+                       and relative.suffix.lower() in {".html", ".svg"})
+            self._json({"path": str(relative), "text": text, "preview": preview})
         elif method == "GET" and parts == ["new-project"]:
             self._require_owner("create a project")
             self._json(new_project_state())

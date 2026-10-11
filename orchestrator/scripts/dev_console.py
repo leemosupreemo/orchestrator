@@ -7063,7 +7063,7 @@ def handle_configuration_menu(session_allowed_machines: list[str], session_allow
             print_wrapped_option("[\033[93mI\033[0m] Instructions for AI helpers")
 
             print("\n  \033[1;96m--- Computers & access ---\033[0m")
-            print_wrapped_option("[\033[93mF\033[0m] Machines")
+            print_wrapped_option("[\033[93mF\033[0m] Machines & computers")
             print_wrapped_option("[\033[93mU\033[0m] Updates")
 
             print("\n  \033[1;96m--- Alerts ---\033[0m")

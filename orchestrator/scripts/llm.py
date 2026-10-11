@@ -61,12 +61,17 @@ def extract_json_block(text: str) -> str:
                 escape = False
         return None, -1, -1
 
+    def _strip_comments(value: str) -> str:
+        # A URL or source-code comment inside a JSON string is literal content.
+        return re.sub(r'"(?:\\.|[^"\\])*"|//[^\n]*',
+                      lambda match: "" if match.group().startswith("//") else match.group(), value).strip()
+
     # 1. Try markdown fences (all blocks)
     fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, re.S)
     if fenced_blocks:
         # Prioritize any fenced block that parses as a JSON dict
         for b in fenced_blocks:
-            b_clean = re.sub(r"//.*$", "", b.strip(), flags=re.M).strip()
+            b_clean = _strip_comments(b.strip())
             try:
                 parsed = json.loads(b_clean)
                 if isinstance(parsed, dict):
@@ -75,7 +80,7 @@ def extract_json_block(text: str) -> str:
                 pass
         # Next, try any fenced block that parses as valid JSON (e.g. list)
         for b in fenced_blocks:
-            b_clean = re.sub(r"//.*$", "", b.strip(), flags=re.M).strip()
+            b_clean = _strip_comments(b.strip())
             try:
                 json.loads(b_clean)
                 return b_clean
@@ -90,7 +95,7 @@ def extract_json_block(text: str) -> str:
         dict_valid = False
         dict_clean = ""
         if dict_cand:
-            dict_clean = re.sub(r"//.*$", "", dict_cand, flags=re.M).strip()
+            dict_clean = _strip_comments(dict_cand)
             try:
                 if isinstance(json.loads(dict_clean), dict):
                     dict_valid = True
@@ -100,7 +105,7 @@ def extract_json_block(text: str) -> str:
         list_valid = False
         list_clean = ""
         if list_cand:
-            list_clean = re.sub(r"//.*$", "", list_cand, flags=re.M).strip()
+            list_clean = _strip_comments(list_cand)
             try:
                 json.loads(list_clean)
                 list_valid = True
@@ -125,7 +130,7 @@ def extract_json_block(text: str) -> str:
             text = list_cand
 
     # 3. Strip single-line comments (// ...) which some models (like deepseek) hallucinate into JSON
-    text = re.sub(r"//.*$", "", text, flags=re.M)
+    text = _strip_comments(text)
     return text.strip()
 
 
@@ -150,7 +155,7 @@ JSON_REMINDER = (
 )
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None) -> tuple[str, str, str]:
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model
@@ -174,12 +179,13 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     elif not allowed_models:
         attempts.insert(0, primary_id)
 
+    protection = {"protected_paths": protected_paths} if protected_paths else {}
     last_error = None
     actual_session_id = session_id or str(uuid.uuid4())
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images)
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, **protection)
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
@@ -191,7 +197,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     # with only one model allowed (a free-only setup) there is no other to move on to.
                     print(f"⚠️  {current_model} produced invalid JSON. Asking it to restate the answer as plain JSON...")
                     try:
-                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images)
+                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images, **protection)
                         json.loads(extract_json_block(raw_output), strict=False)
                     except json.JSONDecodeError as exc2:
                         print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
@@ -356,7 +362,7 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
-def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None) -> str:
+def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
         prompt = f"[SOURCE: {source}]\n\n{prompt}"
@@ -367,6 +373,9 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
 
     actual_session_id = session_id or str(uuid.uuid4())
     cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id, images=images)
+    if protected_paths:
+        from orchestrator.job_scope import protect_command
+        cmd = protect_command(cmd, protected_paths)
     env = get_llm_env()
 
     prompt_chars = len(prompt)

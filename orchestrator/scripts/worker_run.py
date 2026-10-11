@@ -49,6 +49,7 @@ from common import (
 )
 from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
+from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
 
 
@@ -364,6 +365,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 print("\n      - Detached from logs.")
             return
 
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        from nonproduction_job import execute_nonproduction_job
+        execute_nonproduction_job(job_path)
+        return
+
     # Task 1: Update Job Schema and PID Tracking
     job["worker_pid"] = os.getpid()
     job["worker_host"] = socket.gethostname()  # a process id only means something on the machine that wrote it
@@ -439,6 +446,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         except Exception:
             pass
 
+        # Clarification and an already completed task list need these before any builder call.
+        is_yolo = job.get("is_yolo", False)
+        task_output = {}
         # Capture state before builder
         pre_state = get_repo_state()
 

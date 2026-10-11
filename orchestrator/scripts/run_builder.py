@@ -147,6 +147,9 @@ def inspect_progress(job: dict) -> bool:
 
 def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]:
     job = read_json(job_path)
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        raise RuntimeError("The production builder is disabled for Design and Tests jobs.")
     if "type" not in job:
         if "repro_steps" in job.get("plan", {}):
             job["type"] = "bug-fix"
