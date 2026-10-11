@@ -91,7 +91,7 @@ def cp(req: https_fn.Request) -> https_fn.Response:
     except ControlError as exc:
         return _json(exc.status, {"error": str(exc)})
     headers = {k.lower(): v for k, v in req.headers.items()}
-    status, payload = plane.handle(req.method, req.path, headers, body, _verify_user)
+    status, payload = _get_plane().handle(req.method, req.path, headers, body, _verify_user)
     return _json(status, payload)
 
 
