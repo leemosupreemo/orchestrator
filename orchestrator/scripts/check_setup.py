@@ -508,6 +508,19 @@ def _check():
         print_optional_result(detected, label, "DETECTED" if detected else "recommended, not required")
         print(f"        \033[90m└─ Value: {value_desc}\033[0m")
         
+    # Central device-log store (orchestrator logs ...)
+    if PROJECT_CONFIG.remote_logs:
+        from cloud_logs import CloudLogsError, load_config
+        try:
+            logs_config = load_config()
+            logs_config.token()
+            print_optional_result(True, "Device log store", f"CONFIGURED ({logs_config.api_base})")
+        except CloudLogsError as exc:
+            print_optional_result(False, "Device log store", str(exc))
+    else:
+        print_optional_result(False, "Device log store", "not configured — run 'orchestrator logs setup'")
+    print("        \033[90m└─ Value: Pull device/tester-build logs into jobs from anywhere, including SSH on mobile.\033[0m")
+
     # Tailscale Check (Optional but recommended for secure fleet networking)
     ts_paths = ["tailscale", "/Applications/Tailscale.app/Contents/Resources/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/tailscale", "/opt/tailscale/bin/tailscale", "/usr/local/bin/tailscale"]
     ts_bin = None

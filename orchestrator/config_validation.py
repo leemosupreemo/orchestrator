@@ -37,6 +37,13 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
         errors.append(f"visual_app_path does not exist: {config.visual_app_path}")
     if config.visual_app_path and not config.app_bundle_id:
         errors.append("visual_app_path requires app_bundle_id for simulator launch.")
+    remote_logs = getattr(config, "remote_logs", None) or {}
+    if remote_logs:
+        if remote_logs.get("provider", "sentry") != "sentry":
+            errors.append("remote_logs.provider must be 'sentry'.")
+        missing = [k for k in ("api_base", "org") if not remote_logs.get(k)]
+        if missing:
+            errors.append(f"remote_logs is missing {', '.join(missing)}. Run 'orchestrator logs setup'.")
     if config.git_remote and ("github_pat_" in config.git_remote or (config.git_remote.startswith("http") and "@" in config.git_remote)):
         errors.append(
             "git_remote contains a hardcoded Personal Access Token (PAT). "
