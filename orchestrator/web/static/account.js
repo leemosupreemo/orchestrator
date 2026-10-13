@@ -43,7 +43,13 @@
   const escapeHtml = root.Html.escape;
 
   function isHosted(origin = root.location?.origin) {
-    return HOSTED_ORIGINS.includes(origin);
+    if (HOSTED_ORIGINS.includes(origin)) return true;
+    try {
+      const host = new URL(origin).hostname;
+      return host.endsWith(".web.app") || host.endsWith(".firebaseapp.com");
+    } catch {
+      return false;
+    }
   }
 
   // Google, Apple and GitHub sign-in (Firebase) only work on domains the Firebase project authorizes: the hosted app and

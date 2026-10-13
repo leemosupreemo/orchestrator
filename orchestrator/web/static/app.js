@@ -1018,13 +1018,9 @@ async function refreshState() {
     showSignInGate("Sign in with your access token to continue.");
     return;
   }
-  if (Account.active() && !backend) { // the hosted app, before a computer is chosen: just the sign-in screen
+  if (Account.active() && (!backend || !window.firebase?.auth?.().currentUser)) { // the hosted app, before a computer is chosen: just the sign-in screen
     if (window.firebase?.auth?.().currentUser) {
       openAccount().catch(() => showSignInGate());
-      return;
-    }
-    if (!authResolved) {
-      showSigningIn("Connecting to your account…");
       return;
     }
     showSignInGate();
@@ -1084,10 +1080,8 @@ async function refreshState() {
         relocateMachine().catch(() => openAccount().catch(() => {}));
         return;
       }
-      if (!authResolved) {
-        showSigningIn("Connecting to your account…");
-        return;
-      }
+      showSignInGate();
+      return;
     }
     if (pollFailures >= 2) relocateMachine();
     if (!state.project) {
@@ -1659,7 +1653,7 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) 
           openAccount().catch(() => {});
         }
       } else {
-        if (!getToken() && !state.project) {
+        if (!state.project) {
           showSignInGate();
         }
       }
@@ -6421,7 +6415,6 @@ pages.connections = async (_, query) => {
               connectFigma(cid);
             });
           }
-          const quickTrello = $("#trello-dialog-quick-btn");
           if (quickTrello) {
             quickTrello.addEventListener("click", () => {
               const keyInput = $("#dialog-body input[name='key']");

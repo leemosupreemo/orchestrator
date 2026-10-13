@@ -177,7 +177,24 @@ class ConnectionUIBehaviorTests(unittest.TestCase):
         self.assertIn("configureSearchShortcut", self.app_js)
         self.assertIn(".search-btn kbd { display: none !important; }", self.style_css)
 
+    def test_static_js_files_have_no_duplicate_identifiers_or_syntax_errors(self):
+        import subprocess
+        static_dir = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        for js_file in static_dir.glob("*.js"):
+            res = subprocess.run(["node", "--check", str(js_file)], capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"Syntax error in {js_file.name}: {res.stderr}")
+
+    def test_hosted_app_shows_signin_gate_when_unauthenticated(self):
+        # Hosted app without authenticated user shows sign-in gate immediately, not getting stuck on spinner
+        self.assertIn("if (Account.active() && (!backend || !window.firebase?.auth?.().currentUser))", self.app_js)
+        # onAuthStateChanged does not block showSignInGate on stale localStorage token
+        self.assertIn("window.firebase.auth().onAuthStateChanged(async (user) => {", self.app_js)
+        on_auth = self.app_js[self.app_js.index("window.firebase.auth().onAuthStateChanged"):][:500]
+        self.assertNotIn("!getToken() && !state.project", on_auth)
+        self.assertIn("if (!state.project) {\n          showSignInGate();", on_auth)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
