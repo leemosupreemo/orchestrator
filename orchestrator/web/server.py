@@ -3056,8 +3056,9 @@ def sentry_suggestion(root: Path) -> dict[str, str]:
 
 def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) -> dict[str, Any]:
     saved = saved_integrations(root)
+    settings = read_settings(root)
     try:
-        creds, who = integrations.connect(provider_id, {k: str(v) for k, v in values.items()}, saved.get(provider_id))
+        creds, who = integrations.connect(provider_id, {k: str(v) for k, v in values.items()}, saved.get(provider_id), settings=settings)
     except integrations.IntegrationError as exc:
         raise integration_error(exc)
     settings = read_settings(root)

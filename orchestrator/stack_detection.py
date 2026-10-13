@@ -164,7 +164,69 @@ def detect_project_stack(root: Path) -> DetectedStack:
             manifest_file="go.mod",
         )
 
-    # 7. Generic / Unknown Stack
+    # 7. Documented commands in docs/build-test-commands.md
+    doc_cmds = root / "docs" / "build-test-commands.md"
+    if doc_cmds.exists():
+        try:
+            content = doc_cmds.read_text(encoding="utf-8", errors="ignore")
+            def _extract_cmd(heading: str) -> str | None:
+                pat = rf"^## (?:iOS app )?{heading}\s*$((?:(?!^## ).)*?)^```bash\s*\n(.*?)^```"
+                m = re.search(pat, content, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+                return m.group(2).strip() if m else None
+            b_cmd = _extract_cmd("build")
+            t_cmd = _extract_cmd("tests?")
+            if b_cmd or t_cmd:
+                return DetectedStack(
+                    language="generic",
+                    framework="docs",
+                    display_name="Documented",
+                    build_command=b_cmd,
+                    test_command=t_cmd,
+                    uses_xcode=False,
+                    manifest_file="docs/build-test-commands.md",
+                )
+        except Exception:
+            pass
+
+    # 8. Inferred from Product Requirements (new project created from idea)
+    for prd_path in (root / "docs" / "product" / "prd.md", root / "docs" / "prd.md"):
+        if prd_path.exists():
+            try:
+                prd_text = prd_path.read_text(encoding="utf-8", errors="ignore").lower()
+                if any(k in prd_text for k in ("ios app", "macos app", "swift", "apple")):
+                    return DetectedStack(
+                        language="swift",
+                        framework="spm",
+                        display_name="Swift (from PRD)",
+                        build_command="swift build",
+                        test_command="swift test",
+                        uses_xcode=False,
+                        manifest_file=str(prd_path.relative_to(root)),
+                    )
+                if any(k in prd_text for k in ("python", "fastapi", "django", "flask")):
+                    return DetectedStack(
+                        language="python",
+                        framework="unittest",
+                        display_name="Python (from PRD)",
+                        build_command="python3 -m compileall -q .",
+                        test_command="python3 -m unittest discover tests",
+                        uses_xcode=False,
+                        manifest_file=str(prd_path.relative_to(root)),
+                    )
+                if any(k in prd_text for k in ("web app", "node", "typescript", "javascript", "react", "vue", "svelte")):
+                    return DetectedStack(
+                        language="typescript",
+                        framework="npm",
+                        display_name="Web / Node.js (from PRD)",
+                        build_command="npm run build",
+                        test_command="npm test",
+                        uses_xcode=False,
+                        manifest_file=str(prd_path.relative_to(root)),
+                    )
+            except Exception:
+                pass
+
+    # 9. Generic / Unknown Stack
     return DetectedStack(
         language="generic",
         framework=None,

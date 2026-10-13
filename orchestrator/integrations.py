@@ -29,6 +29,8 @@ TIMEOUT = 15
 # or per computer with ORCHESTRATOR_TRELLO_APP_KEY (or `trello_app_key` in settings). Without it, Trello falls back to
 # pasting a key and token.
 TRELLO_APP_KEY = ""
+FIGMA_CLIENT_ID = os.environ.get("ORCHESTRATOR_FIGMA_CLIENT_ID", "")
+FIGMA_CLIENT_SECRET = os.environ.get("ORCHESTRATOR_FIGMA_CLIENT_SECRET", "")
 EXPIRY_WARN_DAYS = 14
 MAX_CONTEXT_CHARS = 20_000
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -510,8 +512,16 @@ class Figma(Provider):
     token_max_days = 90
     URL = re.compile(r"figma\.com/(?:design|file|proto|board)/([A-Za-z0-9]+)")
 
+    def _headers(self) -> dict[str, str]:
+        token = self.c.get("token", "").strip()
+        auth_type = self.c.get("auth_type", "")
+        if auth_type == "oauth" or token.startswith("figo_") or token.startswith("Bearer "):
+            bearer = token[7:] if token.startswith("Bearer ") else token
+            return {"Authorization": f"Bearer {bearer}"}
+        return {"X-Figma-Token": token}
+
     def _get(self, path: str) -> Any:
-        return http_json("https://api.figma.com" + path, {"X-Figma-Token": self.c.get("token", "")}, self.secrets())
+        return http_json("https://api.figma.com" + path, self._headers(), self.secrets())
 
     def describe(self) -> str:
         return self.c.get("handle", "") or "Figma account"
@@ -614,6 +624,55 @@ def trello_app_key(settings: dict[str, Any] | None = None) -> str:
             or TRELLO_APP_KEY).strip()
 
 
+def figma_client_id(settings: dict[str, Any] | None = None) -> str:
+    return (os.environ.get("ORCHESTRATOR_FIGMA_CLIENT_ID") or str((settings or {}).get("figma_client_id") or "")
+            or FIGMA_CLIENT_ID).strip()
+
+
+def figma_client_secret(settings: dict[str, Any] | None = None) -> str:
+    return (os.environ.get("ORCHESTRATOR_FIGMA_CLIENT_SECRET") or str((settings or {}).get("figma_client_secret") or "")
+            or FIGMA_CLIENT_SECRET).strip()
+
+
+def exchange_figma_token(code: str, code_verifier: str = "", redirect_uri: str = "",
+                         client_id: str = "", client_secret: str = "") -> dict[str, Any]:
+    params = {
+        "client_id": client_id,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    if code_verifier:
+        params["code_verifier"] = code_verifier
+    if client_secret:
+        params["client_secret"] = client_secret
+    data = urllib.parse.urlencode(params).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.figma.com/v1/oauth/token",
+        data=data,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "orchestrator",
+        },
+    )
+    secrets = [s for s in (client_secret, code, code_verifier) if s]
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=_ssl_context()) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="ignore")
+        try:
+            msg = json.loads(err_body).get("message") or json.loads(err_body).get("error")
+        except Exception:
+            msg = None
+        raise IntegrationError(_scrub(msg or f"Figma authorization failed ({exc.code}).", secrets)) from None
+    except Exception as exc:
+        raise IntegrationError(_scrub(f"Couldn't reach Figma: {exc}", secrets)) from None
+
+
 def expiry_view(expires: str, today: date | None = None) -> dict[str, Any] | None:
     """When a saved token stops working, and whether to warn: None when it doesn't expire (or wasn't recorded)."""
     try:
@@ -648,16 +707,41 @@ def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str
             "rejected": bool(connected and (status or {}).get(pid, {}).get("rejected_at")),
             "suggest": (suggest or {}).get(pid) or {},
             **({"authorize_key": trello_app_key(settings)} if pid == "trello" and trello_app_key(settings) else {}),
+            **({"authorize_key": figma_client_id(settings)} if pid == "figma" and figma_client_id(settings) else {}),
         })
     return out
 
 
-def connect(provider_id: str, values: dict[str, str], previous: dict[str, str] | None = None) -> tuple[dict[str, str], str]:
+def connect(provider_id: str, values: dict[str, str], previous: dict[str, str] | None = None,
+            *, settings: dict[str, Any] | None = None) -> tuple[dict[str, str], str]:
     """Validate against the live service; returns (creds to store, who we're connected as).
     Blank secret fields keep the previously saved value."""
     cls = PROVIDERS.get(provider_id)
     if not cls:
         raise IntegrationError("Unknown connection.")
+
+    if provider_id == "figma" and values.get("code"):
+        cid = values.get("client_id") or figma_client_id(settings)
+        if not cid:
+            raise IntegrationError("Figma Client ID is required to complete authorization.")
+        secret = values.get("client_secret") or figma_client_secret(settings)
+        token_data = exchange_figma_token(
+            code=values["code"],
+            code_verifier=values.get("code_verifier", ""),
+            redirect_uri=values.get("redirect_uri", ""),
+            client_id=cid,
+            client_secret=secret,
+        )
+        values = {
+            **values,
+            "token": token_data.get("access_token") or "",
+            "auth_type": "oauth",
+        }
+        if token_data.get("refresh_token"):
+            values["refresh_token"] = token_data["refresh_token"]
+        if token_data.get("expires_in"):
+            values["expires"] = (date.today() + timedelta(seconds=int(token_data["expires_in"]))).isoformat()
+
     creds: dict[str, str] = {}
     for key, label, secret, _, _ in cls.fields:
         value = str(values.get(key) or "").strip() or (previous or {}).get(key, "")
@@ -666,6 +750,9 @@ def connect(provider_id: str, values: dict[str, str], previous: dict[str, str] |
             raise IntegrationError(f"{label} is required.")
         if value:
             creds[key] = value
+    for extra_key in ("auth_type", "refresh_token"):
+        if values.get(extra_key):
+            creds[extra_key] = str(values[extra_key])
     if cls.token_max_days:
         raw = str(values.get("expires") or "").strip()
         latest = date.today() + timedelta(days=cls.token_max_days)

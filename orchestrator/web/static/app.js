@@ -347,6 +347,7 @@ function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact 
   $("#dialog-ok").textContent = okLabel;
   $("#dialog-ok").hidden = false;
   $("#dialog-ok").className = danger ? "btn danger" : "btn primary";
+  $("#dialog-ok").disabled = false;
   dlg.returnValue = "";
   if (!dlg.open) dlg.showModal();
   const first = $("#dialog-body textarea, #dialog-body input:not([type=hidden]):not([type=checkbox]):not([type=radio]), #dialog-body select");
@@ -361,8 +362,10 @@ function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact 
   return new Promise((resolve) => {
     dlg.addEventListener("close", () => {
       dlg.classList.remove("dialog-compact");
+      const wasOk = dlg.returnValue === "ok" && !$("#dialog-ok")?.disabled;
       $("#dialog-ok").className = "btn primary";
-      if (dlg.returnValue !== "ok") return resolve(null);
+      $("#dialog-ok").disabled = false;
+      if (!wasOk) return resolve(null);
       resolve(Object.fromEntries(new FormData($("#dialog-form")).entries()));
     }, { once: true });
   });
@@ -1174,7 +1177,11 @@ document.addEventListener("change", async (e) => {
     await api("project", { method: "POST", body: { root: val } });
     await refreshState();
     toast(`Switched to ${state.project.name}`);
-    location.hash = "#/";
+    if (location.hash.startsWith("#/product")) {
+      location.hash = "#/product";
+    } else {
+      location.hash = "#/";
+    }
     route();
   } catch (err) {
     toast(err.message, true);
@@ -3093,8 +3100,7 @@ pages.new = async (_, query) => {
   const opt = (text) => ` <span class="muted">(${text})</span>`;
   const uploadBox = (label, hint, accept, optional = true) => `<div class="field"><span>${label}${optional ? opt("optional") : ""}</span>
       <input type="file" id="nj-files" class="sr-only" multiple accept="${accept}" aria-label="${esc(label)}">
-      <label class="prd-drop upload-drop file-picker" for="nj-files" id="nj-drop">${filePickerContent("Add files to your job")}</label>
-      <small class="hint-text">${hint}</small>
+      <label class="prd-drop upload-drop file-picker" for="nj-files" id="nj-drop">${filePickerContent("Add files to your job", hint)}</label>
       <div class="upload-chips row" id="nj-chips" aria-live="polite"></div></div>`;
   const logPicker = () => {
     const rows = (st.recent || []).map((l, i) => `<label class="check"><input type="checkbox" data-nj-log="${esc(l.path)}" ${st.logs.has(l.path) ? "checked" : ""}>
@@ -3274,12 +3280,12 @@ pages.new = async (_, query) => {
 
   return {
     title: "New job",
-    sub: "Tell it what you need. It's planned, then built on a worker, and anything that needs you shows up on Home.",
+    sub: "",
     html: `
     <form class="card card-b stack" id="new-job">
       <div class="field"><span>What kind of work?</span>
         <div class="segmented" role="radiogroup" aria-label="Kind of work">${JOB_TYPE_INFO.map(([v, t, d]) =>
-          `<label><input type="radio" name="type" value="${v}" ${st.type === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
+          `<label class="job-type-card job-type-${v}" data-type="${v}"><input type="radio" name="type" value="${v}" ${st.type === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
         </div></div>
       <div id="nj-discovery"></div>
       <div class="stack" id="nj-fields"></div>
@@ -4562,13 +4568,10 @@ function productStripHtml(p) {
 }
 
 pages.product = async (_, query) => {
-  let [p, integrationsData, productsData] = await Promise.all([
+  let [p, integrationsData] = await Promise.all([
     api("product"),
     api("integrations").catch(() => ({ integrations: [] })),
-    api("projects").catch(() => null),
   ]);
-  const products = (productsData?.projects || (state.project ? [{ ...state.project, active: true }] : []))
-    .slice().sort((a, b) => Number(b.active) - Number(a.active));
   let connectedApps = (integrationsData?.integrations || []).filter((i) => i.connected);
   const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1", section: query?.get("section") || "" };
   const sectionCard = (s) => {
@@ -4605,11 +4608,6 @@ pages.product = async (_, query) => {
       <div class="meta">${esc(ago(v.at))}${v.summary ? ` · ${esc(v.summary)}` : ""}</div><div class="prd-diff" hidden></div></div>
       <div class="side"><button type="button" class="btn small ghost" data-prd-diff="${esc(v.id)}">See changes</button>${i === 0 ? "" : `<button type="button" class="btn small" data-prd-restore="${esc(v.id)}">Restore</button>`}</div></div>`).join("");
   const render = () => `
-      <section class="card mb-16" aria-labelledby="current-products-title"><div class="card-h"><h2 id="current-products-title">Current products</h2><a href="#/projects">Manage</a></div>
-        <div class="card-b row gap-8 wrap">${products.map((product) => product.active
-          ? `<span class="chip"><strong>${esc(product.name)}</strong><span class="muted"> · Current</span></span>`
-          : `<button type="button" class="btn small" data-switch-project="${esc(product.root)}" data-then="#/product">${esc(product.name)}</button>`).join("") || `<span class="muted">No products added yet.</span>`}
-          ${!productsData ? `<span class="muted">Couldn't load the product list. <a href="#/projects">Try again</a></span>` : ""}</div></section>
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2></div>
         <div class="card-b stack">
           <div class="row gap-10 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button></div>
@@ -4634,7 +4632,7 @@ pages.product = async (_, query) => {
             <option value="__manage_llms__">⚙️ Manage LLMs</option>
           </select>
         </div>
-        <div class="muted">After feature or design jobs, AI updates clear changes, keeps your wording, and notifies you. Review or undo any update in History.</div></div></section>
+        <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
         <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
@@ -5326,16 +5324,72 @@ pages.tests = async (_, query) => {
         <div class="card-b stack"><p>Builds and launches your app in the simulator, then captures screenshots for you to review.</p>
           <p class="muted">Requires Xcode and an iOS simulator.</p>
           <div><button type="button" class="btn" ${act("visual_check")}>Capture screenshots</button></div></div></section>` : ""}
-      ${data.frameworks && Object.keys(data.frameworks).length > 0 ? `<section class="card"><details class="fold"><summary class="card-h"><h2>Test frameworks &amp; tools <span class="count">${Object.keys(data.frameworks).length}</span></h2></summary>
-        <div class="card-b stack"><p class="muted">Detection checks your test source files and local tools. Expand an item to see what it does and how to get started.</p>
-          <div class="framework-grid">${Object.entries(data.frameworks).map(([key, f]) => `<details class="framework"><summary class="framework-h"><strong>${esc(f.name)}</strong>
-            <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Detected" : "Not detected"}</span></summary>
-            <div class="framework-detail stack"><p>${esc(f.desc)}</p><p class="muted">${key === "xcbeautify" ? (f.installed ? "This formatter is installed on this computer. It makes Xcode build logs easier to read." : "This formatter was not found on this computer. It formats build logs; it does not add tests.")
-              : key === "canary_suite" ? (f.installed ? "The generated sample test file exists in this project. Replace its examples with checks for your app." : "Generate a small sample Swift Testing suite, then replace its examples with checks for your app.")
-              : key === "coverage_py" ? (f.installed ? "coverage.py is installed and ready to measure statement coverage." : "coverage.py is not installed yet. Clicking Calculate will automatically install it and calculate test coverage.")
-              : f.installed ? "Usage was found in your test source files. This does not confirm every test passes; run your suites to check." : "No usage was found in your test source files. It may still be installed as a dependency. Create a test job to add relevant tests."}</p>
-              ${key === "canary_suite" && !f.installed ? `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>` : key === "coverage_py" && !f.installed ? `<div><button type="button" class="btn small" ${act("coverage")}>Auto-add coverage.py</button></div>` : key !== "xcbeautify" && key !== "canary_suite" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`).join("")}</div>
-        </div></details></section>` : ""}`,
+      ${data.frameworks && Object.keys(data.frameworks).length > 0 ? (() => {
+        const frameworkGuidance = (key, f) => {
+          const guide = {
+            swift_testing: {
+              benefit: "Apple's modern Swift-native testing library with @Test, @Suite, and #expect. Executes concurrently with macro-based diagnostics and zero boilerplate.",
+              howToUse: "Add `import Testing` to your test target and mark test functions with `@Test func yourFeature() { #expect(...) }`.",
+              status: f.installed ? "Found in your test files. Run your test suites above to execute." : "No @Test files detected. Create a coverage job to scaffold native Swift tests."
+            },
+            snapshot_testing: {
+              benefit: "Visual UI regression prevention. Captures SwiftUI and UIKit view hierarchies pixel-by-pixel to catch unintended layout breaks and dark mode regressions.",
+              howToUse: "Add `import SnapshotTesting` to your tests and assert views with `assertSnapshot(of: view, as: .image)`.",
+              status: f.installed ? "Detected in your test source files. Compares snapshots against stored baseline images." : "Not found in your tests. Add SnapshotTesting via SPM to record reference screenshots."
+            },
+            quick_nimble: {
+              benefit: "Behavior-Driven Development (BDD) specs with human-readable descriptions and asynchronous polling matchers (toEventually).",
+              howToUse: "Subclass `QuickSpec` and define test scenarios using `describe(...) { it(...) { expect(...).toEventually(...) } }`.",
+              status: f.installed ? "Quick specs and Nimble expectations detected in your test suites." : "Not found in your tests. Useful for complex async state machines and polling assertions."
+            },
+            canary_suite: {
+              benefit: "Rapid toolchain validation. A minimal starter suite that verifies your test target, build settings, and Swift Testing linkage end-to-end.",
+              howToUse: "Click 'Add sample suite' below to generate SampleSwiftTestingTests.swift, then run tests to verify the pipeline.",
+              status: f.installed ? "Sample canary suite exists in your test target. Replace its examples with checks for your app." : "Not generated yet. Click 'Add sample suite' below to scaffold a ready-to-run test file."
+            },
+            xcbeautify: {
+              benefit: "Clean, human-readable build logs. Filters raw multiline xcodebuild logs into structured, single-line summaries with highlighted errors.",
+              howToUse: "Install once on your Mac with `brew install xcbeautify`. Orchestrator detects it and formats build logs automatically.",
+              status: f.installed ? "Installed on this computer. Clean build logs are formatted automatically." : "Not found on this computer. Formats build logs for easier reading; it does not add tests."
+            },
+            coverage_py: {
+              benefit: "Statement and branch coverage analysis. Highlights exact lines of code that need tests.",
+              howToUse: "Click 'Auto-add coverage.py' or Calculate Coverage above. Orchestrator automatically runs coverage measurement.",
+              status: f.installed ? "coverage.py is installed and ready to measure statement coverage." : "Not installed yet. Clicking Calculate will automatically install it and calculate test coverage."
+            },
+            pytest: {
+              benefit: "Python test runner with automatic test discovery, parameterized tests, modular fixtures, and rich assertion diffs.",
+              howToUse: "Write `test_*.py` files with functions named `test_*()` and run via Orchestrator or `pytest` CLI.",
+              status: f.installed ? "pytest is installed and available for test execution." : "No pytest tests found. Create a test job to add tests with pytest assertions."
+            },
+            unittest: {
+              benefit: "Built-in standard library testing with zero dependencies, structured TestCase classes, and predictable test lifecycles.",
+              howToUse: "Subclass `unittest.TestCase` and run your suites via Orchestrator or `python -m unittest`.",
+              status: f.installed ? "Standard library unittest is supported and ready to run." : "Subclass unittest.TestCase in your test files to add test cases."
+            }
+          }[key] || {
+            benefit: f.desc || "Automated testing tool for code quality and regression prevention.",
+            howToUse: "Add test files referencing this framework and run test suites to verify behavior.",
+            status: f.installed ? "Usage was found in your test source files." : "No usage was found in your test source files."
+          };
+          return guide;
+        };
+        return `<section class="card"><details class="fold"><summary class="card-h"><h2>Test frameworks &amp; tools <span class="count">${Object.keys(data.frameworks).length}</span></h2></summary>
+          <div class="card-b stack">
+            <div class="framework-grid">${Object.entries(data.frameworks).map(([key, f]) => {
+              const guide = frameworkGuidance(key, f);
+              return `<details class="framework"><summary class="framework-h"><strong>${esc(f.name)}</strong>
+              <span class="badge ${f.installed ? "good" : "muted-badge"}">${f.installed ? "Detected" : "Not detected"}</span></summary>
+              <div class="framework-detail stack">
+                <div class="framework-guide">
+                  <div class="framework-guide-row"><strong>Benefit:</strong> <span>${esc(guide.benefit)}</span></div>
+                  <div class="framework-guide-row"><strong>How to use:</strong> <span>${codeSpans(guide.howToUse)}</span></div>
+                </div>
+                <p class="muted">${esc(guide.status)}</p>
+                ${key === "canary_suite" && !f.installed ? `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>` : key === "coverage_py" && !f.installed ? `<div><button type="button" class="btn small" ${act("coverage")}>Auto-add coverage.py</button></div>` : key !== "xcbeautify" && key !== "canary_suite" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`;
+            }).join("")}</div>
+          </div></details></section>`;
+      })() : ""}`,
 
     after: () => {
       $("#suite-filter").addEventListener("submit", (e) => {
@@ -5959,6 +6013,40 @@ function connectTrello(key) {
   location.href = `https://trello.com/1/authorize?${q}`;
 }
 
+async function connectFigma(clientId) {
+  const back = new URL("figma-auth.html", location.href).href;
+  let verifier = "", challenge = "";
+  try {
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    verifier = btoa(String.fromCharCode(...array)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const encoder = new TextEncoder();
+    const data = encoder.encode(verifier);
+    const hash = await crypto.subtle.digest("SHA-256", data);
+    challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  } catch (e) {
+    verifier = "";
+    challenge = "";
+  }
+  const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try {
+    sessionStorage.setItem("orchestrator_figma_pkce", JSON.stringify({ verifier, challenge, state, clientId }));
+  } catch (e) { /* storage blocked */ }
+
+  const q = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: back,
+    scope: "file_content:read,current_user:read",
+    state: state,
+    response_type: "code",
+  });
+  if (challenge) {
+    q.set("code_challenge", challenge);
+    q.set("code_challenge_method", "S256");
+  }
+  location.href = `https://www.figma.com/oauth?${q}`;
+}
+
 function connectionStatus(p) {
   if (!p.connected) return pill("", "Not connected");
   if (p.rejected) return pill("failed", "Reconnect");
@@ -6146,9 +6234,11 @@ pages.connections = async (_, query) => {
             ${p.move_default ? `<input type="text" data-opt="target" value="${esc(p.options.target)}" placeholder="${esc(p.move_default)}" aria-label="Target" ${p.options.move_on_merge ? "" : "disabled"}>` : ""}
           </div>` : ""}
           <div class="row" data-owner-only>
-            ${p.authorize_key && !p.connected ? `<button class="btn small primary" data-trello-authorize="${esc(p.authorize_key)}">Connect with Trello</button>
+            ${p.id === "figma" && p.authorize_key && !p.connected ? `<button class="btn small primary" data-figma-authorize="${esc(p.authorize_key)}">Connect with Figma</button>
+              <button type="button" class="btn small" data-conn-connect="${esc(p.id)}">Manual token (backup)</button>`
+            : p.id === "trello" && p.authorize_key && !p.connected ? `<button class="btn small primary" data-trello-authorize="${esc(p.authorize_key)}">Connect with Trello</button>
               <button type="button" class="btn small" data-conn-connect="${esc(p.id)}">Manual key &amp; token (backup)</button>`
-            : `<button class="btn small ${!p.connected || p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect" : p.rejected || p.expiry?.expired ? "Reconnect" : "Update"}</button>`}
+            : `<button class="btn small ${p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect" : p.rejected || p.expiry?.expired ? "Reconnect" : "Update"}</button>`}
             ${p.connected ? `<button class="btn small danger" data-conn-disconnect="${esc(p.id)}">Disconnect</button>` : ""}
           </div>
         </div></section>`;
@@ -6239,6 +6329,17 @@ pages.connections = async (_, query) => {
         } else if (connect) {
           const p = list.find((x) => x.id === connect.dataset.connConnect);
           const latest = p.token_max_days ? new Date(Date.now() + p.token_max_days * 86400000).toISOString().slice(0, 10) : "";
+          const figmaOptionA = p.id === "figma" ? `
+            <div class="card stack mb-16 conn-auth-box">
+              <strong>Option A: Log in &amp; authorize with Figma (OAuth - Default)</strong>
+              <p class="muted">Authorize with 1 click in your browser using Figma OAuth:</p>
+              ${!p.authorize_key ? `<label class="field"><span>Figma Client ID <span class="muted">(from figma.com/developers/apps)</span></span>
+                <input type="text" name="figma_client_id" placeholder="e.g. your_figma_oauth_client_id" value="">
+              </label>` : ""}
+              <div><button type="button" class="btn small primary" id="figma-dialog-quick-btn">Log in &amp; authorize with Figma ↗</button></div>
+              <small class="hint-text">Sign in with your Figma account (or Enterprise SSO) and approve read access.</small>
+            </div>
+            <div class="conn-auth-divider mb-8"><strong>Option B: Enter personal access token manually (backup)</strong></div>` : "";
           const trelloOptionA = p.id === "trello" ? `
             <div class="card stack mb-16 conn-auth-box">
               <strong>Option A: Log in &amp; authorize with Trello</strong>
@@ -6254,8 +6355,9 @@ pages.connections = async (_, query) => {
               <small class="hint-text">Click "Create API token", copy it, and paste it into the API token field below.</small>
             </div>
             <div class="conn-auth-divider mb-8"><strong>Option B: Enter credentials manually (backup)</strong></div>` : "";
-          const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : "";
+          const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : "";
           const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
+            ${figmaOptionA}
             ${trelloOptionA}
             ${jiraOptionA}
             ${genericTokenLink}
@@ -6269,6 +6371,56 @@ pages.connections = async (_, query) => {
             ${p.token_max_days ? `<label class="field"><span>Token expires on</span><input type="date" name="expires" value="${esc(p.expiry?.on || latest)}" max="${latest}">
               <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}`,
             p.connected ? "Save" : "Connect");
+          const okBtn = $("#dialog-ok");
+          const dialogBody = $("#dialog-body");
+          const quickFigma = $("#figma-dialog-quick-btn");
+          const quickTrello = $("#trello-dialog-quick-btn");
+
+          const updateDialogConnectState = () => {
+            let manualValid = true;
+            if (!p.connected) {
+              for (const f of (p.fields || [])) {
+                const isOpt = (f.label || "").toLowerCase().includes("optional") || f.key === "host";
+                if (isOpt) continue;
+                const input = dialogBody?.querySelector(`[name="${CSS.escape(f.key)}"]`);
+                const val = (input ? input.value : (p.suggest?.[f.key] || "")).trim();
+                if (!val) {
+                  manualValid = false;
+                  break;
+                }
+              }
+            }
+            if (okBtn) {
+              okBtn.disabled = !manualValid;
+            }
+            if (quickFigma) {
+              const idInput = dialogBody?.querySelector("input[name='figma_client_id']");
+              const cid = (idInput?.value || p.authorize_key || "").trim();
+              quickFigma.disabled = !cid;
+            }
+            if (quickTrello) {
+              const keyInput = dialogBody?.querySelector("input[name='key']");
+              const k = (keyInput?.value || p.authorize_key || "").trim();
+              quickTrello.disabled = !k;
+            }
+          };
+
+          updateDialogConnectState();
+          dialogBody?.addEventListener("input", updateDialogConnectState);
+          dialogBody?.addEventListener("change", updateDialogConnectState);
+
+          if (quickFigma) {
+            quickFigma.addEventListener("click", () => {
+              const idInput = $("#dialog-body input[name='figma_client_id']");
+              const cid = (idInput?.value || p.authorize_key || "").trim();
+              if (!cid) {
+                toast("Enter your Figma Client ID above first, then click Log in & authorize", true);
+                idInput?.focus();
+                return;
+              }
+              connectFigma(cid);
+            });
+          }
           const quickTrello = $("#trello-dialog-quick-btn");
           if (quickTrello) {
             quickTrello.addEventListener("click", () => {
@@ -6304,6 +6456,9 @@ pages.connections = async (_, query) => {
       const trelloStart = (ev) => { const b = ev.target.closest("[data-trello-authorize]"); if (b) connectTrello(b.dataset.trelloAuthorize); };
       view.addEventListener("click", trelloStart);
       cleanup.push(() => view.removeEventListener("click", trelloStart));
+      const figmaStart = (ev) => { const b = ev.target.closest("[data-figma-authorize]"); if (b) connectFigma(b.dataset.figmaAuthorize); };
+      view.addEventListener("click", figmaStart);
+      cleanup.push(() => view.removeEventListener("click", figmaStart));
       // Back from Trello's approval page with a token: save it like any connection.
       let trelloToken = null;
       try { trelloToken = sessionStorage.getItem("orchestrator_trello_token"); sessionStorage.removeItem("orchestrator_trello_token"); } catch { /* storage blocked */ }
@@ -6311,6 +6466,33 @@ pages.connections = async (_, query) => {
       if (trelloToken && trello?.authorize_key) {
         api("integrations/trello/connect", { method: "POST", body: { values: { key: trello.authorize_key, token: trelloToken } } })
           .then((r) => { toast(`Trello connected${r.who ? ` as ${r.who}` : ""}`); route(); })
+          .catch((e) => toast(e.message, true));
+      }
+      // Back from Figma's OAuth page with authorization code: exchange and save it.
+      let figmaAuth = null;
+      try {
+        const rawFigma = sessionStorage.getItem("orchestrator_figma_auth");
+        if (rawFigma) {
+          figmaAuth = JSON.parse(rawFigma);
+          sessionStorage.removeItem("orchestrator_figma_auth");
+          sessionStorage.removeItem("orchestrator_figma_pkce");
+        }
+      } catch { /* storage blocked */ }
+      const figma = list.find((x) => x.id === "figma");
+      if (figmaAuth && figmaAuth.code) {
+        const cid = figmaAuth.clientId || figma?.authorize_key || "";
+        api("integrations/figma/connect", {
+          method: "POST",
+          body: {
+            values: {
+              code: figmaAuth.code,
+              code_verifier: figmaAuth.verifier,
+              redirect_uri: figmaAuth.redirectUri,
+              client_id: cid
+            }
+          }
+        })
+          .then((r) => { toast(`Figma connected${r.who ? ` as ${r.who}` : ""}`); route(); })
           .catch((e) => toast(e.message, true));
       }
       // Arriving to connect one app (Device logs → Connect Sentry): open its form straight away.
@@ -7563,7 +7745,30 @@ $("#palette-input")?.addEventListener("input", () => { palette.active = 0; rende
 $("#palette-list")?.addEventListener("click", (e) => { const li = e.target.closest("[data-i]"); if (li) runPalette(Number(li.dataset.i)); });
 $("#palette-backdrop")?.addEventListener("click", closePalette);
 $("#search-btn")?.addEventListener("click", openPalette);
-if (!/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) { const k = $("#search-btn kbd"); if (k) k.textContent = "Ctrl K"; }
+const configureSearchShortcut = () => {
+  const k = $("#search-btn kbd");
+  if (!k) return;
+  const ua = navigator.userAgent || "";
+  const plat = navigator.platform || "";
+  const isTouchMobile = (navigator.maxTouchPoints > 1 && /MacIntel|iPhone|iPad|iPod/i.test(plat))
+    || /Android|iPhone|iPad|iPod|Windows Phone|Mobile|Silk/i.test(ua)
+    || (window.matchMedia?.("(pointer: coarse)")?.matches && window.innerWidth <= 1024);
+
+  if (isTouchMobile) {
+    k.hidden = true;
+    k.textContent = "";
+  } else if (/Mac/i.test(plat) || /Macintosh/i.test(ua)) {
+    k.hidden = false;
+    k.textContent = "⌘K";
+  } else if (/Win|Linux/i.test(plat) || /Windows|Linux/i.test(ua)) {
+    k.hidden = false;
+    k.textContent = "Ctrl K";
+  } else {
+    k.hidden = true;
+    k.textContent = "";
+  }
+};
+configureSearchShortcut();
 document.addEventListener("keydown", (e) => {
   const typing = e.target.matches?.("input, textarea, select, [contenteditable]");
   if ((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) { e.preventDefault(); palette.open ? closePalette() : openPalette(); return; }

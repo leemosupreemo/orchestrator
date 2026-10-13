@@ -53,6 +53,38 @@ class TrelloSignInTests(unittest.TestCase):
         self.assertEqual(page.count("<script"), 1)
 
 
+class FigmaSignInTests(unittest.TestCase):
+    def test_the_oauth_button_appears_with_client_id(self):
+        figma = lambda settings=None: next(p for p in ig.public_catalog({}, settings=settings) if p["id"] == "figma")  # noqa: E731
+        with patch.dict(os.environ, {"ORCHESTRATOR_FIGMA_CLIENT_ID": ""}):
+            self.assertNotIn("authorize_key", figma())
+            self.assertEqual(figma({"figma_client_id": "fig_client_123"})["authorize_key"], "fig_client_123")
+
+    def test_the_return_page_has_no_inline_script(self):
+        page = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "figma-auth.html").read_text()
+        self.assertIn('<script src="figma-auth.js"></script>', page)  # the server's policy blocks inline scripts
+        self.assertEqual(page.count("<script"), 1)
+
+    def test_oauth_code_exchange_and_bearer_headers(self):
+        token_response = {"access_token": "figo_secret_access", "refresh_token": "r_123", "expires_in": 7776000}
+        with patch.object(ig, "exchange_figma_token", return_value=token_response) as mock_exchange, \
+             patch.object(ig.Figma, "test", return_value="designer_bob"):
+            creds, who = ig.connect("figma", {"code": "c_123", "code_verifier": "v_abc", "client_id": "cid_xyz", "redirect_uri": "https://app/figma-auth.html"})
+            self.assertEqual(who, "designer_bob")
+            self.assertEqual(creds["token"], "figo_secret_access")
+            self.assertEqual(creds["auth_type"], "oauth")
+            self.assertEqual(creds["refresh_token"], "r_123")
+            mock_exchange.assert_called_once_with(code="c_123", code_verifier="v_abc", redirect_uri="https://app/figma-auth.html", client_id="cid_xyz", client_secret="")
+
+        # Bearer header for oauth
+        f_oauth = ig.Figma({"token": "figo_secret_access", "auth_type": "oauth"})
+        self.assertEqual(f_oauth._headers(), {"Authorization": "Bearer figo_secret_access"})
+
+        # X-Figma-Token header for personal access token
+        f_pat = ig.Figma({"token": "figd_pat_token"})
+        self.assertEqual(f_pat._headers(), {"X-Figma-Token": "figd_pat_token"})
+
+
 class RejectedTokenTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -105,5 +137,47 @@ class OneSentrySetupTests(unittest.TestCase):
                 self.assertEqual(config.token(), "sntryu_secret")
 
 
+class ConnectionUIBehaviorTests(unittest.TestCase):
+    def setUp(self):
+        self.app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.style_css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+
+    def test_connect_buttons_do_not_show_as_active_unless_requisite_info_present(self):
+        # Card buttons don't apply primary active style to unconfigured "Connect" button
+        self.assertIn(': `<button class="btn small ${p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect"', self.app_js)
+        # Modal dialog connect state validator disables submit until manual fields are valid
+        self.assertIn("updateDialogConnectState", self.app_js)
+        self.assertIn("okBtn.disabled = !manualValid;", self.app_js)
+        # Figma and Trello quick OAuth buttons in dialog are disabled without client id / key
+        self.assertIn("quickFigma.disabled = !cid;", self.app_js)
+        self.assertIn("quickTrello.disabled = !k;", self.app_js)
+
+    def test_job_type_buttons_dimmed_by_about_25_percent_on_select(self):
+        self.assertIn(".job-type-card:has(input:checked)::before {\n  opacity: 0.62;", self.style_css)
+        self.assertIn("brightness(0.95);", self.style_css)
+        self.assertIn(".job-type-card:has(input:checked)::before { opacity: 0.68;", self.style_css)
+
+    def test_new_job_page_has_no_tell_it_what_you_need_subtitle(self):
+        self.assertNotIn("Tell it what you need. It's planned, then built on a worker, and anything that needs you shows up on Home.", self.app_js)
+
+    def test_frameworks_explain_benefit_and_how_to_use_without_generic_intro_text(self):
+        self.assertNotIn("Detection checks your test source files and local tools. Expand an item to see what it does and how to get started.", self.app_js)
+        self.assertIn("<strong>Benefit:</strong>", self.app_js)
+        self.assertIn("<strong>How to use:</strong>", self.app_js)
+        self.assertIn(".framework-guide", self.style_css)
+
+    def test_top_header_bar_has_no_logo_and_hamburger_brand_is_aligned(self):
+        html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
+        self.assertNotIn('<a class="brand-home"', html)
+        self.assertIn('<span class="brand-mark" role="img" aria-label="Orchestrator"></span>', html)
+        self.assertIn('.brand { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); font-weight: 650; font-size: var(--text-lg); padding: 0 var(--space-3); }', self.style_css)
+        self.assertIn('.sidebar .brand { padding: 0 var(--space-3); }', self.style_css)
+
+    def test_search_shortcut_only_on_mac_pc_desktop_none_on_mobile(self):
+        self.assertIn("configureSearchShortcut", self.app_js)
+        self.assertIn(".search-btn kbd { display: none !important; }", self.style_css)
+
+
 if __name__ == "__main__":
     unittest.main()
+

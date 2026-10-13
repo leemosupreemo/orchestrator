@@ -507,6 +507,7 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
         end = app_js.index("showSigningIn", start)
         handler_code = app_js[start:end]
         self.assertIn('location.hash = "#/";', handler_code)
+        self.assertIn('location.hash.startsWith("#/product")', handler_code)
 
 
 class FakeTunnelProcess:
@@ -1081,6 +1082,14 @@ const api = async (path) => path === "bootstrap" ? {selected_root: ""} : {stack:
         self.assertLess(pages["fresh"].index('id="desktop-idea"'), pages["fresh"].index('id="desktop-folder"'))
         self.assertNotIn('id="desktop-idea"', pages["folder"])
         self.assertIn("Set up your project", pages["folder"])
+        self.assertIn('id="desktop-setup-error"', pages["folder"])
+        self.assertLess(pages["folder"].index('id="desktop-setup-error"'), pages["folder"].index('id="desktop-apply"'))
+        self.assertIn('class="fold advanced-settings"', pages["folder"])
+        script_code = script.read_text()
+        self.assertIn('window.scrollTo({ top: 0, behavior: "smooth" })', script_code)
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn('.desktop-setup, .desktop-idea { max-width: 720px; }', css)
+        self.assertIn('.setup-detected-summary', css)
 
     def test_the_pages_required_version_is_what_this_runner_provides(self):
         # Bump both together: the page asks for exactly what the runner in this repo reports.
@@ -3905,7 +3914,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("Import a PRD", self.js)  # the button just says Import PRD
         self.assertNotIn("product/scaffold", self.js)  # no six documents to create
         self.assertNotIn("last-review", self.js)  # and no separate review job
-        self.assertNotIn("Everything here is optional", page)
+        self.assertNotIn("Current products", page)
+        self.assertNotIn("current-products-title", page)
+        self.assertIn("#prd-panel:empty { display: none; }", self.css)
         self.assertIn('title: "Product"', page)
         self.assertIn("<h2>Product requirements</h2>", page)
         self.assertIn("Press Enter to add another feature", page)
@@ -3941,6 +3952,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         picker = self.js[self.js.index("async function linkPickerHtml"):self.js.index("async function attachToJob")]
         self.assertIn('Connected apps:', picker)
         self.assertIn('href="#/connections"', picker)
+        self.assertIn('.prd-drop.reference-file-picker { background: var(--panel); }', self.css)
+        self.assertIn('.reference-file-picker .file-picker-target { background: var(--panel-2); }', self.css)
 
     def test_hosted_self_healing_and_reconnection(self):
         # Hosted app auto-reconnects and relocates without locking user into sign-in gate
@@ -4095,6 +4108,15 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Console connection was stopped.", self.js)
         fn = self.js[self.js.index("function nextStep(r)"):self.js.index("pages.run =")]
         self.assertIn('r.action === "console"', fn)
+
+    def test_job_type_cards_have_thematic_dimmed_and_brightened_background_art(self):
+        self.assertIn(".job-type-card {", self.css)
+        self.assertIn(".job-type-card::before {", self.css)
+        self.assertIn(".job-type-card:has(input:checked)::before {", self.css)
+        for job_type in ("bug", "feature", "design", "coverage", "quick"):
+            self.assertIn(f".job-type-{job_type}::before {{ background-image: url('data:image/svg+xml,", self.css)
+            self.assertIn(f".job-type-{job_type}:has(input:checked)", self.css)
+        self.assertIn("job-type-card job-type-${v}", self.js)
 
 
 class ScopeEndpointTests(ServerTestCase):
@@ -6077,6 +6099,7 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
         js = (self.STATIC / "app.js").read_text()
         self.assertIn('<fieldset class="field nj-logs"><span>Attach logs</span>', js)
         self.assertNotIn('<fieldset class="field nj-logs"><span>Logs', js)
+        self.assertIn('${filePickerContent("Add files to your job", hint)}', js)
 
     def test_connections_page_includes_recommended_installs_section(self):
         js = (self.STATIC / "app.js").read_text()
