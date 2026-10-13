@@ -547,7 +547,7 @@ class ProjectTitleTests(unittest.TestCase):
         js, css, html = (static / "app.js").read_text(), (static / "style.css").read_text(), (static / "index.html").read_text()
         header = html[html.index('<header class="mobile-header">'):html.index("</header>")]
         self.assertIn('<span class="mobile-title" id="mobile-title"></span>', header)
-        self.assertIn('href="#/" aria-label="Orchestrator home"', header)  # the logo link names its Home destination for screen readers
+        self.assertIn('role="img" aria-label="Orchestrator"', html)  # brand mark kept in hamburger side menu
         self.assertNotIn("<span>Orchestrator</span>", html)
         self.assertIn('mobileTitle.textContent = state.project?.name', js)
         self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
