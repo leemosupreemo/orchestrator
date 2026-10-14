@@ -1524,6 +1524,12 @@ process.stdout.write(JSON.stringify(page));
         self.assertIn("this archive can't be read", home)  # a corrupt archive is listed, without Restore
         self.assertIn("No archived jobs", home)
 
+    def test_empty_jobs_on_home_has_simplified_message_and_link_to_start_new_job(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
+        self.assertIn('No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.', home)
+        self.assertNotIn("<strong>New job</strong>", home)
+
     def test_email_page_reports_sender_readiness_without_secret_values(self):
         result = self.run_configuration_script("""
 const gmail = globalThis.ConfigurationPages.render('email', {email: {

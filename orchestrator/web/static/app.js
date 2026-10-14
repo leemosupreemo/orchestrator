@@ -2406,7 +2406,7 @@ pages.home = async (_, query) => {
               </div>
               <div class="job-table-body" id="stale-list">${staleJobs.map((j) => jobTableRow(j, { hidden: true })).join("")}</div>` : ""}
           </div>
-        ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <strong>New job</strong> plans work from a description, a bug report or a design.' : 'No jobs match this filter.'}</div>`}
+        ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.' : 'No jobs match this filter.'}</div>`}
         ${elsewhereLine(waiting.elsewhere)}
       </section>`,
     after: () => {
@@ -4426,7 +4426,7 @@ pages.docs = async (args, query) => {
         <div class="list" id="docs-features">${d.features.length ? d.features.map(featureRow).join("") : `<div class="empty">No features yet. Group your jobs into features in <a href="#/product">product requirements</a> and each gets a page here.</div>`}</div></section>
       <section class="card mb-16"><div class="card-h"><h2>Jobs</h2><span class="count">${d.jobs.length}</span>
         <div class="filters"><button type="button" class="btn small on" data-docs-group="">All</button><button type="button" class="btn small" data-docs-group="done">Done</button><button type="button" class="btn small" data-docs-group="open">Not done</button></div></div>
-        <div class="list" id="docs-jobs">${d.jobs.length ? d.jobs.map(jobRow).join("") : `<div class="empty">No jobs yet.</div>`}</div>
+        <div class="list" id="docs-jobs">${d.jobs.length ? d.jobs.map(jobRow).join("") : `<div class="empty">No jobs yet. <a href="#/new">Start a new job</a>.</div>`}</div>
         ${d.jobs.length > SHOWN ? `<div class="card-b"><button type="button" class="btn small" id="docs-more">Show all ${d.jobs.length}</button></div>` : ""}</section>
       <section class="card"><div class="card-h"><h2>Project files</h2><span class="count">${d.files.length}</span></div>
         <div class="list" id="docs-files">${d.files.length ? fileRows : `<div class="empty">No README or docs/ folder found.</div>`}</div></section>

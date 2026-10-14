@@ -263,6 +263,8 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
 .card > :is(p, ul, ol, form):not([class]) { margin: 0; padding: var(--space-3) var(--container-pad-x); }
 .muted { color: var(--muted); }
 .empty { color: var(--muted); padding: var(--space-5) var(--space-4); }
+.empty a { text-decoration: underline; text-underline-offset: 2px; }
+.empty a:hover { text-decoration-thickness: 2px; }
 .row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .spacer { flex: 1; }
 
