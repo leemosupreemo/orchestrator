@@ -14,7 +14,7 @@ Five sections, in the person's own words wherever possible. **Every section is o
 | **Who it's for** | An ideal user, or the situations it's for. "Not sure yet" is a fine answer. | Yes |
 | **Core features** | The things it has to do, one per line. User-story form ("As a …, I can … so that …") is encouraged, not required. | Yes |
 | **Look and feel** | A description ("feels like Google Docs"), plus designs, sketches, links and items from a connected app such as Figma. | Yes |
-| **Not this** | What it should not be or include: features you don't want, competitors not to copy exactly. | Yes |
+| **Not this** | Features to avoid, non-goals, or competitor patterns you don't want to copy. | Yes |
 
 Each section starts with a line of italic guidance. Guidance and lines beginning `TBD:` don't count as content, so a section is "written" only when the person (or an accepted draft) has put something real in it.
 

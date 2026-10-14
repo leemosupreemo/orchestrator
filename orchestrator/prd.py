@@ -50,7 +50,7 @@ SECTIONS: list[dict[str, Any]] = [
     {"id": "look", "title": "Look and feel", "optional": True,
      "hint": "What should it look and feel like? Describe it (\"feels like Google Docs\"), or add designs, sketches or Figma items."},
     {"id": "not", "title": "What to exclude", "optional": True,
-     "hint": "Anything it should not be or include: features you don't want, competitors not to copy exactly."},
+     "hint": "Features to avoid, non-goals, or competitor patterns you don't want to copy."},
 ]
 BY_ID = {s["id"]: s for s in SECTIONS}
 HEADING = {s["id"]: f"## {s['title']}" for s in SECTIONS}
