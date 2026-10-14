@@ -219,7 +219,7 @@ globalThis.setHeader = globalThis.hydrateAuthImages = globalThis.wireImagePrevie
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRunStatus', 'nextStep']) {
+for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRunStatus', 'nextStep', 'suiteGroupsHtml']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -227,6 +227,7 @@ for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRun
 }
 require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'));
 globalThis.esc = Html.escape;
+globalThis.plural = (n, word, many = `${word}s`) => `${n} ${Number(n) === 1 ? word : many}`;
 globalThis.act = (action) => `data-action="${action}"`;
 globalThis.stoppingRuns = new Set();
 Date.now = () => 1000000;
@@ -263,8 +264,8 @@ assert.doesNotMatch(failedCov, /Next steps to fix/);
 assert.doesNotMatch(failedCov, /Models &amp; agents|Models & agents/);
 assert.doesNotMatch(failedCov, /Elapsed/);
 assert.doesNotMatch(failedCov, /Measuring code coverage failed/);
-assert.match(failedCov, /Create a job to add tests/);
-assert.match(failedCov, /href="#\/new\?type=feature"/);
+assert.match(failedCov, /Add tests/);
+assert.match(failedCov, /href="#\/new\?type=coverage"/);
 assert.match(failedCov, /href="#\/tests"/);
 
 globalThis.current = {page: 'tests'};
@@ -275,11 +276,11 @@ globalThis.current = undefined;
 
 const failedNoTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage."});
 assert.match(failedNoTests, /No source files or tests yet/);
-assert.match(failedNoTests, /Create a job to add tests/);
+assert.match(failedNoTests, /Add tests/);
 
 const failedExited = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "[exited with code 1]"});
 assert.match(failedExited, /No source files or tests yet/);
-assert.match(failedExited, /Create a job to add tests/);
+assert.match(failedExited, /Add tests/);
 
 const failedPyCov = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "pip install coverage required"});
 assert.match(failedPyCov, /coverage\.py required/);
@@ -302,7 +303,12 @@ assert.match(failedCheck, /Open Settings/);
 const nextFailed = nextStep({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No Swift source files or Package.swift manifest found yet"});
 assert.match(nextFailed, /banner failed/);
 assert.match(nextFailed, /No source files or tests yet/);
-assert.match(nextFailed, /Create a job to add tests/);
+assert.match(nextFailed, /Add tests/);
+
+const emptySuites = suiteGroupsHtml([]);
+assert.match(emptySuites, /No test suites found in this project/);
+assert.match(emptySuites, /Add tests/);
+assert.match(emptySuites, /href="#\/new\?type=coverage"/);
 
 let replacements = 0;
 const clock = {textContent: ''};

@@ -5245,7 +5245,7 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
   if (!suites.length) {
     return `<div class="empty stack gap-8">
       <p>No test suites found in this project${open ? " matching your filter" : ""}.</p>
-      ${!open ? `<div class="row gap-8 justify-center"><a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create a job to add tests</a></div>` : ""}
+      ${!open ? `<div class="row gap-8 justify-center"><a class="btn small primary" href="#/new?type=coverage"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Add tests</a></div>` : ""}
     </div>`;
   }
   const groups = new Map();
@@ -5330,7 +5330,7 @@ pages.tests = async (_, query) => {
         started: cov.last_error_at ? Math.floor(Date.parse(cov.last_error_at) / 1000) : Math.floor(Date.now() / 1000),
         ended: cov.last_error_at ? Math.floor(Date.parse(cov.last_error_at) / 1000) : Math.floor(Date.now() / 1000),
       } : null));
-  const showNextStep = Boolean((recentCoverageRun && recentCoverageRun.exit_code !== 0) || cov?.last_error);
+  const showNextStep = Boolean(!hasTests || (recentCoverageRun && recentCoverageRun.exit_code !== 0) || cov?.last_error);
   return {
     title: "Tests",
     sub: `${withTests.length} suites · ${total} tests`,
@@ -5432,11 +5432,39 @@ pages.tests = async (_, query) => {
         e.preventDefault();
         location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
       });
-      $("#recalc-coverage")?.addEventListener("click", (e) => {
+      $("#recalc-coverage")?.addEventListener("click", async (e) => {
         if (!hasTests) {
           e.preventDefault();
           e.stopPropagation();
           if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          const btn = $("#recalc-coverage");
+          const origText = btn ? btn.textContent : "Recalculate";
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = "Checking…";
+          }
+          let foundTests = false;
+          try {
+            const fresh = await api("tests?refresh=1");
+            const freshSuites = (fresh.suites || []).filter((s) => s.tests > 0);
+            const freshTotal = freshSuites.reduce((n, s) => n + s.tests, 0);
+            if (freshTotal > 0) {
+              foundTests = true;
+            }
+          } catch {
+            // Server or network error, proceed with local refresh acknowledgment
+          } finally {
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = origText;
+            }
+          }
+          if (foundTests) {
+            toast("Tests detected. Calculating coverage…");
+            await route();
+            runAction("coverage");
+            return;
+          }
           const covNum = view.querySelector(".big-number");
           if (covNum) covNum.textContent = "0%";
           const container = $("#next-step");
@@ -5453,8 +5481,12 @@ pages.tests = async (_, query) => {
             };
             container.innerHTML = runStatus(runForStatus);
             container.hidden = false;
+            container.classList.remove("highlight-flash");
+            void container.offsetWidth;
+            container.classList.add("highlight-flash");
             container.scrollIntoView({ behavior: "smooth", block: "nearest" });
           }
+          toast("Coverage refreshed: 0%. No tests exist in this project yet.", "info");
         }
       }, true);
       $("#expand-coverage").addEventListener("click", async () => {
@@ -7161,8 +7193,8 @@ function runFailureGuidance(r) {
       const onTestsPage = typeof current !== "undefined" && current?.page === "tests";
       return {
         title: "No source files or tests yet",
-        detail: "Create your first feature to scaffold project code and tests before measuring coverage.",
-        action: `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create a job to add tests</a>`,
+        detail: "Create a test job to add tests and measure code coverage.",
+        action: `<a class="btn small primary" href="#/new?type=coverage"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Add tests</a>`,
         secondary: onTestsPage ? "" : `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }
