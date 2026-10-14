@@ -4006,6 +4006,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('id="prd-link-input"', page)
         self.assertNotIn('id="prd-add-link"', page)
         self.assertIn('connected-apps-list', page)
+        self.assertIn('Import live designs, UI frames, and tickets from Figma, Jira, or Trello', page)
         self.assertIn('providerIcon(a.id)', page)
         self.assertIn('href="#/connections"', page)
         self.assertIn('Connect more', page)

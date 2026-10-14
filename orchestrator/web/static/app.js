@@ -4680,6 +4680,7 @@ pages.product = async (_, query) => {
         </div>
         <div class="import-option import-option-apps" id="prd-apps-section">
           <strong>Connected apps</strong>
+          <span>Import live designs, UI frames, and tickets from Figma, Jira, or Trello</span>
           <div class="connected-apps-list">${connectedApps.length ? connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("") : `<span class="muted text-sm">None connected</span>`}</div>
           <div class="connected-apps-actions row gap-8 mt-4">
             ${connectedApps.length ? `<button type="button" class="btn small primary" id="prd-add-app">Choose reference</button>` : ""}
