@@ -278,4 +278,60 @@ def _measure(root: Path, test_command: str | None, run: Run) -> Measurement:
         if any((root / f).exists() for f in ("build.gradle", "build.gradle.kts", "pom.xml")):
             raise CoverageUnavailable("Java and Kotlin coverage comes from JaCoCo, which has to be set up in the build. "
                                       "It can't be measured here yet.")
-        raise CoverageUnavailable("Couldn't tell which language this project uses, so coverage can't be measured here.")
+        raise CoverageUnavailable(_diagnose_unsupported(root, command))
+
+
+def _find_sub_manifest(root: Path, filename: str) -> Path | None:
+    ignored = {".git", ".build", "node_modules", "Pods", "DerivedData", ".venv", "venv", "__pycache__", ".orchestrator", "dist", "build"}
+    try:
+        for r, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in ignored and not d.startswith(".")]
+            if Path(r) == root:
+                continue
+            if filename in files:
+                return Path(r) / filename
+    except Exception:
+        pass
+    return None
+
+
+def _diagnose_unsupported(root: Path, command: str) -> str:
+    has_source = count_source_lines(root) > 0
+    cmd = command.lower()
+
+    if "swift" in cmd or any(root.glob("*.swift")):
+        sub = _find_sub_manifest(root, "Package.swift")
+        if sub:
+            return f"Found Swift language manifest at '{sub.relative_to(root)}', but coverage measurement expects Package.swift at the project root."
+        if not has_source:
+            return f"This project language is configured for Swift ('{command}'), but has no source files or Package.swift manifest yet. Create initial code and tests before measuring coverage."
+        return "This project language is configured for Swift, but no Package.swift manifest was found in the project root."
+
+    if "cargo" in cmd or any(root.glob("*.rs")):
+        sub = _find_sub_manifest(root, "Cargo.toml")
+        if sub:
+            return f"Found Rust language manifest at '{sub.relative_to(root)}', but coverage measurement expects Cargo.toml at the project root."
+        if not has_source:
+            return f"This project language is configured for Rust ('{command}'), but has no source files or Cargo.toml manifest yet. Create initial code and tests before measuring coverage."
+        return "This project language is configured for Rust, but no Cargo.toml manifest was found in the project root."
+
+    if "go " in cmd or "go test" in cmd or any(root.glob("*.go")):
+        sub = _find_sub_manifest(root, "go.mod")
+        if sub:
+            return f"Found Go language manifest at '{sub.relative_to(root)}', but coverage measurement expects go.mod at the project root."
+        if not has_source:
+            return f"This project language is configured for Go ('{command}'), but has no source files or go.mod manifest yet. Create initial code and tests before measuring coverage."
+        return "This project language is configured for Go, but no go.mod manifest was found in the project root."
+
+    if any(k in cmd for k in ("npm", "yarn", "pnpm", "bun", "jest", "vitest")):
+        sub = _find_sub_manifest(root, "package.json")
+        if sub:
+            return f"Found JavaScript/TypeScript language manifest at '{sub.relative_to(root)}', but coverage measurement expects package.json at the project root."
+        if not has_source:
+            return f"This project language is configured for JavaScript/TypeScript ('{command}'), but has no source files or package.json manifest yet. Create initial code and tests before measuring coverage."
+        return "This project language is configured for JavaScript/TypeScript, but no package.json manifest was found in the project root."
+
+    if not has_source:
+        return "No source code or language manifest found in this project yet. Create initial code and tests before measuring coverage."
+
+    return "Couldn't tell which language this project uses, so coverage can't be measured here."

@@ -388,7 +388,7 @@ class PtySession:
             "job": self.job_id, "result_job": self.result_job,
             # Quiet for a while with a prompt-shaped last line: probably waiting on you.
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
-            "last_line": self._last_line(), "idle": int(idle),
+            "last_line": self._last_line(), "error_summary": self._error_summary(), "idle": int(idle),
             "progress": progress,
         }
 
@@ -399,6 +399,23 @@ class PtySession:
         text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").replace("\r", "\n")
         lines = [l.strip() for l in text.splitlines() if l.strip()]
         return lines[-1][:200] if lines else ""
+
+    def _error_summary(self) -> str:
+        """Finds the most specific error line from output when a run fails."""
+        if self.running or self.exit_code == 0:
+            return ""
+        with self._cond:
+            tail = bytes(self._buffer[-8000:])
+        text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").replace("\r", "\n")
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        for line in reversed(lines):
+            clean = re.sub(r"^(?:❌|⚠️|!+|Error:|error:)\s*", "", line).strip()
+            if any(k in clean.lower() for k in ("coverage measurement failed", "failed to calculate", "couldn't tell which language", "this project language is configured", "no source files", "tests failed", "build failed", "cannot create a build", "delivery job targets branch")):
+                return clean
+        for line in reversed(lines):
+            if any(line.startswith(prefix) for prefix in ("❌", "⚠️", "Error:", "error:", "fatal:", "FAILED")):
+                return re.sub(r"^(?:❌|⚠️|!+|Error:|error:)\s*", "", line).strip()
+        return lines[-1][:300] if lines else ""
 
     def _looks_like_prompt(self) -> bool:
         with self._cond:

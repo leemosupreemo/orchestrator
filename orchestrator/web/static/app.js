@@ -5242,7 +5242,12 @@ function testCaseRowsHtml(cases, { editable = false, actionPrefix = "tc" } = {})
 // Suites grouped by folder, like a file tree: a glance shows where the tests live and how many; open a folder to run
 // one suite. A single folder (or a filter) shows its suites straight away.
 function suiteGroupsHtml(suites, { open = false } = {}) {
-  if (!suites.length) return `<div class="empty">No suites${open ? " match" : ""}.</div>`;
+  if (!suites.length) {
+    return `<div class="empty stack gap-8">
+      <p>No test suites found in this project${open ? " matching your filter" : ""}.</p>
+      ${!open ? `<div class="row gap-8 justify-center"><a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create a job to add tests</a></div>` : ""}
+    </div>`;
+  }
   const groups = new Map();
   for (const s of suites) {
     const folder = (s.path || "").split("/").slice(0, -1).join("/") || "(project root)";
@@ -5308,7 +5313,18 @@ pages.tests = async (_, query) => {
         <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
           <span class="muted">${cov.total_lines ? `of ${cov.total_lines.toLocaleString()} ` : "of "}${esc(cov.metric || "lines")} covered${cov.tool ? `, measured with ${esc(cov.tool)}` : ""} · ${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
           : `<p class="muted">Not measured yet. Measuring runs every test with coverage turned on, which may take time.</p>`}
-          ${cov?.last_error && (!measured || cov.last_error_at > cov.timestamp) ? `<div class="notice">${measured ? "The last attempt didn't measure: " : "Couldn't measure: "}${codeSpans(cov.last_error)}</div>` : ""}</div></section>
+          ${cov?.last_error && (!measured || cov.last_error_at > cov.timestamp) ? `<div class="notice bad">
+            <div class="stack gap-8">
+              <div><strong>${measured ? "The last attempt didn't measure: " : "Couldn't measure: "}</strong>${codeSpans(cov.last_error)}</div>
+              <div class="row gap-8">
+                ${(cov.last_error.toLowerCase().includes("no source files") || cov.last_error.toLowerCase().includes("initial code") || cov.last_error.toLowerCase().includes("package.swift manifest yet") || cov.last_error.toLowerCase().includes("no package.json") || cov.last_error.toLowerCase().includes("no cargo.toml") || cov.last_error.toLowerCase().includes("no go.mod"))
+                  ? `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create first job</a>`
+                  : cov.last_error.toLowerCase().includes("tests failed")
+                  ? `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`
+                  : `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`}
+              </div>
+            </div>
+          </div>` : ""}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Suites</h2>
@@ -7084,6 +7100,108 @@ function runDuration(started) {
     : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 }
 
+function runFailureGuidance(r) {
+  const err = (r.error_summary || r.last_line || "").trim();
+  const lower = err.toLowerCase();
+
+  if (r.action === "coverage") {
+    if (lower.includes("no source files") || lower.includes("package.swift manifest yet") || lower.includes("create initial code") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod")) {
+      return {
+        title: "Project source files and tests needed",
+        detail: err || "This project does not have source files, test suites, or a package manifest to measure coverage against yet.",
+        suggestion: "Create your first feature job to scaffold project code, a package manifest, and initial test suites.",
+        action: `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create first job</a>`,
+        secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
+      };
+    }
+    if (lower.includes("tests failed") || lower.includes("failing tests")) {
+      return {
+        title: "Tests must pass before measuring coverage",
+        detail: "The test runner reported failing tests. Code coverage can only be recorded when all tests pass.",
+        suggestion: "Resolve the failing tests in your workspace, or create an automated bug fix job.",
+        action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`,
+        secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
+      };
+    }
+    if (lower.includes("pip install coverage") || lower.includes("coverage.py")) {
+      return {
+        title: "coverage.py installation required",
+        detail: err || "Python coverage measurement requires coverage.py.",
+        suggestion: "Install coverage.py with pip install coverage, then recalculate.",
+        action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
+        secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
+      };
+    }
+    if (lower.includes("cargo-llvm-cov") || lower.includes("cargo install cargo-llvm-cov")) {
+      return {
+        title: "cargo-llvm-cov installation required",
+        detail: err || "Rust coverage requires cargo-llvm-cov.",
+        suggestion: "Install cargo-llvm-cov with cargo install cargo-llvm-cov, then recalculate.",
+        action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
+        secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
+      };
+    }
+    if (lower.includes("vitest") || lower.includes("jest")) {
+      return {
+        title: "Coverage provider needed",
+        detail: err || "A coverage provider (e.g. @vitest/coverage-v8) is needed for your test runner.",
+        suggestion: "Add the coverage package to devDependencies in package.json, then retry.",
+        action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
+        secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
+      };
+    }
+    return {
+      title: "Coverage measurement could not complete",
+      detail: err || "The coverage runner encountered an error while measuring test coverage.",
+      suggestion: "Check the terminal log below for details, or return to the Tests view.",
+      action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
+      secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
+    };
+  }
+
+  if (r.action === "build") {
+    return {
+      title: "Build compilation failed",
+      detail: err || "The compiler or build tool encountered errors.",
+      suggestion: "Inspect build errors below or create a bug fix job to resolve them with AI.",
+      action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+build+compilation+errors"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix build with AI</a>`,
+      secondary: `<button type="button" class="btn small" ${act("build")}>Retry build</button>`,
+    };
+  }
+
+  if (r.action === "test" || r.action === "test_suite" || r.action === "test_plan") {
+    return {
+      title: "Test suite execution failed",
+      detail: err || "One or more tests in the suite failed.",
+      suggestion: "Inspect failing test output below or create a bug fix job to resolve them.",
+      action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`,
+      secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
+    };
+  }
+
+  if (r.action === "check_config" || r.action === "check") {
+    return {
+      title: "Configuration check reported issues",
+      detail: err || "Orchestrator configuration or environment checks reported errors.",
+      suggestion: "Review the missing configuration in the output below and update your project settings.",
+      action: `<a class="btn small primary" href="#/settings">Open Settings</a>`,
+      secondary: `<button type="button" class="btn small" ${act("check_config")}>Re-check config</button>`,
+    };
+  }
+
+  if (err) {
+    return {
+      title: "Run failed with error",
+      detail: err,
+      suggestion: "Review the terminal output below to diagnose and resolve the issue.",
+      action: `<a class="btn small primary" href="#/new">Create new job</a>`,
+      secondary: "",
+    };
+  }
+
+  return null;
+}
+
 function runStatus(r, vc = null) {
   if (r.action === "console") {
     return `<div class="banner"><p>Console connection was stopped.</p></div>`;
@@ -7160,10 +7278,12 @@ function runStatus(r, vc = null) {
   const progressVal = done && numbered ? totalSteps : (numbered ? p.step - 1 : 0);
   const progressMax = numbered ? totalSteps : 1;
   const duration = runDuration(r.started, r.ended);
+  const guidance = failed && typeof runFailureGuidance === "function" ? runFailureGuidance(r) : null;
   const actionBtn = done ? (r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
-    : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "") : "";
+    : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "")
+    : failed && guidance ? (guidance.action || "") : "";
 
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
@@ -7172,6 +7292,16 @@ function runStatus(r, vc = null) {
       <div><dt>Models & agents</dt><dd>${modelsText}</dd></div>
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
     </dl>
+    ${guidance ? `
+      <div class="run-status-guidance">
+        <div class="run-status-guidance-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
+        <p class="run-status-guidance-detail">${esc(guidance.detail)}</p>
+        <p class="run-status-guidance-next"><strong>Next steps to fix:</strong> ${esc(guidance.suggestion)}</p>
+        <div class="run-status-guidance-actions row gap-8">
+          ${guidance.action || ""}
+          ${guidance.secondary || ""}
+        </div>
+      </div>` : ""}
     ${numbered ? `<progress class="run-status-progress" value="${progressVal}" max="${progressMax}" aria-label="Completed steps">${progressVal} of ${progressMax}</progress>` : ""}
   </section>`;
 }
@@ -7191,7 +7321,7 @@ function updateRunStatus(r) {
       }
       return;
     }
-    const signature = JSON.stringify([r.running, r.exit_code, r.progress, r.title]);
+    const signature = JSON.stringify([r.running, r.exit_code, r.progress, r.title, r.error_summary, r.last_line]);
     if (container.runStatusSignature !== signature) {
       container.innerHTML = runStatus(r);
       container.runStatusSignature = signature;
@@ -7256,9 +7386,10 @@ function nextStep(r) {
       </div>
     </div>`;
   }
+  const guidance = failed && typeof runFailureGuidance === "function" ? runFailureGuidance(r) : null;
   const target = r.result_job || r.job;
   const open = r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>` : ""; // Back covers returning to the job
-  const text = failed ? "This run failed. The output below shows why."
+  const text = failed ? (guidance?.detail || "This run failed. The output below shows why.")
     : r.result_job && !r.job ? "Job created."
     : target ? "Done. The job page shows where it stands now."
     : r.action === "logs_pull" ? "Logs pulled."
@@ -7266,9 +7397,9 @@ function nextStep(r) {
     : "Done.";
   const extra = !failed && r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : !failed && r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
+    : failed && guidance ? `<div class="run-status-guidance-actions row gap-8">${guidance.action || ""}${guidance.secondary || ""}</div>`
     : "";
-  return `<div class="banner ${failed ? "failed" : "done"}"><p>${esc(text)}</p>${extra}${open}</div>`;
-
+  return `<div class="banner ${failed ? "failed attention" : "done"}">${guidance ? `<div class="run-status-guidance-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>` : ""}<p>${esc(text)}</p>${guidance?.suggestion ? `<p class="run-status-guidance-next"><strong>Next steps to fix:</strong> ${esc(guidance.suggestion)}</p>` : ""}${extra}${open}</div>`;
 }
 
 async function finishRunStatus(run) {

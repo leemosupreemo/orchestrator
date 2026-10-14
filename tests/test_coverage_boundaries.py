@@ -132,3 +132,85 @@ class CoverageBoundaryTests(unittest.TestCase):
         with patch.object(cov.subprocess, 'Popen', return_value=child):
             result = cov.stream(['missing-output'], self.root)
         self.assertEqual((result.returncode, result.stdout), (7, ''))
+
+    def test_missing_manifest_diagnostics_and_sub_manifest_discovery(self):
+        # 1. Sub-manifest discovery and ignore filters
+        (self.root / "sub").mkdir()
+        (self.root / "sub" / "Package.swift").write_text("")
+        (self.root / "node_modules").mkdir()
+        (self.root / "node_modules" / "Package.swift").write_text("")
+        (self.root / ".hidden").mkdir()
+        (self.root / ".hidden" / "Package.swift").write_text("")
+        self.assertEqual(cov._find_sub_manifest(self.root, "Package.swift"), self.root / "sub" / "Package.swift")
+        self.assertIsNone(cov._find_sub_manifest(self.root, "nonexistent.file"))
+        with patch("os.walk", side_effect=OSError("denied")):
+            self.assertIsNone(cov._find_sub_manifest(self.root, "Package.swift"))
+
+        # 2. Swift diagnostics: submanifest, no source, has source
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Swift language manifest at 'sub/Package.swift'"):
+            cov.measure(self.root, "swift test", FakeRun({}))
+        (self.root / "sub" / "Package.swift").unlink()
+        (self.root / "sub").rmdir()
+
+        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for Swift \('swift test'\), but has no source files"):
+            cov.measure(self.root, "swift test", FakeRun({}))
+
+        (self.root / "app.swift").write_text("let a = 1\n")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for Swift, but no Package.swift"):
+            cov.measure(self.root, "", FakeRun({}))
+        (self.root / "app.swift").unlink()
+
+        # 3. Rust diagnostics: submanifest, no source, has source
+        (self.root / "sub").mkdir()
+        (self.root / "sub" / "Cargo.toml").write_text("")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Rust language manifest at 'sub/Cargo.toml'"):
+            cov.measure(self.root, "cargo test", FakeRun({}))
+        (self.root / "sub" / "Cargo.toml").unlink()
+        (self.root / "sub").rmdir()
+
+        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for Rust \('cargo test'\), but has no source files"):
+            cov.measure(self.root, "cargo test", FakeRun({}))
+
+        (self.root / "app.rs").write_text("fn main() {}\n")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for Rust, but no Cargo.toml"):
+            cov.measure(self.root, "", FakeRun({}))
+        (self.root / "app.rs").unlink()
+
+        # 4. Go diagnostics: submanifest, no source, has source
+        (self.root / "sub").mkdir()
+        (self.root / "sub" / "go.mod").write_text("")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Go language manifest at 'sub/go.mod'"):
+            cov.measure(self.root, "go test", FakeRun({}))
+        (self.root / "sub" / "go.mod").unlink()
+        (self.root / "sub").rmdir()
+
+        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for Go \('go test'\), but has no source files"):
+            cov.measure(self.root, "go test", FakeRun({}))
+
+        (self.root / "app.go").write_text("package main\n")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for Go, but no go.mod"):
+            cov.measure(self.root, "", FakeRun({}))
+        (self.root / "app.go").unlink()
+
+        # 5. JS/TS diagnostics: submanifest, no source, has source
+        (self.root / "sub").mkdir()
+        (self.root / "sub" / "package.json").write_text("{}")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found JavaScript/TypeScript language manifest at 'sub/package.json'"):
+            cov.measure(self.root, "npm test", FakeRun({}))
+        (self.root / "sub" / "package.json").unlink()
+        (self.root / "sub").rmdir()
+
+        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for JavaScript/TypeScript \('npm test'\), but has no source files"):
+            cov.measure(self.root, "npm test", FakeRun({}))
+
+        (self.root / "app.js").write_text("console.log(1);\n")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for JavaScript/TypeScript, but no package.json"):
+            cov.measure(self.root, "jest", FakeRun({}))
+        (self.root / "app.js").unlink()
+
+        # 6. Fallback with source code from an unconfigured language
+        (self.root / "script.sh").write_text("echo hi\n")
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Couldn't tell which language this project uses"):
+            cov.measure(self.root, None, FakeRun({}))
+        (self.root / "script.sh").unlink()
+

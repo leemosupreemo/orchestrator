@@ -131,7 +131,7 @@ class RunStatusRenderingTests(unittest.TestCase):
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['jobTableRow', 'runDuration', 'runStatus', 'nextStep']) {
+for (const name of ['jobTableRow', 'runDuration', 'runFailureGuidance', 'runStatus', 'nextStep']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -139,6 +139,7 @@ for (const name of ['jobTableRow', 'runDuration', 'runStatus', 'nextStep']) {
 }
 require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'));
 globalThis.esc = Html.escape;
+globalThis.act = (action) => `data-action="${action}"`;
 globalThis.stoppingRuns = new Set();
 globalThis.ago = () => 'just now';
 globalThis.jobPill = () => '<span class="pill working">Running</span>';
@@ -170,7 +171,7 @@ assert.doesNotMatch(jobTableRow({...job, active_run: false}), /run-status/);
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['finishRunStatus', 'nextStep']) {
+for (const name of ['finishRunStatus', 'runFailureGuidance', 'nextStep']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -179,6 +180,7 @@ for (const name of ['finishRunStatus', 'nextStep']) {
 }
 require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'));
 globalThis.esc = Html.escape;
+globalThis.act = (action) => `data-action="${action}"`;
 globalThis.plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const panel = {}, keys = {}, input = {};
 globalThis.$ = selector => ({'#next-step': panel, '#keybar': keys, '#term-input': input})[selector];
@@ -202,7 +204,7 @@ globalThis.setHeader = globalThis.hydrateAuthImages = globalThis.wireImagePrevie
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['runDuration', 'runStatus', 'updateRunStatus', 'nextStep']) {
+for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRunStatus', 'nextStep']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -210,6 +212,7 @@ for (const name of ['runDuration', 'runStatus', 'updateRunStatus', 'nextStep']) 
 }
 require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'));
 globalThis.esc = Html.escape;
+globalThis.act = (action) => `data-action="${action}"`;
 globalThis.stoppingRuns = new Set();
 Date.now = () => 1000000;
 const run = {id: 'r1', running: true, started: 875, action: 'execute', title: 'Build',
@@ -235,6 +238,34 @@ assert.match(html, /Models &amp; agents|Models & agents/);
 assert.match(runStatus({...run, action: 'coverage', progress: {step: 1, total: 5}}), /None \(local run\)/);
 assert.match(runStatus({...run, progress: {label: 'Building', models: ['provider/model-a'], active_models: []}}), /provider\/model-a \(idle\)/);
 assert.match(runStatus({...run, progress: {label: 'Building', assigned_models: ['provider/model-b'], models: [], active_models: []}}), /provider\/model-b \(assigned\)/);
+
+// Failure guidance and action buttons
+const failedCov = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files, test suites, or package manifest found"});
+assert.match(failedCov, /banner failed/);
+assert.match(failedCov, /Project source files and tests needed/);
+assert.match(failedCov, /Next steps to fix/);
+assert.match(failedCov, /Create first job/);
+assert.match(failedCov, /href="#\/new\?type=feature"/);
+assert.match(failedCov, /href="#\/tests"/);
+
+const failedCovTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "Coverage measurement failed because test suite had failing tests"});
+assert.match(failedCovTests, /Tests must pass before measuring coverage/);
+assert.match(failedCovTests, /Fix tests with AI/);
+
+const failedBuild = runStatus({...run, action: 'build', running: false, exit_code: 1, error_summary: "compilation error: unresolved identifier"});
+assert.match(failedBuild, /Build compilation failed/);
+assert.match(failedBuild, /Fix build with AI/);
+assert.match(failedBuild, /data-action="build"/);
+
+const failedCheck = runStatus({...run, action: 'check_config', running: false, exit_code: 1, error_summary: "Invalid config"});
+assert.match(failedCheck, /Configuration check reported issues/);
+assert.match(failedCheck, /Open Settings/);
+
+const nextFailed = nextStep({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files, test suites, or package manifest found"});
+assert.match(nextFailed, /banner failed/);
+assert.match(nextFailed, /Project source files and tests needed/);
+assert.match(nextFailed, /Create first job/);
+
 let replacements = 0;
 const clock = {textContent: ''};
 const panel = {set innerHTML(value) { replacements++; this.html = value; },
