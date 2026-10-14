@@ -710,6 +710,19 @@ class TunnelKeeperTests(unittest.TestCase):
         time.sleep(0.1)
         self.assertEqual(len(self.calls), count)
 
+    def test_concurrent_recycle_calls_are_serialized_safely(self):
+        p1, p2, p3 = FakeTunnelProcess(), FakeTunnelProcess(), FakeTunnelProcess()
+        keeper = self.keeper([(p1, "https://one.trycloudflare.com"),
+                              (p2, "https://two.trycloudflare.com"),
+                              (p3, "https://three.trycloudflare.com")])
+        keeper.start()
+        threads = [threading.Thread(target=keeper.recycle) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertTrue(keeper._healthy())
+
     def test_cloudflared_output_is_read_so_it_can_never_fill_the_pipe(self):
         # A child that writes far more than a pipe holds (about 64 KB) finishes only if somebody reads what it writes.
         proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdout.write('x' * 1_000_000)"],

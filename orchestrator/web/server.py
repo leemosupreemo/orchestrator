@@ -5525,16 +5525,19 @@ class TunnelKeeper:
         self.proc: Any = None
         self.url = ""
         self._stop = threading.Event()
+        self._lock = threading.RLock()
 
     def _launch(self) -> bool:
-        self._end_process()
-        self.proc, found = self.starter(self.port, token=self.token) if self.token else self.starter(self.port)
-        self.url = self.fixed_url or (found or "")
-        return self._healthy()
+        with self._lock:
+            self._end_process()
+            self.proc, found = self.starter(self.port, token=self.token) if self.token else self.starter(self.port)
+            self.url = self.fixed_url or (found or "")
+            return self._healthy()
 
     def _healthy(self) -> bool:
-        # A quick tunnel that never printed an address isn't usable, even though cloudflared is running.
-        return self.proc is not None and self.proc.poll() is None and bool(self.url or self.token)
+        with self._lock:
+            # A quick tunnel that never printed an address isn't usable, even though cloudflared is running.
+            return self.proc is not None and self.proc.poll() is None and bool(self.url or self.token)
 
     def start(self) -> str:
         self._launch()
@@ -5544,9 +5547,10 @@ class TunnelKeeper:
     def _watch(self) -> None:
         failures = 0
         while not self._stop.wait(min(self.interval * (2 ** failures), self.max_wait)):
-            if self._healthy():
-                failures = 0
-                continue
+            with self._lock:
+                if self._healthy():
+                    failures = 0
+                    continue
             before = self.url
             print("  The tunnel stopped. Starting it again…", flush=True)
             if self._launch():
@@ -5557,30 +5561,36 @@ class TunnelKeeper:
                 failures = min(failures + 1, 6)  # back off: cloudflared missing, or no network
 
     def _end_process(self) -> None:
-        proc, self.proc = self.proc, None
-        if proc is not None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
+        with self._lock:
+            proc, self.proc = self.proc, None
+            if proc is not None:
                 try:
-                    proc.kill()
+                    proc.terminate()
+                    proc.wait(timeout=2)
                 except Exception:
                     pass
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
 
     def recycle(self) -> bool:
         """Force a fresh tunnel connection."""
-        before = self.url
-        print("  Resetting Cloudflare tunnel per request…", flush=True)
-        if self._launch():
-            if self.url != before:
-                self.on_url(self.url)
-            return True
-        return False
+        with self._lock:
+            before = self.url
+            print("  Resetting Cloudflare tunnel per request…", flush=True)
+            if self._launch():
+                if self.url != before:
+                    self.on_url(self.url)
+                return True
+            return False
 
     def stop(self) -> None:
         self._stop.set()
-        self._end_process()
+        with self._lock:
+            self._end_process()
 
 
 def main(argv: list[str] | None = None) -> int:
