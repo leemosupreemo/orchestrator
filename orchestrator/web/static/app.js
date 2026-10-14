@@ -5312,19 +5312,7 @@ pages.tests = async (_, query) => {
         <button type="button" class="btn small" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Recalculate" : "Calculate"}</button></div>
         <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
           <span class="muted">${cov.total_lines ? `of ${cov.total_lines.toLocaleString()} ` : "of "}${esc(cov.metric || "lines")} covered${cov.tool ? `, measured with ${esc(cov.tool)}` : ""} · ${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
-          : `<p class="muted">Not measured yet. Measuring runs every test with coverage turned on, which may take time.</p>`}
-          ${cov?.last_error && (!measured || cov.last_error_at > cov.timestamp) ? `<div class="notice bad">
-            <div class="stack gap-8">
-              <div><strong>${measured ? "The last attempt didn't measure: " : "Couldn't measure: "}</strong>${codeSpans(cov.last_error)}</div>
-              <div class="row gap-8">
-                ${(cov.last_error.toLowerCase().includes("no source files") || cov.last_error.toLowerCase().includes("initial code") || cov.last_error.toLowerCase().includes("package.swift manifest yet") || cov.last_error.toLowerCase().includes("no package.json") || cov.last_error.toLowerCase().includes("no cargo.toml") || cov.last_error.toLowerCase().includes("no go.mod"))
-                  ? `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create first job</a>`
-                  : cov.last_error.toLowerCase().includes("tests failed")
-                  ? `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`
-                  : `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`}
-              </div>
-            </div>
-          </div>` : ""}</div></section>
+          : `<p class="muted">Not measured yet.</p>`}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
       <section class="card"><div class="card-h"><h2>Suites</h2>
@@ -7105,55 +7093,49 @@ function runFailureGuidance(r) {
   const lower = err.toLowerCase();
 
   if (r.action === "coverage") {
-    if (lower.includes("no source files") || lower.includes("package.swift manifest yet") || lower.includes("create initial code") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod")) {
+    if (lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod")) {
       return {
-        title: "Project source files and tests needed",
-        detail: err || "This project does not have source files, test suites, or a package manifest to measure coverage against yet.",
-        suggestion: "Create your first feature job to scaffold project code, a package manifest, and initial test suites.",
+        title: "No source files or tests yet",
+        detail: "Create your first feature to scaffold project code and tests before measuring coverage.",
         action: `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create first job</a>`,
         secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }
     if (lower.includes("tests failed") || lower.includes("failing tests")) {
       return {
-        title: "Tests must pass before measuring coverage",
-        detail: "The test runner reported failing tests. Code coverage can only be recorded when all tests pass.",
-        suggestion: "Resolve the failing tests in your workspace, or create an automated bug fix job.",
+        title: "Tests failed during coverage",
+        detail: "Tests must pass before coverage can be recorded. Fix failing tests first.",
         action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`,
         secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
       };
     }
     if (lower.includes("pip install coverage") || lower.includes("coverage.py")) {
       return {
-        title: "coverage.py installation required",
-        detail: err || "Python coverage measurement requires coverage.py.",
-        suggestion: "Install coverage.py with pip install coverage, then recalculate.",
+        title: "coverage.py required",
+        detail: "Install coverage.py with pip install coverage to measure Python coverage.",
         action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
         secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }
     if (lower.includes("cargo-llvm-cov") || lower.includes("cargo install cargo-llvm-cov")) {
       return {
-        title: "cargo-llvm-cov installation required",
-        detail: err || "Rust coverage requires cargo-llvm-cov.",
-        suggestion: "Install cargo-llvm-cov with cargo install cargo-llvm-cov, then recalculate.",
+        title: "cargo-llvm-cov required",
+        detail: "Install with cargo install cargo-llvm-cov to measure Rust coverage.",
         action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
         secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }
     if (lower.includes("vitest") || lower.includes("jest")) {
       return {
-        title: "Coverage provider needed",
-        detail: err || "A coverage provider (e.g. @vitest/coverage-v8) is needed for your test runner.",
-        suggestion: "Add the coverage package to devDependencies in package.json, then retry.",
+        title: "Coverage provider required",
+        detail: "Add a coverage provider package (e.g. @vitest/coverage-v8) in package.json.",
         action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
         secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }
     return {
-      title: "Coverage measurement could not complete",
-      detail: err || "The coverage runner encountered an error while measuring test coverage.",
-      suggestion: "Check the terminal log below for details, or return to the Tests view.",
+      title: "Coverage measurement failed",
+      detail: err || "Encountered an error while measuring test coverage.",
       action: `<button type="button" class="btn small primary" ${act("coverage")}>Retry calculation</button>`,
       secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
     };
@@ -7163,7 +7145,6 @@ function runFailureGuidance(r) {
     return {
       title: "Build compilation failed",
       detail: err || "The compiler or build tool encountered errors.",
-      suggestion: "Inspect build errors below or create a bug fix job to resolve them with AI.",
       action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+build+compilation+errors"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix build with AI</a>`,
       secondary: `<button type="button" class="btn small" ${act("build")}>Retry build</button>`,
     };
@@ -7173,7 +7154,6 @@ function runFailureGuidance(r) {
     return {
       title: "Test suite execution failed",
       detail: err || "One or more tests in the suite failed.",
-      suggestion: "Inspect failing test output below or create a bug fix job to resolve them.",
       action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`,
       secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
     };
@@ -7183,7 +7163,6 @@ function runFailureGuidance(r) {
     return {
       title: "Configuration check reported issues",
       detail: err || "Orchestrator configuration or environment checks reported errors.",
-      suggestion: "Review the missing configuration in the output below and update your project settings.",
       action: `<a class="btn small primary" href="#/settings">Open Settings</a>`,
       secondary: `<button type="button" class="btn small" ${act("check_config")}>Re-check config</button>`,
     };
@@ -7191,9 +7170,8 @@ function runFailureGuidance(r) {
 
   if (err) {
     return {
-      title: "Run failed with error",
+      title: "Run failed",
       detail: err,
-      suggestion: "Review the terminal output below to diagnose and resolve the issue.",
       action: `<a class="btn small primary" href="#/new">Create new job</a>`,
       secondary: "",
     };
@@ -7283,7 +7261,7 @@ function runStatus(r, vc = null) {
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
     : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "")
-    : failed && guidance ? (guidance.action || "") : "";
+    : "";
 
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
@@ -7296,7 +7274,6 @@ function runStatus(r, vc = null) {
       <div class="run-status-guidance">
         <div class="run-status-guidance-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
         <p class="run-status-guidance-detail">${esc(guidance.detail)}</p>
-        <p class="run-status-guidance-next"><strong>Next steps to fix:</strong> ${esc(guidance.suggestion)}</p>
         <div class="run-status-guidance-actions row gap-8">
           ${guidance.action || ""}
           ${guidance.secondary || ""}
@@ -7399,7 +7376,7 @@ function nextStep(r) {
     : !failed && r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
     : failed && guidance ? `<div class="run-status-guidance-actions row gap-8">${guidance.action || ""}${guidance.secondary || ""}</div>`
     : "";
-  return `<div class="banner ${failed ? "failed attention" : "done"}">${guidance ? `<div class="run-status-guidance-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>` : ""}<p>${esc(text)}</p>${guidance?.suggestion ? `<p class="run-status-guidance-next"><strong>Next steps to fix:</strong> ${esc(guidance.suggestion)}</p>` : ""}${extra}${open}</div>`;
+  return `<div class="banner ${failed ? "failed attention" : "done"}">${guidance ? `<div class="run-status-guidance-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>` : ""}<p>${esc(text)}</p>${extra}${open}</div>`;
 }
 
 async function finishRunStatus(run) {

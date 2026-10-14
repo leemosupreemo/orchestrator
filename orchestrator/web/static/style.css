@@ -441,12 +441,6 @@ a.item:hover { background: var(--panel-2); }
   color: var(--text);
   line-height: 1.45;
 }
-.run-status-guidance-next {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--text);
-  line-height: 1.45;
-}
 .run-status-guidance-actions {
   display: flex;
   align-items: center;

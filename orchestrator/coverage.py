@@ -302,36 +302,36 @@ def _diagnose_unsupported(root: Path, command: str) -> str:
     if "swift" in cmd or any(root.glob("*.swift")):
         sub = _find_sub_manifest(root, "Package.swift")
         if sub:
-            return f"Found Swift language manifest at '{sub.relative_to(root)}', but coverage measurement expects Package.swift at the project root."
+            return f"Found Swift manifest at '{sub.relative_to(root)}', but expected at project root."
         if not has_source:
-            return f"This project language is configured for Swift ('{command}'), but has no source files or Package.swift manifest yet. Create initial code and tests before measuring coverage."
-        return "This project language is configured for Swift, but no Package.swift manifest was found in the project root."
+            return "No Swift source files or Package.swift manifest found yet."
+        return "No Package.swift manifest found in project root."
 
     if "cargo" in cmd or any(root.glob("*.rs")):
         sub = _find_sub_manifest(root, "Cargo.toml")
         if sub:
-            return f"Found Rust language manifest at '{sub.relative_to(root)}', but coverage measurement expects Cargo.toml at the project root."
+            return f"Found Rust manifest at '{sub.relative_to(root)}', but expected at project root."
         if not has_source:
-            return f"This project language is configured for Rust ('{command}'), but has no source files or Cargo.toml manifest yet. Create initial code and tests before measuring coverage."
-        return "This project language is configured for Rust, but no Cargo.toml manifest was found in the project root."
+            return "No Rust source files or Cargo.toml manifest found yet."
+        return "No Cargo.toml manifest found in project root."
 
     if "go " in cmd or "go test" in cmd or any(root.glob("*.go")):
         sub = _find_sub_manifest(root, "go.mod")
         if sub:
-            return f"Found Go language manifest at '{sub.relative_to(root)}', but coverage measurement expects go.mod at the project root."
+            return f"Found Go manifest at '{sub.relative_to(root)}', but expected at project root."
         if not has_source:
-            return f"This project language is configured for Go ('{command}'), but has no source files or go.mod manifest yet. Create initial code and tests before measuring coverage."
-        return "This project language is configured for Go, but no go.mod manifest was found in the project root."
+            return "No Go source files or go.mod manifest found yet."
+        return "No go.mod manifest found in project root."
 
     if any(k in cmd for k in ("npm", "yarn", "pnpm", "bun", "jest", "vitest")):
         sub = _find_sub_manifest(root, "package.json")
         if sub:
-            return f"Found JavaScript/TypeScript language manifest at '{sub.relative_to(root)}', but coverage measurement expects package.json at the project root."
+            return f"Found manifest at '{sub.relative_to(root)}', but expected at project root."
         if not has_source:
-            return f"This project language is configured for JavaScript/TypeScript ('{command}'), but has no source files or package.json manifest yet. Create initial code and tests before measuring coverage."
-        return "This project language is configured for JavaScript/TypeScript, but no package.json manifest was found in the project root."
+            return "No source files or package.json manifest found yet."
+        return "No package.json manifest found in project root."
 
     if not has_source:
-        return "No source code or language manifest found in this project yet. Create initial code and tests before measuring coverage."
+        return "No source files or language manifest found yet."
 
-    return "Couldn't tell which language this project uses, so coverage can't be measured here."
+    return "Couldn't identify project language for coverage."

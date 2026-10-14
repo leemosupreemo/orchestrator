@@ -147,70 +147,70 @@ class CoverageBoundaryTests(unittest.TestCase):
             self.assertIsNone(cov._find_sub_manifest(self.root, "Package.swift"))
 
         # 2. Swift diagnostics: submanifest, no source, has source
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Swift language manifest at 'sub/Package.swift'"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Swift manifest at 'sub/Package.swift'"):
             cov.measure(self.root, "swift test", FakeRun({}))
         (self.root / "sub" / "Package.swift").unlink()
         (self.root / "sub").rmdir()
 
-        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for Swift \('swift test'\), but has no source files"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No Swift source files or Package.swift manifest found yet"):
             cov.measure(self.root, "swift test", FakeRun({}))
 
         (self.root / "app.swift").write_text("let a = 1\n")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for Swift, but no Package.swift"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No Package.swift manifest found in project root"):
             cov.measure(self.root, "", FakeRun({}))
         (self.root / "app.swift").unlink()
 
         # 3. Rust diagnostics: submanifest, no source, has source
         (self.root / "sub").mkdir()
         (self.root / "sub" / "Cargo.toml").write_text("")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Rust language manifest at 'sub/Cargo.toml'"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Rust manifest at 'sub/Cargo.toml'"):
             cov.measure(self.root, "cargo test", FakeRun({}))
         (self.root / "sub" / "Cargo.toml").unlink()
         (self.root / "sub").rmdir()
 
-        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for Rust \('cargo test'\), but has no source files"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No Rust source files or Cargo.toml manifest found yet"):
             cov.measure(self.root, "cargo test", FakeRun({}))
 
         (self.root / "app.rs").write_text("fn main() {}\n")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for Rust, but no Cargo.toml"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No Cargo.toml manifest found in project root"):
             cov.measure(self.root, "", FakeRun({}))
         (self.root / "app.rs").unlink()
 
         # 4. Go diagnostics: submanifest, no source, has source
         (self.root / "sub").mkdir()
         (self.root / "sub" / "go.mod").write_text("")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Go language manifest at 'sub/go.mod'"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found Go manifest at 'sub/go.mod'"):
             cov.measure(self.root, "go test", FakeRun({}))
         (self.root / "sub" / "go.mod").unlink()
         (self.root / "sub").rmdir()
 
-        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for Go \('go test'\), but has no source files"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No Go source files or go.mod manifest found yet"):
             cov.measure(self.root, "go test", FakeRun({}))
 
         (self.root / "app.go").write_text("package main\n")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for Go, but no go.mod"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No go.mod manifest found in project root"):
             cov.measure(self.root, "", FakeRun({}))
         (self.root / "app.go").unlink()
 
         # 5. JS/TS diagnostics: submanifest, no source, has source
         (self.root / "sub").mkdir()
         (self.root / "sub" / "package.json").write_text("{}")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found JavaScript/TypeScript language manifest at 'sub/package.json'"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Found manifest at 'sub/package.json'"):
             cov.measure(self.root, "npm test", FakeRun({}))
         (self.root / "sub" / "package.json").unlink()
         (self.root / "sub").rmdir()
 
-        with self.assertRaisesRegex(cov.CoverageUnavailable, r"This project language is configured for JavaScript/TypeScript \('npm test'\), but has no source files"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No source files or package.json manifest found yet"):
             cov.measure(self.root, "npm test", FakeRun({}))
 
         (self.root / "app.js").write_text("console.log(1);\n")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "This project language is configured for JavaScript/TypeScript, but no package.json"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "No package.json manifest found in project root"):
             cov.measure(self.root, "jest", FakeRun({}))
         (self.root / "app.js").unlink()
 
         # 6. Fallback with source code from an unconfigured language
         (self.root / "script.sh").write_text("echo hi\n")
-        with self.assertRaisesRegex(cov.CoverageUnavailable, "Couldn't tell which language this project uses"):
+        with self.assertRaisesRegex(cov.CoverageUnavailable, "Couldn't identify project language for coverage"):
             cov.measure(self.root, None, FakeRun({}))
         (self.root / "script.sh").unlink()
 

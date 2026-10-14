@@ -240,16 +240,16 @@ assert.match(runStatus({...run, progress: {label: 'Building', models: ['provider
 assert.match(runStatus({...run, progress: {label: 'Building', assigned_models: ['provider/model-b'], models: [], active_models: []}}), /provider\/model-b \(assigned\)/);
 
 // Failure guidance and action buttons
-const failedCov = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files, test suites, or package manifest found"});
+const failedCov = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No Swift source files or Package.swift manifest found yet"});
 assert.match(failedCov, /banner failed/);
-assert.match(failedCov, /Project source files and tests needed/);
-assert.match(failedCov, /Next steps to fix/);
+assert.match(failedCov, /No source files or tests yet/);
+assert.doesNotMatch(failedCov, /Next steps to fix/);
 assert.match(failedCov, /Create first job/);
 assert.match(failedCov, /href="#\/new\?type=feature"/);
 assert.match(failedCov, /href="#\/tests"/);
 
 const failedCovTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "Coverage measurement failed because test suite had failing tests"});
-assert.match(failedCovTests, /Tests must pass before measuring coverage/);
+assert.match(failedCovTests, /Tests failed during coverage/);
 assert.match(failedCovTests, /Fix tests with AI/);
 
 const failedBuild = runStatus({...run, action: 'build', running: false, exit_code: 1, error_summary: "compilation error: unresolved identifier"});
@@ -261,9 +261,9 @@ const failedCheck = runStatus({...run, action: 'check_config', running: false, e
 assert.match(failedCheck, /Configuration check reported issues/);
 assert.match(failedCheck, /Open Settings/);
 
-const nextFailed = nextStep({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files, test suites, or package manifest found"});
+const nextFailed = nextStep({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No Swift source files or Package.swift manifest found yet"});
 assert.match(nextFailed, /banner failed/);
-assert.match(nextFailed, /Project source files and tests needed/);
+assert.match(nextFailed, /No source files or tests yet/);
 assert.match(nextFailed, /Create first job/);
 
 let replacements = 0;
