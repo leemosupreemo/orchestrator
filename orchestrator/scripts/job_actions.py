@@ -288,7 +288,18 @@ def test_inventory() -> dict[str, Any]:
     plans_root = ROOT / (PROJECT_CONFIG.test_target or "") / "TestPlans"
     plans = sorted(plans_root.glob("*.xctestplan")) if PROJECT_CONFIG.test_target and plans_root.exists() else []
     cov = get_coverage_data()
-    if cov and not cov.get("total_lines"):
+    total_tests = sum(s.get("test_count", 0) for s in suites)
+    if total_tests == 0 and (not cov or cov.get("overall_coverage_pct") is None):
+        cov = {
+            **(cov or {}),
+            "overall_coverage_pct": 0,
+            "total_lines": count_source_lines(ROOT),
+            "covered_lines": 0,
+            "total_tests": 0,
+            "total_suites": 0,
+            "metric": (cov or {}).get("metric") or "lines",
+        }
+    elif cov and not cov.get("total_lines"):
         lines_cnt = count_source_lines(ROOT)
         if lines_cnt > 0:
             cov["total_lines"] = lines_cnt

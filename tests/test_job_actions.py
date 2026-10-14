@@ -141,6 +141,19 @@ class ApproveReviseTests(unittest.TestCase):
         self.assertEqual(feedback, "Requested change: Bigger button\nAffected area: Results\nDone when: Tappable")
         self.assertIn("--stitch", argv)
 
+    def test_test_inventory_defaults_to_zero_coverage_when_no_tests(self):
+        with patch("dev_console.discover_test_suites", return_value=[]), \
+             patch("dev_console.get_coverage_data", return_value={"last_error": "Coverage measurement failed: No tests", "last_error_at": "2026-10-14T00:00:00Z"}), \
+             patch("orchestrator.coverage.count_source_lines", return_value=42):
+            inv = job_actions.test_inventory()
+            self.assertEqual(inv["suites"], [])
+            self.assertEqual(inv["coverage"]["overall_coverage_pct"], 0)
+            self.assertEqual(inv["coverage"]["total_tests"], 0)
+            self.assertEqual(inv["coverage"]["total_suites"], 0)
+            self.assertEqual(inv["coverage"]["covered_lines"], 0)
+            self.assertEqual(inv["coverage"]["total_lines"], 42)
+            self.assertEqual(inv["coverage"]["last_error"], "Coverage measurement failed: No tests")
+
 
 if __name__ == "__main__":
     unittest.main()

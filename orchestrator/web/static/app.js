@@ -5287,13 +5287,48 @@ pages.tests = async (_, query) => {
   const byArea = new Map();
   for (const c of shownCases) byArea.set(c.area, [...(byArea.get(c.area) || []), c]);
   const cov = data.coverage;
-  // Only a real measurement shows a number (older versions saved an estimate from the test count).
-  const measured = cov && cov.overall_coverage_pct != null && !cov.estimated;
   const filter = (query.get("q") || "").toLowerCase();
   // Discovery also matches source files with no tests in them; those aren't runnable suites.
   const withTests = data.suites.filter((s) => s.tests > 0);
   const suites = withTests.filter((s) => !filter || s.name.toLowerCase().includes(filter));
   const total = withTests.reduce((n, s) => n + s.tests, 0);
+  const hasTests = total > 0;
+  // Automatically show 0% if project has no tests yet.
+  const effectiveCov = (cov && cov.overall_coverage_pct != null && !cov.estimated)
+    ? cov
+    : (!hasTests ? {
+        overall_coverage_pct: 0,
+        total_lines: cov?.total_lines ?? 0,
+        covered_lines: 0,
+        total_tests: 0,
+        total_suites: 0,
+        metric: cov?.metric || "lines",
+        timestamp: cov?.timestamp,
+        last_error: cov?.last_error,
+      } : null);
+  const measured = Boolean(effectiveCov);
+  const recentCoverageRun = (state.runs || []).filter((r) => r.action === "coverage").sort((a, b) => (b.started || 0) - (a.started || 0))[0];
+  const coverageFailureRun = (recentCoverageRun && recentCoverageRun.exit_code !== 0) ? recentCoverageRun
+    : (cov?.last_error ? {
+        id: "cov-failure",
+        action: "coverage",
+        title: "Measure test coverage",
+        running: false,
+        exit_code: 1,
+        error_summary: cov.last_error,
+        started: cov.last_error_at ? Math.floor(Date.parse(cov.last_error_at) / 1000) : Math.floor(Date.now() / 1000),
+        ended: cov.last_error_at ? Math.floor(Date.parse(cov.last_error_at) / 1000) : Math.floor(Date.now() / 1000),
+      } : (!hasTests ? {
+        id: "cov-no-tests",
+        action: "coverage",
+        title: "Measure test coverage",
+        running: false,
+        exit_code: 1,
+        error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage.",
+        started: Math.floor(Date.now() / 1000),
+        ended: Math.floor(Date.now() / 1000),
+      } : null));
+  const showNextStep = Boolean((recentCoverageRun && recentCoverageRun.exit_code !== 0) || cov?.last_error);
   return {
     title: "Tests",
     sub: `${withTests.length} suites · ${total} tests`,
@@ -5308,10 +5343,11 @@ pages.tests = async (_, query) => {
         </div></div>
         <div class="card-b">${testCaseSummaryHtml(caseView.summary)}</div>
         ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
-      <section class="card"><div class="card-h"><h2>Coverage${measured ? ` <span class="count">${esc(ago(Date.parse(cov.timestamp) / 1000))}</span>` : ""}</h2>
-        <button type="button" class="btn small" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Recalculate" : "Calculate"}</button></div>
-        <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(cov.overall_coverage_pct)}%</span>
-          <span class="muted">${cov.total_lines ? `of ${cov.total_lines.toLocaleString()} ` : "of "}${esc(cov.metric || "lines")} covered${cov.tool ? `, measured with ${esc(cov.tool)}` : ""} · ${esc(cov.total_tests)} tests in ${esc(cov.total_suites)} suites</span></div>`
+      <div id="next-step" class="mb-16"${showNextStep && coverageFailureRun ? "" : " hidden"}>${showNextStep && coverageFailureRun ? runStatus(coverageFailureRun) : ""}</div>
+      <section class="card"><div class="card-h"><h2>Coverage${effectiveCov?.timestamp ? ` <span class="count">${esc(ago(Date.parse(effectiveCov.timestamp) / 1000))}</span>` : ""}</h2>
+        <button type="button" class="btn small" id="recalc-coverage" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Recalculate" : "Calculate"}</button></div>
+        <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(effectiveCov.overall_coverage_pct)}%</span>
+          <span class="muted">${effectiveCov.total_lines ? `of ${effectiveCov.total_lines.toLocaleString()} ` : ""}${esc(effectiveCov.metric || "lines")} covered${effectiveCov.tool ? `, measured with ${esc(effectiveCov.tool)}` : ""} · ${esc(effectiveCov.total_tests)} tests in ${esc(effectiveCov.total_suites)} suites</span></div>`
           : `<p class="muted">Not measured yet.</p>`}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
@@ -5394,6 +5430,31 @@ pages.tests = async (_, query) => {
         e.preventDefault();
         location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
       });
+      $("#recalc-coverage")?.addEventListener("click", (e) => {
+        if (!hasTests) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          const covNum = view.querySelector(".big-number");
+          if (covNum) covNum.textContent = "0%";
+          const container = $("#next-step");
+          if (container) {
+            const runForStatus = coverageFailureRun || {
+              id: "cov-no-tests",
+              action: "coverage",
+              title: "Measure test coverage",
+              running: false,
+              exit_code: 1,
+              error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage.",
+              started: Math.floor(Date.now() / 1000),
+              ended: Math.floor(Date.now() / 1000),
+            };
+            container.innerHTML = runStatus(runForStatus);
+            container.hidden = false;
+            container.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          }
+        }
+      }, true);
       $("#expand-coverage").addEventListener("click", async () => {
         const choicePromise = formDialog("Expand coverage", `<p>Choose an area, or let AI find the most useful gaps to address.</p>
           <div class="import-options coverage-paths"><a class="import-option" id="coverage-specific" href="#/new?type=coverage"><strong>I have an area in mind</strong><span>Describe the feature or code you want tested.</span></a>
@@ -7093,11 +7154,11 @@ function runFailureGuidance(r) {
   const lower = err.toLowerCase();
 
   if (r.action === "coverage") {
-    if (lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod")) {
+    if (lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod") || lower.includes("no test")) {
       return {
         title: "No source files or tests yet",
         detail: "Create your first feature to scaffold project code and tests before measuring coverage.",
-        action: `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create first job</a>`,
+        action: `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create a job to add tests</a>`,
         secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }

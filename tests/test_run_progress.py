@@ -244,9 +244,13 @@ const failedCov = runStatus({...run, action: 'coverage', running: false, exit_co
 assert.match(failedCov, /banner failed/);
 assert.match(failedCov, /No source files or tests yet/);
 assert.doesNotMatch(failedCov, /Next steps to fix/);
-assert.match(failedCov, /Create first job/);
+assert.match(failedCov, /Create a job to add tests/);
 assert.match(failedCov, /href="#\/new\?type=feature"/);
 assert.match(failedCov, /href="#\/tests"/);
+
+const failedNoTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage."});
+assert.match(failedNoTests, /No source files or tests yet/);
+assert.match(failedNoTests, /Create a job to add tests/);
 
 const failedCovTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "Coverage measurement failed because test suite had failing tests"});
 assert.match(failedCovTests, /Tests failed during coverage/);
@@ -264,7 +268,7 @@ assert.match(failedCheck, /Open Settings/);
 const nextFailed = nextStep({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No Swift source files or Package.swift manifest found yet"});
 assert.match(nextFailed, /banner failed/);
 assert.match(nextFailed, /No source files or tests yet/);
-assert.match(nextFailed, /Create first job/);
+assert.match(nextFailed, /Create a job to add tests/);
 
 let replacements = 0;
 const clock = {textContent: ''};
