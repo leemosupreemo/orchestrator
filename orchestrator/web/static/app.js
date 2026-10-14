@@ -3409,7 +3409,7 @@ pages.delivery = async (args, query) => {
   const { testers, pipeline, branches = [], current_branch = "", selected_branch = "", branch_commit = {}, latest_job = null, user_email = "" } = d;
   const when = (iso) => (iso ? ago(Date.parse(iso) / 1000) : "");
 
-  const jobTone = (status) => (status === "completed" ? "done" : status === "review-needed" ? "attention" : "working");
+  const jobTone = (status) => (status === "completed" ? "done" : (status === "review-needed" || status === "human-needed") ? "attention" : status === "failed" ? "failed" : "working");
 
   const releaseCard = `<section class="card mb-16"><div class="card-h"><h2>Release versions</h2>
     ${d.live?.commit ? `<button type="button" class="btn small" data-create-release data-owner-only>Create release tag</button>` : ""}</div>
@@ -3428,20 +3428,40 @@ pages.delivery = async (args, query) => {
       </div>
     </div>
     <div class="card-b stack">
-      <div>
-        ${branch_commit.commit ? `
-          <div><strong class="mono">${esc(branch_commit.commit)}</strong> ${esc(branch_commit.subject || "(no commit message)")} <span class="muted">· ${branch_commit.author ? `by ${esc(branch_commit.author)} · ` : ""}${esc(branch_commit.when)}</span></div>
-        ` : `<div class="muted">No commit information found for this branch.</div>`}
-      </div>
-      <div>
-        ${latest_job ? `
-          <span class="muted">Latest job on branch:</span>
-          <a href="#/jobs/${encodeURIComponent(latest_job.id)}"><strong>${esc(latest_job.title || latest_job.id)}</strong></a>
-          <span class="pill ${jobTone(latest_job.status)}">${esc(latest_job.status)}</span>
-          <span class="muted">· ${esc(ago(latest_job.updated))}</span>
-        ` : `
-          <span class="muted">No Orchestrator jobs have run on this branch yet.</span>
-        `}
+      <div class="branch-meta-box">
+        <div class="branch-meta-row">
+          <div class="branch-meta-label">
+            <span class="branch-meta-tag">Latest commit</span>
+          </div>
+          <div class="branch-meta-main">
+            ${branch_commit.commit ? `
+              <div class="branch-meta-title">
+                <code class="mono branch-commit-hash">${esc(branch_commit.commit)}</code>
+                <span class="branch-commit-subject">${esc(branch_commit.subject || "(no commit message)")}</span>
+              </div>
+              <div class="branch-meta-sub">
+                ${branch_commit.author ? `<span>by <strong>${esc(branch_commit.author)}</strong></span><span class="sep">·</span>` : ""}
+                <span>${esc(branch_commit.when)}</span>
+              </div>
+            ` : `<div class="muted text-sm">No commit information found for this branch.</div>`}
+          </div>
+        </div>
+        <div class="branch-meta-row">
+          <div class="branch-meta-label">
+            <span class="branch-meta-tag">Latest job</span>
+          </div>
+          <div class="branch-meta-main">
+            ${latest_job ? `
+              <div class="branch-meta-title">
+                <a class="branch-job-link" href="#/jobs/${encodeURIComponent(latest_job.id)}"><strong>${esc(latest_job.title || latest_job.id)}</strong></a>
+                <span class="pill ${jobTone(latest_job.status)}">${esc(latest_job.status)}</span>
+              </div>
+              <div class="branch-meta-sub">
+                <span>Updated ${esc(ago(latest_job.updated))}</span>
+              </div>
+            ` : `<div class="muted text-sm">No Orchestrator jobs have run on this branch yet.</div>`}
+          </div>
+        </div>
       </div>
 
       ${!testers.configured ? `

@@ -3385,3 +3385,113 @@ dialog.dialog-image-viewer form {
   gap: 10px;
   justify-content: center;
 }
+
+/* Delivery / Distribution: Branch metadata container */
+.branch-meta-box {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.branch-meta-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  min-width: 0;
+}
+
+.branch-meta-row + .branch-meta-row {
+  border-top: 1px solid var(--border);
+}
+
+.branch-meta-label {
+  flex: 0 0 110px;
+  min-width: 90px;
+  padding-top: 2px;
+}
+
+.branch-meta-tag {
+  display: inline-block;
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.branch-meta-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.branch-meta-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.branch-commit-hash {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--space-1.5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.branch-commit-subject {
+  font-weight: 550;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.branch-job-link {
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.branch-job-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.branch-meta-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1.5);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.branch-meta-sub .sep {
+  opacity: 0.5;
+}
+
+@media (max-width: 760px) {
+  .branch-meta-row {
+    flex-direction: column;
+    gap: var(--space-1.5);
+  }
+  .branch-meta-label {
+    flex: none;
+    padding-top: 0;
+  }
+}
+

@@ -3858,6 +3858,19 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('formDialog(title, body, okLabel, { danger: true, compact: true })', self.js)
         self.assertIn('"Stop this job?"', self.js)
         self.assertIn('"Stop job"', self.js)
+
+    def test_delivery_branch_meta_container_and_labels(self):
+        delivery_src = self.js[self.js.index("pages.delivery = async"):self.js.index("pages.git = async")]
+        self.assertIn("branch-meta-box", delivery_src)
+        self.assertIn("branch-meta-row", delivery_src)
+        self.assertIn("Latest commit", delivery_src)
+        self.assertIn("Latest job", delivery_src)
+        self.assertIn("branch-commit-hash", delivery_src)
+        self.assertIn("branch-job-link", delivery_src)
+        self.assertIn(".branch-meta-box {", self.css)
+        self.assertIn("background: var(--panel-2);", self.css)
+        self.assertIn(".branch-meta-row {", self.css)
+        self.assertIn(".branch-meta-tag {", self.css)
         # Shows loading spinner overlay over job card while in progress
         self.assertIn('live-run-overlay', self.js)
         self.assertIn('role="status"', self.js)
