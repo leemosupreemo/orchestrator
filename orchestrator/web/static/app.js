@@ -7269,8 +7269,9 @@ async function getVisualCheckForRun(r) {
   }
 }
 
-function runDuration(started) {
-  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - started));
+function runDuration(started, ended) {
+  const finish = (ended && Number(ended) > 0) ? Number(ended) : Date.now() / 1000;
+  const seconds = Math.max(0, Math.floor(finish - started));
   return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
     : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 }
@@ -7291,10 +7292,15 @@ function runFailureGuidance(r) {
       };
     }
     if (lower.includes("tests failed") || lower.includes("failing tests")) {
+      const fixParams = {
+        type: "bug",
+        summary: "Fix failing tests",
+        spec: err ? `Fix failing tests encountered during coverage run:\n${err.slice(0, 1500)}` : "Diagnose test failures from the coverage run output and make all test suites pass."
+      };
       return {
         title: "Tests failed during coverage",
-        detail: "Tests must pass before coverage can be recorded. Fix failing tests first.",
-        action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`,
+        detail: "Code coverage requires all tests to pass to produce accurate measurements. Fix failing tests to unblock coverage, or let AI automatically diagnose the failure log and repair them.",
+        action: `<button type="button" class="btn small primary" ${act("new_job", fixParams)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</button>`,
         secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
       };
     }
@@ -7331,19 +7337,29 @@ function runFailureGuidance(r) {
   }
 
   if (r.action === "build") {
+    const fixParams = {
+      type: "bug",
+      summary: "Fix build compilation errors",
+      spec: err ? `Fix build compilation errors:\n${err.slice(0, 1500)}` : "Diagnose and fix compilation errors from the build tool output."
+    };
     return {
       title: "Build compilation failed",
-      detail: err || "The compiler or build tool encountered errors.",
-      action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+build+compilation+errors"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix build with AI</a>`,
+      detail: err || "The compiler or build tool encountered errors. Fix the compilation errors or let AI resolve them automatically.",
+      action: `<button type="button" class="btn small primary" ${act("new_job", fixParams)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix build with AI</button>`,
       secondary: `<button type="button" class="btn small" ${act("build")}>Retry build</button>`,
     };
   }
 
   if (r.action === "test" || r.action === "test_suite" || r.action === "test_plan") {
+    const fixParams = {
+      type: "bug",
+      summary: "Fix failing tests",
+      spec: err ? `Fix failing tests encountered during test run:\n${err.slice(0, 1500)}` : "Diagnose test failures from the test runner output and make all test suites pass."
+    };
     return {
       title: "Test suite execution failed",
-      detail: err || "One or more tests in the suite failed.",
-      action: `<a class="btn small primary" href="#/new?type=bug&summary=Fix+failing+tests"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</a>`,
+      detail: err ? `One or more tests in the suite failed: ${err.slice(0, 300)}. Let AI diagnose and fix them, or inspect test suites.` : "One or more tests in the suite failed. Let AI automatically diagnose the failure log and repair the tests, or inspect your test suites.",
+      action: `<button type="button" class="btn small primary" ${act("new_job", fixParams)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</button>`,
       secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
     };
   }
@@ -7478,10 +7494,10 @@ function runStatus(r, vc = null) {
       <div class="run-status-guidance">
         <div class="run-status-guidance-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
         <p class="run-status-guidance-detail">${esc(guidance.detail)}</p>
-        <div class="run-status-guidance-actions row gap-8">
-          ${guidance.action || ""}
-          ${guidance.secondary || ""}
-        </div>
+      </div>
+      <div class="run-status-guidance-actions row gap-8">
+        ${guidance.action || ""}
+        ${guidance.secondary || ""}
       </div>` : ""}
     ${numbered ? `<progress class="run-status-progress" value="${progressVal}" max="${progressMax}" aria-label="Completed steps">${progressVal} of ${progressMax}</progress>` : ""}
   </section>`;

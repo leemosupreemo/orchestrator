@@ -449,7 +449,7 @@ a.item:hover { background: var(--panel-2); }
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: var(--space-1);
+  margin-top: 0;
 }
 
 .run-status.run-status-notice {

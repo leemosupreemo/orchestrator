@@ -290,6 +290,11 @@ assert.equal(retryCount, 1, "There must be exactly one Retry calculation button,
 const failedCovTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "Coverage measurement failed because test suite had failing tests"});
 assert.match(failedCovTests, /Tests failed during coverage/);
 assert.match(failedCovTests, /Fix tests with AI/);
+assert.match(failedCovTests, /data-action="new_job"/);
+assert.doesNotMatch(failedCovTests, /href="#\/new\?type=bug/);
+assert.match(failedCovTests, /<\/div>\s*<div class="run-status-guidance-actions row gap-8">/);
+assert.equal(runDuration(1000, 1025), "25s");
+assert.equal(runDuration(1000, 1120), "2m 0s");
 
 const failedBuild = runStatus({...run, action: 'build', running: false, exit_code: 1, error_summary: "compilation error: unresolved identifier"});
 assert.match(failedBuild, /Build compilation failed/);
