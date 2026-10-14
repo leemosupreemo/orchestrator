@@ -2605,6 +2605,14 @@ class RunApiTests(ServerTestCase):
         self.assertEqual(s_label, "GitHub Tracked")
         self.assertEqual(repo, "my-org/my-project")
 
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                ["gh", "repo", "view"], 0, stdout=json.dumps({"nameWithOwner": "my-org/my-project"}), stderr=""
+            )
+            s_type, s_label, repo = ui.detect_project_source(self.root.parent / "nonexistent")
+            self.assertEqual(s_type, "github")
+            self.assertEqual(repo, "my-org/my-project")
+
     def test_projects_add_and_forget(self):
         other_dir = self.root.parent / "other_project"
         make_project(other_dir)
@@ -2618,6 +2626,16 @@ class RunApiTests(ServerTestCase):
         res, data = self.request("DELETE", "/api/projects", body={"root": str(other_dir)}, headers=UI_HEADERS)
         self.assertEqual(res.status, 200)
         self.assertFalse(any(p["root"] == str(ui.safe_resolve(other_dir)) for p in data["projects"]))
+
+    def test_all_projects_info_preserves_github_source_when_local_fs_is_inaccessible(self):
+        other_dir = self.root.parent / "restricted_project"
+        other_dir.mkdir(parents=True, exist_ok=True)
+        ui.remember_project(other_dir, "Restricted", active=False, source_type="github", source_label="GitHub Tracked", github_repo="my-org/restricted")
+        info = ui.all_projects_info(self.root)
+        matched = next((p for p in info if p["name"] == "Restricted"), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["source_type"], "github")
+        self.assertEqual(matched["github_repo"], "my-org/restricted")
 
     def test_projects_scan_finds_projects(self):
         other_dir = self.root.parent / "scanned_project"
@@ -3817,8 +3835,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('body[data-page="tests"] .topbar-actions > .test-run-all-btn { flex: 2 1 0;', self.css)
         self.assertIn('body[data-page="tests"] .topbar-actions > .test-expand-coverage-btn {', self.css)
         self.assertIn('flex: 1 1 0;', self.css)
-        self.assertIn("cov.total_lines", tests_src)
-        self.assertIn("cov.total_lines.toLocaleString()", tests_src)
+        self.assertIn("effectiveCov.total_lines", tests_src)
+        self.assertIn("effectiveCov.total_lines.toLocaleString()", tests_src)
         self.assertNotIn("Coverage target (%)", tests_src)
         self.assertIn('${measured ? "Recalculate" : "Calculate"}', tests_src)
         self.assertNotIn("Measure again", tests_src)

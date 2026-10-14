@@ -1762,7 +1762,12 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, gi
         if cfg_repo and isinstance(cfg_repo, str) and "/" in cfg_repo:
             github_repo = cfg_repo.strip()
 
-    has_git = (root / ".git").exists()
+    has_git = False
+    try:
+        has_git = (root / ".git").exists()
+    except (OSError, InterruptedError):
+        pass
+
     if not github_repo and has_git:
         origin_url = git(root, "config", "--get", "remote.origin.url", timeout=git_timeout).strip()
         if origin_url and "github.com" in origin_url:
@@ -1771,6 +1776,19 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, gi
                 github_repo = m.group(1).removesuffix(".git")
             else:
                 github_repo = "GitHub Tracked"
+
+    # If git couldn't be inspected (e.g. permission/TCC restriction on ~/Documents),
+    # fallback to checking gh CLI for a repository matching root.name
+    if not github_repo:
+        try:
+            res = subprocess.run(["gh", "repo", "view", root.name, "--json", "nameWithOwner"],
+                                 capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                if isinstance(data, dict) and data.get("nameWithOwner"):
+                    github_repo = data["nameWithOwner"].strip()
+        except Exception:
+            pass
 
     if github_repo:
         return "github", "GitHub Tracked", github_repo
@@ -2043,6 +2061,15 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
                     pass
             source_type, source_label, github_repo = detect_project_source(p_resolved, p_config, git_timeout=1.0)
             p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None, scan_local=False)
+
+        if source_type != "github" and p.get("source_type") == "github":
+            source_type = "github"
+            source_label = p.get("source_label", "GitHub Tracked")
+            github_repo = p.get("github_repo")
+        elif not github_repo and p.get("github_repo"):
+            github_repo = p.get("github_repo")
+            source_type = "github"
+            source_label = "GitHub Tracked"
 
         results.append({
             "name": p.get("name") or project_display_name(p_resolved),
