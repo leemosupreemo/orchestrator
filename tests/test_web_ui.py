@@ -2595,6 +2595,16 @@ class RunApiTests(ServerTestCase):
         self.assertEqual(s_label, "GitHub Tracked")
         self.assertEqual(repo, "my-org/my-project")
 
+        s_type, s_label, repo = ui.detect_project_source(self.root, {"git_remote": "git@github.com:my-org/my-project.git"})
+        self.assertEqual(s_type, "github")
+        self.assertEqual(s_label, "GitHub Tracked")
+        self.assertEqual(repo, "my-org/my-project")
+
+        s_type, s_label, repo = ui.detect_project_source(self.root, {"git_remote": "https://github.com/my-org/my-project"})
+        self.assertEqual(s_type, "github")
+        self.assertEqual(s_label, "GitHub Tracked")
+        self.assertEqual(repo, "my-org/my-project")
+
     def test_projects_add_and_forget(self):
         other_dir = self.root.parent / "other_project"
         make_project(other_dir)

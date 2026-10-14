@@ -1754,6 +1754,11 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, gi
     github_repo: str | None = None
     if isinstance(p_config, dict):
         cfg_repo = p_config.get("github_repo") or (p_config.get("github") or {}).get("repo")
+        if not cfg_repo and p_config.get("git_remote"):
+            remote = str(p_config.get("git_remote"))
+            m = re.search(r"github\.com[:/]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)", remote)
+            if m:
+                cfg_repo = m.group(1).removesuffix(".git")
         if cfg_repo and isinstance(cfg_repo, str) and "/" in cfg_repo:
             github_repo = cfg_repo.strip()
 
@@ -1947,12 +1952,18 @@ def project_state(root: Path) -> dict[str, Any]:
                 "languages": root_languages,
             })
         else:
+            s_type = p.get("source_type")
+            s_label = p.get("source_label")
+            g_repo = p.get("github_repo")
+            if not s_type and p_r and p_r.is_dir():
+                p_cfg = _safe_read_json_file(runtime_dir(p_r) / "project.json", timeout=0.2)
+                s_type, s_label, g_repo = detect_project_source(p_r, p_cfg, git_timeout=1.0)
             recent_entries.append({
                 "name": p.get("name"),
                 "root": p.get("root"),
-                "source_type": p.get("source_type", "local"),
-                "source_label": p.get("source_label", "Local"),
-                "github_repo": p.get("github_repo"),
+                "source_type": s_type or "local",
+                "source_label": s_label or "Local",
+                "github_repo": g_repo,
                 "languages": [],
             })
 
@@ -2030,7 +2041,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
                             needs_you_count += 1
                 except Exception:
                     pass
-            source_type, source_label, github_repo = detect_project_source(p_resolved, p_config, git_timeout=0.3)
+            source_type, source_label, github_repo = detect_project_source(p_resolved, p_config, git_timeout=1.0)
             p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None, scan_local=False)
 
         results.append({
@@ -4498,7 +4509,10 @@ class UIHandler(BaseHTTPRequestHandler):
             if not p.is_dir():
                 raise UIError(f"Directory not found: {p}")
             name = str(body.get("name") or "").strip() or project_display_name(p)
-            remember_project(p, name, active=bool(body.get("active", False)))
+            p_cfg = read_json_file(runtime_dir(p) / "project.json")
+            s_type, s_label, g_repo = detect_project_source(p, p_cfg)
+            remember_project(p, name, active=bool(body.get("active", False)),
+                             source_type=s_type, source_label=s_label, github_repo=g_repo)
             self._audit("project_added", project=name, path=str(p))
             if body.get("active"):
                 self.server.set_root(p)
@@ -5209,7 +5223,9 @@ class UIHandler(BaseHTTPRequestHandler):
         if str(candidate) not in known and not (runtime_dir(candidate) / "project.json").is_file():
             raise UIError("Not a known orchestrator project")
         self.server.set_root(candidate)
-        remember_project(candidate, active=True)
+        p_cfg = read_json_file(runtime_dir(candidate) / "project.json")
+        s_type, s_label, g_repo = detect_project_source(candidate, p_cfg)
+        remember_project(candidate, active=True, source_type=s_type, source_label=s_label, github_repo=g_repo)
         self._json({"project": project_state(candidate)})
 
     def _start_run(self, body: dict[str, Any], root: Path) -> None:
@@ -5580,7 +5596,9 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
             resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
     except Exception:
         pass
-    remember_project(root)
+    p_cfg = read_json_file(runtime_dir(root) / "project.json")
+    s_type, s_label, g_repo = detect_project_source(root, p_cfg)
+    remember_project(root, source_type=s_type, source_label=s_label, github_repo=g_repo)
 
     settings_file = runtime_dir(root) / "config" / "settings.json"
     settings = {}
