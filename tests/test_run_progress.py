@@ -257,11 +257,21 @@ assert.match(runStatus({...run, progress: {label: 'Building', assigned_models: [
 // Failure guidance and action buttons
 const failedCov = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No Swift source files or Package.swift manifest found yet"});
 assert.match(failedCov, /banner failed/);
+assert.match(failedCov, /run-status-notice/);
 assert.match(failedCov, /No source files or tests yet/);
 assert.doesNotMatch(failedCov, /Next steps to fix/);
+assert.doesNotMatch(failedCov, /Models &amp; agents|Models & agents/);
+assert.doesNotMatch(failedCov, /Elapsed/);
+assert.doesNotMatch(failedCov, /Measuring code coverage failed/);
 assert.match(failedCov, /Create a job to add tests/);
 assert.match(failedCov, /href="#\/new\?type=feature"/);
 assert.match(failedCov, /href="#\/tests"/);
+
+globalThis.current = {page: 'tests'};
+const failedCovTestsPage = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No Swift source files or Package.swift manifest found yet"});
+assert.doesNotMatch(failedCovTestsPage, /Back to Tests/);
+assert.doesNotMatch(failedCovTestsPage, /href="#\/tests"/);
+globalThis.current = undefined;
 
 const failedNoTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage."});
 assert.match(failedNoTests, /No source files or tests yet/);

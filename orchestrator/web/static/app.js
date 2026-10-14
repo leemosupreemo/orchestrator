@@ -5308,7 +5308,18 @@ pages.tests = async (_, query) => {
       } : null);
   const measured = Boolean(effectiveCov);
   const recentCoverageRun = (state.runs || []).filter((r) => r.action === "coverage").sort((a, b) => (b.started || 0) - (a.started || 0))[0];
-  const coverageFailureRun = (recentCoverageRun && recentCoverageRun.exit_code !== 0) ? recentCoverageRun
+  const coverageFailureRun = !hasTests
+    ? {
+        id: "cov-no-tests",
+        action: "coverage",
+        title: "Measure test coverage",
+        running: false,
+        exit_code: 1,
+        error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage.",
+        started: Math.floor(Date.now() / 1000),
+        ended: Math.floor(Date.now() / 1000),
+      }
+    : ((recentCoverageRun && recentCoverageRun.exit_code !== 0) ? recentCoverageRun
     : (cov?.last_error ? {
         id: "cov-failure",
         action: "coverage",
@@ -5318,15 +5329,6 @@ pages.tests = async (_, query) => {
         error_summary: cov.last_error,
         started: cov.last_error_at ? Math.floor(Date.parse(cov.last_error_at) / 1000) : Math.floor(Date.now() / 1000),
         ended: cov.last_error_at ? Math.floor(Date.parse(cov.last_error_at) / 1000) : Math.floor(Date.now() / 1000),
-      } : (!hasTests ? {
-        id: "cov-no-tests",
-        action: "coverage",
-        title: "Measure test coverage",
-        running: false,
-        exit_code: 1,
-        error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage.",
-        started: Math.floor(Date.now() / 1000),
-        ended: Math.floor(Date.now() / 1000),
       } : null));
   const showNextStep = Boolean((recentCoverageRun && recentCoverageRun.exit_code !== 0) || cov?.last_error);
   return {
@@ -7155,12 +7157,13 @@ function runFailureGuidance(r) {
   const lower = err.toLowerCase();
 
   if (r.action === "coverage") {
-    if (!err || lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod") || lower.includes("no test")) {
+    if (!err || lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("tell what language") || lower.includes("which language") || lower.includes("language the project uses") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod") || lower.includes("no test")) {
+      const onTestsPage = typeof current !== "undefined" && current?.page === "tests";
       return {
         title: "No source files or tests yet",
         detail: "Create your first feature to scaffold project code and tests before measuring coverage.",
         action: `<a class="btn small primary" href="#/new?type=feature"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Create a job to add tests</a>`,
-        secondary: `<a class="btn small" href="#/tests">Back to Tests</a>`,
+        secondary: onTestsPage ? "" : `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }
     if (lower.includes("tests failed") || lower.includes("failing tests")) {
@@ -7258,6 +7261,22 @@ function runStatus(r, vc = null) {
   const stopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   const failed = Boolean(!r.running && r.exit_code !== 0);
   const done = Boolean(!r.running && r.exit_code === 0);
+  const guidance = failed && typeof runFailureGuidance === "function" ? runFailureGuidance(r) : null;
+
+  // When no tests exist, simplify the container completely: no telemetry clutter, no redundant headline or elapsed
+  if (failed && guidance && guidance.title === "No source files or tests yet") {
+    return `<section class="banner failed attention run-status run-status-notice" aria-label="Run status">
+      <div class="run-status-notice-body">
+        <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
+        <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
+      </div>
+      <div class="run-status-notice-actions row gap-8">
+        ${guidance.action || ""}
+        ${guidance.secondary || ""}
+      </div>
+    </section>`;
+  }
+
   const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : "Completed";
   const tone = stopping || r.waiting ? "attention" : r.running ? "working" : failed ? "failed" : "done";
   const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
@@ -7318,7 +7337,6 @@ function runStatus(r, vc = null) {
   const progressVal = done && numbered ? totalSteps : (numbered ? p.step - 1 : 0);
   const progressMax = numbered ? totalSteps : 1;
   const duration = runDuration(r.started, r.ended);
-  const guidance = failed && typeof runFailureGuidance === "function" ? runFailureGuidance(r) : null;
   const actionBtn = done ? (r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
