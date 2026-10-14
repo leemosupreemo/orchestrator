@@ -292,7 +292,11 @@ assert.match(failedCovTests, /Tests failed during coverage/);
 assert.match(failedCovTests, /Fix tests with AI/);
 assert.match(failedCovTests, /data-action="new_job"/);
 assert.doesNotMatch(failedCovTests, /href="#\/new\?type=bug/);
-assert.match(failedCovTests, /<\/div>\s*<div class="run-status-guidance-actions row gap-8">/);
+assert.doesNotMatch(failedCovTests, /Run failed/);
+assert.doesNotMatch(failedCovTests, /failed<\/strong>/);
+const standaloneFailedCov = runStatus({...run, action: 'coverage', progress: null, running: false, exit_code: 1, error_summary: "Coverage measurement failed because test suite had failing tests"});
+assert.match(standaloneFailedCov, /Coverage measurement/);
+assert.doesNotMatch(standaloneFailedCov, /Run failed/);
 assert.equal(runDuration(1000, 1025), "25s");
 assert.equal(runDuration(1000, 1120), "2m 0s");
 

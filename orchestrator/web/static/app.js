@@ -7375,7 +7375,7 @@ function runFailureGuidance(r) {
 
   if (err) {
     return {
-      title: "Run failed",
+      title: "Execution error",
       detail: err,
       action: `<a class="btn small primary" href="#/new">Create new job</a>`,
       secondary: "",
@@ -7428,8 +7428,13 @@ function runStatus(r, vc = null) {
     : r.result_job && !r.job ? "Job created"
     : (r.job || r.result_job) ? "Job execution complete"
     : "Run complete";
+  const actionName = r.action === "coverage" ? "Coverage measurement"
+    : r.action === "logs_pull" ? "Pull device logs"
+    : r.action === "build" ? "Build"
+    : r.action === "test" ? "Run all tests"
+    : r.title || (r.action ? r.action.replace(/_/g, " ") : "Run");
   const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : (p.label || completionLabel))
-    : failed ? (p.label ? `${p.label} failed` : "Run failed")
+    : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
     : (p.label || r.title || "Starting run");
   const headline = `${stepPrefix}${headlineLabel}`;
   const nonAiActions = new Set([
