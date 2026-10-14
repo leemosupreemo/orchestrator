@@ -7150,11 +7150,12 @@ function runDuration(started) {
 }
 
 function runFailureGuidance(r) {
-  const err = (r.error_summary || r.last_line || "").trim();
+  let err = (r.error_summary || r.last_line || "").trim();
+  if (/^\[exited(?: with code \d+)?\]$/i.test(err)) err = "";
   const lower = err.toLowerCase();
 
   if (r.action === "coverage") {
-    if (lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod") || lower.includes("no test")) {
+    if (!err || lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod") || lower.includes("no test")) {
       return {
         title: "No source files or tests yet",
         detail: "Create your first feature to scaffold project code and tests before measuring coverage.",

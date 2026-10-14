@@ -48,6 +48,21 @@ class RunProgressTests(unittest.TestCase):
             self.assertEqual(summary["progress"]["models"], ["model-a"])
             self.assertEqual(summary["progress"]["agents"], 0)
 
+    def test_error_summary_ignores_exited_status_line(self):
+        from orchestrator.web.server import PtySession
+
+        with tempfile.TemporaryDirectory() as root:
+            session = PtySession("error-test", "coverage", "Measure coverage", [sys.executable, "-c",
+                "import sys; print('Coverage measurement failed: no tests found'); sys.exit(1)"], Path(root), {})
+            deadline = time.monotonic() + 5
+            offset = 0
+            while session.running and time.monotonic() < deadline:
+                offset, _, _ = session.read(offset, 0.1)
+            summary = session.summary()
+            self.assertEqual(summary["error_summary"], "Coverage measurement failed: no tests found")
+            self.assertNotIn("exited with code", summary["error_summary"])
+            self.assertNotIn("exited with code", summary["last_line"])
+
     def test_fragmented_phase_and_task_headers_survive_noisy_output(self):
         progress = RunProgress()
         output = ("\x1b[1;96m=== ⚙️ SUB-TASK 2/10: ADD LOGIN ===\x1b[0m\r\n"
@@ -251,6 +266,15 @@ assert.match(failedCov, /href="#\/tests"/);
 const failedNoTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No source files or tests found yet in this project. Create initial code and tests before measuring coverage."});
 assert.match(failedNoTests, /No source files or tests yet/);
 assert.match(failedNoTests, /Create a job to add tests/);
+
+const failedExited = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "[exited with code 1]"});
+assert.match(failedExited, /No source files or tests yet/);
+assert.match(failedExited, /Create a job to add tests/);
+
+const failedPyCov = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "pip install coverage required"});
+assert.match(failedPyCov, /coverage\.py required/);
+const retryCount = (failedPyCov.match(/Retry calculation/g) || []).length;
+assert.equal(retryCount, 1, "There must be exactly one Retry calculation button, no duplicates");
 
 const failedCovTests = runStatus({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "Coverage measurement failed because test suite had failing tests"});
 assert.match(failedCovTests, /Tests failed during coverage/);
