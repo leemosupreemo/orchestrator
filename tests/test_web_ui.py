@@ -3871,6 +3871,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("background: var(--panel-2);", self.css)
         self.assertIn(".branch-meta-row {", self.css)
         self.assertIn(".branch-meta-tag {", self.css)
+        self.assertIn("Base branch:", delivery_src)
+        self.assertIn("Latest release", delivery_src)
+        self.assertIn("Unreleased", delivery_src)
         # Shows loading spinner overlay over job card while in progress
         self.assertIn('live-run-overlay', self.js)
         self.assertIn('role="status"', self.js)

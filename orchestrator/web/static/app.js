@@ -2102,11 +2102,13 @@ async function createReleaseTag() {
     const preview = await api("delivery/release");
     const values = await formDialog("Create release tag", `
       <p>Project: <strong>${esc(state.project?.name || "Current project")}</strong></p>
-      <p>Mark this committed version as a release. This records a version; it does not deploy your app.</p>
-      <p>Base branch: <strong>${esc(preview.branch)}</strong><br>Commit: <code>${esc(preview.commit.slice(0, 12))}</code> · ${esc(preview.subject)}</p>
+      <p>Bookmark this committed state on your base branch (<strong>${esc(preview.branch)}</strong>) as a release milestone to track future changes. Creating a tag records a version in Git; it does not deploy your app.</p>
+      <div class="card-b-split pt-8 mt-8 mb-12">
+        <div class="text-sm"><strong>Commit on ${esc(preview.branch)}:</strong> <code class="mono">${esc(preview.commit.slice(0, 10))}</code> · ${esc(preview.subject)}</div>
+      </div>
       <label class="field"><span>Release version</span><input name="tag" required maxlength="120" value="${esc(preview.suggested_tag)}" placeholder="v0.1.0" spellcheck="false"></label>
-      ${preview.can_push ? `<label class="check"><input type="checkbox" name="publish" checked><span>Publish this tag to origin</span></label>` : `<p class="muted">No remote is configured. The tag will be saved locally.</p>`}
-      <p class="muted">Your current branch and uncommitted changes stay as they are.</p>`, "Create release tag");
+      ${preview.can_push ? `<label class="check"><input type="checkbox" name="publish" checked><span>Publish this tag to GitHub (origin)</span></label>` : `<p class="muted">No remote is configured. The tag will be saved locally.</p>`}
+      <p class="muted font-13">Your current branch and uncommitted changes stay as they are.</p>`, "Create release tag");
     if (!values) return;
     const body = {tag: values.tag, commit: preview.commit, push: Boolean(values.publish)};
     let result = await api("delivery/release", {method: "POST", body});
@@ -3411,11 +3413,80 @@ pages.delivery = async (args, query) => {
 
   const jobTone = (status) => (status === "completed" ? "done" : (status === "review-needed" || status === "human-needed") ? "attention" : status === "failed" ? "failed" : "working");
 
-  const releaseCard = `<section class="card mb-16"><div class="card-h"><h2>Release versions</h2>
-    ${d.live?.commit ? `<button type="button" class="btn small" data-create-release data-owner-only>Create release tag</button>` : ""}</div>
-    <div class="card-b stack"><p>${d.live?.tag ? `Last release: <strong>${esc(d.live.tag)}</strong>. ${esc(d.live.unreleased ?? "Unknown")} commits since that version.` : "Mark a committed version as released to track what changed since it shipped."}</p>
-    <p class="muted">Tags use the configured base branch. Creating a tag does not deploy your app.</p>
-    ${!d.live?.commit ? `<a class="btn small" href="#/git">Sync the base branch in Git setup</a>` : ""}</div></section>`;
+  const baseBranchName = d.live?.branch || "main";
+  const hasTag = Boolean(d.live?.tag);
+  const unreleasedCount = d.live?.unreleased ?? 0;
+  const releasesUrl = d.web_url ? `${d.web_url}/releases` : "";
+
+  const releaseCard = `<section class="card mb-16">
+    <div class="card-h">
+      <h2>Release versions</h2>
+      <div class="row gap-8 align-center">
+        <span class="muted font-13">Base branch: <strong class="mono">${esc(baseBranchName)}</strong></span>
+        ${d.live?.commit ? `<button type="button" class="btn small" data-create-release data-owner-only>Create release tag</button>` : ""}
+      </div>
+    </div>
+    <div class="card-b stack">
+      <div class="branch-meta-box">
+        <div class="branch-meta-row">
+          <div class="branch-meta-label">
+            <span class="branch-meta-tag">Latest release</span>
+          </div>
+          <div class="branch-meta-main">
+            ${hasTag ? `
+              <div class="branch-meta-title">
+                <code class="mono branch-commit-hash">${esc(d.live.tag)}</code>
+                ${releasesUrl ? `<a class="muted font-13" href="${esc(releasesUrl)}" target="_blank" rel="noopener">View all releases on GitHub ↗</a>` : ""}
+              </div>
+              <div class="branch-meta-sub">
+                <span>Tagged on base branch <strong>${esc(baseBranchName)}</strong></span>
+              </div>
+            ` : `
+              <div class="branch-meta-title">
+                <span class="muted text-sm">No releases tagged yet on <strong>${esc(baseBranchName)}</strong>.</span>
+              </div>
+              <div class="branch-meta-sub">
+                <span>Tag a release milestone when you ship to track new changes that follow.</span>
+              </div>
+            `}
+          </div>
+        </div>
+
+        <div class="branch-meta-row">
+          <div class="branch-meta-label">
+            <span class="branch-meta-tag">Unreleased</span>
+          </div>
+          <div class="branch-meta-main">
+            ${hasTag ? `
+              <div class="branch-meta-title">
+                ${unreleasedCount === 0 ? `
+                  <span class="pill done">Up to date</span>
+                  <span class="text-sm">No unreleased commits on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong>.</span>
+                ` : `
+                  <span class="pill attention">${unreleasedCount} unreleased commit${unreleasedCount === 1 ? "" : "s"}</span>
+                  <span class="text-sm">on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong></span>
+                `}
+              </div>
+              <div class="branch-meta-sub">
+                <span>${unreleasedCount === 0 ? "Production is running the latest code from this branch." : "Ready to be tested and packaged into your next release milestone."}</span>
+              </div>
+            ` : `
+              <div class="branch-meta-title">
+                <span class="pill working">${unreleasedCount} commit${unreleasedCount === 1 ? "" : "s"}</span>
+                <span class="text-sm">accumulated on <strong>${esc(baseBranchName)}</strong> awaiting initial release tag.</span>
+              </div>
+              <div class="branch-meta-sub">
+                <span>Click "Create release tag" above to establish your initial release version anchor.</span>
+              </div>
+            `}
+          </div>
+        </div>
+      </div>
+
+      <p class="muted font-13">Tags anchor official versions on your base branch (<strong>${esc(baseBranchName)}</strong>) to track what changed since you shipped. Creating a tag records a milestone in Git; it does not deploy or upload your app.</p>
+      ${!d.live?.commit ? `<a class="btn small" href="#/git">Sync the base branch in Git setup</a>` : ""}
+    </div>
+  </section>`;
 
   const branchCard = `<section class="card mb-16">
     <div class="card-h">
