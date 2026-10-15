@@ -7804,12 +7804,14 @@ pages.run = async ([id]) => {
   let run = state.runs.find((r) => r.id === id);
   if (!run) { await refreshState(); run = state.runs.find((r) => r.id === id); } // opened before the list caught up
   if (!run) {
-    // Orchestrator restarted since this run (it stops runs it started), but the run's log was saved: link straight to it.
     const saved = state.you?.role === "member" ? null : ((await api("runs/history").catch(() => null))?.runs || []).find((r) => r.id === id);
+    const rerunBtn = saved?.action
+      ? `<button type="button" class="btn small primary" ${act(saved.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Run again</button>`
+      : "";
     return saved
       ? { title: saved.title, sub: `Started ${esc(ago(saved.started))}`,
           html: `<div class="notice"><p>Orchestrator has restarted since this run, so it isn't live here any more (if it was still going, the restart stopped it). Its full output was saved.</p>
-            <div class="row mt-8"><a class="btn small" href="#/file?path=${encodeURIComponent(saved.log)}">Open the saved log</a><a class="btn small ghost" href="#/activity">All runs</a></div></div>` }
+            <div class="row mt-8 gap-8 items-center flex-wrap">${rerunBtn}<a class="btn small" href="#/file?path=${encodeURIComponent(saved.log)}">Open the saved log</a><a class="btn small ghost" href="#/activity">All runs</a></div></div>` }
       : { title: "Run not found", html: `<div class="notice"><p>This run isn't running, and no saved log matches it.</p>
             <div class="row mt-8"><a class="btn small" href="#/activity">See earlier runs</a></div></div>` };
   }
