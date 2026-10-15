@@ -416,6 +416,11 @@ class PtySession:
         for line in reversed(lines):
             if any(line.startswith(prefix) for prefix in ("❌", "⚠️", "Error:", "error:", "fatal:", "FAILED")):
                 return re.sub(r"^(?:❌|⚠️|!+|Error:|error:)\s*", "", line).strip()
+        meaningful = [l for l in lines if not re.match(r"^(?:Checking out|Fetching|Creating working copy|Resolving Package)\b", l, re.IGNORECASE)]
+        if meaningful:
+            return meaningful[-1][:300]
+        if any("checking out" in l.lower() or "resolving package" in l.lower() for l in lines):
+            return "Run stopped while resolving Swift package dependencies."
         return lines[-1][:300] if lines else ""
 
     def _looks_like_prompt(self) -> bool:

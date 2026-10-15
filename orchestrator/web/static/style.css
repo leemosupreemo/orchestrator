@@ -274,6 +274,7 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
   appearance: none; border: 1px solid var(--btn-secondary-border); background: var(--btn-secondary-bg); color: var(--btn-secondary-text);
   padding: var(--space-2) var(--space-4); border-radius: var(--r-md); font: inherit; font-weight: 550; cursor: pointer; white-space: nowrap;
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: var(--control-md);
+  text-align: center;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
 .btn:hover, .btn.secondary:hover {
@@ -455,6 +456,7 @@ a.item:hover { background: var(--panel-2); }
 .run-status-guidance-actions {
   display: flex;
   align-items: center;
+  justify-content: center;
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: 0;
@@ -504,6 +506,7 @@ a.item:hover { background: var(--panel-2); }
 .run-status-notice-actions {
   display: flex;
   align-items: center;
+  justify-content: center;
   flex-wrap: wrap;
   gap: var(--space-2);
   flex-shrink: 0;

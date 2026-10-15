@@ -4118,6 +4118,21 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('view.querySelector(".signin-wrap")', gate_fn)
         self.assertIn("signin-gate-message", gate_fn)
 
+    def test_action_icons_and_guidance_centering(self):
+        # Action icons (play, alert, refresh, trash, key) are defined in index.html
+        index_html = (self.STATIC / "index.html").read_text()
+        for sym in ("i-play", "i-alert", "i-refresh", "i-trash", "i-key"):
+            self.assertIn(f'<symbol id="{sym}"', index_html)
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn("text-align: center;", css[css.index(".btn, .btn.secondary {"):css.index(".btn, .btn.secondary {") + 600])
+        self.assertIn("justify-content: center;", css[css.index(".run-status-notice-actions {"):css.index(".run-status-notice-actions {") + 200])
+        self.assertIn("justify-content: center;", css[css.index(".run-status-guidance-actions {"):css.index(".run-status-guidance-actions {") + 200])
+        # visual_check has dedicated failure guidance
+        js = self.js
+        guidance = js[js.index("function runFailureGuidance(r) {"):js.index("function runStatus(r, vc = null) {")]
+        self.assertIn('r.action === "visual_check"', guidance)
+        self.assertIn("Swift package resolution required", guidance)
+
     def test_signin_modal_omits_orchestrator_icon_and_title(self):
         # Sign-in modal card begins directly with heading without redundant app brand mark or title
         gate = self.js[self.js.index("function showSignInGate"):self.js.index("function showSignInGate") + 2500]

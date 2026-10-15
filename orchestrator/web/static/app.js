@@ -7853,6 +7853,33 @@ function runFailureGuidance(r) {
     }
   }
 
+  if (r.action === "visual_check" || (r.title && /visual check/i.test(r.title))) {
+    const isPpmProgress = lower.includes("checking out") || lower.includes("resolving package") || lower.includes("fetching from") || lower.includes("package");
+    if (isPpmProgress || lower.includes("package.resolved") || lower.includes("dependencies")) {
+      return {
+        recoveryAction: "resolve-packages",
+        title: "Swift package resolution required",
+        detail: "Swift package dependencies were resolving when the check stopped. Resolving package dependencies will allow the simulator check to compile and run.",
+        action: `<button type="button" class="btn small primary" data-recover="resolve-packages" data-rerun-action="visual_check"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Resolve packages &amp; Rerun</button>`,
+        secondary: `<button type="button" class="btn small" ${act("visual_check")}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun check</button>`,
+      };
+    }
+    if (lower.includes("build failed") || lower.includes("compilation") || lower.includes("cannot create a build")) {
+      return {
+        title: "App build failed for visual check",
+        detail: err || "The app must compile for the iOS simulator before screenshots can be captured. Check compilation output or rebuild.",
+        action: `<button type="button" class="btn small primary" ${act("visual_check")}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun visual check</button>`,
+        secondary: `<button type="button" class="btn small" ${act("build")}>Run build</button>`,
+      };
+    }
+    return {
+      title: "Simulator visual check failed",
+      detail: err || "Encountered an error while building or running the simulator visual check.",
+      action: `<button type="button" class="btn small primary" ${act("visual_check")}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun visual check</button>`,
+      secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "",
+    };
+  }
+
   if (err) {
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
@@ -8380,7 +8407,8 @@ async function finishRunStatus(run) {
   }
   if (!container || $("#next-step") !== container || current.page !== "run" || current.args[0] !== run.id) return;
   setHeader(runHeader(run));
-  container.innerHTML = (run.action === "visual_check" || /visual check/i.test(run.title)) ? nextStep(run, vc) : runStatus(run, vc);
+  const isVisualCheck = run.action === "visual_check" || /visual check/i.test(run.title);
+  container.innerHTML = (isVisualCheck && !run.exit_code && (vc?.screenshots?.length || vc?.video)) ? nextStep(run, vc) : runStatus(run, vc);
   container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.title]);
   hydrateAuthImages(container);
   wireImagePreviews(container);

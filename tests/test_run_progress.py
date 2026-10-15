@@ -63,6 +63,19 @@ class RunProgressTests(unittest.TestCase):
             self.assertNotIn("exited with code", summary["error_summary"])
             self.assertNotIn("exited with code", summary["last_line"])
 
+    def test_error_summary_ignores_package_checkout_progress(self):
+        from orchestrator.web.server import PtySession
+
+        with tempfile.TemporaryDirectory() as root:
+            session = PtySession("error-test", "visual_check", "Simulator check", [sys.executable, "-c",
+                "print('Checking out ‘interop-ios-for-google-sdks’ @ 101.0.0 Checking out ‘onboarder’ @ master (b35003b)'); import sys; sys.exit(1)"], Path(root), {})
+            deadline = time.monotonic() + 5
+            offset = 0
+            while session.running and time.monotonic() < deadline:
+                offset, _, _ = session.read(offset, 0.1)
+            summary = session.summary()
+            self.assertEqual(summary["error_summary"], "Run stopped while resolving Swift package dependencies.")
+
     def test_fragmented_phase_and_task_headers_survive_noisy_output(self):
         progress = RunProgress()
         output = ("\x1b[1;96m=== ⚙️ SUB-TASK 2/10: ADD LOGIN ===\x1b[0m\r\n"
