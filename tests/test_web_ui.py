@@ -4110,12 +4110,12 @@ class AccessibilityStaticTests(unittest.TestCase):
         # Background ticks and refreshState do not clobber inputs or redraw sign-in gate
         js = self.js
         tick_fn = js[js.index("async function tick()"):js.index("async function tick()") + 400]
-        self.assertIn('document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")', tick_fn)
+        self.assertIn('view.querySelector(".signin-card:not(.signing-in)")', tick_fn)
         self.assertIn("view.contains(document.activeElement)", tick_fn)
-        refresh_fn = js[js.index("async function refreshState()"):js.index("async function refreshState()") + 200]
-        self.assertIn('document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")', refresh_fn)
+        refresh_fn = js[js.index("async function refreshState()"):js.index("async function refreshState()") + 400]
+        self.assertIn('view.querySelector(".signin-card:not(.signing-in)")', refresh_fn)
         gate_fn = js[js.index("function showSignInGate"):js.index("function showSignInGate") + 400]
-        self.assertIn('view.querySelector(".signin-wrap")', gate_fn)
+        self.assertIn('view.querySelector(".signin-card:not(.signing-in)")', gate_fn)
         self.assertIn("signin-gate-message", gate_fn)
 
     def test_action_icons_and_guidance_centering(self):

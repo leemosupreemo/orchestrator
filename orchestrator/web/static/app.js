@@ -1020,19 +1020,22 @@ function checkRunnerVersion(runner) {
 
 async function refreshState() {
   if (signingIn) return;
-  if (document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")) return;
   const backend = getBackendUrl();
   const token = getToken();
   if (backend === null && !token) {
-    showSignInGate("Sign in with your access token to continue.");
+    if (!view.querySelector(".signin-card:not(.signing-in)")) {
+      showSignInGate("Sign in with your access token to continue.");
+    }
     return;
   }
   if (Account.active() && (!backend || !window.firebase?.auth?.().currentUser)) { // the hosted app, before a computer is chosen: just the sign-in screen
     if (window.firebase?.auth?.().currentUser) {
-      openAccount().catch(() => showSignInGate());
+      openAccount().catch(() => { if (!view.querySelector(".signin-card:not(.signing-in)")) showSignInGate(); });
       return;
     }
-    showSignInGate();
+    if (!view.querySelector(".signin-card:not(.signing-in)")) {
+      showSignInGate();
+    }
     return;
   }
   try {
@@ -1706,8 +1709,8 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.providerSi
 }
 
 function showSignInGate(message) {
-  const existingWrap = view.querySelector(".signin-wrap");
-  if (existingWrap) {
+  const existingCard = view.querySelector(".signin-card:not(.signing-in)");
+  if (existingCard) {
     const msgEl = $("#signin-gate-message");
     if (msgEl) {
       msgEl.innerHTML = message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : "";
@@ -8869,8 +8872,8 @@ async function route() {
 
 // Live pages refresh in place — but never under the user's hands.
 async function tick() {
-  if (document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")) return;
-  if (view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
+  if (signingIn) return;
+  if (view.querySelector(".signin-card:not(.signing-in)") && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   await refreshState(); // also while the tab is hidden, so notifications can fire
   if (document.hidden) return;
   if (!state.project) return;
