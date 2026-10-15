@@ -1045,6 +1045,7 @@ process.stdout.write(JSON.stringify({
         self.assertIn("Write &lt;test&gt;", rendered)
         self.assertIn('data-account-action="back-machines"', rendered)
         self.assertIn('data-account-action="open" data-id="m_123"', rendered)
+        self.assertLess(rendered.index('data-account-action="open"'), rendered.index("Projects ("))
         self.assertEqual(result["empty"], "")
 
         # Machine list rendering with snapshot buttons

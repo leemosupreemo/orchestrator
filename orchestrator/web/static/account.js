@@ -389,6 +389,10 @@
       <div class="notice">
         This is a read-only snapshot synced from your Mac. To run new tasks or edit code, wake your computer and open Orchestrator.
       </div>
+      <div class="row gap-10" style="margin: var(--space-3) 0 var(--space-4);">
+        <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
+        <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
+      </div>
       <div class="stack" style="gap: var(--space-4);">
         <h3 style="margin: 0; font-size: var(--text-base);">Projects (${projects.length})</h3>
         <div class="account-machines">${projectCards}</div>
