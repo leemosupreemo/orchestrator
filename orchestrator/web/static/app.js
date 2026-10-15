@@ -7294,7 +7294,7 @@ function runFailureGuidance(r) {
   let err = (r.error_summary || r.last_line || "").trim();
   if (/^\[exited(?: with code \d+)?\]$/i.test(err)) err = "";
   const lower = err.toLowerCase();
-  const fullText = (err + " " + (r.last_line || "") + " " + (r.error_summary || "") + " " + (r.title || "")).toLowerCase();
+  const fullText = (err + " " + (r.last_line || "") + " " + (r.error_summary || "") + " " + (r.title || "") + " " + (r.saved_log_text || "").slice(-5000)).toLowerCase();
   const targetJob = r.job || r.result_job;
 
   const isKeychain = fullText.includes("keychain")
@@ -7414,6 +7414,39 @@ function runFailureGuidance(r) {
       action: `<a class="btn small primary" href="#/settings">Open Settings</a>`,
       secondary: `<button type="button" class="btn small" ${act("check_config")}>Re-check config</button>`,
     };
+  }
+
+  if (r.action === "distribute" || r.action === "deliver") {
+    if (lower.includes("configuration is incomplete") || lower.includes("not set") || lower.includes("configure signing") || lower.includes("development_team") || lower.includes("provisioning_profile")) {
+      return {
+        title: "Distribution signing incomplete",
+        detail: err || "Apple Development Team or provisioning profile is not configured in project settings.",
+        action: `<a class="btn small primary" href="#/config/integrations">Configure Apple Signing</a>`,
+        secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : `<button type="button" class="btn small" ${act(r.action || "distribute")}>Retry distribution</button>`,
+      };
+    }
+    if (lower.includes("firebase") && (lower.includes("not configured") || lower.includes("credentials") || lower.includes("app id") || lower.includes("permission"))) {
+      return {
+        title: "Firebase distribution issue",
+        detail: err || "Firebase credentials or distribution app ID are not configured or lacked permission.",
+        action: `<a class="btn small primary" href="#/config/integrations">Configure Firebase</a>`,
+        secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : `<button type="button" class="btn small" ${act(r.action || "distribute")}>Retry distribution</button>`,
+      };
+    }
+    if (err) {
+      const rerunBtn = targetJob
+        ? `<button type="button" class="btn small primary" ${act(r.action || "distribute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Retry distribution</button>`
+        : `<button type="button" class="btn small primary" ${act(r.action || "distribute")}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Retry distribution</button>`;
+      const backBtn = targetJob
+        ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+        : "";
+      return {
+        title: "Distribution failed",
+        detail: err,
+        action: rerunBtn,
+        secondary: backBtn,
+      };
+    }
   }
 
   if (err) {
@@ -7814,7 +7847,9 @@ pages.run = async ([id]) => {
       const exitMatch = logText.match(/\[exited(?: with code (\d+))?\]/);
       const exitCode = exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1;
       const nonExitedLines = logText.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith("[exited"));
-      const lastLine = nonExitedLines.slice(-4).join("\n");
+      const recentLines = nonExitedLines.slice(-40);
+      const errorCandidates = recentLines.filter((l) => /error|failed|fatal|exception|cannot|command not found|denied|locked|timed? ?out/i.test(l) && !/cleaned up|notification/i.test(l));
+      const extractedError = errorCandidates.length ? errorCandidates.slice(-3).join("\n") : recentLines.slice(-4).join("\n");
 
       run = {
         id: saved.id,
@@ -7825,8 +7860,8 @@ pages.run = async ([id]) => {
         running: false,
         stopped: false,
         exit_code: exitCode,
-        error_summary: exitCode !== 0 ? lastLine : "",
-        last_line: lastLine,
+        error_summary: exitCode !== 0 ? extractedError : "",
+        last_line: extractedError,
         progress: {},
         saved_log_text: logText,
         is_saved: true,
