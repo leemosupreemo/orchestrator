@@ -2872,20 +2872,36 @@ pages.job = async ([id]) => {
         </section>
       ` : ""}
 
-      <!-- Simulator Visual QA Screenshots (if any) -->
-      ${(visualChecks.length && visualChecks[0].screenshots.length) ? `
-        <section class="card mb-16">
-          <div class="card-h"><h2>Simulator Visual QA Screenshots</h2><span class="count">${visualChecks[0].screenshots.length} captured</span></div>
+      <!-- Simulator Visual QA Screenshots & Video (if any) -->
+      ${(visualChecks.length && (visualChecks[0].screenshots.length || visualChecks[0].video)) ? `
+        <section class="card mb-16 visual-check-job-card">
+          <div class="card-h">
+            <h2>Simulator Visual QA</h2>
+            <div class="row gap-8">
+              ${visualChecks[0].video ? `<span class="pill pill-sm">Video recorded</span>` : ""}
+              <span class="count">${visualChecks[0].screenshots.length} captured</span>
+            </div>
+          </div>
           <p class="visual-check-desc">Boots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.</p>
-          <div class="card-b" style="display:flex; gap:14px; overflow-x:auto; padding:12px 16px;">
-            ${visualChecks[0].screenshots.map((img) => `
-              <div style="flex:0 0 auto; text-align:center;">
-                <a href="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" target="_blank" rel="noopener" data-preview-img="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-auth="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-title="${esc(img)}">
-                  <img src="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-auth-src="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" style="max-height:220px; border-radius:10px; border:1px solid var(--border); box-shadow:0 2px 8px rgba(0,0,0,0.15);" alt="Screenshot">
-                </a>
-                <div style="font-size:11px; margin-top:4px;" class="muted mono">${esc(img)}</div>
-              </div>
-            `).join("")}
+          <div class="card-b visual-check-job-body">
+            ${visualChecks[0].video ? `
+              <div class="visual-check-job-video-wrap">
+                <div class="visual-check-video-label"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Launch &amp; Settle Video</div>
+                <video class="visual-check-player" controls playsinline preload="metadata" src="${typeof visualVideoUrl === "function" ? visualVideoUrl(visualChecks[0]) : `/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/video/${encodeURIComponent(visualChecks[0].video)}`}">
+                  Your browser does not support HTML5 video.
+                </video>
+              </div>` : ""}
+            <div class="visual-check-job-grid">
+              ${visualChecks[0].screenshots.map((img) => `
+                <div class="visual-check-job-item">
+                  <a href="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" target="_blank" rel="noopener" data-preview-img="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-auth="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-title="${esc(img)}">
+                    <img src="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-auth-src="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" alt="Screenshot: ${esc(img)}">
+                    ${typeof appearanceBadgeHtml === "function" ? appearanceBadgeHtml(img) : ""}
+                  </a>
+                  <div class="visual-check-thumb-caption muted mono">${esc(img)}</div>
+                </div>
+              `).join("")}
+            </div>
           </div>
         </section>
       ` : ""}
@@ -7510,7 +7526,7 @@ function runFailureGuidance(r) {
       };
       return {
         title: "Tests failed during coverage",
-        detail: "Code coverage requires all tests to pass to produce accurate measurements. Fix failing tests to unblock coverage, or let AI automatically diagnose the failure log and repair them.",
+        detail: "Coverage measurement requires all tests to pass to produce accurate measurements. Fix failing tests to unblock coverage, or let AI automatically diagnose the failure log and repair them.",
         action: `<button type="button" class="btn small primary" ${act("new_job", fixParams)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</button>`,
         secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
       };
@@ -8019,8 +8035,8 @@ function updateRunStatus(r) {
       container.runStatusSignature = signature;
       wireRunGuidance(container);
       if (r.exit_code !== 0) {
-        $("#term-wrap")?.classList.add("run-failed");
-        document.body.classList.add("run-failed");
+        $("#term-wrap")?.classList?.add("run-failed");
+        if (typeof document !== "undefined") document.body?.classList?.add("run-failed");
       }
       if ($("#keybar")) $("#keybar").hidden = true;
       if ($("#term-input")) $("#term-input").hidden = true;
@@ -8038,6 +8054,24 @@ function updateRunStatus(r) {
   }
 }
 
+function visualVideoUrl(vc) {
+  if (!vc || !vc.video) return "";
+  const backend = typeof getBackendUrl === "function" ? getBackendUrl() : null;
+  const token = typeof getToken === "function" ? getToken() : null;
+  const base = `${backend ?? ""}/api/visual-checks/${encodeURIComponent(vc.id)}/video/${encodeURIComponent(vc.video)}`;
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+}
+
+function appearanceBadgeHtml(img) {
+  if (img.includes("light")) {
+    return `<span class="visual-check-mode-badge light"><span class="badge-dot"></span> Light</span>`;
+  }
+  if (img.includes("dark")) {
+    return `<span class="visual-check-mode-badge dark"><span class="badge-dot"></span> Dark</span>`;
+  }
+  return "";
+}
+
 function nextStep(r) {
   const vc = arguments[1] || null;
   if (r.action === "console") {
@@ -8049,15 +8083,17 @@ function nextStep(r) {
     return `<div class="banner"><p>Run was stopped.</p>${open}</div>`;
   }
   const failed = r.exit_code !== 0;
-  if (!failed && (r.action === "visual_check" || /visual check/i.test(r.title)) && vc?.screenshots?.length) {
+  if (!failed && (r.action === "visual_check" || /visual check/i.test(r.title)) && (vc?.screenshots?.length || vc?.video)) {
     const target = r.result_job || r.job;
     const openJob = target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Back to job</a>` : "";
     const openReport = vc.id ? `<a class="btn small ghost" href="#/file?path=${encodeURIComponent(`.orchestrator/output/manual/${vc.id}/report.md`)}">Report</a>` : "";
+    const shotCount = (vc.screenshots || []).length;
+    const vUrl = typeof visualVideoUrl === "function" ? visualVideoUrl(vc) : (vc.video ? `/api/visual-checks/${encodeURIComponent(vc.id)}/video/${encodeURIComponent(vc.video)}` : "");
     return `<div class="banner done visual-check-banner">
       <div class="visual-check-done-header">
         <div class="visual-check-done-title">
           <strong>Visual check complete</strong>
-          <span class="count">${plural(vc.screenshots.length, "screenshot")}</span>
+          <span class="count">${plural(shotCount, "screenshot")}${vc.video ? ", 1 launch video" : ""}</span>
         </div>
         <div class="visual-check-done-actions row gap-8">
           ${openReport}
@@ -8065,14 +8101,26 @@ function nextStep(r) {
         </div>
       </div>
       <p class="visual-check-desc">Boots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.</p>
+      ${vc.video ? `
+        <div class="visual-check-video-card">
+          <div class="visual-check-video-label">
+            <svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg>
+            <span>Launch &amp; Settle Video</span>
+          </div>
+          <video class="visual-check-player" controls playsinline preload="metadata" src="${vUrl}">
+            Your browser does not support HTML5 video.
+          </video>
+        </div>` : ""}
       <div class="visual-check-grid" role="region" aria-label="Visual check screenshot results">
-        ${vc.screenshots.map((img) => {
+        ${(vc.screenshots || []).map((img) => {
           const imgUrl = `/api/visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}`;
           const authSrc = `visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}`;
+          const badge = typeof appearanceBadgeHtml === "function" ? appearanceBadgeHtml(img) : "";
           return `
             <figure class="visual-check-thumb-card">
               <button type="button" class="visual-check-thumb-btn" data-preview-img="${esc(imgUrl)}" data-preview-auth="${esc(authSrc)}" data-preview-title="${esc(img)}" aria-label="Open screenshot ${esc(img)}">
                 <img src="${esc(imgUrl)}" data-auth-src="${esc(authSrc)}" alt="Screenshot: ${esc(img)}" class="visual-check-thumb-img" loading="lazy">
+                ${badge}
                 <span class="visual-check-thumb-badge"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg> Open</span>
               </button>
               <figcaption class="visual-check-thumb-caption">
@@ -8118,8 +8166,8 @@ async function finishRunStatus(run) {
   wireImagePreviews(container);
   wireRunGuidance(container);
   if (run.exit_code !== 0) {
-    $("#term-wrap")?.classList.add("run-failed");
-    document.body.classList.add("run-failed");
+    $("#term-wrap")?.classList?.add("run-failed");
+    if (typeof document !== "undefined") document.body?.classList?.add("run-failed");
   }
   $("#keybar").hidden = true;
   $("#term-input").hidden = true;

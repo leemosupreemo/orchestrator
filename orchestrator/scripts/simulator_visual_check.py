@@ -6,6 +6,7 @@ import json
 import plistlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -75,7 +76,8 @@ def markdown_link(label: str, path: Path) -> str:
 
 
 def screenshot_report_block(idx: int, path: Path) -> str:
-    return f"### Screenshot {idx}\n[![Screenshot {idx}]({path.name})]({path.name})\n"
+    mode_tag = " (Light Mode)" if "light" in path.stem else (" (Dark Mode)" if "dark" in path.stem else "")
+    return f"### Screenshot {idx}{mode_tag}\n[![Screenshot {idx}{mode_tag}]({path.name})]({path.name})\n"
 
 
 def main() -> None:
@@ -85,8 +87,14 @@ def main() -> None:
     parser.add_argument("--bundle-id", default=DEFAULT_BUNDLE_ID, help="Bundle identifier to launch.")
     parser.add_argument("--app-path", default=str(DEFAULT_APP_PATH), help="Built .app path to install.")
     parser.add_argument("--wait", type=float, default=3.0, help="Seconds to wait after launch before the first screenshot.")
-    parser.add_argument("--screenshots", type=int, default=1, help="Number of screenshots to capture.")
+    parser.add_argument("--screenshots", type=int, default=1, help="Number of screenshots to capture per appearance mode.")
     parser.add_argument("--interval", type=float, default=1.0, help="Seconds between screenshots.")
+    parser.add_argument("--appearance", choices=["both", "light", "dark", "current"], default="both", help="Simulator appearance: both, light, dark, or current (default: both).")
+    parser.add_argument("--mask", choices=["alpha", "black", "ignored"], default="alpha", help="Screenshot device corner mask (default: alpha).")
+    parser.add_argument("--status-bar", choices=["override", "none"], default="override", help="Set clean 9:41 status bar override during check (default: override).")
+    parser.add_argument("--video", dest="video", action="store_true", default=True, help="Record an MP4 video of the app launch and settle (default: enabled).")
+    parser.add_argument("--no-video", dest="video", action="store_false", help="Disable launch video recording.")
+    parser.add_argument("--video-codec", choices=["h264", "hevc"], default="h264", help="Video codec for browser HTML5 compatibility (default: h264).")
     args = parser.parse_args()
     bundle_id = args.bundle_id
 
@@ -116,7 +124,7 @@ def main() -> None:
     print(f"Simulator destination: {destination}")
     print(f"Output: {out_dir.relative_to(ROOT)}")
 
-    if not args.no_build:
+    if not getattr(args, "no_build", False):
         build_cmd, _ = extract_commands()
         build_cmd = command_with_destination(build_cmd, destination)
         build_ok = stream_command(build_cmd, out_dir / "build.log")
@@ -153,24 +161,110 @@ def main() -> None:
         ["boot", udid],
         ["bootstatus", udid, "-b"],
         ["install", udid, str(app_path)],
-        ["launch", udid, bundle_id],
     ]
     for step in steps:
         if not run_simctl(step, run_log):
             print(f"❌ simctl step failed: {' '.join(step)}")
             sys.exit(1)
 
-    time.sleep(max(0, args.wait))
+    # Clean status bar override for marketing/QA quality screenshots
+    status_bar_mode = getattr(args, "status_bar", "override")
+    if status_bar_mode == "override":
+        run_simctl([
+            "status_bar", udid, "override",
+            "--time", "9:41",
+            "--batteryState", "charged",
+            "--batteryLevel", "100",
+            "--cellularBars", "4",
+            "--wifiBars", "3",
+        ], run_log)
 
-    screenshot_paths: list[Path] = []
-    for idx in range(max(1, args.screenshots)):
-        screenshot_path = out_dir / f"screenshot_{idx + 1}.png"
-        if not run_simctl(["io", udid, "screenshot", str(screenshot_path)], run_log):
-            print("❌ Screenshot capture failed.")
+    # Launch video recording in background
+    video_proc: subprocess.Popen[str] | None = None
+    video_path = out_dir / "launch.mp4"
+    should_record_video = bool(getattr(args, "video", False))
+    video_codec = getattr(args, "video_codec", "h264")
+    if should_record_video:
+        video_cmd = ["xcrun", "simctl", "io", udid, "recordVideo", f"--codec={video_codec}", "--force", str(video_path)]
+        with open(run_log, "a", encoding="utf-8") as log:
+            log.write(f"$ {shlex.join(video_cmd)}\n")
+        try:
+            video_proc = subprocess.Popen(
+                video_cmd,
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(0.5)
+        except Exception as exc:
+            print(f"Warning: Could not start video recording: {exc}")
+            video_proc = None
+
+    try:
+        if not run_simctl(["launch", udid, bundle_id], run_log):
+            print(f"❌ simctl step failed: launch {bundle_id}")
             sys.exit(1)
-        screenshot_paths.append(screenshot_path)
-        if idx < args.screenshots - 1:
-            time.sleep(max(0, args.interval))
+
+        wait_seconds = max(0, getattr(args, "wait", 3.0))
+        time.sleep(wait_seconds)
+
+        # Appearance mode setup
+        appearance_choice = getattr(args, "appearance", "both")
+        if appearance_choice == "both":
+            modes: list[str | None] = ["light", "dark"]
+        elif appearance_choice in ("light", "dark"):
+            modes = [appearance_choice]
+        else:
+            modes = [None]
+
+        mask_policy = getattr(args, "mask", "alpha")
+        screenshot_paths: list[Path] = []
+        shot_count = max(1, getattr(args, "screenshots", 1))
+
+        for mode in modes:
+            if mode:
+                run_simctl(["ui", udid, "appearance", mode], run_log)
+                time.sleep(0.4)
+
+            for idx in range(shot_count):
+                suffix = f"_{mode}" if mode else ""
+                idx_str = f"_{idx + 1}" if shot_count > 1 or not mode else (f"_{idx + 1}" if len(modes) > 1 else f"_{idx + 1}")
+                screenshot_path = out_dir / f"screenshot{idx_str}{suffix}.png"
+
+                shot_cmd = ["io", udid, "screenshot"]
+                if mask_policy:
+                    shot_cmd.append(f"--mask={mask_policy}")
+                shot_cmd.append(str(screenshot_path))
+
+                if not run_simctl(shot_cmd, run_log):
+                    # Fallback to unmasked screenshot if --mask flag is rejected
+                    if not run_simctl(["io", udid, "screenshot", str(screenshot_path)], run_log):
+                        print("❌ Screenshot capture failed.")
+                        sys.exit(1)
+
+                screenshot_paths.append(screenshot_path)
+                if idx < shot_count - 1:
+                    time.sleep(max(0, getattr(args, "interval", 1.0)))
+
+    finally:
+        # Finalize video recording
+        video_recorded = False
+        if video_proc:
+            try:
+                video_proc.send_signal(signal.SIGINT)
+                video_proc.wait(timeout=6.0)
+            except Exception:
+                try:
+                    video_proc.kill()
+                except Exception:
+                    pass
+            if video_path.is_file() and video_path.stat().st_size > 1024:
+                video_recorded = True
+
+        # Clear status bar override to return simulator to host status
+        if status_bar_mode == "override":
+            run_simctl(["status_bar", udid, "clear"], run_log)
 
     report_lines = [
         "# 📱 Simulator Visual Check Report",
@@ -179,16 +273,25 @@ def main() -> None:
         "",
         "## Overview",
         f"- **Captured Scope:** Active foreground root view & initial UI state of `{bundle_id}` after launch.",
-        f"- **Screenshots Taken:** {len(screenshot_paths)} screenshot(s) (with {args.wait:.1f}s post-launch settle delay).",
+        f"- **Screenshots Taken:** {len(screenshot_paths)} screenshot(s) (with {wait_seconds:.1f}s post-launch settle delay).",
+        f"- **Appearance:** `{appearance_choice}`",
+        f"- **Launch Video:** `{'Recorded (launch.mp4)' if video_recorded else 'Not recorded'}`",
         f"- **Target Simulator:** `{destination}`",
         f"- **Bundle Identifier:** `{bundle_id}`",
         f"- **App Binary:** `{app_path}`",
-        f"- **Build Status:** `{'Skipped (reused binary)' if args.no_build else 'Passed'}`",
+        f"- **Build Status:** `{'Skipped (reused binary)' if getattr(args, 'no_build', False) else 'Passed'}`",
         f"- **Output Folder:** [{out_dir.name}](file://{out_dir.resolve()})",
         "",
-        "## Screenshots",
-        "",
     ]
+    if video_recorded:
+        report_lines.extend([
+            "## Launch Video",
+            "",
+            f"[▶ Watch Launch & Settle Video]({video_path.name})",
+            "",
+        ])
+    report_lines.append("## Screenshots")
+    report_lines.append("")
     report_lines.extend(
         screenshot_report_block(idx, path)
         for idx, path in enumerate(screenshot_paths, start=1)
@@ -208,7 +311,9 @@ def main() -> None:
     print("   \033[90mBoots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.\033[0m\n")
     print(f"   \033[1;36m• Target App:\033[0m        \033[1;97m{bundle_id}\033[0m \033[90m({app_path.name})\033[0m")
     print(f"   \033[1;36m• Scope Captured:\033[0m    \033[97mForeground root view & initial UI state after launch\033[0m")
-    print(f"   \033[1;36m• Screenshots:\033[0m       \033[1;93m{len(screenshot_paths)} screenshot(s)\033[0m \033[90m({args.wait:.1f}s post-launch settle delay)\033[0m")
+    if video_recorded:
+        print(f"   \033[1;36m• Launch Video:\033[0m      \033[1;92m{video_path.name}\033[0m ({markdown_link(video_path.name, video_path)})")
+    print(f"   \033[1;36m• Screenshots:\033[0m       \033[1;93m{len(screenshot_paths)} screenshot(s)\033[0m \033[90m({wait_seconds:.1f}s post-launch settle delay)\033[0m")
     print(f"   \033[1;36m• Target Device:\033[0m     \033[97m{destination}\033[0m")
     print(f"   \033[1;36m• Output Folder:\033[0m     {markdown_link(str(out_dir.relative_to(ROOT)), out_dir)}")
     print(f"   \033[1;36m• Visual Report:\033[0m     {markdown_link('Open report.md', out_dir / 'report.md')}")

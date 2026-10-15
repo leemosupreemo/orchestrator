@@ -202,7 +202,7 @@ globalThis.$ = selector => ({'#next-step': panel, '#keybar': keys, '#term-input'
 globalThis.current = {page: 'run', args: ['visual']};
 globalThis.getVisualCheckForRun = async () => ({id: 'vc1', screenshots: ['screen.png']});
 globalThis.runHeader = () => ({});
-globalThis.setHeader = globalThis.hydrateAuthImages = globalThis.wireImagePreviews = () => {};
+globalThis.setHeader = globalThis.hydrateAuthImages = globalThis.wireImagePreviews = globalThis.wireRunGuidance = () => {};
 (async () => {
   await finishRunStatus({id: 'visual', running: false, action: 'visual_check', title: 'Visual check', exit_code: 0});
   assert.match(panel.innerHTML, /screen\.png/);
@@ -230,6 +230,7 @@ globalThis.esc = Html.escape;
 globalThis.plural = (n, word, many = `${word}s`) => `${n} ${Number(n) === 1 ? word : many}`;
 globalThis.act = (action) => `data-action="${action}"`;
 globalThis.stoppingRuns = new Set();
+globalThis.wireRunGuidance = () => {};
 Date.now = () => 1000000;
 const run = {id: 'r1', running: true, started: 875, action: 'execute', title: 'Build',
   progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10,

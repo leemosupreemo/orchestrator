@@ -4843,6 +4843,47 @@ class VisualCheckTests(ServerTestCase):
         with self.assertRaises(ui.UIError):
             ui.build_simulator_visual_check({"job": "nope"}, self.root)
 
+    def test_video_is_discovered_and_served_with_range_requests(self):
+        folder = self.make_check("manual", "20260923-101500-visual-check", job=self.JOB)
+        dummy_mp4 = b"\x00\x00\x00 ftypisom" + b"X" * 100
+        (folder / "launch.mp4").write_bytes(dummy_mp4)
+
+        _, data = self.request("GET", "/api/visual-checks")
+        by_id = {c["id"]: c for c in data["checks"]}
+        check = by_id["20260923-101500-visual-check"]
+        self.assertEqual(check["video"], "launch.mp4")
+        self.assertEqual(check["videos"], ["launch.mp4"])
+
+        # Full video request
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", "/api/visual-checks/20260923-101500-visual-check/video/launch.mp4", headers={"Authorization": "Bearer test-token"})
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.getheader("Content-Type"), "video/mp4")
+        self.assertEqual(res.getheader("Accept-Ranges"), "bytes")
+        self.assertEqual(res.read(), dummy_mp4)
+        conn.close()
+
+        # Partial range request
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", "/api/visual-checks/20260923-101500-visual-check/video/launch.mp4", headers={
+            "Authorization": "Bearer test-token",
+            "Range": "bytes=0-11",
+        })
+        res = conn.getresponse()
+        self.assertEqual(res.status, 206)
+        self.assertEqual(res.getheader("Content-Type"), "video/mp4")
+        self.assertEqual(res.getheader("Content-Range"), f"bytes 0-11/{len(dummy_mp4)}")
+        self.assertEqual(res.read(), dummy_mp4[:12])
+        conn.close()
+
+        # Nonexistent video or traversal
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", "/api/visual-checks/20260923-101500-visual-check/video/missing.mp4", headers={"Authorization": "Bearer test-token"})
+        res = conn.getresponse()
+        self.assertEqual(res.status, 404)
+        conn.close()
+
     def test_the_job_page_only_shows_its_own_checks(self):
         self.assertIn('.filter((c) => c.job === id)', (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text())
 

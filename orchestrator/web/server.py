@@ -2565,6 +2565,10 @@ def build_simulator_visual_check(params: dict[str, Any], root: Path) -> list[str
         argv += ["--destination", destination]
     if params.get("no_build"):
         argv.append("--no-build")
+    if params.get("no_video"):
+        argv.append("--no-video")
+    if params.get("appearance") in ("both", "light", "dark", "current"):
+        argv += ["--appearance", str(params["appearance"])]
     wait = params.get("wait")
     if wait:
         try:
@@ -2605,6 +2609,7 @@ def visual_checks_inventory(root: Path) -> list[dict[str, Any]]:
         report_file = child / "report.md"
         report_text = report_file.read_text(encoding="utf-8", errors="replace") if report_file.is_file() else ""
         screenshots = sorted([p.name for p in child.glob("*.png")])
+        video_files = sorted([p.name for p in child.glob("*.mp4")])
         mtime = child.stat().st_mtime
         runs.append({
             "id": child.name,
@@ -2613,6 +2618,8 @@ def visual_checks_inventory(root: Path) -> list[dict[str, Any]]:
             "report": report_text,
             "screenshots": screenshots,
             "count": len(screenshots),
+            "video": video_files[0] if video_files else None,
+            "videos": video_files,
         })
     return sorted(runs, key=lambda x: x["created_at"], reverse=True)
 
@@ -2621,6 +2628,19 @@ def visual_check_image(root: Path, run_id: str, name: str) -> Path | None:
     """A screenshot inside one visual-check folder, or None. Both parts are validated so a URL can't name
     anything else on disk."""
     if not VISUAL_RUN_RE.match(run_id) or not VISUAL_RUN_RE.match(name) or not name.lower().endswith(".png") or run_id.startswith("."):
+        return None
+    for folder in visual_check_dirs(root):
+        if folder.name == run_id:
+            candidate = (folder / name).resolve()
+            if candidate.parent == folder.resolve() and candidate.is_file():
+                return candidate
+    return None
+
+
+def visual_check_video(root: Path, run_id: str, name: str) -> Path | None:
+    """A video recording inside one visual-check folder, or None. Both parts are validated so a URL can't name
+    anything else on disk."""
+    if not VISUAL_RUN_RE.match(run_id) or not VISUAL_RUN_RE.match(name) or not name.lower().endswith(".mp4") or run_id.startswith("."):
         return None
     for folder in visual_check_dirs(root):
         if folder.name == run_id:
@@ -3533,7 +3553,7 @@ ACTIONS: dict[str, Action] = {
     "splinter": Action("Splinter into sub-jobs", build_splinter,
                        confirm="Decomposes this feature plan into child task jobs and issues.", fields=["job"]),
     "export_job": Action("Export job bundle", build_export_job, fields=["job", "destination"]),
-    "visual_check": Action("Simulator visual check", build_simulator_visual_check, fields=["destination", "wait", "no_build", "job"]),
+    "visual_check": Action("Simulator visual check", build_simulator_visual_check, fields=["destination", "wait", "no_build", "job", "no_video", "appearance"]),
     "worker_install": Action("Install worker dependencies", build_worker_install, fields=["machine"]),
     "verify_feature": Action("Check the feature's jobs together", build_verify_feature, fields=["feature"]),
     "sync_fleet": Action("Sync fleet code", lambda p, r: orchestrator_argv("script", "sync_fleet.py")),
@@ -4001,6 +4021,32 @@ class UIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _send_media_file(self, path: Path, content_type: str) -> None:
+        file_size = path.stat().st_size
+        range_header = self.headers.get("Range")
+        if range_header and range_header.startswith("bytes="):
+            try:
+                ranges = range_header[6:].split("-")
+                start = int(ranges[0]) if ranges[0] else 0
+                end = int(ranges[1]) if len(ranges) > 1 and ranges[1] else file_size - 1
+                if start >= file_size:
+                    self._error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, "Requested range not satisfiable")
+                    return
+                end = min(end, file_size - 1)
+                length = end - start + 1
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    chunk = f.read(length)
+                extra = {
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges": "bytes",
+                }
+                self._send(HTTPStatus.PARTIAL_CONTENT, chunk, content_type, extra)
+                return
+            except Exception:
+                pass
+        self._send(HTTPStatus.OK, path.read_bytes(), content_type, {"Accept-Ranges": "bytes"})
 
     def _json(self, data: Any, status: int = HTTPStatus.OK, extra: dict[str, str] | None = None) -> None:
         self._send(status, json.dumps(data).encode("utf-8"), "application/json", extra)
@@ -5212,6 +5258,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
                 return
             self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+        elif method == "GET" and len(parts) >= 4 and parts[0] == "visual-checks" and parts[2] == "video":
+            target = visual_check_video(root, parts[1], parts[3])
+            if not target:
+                self._error(HTTPStatus.NOT_FOUND, "Video not found")
+                return
+            self._send_media_file(target, "video/mp4")
         elif method == "POST" and parts == ["project"]:
             self._switch_project(self._body())
         elif method == "POST" and parts == ["keychain", "unlock"]:

@@ -3457,6 +3457,114 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
   background: var(--panel-2);
 }
 
+.visual-check-mode-badge {
+  position: absolute;
+  inset: 6px auto auto 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  border-radius: var(--r-pill);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  z-index: var(--z-inner);
+}
+.visual-check-mode-badge.light {
+  background: rgba(255, 255, 255, 0.9);
+  color: #18181b;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+.visual-check-mode-badge.dark {
+  background: rgba(24, 24, 27, 0.9);
+  color: #fafafa;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.visual-check-mode-badge .badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.visual-check-mode-badge.light .badge-dot {
+  background: #f59e0b;
+}
+.visual-check-mode-badge.dark .badge-dot {
+  background: #818cf8;
+}
+.visual-check-video-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--space-3);
+  margin-top: var(--space-1);
+}
+.visual-check-video-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text);
+}
+.visual-check-player {
+  width: 100%;
+  max-width: 440px;
+  border-radius: var(--r-sm);
+  background: #000;
+  border: 1px solid var(--border);
+  outline: none;
+  display: block;
+}
+.visual-check-job-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.visual-check-job-video-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.visual-check-job-grid {
+  display: flex;
+  gap: var(--space-3);
+  overflow-x: auto;
+  padding-bottom: var(--space-1);
+}
+.visual-check-job-item {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  text-align: center;
+}
+.visual-check-job-item a {
+  position: relative;
+  display: block;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.visual-check-job-item img {
+  max-height: 220px;
+  width: auto;
+  display: block;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transition: transform 0.15s ease;
+}
+.visual-check-job-item a:hover img {
+  transform: scale(1.02);
+}
+
 /* Modal lightbox for full size preview */
 dialog.dialog-image-viewer {
   width: min(920px, calc(100vw - 24px));
