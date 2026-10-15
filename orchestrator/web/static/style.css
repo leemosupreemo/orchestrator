@@ -513,6 +513,56 @@ a.item:hover { background: var(--panel-2); }
   }
 }
 
+.run-status.run-status-keychain {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+.run-status-keychain .keychain-unlock-form {
+  margin-top: var(--space-1);
+}
+.keychain-pwd-input {
+  min-height: var(--control-sm);
+  padding: var(--space-1) var(--space-2.5);
+  font-size: var(--text-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  flex: 1 1 200px;
+  max-width: 320px;
+}
+.keychain-pwd-note {
+  line-height: 1.4;
+}
+.keychain-manual-fold {
+  border-top: 1px dashed var(--border);
+  padding-top: var(--space-2);
+}
+.keychain-manual-fold summary {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  user-select: none;
+}
+.keychain-manual-body {
+  padding: var(--space-2);
+  background: var(--panel-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.code-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--text);
+  word-break: break-all;
+  flex: 1 1 auto;
+}
+
 /* forms */
 form.stack, .stack { display: flex; flex-direction: column; gap: var(--space-4); }
 .field { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; max-width: 100%; }
@@ -665,6 +715,19 @@ details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow:
 .term-input { display: none; gap: var(--space-2); }
 .term-input input { font-family: var(--mono); }
 .term-wrap.fallback .term-input { display: flex; }
+.term-wrap.term-empty,
+body[data-page="run"]:has(.banner.failed) .term-wrap.term-empty,
+body[data-page="run"].run-failed .term-wrap.term-empty {
+  display: none !important;
+}
+.term-wrap.run-failed .term,
+body[data-page="run"]:has(.banner.failed) .term,
+body[data-page="run"].run-failed .term {
+  height: auto;
+  min-height: 0;
+  max-height: min(280px, 35vh);
+  overflow-y: auto;
+}
 
 dialog {
   border: 1px solid var(--border); border-radius: var(--r-lg); padding: 0; background: var(--panel); color: var(--text);
@@ -3066,6 +3129,26 @@ body[data-page="run"] .topbar-actions {
     height: auto;
     padding: var(--space-1.5);
     overflow: hidden;
+  }
+
+  body[data-page="run"]:has(.banner.failed) #next-step,
+  body[data-page="run"].run-failed #next-step {
+    max-height: none;
+    flex-shrink: 0;
+  }
+
+  body[data-page="run"]:has(.banner.failed) .term-wrap,
+  body[data-page="run"].run-failed .term-wrap {
+    flex: 0 1 auto;
+    max-height: 35vh;
+  }
+
+  body[data-page="run"]:has(.banner.failed) .term-wrap .term,
+  body[data-page="run"].run-failed .term-wrap .term {
+    flex: 0 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: 35vh;
   }
 
   body[data-page="run"] .keybar {

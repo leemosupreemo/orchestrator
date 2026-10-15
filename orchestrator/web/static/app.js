@@ -7294,6 +7294,35 @@ function runFailureGuidance(r) {
   let err = (r.error_summary || r.last_line || "").trim();
   if (/^\[exited(?: with code \d+)?\]$/i.test(err)) err = "";
   const lower = err.toLowerCase();
+  const fullText = (err + " " + (r.last_line || "") + " " + (r.error_summary || "") + " " + (r.title || "")).toLowerCase();
+  const targetJob = r.job || r.result_job;
+
+  const isKeychain = fullText.includes("keychain")
+    || fullText.includes("user interaction is not allowed")
+    || fullText.includes("errsecinteractionnotallowed")
+    || fullText.includes("-25308")
+    || fullText.includes("seckeychainunlock")
+    || fullText.includes("secauthfailed")
+    || fullText.includes("-25293")
+    || fullText.includes("errseckeychaindenied")
+    || (fullText.includes("signing certificate") && (fullText.includes("locked") || fullText.includes("access") || fullText.includes("find")))
+    || ((fullText.includes("codesign") || fullText.includes("code signing")) && (fullText.includes("keychain") || fullText.includes("interaction not allowed") || fullText.includes("locked") || fullText.includes("denied")));
+
+  if (isKeychain) {
+    const rerunBtn = targetJob
+      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
+      : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
+    return {
+      isKeychain: true,
+      title: "macOS Keychain is locked",
+      detail: "The build could not access developer signing certificates because the macOS login keychain is locked on this Mac.",
+      action: rerunBtn,
+      secondary: backBtn,
+    };
+  }
 
   if (r.action === "coverage") {
     if (!err || lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("tell what language") || lower.includes("which language") || lower.includes("language the project uses") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod") || lower.includes("no test")) {
@@ -7388,11 +7417,17 @@ function runFailureGuidance(r) {
   }
 
   if (err) {
+    const rerunBtn = targetJob
+      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
+      : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
     return {
       title: "Execution error",
       detail: err,
-      action: `<a class="btn small primary" href="#/new">Create new job</a>`,
-      secondary: "",
+      action: rerunBtn || `<a class="btn small primary" href="#/new">Create new job</a>`,
+      secondary: backBtn,
     };
   }
 
@@ -7419,6 +7454,59 @@ function runStatus(r, vc = null) {
 
   // When no tests exist, simplify the container completely: no telemetry clutter, no redundant headline or elapsed
   if (failed && guidance && guidance.title === "No source files or tests yet") {
+    return `<section class="banner failed attention run-status run-status-notice" aria-label="Run status">
+      <div class="run-status-notice-body">
+        <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
+        <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
+      </div>
+      <div class="run-status-notice-actions row gap-8">
+        ${guidance.action || ""}
+        ${guidance.secondary || ""}
+      </div>
+    </section>`;
+  }
+
+  if (failed && guidance && guidance.isKeychain) {
+    return `<section class="banner failed attention run-status run-status-notice run-status-keychain" aria-label="Run status">
+      <div class="run-status-notice-body">
+        <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-lock"/></svg> <strong>${esc(guidance.title)}</strong></div>
+        <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
+
+        <form class="keychain-unlock-form" id="keychain-unlock-form" onsubmit="return false;">
+          <div class="row gap-8 items-center flex-wrap">
+            <input type="password" id="keychain-pwd-input" placeholder="Mac login password" autocomplete="current-password" aria-label="Mac login password" class="keychain-pwd-input" required>
+            <button type="submit" class="btn small primary" id="keychain-unlock-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-lock"/></svg> Unlock keychain</button>
+          </div>
+          <div class="keychain-pwd-note muted text-xs mt-4">
+            🔒 Stored strictly locally in <code>.secrets/project-secrets.zsh</code> on this Mac to allow background builds. Never sent to remote servers.
+          </div>
+          <div id="keychain-unlock-result" class="mt-4" hidden></div>
+        </form>
+
+        <details class="keychain-manual-fold mt-8">
+          <summary class="text-xs text-muted cursor-pointer">Or unlock manually in Terminal</summary>
+          <div class="keychain-manual-body mt-4 text-xs stack gap-4">
+            <p class="muted">Run this in Terminal on your Mac to unlock the login keychain:</p>
+            <div class="row gap-4 items-center flex-wrap">
+              <code class="code-box user-select-all">security unlock-keychain ~/Library/Keychains/login.keychain-db</code>
+              <button type="button" class="btn small ghost" data-copy="security unlock-keychain ~/Library/Keychains/login.keychain-db">Copy</button>
+            </div>
+            <p class="muted">To whitelist codesigning for background builds without future prompts:</p>
+            <div class="row gap-4 items-center flex-wrap">
+              <code class="code-box user-select-all">security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "&lt;your-password&gt;" ~/Library/Keychains/login.keychain-db</code>
+              <button type="button" class="btn small ghost" data-copy='security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "&lt;your-password&gt;" ~/Library/Keychains/login.keychain-db'>Copy</button>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="run-status-notice-actions row gap-8">
+        ${guidance.action || ""}
+        ${guidance.secondary || ""}
+      </div>
+    </section>`;
+  }
+
+  if (failed && guidance && guidance.title === "Execution error") {
     return `<section class="banner failed attention run-status run-status-notice" aria-label="Run status">
       <div class="run-status-notice-body">
         <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
@@ -7522,6 +7610,70 @@ function runStatus(r, vc = null) {
   </section>`;
 }
 
+function wireKeychainUnlock(container) {
+  if (!container) return;
+  const form = container.querySelector("#keychain-unlock-form");
+  if (form && form.dataset.wired !== "true") {
+    form.dataset.wired = "true";
+    const pwdInput = form.querySelector("#keychain-pwd-input");
+    const unlockBtn = form.querySelector("#keychain-unlock-btn");
+    const resultEl = form.querySelector("#keychain-unlock-result");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pwd = pwdInput ? pwdInput.value : "";
+      if (!pwd) return;
+      if (unlockBtn) {
+        unlockBtn.disabled = true;
+        unlockBtn.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Unlocking…`;
+      }
+      if (pwdInput) pwdInput.disabled = true;
+      if (resultEl) resultEl.hidden = true;
+
+      try {
+        const res = await api("keychain/unlock", { method: "POST", body: { password: pwd } });
+        toast(res?.message || "Keychain unlocked");
+        if (resultEl) {
+          resultEl.innerHTML = `<div class="banner done py-2 px-3 text-sm row gap-4 items-center"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> <span>${esc(res?.message || "Keychain unlocked and saved locally.")} You can now rerun the job.</span></div>`;
+          resultEl.hidden = false;
+        }
+        if (unlockBtn) {
+          unlockBtn.disabled = false;
+          unlockBtn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> Unlocked`;
+        }
+      } catch (err) {
+        if (unlockBtn) {
+          unlockBtn.disabled = false;
+          unlockBtn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-lock"/></svg> Unlock keychain`;
+        }
+        if (pwdInput) {
+          pwdInput.disabled = false;
+          pwdInput.focus();
+        }
+        if (resultEl) {
+          resultEl.innerHTML = `<div class="text-danger text-xs mt-2">${esc(err.message || "Failed to unlock keychain. Check your password.")}</div>`;
+          resultEl.hidden = false;
+        }
+      }
+    });
+  }
+
+  container.querySelectorAll("[data-copy]").forEach((btn) => {
+    if (btn.dataset.copyWired === "true") return;
+    btn.dataset.copyWired = "true";
+    btn.addEventListener("click", () => {
+      const text = btn.dataset.copy;
+      if (!text) return;
+      navigator.clipboard?.writeText(text).then(() => {
+        toast("Copied command");
+        const orig = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+      }).catch(() => toast(text, "info"));
+    });
+  });
+}
+
 function updateRunStatus(r) {
   const container = $("#next-step");
   if (!container) return;
@@ -7541,6 +7693,11 @@ function updateRunStatus(r) {
     if (container.runStatusSignature !== signature) {
       container.innerHTML = runStatus(r);
       container.runStatusSignature = signature;
+      wireKeychainUnlock(container);
+      if (r.exit_code !== 0) {
+        $("#term-wrap")?.classList.add("run-failed");
+        document.body.classList.add("run-failed");
+      }
       if ($("#keybar")) $("#keybar").hidden = true;
       if ($("#term-input")) $("#term-input").hidden = true;
     }
@@ -7634,6 +7791,11 @@ async function finishRunStatus(run) {
   container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.title]);
   hydrateAuthImages(container);
   wireImagePreviews(container);
+  wireKeychainUnlock(container);
+  if (run.exit_code !== 0) {
+    $("#term-wrap")?.classList.add("run-failed");
+    document.body.classList.add("run-failed");
+  }
   $("#keybar").hidden = true;
   $("#term-input").hidden = true;
 }
@@ -7669,6 +7831,8 @@ pages.run = async ([id]) => {
       </div>`,
     after: () => {
       attachTerminal(id);
+      wireKeychainUnlock($("#next-step"));
+      cleanup.push(() => { document.body.classList.remove("run-failed"); });
       let lastPoll = Date.now();
       const statusTimer = setInterval(async () => {
         const latest = state.runs.find((r) => r.id === id);
@@ -7689,6 +7853,7 @@ pages.run = async ([id]) => {
       if (!run.running) {
         hydrateAuthImages($("#next-step"));
         wireImagePreviews($("#next-step"));
+        wireKeychainUnlock($("#next-step"));
       }
     },
   };
@@ -7697,7 +7862,25 @@ pages.run = async ([id]) => {
 function attachTerminal(id) {
   const send = (data) => api(`runs/${id}/input`, { method: "POST", body: { data } }).catch((e) => toast(e.message, true));
   const termEl = $("#term");
+  const termWrap = $("#term-wrap");
   let write, fit = () => {};
+  let hasOutput = false;
+
+  const currentRun = state.runs.find((r) => r.id === id);
+  if (currentRun && !currentRun.running) {
+    if (currentRun.exit_code !== 0) {
+      termWrap?.classList.add("run-failed");
+      document.body.classList.add("run-failed");
+    }
+    termWrap?.classList.add("term-empty");
+  }
+
+  const onBytesWritten = (bytes) => {
+    if (bytes && bytes.length > 0) {
+      hasOutput = true;
+      termWrap?.classList.remove("term-empty");
+    }
+  };
 
   if (window.Terminal) {
     const term = new window.Terminal({
@@ -7708,7 +7891,10 @@ function attachTerminal(id) {
     if (fitAddon) term.loadAddon(fitAddon);
     term.open(termEl);
     term.onData(send);
-    write = (bytes) => term.write(bytes);
+    write = (bytes) => {
+      onBytesWritten(bytes);
+      term.write(bytes);
+    };
     let resizeTimer;
     fit = () => {
       if (!fitAddon) return;
@@ -7734,6 +7920,7 @@ function attachTerminal(id) {
     termEl.appendChild(pre);
     const decoder = new TextDecoder();
     write = (bytes) => {
+      onBytesWritten(bytes);
       pre.textContent += decoder.decode(bytes, { stream: true }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
       pre.scrollTop = pre.scrollHeight;
     };
@@ -7773,6 +7960,14 @@ function attachTerminal(id) {
       run = state.runs.find((r) => r.id === id);
     }
     if (!run || current.page !== "run" || current.args[0] !== id) return;
+    if (run.exit_code !== 0) {
+      termWrap?.classList.add("run-failed");
+      document.body.classList.add("run-failed");
+    }
+    if (!hasOutput) {
+      termWrap?.classList.add("term-empty");
+    }
+    fit();
     await finishRunStatus(run);
   });
   cleanup.push(follow.stop);

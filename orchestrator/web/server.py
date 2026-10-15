@@ -32,6 +32,7 @@ import queue
 import re
 import secrets
 import select
+import shlex
 import socket
 import shutil
 import zipfile
@@ -5199,6 +5200,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
         elif method == "POST" and parts == ["project"]:
             self._switch_project(self._body())
+        elif method == "POST" and parts == ["keychain", "unlock"]:
+            self._unlock_keychain(root, self._body())
         elif method == "GET" and parts == ["runs"]:
             self._json({"runs": self._sessions_view()})
         elif method == "GET" and parts == ["runs", "history"]:
@@ -5397,6 +5400,43 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         else:
             self._error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def _unlock_keychain(self, root: Path, body: dict[str, Any]) -> None:
+        self._require_owner("unlock macOS keychain")
+        pwd = str(body.get("password") or "")
+        if not pwd:
+            raise UIError("Password is required")
+        keychain_path = os.path.expanduser("~/Library/Keychains/login.keychain-db")
+        if not os.path.exists(keychain_path):
+            keychain_path = os.path.expanduser("~/Library/Keychains/login.keychain")
+        if shutil.which("security"):
+            res = subprocess.run(
+                ["security", "unlock-keychain", "-p", pwd, keychain_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if res.returncode != 0:
+                err = res.stderr.strip() or "Incorrect password or unable to unlock keychain"
+                raise UIError(err)
+            subprocess.run(
+                ["security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", pwd, keychain_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        secrets_path = root / ".secrets" / "project-secrets.zsh"
+        secrets_path.parent.mkdir(parents=True, exist_ok=True)
+        content = secrets_path.read_text(encoding="utf-8") if secrets_path.exists() else ""
+        lines = [l for l in content.splitlines() if "KEYCHAIN_PASSWORD=" not in l]
+        lines.append(f"export KEYCHAIN_PASSWORD={shlex.quote(pwd)}")
+        secrets_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        try:
+            secrets_path.chmod(0o600)
+        except OSError:
+            pass
+        os.environ["KEYCHAIN_PASSWORD"] = pwd
+        self._audit("keychain_unlocked")
+        self._json({"ok": True, "message": "Keychain unlocked and saved locally on this Mac."})
 
     def _sessions_view(self, job_id: str | None = None) -> list[dict[str, Any]]:
         sessions = self.server.sessions.list(job_id=job_id)

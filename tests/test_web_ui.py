@@ -6210,3 +6210,90 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
         self.assertIn(".rec-section-header", css)
         self.assertIn(".rec-callout", css)
 
+
+class KeychainUnlockTests(ServerTestCase):
+    def test_keychain_unlock_requires_owner(self):
+        with patch.object(ui.UIHandler, "_is_owner", return_value=False):
+            res, data = self.request("POST", "/api/keychain/unlock", body={"password": "secret"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 403)
+
+    def test_keychain_unlock_requires_password(self):
+        res, data = self.request("POST", "/api/keychain/unlock", body={"password": ""}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn("Password is required", data.get("error", ""))
+
+    def test_keychain_unlock_success_saves_secrets_file(self):
+        secrets_file = self.root / ".secrets" / "project-secrets.zsh"
+        with patch("shutil.which", return_value=None):
+            res, data = self.request("POST", "/api/keychain/unlock", body={"password": "MySuperSecret$123'\""}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            self.assertTrue(secrets_file.exists())
+            content = secrets_file.read_text(encoding="utf-8")
+            self.assertIn("KEYCHAIN_PASSWORD=", content)
+            self.assertEqual(os.environ.get("KEYCHAIN_PASSWORD"), "MySuperSecret$123'\"")
+
+    def test_keychain_unlock_failure_from_security_raises(self):
+        with patch("shutil.which", return_value="/usr/bin/security"), \
+             patch("subprocess.run", return_value=subprocess.CompletedProcess(args=[], returncode=1, stderr="Authentication failed")):
+            res, data = self.request("POST", "/api/keychain/unlock", body={"password": "wrong"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 400)
+            self.assertIn("Authentication failed", data.get("error", ""))
+
+    def test_static_keychain_guidance_and_ui_present(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn("macOS Keychain is locked", js)
+        self.assertIn("keychain-unlock-form", js)
+        self.assertIn("keychain/unlock", js)
+        self.assertIn("Rerun job", js)
+        self.assertIn("Back to job", js)
+        self.assertIn("wireKeychainUnlock", js)
+        self.assertIn(".secrets/project-secrets.zsh", js)
+        self.assertIn("Stored strictly locally", js)
+        self.assertIn("security unlock-keychain", js)
+        self.assertIn("security set-key-partition-list", js)
+        self.assertIn(".term-wrap.term-empty", css)
+        self.assertIn(".term-wrap.run-failed .term", css)
+        self.assertIn(".run-status.run-status-keychain", css)
+
+    def test_run_failure_guidance_evaluates_keychain_and_job_preservation(self):
+        script = """
+const fs = require('fs');
+const assert = require('assert');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+globalThis.act = (action, obj) => `data-action="${action}" data-params='${JSON.stringify(obj || {})}'`;
+globalThis.esc = (s) => s;
+eval(code.slice(code.indexOf('function runFailureGuidance'), code.indexOf('function runStatus')));
+
+const res1 = runFailureGuidance({
+  exit_code: 1,
+  error_summary: "SecKeychainUnlock: User interaction is not allowed",
+  job: "job-123",
+  action: "execute"
+});
+assert.equal(res1.isKeychain, true);
+assert.equal(res1.title, "macOS Keychain is locked");
+assert(res1.action.includes("job-123"), "Rerun action preserves job");
+assert(res1.action.includes("Rerun job"), "Rerun label specifies job");
+assert(res1.secondary.includes("#/jobs/job-123"), "Back link preserves job");
+assert(res1.secondary.includes("Back to job"), "Back label specifies job");
+
+const res2 = runFailureGuidance({
+  exit_code: 1,
+  error_summary: "fatal: compilation error in main.swift",
+  job: "job-456",
+  action: "execute"
+});
+assert.equal(res2.title, "Execution error");
+assert(res2.action.includes("job-456"), "Execution error rerun preserves job");
+assert(res2.action.includes("Rerun job"), "Execution error rerun label specifies job");
+assert(res2.secondary.includes("#/jobs/job-456"), "Execution error back link preserves job");
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
