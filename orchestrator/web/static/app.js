@@ -2876,6 +2876,7 @@ pages.job = async ([id]) => {
       ${(visualChecks.length && visualChecks[0].screenshots.length) ? `
         <section class="card mb-16">
           <div class="card-h"><h2>Simulator Visual QA Screenshots</h2><span class="count">${visualChecks[0].screenshots.length} captured</span></div>
+          <p class="visual-check-desc">Boots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.</p>
           <div class="card-b" style="display:flex; gap:14px; overflow-x:auto; padding:12px 16px;">
             ${visualChecks[0].screenshots.map((img) => `
               <div style="flex:0 0 auto; text-align:center;">
@@ -8063,6 +8064,7 @@ function nextStep(r) {
           ${openJob}
         </div>
       </div>
+      <p class="visual-check-desc">Boots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.</p>
       <div class="visual-check-grid" role="region" aria-label="Visual check screenshot results">
         ${vc.screenshots.map((img) => {
           const imgUrl = `/api/visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}`;

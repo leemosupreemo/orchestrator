@@ -175,6 +175,8 @@ def main() -> None:
     report_lines = [
         "# 📱 Simulator Visual Check Report",
         "",
+        "> Boots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.",
+        "",
         "## Overview",
         f"- **Captured Scope:** Active foreground root view & initial UI state of `{bundle_id}` after launch.",
         f"- **Screenshots Taken:** {len(screenshot_paths)} screenshot(s) (with {args.wait:.1f}s post-launch settle delay).",
@@ -203,6 +205,7 @@ def main() -> None:
     write_text(out_dir / "report.md", "\n".join(report_lines))
 
     print_header("📱 Simulator Visual Check Complete")
+    print("   \033[90mBoots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.\033[0m\n")
     print(f"   \033[1;36m• Target App:\033[0m        \033[1;97m{bundle_id}\033[0m \033[90m({app_path.name})\033[0m")
     print(f"   \033[1;36m• Scope Captured:\033[0m    \033[97mForeground root view & initial UI state after launch\033[0m")
     print(f"   \033[1;36m• Screenshots:\033[0m       \033[1;93m{len(screenshot_paths)} screenshot(s)\033[0m \033[90m({args.wait:.1f}s post-launch settle delay)\033[0m")
