@@ -1251,6 +1251,104 @@ dialog h2 {
   background: #32383f;
   border-color: #5b636b;
 }
+.sso-btn.email-btn {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+.sso-btn.email-btn:hover {
+  background: var(--panel);
+  border-color: var(--text);
+}
+.email-signin-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  text-align: left;
+}
+.email-signin-panel .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.email-signin-panel .field span {
+  font-size: var(--text-xs);
+  font-weight: 550;
+  color: var(--muted);
+}
+.email-signin-panel input {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--text-md);
+  width: 100%;
+  box-sizing: border-box;
+}
+.email-signin-panel input:focus {
+  outline: 2px solid var(--accent);
+  border-color: var(--accent);
+}
+.email-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.email-panel-header {
+  justify-content: space-between;
+  align-items: center;
+}
+.email-panel-header strong {
+  font-size: var(--text-sm);
+}
+.email-panel-close {
+  font-size: var(--text-sm);
+  background: none;
+  border: none;
+  cursor: pointer;
+  line-height: 1;
+}
+.email-auth-actions {
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--text-xs);
+}
+.email-auth-mode-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.email-auth-forgot-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.email-auth-submit-btn {
+  width: 100%;
+  justify-content: center;
+  position: relative;
+}
+.email-auth-link-wrap {
+  text-align: center;
+}
+.email-auth-link-btn {
+  background: none;
+  border: none;
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  color: var(--muted);
+}
 
 /* Highlight and tag for the last used login method */
 .sso-btn.last-used,

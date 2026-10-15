@@ -4083,6 +4083,29 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("min-height: calc(100vh - 120px);", css)
         self.assertIn(".app.session-locked .topbar {", css)
 
+    def test_signin_modal_email_option(self):
+        # Continue with email option appears below the OAuth providers (Google, Apple, GitHub)
+        index_html = (self.STATIC / "index.html").read_text()
+        self.assertIn('<symbol id="i-mail" viewBox="0 0 24 24">', index_html)
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn(".sso-btn.email-btn {", css)
+        self.assertIn(".email-signin-panel {", css)
+        js = self.js
+        self.assertIn('id="email-signin-btn"', js)
+        self.assertIn('Continue with email', js)
+        # Positioned after GitHub button
+        github_idx = js.index('id="github-signin-btn"')
+        email_idx = js.index('id="email-signin-btn"')
+        self.assertGreater(email_idx, github_idx)
+        # Email panel and handlers
+        self.assertIn('id="email-signin-panel"', js)
+        self.assertIn('id="email-auth-form"', js)
+        self.assertIn('signInWithEmailAndPassword', js)
+        self.assertIn('createUserWithEmailAndPassword', js)
+        self.assertIn('sendPasswordResetEmail', js)
+        self.assertIn('sendSignInLinkToEmail', js)
+        self.assertIn('isSignInWithEmailLink', js)
+
     def test_signin_modal_omits_orchestrator_icon_and_title(self):
         # Sign-in modal card begins directly with heading without redundant app brand mark or title
         gate = self.js[self.js.index("function showSignInGate"):self.js.index("function showSignInGate") + 2500]

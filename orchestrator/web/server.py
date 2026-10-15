@@ -4394,7 +4394,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(f"Email {email} is not authorized for this computer.", HTTPStatus.FORBIDDEN)
             return self.server.sign_ins.create(email), email, "hosted app"
         if id_token:
-            self._attempted_how = "Google, Apple or GitHub"
+            self._attempted_how = "Google, Apple, GitHub or email"
             user_info = verify_firebase_id_token(id_token)
             email = (user_info.get("email") or "").strip().lower()
             self._attempted = email
@@ -4416,7 +4416,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(f"Email {email} is not authorized for this computer. Ask its owner to add it "
                               "under Configuration, Who can sign in.", HTTPStatus.FORBIDDEN)
             # Their own token, not the server's: it expires, and it can be revoked without locking anyone else out.
-            return self.server.sign_ins.create(email), email, "Google, Apple or GitHub"
+            return self.server.sign_ins.create(email), email, "Google, Apple, GitHub or email"
         if token:
             self._attempted_how = "access token"
             if not hmac.compare_digest(token, self.server.token):

@@ -122,6 +122,7 @@ function getLastLoginMethod() {
       if (pid === "google.com") return "google";
       if (pid === "apple.com") return "apple";
       if (pid === "github.com") return "github";
+      if (pid === "password") return "email";
     }
   }
   return "";
@@ -1231,10 +1232,12 @@ async function afterProviderSignIn(user, name) {
   const provider = (name || "").toLowerCase().includes("google") ? "google"
     : (name || "").toLowerCase().includes("apple") ? "apple"
     : (name || "").toLowerCase().includes("github") ? "github"
+    : (name || "").toLowerCase().includes("email") ? "email"
     : (user?.providerData?.[0]?.providerId === "google.com") ? "google"
     : (user?.providerData?.[0]?.providerId === "apple.com") ? "apple"
     : (user?.providerData?.[0]?.providerId === "github.com") ? "github"
-    : "google";
+    : (user?.providerData?.[0]?.providerId === "password") ? "email"
+    : "email";
   setLastLoginMethod(provider);
   if (Account.active()) return openAccount();
   const backend = getBackendUrl();
@@ -1673,6 +1676,33 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) 
   } catch { /* auth unavailable: the sign-in screen still works */ }
 }
 
+// Complete email link sign-in if returning from an email link
+if (typeof window !== "undefined" && window.firebase?.auth && Account.providerSignInWorks()) {
+  try {
+    if (firebase.auth().isSignInWithEmailLink(window.location.href)) {
+      let email = "";
+      try { email = localStorage.getItem("orchestrator_email_for_signin") || ""; } catch {}
+      if (!email) {
+        email = window.prompt("Please confirm your email address to complete sign in:") || "";
+      }
+      if (email) {
+        signingIn = true;
+        showSigningIn("Signing in with email link…");
+        firebase.auth().signInWithEmailLink(email, window.location.href)
+          .then(async (cred) => {
+            try { localStorage.removeItem("orchestrator_email_for_signin"); } catch {}
+            setLastLoginMethod("email");
+            await afterProviderSignIn(cred.user, "Email");
+          })
+          .catch((err) => {
+            endSigningIn();
+            showSignInGate(err.message);
+          });
+      }
+    }
+  } catch {}
+}
+
 function showSignInGate(message) {
   setHeader({ title: "", sub: "", actions: "" });
   document.title = Notifications.tabTitle("Sign In · Orchestrator", state.inbox_count || 0);
@@ -1704,7 +1734,7 @@ function showSignInGate(message) {
           </picture>
         </figure>
         ${providers ? "" : `<div class="notice signin-elsewhere">
-          <p>Google, Apple and GitHub sign-in work on the Orchestrator site, which then opens this computer for you.</p>
+          <p>Google, Apple, GitHub and email sign-in work on the Orchestrator site, which then opens this computer for you.</p>
           <a class="btn primary" href="${esc(Account.HOSTED_ORIGINS[0])}" style="width: 100%; justify-content: center;">Sign in on the Orchestrator site</a>
           <p class="muted">Or use the access token below${location.hostname === "127.0.0.1" ? `, or open <a href="${esc(location.href.replace("//127.0.0.1", "//localhost"))}">localhost</a> instead of 127.0.0.1` : ""}.</p></div>`}
         <div class="sso-buttons" ${providers ? "" : "hidden"}>
@@ -1723,6 +1753,37 @@ function showSignInGate(message) {
             <span>Continue with GitHub</span>
             ${isLastProvider("github") ? `<span class="last-used-tag">Last used</span>` : ""}
           </button>
+          <button type="button" class="sso-btn email-btn ${isLastProvider("email") ? "last-used" : ""}" id="email-signin-btn">
+            <svg class="icon"><use href="#i-mail"/></svg>
+            <span>Continue with email</span>
+            ${isLastProvider("email") ? `<span class="last-used-tag">Last used</span>` : ""}
+          </button>
+        </div>
+        <div id="email-signin-panel" class="email-signin-panel" ${isLastProvider("email") ? "" : "hidden"}>
+          <form id="email-auth-form" class="stack email-auth-form">
+            <div class="row gap-8 email-panel-header">
+              <strong id="email-panel-title">Sign in with email</strong>
+              <button type="button" class="linklike muted email-panel-close" id="email-panel-close" title="Close">✕</button>
+            </div>
+            <label class="field">
+              <span>Email address</span>
+              <input type="email" id="email-auth-email" name="email" required placeholder="you@example.com" autocomplete="email">
+            </label>
+            <label class="field" id="email-auth-pw-wrap">
+              <span>Password</span>
+              <input type="password" id="email-auth-password" name="password" required placeholder="Your password" autocomplete="current-password">
+            </label>
+            <div class="row gap-8 email-auth-actions">
+              <button type="button" class="linklike email-auth-mode-btn" id="email-auth-mode-btn">Need an account? Sign up</button>
+              <button type="button" class="linklike muted email-auth-forgot-btn" id="email-auth-forgot-btn">Forgot password?</button>
+            </div>
+            <button type="submit" id="email-auth-submit-btn" class="btn primary email-auth-submit-btn">
+              <span id="email-auth-submit-label">Sign In</span>
+            </button>
+            <div class="email-auth-link-wrap">
+              <button type="button" class="linklike muted email-auth-link-btn" id="email-auth-link-btn">Or email me a sign-in link</button>
+            </div>
+          </form>
         </div>
         ${hostedUser ? `<button type="button" class="btn primary sso-continue-btn ${lastUsed && lastUsed !== "token" ? "last-used" : ""}" id="account-continue-btn" style="width: 100%; justify-content: center; position: relative;">
           <span>Continue as ${esc(hostedUser.email || "you")}</span>
@@ -1773,6 +1834,7 @@ function showSignInGate(message) {
     if (pid === "google.com") setLastLoginMethod("google");
     else if (pid === "apple.com") setLastLoginMethod("apple");
     else if (pid === "github.com") setLastLoginMethod("github");
+    else if (pid === "password") setLastLoginMethod("email");
     openAccount();
   });
 
@@ -1858,6 +1920,154 @@ function showSignInGate(message) {
     "auth/operation-not-allowed": "GitHub sign-in isn't turned on yet. Enable the GitHub provider in the Firebase console (Authentication → Sign-in method).",
     "auth/account-exists-with-different-credential": "This email already signs in with another provider (Google or Apple). Use that one instead.",
   });
+
+  // Email sign-in toggle and form handling
+  const emailBtn = $("#email-signin-btn");
+  const emailPanel = $("#email-signin-panel");
+  const emailForm = $("#email-auth-form");
+  const emailInput = $("#email-auth-email");
+  const emailPw = $("#email-auth-password");
+  const emailModeBtn = $("#email-auth-mode-btn");
+  const emailForgotBtn = $("#email-auth-forgot-btn");
+  const emailSubmitBtn = $("#email-auth-submit-btn");
+  const emailSubmitLabel = $("#email-auth-submit-label");
+  const emailPanelTitle = $("#email-panel-title");
+  const emailLinkBtn = $("#email-auth-link-btn");
+  const emailCloseBtn = $("#email-panel-close");
+
+  let emailMode = "signin";
+
+  if (emailBtn && emailPanel) {
+    emailBtn.addEventListener("click", () => {
+      const isHidden = emailPanel.hidden;
+      emailPanel.hidden = !isHidden;
+      if (isHidden && emailInput) {
+        emailInput.focus();
+      }
+    });
+  }
+
+  if (emailCloseBtn && emailPanel) {
+    emailCloseBtn.addEventListener("click", () => {
+      emailPanel.hidden = true;
+    });
+  }
+
+  if (emailModeBtn) {
+    emailModeBtn.addEventListener("click", () => {
+      if (emailMode === "signin") {
+        emailMode = "signup";
+        if (emailPanelTitle) emailPanelTitle.textContent = "Create an account";
+        if (emailModeBtn) emailModeBtn.textContent = "Already have an account? Sign in";
+        if (emailSubmitLabel) emailSubmitLabel.textContent = "Create Account";
+        if (emailForgotBtn) emailForgotBtn.hidden = true;
+        if (emailPw) emailPw.autocomplete = "new-password";
+      } else {
+        emailMode = "signin";
+        if (emailPanelTitle) emailPanelTitle.textContent = "Sign in with email";
+        if (emailModeBtn) emailModeBtn.textContent = "Need an account? Sign up";
+        if (emailSubmitLabel) emailSubmitLabel.textContent = "Sign In";
+        if (emailForgotBtn) emailForgotBtn.hidden = false;
+        if (emailPw) emailPw.autocomplete = "current-password";
+      }
+    });
+  }
+
+  if (emailForgotBtn && emailInput) {
+    emailForgotBtn.addEventListener("click", async () => {
+      const email = (emailInput.value || "").trim();
+      if (!email) {
+        toast("Enter your email address first", true);
+        emailInput.focus();
+        return;
+      }
+      if (!window.firebase?.auth) {
+        toast("Firebase Auth is loading or unavailable", true);
+        return;
+      }
+      try {
+        await firebase.auth().sendPasswordResetEmail(email);
+        toast(`Password reset link sent to ${email}`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  }
+
+  if (emailLinkBtn && emailInput) {
+    emailLinkBtn.addEventListener("click", async () => {
+      const email = (emailInput.value || "").trim();
+      if (!email) {
+        toast("Enter your email address first", true);
+        emailInput.focus();
+        return;
+      }
+      if (!window.firebase?.auth) {
+        toast("Firebase Auth is loading or unavailable", true);
+        return;
+      }
+      try {
+        const actionCodeSettings = {
+          url: window.location.href,
+          handleCodeInApp: true,
+        };
+        await firebase.auth().sendSignInLinkToEmail(email, actionCodeSettings);
+        try { localStorage.setItem("orchestrator_email_for_signin", email); } catch {}
+        toast(`Sign-in link sent to ${email}! Check your inbox.`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  }
+
+  if (emailForm) {
+    emailForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!window.firebase?.auth) {
+        toast("Firebase Auth is loading or unavailable", true);
+        return;
+      }
+      syncBackend();
+      const email = (emailInput?.value || "").trim();
+      const password = (emailPw?.value || "").trim();
+      if (!email || !password) return;
+
+      if (emailSubmitBtn) {
+        emailSubmitBtn.disabled = true;
+        if (emailSubmitLabel) emailSubmitLabel.textContent = emailMode === "signup" ? "Creating account…" : "Signing in…";
+      }
+      signingIn = true;
+      showSigningIn(emailMode === "signup" ? "Creating your account…" : "Signing in…");
+
+      try {
+        let cred;
+        if (emailMode === "signup") {
+          cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
+          try { await cred.user.sendEmailVerification(); } catch {}
+        } else {
+          try {
+            cred = await firebase.auth().signInWithEmailAndPassword(email, password);
+          } catch (signInErr) {
+            if (signInErr.code === "auth/user-not-found") {
+              throw Object.assign(new Error("No account found with this email. Click 'Need an account? Sign up' to register."), { code: "auth/user-not-found" });
+            }
+            throw signInErr;
+          }
+        }
+        setLastLoginMethod("email");
+        showSigningIn(`Signed in as ${cred.user.email || email}. Connecting…`);
+        await afterProviderSignIn(cred.user, "Email");
+      } catch (err) {
+        endSigningIn();
+        if (emailSubmitBtn) {
+          emailSubmitBtn.disabled = false;
+          if (emailSubmitLabel) emailSubmitLabel.textContent = emailMode === "signup" ? "Create Account" : "Sign In";
+        }
+        toast(err.message, true);
+        showSignInGate(err.message);
+      }
+    });
+  }
 
   const form = $("#signin-form");
   if (form) {
