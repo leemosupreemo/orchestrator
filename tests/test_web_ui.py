@@ -6304,4 +6304,143 @@ assert(res2.secondary.includes("#/jobs/job-456"), "Execution error back link pre
         self.assertIn("api(`file?path=${encodeURIComponent(saved.log)}`)", js)
 
 
+class AutoRecoveryTests(ServerTestCase):
+    def test_recovery_requires_owner(self):
+        with patch.object(ui.UIHandler, "_is_owner", return_value=False):
+            res, data = self.request("POST", "/api/recovery/clean-build-cache", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 403)
+
+    def test_recovery_unknown_action(self):
+        res, data = self.request("POST", "/api/recovery/invalid-action", body={}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 404)
+        self.assertIn("Unknown recovery action", data.get("error", ""))
+
+    def test_recovery_clean_build_cache(self):
+        build_dir = self.root / ".build"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        (build_dir / "test.o").write_text("dummy")
+
+        tmp_dd = Path(f"/tmp/{self.root.name.lower()}_orchestrator_dd")
+        tmp_dd.mkdir(parents=True, exist_ok=True)
+        (tmp_dd / "build.db").write_text("sqlite")
+
+        with patch("shutil.which", return_value=None):
+            res, data = self.request("POST", "/api/recovery/clean-build-cache", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            self.assertFalse(build_dir.exists())
+            self.assertFalse(tmp_dd.exists())
+
+    def test_recovery_resolve_packages(self):
+        pkg_file = self.root / "Package.swift"
+        pkg_file.write_text("// swift-tools-version: 5.9\n")
+        with patch("shutil.which", return_value="/usr/bin/swift"), \
+             patch("subprocess.run", return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="Resolved packages")):
+            res, data = self.request("POST", "/api/recovery/resolve-packages", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+
+    def test_recovery_reset_simulator(self):
+        with patch("shutil.which", return_value="/usr/bin/xcrun"), \
+             patch("subprocess.run", return_value=subprocess.CompletedProcess(args=[], returncode=0)):
+            res, data = self.request("POST", "/api/recovery/reset-simulator", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            self.assertIn("iOS Simulator", data.get("message", ""))
+
+    def test_recovery_git_stash(self):
+        with patch("shutil.which", return_value="/usr/bin/git"), \
+             patch("subprocess.run", return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="Saved working directory and index state")):
+            res, data = self.request("POST", "/api/recovery/git-stash", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            self.assertIn("Local changes stashed", data.get("message", ""))
+
+    def test_recovery_git_prune_worktrees(self):
+        wt_dir = self.root / ".git" / "worktrees" / "wt1"
+        wt_dir.mkdir(parents=True, exist_ok=True)
+        locked_file = wt_dir / "locked"
+        locked_file.write_text("reason: busy")
+
+        with patch("shutil.which", return_value="/usr/bin/git"), \
+             patch("subprocess.run", return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="Pruning worktrees")):
+            res, data = self.request("POST", "/api/recovery/git-prune-worktrees", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            self.assertFalse(locked_file.exists())
+
+    def test_recovery_reclaim_space(self):
+        fake_dd = self.root / "fake_dd"
+        fake_dd.mkdir(parents=True, exist_ok=True)
+        (fake_dd / f"{self.root.name}-xyz").mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, {"XCODE_DERIVED_DATA_PATH": str(fake_dd), "ORCHESTRATOR_TESTING": "1"}):
+            res, data = self.request("POST", "/api/recovery/reclaim-space", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data.get("ok"))
+            self.assertIn("Reclaimed disk space", data.get("message", ""))
+
+    def test_api_key_update_and_child_env(self):
+        res, data = self.request("POST", "/api/config/keys", body={"id": "anthropic_api_key", "value": "sk-ant-test1234"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(os.environ.get("ANTHROPIC_API_KEY"), "sk-ant-test1234")
+        child_env = self.server.child_env()
+        self.assertEqual(child_env.get("ANTHROPIC_API_KEY"), "sk-ant-test1234")
+
+    def test_frontend_auto_recovery_guidance_and_buttons(self):
+        script = """
+const fs = require('fs');
+const assert = require('assert');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+globalThis.act = (action, obj) => `data-action="${action}" data-params='${JSON.stringify(obj || {})}'`;
+globalThis.attrJSON = (o) => JSON.stringify(o);
+globalThis.esc = (s) => s;
+eval(code.slice(code.indexOf('function runFailureGuidance'), code.indexOf('function runStatus')));
+
+// 1. Build cache lock
+const g1 = runFailureGuidance({ exit_code: 1, error_summary: "fatal error: database is locked in build.db", job: "j1", action: "build" });
+assert.equal(g1.recoveryAction, "clean-build-cache");
+assert(g1.action.includes('data-recover="clean-build-cache"'));
+
+// 2. Package resolution
+const g2 = runFailureGuidance({ exit_code: 1, error_summary: "Package.resolved file is corrupted or out of date", job: "j1", action: "execute" });
+assert.equal(g2.recoveryAction, "resolve-packages");
+assert(g2.action.includes('data-recover="resolve-packages"'));
+
+// 3. Simulator freeze
+const g3 = runFailureGuidance({ exit_code: 1, error_summary: "CoreSimulator.bridge error: Unable to boot device in current state", job: "j1", action: "test" });
+assert.equal(g3.recoveryAction, "reset-simulator");
+assert(g3.action.includes('data-recover="reset-simulator"'));
+
+// 4. Git dirty conflict
+const g4 = runFailureGuidance({ exit_code: 1, error_summary: "error: Your local changes to the following files would be overwritten by checkout", job: "j1", action: "execute" });
+assert.equal(g4.recoveryAction, "git-stash");
+assert(g4.action.includes('data-recover="git-stash"'));
+
+// 5. Worktree locked
+const g5 = runFailureGuidance({ exit_code: 1, error_summary: "fatal: 'feature-branch' is already checked out at '/path/.git/worktrees/wt1'", job: "j1", action: "execute" });
+assert.equal(g5.recoveryAction, "git-prune-worktrees");
+assert(g5.action.includes('data-recover="git-prune-worktrees"'));
+
+// 6. Disk space exhausted
+const g6 = runFailureGuidance({ exit_code: 1, error_summary: "fatal error: No space left on device while writing cache", job: "j1", action: "build" });
+assert.equal(g6.recoveryAction, "reclaim-space");
+assert(g6.action.includes('data-recover="reclaim-space"'));
+
+// 7. Missing API key
+const g7 = runFailureGuidance({ exit_code: 1, error_summary: "No model is available. Missing api key: anthropic_api_key", job: "j1", action: "execute" });
+assert.equal(g7.isApiKey, true);
+
+// 8. GitHub auth missing
+const g8 = runFailureGuidance({ exit_code: 1, error_summary: "To authenticate, run: gh auth login", job: "j1", action: "execute" });
+assert.equal(g8.isGhAuth, true);
+assert(g8.secondary.includes("gh auth login --web"));
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 

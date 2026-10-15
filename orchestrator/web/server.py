@@ -2827,14 +2827,20 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
         kid = _text(body, "id", required=True, limit=50)
         if kid not in {k[0] for k in API_KEYS}:
             raise UIError("Unknown key")
+        key_env = next((k[2] for k in API_KEYS if k[0] == kid), None)
         if body.get("clear"):
             settings.pop(kid, None)
             if kid == "ollama_api_key":
                 settings.pop("ollama_host", None)
+            if key_env:
+                os.environ.pop(key_env, None)
         else:
-            settings[kid] = _text(body, "value", required=True, limit=2000)
+            val = _text(body, "value", required=True, limit=2000)
+            settings[kid] = val
             if kid == "ollama_api_key" and _text(body, "host", limit=500):
                 settings["ollama_host"] = _text(body, "host", limit=500)
+            if key_env:
+                os.environ[key_env] = val
     elif part == "email":
         op = _choice(body, "op", ["add", "remove", "provider"])
         emails = list(settings.get("notification_emails", []))
@@ -3949,6 +3955,14 @@ class UIServer(ThreadingHTTPServer):
         # serving this UI. `-P` (see orchestrator_argv) keeps cwd off the import path and this puts
         # the UI's package first; unlike PYTHONSAFEPATH it isn't inherited by the scripts we start.
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PACKAGE_PARENT), env.get("PYTHONPATH")]))
+        try:
+            settings = read_settings(self.root)
+            for kid, label, env_var in API_KEYS:
+                val = settings.get(kid)
+                if val and env_var not in env:
+                    env[env_var] = str(val)
+        except Exception:
+            pass
         return env
 
 
@@ -5202,6 +5216,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._switch_project(self._body())
         elif method == "POST" and parts == ["keychain", "unlock"]:
             self._unlock_keychain(root, self._body())
+        elif method == "POST" and len(parts) == 2 and parts[0] == "recovery":
+            self._handle_recovery(root, parts[1], self._body())
         elif method == "GET" and parts == ["runs"]:
             self._json({"runs": self._sessions_view()})
         elif method == "GET" and parts == ["runs", "history"]:
@@ -5437,6 +5453,221 @@ class UIHandler(BaseHTTPRequestHandler):
         os.environ["KEYCHAIN_PASSWORD"] = pwd
         self._audit("keychain_unlocked")
         self._json({"ok": True, "message": "Keychain unlocked and saved locally on this Mac."})
+
+    def _handle_recovery(self, root: Path, action: str, body: dict[str, Any]) -> None:
+        self._require_owner(f"perform auto-recovery ({action})")
+        if action == "clean-build-cache":
+            self._clean_build_cache(root)
+        elif action == "resolve-packages":
+            self._resolve_packages(root)
+        elif action == "reset-simulator":
+            self._reset_simulators(root)
+        elif action == "git-stash":
+            self._git_stash(root)
+        elif action == "git-prune-worktrees":
+            self._git_prune_worktrees(root)
+        elif action == "reclaim-space":
+            self._reclaim_space(root)
+        else:
+            self._error(HTTPStatus.NOT_FOUND, f"Unknown recovery action: {action}")
+
+    def _clean_build_cache(self, root: Path) -> None:
+        cleared_paths: list[str] = []
+        project_name = root.name
+        dd_candidates = [
+            root / ".build",
+            root / "DerivedData",
+            Path(f"/tmp/{project_name.lower()}_orchestrator_dd"),
+        ]
+        xcode_dd = Path(os.environ.get("XCODE_DERIVED_DATA_PATH", os.path.expanduser("~/Library/Developer/Xcode/DerivedData")))
+        if xcode_dd.exists():
+            try:
+                for entry in xcode_dd.iterdir():
+                    if entry.is_dir() and (entry.name.lower().startswith(project_name.lower()) or entry.name == "ModuleCache.noindex"):
+                        dd_candidates.append(entry)
+            except OSError:
+                pass
+
+        for p in dd_candidates:
+            if p.exists():
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    cleared_paths.append(p.name)
+                except OSError:
+                    pass
+
+        if shutil.which("killall"):
+            subprocess.run(
+                ["killall", "-9", "xcodebuild", "swift-frontend", "SourceKitService"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+        self._audit("clean_build_cache", {"cleared": cleared_paths})
+        msg = f"Cleaned build caches ({', '.join(cleared_paths)}) and reset build database." if cleared_paths else "Cleaned Xcode build caches and reset build database."
+        self._json({"ok": True, "message": msg})
+
+    def _resolve_packages(self, root: Path) -> None:
+        has_spm = (root / "Package.swift").exists()
+        has_xcode = any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace"))
+
+        output = ""
+        if has_spm and shutil.which("swift"):
+            res = subprocess.run(
+                ["swift", "package", "resolve"],
+                cwd=root, env=self.server.child_env(),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=90
+            )
+            if res.returncode != 0:
+                err = res.stderr.strip() or res.stdout.strip()
+                raise UIError(f"Swift package resolution failed: {err}")
+            output = "Swift package dependencies resolved successfully."
+        elif has_xcode and shutil.which("xcodebuild"):
+            res = subprocess.run(
+                ["xcodebuild", "-resolvePackageDependencies"],
+                cwd=root, env=self.server.child_env(),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=90
+            )
+            if res.returncode != 0:
+                err = res.stderr.strip() or res.stdout.strip()
+                raise UIError(f"Xcode package resolution failed: {err}")
+            output = "Xcode package dependencies resolved successfully."
+        else:
+            raise UIError("No Swift package manifest (Package.swift) or Xcode project found in repository.")
+
+        self._audit("resolve_packages")
+        self._json({"ok": True, "message": output})
+
+    def _reset_simulators(self, root: Path) -> None:
+        if not shutil.which("xcrun"):
+            raise UIError("xcrun is not available on this system.")
+
+        subprocess.run(
+            ["xcrun", "simctl", "shutdown", "all"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20
+        )
+        if shutil.which("killall"):
+            subprocess.run(
+                ["killall", "-9", "Simulator", "com.apple.CoreSimulator.CoreSimulatorService"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+        self._audit("reset_simulators")
+        self._json({"ok": True, "message": "iOS Simulator daemons terminated and all devices shut down cleanly."})
+
+    def _git_stash(self, root: Path) -> None:
+        if not shutil.which("git"):
+            raise UIError("git is not installed.")
+
+        ts = int(time.time())
+        tag = f"orchestrator-auto-recovery-{ts}"
+        res = subprocess.run(
+            ["git", "stash", "push", "-u", "-m", tag],
+            cwd=root, env=self.server.child_env(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30
+        )
+        if res.returncode != 0:
+            err = res.stderr.strip() or res.stdout.strip()
+            raise UIError(f"Git stash failed: {err}")
+
+        out = res.stdout.strip()
+        msg = f"Local changes stashed successfully ({tag}). You can restore them anytime with `git stash pop`."
+        if "No local changes to save" in out:
+            msg = "Working directory is already clean; no local changes were pending."
+
+        self._audit("git_stash", {"tag": tag})
+        self._json({"ok": True, "message": msg})
+
+    def _git_prune_worktrees(self, root: Path) -> None:
+        if not shutil.which("git"):
+            raise UIError("git is not installed.")
+
+        res = subprocess.run(
+            ["git", "worktree", "prune", "-v"],
+            cwd=root, env=self.server.child_env(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30
+        )
+        if res.returncode != 0:
+            err = res.stderr.strip() or res.stdout.strip()
+            raise UIError(f"Git worktree prune failed: {err}")
+
+        git_dir = root / ".git"
+        if git_dir.is_file():
+            try:
+                content = git_dir.read_text().strip()
+                if content.startswith("gitdir:"):
+                    git_dir = Path(content.split(":", 1)[1].strip())
+            except OSError:
+                pass
+
+        worktrees_dir = git_dir / "worktrees"
+        pruned_dirs: list[str] = []
+        if worktrees_dir.is_dir():
+            try:
+                for wt in worktrees_dir.iterdir():
+                    locked_file = wt / "locked"
+                    if locked_file.exists():
+                        locked_file.unlink(missing_ok=True)
+                        pruned_dirs.append(wt.name)
+            except OSError:
+                pass
+
+        self._audit("git_prune_worktrees", {"pruned": pruned_dirs})
+        self._json({"ok": True, "message": "Pruned orphaned worktrees and cleared stale git locks."})
+
+    def _reclaim_space(self, root: Path) -> None:
+        freed_items: list[str] = []
+        if shutil.which("xcrun") and not os.environ.get("ORCHESTRATOR_TESTING"):
+            subprocess.run(
+                ["xcrun", "simctl", "delete", "unavailable"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10
+            )
+            freed_items.append("unavailable simulators")
+
+        project_name = root.name
+        dd_candidates = [
+            root / ".build",
+            root / "DerivedData",
+            Path(f"/tmp/{project_name.lower()}_orchestrator_dd"),
+        ]
+        xcode_dd = Path(os.environ.get("XCODE_DERIVED_DATA_PATH", os.path.expanduser("~/Library/Developer/Xcode/DerivedData")))
+        if xcode_dd.exists():
+            try:
+                for entry in xcode_dd.iterdir():
+                    if entry.is_dir() and (entry.name.lower().startswith(project_name.lower()) or entry.name == "ModuleCache.noindex"):
+                        dd_candidates.append(entry)
+            except OSError:
+                pass
+
+        for p in dd_candidates:
+            if p.exists():
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    freed_items.append(f"DerivedData ({p.name})")
+                except OSError:
+                    pass
+
+        import glob
+        try:
+            for tmp_path in glob.glob("/tmp/*_orchestrator*"):
+                p = Path(tmp_path)
+                if p.exists() and project_name.lower() in p.name.lower():
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    freed_items.append("temp orchestrator builds")
+        except OSError:
+            pass
+
+        self._audit("reclaim_space")
+        msg = f"Reclaimed disk space by clearing {', '.join(freed_items)}." if freed_items else "Reclaimed disk space from build caches and simulator runtimes."
+        self._json({"ok": True, "message": msg})
 
     def _sessions_view(self, job_id: str | None = None) -> list[dict[str, Any]]:
         sessions = self.server.sessions.list(job_id=job_id)

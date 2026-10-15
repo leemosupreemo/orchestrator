@@ -7324,6 +7324,173 @@ function runFailureGuidance(r) {
     };
   }
 
+  const isMissingApiKey = (fullText.includes("no model is available")
+    || fullText.includes("no ai provider")
+    || fullText.includes("missing api key")
+    || fullText.includes("api_key not found")
+    || fullText.includes("invalid api key")
+    || fullText.includes("credit balance is too low")
+    || fullText.includes("anthropic_api_key")
+    || fullText.includes("openai_api_key")
+    || fullText.includes("gemini_api_key")
+    || (fullText.includes("authentication failed") && (fullText.includes("anthropic") || fullText.includes("openai") || fullText.includes("gemini"))))
+    && (fullText.includes("api key") || fullText.includes("key") || fullText.includes("model") || fullText.includes("provider") || fullText.includes("anthropic") || fullText.includes("openai") || fullText.includes("gemini") || fullText.includes("ollama"));
+
+  if (isMissingApiKey) {
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : `<a class="btn small" href="#/settings">Open Settings</a>`;
+    return {
+      isApiKey: true,
+      title: "AI API key required",
+      detail: "The AI agent could not start because an AI provider API key is missing or invalid. Enter your API key below to save it locally and immediately rerun.",
+      action: "",
+      secondary: backBtn,
+    };
+  }
+
+  const isBuildCacheLock = fullText.includes("database is locked")
+    || (fullText.includes("build.db") && (fullText.includes("lock") || fullText.includes("sqlite") || fullText.includes("busy")))
+    || fullText.includes("unable to open database file")
+    || (fullText.includes("module cache") && (fullText.includes("corrupt") || fullText.includes("invalid") || fullText.includes("lock")))
+    || fullText.includes("modulecache.noindex")
+    || fullText.includes("fatal error: could not build module")
+    || (fullText.includes("deriveddata") && fullText.includes("lock"));
+
+  if (isBuildCacheLock) {
+    const opAction = r.action || (targetJob ? "execute" : "build");
+    const opAttr = `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}`;
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : `<button type="button" class="btn small" ${act(r.action || "build")}>Retry build</button>`;
+    return {
+      recoveryAction: "clean-build-cache",
+      title: "Xcode build database or module cache is locked",
+      detail: "A previous build left a lock on the SQLite build database or Clang module cache. Cleaning the DerivedData build cache and resetting locks resolves this.",
+      action: `<button type="button" class="btn small primary" data-recover="clean-build-cache" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Clean cache &amp; Rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
+  const isPackageResolution = fullText.includes("resolvepackagedependencies")
+    || fullText.includes("package.resolved file is corrupted")
+    || (fullText.includes("package.resolved") && fullText.includes("out of date"))
+    || (fullText.includes("checksum of package") && fullText.includes("does not match"))
+    || fullText.includes("failed to resolve dependencies")
+    || fullText.includes("could not resolve package dependencies")
+    || (fullText.includes("missing package") && fullText.includes("package.swift"));
+
+  if (isPackageResolution) {
+    const opAction = r.action || (targetJob ? "execute" : "build");
+    const opAttr = `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}`;
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : `<button type="button" class="btn small" ${act(r.action || "build")}>Retry build</button>`;
+    return {
+      recoveryAction: "resolve-packages",
+      title: "Swift package dependencies failed to resolve",
+      detail: "Package dependencies are missing, corrupted, or out of sync with Package.resolved. Running package resolution and refreshing dependency caches will fix this.",
+      action: `<button type="button" class="btn small primary" data-recover="resolve-packages" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Resolve packages &amp; Rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
+  const isSimulatorFreeze = fullText.includes("unable to boot device in current state")
+    || fullText.includes("coresimulator.bridge error")
+    || fullText.includes("coresimulatorservice")
+    || (fullText.includes("simulator") && (fullText.includes("failed to boot") || fullText.includes("booted more than once") || fullText.includes("unresponsive")))
+    || (fullText.includes("failed to launch") && fullText.includes("iphonesimulator"))
+    || (fullText.includes("simctl") && fullText.includes("boot") && fullText.includes("error"));
+
+  if (isSimulatorFreeze) {
+    const opAction = r.action || (targetJob ? "execute" : "test");
+    const opAttr = `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}`;
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : `<button type="button" class="btn small" ${act(r.action || "test")}>Retry tests</button>`;
+    return {
+      recoveryAction: "reset-simulator",
+      title: "iOS Simulator is frozen or failed to boot",
+      detail: "The CoreSimulator daemon or booted simulator device is unresponsive or locked. Terminating hung simulator daemons and shutting down devices unblocks execution.",
+      action: `<button type="button" class="btn small primary" data-recover="reset-simulator" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Reset simulator &amp; Rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
+  const isGitDirtyConflict = fullText.includes("your local changes to the following files would be overwritten by checkout")
+    || fullText.includes("your local changes to the following files would be overwritten by merge")
+    || fullText.includes("cannot be applied because you have unstaged changes")
+    || fullText.includes("please commit your changes or stash them");
+
+  if (isGitDirtyConflict) {
+    const opAction = r.action || (targetJob ? "execute" : "");
+    const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
+    return {
+      recoveryAction: "git-stash",
+      title: "Uncommitted local changes in working directory",
+      detail: "Git checkout or switch was blocked by unstaged local files. Stashing them saves your changes safely into git stash so the job can run.",
+      action: `<button type="button" class="btn small primary" data-recover="git-stash" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Stash changes &amp; Rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
+  const isWorktreeLocked = (fullText.includes("already checked out at") && fullText.includes(".git/worktrees"))
+    || fullText.includes("already used by worktree at")
+    || (fullText.includes("fatal: ") && fullText.includes("worktree") && fullText.includes("lock"))
+    || fullText.includes("is already checked out at");
+
+  if (isWorktreeLocked) {
+    const opAction = r.action || (targetJob ? "execute" : "");
+    const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
+    return {
+      recoveryAction: "git-prune-worktrees",
+      title: "Git branch is locked by an orphaned worktree",
+      detail: "A previous worker or splinter job left an active git worktree registration. Pruning orphaned worktrees clears the locks so the branch can be checked out.",
+      action: `<button type="button" class="btn small primary" data-recover="git-prune-worktrees" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Prune worktrees &amp; Rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
+  const isDiskExhausted = fullText.includes("no space left on device")
+    || fullText.includes("enospc")
+    || fullText.includes("not enough disk space")
+    || (fullText.includes("disk") && fullText.includes("full"));
+
+  if (isDiskExhausted) {
+    const opAction = r.action || (targetJob ? "execute" : "");
+    const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
+    return {
+      recoveryAction: "reclaim-space",
+      title: "Disk space exhausted on Mac",
+      detail: "The disk ran out of free space during compilation or artifact creation. Orchestrator can immediately reclaim space by clearing old DerivedData, SPM caches, and unavailable simulator runtimes.",
+      action: `<button type="button" class="btn small primary" data-recover="reclaim-space" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-trash"/></svg> Reclaim space &amp; Rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
+  const isGhAuth = fullText.includes("gh auth login")
+    || (fullText.includes("github") && fullText.includes("authenticate") && fullText.includes("login"))
+    || fullText.includes("you are not logged into any github hosts");
+
+  if (isGhAuth) {
+    return {
+      isGhAuth: true,
+      title: "GitHub authentication required",
+      detail: "GitHub CLI is not signed in on this Mac. Sign in to GitHub or run 'gh auth login --web' in Terminal.",
+      action: `<a class="btn small primary" href="#/config/integrations">Sign in to GitHub</a>`,
+      secondary: `<button type="button" class="btn small ghost" data-copy="gh auth login --web">Copy gh command</button>`,
+    };
+  }
+
   if (r.action === "coverage") {
     if (!err || lower.includes("no swift source") || lower.includes("no source files") || lower.includes("package.swift") || lower.includes("initial code") || lower.includes("couldn't identify") || lower.includes("couldn't tell which language") || lower.includes("tell what language") || lower.includes("which language") || lower.includes("language the project uses") || lower.includes("no package.json") || lower.includes("no cargo.toml") || lower.includes("no go.mod") || lower.includes("no test")) {
       const onTestsPage = typeof current !== "undefined" && current?.page === "tests";
@@ -7539,7 +7706,39 @@ function runStatus(r, vc = null) {
     </section>`;
   }
 
-  if (failed && guidance && guidance.title === "Execution error") {
+  if (failed && guidance && guidance.isApiKey) {
+    const targetJob = r.job || r.result_job;
+    const rerunAction = r.action || (targetJob ? "execute" : "");
+    const rerunParams = targetJob ? { job: targetJob } : {};
+    return `<section class="banner failed attention run-status run-status-notice run-status-apikey" aria-label="Run status">
+      <div class="run-status-notice-body">
+        <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg> <strong>${esc(guidance.title)}</strong></div>
+        <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
+
+        <form class="inline-apikey-form" id="inline-apikey-form" onsubmit="return false;" data-rerun-action="${esc(rerunAction)}"${targetJob ? ` data-rerun-params='${attrJSON(rerunParams)}'` : ""}>
+          <div class="row gap-8 items-center flex-wrap mt-2">
+            <select id="apikey-provider-select" class="apikey-select" aria-label="AI provider">
+              <option value="anthropic_api_key">Anthropic (Claude)</option>
+              <option value="openai_api_key">OpenAI (Codex / ChatGPT)</option>
+              <option value="gemini_api_key">Google (Gemini / Antigravity)</option>
+              <option value="ollama_api_key">Ollama Cloud</option>
+            </select>
+            <input type="password" id="apikey-val-input" placeholder="Paste API key (sk-…)" autocomplete="off" aria-label="API key" class="apikey-input" required>
+            <button type="submit" class="btn small primary" id="apikey-save-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg> Save key &amp; Rerun</button>
+          </div>
+          <div class="apikey-note muted text-xs mt-4">
+            🔒 Saved locally in settings.json on this Mac. Never transmitted to external servers.
+          </div>
+        </form>
+      </div>
+      <div class="run-status-notice-actions row gap-8">
+        ${guidance.action || ""}
+        ${guidance.secondary || ""}
+      </div>
+    </section>`;
+  }
+
+  if (failed && guidance && (guidance.title === "Execution error" || guidance.recoveryAction || guidance.isGhAuth || guidance.title.includes("failed") || guidance.title.includes("locked") || guidance.title.includes("required") || guidance.title.includes("incomplete") || guidance.title.includes("issue"))) {
     return `<section class="banner failed attention run-status run-status-notice" aria-label="Run status">
       <div class="run-status-notice-body">
         <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
@@ -7707,6 +7906,96 @@ function wireKeychainUnlock(container) {
   });
 }
 
+function wireAutoRecovery(container) {
+  if (!container) return;
+  container.querySelectorAll("[data-recover]").forEach((btn) => {
+    if (btn.dataset.wired === "true") return;
+    btn.dataset.wired = "true";
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const op = btn.dataset.recover;
+      if (!op) return;
+      const origHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Recovering…`;
+      try {
+        const res = await api(`recovery/${encodeURIComponent(op)}`, { method: "POST", body: {} });
+        toast(res?.message || "Recovery completed");
+        const rerunAction = btn.dataset.rerunAction;
+        const rerunParams = btn.dataset.rerunParams ? JSON.parse(btn.dataset.rerunParams) : {};
+        if (rerunAction) {
+          runAction(rerunAction, rerunParams);
+        } else {
+          btn.disabled = false;
+          btn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> Done`;
+        }
+      } catch (err) {
+        toast(err?.message || "Recovery failed", true);
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+      }
+    });
+  });
+}
+
+function wireApiKeyForm(container) {
+  if (!container) return;
+  const form = container.querySelector("#inline-apikey-form");
+  if (form && form.dataset.wired !== "true") {
+    form.dataset.wired = "true";
+    const providerSelect = form.querySelector("#apikey-provider-select");
+    const valInput = form.querySelector("#apikey-val-input");
+    const saveBtn = form.querySelector("#apikey-save-btn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const providerId = providerSelect ? providerSelect.value : "";
+      const val = valInput ? valInput.value.trim() : "";
+      if (!providerId || !val) return;
+
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Saving…`;
+      }
+      if (valInput) valInput.disabled = true;
+      if (providerSelect) providerSelect.disabled = true;
+
+      try {
+        await api("config/keys", { method: "POST", body: { id: providerId, value: val } });
+        toast("API key saved locally. Starting rerun…");
+        const rerunAction = form.dataset.rerunAction;
+        const rerunParams = form.dataset.rerunParams ? JSON.parse(form.dataset.rerunParams) : {};
+        if (rerunAction) {
+          runAction(rerunAction, rerunParams);
+        } else {
+          if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> Saved`;
+          }
+        }
+      } catch (err) {
+        toast(err?.message || "Failed to save API key", true);
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg> Save key &amp; Rerun`;
+        }
+        if (valInput) {
+          valInput.disabled = false;
+          valInput.focus();
+        }
+        if (providerSelect) providerSelect.disabled = false;
+      }
+    });
+  }
+}
+
+function wireRunGuidance(container) {
+  if (!container) return;
+  wireKeychainUnlock(container);
+  wireAutoRecovery(container);
+  wireApiKeyForm(container);
+}
+
 function updateRunStatus(r) {
   const container = $("#next-step");
   if (!container) return;
@@ -7726,7 +8015,7 @@ function updateRunStatus(r) {
     if (container.runStatusSignature !== signature) {
       container.innerHTML = runStatus(r);
       container.runStatusSignature = signature;
-      wireKeychainUnlock(container);
+      wireRunGuidance(container);
       if (r.exit_code !== 0) {
         $("#term-wrap")?.classList.add("run-failed");
         document.body.classList.add("run-failed");
@@ -7824,7 +8113,7 @@ async function finishRunStatus(run) {
   container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.title]);
   hydrateAuthImages(container);
   wireImagePreviews(container);
-  wireKeychainUnlock(container);
+  wireRunGuidance(container);
   if (run.exit_code !== 0) {
     $("#term-wrap")?.classList.add("run-failed");
     document.body.classList.add("run-failed");
@@ -7891,12 +8180,12 @@ pages.run = async ([id]) => {
     after: () => {
       if (run.is_saved && run.saved_log_text) {
         attachSavedTerminal(run.saved_log_text, run.exit_code !== 0);
-        wireKeychainUnlock($("#next-step"));
+        wireRunGuidance($("#next-step"));
         cleanup.push(() => { document.body.classList.remove("run-failed"); });
         return;
       }
       attachTerminal(id);
-      wireKeychainUnlock($("#next-step"));
+      wireRunGuidance($("#next-step"));
       cleanup.push(() => { document.body.classList.remove("run-failed"); });
       let lastPoll = Date.now();
       const statusTimer = setInterval(async () => {
@@ -7918,7 +8207,7 @@ pages.run = async ([id]) => {
       if (!run.running) {
         hydrateAuthImages($("#next-step"));
         wireImagePreviews($("#next-step"));
-        wireKeychainUnlock($("#next-step"));
+        wireRunGuidance($("#next-step"));
       }
     },
   };
