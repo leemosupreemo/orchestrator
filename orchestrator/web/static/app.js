@@ -3079,7 +3079,8 @@ function filePickerContent(title, types = "", multiple = true) {
     <span class="file-picker-target">
       <span class="file-picker-action"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>Browse files</span>
       <span class="muted drop-hint">${multiple ? "or drop files here" : "or drop a file here"}</span>
-    </span>${types ? `<small class="file-picker-types">${esc(types)}</small>` : ""}`;
+      ${types ? `<small class="file-picker-types">${esc(types)}</small>` : ""}
+    </span>`;
 }
 
 pages.new = async (_, query) => {
