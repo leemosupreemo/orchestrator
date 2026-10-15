@@ -947,18 +947,25 @@ document.addEventListener("click", (e) => {
   const switchBtn = e.target.closest("[data-switch-project]");
   if (switchBtn) {
     const root = switchBtn.dataset.switchProject;
-    // Respond instantly: move the highlight now; the page rebuilds (slowly) once the switch lands.
-    if (switchBtn.classList.contains("project-card")) {
+    // Respond instantly: move the highlight now; the page rebuilds once the switch lands.
+    const card = switchBtn.closest(".project-card");
+    if (card) {
       document.querySelectorAll(".project-card.active-project").forEach((c) => c.classList.remove("active-project"));
-      switchBtn.classList.add("active-project");
-      switchBtn.setAttribute("aria-busy", "true");
+      card.classList.add("active-project");
+      card.setAttribute("aria-busy", "true");
     }
+    const then = switchBtn.dataset.then || "#/";
     api("project", { method: "POST", body: { root } })
-      .then(async () => {
+      .then(async (res) => {
+        if (res?.project) state.project = res.project;
+        setupFetched = 0;
         await refreshState();
         toast(`Switched to ${state.project?.name || "project"}`);
-        if (switchBtn.dataset.then) location.hash = switchBtn.dataset.then;
-        route();
+        if (location.hash !== then) {
+          location.hash = then;
+        } else {
+          await route();
+        }
       })
       .catch((err) => { toast(err.message, true); route(); }); // put the highlight back
     return;
@@ -1168,15 +1175,17 @@ document.addEventListener("change", async (e) => {
     return;
   }
   try {
-    await api("project", { method: "POST", body: { root: val } });
+    const res = await api("project", { method: "POST", body: { root: val } });
+    if (res?.project) state.project = res.project;
+    setupFetched = 0;
     await refreshState();
     toast(`Switched to ${state.project.name}`);
-    if (location.hash.startsWith("#/product")) {
-      location.hash = "#/product";
+    const then = location.hash.startsWith("#/product") ? "#/product" : "#/";
+    if (location.hash !== then) {
+      location.hash = then;
     } else {
-      location.hash = "#/";
+      await route();
     }
-    route();
   } catch (err) {
     toast(err.message, true);
   }
@@ -7099,7 +7108,7 @@ pages.projects = async () => {
 
   const cardsHtml = pList.map((p) => `
     <div class="project-card ${p.active ? "active-project" : ""}" data-source="${esc(p.source_type || "local")}" role="button" tabindex="0"
-      ${p.active ? 'data-href="#/"' : `data-switch-project="${esc(p.root)}"`} aria-label="${p.active ? "Open" : "Switch to"} ${esc(p.name)}">
+      ${p.active ? 'data-href="#/"' : `data-switch-project="${esc(p.root)}" data-then="#/"`} aria-label="${p.active ? "Open" : "Switch to"} ${esc(p.name)}">
       <div class="project-card-header">
         <h4 class="project-card-title">${esc(p.name)}</h4>
         <div class="project-card-badges">
@@ -7122,7 +7131,8 @@ pages.projects = async () => {
         ${p.active ? `
           <a class="btn small" href="#/">Open</a>
         ` : `
-          ${state.you?.role !== "member" ? `<button class="btn small ghost" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>` : ""}
+          <button class="btn small primary" type="button" data-switch-project="${esc(p.root)}" data-then="#/">Switch & Open</button>
+          ${state.you?.role !== "member" ? `<button class="btn small ghost" type="button" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>` : ""}
         `}
       </div>
     </div>

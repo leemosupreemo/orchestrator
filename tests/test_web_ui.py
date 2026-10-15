@@ -3799,6 +3799,18 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(".projects-actions", css)
         self.assertIn("grid-template-columns: 1fr 1fr", css)
 
+    def test_switch_project_handler_and_cards_navigate_to_home(self):
+        js = self.js
+        # Click handler defaults to #/ when dataset.then is not set, resets setup cache, and navigates
+        self.assertIn('const then = switchBtn.dataset.then || "#/";', js)
+        self.assertIn("setupFetched = 0;", js)
+        self.assertIn("if (res?.project) state.project = res.project;", js)
+
+        # Projects page cards have data-then="#/" and Switch & Open button for inactive projects
+        projects = js[js.index('pages.projects = async'):js.index('pages.run = async')]
+        self.assertIn('data-switch-project="${esc(p.root)}" data-then="#/"', projects)
+        self.assertIn("Switch & Open", projects)
+
     def test_signing_in_shows_a_loading_screen_and_background_refreshes_leave_it_alone(self):
         js = self.js
         self.assertIn("function showSigningIn", js)
