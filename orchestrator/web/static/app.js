@@ -7824,11 +7824,12 @@ function runStatus(r, vc = null) {
 
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
-      <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}</div>
+      <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
     <dl class="run-status-details">
       <div><dt>Models & agents</dt><dd>${modelsText}</dd></div>
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
     </dl>
+    ${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}
     ${guidance ? `
       <div class="run-status-guidance">
         <div class="run-status-guidance-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
