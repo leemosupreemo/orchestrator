@@ -4106,6 +4106,18 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('sendSignInLinkToEmail', js)
         self.assertIn('isSignInWithEmailLink', js)
 
+    def test_signin_gate_does_not_refresh_under_user_input(self):
+        # Background ticks and refreshState do not clobber inputs or redraw sign-in gate
+        js = self.js
+        tick_fn = js[js.index("async function tick()"):js.index("async function tick()") + 400]
+        self.assertIn('document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")', tick_fn)
+        self.assertIn("view.contains(document.activeElement)", tick_fn)
+        refresh_fn = js[js.index("async function refreshState()"):js.index("async function refreshState()") + 200]
+        self.assertIn('document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")', refresh_fn)
+        gate_fn = js[js.index("function showSignInGate"):js.index("function showSignInGate") + 400]
+        self.assertIn('view.querySelector(".signin-wrap")', gate_fn)
+        self.assertIn("signin-gate-message", gate_fn)
+
     def test_signin_modal_omits_orchestrator_icon_and_title(self):
         # Sign-in modal card begins directly with heading without redundant app brand mark or title
         gate = self.js[self.js.index("function showSignInGate"):self.js.index("function showSignInGate") + 2500]

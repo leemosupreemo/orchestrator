@@ -1020,6 +1020,7 @@ function checkRunnerVersion(runner) {
 
 async function refreshState() {
   if (signingIn) return;
+  if (document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")) return;
   const backend = getBackendUrl();
   const token = getToken();
   if (backend === null && !token) {
@@ -1258,6 +1259,7 @@ async function unlockWith(token, message) {
   if (token) localStorage.setItem("orchestrator_token", token);
   toast(message);
   document.querySelector(".app")?.classList.remove("session-locked");
+  document.body.classList.remove("signin-gate");
   endSigningIn();
   await refreshState();
   route();
@@ -1704,6 +1706,14 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.providerSi
 }
 
 function showSignInGate(message) {
+  const existingWrap = view.querySelector(".signin-wrap");
+  if (existingWrap) {
+    const msgEl = $("#signin-gate-message");
+    if (msgEl) {
+      msgEl.innerHTML = message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : "";
+    }
+    return;
+  }
   setHeader({ title: "", sub: "", actions: "" });
   document.title = Notifications.tabTitle("Sign In · Orchestrator", state.inbox_count || 0);
   document.body.classList.add("signin-gate");
@@ -1724,7 +1734,7 @@ function showSignInGate(message) {
       <div class="signin-card">
         <div>
           <h2 style="margin: 0; font-size: 1.3rem; font-weight: 700;">Sign In</h2>
-          ${message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : ""}
+          <div id="signin-gate-message">${message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : ""}</div>
         </div>
         <figure class="signin-preview">
           <h3>The app in your head. Made real.</h3>
@@ -8831,6 +8841,8 @@ async function route() {
 
 // Live pages refresh in place — but never under the user's hands.
 async function tick() {
+  if (document.body.classList.contains("signin-gate") || view.querySelector(".signin-wrap")) return;
+  if (view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   await refreshState(); // also while the tab is hidden, so notifications can fire
   if (document.hidden) return;
   if (!state.project) return;
