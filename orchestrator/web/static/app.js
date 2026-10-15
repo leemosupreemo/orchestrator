@@ -7718,6 +7718,13 @@ function attachTerminal(id) {
       resizeTimer = setTimeout(() => api(`runs/${id}/resize`, { method: "POST", body: lastTermSize }).catch(() => {}), 150);
     };
     fit();
+    requestAnimationFrame(fit);
+    setTimeout(fit, 60);
+    if (window.ResizeObserver && termEl) {
+      const ro = new ResizeObserver(() => fit());
+      ro.observe(termEl);
+      cleanup.push(() => ro.disconnect());
+    }
     if (window.innerWidth >= 760) term.focus();
     cleanup.push(() => term.dispose());
   } else {
@@ -7938,6 +7945,7 @@ async function route() {
   }
   trackNavigation();
   current = { page: r.page, args: r.args, query: r.query, rendered: "", parent: routeParent(r) };
+  document.body.dataset.page = r.page || "";
   document.querySelectorAll(".nav [data-route], .tabbar [data-route]").forEach((item) => {
     const active = item.dataset.route === r.nav;
     item.classList.toggle("active", active);

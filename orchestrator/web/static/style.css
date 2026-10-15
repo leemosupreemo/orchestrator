@@ -2919,6 +2919,198 @@ body[data-page="run"] .topbar-actions {
   align-self: center;
 }
 
+@media (max-width: 760px) {
+  html:has(body[data-page="run"]) {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body[data-page="run"] {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body[data-page="run"] .app {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+
+  body[data-page="run"] .main {
+    height: 100dvh;
+    max-height: 100dvh;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    padding-top: calc(64px + env(safe-area-inset-top) + var(--space-2));
+    padding-bottom: calc(56px + env(safe-area-inset-bottom) + var(--space-2));
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+  }
+
+  body[data-page="run"] .topbar {
+    flex-shrink: 0;
+    margin-bottom: var(--space-2);
+    gap: var(--space-0) var(--space-2);
+  }
+
+  body[data-page="run"] .topbar-title-row {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  body[data-page="run"] #page-title {
+    font-size: var(--text-base);
+    font-weight: 650;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  body[data-page="run"] #page-sub {
+    font-size: var(--text-2xs);
+    line-height: 1.2;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  body[data-page="run"] .topbar-actions .btn {
+    min-height: var(--control-sm);
+    padding: var(--space-1) var(--space-2.5);
+    font-size: var(--text-xs);
+  }
+
+  body[data-page="run"] #view {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    overflow: hidden;
+  }
+
+  body[data-page="run"] #next-step {
+    flex-shrink: 0;
+    max-height: 38dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  body[data-page="run"] #next-step .run-status,
+  body[data-page="run"] #next-step .banner {
+    padding: var(--space-2) var(--space-3);
+    gap: var(--space-1.5);
+    border-radius: var(--radius);
+  }
+
+  body[data-page="run"] #next-step .run-status-heading {
+    gap: var(--space-1) var(--space-2);
+    align-items: center;
+  }
+
+  body[data-page="run"] #next-step .run-status-heading strong {
+    font-size: var(--text-sm);
+    line-height: 1.25;
+  }
+
+  body[data-page="run"] #next-step .run-status-task {
+    font-size: var(--text-xs);
+    line-height: 1.25;
+  }
+
+  body[data-page="run"] #next-step .run-status-details {
+    gap: var(--space-0) var(--space-3);
+  }
+
+  body[data-page="run"] #next-step .run-status-details dt,
+  body[data-page="run"] #next-step .run-status-details dd {
+    font-size: var(--text-xs);
+  }
+
+  body[data-page="run"] #next-step .run-status-progress {
+    height: 3px;
+  }
+
+  body[data-page="run"] #next-step .pill {
+    font-size: var(--text-xs);
+    padding: 2px 6px;
+  }
+
+  body[data-page="run"] #next-step .visual-check-banner {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  body[data-page="run"] #next-step .visual-check-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: var(--space-2);
+  }
+
+  body[data-page="run"] .term-wrap {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1.5);
+    overflow: hidden;
+  }
+
+  body[data-page="run"] .term {
+    flex: 1 1 0;
+    min-height: 120px;
+    height: auto;
+    padding: var(--space-1.5);
+    overflow: hidden;
+  }
+
+  body[data-page="run"] .keybar {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: var(--space-1);
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 2px 0;
+  }
+
+  body[data-page="run"] .keybar::-webkit-scrollbar {
+    display: none;
+  }
+
+  body[data-page="run"] .keybar .btn {
+    min-height: var(--control-sm);
+    min-width: var(--control-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    flex-shrink: 0;
+  }
+
+  body[data-page="run"] .term-input {
+    flex-shrink: 0;
+    display: flex;
+    gap: var(--space-1.5);
+  }
+
+  body[data-page="run"] .term-input input {
+    min-height: var(--control-sm);
+    font-size: var(--text-sm);
+    padding: var(--space-1) var(--space-2.5);
+  }
+
+  body[data-page="run"] .term-input button {
+    min-height: var(--control-sm);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-sm);
+  }
+}
+
+
 /* Back button beside a detail page's title: returns to where you came from (see routeParent in app.js). */
 .topbar-title-row {
   display: flex;

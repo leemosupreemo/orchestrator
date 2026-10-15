@@ -553,6 +553,21 @@ class ProjectTitleTests(unittest.TestCase):
         self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
         self.assertIn('body[data-page="home"] #page-title { display: none; }', css)  # not said twice on phones
 
+    def test_mobile_run_page_fits_status_and_cli_feed_without_scrolling(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
+        self.assertIn('body[data-page="run"] {\n    height: 100%;\n    overflow: hidden;', css)
+        self.assertIn('body[data-page="run"] .main {\n    height: 100dvh;\n    max-height: 100dvh;', css)
+        self.assertIn('body[data-page="run"] #view {\n    flex: 1 1 0;\n    min-height: 0;\n    display: flex;\n    flex-direction: column;', css)
+        self.assertIn('body[data-page="run"] #next-step {\n    flex-shrink: 0;', css)
+        self.assertIn('body[data-page="run"] .term-wrap {\n    flex: 1 1 0;\n    min-height: 0;', css)
+        self.assertIn('body[data-page="run"] .term {\n    flex: 1 1 0;\n    min-height: 120px;\n    height: auto;', css)
+        self.assertIn('body[data-page="run"] .keybar {\n    flex-shrink: 0;\n    display: flex;\n    flex-wrap: nowrap;\n    overflow-x: auto;', css)
+        self.assertIn('body[data-page="run"] .keybar .btn {\n    min-height: var(--control-sm);', css)
+        self.assertIn("ResizeObserver", js)
+        self.assertIn('document.body.dataset.page = r.page || "";', js)
+
+
 
 class ProductStripTests(unittest.TestCase):
     def test_the_card_itself_opens_the_product_requirements(self):
