@@ -77,6 +77,11 @@ def load_recent_projects(prune_missing: bool = True) -> dict[str, Any]:
                 changed = True
                 continue
             root_path = Path(root_val).expanduser()
+            projects_alt = Path.home() / "Projects" / root_path.name
+            if (not root_path.exists() or "Documents" in str(root_path)) and projects_alt.is_dir() and (projects_alt / ".orchestrator" / "project.json").is_file():
+                project["root"] = str(projects_alt)
+                root_path = projects_alt
+                changed = True
             if root_path.exists() and root_path.is_dir():
                 valid_projects.append(project)
             else:

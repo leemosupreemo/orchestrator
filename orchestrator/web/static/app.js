@@ -1172,6 +1172,7 @@ document.addEventListener("change", async (e) => {
   if (val === "__manage__") {
     location.hash = "#/projects";
     if (state.project) e.target.value = state.project.root;
+    navigationDrawer?.close();
     return;
   }
   try {
@@ -1179,14 +1180,16 @@ document.addEventListener("change", async (e) => {
     if (res?.project) state.project = res.project;
     setupFetched = 0;
     await refreshState();
-    toast(`Switched to ${state.project.name}`);
-    const then = location.hash.startsWith("#/product") ? "#/product" : "#/";
-    if (location.hash !== then) {
-      location.hash = then;
+    toast(`Switched to ${state.project?.name || "project"}`);
+    if (location.hash.startsWith("#/product")) {
+      location.hash = "#/product";
     } else {
-      await route();
+      location.hash = "#/";
     }
+    await route();
+    navigationDrawer?.close();
   } catch (err) {
+    if (state.project) e.target.value = state.project.root;
     toast(err.message, true);
   }
 });

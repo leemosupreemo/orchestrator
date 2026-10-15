@@ -61,11 +61,30 @@ def dispatch_bootstrap(handler, method: str, parts: list[str]) -> bool:
         return False
     elif method == "POST" and parts == ["project"]:
         body = handler._body()
-        root = Path(str(body.get("root") or "")).expanduser().resolve()
+        wanted = str(body.get("root") or "").strip()
+        if not wanted:
+            handler._json({"error": "Project root path is required"}, 400)
+            return True
+        root = Path(wanted).expanduser().resolve()
+        if not root.is_dir():
+            fallback = Path.home() / "Projects" / Path(wanted).name
+            if fallback.is_dir():
+                root = fallback.resolve()
+        from orchestrator.web.server import is_path_accessible
+        if not is_path_accessible(root):
+            fallback = Path.home() / "Projects" / root.name
+            if fallback != root and fallback.is_dir() and is_path_accessible(fallback):
+                root = fallback.resolve()
+            else:
+                handler._json({"error": f"Cannot access project directory '{root}'. Check folder permissions or iCloud Drive status."}, 400)
+                return True
         if project_ready(root):
             server.set_root(root)
-            remember_project(root, active=True)
-            handler._json({"ok": True})
+            from orchestrator.web.server import detect_project_source, project_state, runtime_dir, _safe_read_json_file
+            p_cfg = _safe_read_json_file(runtime_dir(root) / "project.json")
+            s_type, s_label, g_repo = detect_project_source(root, p_cfg)
+            remember_project(root, active=True, source_type=s_type, source_label=s_label, github_repo=g_repo)
+            handler._json({"ok": True, "project": project_state(root)})
         else:
             handler._json({"error": "Set up this project first.", "code": "project_required"}, 409)
     else:

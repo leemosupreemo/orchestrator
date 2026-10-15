@@ -509,6 +509,18 @@ def git(root: Path, *args: str, timeout: float = 5.0) -> str:
         return ""
 
 
+def is_path_accessible(path: Path, timeout: float = 1.0) -> bool:
+    """Check if a path is accessible without hanging on macOS TCC or dataless files."""
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c", "import os, sys; os.listdir(sys.argv[1]) if os.path.isdir(sys.argv[1]) else os.stat(sys.argv[1])", str(path)],
+            capture_output=True, timeout=timeout
+        )
+        return res.returncode == 0
+    except (subprocess.TimeoutExpired, Exception):
+        return False
+
+
 def _safe_read_json_file(path: Path, timeout: float = 0.3) -> dict[str, Any]:
     """Read a JSON file with a hard timeout to avoid blocking indefinitely on evicted or remote files."""
     try:
@@ -1942,10 +1954,10 @@ def is_mobile_app(root: Path, config: dict[str, Any]) -> bool:
 
 
 def project_state(root: Path) -> dict[str, Any]:
-    config = read_json_file(runtime_dir(root) / "project.json")
-    status = git(root, "status", "--porcelain")
+    config = _safe_read_json_file(runtime_dir(root) / "project.json")
+    status = git(root, "status", "--porcelain", timeout=2.0)
     recent = load_recent_projects().get("projects", [])
-    machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
+    machines = [m for m in _safe_read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
     root_source_type, root_source_label, root_github_repo = detect_project_source(root, config)
     root_languages = get_project_languages(root, root_github_repo if root_source_type == "github" else None)
 
@@ -5244,13 +5256,23 @@ class UIHandler(BaseHTTPRequestHandler):
             raise UIError("Project root path is required")
         candidate = safe_resolve(Path(wanted).expanduser())
         if not candidate.is_dir():
-            raise UIError("Directory not found")
+            fallback = Path.home() / "Projects" / Path(wanted).name
+            if fallback.is_dir():
+                candidate = safe_resolve(fallback)
+            else:
+                raise UIError("Directory not found")
+        if not is_path_accessible(candidate):
+            fallback = Path.home() / "Projects" / candidate.name
+            if fallback != candidate and fallback.is_dir() and is_path_accessible(fallback):
+                candidate = safe_resolve(fallback)
+            else:
+                raise UIError(f"Cannot access project directory '{candidate}'. Check folder permissions or iCloud Drive status.")
         known = {str(safe_resolve(Path(p["root"]).expanduser()))
                  for p in load_recent_projects().get("projects", []) if p.get("root")}
         if str(candidate) not in known and not (runtime_dir(candidate) / "project.json").is_file():
             raise UIError("Not a known orchestrator project")
         self.server.set_root(candidate)
-        p_cfg = read_json_file(runtime_dir(candidate) / "project.json")
+        p_cfg = _safe_read_json_file(runtime_dir(candidate) / "project.json")
         s_type, s_label, g_repo = detect_project_source(candidate, p_cfg)
         remember_project(candidate, active=True, source_type=s_type, source_label=s_label, github_repo=g_repo)
         self._json({"project": project_state(candidate)})
