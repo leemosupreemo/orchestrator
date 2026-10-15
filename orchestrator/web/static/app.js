@@ -7805,15 +7805,37 @@ pages.run = async ([id]) => {
   if (!run) { await refreshState(); run = state.runs.find((r) => r.id === id); } // opened before the list caught up
   if (!run) {
     const saved = state.you?.role === "member" ? null : ((await api("runs/history").catch(() => null))?.runs || []).find((r) => r.id === id);
-    const rerunBtn = saved?.action
-      ? `<button type="button" class="btn small primary" ${act(saved.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Run again</button>`
-      : "";
-    return saved
-      ? { title: saved.title, sub: `Started ${esc(ago(saved.started))}`,
-          html: `<div class="notice"><p>Orchestrator has restarted since this run, so it isn't live here any more (if it was still going, the restart stopped it). Its full output was saved.</p>
-            <div class="row mt-8 gap-8 items-center flex-wrap">${rerunBtn}<a class="btn small" href="#/file?path=${encodeURIComponent(saved.log)}">Open the saved log</a><a class="btn small ghost" href="#/activity">All runs</a></div></div>` }
-      : { title: "Run not found", html: `<div class="notice"><p>This run isn't running, and no saved log matches it.</p>
-            <div class="row mt-8"><a class="btn small" href="#/activity">See earlier runs</a></div></div>` };
+    if (saved) {
+      let logText = "";
+      try {
+        const fileData = await api(`file?path=${encodeURIComponent(saved.log)}`);
+        logText = fileData?.text || "";
+      } catch {}
+      const exitMatch = logText.match(/\[exited(?: with code (\d+))?\]/);
+      const exitCode = exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1;
+      const nonExitedLines = logText.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith("[exited"));
+      const lastLine = nonExitedLines.slice(-4).join("\n");
+
+      run = {
+        id: saved.id,
+        action: saved.action,
+        title: saved.title,
+        started: saved.started,
+        ended: saved.started,
+        running: false,
+        stopped: false,
+        exit_code: exitCode,
+        error_summary: exitCode !== 0 ? lastLine : "",
+        last_line: lastLine,
+        progress: {},
+        saved_log_text: logText,
+        is_saved: true,
+      };
+    }
+  }
+  if (!run) {
+    return { title: "Run not found", html: `<div class="notice"><p>This run isn't running, and no saved log matches it.</p>
+          <div class="row mt-8"><a class="btn small" href="#/activity">See earlier runs</a></div></div>` };
   }
   let vc = null;
   if (!run.running && (run.action === "visual_check" || /visual check/i.test(run.title))) {
@@ -7832,6 +7854,12 @@ pages.run = async ([id]) => {
         </form>
       </div>`,
     after: () => {
+      if (run.is_saved && run.saved_log_text) {
+        attachSavedTerminal(run.saved_log_text, run.exit_code !== 0);
+        wireKeychainUnlock($("#next-step"));
+        cleanup.push(() => { document.body.classList.remove("run-failed"); });
+        return;
+      }
       attachTerminal(id);
       wireKeychainUnlock($("#next-step"));
       cleanup.push(() => { document.body.classList.remove("run-failed"); });
@@ -7860,6 +7888,45 @@ pages.run = async ([id]) => {
     },
   };
 };
+
+function attachSavedTerminal(text, failed) {
+  const termEl = $("#term");
+  const termWrap = $("#term-wrap");
+  if (!termEl) return;
+  if (failed) {
+    termWrap?.classList.add("run-failed");
+    document.body.classList.add("run-failed");
+  }
+  if (!text || !text.trim()) {
+    termWrap?.classList.add("term-empty");
+    return;
+  }
+  if (window.Terminal) {
+    const term = new window.Terminal({
+      cursorBlink: false, fontSize: window.innerWidth < 760 ? 12 : 13, scrollback: 20000,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", theme: { background: "#0f1216" },
+    });
+    const fitAddon = window.FitAddon ? new window.FitAddon.FitAddon() : null;
+    if (fitAddon) term.loadAddon(fitAddon);
+    term.open(termEl);
+    if (fitAddon) {
+      try { fitAddon.fit(); } catch {}
+    }
+    term.write(text.replace(/\r?\n/g, "\r\n"));
+    const onResize = () => { try { fitAddon?.fit(); } catch {} };
+    window.addEventListener("resize", onResize);
+    cleanup.push(() => {
+      window.removeEventListener("resize", onResize);
+      term.dispose();
+    });
+  } else {
+    termWrap?.classList.add("fallback");
+    const pre = document.createElement("pre");
+    pre.className = "term-fallback";
+    pre.textContent = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+    termEl.appendChild(pre);
+  }
+}
 
 function attachTerminal(id) {
   const send = (data) => api(`runs/${id}/input`, { method: "POST", body: { data } }).catch((e) => toast(e.message, true));

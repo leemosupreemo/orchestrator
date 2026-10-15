@@ -6296,4 +6296,12 @@ assert(res2.secondary.includes("#/jobs/job-456"), "Execution error back link pre
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_historical_run_auto_recovers_terminal_and_status(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn("attachSavedTerminal", js)
+        self.assertIn("saved_log_text", js)
+        self.assertIn("is_saved", js)
+        self.assertIn("api(`file?path=${encodeURIComponent(saved.log)}`)", js)
+
+
 
