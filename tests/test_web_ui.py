@@ -4465,11 +4465,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('href="#/auto-improve"', self.html)
         self.assertIn('data-route="auto-improve"', self.html)
         self.assertIn('id="auto-improve-job-form"', self.js)
-        self.assertIn('Tracked Orchestrator improvements', self.js)
+        self.assertIn('Tracked improvements', self.js)
         self.assertIn('data-submit-job', self.js)
-        self.assertIn('Submit for Prize', self.js)
+        self.assertIn('Submit for prize', self.js)
         self.assertIn('job-type-auto-improve', self.js)
-        self.assertIn('This is where you can improve Orchestrator itself!', self.js)
+        self.assertIn('Build features and fixes for Orchestrator itself', self.js)
         self.assertNotIn('Switch to swift-orchestrator', self.js)
         self.assertNotIn('You are currently in', self.js)
         self.assertIn('job-type-feature', self.js)
@@ -4478,6 +4478,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         auto_improve_page = self.js[self.js.index('pages["auto-improve"] ='):self.js.index('function attachSavedTerminal')]
         self.assertNotIn('job-type-design', auto_improve_page)
         self.assertNotIn('job-type-quick', auto_improve_page)
+        # Verify button placement guidelines: no page header action competing with form
+        self.assertIn('actions: ""', auto_improve_page)
+        self.assertIn('Start job', auto_improve_page)
 
 
 class ScopeEndpointTests(ServerTestCase):

@@ -9082,48 +9082,43 @@ pages["auto-improve"] = async (_, query) => {
 
   return {
     title: "Auto-improve Orchestrator",
-    sub: "This is where you can improve Orchestrator itself! Build new features and bug fixes using local AI jobs, track your changes, and submit your work for permanent inclusion & prize.",
-    actions: `<button type="button" class="btn small" id="auto-improve-manual-submit-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Submit outside contribution</button>`,
+    sub: "Build features and fixes for Orchestrator itself, track changes, and submit your work for contributor prizes.",
+    actions: "",
     html: `
-      <!-- Orchestrator Job Creation Card -->
+      <!-- New Improvement Job Card -->
       <section class="card mb-16">
         <div class="card-h">
-          <h2>Create an Orchestrator improvement job</h2>
-          <span class="muted">Improve Orchestrator itself</span>
+          <h2>New improvement job</h2>
         </div>
         <form class="card-b stack" id="auto-improve-job-form">
-          <div class="banner info mb-12">
-            <p><strong>This is where you can improve Orchestrator itself!</strong> Create an AI job to add new features or make fixes on your own first. Jobs created here are tagged and tracked separately, and you can submit your work for permanent inclusion and a contributor prize afterwards.</p>
-          </div>
-          <div class="field"><span>What kind of improvement?</span>
-            <div class="segmented" role="radiogroup" aria-label="Kind of improvement">
-              <label class="job-type-card job-type-feature"><input type="radio" name="improve_type" value="feature" ${initialType !== "bug" ? "checked" : ""}>Feature<small>Add a new capability, tool, or integration</small></label>
-              <label class="job-type-card job-type-bug"><input type="radio" name="improve_type" value="bug" ${initialType === "bug" ? "checked" : ""}>Bug fix<small>Fix a bug, error, or unexpected behavior</small></label>
+          <div class="field"><span>Type</span>
+            <div class="segmented" role="radiogroup" aria-label="Improvement type">
+              <label class="job-type-card job-type-feature"><input type="radio" name="improve_type" value="feature" ${initialType !== "bug" ? "checked" : ""}>Feature<small>New capability or tool</small></label>
+              <label class="job-type-card job-type-bug"><input type="radio" name="improve_type" value="bug" ${initialType === "bug" ? "checked" : ""}>Bug fix<small>Fix a bug or error</small></label>
             </div>
           </div>
 
           <label class="field">
-            <span>What should Orchestrator build or fix?</span>
-            <input type="text" name="summary" required maxlength="500" value="${esc(initialSummary)}" placeholder="e.g. Add dark mode toggle or parallel run streaming">
+            <span>Summary</span>
+            <input type="text" name="summary" required maxlength="500" value="${esc(initialSummary)}" placeholder="What should Orchestrator build or fix?">
           </label>
 
           <label class="field">
-            <span>Details & requirements <span class="muted">(optional)</span></span>
-            <textarea name="spec" rows="4" placeholder="Describe the improvement:&#10;- What it does&#10;- Why it's valuable&#10;- Suggested files or behavior&#10;- How to test">${esc(initialSpec)}</textarea>
-            <small class="hint-text">Leave blank to let the AI planner explore the codebase and determine the best approach.</small>
+            <span>Details <span class="muted">(optional)</span></span>
+            <textarea name="spec" rows="3" placeholder="Requirements, suggested files, or test cases">${esc(initialSpec)}</textarea>
           </label>
 
           <div class="row align-center justify-between">
-            <label class="check"><input type="checkbox" name="yolo"><span><strong>YOLO (Autopilot)</strong><small class="muted">Runs without pauses</small></span></label>
-            <button class="btn primary big" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-sparkle"/></svg> Start Orchestrator AI job</button>
+            <label class="check"><input type="checkbox" name="yolo"><span>Autopilot <small class="muted">(runs without pauses)</small></span></label>
+            <button class="btn primary" type="submit">Start job</button>
           </div>
         </form>
       </section>
 
-      <!-- Tracked Orchestrator Improvements -->
+      <!-- Tracked Improvements -->
       <section class="card mb-16">
         <div class="card-h">
-          <h2>Tracked Orchestrator improvements <span class="count">${improvementJobs.length}</span></h2>
+          <h2>Tracked improvements <span class="count">${improvementJobs.length}</span></h2>
         </div>
         ${improvementJobs.length ? `
           <div class="job-table">
@@ -9143,7 +9138,7 @@ pages["auto-improve"] = async (_, query) => {
                       <div class="job-meta">
                         <span class="mono">${esc(j.job_id || j.id)}</span>
                         ${j.branch ? ` · <span class="mono">${esc(j.branch)}</span>` : ""}
-                        ${submitted ? ` · <span class="accent">✓ Submitted for inclusion</span>` : ""}
+                        ${submitted ? ` · <span class="accent">✓ Submitted</span>` : ""}
                       </div>
                     </div>
                     <div class="col-type">
@@ -9156,11 +9151,11 @@ pages["auto-improve"] = async (_, query) => {
                       <span class="date-relative">${esc(ago(j.updated))}</span>
                     </div>
                     <div class="row gap-8 align-center" style="margin-left: auto; padding-right: 12px;">
-                      <a class="btn small" href="#/jobs/${encodeURIComponent(j.id)}">Open</a>
+                      <a class="btn small ghost" href="#/jobs/${encodeURIComponent(j.id)}">Open</a>
                       ${submitted ? `
-                        <button type="button" class="btn small ghost" disabled title="Already submitted for core review">✓ Submitted</button>
+                        <button type="button" class="btn small ghost" disabled>Submitted</button>
                       ` : `
-                        <button type="button" class="btn small prize-btn" data-submit-job="${esc(j.id)}" data-job-title="${esc(j.title)}" data-job-branch="${esc(j.branch || '')}" title="Submit this completed work to the core team for permanent inclusion & prize">Submit for Prize 🏆</button>
+                        <button type="button" class="btn small prize-btn" data-submit-job="${esc(j.id)}" data-job-title="${esc(j.title)}" data-job-branch="${esc(j.branch || '')}">Submit for prize 🏆</button>
                       `}
                     </div>
                   </div>
@@ -9170,19 +9165,21 @@ pages["auto-improve"] = async (_, query) => {
           </div>
         ` : `
           <div class="empty">
-            <p>No Orchestrator improvement jobs yet.</p>
-            <p class="muted">Use the form above to start building your first feature or fix for Orchestrator!</p>
+            <p>No improvement jobs yet.</p>
+            <p class="muted">Jobs started here are tracked and can be submitted for inclusion.</p>
           </div>
         `}
       </section>
 
-      <!-- Prize Challenge Info Card -->
+      <!-- Contributor Prize -->
       <section class="card prize-card">
-        <div class="card-h"><h2>🏆 Permanent Inclusion & Contributor Prize</h2></div>
+        <div class="card-h">
+          <h2>Contributor prize 🏆</h2>
+        </div>
         <div class="card-b stack">
-          <p>You can use Orchestrator to improve Orchestrator itself! Create an AI job to build a feature, UI polish, or workflow upgrade. When satisfied with your work, click <strong>Submit for Prize</strong> on the job. If selected for permanent inclusion, you'll receive an <strong>awesome prize</strong> and public recognition.</p>
+          <p class="muted">Build features and fixes for Orchestrator itself. Completed jobs can be submitted for review. When accepted for permanent inclusion, you'll receive a contributor prize and recognition.</p>
           <div class="row">
-            <button type="button" class="btn small" id="auto-improve-prize-info-btn">Submit manual branch or PR 🏆</button>
+            <button type="button" class="btn small ghost" id="auto-improve-manual-submit-btn">Submit outside branch or PR</button>
           </div>
         </div>
       </section>
@@ -9239,10 +9236,6 @@ pages["auto-improve"] = async (_, query) => {
       });
 
       $("#auto-improve-manual-submit-btn")?.addEventListener("click", () => {
-        openPrizeModal();
-      });
-
-      $("#auto-improve-prize-info-btn")?.addEventListener("click", () => {
         openPrizeModal();
       });
     }
