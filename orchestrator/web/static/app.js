@@ -9104,8 +9104,9 @@ pages["auto-improve"] = async (_, query) => {
           <textarea name="spec" rows="2" placeholder="Requirements or notes">${esc(initialSpec)}</textarea>
         </label>
 
-        <div class="row align-center justify-between">
+        <div class="row">
           <label class="check"><input type="checkbox" name="yolo"><span>Autopilot</span></label>
+          <span class="spacer"></span>
           <button class="btn primary" type="submit">Start job</button>
         </div>
       </form>
