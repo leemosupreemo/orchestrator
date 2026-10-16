@@ -2388,22 +2388,30 @@ function jobTableRow(j, { hidden = false } = {}) {
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
   ].filter(Boolean);
 
+  const isAutoImprove = Boolean(j.is_orchestrator_improvement || j.tag === "improve_orchestrator");
+  if (j.submitted_for_inclusion) {
+    parts.push('<span class="accent">✓ Submitted for inclusion</span>');
+  }
+
   // The status pill already says what the job needs; its longer reason is on the job page.
   const metaHtml = parts.join(" · ");
   const typeLabel = esc(j.kind || j.type || "Job");
+  const typeTag = isAutoImprove
+    ? `<span class="job-type-tag job-type-auto-improve" title="Orchestrator Improvement">🏆 Orchestrator</span>`
+    : `<span class="job-type-tag">${typeLabel}</span>`;
 
   return `
     <a class="job-table-row"${hidden ? " hidden" : ""} href="#/jobs/${encodeURIComponent(j.id)}">
       <div class="col-job">
         <div class="job-title">${esc(j.title)}</div>
         <div class="job-mobile-info">
-          <span class="job-type-tag">${typeLabel}</span>
+          ${typeTag}
           ${jobPill(j)}
         </div>
         ${metaHtml ? `<div class="job-meta">${metaHtml}</div>` : ""}
       </div>
       <div class="col-type">
-        <span class="job-type-tag">${typeLabel}</span>
+        ${typeTag}
       </div>
       <div class="col-status">
         ${jobPill(j)}
@@ -2933,6 +2941,8 @@ function jobHeaderActions(s, links = [], ctx = {}) {
       idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)
         && ["Send to testers…", act("deliver", j), `Builds ${s.branch} and sends it to your testers`],
       ["Export…", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"],
+      Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator") && !s.submitted_for_inclusion
+        && ["Submit for Prize 🏆", `data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title || '')}"`, "Submit this improvement to the core team for permanent inclusion"],
     ]],
     ["Open", [
       ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page in Docs"],
@@ -2976,6 +2986,20 @@ document.addEventListener("click", async (e) => {
 document.addEventListener("click", (e) => {
   const open = e.target.closest("[data-open]");
   if (open) window.open(open.dataset.open, "_blank", "noopener");
+});
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-submit-inclusion]");
+  if (!btn) return;
+  const jobId = btn.dataset.submitInclusion;
+  Feedback.open({
+    initialStep: "improve_orchestrator",
+    category: "improve_orchestrator",
+    jobId,
+    title: btn.dataset.jobTitle || "",
+    explanation: jobId ? `Completed improvement via job ${jobId}.` : "",
+    userName: state.you?.email || ""
+  });
 });
 
 function formatJobTests(t) {
@@ -3184,14 +3208,35 @@ pages.job = async ([id]) => {
     : s.status === "designing" && nextAction === "approve" ? `Read <button type="button" class="linklike" data-scroll-to="#brief-section">the design below</button>, then approve it or ask for changes.`
     : clamped(s.state.reason || "", 320);
 
+  const isAutoImprove = Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator" || job.is_orchestrator_improvement || job.tag === "improve_orchestrator");
+
   return {
     title: s.title,
     sub: `<span class="status-line"><span>${esc(s.kind || "Job")}</span>${s.issue_number ? `<span class="sep">·</span><span>#${esc(s.issue_number)}</span>` : ""}${s.feature ? `<span class="sep">·</span><span>${esc(featureName || s.feature)}</span>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}${(data.context?.ticket || []).map((t) => `<span class="sep">·</span>${t.url
       ? `<a class="ticket-chip" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(`${t.source}: ${t.title}`)}">${esc(t.ref || t.title)} ↗</a>`
-      : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`}`).join("")}</span>`,
+      : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`}`).join("")}${isAutoImprove ? `<span class="sep">·</span><span class="prize-pill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Orchestrator Improvement</span>` : ""}${s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="sep">·</span><span class="accent">✓ Submitted for inclusion</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
     html: `<div class="job-layout"><div class="job-top">
       ${runs.filter((r) => r.running).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
+
+      ${isAutoImprove ? `
+        <div class="banner info mb-16 row align-center justify-between" style="border-left: 3px solid #fbbf24; background: rgba(245, 158, 11, 0.08); padding: 12px 16px;">
+          <div class="row align-center gap-8">
+            <span style="font-size: 1.25rem;">🏆</span>
+            <div>
+              <strong>Orchestrator Improvement Job</strong>
+              <div class="muted" style="font-size: var(--text-xs);">This job adds a feature or fix to Orchestrator itself.</div>
+            </div>
+          </div>
+          <div>
+            ${job.submitted_for_inclusion || s.submitted_for_inclusion ? `
+              <span class="pill done">✓ Submitted for Permanent Inclusion</span>
+            ` : `
+              <button type="button" class="btn small prize-btn" data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Submit for Prize 🏆</button>
+            `}
+          </div>
+        </div>
+      ` : ""}
 
       <nav class="job-stepper" aria-label="Job lifecycle progress">
         ${phasesInfo.map((p, idx) => `
@@ -9020,9 +9065,208 @@ pages.run = async ([id]) => {
   };
 };
 
-pages["auto-improve"] = async () => {
-  Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" });
-  return pages.home();
+pages["auto-improve"] = async (_, query) => {
+  let jobs = [];
+  try {
+    jobs = (await api("jobs")).jobs || [];
+  } catch {
+    jobs = [];
+  }
+
+  // Filter jobs created to improve Orchestrator
+  const improvementJobs = jobs.filter((j) => Boolean(j.is_orchestrator_improvement || j.tag === "improve_orchestrator"));
+
+  const currentProject = state.project;
+  const isOrchestrator = currentProject?.name === "swift-orchestrator" || /swift-orchestrator/.test(currentProject?.root || "");
+
+  const initialType = query?.get("type") || "feature";
+  const initialSummary = query?.get("summary") || "";
+  const initialSpec = query?.get("spec") || "";
+
+  return {
+    title: "Auto-improve Orchestrator",
+    sub: "Build features and fixes for Orchestrator itself using local AI jobs, track your changes, and submit your work for permanent inclusion & prize.",
+    actions: `<button type="button" class="btn small" id="auto-improve-manual-submit-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Submit outside contribution</button>`,
+    html: `
+      <!-- Orchestrator Job Creation Card -->
+      <section class="card mb-16">
+        <div class="card-h">
+          <h2>Create an Orchestrator improvement job</h2>
+          <span class="muted">${isOrchestrator ? "Targeting swift-orchestrator" : `Current project: ${esc(currentProject?.name || "App")}`}</span>
+        </div>
+        <form class="card-b stack" id="auto-improve-job-form">
+          ${!isOrchestrator ? `
+            <div class="banner info mb-12">
+              <p>You are currently in <strong>${esc(currentProject?.name || "another project")}</strong>. You can create an improvement job here, or switch to the core repository: <button type="button" class="btn small" id="auto-improve-switch-repo-btn">Switch to swift-orchestrator</button></p>
+            </div>
+          ` : ""}
+          <div class="field"><span>What kind of improvement?</span>
+            <div class="segmented" role="radiogroup" aria-label="Kind of improvement">
+              <label class="job-type-card job-type-feature"><input type="radio" name="improve_type" value="feature" ${initialType === "feature" ? "checked" : ""}>Feature<small>Add a new capability, tool, or integration</small></label>
+              <label class="job-type-card job-type-bug"><input type="radio" name="improve_type" value="bug" ${initialType === "bug" ? "checked" : ""}>Bug fix<small>Fix a bug, error, or unexpected behavior</small></label>
+              <label class="job-type-card job-type-design"><input type="radio" name="improve_type" value="design" ${initialType === "design" ? "checked" : ""}>UI polish<small>Enhance UI, styling, layout, or mobile experience</small></label>
+              <label class="job-type-card job-type-quick"><input type="radio" name="improve_type" value="quick" ${initialType === "quick" ? "checked" : ""}>Quick fix<small>Fast prompt adjustment or single-file tweak</small></label>
+            </div>
+          </div>
+
+          <label class="field">
+            <span>What should Orchestrator build or fix?</span>
+            <input type="text" name="summary" required maxlength="500" value="${esc(initialSummary)}" placeholder="e.g. Add dark mode toggle or parallel run streaming">
+          </label>
+
+          <label class="field">
+            <span>Details & requirements <span class="muted">(optional)</span></span>
+            <textarea name="spec" rows="4" placeholder="Describe the improvement:&#10;- What it does&#10;- Why it's valuable&#10;- Suggested files or behavior&#10;- How to test">${esc(initialSpec)}</textarea>
+            <small class="hint-text">Leave blank to let the AI planner explore the codebase and determine the best approach.</small>
+          </label>
+
+          <div class="row align-center justify-between">
+            <label class="check"><input type="checkbox" name="yolo"><span><strong>YOLO (Autopilot)</strong><small class="muted">Runs without pauses</small></span></label>
+            <button class="btn primary big" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-sparkle"/></svg> Start Orchestrator AI job</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Tracked Orchestrator Improvements -->
+      <section class="card mb-16">
+        <div class="card-h">
+          <h2>Tracked Orchestrator improvements <span class="count">${improvementJobs.length}</span></h2>
+        </div>
+        ${improvementJobs.length ? `
+          <div class="job-table">
+            <div class="job-table-header">
+              <div class="col-job">Job</div>
+              <div class="col-type">Type</div>
+              <div class="col-status">Status</div>
+              <div class="col-date"><span class="date-header-long">Last modified</span><span class="date-header-short">Date</span></div>
+            </div>
+            <div class="job-table-body">
+              ${improvementJobs.map((j) => {
+                const submitted = Boolean(j.submitted_for_inclusion);
+                return `
+                  <div class="job-table-row">
+                    <div class="col-job">
+                      <a class="job-title" href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>
+                      <div class="job-meta">
+                        <span class="mono">${esc(j.job_id || j.id)}</span>
+                        ${j.branch ? ` · <span class="mono">${esc(j.branch)}</span>` : ""}
+                        ${submitted ? ` · <span class="accent">✓ Submitted for inclusion</span>` : ""}
+                      </div>
+                    </div>
+                    <div class="col-type">
+                      <span class="job-type-tag job-type-auto-improve">🏆 Orchestrator</span>
+                    </div>
+                    <div class="col-status">
+                      ${jobPill(j)}
+                    </div>
+                    <div class="col-date">
+                      <span class="date-relative">${esc(ago(j.updated))}</span>
+                    </div>
+                    <div class="row gap-8 align-center" style="margin-left: auto; padding-right: 12px;">
+                      <a class="btn small" href="#/jobs/${encodeURIComponent(j.id)}">Open</a>
+                      ${submitted ? `
+                        <button type="button" class="btn small ghost" disabled title="Already submitted for core review">✓ Submitted</button>
+                      ` : `
+                        <button type="button" class="btn small prize-btn" data-submit-job="${esc(j.id)}" data-job-title="${esc(j.title)}" data-job-branch="${esc(j.branch || '')}" title="Submit this completed work to the core team for permanent inclusion & prize">Submit for Prize 🏆</button>
+                      `}
+                    </div>
+                  </div>
+                `;
+              }).join("")}
+            </div>
+          </div>
+        ` : `
+          <div class="empty">
+            <p>No Orchestrator improvement jobs yet.</p>
+            <p class="muted">Use the form above to start building your first feature or fix for Orchestrator!</p>
+          </div>
+        `}
+      </section>
+
+      <!-- Prize Challenge Info Card -->
+      <section class="card prize-card">
+        <div class="card-h"><h2>🏆 Permanent Inclusion & Contributor Prize</h2></div>
+        <div class="card-b stack">
+          <p>You can use Orchestrator to improve Orchestrator itself! Create an AI job to build a feature, UI polish, or workflow upgrade. When satisfied with your work, click <strong>Submit for Prize</strong> on the job. If selected for permanent inclusion, you'll receive an <strong>awesome prize</strong> and public recognition.</p>
+          <div class="row">
+            <button type="button" class="btn small" id="auto-improve-prize-info-btn">Submit manual branch or PR 🏆</button>
+          </div>
+        </div>
+      </section>
+    `,
+    after: () => {
+      const form = $("#auto-improve-job-form");
+      if (form) {
+        form.addEventListener("submit", (e) => {
+          e.preventDefault();
+          const f = new FormData(form);
+          const type = f.get("improve_type") || "feature";
+          const summary = String(f.get("summary") || "").trim();
+          const spec = String(f.get("spec") || "").trim();
+          const yolo = f.has("yolo");
+
+          if (!summary) {
+            toast("Please enter a summary of what to build.", "warning");
+            return;
+          }
+
+          const composedSpec = [
+            "Goal: Improve Orchestrator itself.",
+            "",
+            "Scope: Orchestrator codebase and developer/user experience.",
+            spec ? "Requirements & Guidance:\n" + spec : "",
+          ].filter(Boolean).join("\n\n");
+
+          runAction("new_job", {
+            type,
+            summary: summary.startsWith("Auto-improve:") ? summary : `Auto-improve: ${summary}`,
+            spec: composedSpec,
+            tag: "improve_orchestrator",
+            is_orchestrator_improvement: true,
+            yolo,
+          });
+        });
+      }
+
+      $("#auto-improve-switch-repo-btn")?.addEventListener("click", async () => {
+        try {
+          await api("projects/add", {
+            method: "POST",
+            body: { root: "/Users/leemosupreemo/swift-orchestrator", active: true }
+          });
+          toast("Switched to swift-orchestrator");
+          route();
+        } catch (err) {
+          toast("Couldn't switch project: " + err.message, true);
+        }
+      });
+
+      const openPrizeModal = (jobId = "", jobTitle = "", jobBranch = "") => {
+        Feedback.open({
+          initialStep: "improve_orchestrator",
+          category: "improve_orchestrator",
+          jobId,
+          title: jobTitle,
+          explanation: jobId ? `Completed improvement via job ${jobId} on branch ${jobBranch || 'main'}.` : "",
+          userName: state.you?.email || ""
+        });
+      };
+
+      view.querySelectorAll("[data-submit-job]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          openPrizeModal(btn.dataset.submitJob, btn.dataset.jobTitle, btn.dataset.jobBranch);
+        });
+      });
+
+      $("#auto-improve-manual-submit-btn")?.addEventListener("click", () => {
+        openPrizeModal();
+      });
+
+      $("#auto-improve-prize-info-btn")?.addEventListener("click", () => {
+        openPrizeModal();
+      });
+    }
+  };
 };
 
 function attachSavedTerminal(text, failed) {
@@ -9436,11 +9680,9 @@ function paletteBase() {
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
   act_("Send feedback", "Tell us what could be better or share ideas", () => Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" }));
   act_("Suggest missing feature", "Request a feature or capability you'd like in Orchestrator", () => Feedback.open({ initialStep: "feedback", category: "feature_request", userName: state.you?.email || "" }));
-  act_("Auto-improve Orchestrator", "Use Orchestrator on itself to create new features or submit improvements", () => Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" }));
+  act_("Auto-improve Orchestrator", "Create an AI job to improve Orchestrator itself and track submissions", () => { location.hash = "#/auto-improve"; });
   act_("Improve Orchestrator (Win a Prize!)", "Submit an Orchestrator improvement for permanent inclusion and prize", () => Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" }));
-  act_("Create job to improve Orchestrator", "Start a new local AI job focused on enhancing Orchestrator itself", () => {
-    location.hash = "#/new?type=feature&summary=" + encodeURIComponent("Improve Orchestrator: ") + "&spec=" + encodeURIComponent("Goal: Improve Orchestrator itself.\n\nDescribe the improvement you are making:\n- What it does:\n- Why it's valuable:\n- Files to change:\n- How to test:\n");
-  });
+  act_("Create job to improve Orchestrator", "Start a new local AI job focused on enhancing Orchestrator itself", () => { location.hash = "#/auto-improve"; });
   act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());
   if (Notifications.supported()) act_(Notifications.enabled() ? "Turn off browser alerts" : "Turn on browser alerts", "Alerts when a run finishes or needs you", () => $("#notify-btn")?.click());
   return entries;
@@ -9617,7 +9859,7 @@ if (feedbackBtn) {
 const autoImproveBtn = $("#auto-improve-btn");
 if (autoImproveBtn) {
   autoImproveBtn.addEventListener("click", () => {
-    Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" });
+    location.hash = "#/auto-improve";
   });
 }
 // A tapped alert opens the computer it came from (?machine=…), at the page it is about (the hash).

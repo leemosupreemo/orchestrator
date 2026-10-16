@@ -4459,6 +4459,17 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertIn(f".job-type-{job_type}:has(input:checked)", self.css)
         self.assertIn("job-type-card job-type-${v}", self.js)
 
+    def test_auto_improve_orchestrator_page_renders_creation_form_and_tracked_jobs(self):
+        self.assertIn('pages["auto-improve"]', self.js)
+        self.assertIn('id="auto-improve-btn"', self.html)
+        self.assertIn('href="#/auto-improve"', self.html)
+        self.assertIn('data-route="auto-improve"', self.html)
+        self.assertIn('id="auto-improve-job-form"', self.js)
+        self.assertIn('Tracked Orchestrator improvements', self.js)
+        self.assertIn('data-submit-job', self.js)
+        self.assertIn('Submit for Prize', self.js)
+        self.assertIn('job-type-auto-improve', self.js)
+
 
 class ScopeEndpointTests(ServerTestCase):
     JOB = "20260922-bug-1"

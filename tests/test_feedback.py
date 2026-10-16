@@ -405,6 +405,39 @@ class FeedbackBackendTests(unittest.TestCase):
             self.assertIn("Local Job Kind: feature", body["text"])
             self.assertIn("Local Job State: Running", body["text"])
 
+            # Verify that the local job file is marked as submitted for inclusion
+            job_data = json.loads((jobs_dir / f"{job_id}.json").read_text(encoding="utf-8"))
+            self.assertTrue(job_data.get("submitted_for_inclusion"))
+            self.assertTrue(bool(job_data.get("inclusion_submission_date")))
+
+    def test_job_summary_tags_orchestrator_improvement(self):
+        job_id = "job-improve-42"
+        jobs_dir = ui.jobs_dir(self.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        job_file = jobs_dir / f"{job_id}.json"
+        job_file.write_text(json.dumps({
+            "title": "Add Auto-improve page",
+            "branch": "ai/job-improve-42",
+            "kind": "feature",
+            "tag": "improve_orchestrator",
+            "is_orchestrator_improvement": True,
+            "submitted_for_inclusion": True
+        }))
+        summary = ui.job_summary(job_file, json.loads(job_file.read_text()))
+        self.assertEqual(summary["tag"], "improve_orchestrator")
+        self.assertTrue(summary["is_orchestrator_improvement"])
+        self.assertTrue(summary["submitted_for_inclusion"])
+
+    def test_watch_for_created_job_records_tag(self):
+        jobs_dir = ui.jobs_dir(self.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        job_file = jobs_dir / "job-tag-test.json"
+        job_file.write_text(json.dumps({"title": "Initial job without tag"}))
+        ui.UIHandler._record_tag(job_file, "improve_orchestrator")
+        data = json.loads(job_file.read_text())
+        self.assertEqual(data.get("tag"), "improve_orchestrator")
+        self.assertTrue(data.get("is_orchestrator_improvement"))
+
 
 class ServerEndpointFeedbackTests(unittest.TestCase):
     """Test the HTTP API endpoint /api/feedback over live socket."""

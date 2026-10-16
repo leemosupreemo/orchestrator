@@ -3859,6 +3859,35 @@ dialog.dialog-image-viewer form {
 .auto-improve-btn .icon {
   color: var(--accent);
 }
+.job-type-auto-improve {
+  background: rgba(245, 158, 11, 0.12) !important;
+  border-color: rgba(245, 158, 11, 0.4) !important;
+  color: #fbbf24 !important;
+  font-weight: 600;
+}
+.prize-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+  font-weight: 600;
+  border-radius: var(--r-pill);
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+}
+.prize-btn {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(217, 119, 6, 0.24));
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+  font-weight: 600;
+}
+.prize-btn:hover {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.28), rgba(217, 119, 6, 0.35));
+  border-color: rgba(245, 158, 11, 0.65);
+  color: #fde68a;
+}
 .feedback-dialog {
   padding: 0;
   border: none;

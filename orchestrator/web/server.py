@@ -738,6 +738,8 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
     issue_num = job.get("issue_number")
     job_id = job.get("job_id") or path.stem
     display_id = f"#{issue_num} ({job_id})" if issue_num else str(job_id)
+    tag = job.get("tag") or ("improve_orchestrator" if job.get("is_orchestrator_improvement") else None)
+    is_auto_improve = bool(job.get("is_orchestrator_improvement") or tag == "improve_orchestrator" or "improve_orchestrator" in (job.get("tags") or []) or job.get("target") == "orchestrator")
     approach = job.get("approach") or job.get("execution_strategy") or "Standard workflow"
 
     return {
@@ -760,6 +762,9 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "tasks_total": len(tasks) if isinstance(tasks, list) else 0,
         "tasks_done": len(completed) if isinstance(completed, list) else 0,
         "updated": path.stat().st_mtime,
+        "tag": tag,
+        "is_orchestrator_improvement": is_auto_improve,
+        "submitted_for_inclusion": bool(job.get("submitted_for_inclusion")),
     }
 
 
@@ -2578,6 +2583,8 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
         argv.append("--yolo")
     if params.get("free"):
         argv.append("--free")
+    if params.get("is_orchestrator_improvement") or params.get("tag") == "improve_orchestrator":
+        params["_tag"] = "improve_orchestrator"
     return argv
 
 
@@ -3714,6 +3721,17 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
             body_lines.append(f"Local Job State: {job_metadata['state']}")
     if category == "improve_orchestrator":
         body_lines.append("Prize Eligible: YES (Permanent Inclusion Submission)")
+        if job_id:
+            try:
+                job_file = resolve_job_path(root, job_id)
+                if job_file.is_file():
+                    jdata = read_json_file(job_file)
+                    if jdata:
+                        jdata["submitted_for_inclusion"] = True
+                        jdata["inclusion_submission_date"] = created_at
+                        write_json_file(job_file, jdata)
+            except Exception:
+                pass
     body_lines.extend([
         "",
         "Explanation / Feedback:",
@@ -3912,7 +3930,7 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "test_cases", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "test_cases", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls", "tag", "is_orchestrator_improvement"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
@@ -5878,11 +5896,13 @@ class UIHandler(BaseHTTPRequestHandler):
         self._audit("run_started", action=key, job=job_id)
         if key in ("new_job", "fix"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
-                                        params.get("_attachments") if key == "new_job" else None)
+                                        params.get("_attachments") if key == "new_job" else None,
+                                        tag=params.get("_tag") or params.get("tag") if key == "new_job" else None)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
 
     def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None,
-                               attachments: dict[str, Any] | None = None) -> None:
+                                attachments: dict[str, Any] | None = None,
+                                tag: str | None = None) -> None:
         """Links the job a new-job/fix run creates, so its run can offer "Open job". (Its feature is recorded by new_job.py.)"""
         before = {p.name for p in jobs_dir(root).glob("*.json")} if jobs_dir(root).exists() else set()
 
@@ -5897,12 +5917,26 @@ class UIHandler(BaseHTTPRequestHandler):
                             self._record_links(newest, linked)
                         if attachments and (attachments.get("logs") or attachments.get("refs")):
                             self._record_attachments(newest, attachments)
+                        if tag:
+                            self._record_tag(newest, tag)
                         return
                 if not session.running:
                     return
                 time.sleep(1)
 
         threading.Thread(target=watch, daemon=True).start()
+
+    @staticmethod
+    def _record_tag(job_path: Path, tag: str) -> None:
+        for _ in range(10):
+            job = read_json_file(job_path)
+            if job:
+                job["tag"] = tag
+                if tag == "improve_orchestrator":
+                    job["is_orchestrator_improvement"] = True
+                write_json_file(job_path, job)
+                return
+            time.sleep(0.5)
 
     @staticmethod
     def _record_attachments(job_path: Path, attachments: dict[str, Any]) -> None:
