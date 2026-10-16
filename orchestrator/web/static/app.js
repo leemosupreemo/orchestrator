@@ -4964,12 +4964,12 @@ pages.help = async () => ({
         <button type="button" class="btn small" id="help-feedback-btn">Send feedback</button>
       </div>
     </div></section>
-    <section class="card prize-card"><div class="card-h"><h2>🏆 Improve Orchestrator & Win a Prize</h2></div><div class="card-b">
-      <div class="prize-card-badge mb-8"><span class="prize-badge">🏆 Prize Challenge</span> <span class="muted">Local contribution challenge</span></div>
-      <p class="mb-12">You can use Orchestrator to improve Orchestrator itself! Create an AI job locally to build a feature, UI polish, or workflow upgrade. Submit your explanation and changes to us for permanent inclusion in the core repository. If selected, you'll receive an <strong>awesome prize</strong> and public recognition.</p>
+    <section class="card prize-card"><div class="card-h"><h2>Contributor prize 🏆</h2></div><div class="card-b">
+      <div class="prize-card-badge mb-8"><span class="prize-badge">🏆 Prize Challenge</span></div>
+      <p class="mb-12">Build an improvement for Orchestrator. Selected contributions win a prize and core inclusion.</p>
       <div class="row gap-8">
-        <button type="button" class="btn small primary" id="help-create-improve-job-btn"><svg class="icon icon-sm" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Create job to improve Orchestrator</button>
-        <button type="button" class="btn small" id="help-submit-improvement-btn">Submit improvement for inclusion & prize 🏆</button>
+        <button type="button" class="btn small primary" id="help-create-improve-job-btn">Improve Orchestrator</button>
+        <button type="button" class="btn small" id="help-submit-improvement-btn">Submit improvement 🏆</button>
       </div>
     </div></section>`,
   after: () => {
@@ -4980,7 +4980,7 @@ pages.help = async () => ({
       Feedback.open({ initialStep: "feedback", category: "feature_request", userName: state.you?.email || "" });
     });
     $("#help-create-improve-job-btn")?.addEventListener("click", () => {
-      location.hash = "#/new?type=feature&summary=" + encodeURIComponent("Improve Orchestrator: ") + "&spec=" + encodeURIComponent("Goal: Improve Orchestrator itself.\n\nDescribe the improvement you are making:\n- What it does:\n- Why it's valuable:\n- Files to change:\n- How to test:\n");
+      location.hash = "#/auto-improve";
     });
     $("#help-submit-improvement-btn")?.addEventListener("click", () => {
       Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" });

@@ -270,7 +270,7 @@
           </div>
           <div class="feedback-prize-banner">
             <div class="prize-badge">🏆 Prize Challenge</div>
-            <p>Create and run a job locally to improve Orchestrator itself. Submit your explanation and changes here for permanent inclusion. If selected, you'll receive an <strong>awesome prize</strong> and public contributor recognition!</p>
+            <p>Build an improvement for Orchestrator. Selected contributions win a prize and core inclusion.</p>
           </div>
           <div class="feedback-job-action-box">
             <span>Want to build your improvement with a local AI job first?</span>
