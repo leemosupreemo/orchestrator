@@ -761,7 +761,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         status_bar.render()
         print(f"[4/4] Implementation successful. Opening/updating Pull Request...")
         if PROJECT_CONFIG.uses_github:
-            pr_number, pr_url = open_or_update_pr(job_path)
+            pr_number, pr_url = open_or_update_pr(job_path, publish_result=job)
         else:
             print("      - Plain git (no GitHub): pushing the branch for review instead of opening a pull request.")
             pr_number, pr_url = None, None

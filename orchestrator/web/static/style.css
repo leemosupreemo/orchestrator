@@ -3850,10 +3850,14 @@ dialog.dialog-image-viewer form {
 }
 
 /* ---------------------------------------------------------------- feedback button & modal */
-.feedback-btn {
+.feedback-btn,
+.auto-improve-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+}
+.auto-improve-btn .icon {
+  color: var(--accent);
 }
 .feedback-dialog {
   padding: 0;

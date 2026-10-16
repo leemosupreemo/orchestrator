@@ -1262,8 +1262,10 @@ async function unlockWith(token, message) {
 }
 
 let accountPoll = null;
+let snapshotPoll = null;
 let accountScreenGeneration = 0;
-function stopAccountPoll() { clearInterval(accountPoll); accountPoll = null; }
+function stopSnapshotPoll() { if (snapshotPoll) { clearInterval(snapshotPoll); snapshotPoll = null; } }
+function stopAccountPoll() { clearInterval(accountPoll); accountPoll = null; stopSnapshotPoll(); }
 
 // Your computers: open the one you used last (or the only one), otherwise list them. A code from a link is handled first.
 async function openAccount({ list = false, message = "", troubleshoot = null } = {}) {
@@ -1514,7 +1516,16 @@ async function repairMachineConnection(machine, failure) {
   if (!failure.webConnectionFailed || navigator.onLine === false) throw failure;
   // A previous restart may already have replaced the saved address. Try that before asking for another.
   const { machines } = await cpApi("machines", { signal: AbortSignal.timeout(8000) });
-  const current = (machines || []).find((item) => item.id === machine.id);
+  let current = (machines || []).find((item) => item.id === machine.id);
+  if (!current?.online || !current.endpoint) {
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (navigator.onLine === false) break;
+      const { machines: retry } = await cpApi("machines", { signal: AbortSignal.timeout(4000) }).catch(() => ({ machines: [] }));
+      const found = (retry || []).find((item) => item.id === machine.id);
+      if (found?.online && found.endpoint) { current = found; break; }
+    }
+  }
   if (!current?.online || !current.endpoint) throw failure;
   if (current.endpoint !== failure.endpoint) {
     try { return await signInToMachine(current); }
@@ -1568,19 +1579,35 @@ async function showSnapshotScreen(machineId, machine) {
     }
     view.innerHTML = Account.renderSnapshot(snapshot);
     view.onsubmit = null;
+    stopSnapshotPoll();
+    snapshotPoll = setInterval(async () => {
+      if (!document.querySelector(".account-card") || !signingIn) return stopSnapshotPoll();
+      try {
+        const { machines: fresh } = await cpApi("machines");
+        const current = (fresh || []).find((m) => m.id === machineId);
+        if (current && current.reachable) {
+          stopSnapshotPoll();
+          toast(`${current.name} is back online! Connecting…`, "info");
+          enterMachine(current);
+        }
+      } catch { /* control plane retry */ }
+    }, 4000);
     view.onclick = async (event) => {
       const btn = event.target.closest("[data-account-action]");
       if (!btn || btn.disabled) return;
       const act = btn.dataset.accountAction;
       if (act === "back-machines") {
+        stopSnapshotPoll();
         openAccount({ list: true });
       } else if (act === "open") {
+        stopSnapshotPoll();
         const targetId = btn.dataset.id || machineId;
         const targetMachine = machine || { id: targetId, name: snapshot.machine_name || "Computer" };
         enterMachine(targetMachine);
       }
     };
   } catch (err) {
+    stopSnapshotPoll();
     toast(err.message, true);
     openAccount({ list: true });
   }
@@ -2735,7 +2762,7 @@ function positionHomeHealthPopover(details) {
 }
 
 function repositionOpenHomeHealthPopovers() {
-  document.querySelectorAll(".home-health-inline[open]").forEach(positionHomeHealthPopover);
+  document.querySelectorAll?.(".home-health-inline[open]")?.forEach(positionHomeHealthPopover);
 }
 
 document.addEventListener("toggle", (event) => {
@@ -2745,12 +2772,12 @@ document.addEventListener("toggle", (event) => {
   if (details?.open) requestAnimationFrame(() => positionHomeHealthPopover(details));
 }, true);
 document.addEventListener("click", (event) => {
-  document.querySelectorAll(".home-health-inline[open]").forEach((details) => {
+  document.querySelectorAll?.(".home-health-inline[open]")?.forEach((details) => {
     if (!details.contains(event.target)) details.open = false;
   });
 });
 document.addEventListener("scroll", repositionOpenHomeHealthPopovers, true);
-window.addEventListener("resize", repositionOpenHomeHealthPopovers);
+if (typeof window !== "undefined") window.addEventListener("resize", repositionOpenHomeHealthPopovers);
 
 // Archive keeps the branch and files; Home's Archived filter (or Undo here) brings a job back as it was.
 document.addEventListener("click", async (e) => {
@@ -8993,6 +9020,11 @@ pages.run = async ([id]) => {
   };
 };
 
+pages["auto-improve"] = async () => {
+  Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" });
+  return pages.home();
+};
+
 function attachSavedTerminal(text, failed) {
   const termEl = $("#term");
   const termWrap = $("#term-wrap");
@@ -9218,7 +9250,7 @@ function routeParent(r) {
   if (r.page === "test-cases") return "#/tests";
   if (["connections", "projects"].includes(r.page)) return "#/config";
   if (r.page === "ux-review") return "#/checkup";
-  if (["git", "help", "checkup", "devlogs", "setup"].includes(r.page)) return "#/";
+  if (["git", "help", "readiness", "checkup", "devlogs", "setup"].includes(r.page)) return "#/";
   return null;
 }
 const navStack = [];
@@ -9349,8 +9381,8 @@ async function route() {
 
 // Live pages refresh in place — but never under the user's hands.
 async function tick() {
-  if (signingIn) return;
-  if (view.querySelector(".signin-card:not(.signing-in)") && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
+  if (typeof signingIn !== "undefined" && signingIn) return;
+  if (view.querySelector && view.querySelector(".signin-card:not(.signing-in)") && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   await refreshState(); // also while the tab is hidden, so notifications can fire
   if (document.hidden) return;
   if (!state.project) return;
@@ -9404,6 +9436,7 @@ function paletteBase() {
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
   act_("Send feedback", "Tell us what could be better or share ideas", () => Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" }));
   act_("Suggest missing feature", "Request a feature or capability you'd like in Orchestrator", () => Feedback.open({ initialStep: "feedback", category: "feature_request", userName: state.you?.email || "" }));
+  act_("Auto-improve Orchestrator", "Use Orchestrator on itself to create new features or submit improvements", () => Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" }));
   act_("Improve Orchestrator (Win a Prize!)", "Submit an Orchestrator improvement for permanent inclusion and prize", () => Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" }));
   act_("Create job to improve Orchestrator", "Start a new local AI job focused on enhancing Orchestrator itself", () => {
     location.hash = "#/new?type=feature&summary=" + encodeURIComponent("Improve Orchestrator: ") + "&spec=" + encodeURIComponent("Goal: Improve Orchestrator itself.\n\nDescribe the improvement you are making:\n- What it does:\n- Why it's valuable:\n- Files to change:\n- How to test:\n");
@@ -9579,6 +9612,12 @@ const feedbackBtn = $("#feedback-btn");
 if (feedbackBtn) {
   feedbackBtn.addEventListener("click", () => {
     Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" });
+  });
+}
+const autoImproveBtn = $("#auto-improve-btn");
+if (autoImproveBtn) {
+  autoImproveBtn.addEventListener("click", () => {
+    Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" });
   });
 }
 // A tapped alert opens the computer it came from (?machine=…), at the page it is about (the hash).

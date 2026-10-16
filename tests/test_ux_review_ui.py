@@ -29,7 +29,7 @@ async function api(path) {
   if (path === 'ux-pass/older') return input.report;
   throw new Error(`Unexpected request ${path}`);
 }
-const helpers = source.slice(source.indexOf('const UX_SEVERITY'), source.indexOf('// What jobs need'));
+const helpers = source.slice(source.indexOf('const UX_SEVERITY'), source.indexOf('pages["ux-review"] = async'));
 const pageStart = source.indexOf('pages["ux-review"] = async');
 const page = source.slice(pageStart, source.indexOf('\n};', pageStart) + 3);
 eval(helpers + '\n' + page + '\nglobalThis.uxCheckIds = Object.keys(UX_CHECKS);');
@@ -108,7 +108,7 @@ pages['ux-review']([], new URLSearchParams(input.latest ? 'id=older' : '')).then
         script = r"""
 const source = require('fs').readFileSync(process.argv[1], 'utf8');
 const start = source.indexOf('function updateUxReviewWhileEditing(');
-eval(source.slice(start, source.indexOf('// What jobs need', start)));
+eval(source.slice(start, source.indexOf('pages["ux-review"] = async', start)));
 const form = {dataset: {dirty: 'true'}, url: 'http://unsaved.example', contains: () => false};
 let replacements = 0, headerUpdates = 0;
 const replacement = {querySelector: () => ({append: () => {}})};

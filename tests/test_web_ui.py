@@ -196,6 +196,16 @@ class SignInTests(ServerTestCase):
         denied = [entry for entry in self.server.audit.recent() if entry["event"] == "denied"]
         self.assertEqual([entry["what"] for entry in denied], ["use interactive console", "change keys settings"])
 
+    def test_member_cannot_install_an_ai_provider_or_probe_worker_setup(self):
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+        for path, body in (("/api/ai-providers/install", {"provider": "opencode"}),
+                           ("/api/ai-providers/check-machines", {})):
+            with self.subTest(path=path):
+                res, data = self.as_user(token, "POST", path, body=body, sources=member)
+                self.assertEqual(res.status, 403)
+                self.assertIn("Only the owner", data["error"])
+
     def test_member_cannot_change_connected_app_credentials_or_create_projects(self):
         token = self.sign_in(source="settings")
         member = {"tester@example.com": "settings"}
@@ -392,6 +402,11 @@ class SignInTests(ServerTestCase):
     def test_static_traversal_blocked(self):
         res, _ = self.request("GET", "/../server.py", auth=False)
         self.assertEqual(res.status, 404)
+
+    def test_static_docs_recommended_mcp_plugins_served(self):
+        res, body = self.request("GET", "/docs/recommended-mcp-plugins.md", auth=False)
+        self.assertEqual(res.status, 200)
+        self.assertIn(b"Recommended MCP Servers", body)
 
 
 class ProjectPickerUiTests(unittest.TestCase):
@@ -737,6 +752,15 @@ class TunnelKeeperTests(unittest.TestCase):
         for t in threads:
             t.join()
         self.assertTrue(keeper._healthy())
+
+    def test_broken_tunnel_process_is_restarted_and_reported(self):
+        first, second = FakeTunnelProcess(), FakeTunnelProcess()
+        keeper = self.keeper([(first, "https://one.trycloudflare.com"), (second, "https://two.trycloudflare.com")])
+        keeper.start()
+        first.broken = True
+        self.assertTrue(self.wait_for(lambda: self.changes))
+        self.assertEqual(self.changes, ["https://two.trycloudflare.com"])
+        self.assertEqual(keeper.url, "https://two.trycloudflare.com")
 
     def test_cloudflared_output_is_read_so_it_can_never_fill_the_pipe(self):
         # A child that writes far more than a pipe holds (about 64 KB) finishes only if somebody reads what it writes.
@@ -1163,13 +1187,16 @@ const member = P.render("ai", {ai});  // members' config carries no keys
 process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: page.html, member: member.html, entry: P.resolve("ai", "member")?.route || null}));
 """)
         html = result["html"]
-        self.assertEqual(result["title"], "Add an AI")
-        self.assertIn("Free options are first", result["sub"])
-        self.assertIn('data-setup-copy="curl -fsSL https://opencode.ai/install | bash"', html)
-        self.assertLess(html.index('data-provider="opencode"'), html.index('data-provider="codex"'))
-        codex = html[html.index('data-provider="codex"'):html.index('data-provider="claude"')]
-        self.assertIn("Installed, not signed in", codex)
-        self.assertNotIn("Install it", codex)  # already installed: only the sign-in step
+        self.assertEqual(result["title"], "Manage AI tools")
+        self.assertIn("Install and connect an AI tool", result["sub"])
+        self.assertIn('data-ai-install="opencode"', html)
+        installed = html[html.index('<h2>Installed</h2>'):html.index('<h2>Not installed</h2>')]
+        not_installed = html[html.index('<h2>Not installed</h2>'):html.index('id="team-models"')]
+        self.assertIn('data-provider="codex"', installed)
+        self.assertIn("Needs sign-in", installed)
+        self.assertNotIn("Install here", installed)  # already installed: only the sign-in step
+        self.assertIn('data-provider="opencode"', not_installed)
+        codex = installed[installed.index('data-provider="codex"'):]
         self.assertIn("Add an API key instead", codex)
         self.assertNotIn("Add an API key instead", result["member"])
         self.assertNotIn('id="api-keys"', result["member"])
@@ -1179,6 +1206,119 @@ process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: pag
         self.assertIn("Codex &lt;OpenAI&gt;", html)
         self.assertIn("Drive &lt;web&gt; apps", html)
         self.assertEqual(result["entry"], "#/config/ai")  # members can use it too
+
+    def test_ai_setup_is_a_collapsible_tool_list_with_local_install_and_fleet_status(self):
+        result = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('ai', {
+  viewer: {role: 'owner'}, keys: [], machines: [{name: 'Build Mac', mode: 'ssh', enabled: true}],
+  ai: {checked: 'today', providers: [
+    {id: 'claude', name: 'Claude Code', cost_label: 'Subscription', what: 'Use Claude', installed: true, ready: true, link: 'https://example.com', sign_in: 'Sign in'},
+    {id: 'codex', name: 'Codex', cost_label: 'Subscription', what: 'Use Codex', installed: true, ready: false, link: 'https://example.com', sign_in: 'Sign in'},
+    {id: 'opencode', name: 'OpenCode', cost_label: 'Free', what: 'Use OpenCode', installed: false, ready: false, install: 'fixed command', link: 'https://example.com', sign_in: 'Ready'},
+  ], plugins: []},
+});
+process.stdout.write(JSON.stringify({title: page.title, html: page.html}));
+""")
+        html = result["html"]
+        self.assertEqual(result["title"], "Manage AI tools")
+        self.assertIn("Ready to use on this computer", html)
+        self.assertIn("Needs sign-in", html)
+        self.assertIn("Not installed", html)
+        self.assertIn('data-ai-install="opencode"', html)
+        self.assertIn('id="ai-secondary-computers"', html)
+        self.assertIn("Build Mac", html)
+        self.assertNotIn("Run the install commands in Terminal", html)
+
+    def test_ai_tool_status_failure_is_not_presented_as_an_empty_inventory(self):
+        result = self.run_configuration_script("const page = globalThis.ConfigurationPages.render('ai', {ai: null}); process.stdout.write(JSON.stringify(page.html));")
+        self.assertIn("Couldn't check the AI tools on this computer", result)
+        self.assertNotIn("No AI tools installed", result)
+
+    def test_save_model_team_starts_disabled_and_not_installed_has_extra_spacing(self):
+        result = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('ai', {
+  ai: {
+    providers: [
+      {id: 'claude', name: 'Claude Code', installed: true, ready: true, cost_label: 'Subscription', link: 'https://example.com'},
+      {id: 'opencode', name: 'OpenCode', installed: false, ready: false, cost_label: 'Free', link: 'https://example.com'}
+    ]
+  }
+});
+process.stdout.write(JSON.stringify({html: page.html}));
+""")
+        html = result["html"]
+        self.assertIn('<button class="btn primary" type="submit" disabled title="No changes were made">Save</button>', html)
+        self.assertNotIn("Save model team", html)
+        self.assertIn('id="ai-not-installed"', html)
+        self.assertIn('class="card configuration-card ai-provider-group ai-provider-group-not-installed"', html)
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".ai-provider-group-not-installed", css)
+        self.assertIn("margin-bottom: var(--space-6);", css)
+        self.assertIn(".btn:disabled[title]", css)
+        app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('submitBtn.title = "No changes were made"', app_js)
+        self.assertIn('submitBtn.removeAttribute("title")', app_js)
+
+    def test_best_default_model_config_adapts_to_available_tools(self):
+        # 1. When only Google / Antigravity is ready
+        google_res = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('ai', {
+  ai: {
+    providers: [
+      {id: 'agy', name: 'Antigravity CLI', installed: true, ready: true, cost_label: 'Free-limited', link: 'https://example.com'},
+      {id: 'claude', name: 'Claude Code', installed: false, ready: false, cost_label: 'Subscription', link: 'https://example.com'}
+    ]
+  }
+});
+process.stdout.write(JSON.stringify({html: page.html}));
+""")
+        self.assertIn('<option value="gemini-3.1-pro-preview" selected>Gemini 3.1 Pro (Google)</option>', google_res["html"])
+        self.assertIn('<option value="gemini-3-flash-preview" selected>Gemini 3 Flash (Google)</option>', google_res["html"])
+
+        # 2. When only OpenAI / Codex is ready
+        openai_res = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('ai', {
+  ai: {
+    providers: [
+      {id: 'codex', name: 'Codex', installed: true, ready: true, cost_label: 'Subscription', link: 'https://example.com'},
+      {id: 'claude', name: 'Claude Code', installed: false, ready: false, cost_label: 'Subscription', link: 'https://example.com'}
+    ]
+  }
+});
+process.stdout.write(JSON.stringify({html: page.html}));
+""")
+        self.assertIn('<option value="o3-mini" selected>o3-mini (OpenAI)</option>', openai_res["html"])
+        self.assertIn('<option value="gpt-4o" selected>GPT-4o (OpenAI)</option>', openai_res["html"])
+
+        # 3. Backend pick_best_default_models verification
+        from orchestrator.web.server import pick_best_default_models
+        gemini_defaults = pick_best_default_models(["agy"])
+        self.assertEqual(gemini_defaults["architect"], "gemini-3.1-pro-preview")
+        self.assertEqual(gemini_defaults["reviewer"], "gemini-3-flash-preview")
+
+        codex_defaults = pick_best_default_models(["codex"])
+        self.assertEqual(codex_defaults["architect"], "o3-mini")
+        self.assertEqual(codex_defaults["builder"], "gpt-4o")
+
+        opencode_defaults = pick_best_default_models(["opencode"])
+        self.assertEqual(opencode_defaults["builder"], "opencode/big-pickle")
+
+        multi_defaults = pick_best_default_models(["claude", "gemini"])
+        self.assertEqual(multi_defaults["architect"], "claude-sonnet-4-6")
+        self.assertEqual(multi_defaults["reviewer"], "gemini-3-flash-preview")
+
+    def test_firebase_settings_are_named_as_setup_separate_from_app_delivery(self):
+        result = self.run_configuration_script("""
+const P = globalThis.ConfigurationPages;
+const entry = P.find('firebase');
+const page = P.render('firebase', {firebase: {}});
+process.stdout.write(JSON.stringify({entry, title: page.title, sub: page.sub, html: page.html}));
+""")
+        self.assertEqual(result["entry"]["label"], "Tester build setup")
+        self.assertIn("Configure Firebase App Distribution", result["entry"]["description"])
+        self.assertEqual(result["title"], "Tester build setup")
+        self.assertIn("App delivery", result["sub"])
+        self.assertNotIn('data-config-action="distribute-now"', result["html"])
 
     def test_build_the_plan_views(self):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
@@ -1235,11 +1375,11 @@ process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]),
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
 const pages = globalThis.ConfigurationPages;
-const ids = ["ai", "base-branch", "projects", "email"];
+const ids = ["ai", "projects", "email"];
 process.stdout.write(JSON.stringify(Object.fromEntries(ids.map((id) => [id, pages.find(id)]))));
 """)
         self.assertEqual({key: entry["route"] for key, entry in entries.items()}, {
-            "ai": "#/config/ai", "base-branch": "#/config/base-branch", "projects": "#/projects", "email": "#/config/email"})
+            "ai": "#/config/ai", "projects": "#/projects", "email": "#/config/email"})
         self.assertTrue(all(entry["enabled"] for entry in entries.values()))
 
     def test_settings_that_moved_are_gone_from_configuration(self):
@@ -1271,7 +1411,7 @@ process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), acce
 """)
         for entry_id in ("ai-instructions", "fleet", "access", "email", "firebase", "updates"):
             self.assertNotIn(entry_id, result["ids"])
-        for entry_id in ("ai", "base-branch", "xcode-cloud"):
+        for entry_id in ("ai", "xcode-cloud"):
             self.assertIn(entry_id, result["ids"])
         self.assertNotIn("Who can sign in", result["menu"])
         self.assertNotIn("models", result["ids"])  # models are part of the shared AI destination
@@ -1292,7 +1432,7 @@ process.stdout.write(JSON.stringify(page.html));
 """)
         self.assertNotIn("Instructions for AI helpers", html)
         self.assertNotIn("Who can sign in", html)
-        self.assertIn("Base branch", html)
+        self.assertNotIn("Base branch", html)
         self.assertIn("AI &amp; models", html)
         self.assertNotIn("#/config/fleet", html)  # local members cannot manage the build fleet
 
@@ -1449,11 +1589,11 @@ process.stdout.write(JSON.stringify(page));
         for group in ("This project", ">AI<", "Computers &amp; access", "Alerts"):
             self.assertIn(group, result["html"])
         self.assertNotIn("Troubleshooting", result["html"])  # its checks are on Readiness now
-        for route in ("#/config/ai", "#/config/base-branch", "#/config/email", "#/config/ai-instructions",
+        for route in ("#/config/ai", "#/config/email", "#/config/ai-instructions",
                       "#/config/fleet", "#/config/firebase"):
             self.assertIn(route, result["html"])
         self.assertNotIn("#/config/models", result["html"])  # models share the AI page
-        for route in ("#/readiness", "#/connections", "#/projects"):  # pages of their own, reached from Settings
+        for route in ("#/checkup", "#/connections", "#/projects"):  # pages of their own, reached from Settings
             self.assertIn(route, result["html"])
         for route in ("#/config/documentation", "#/config/setup-wizard", "#/config/audit", "#/ux-review"):
             self.assertNotIn(route, result["html"])  # reachable elsewhere, not repeated
@@ -1474,7 +1614,7 @@ const page = globalThis.ConfigurationPages.render('ai', {
 });
 process.stdout.write(JSON.stringify(page));
 """)
-        self.assertEqual(result["title"], "Add an AI")
+        self.assertEqual(result["title"], "Manage AI tools")
         self.assertIn('id="api-keys"', result["html"])  # the keys card, on the page for adding an AI
         for label in ("Anthropic", "OpenAI", "Ollama", "Saved", "From environment", "Not set"):
             self.assertIn(label, result["html"])
@@ -1530,19 +1670,9 @@ process.stdout.write(JSON.stringify({
             "otherPage": False,
         })
 
-    def test_base_branch_page_uses_only_escaped_backend_branches(self):
-        result = self.run_configuration_script("""
-const page = globalThis.ConfigurationPages.render('base-branch', {
-  base_branch: 'feature/one',
-  branches: ['main', 'feature/one', '\"><script>bad()</script>']
-});
-process.stdout.write(JSON.stringify(page));
-""")
-        self.assertEqual(result["title"], "Base branch")
-        self.assertIn('<option value="feature/one" selected>', result["html"])
-        self.assertIn('&quot;&gt;&lt;script&gt;bad()&lt;/script&gt;', result["html"])
-        self.assertNotIn('<script>bad()</script>', result["html"])
-        self.assertNotIn("develop", result["html"])
+    def test_base_branch_old_route_redirects_to_git_setup(self):
+        routes = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "routes.js").read_text()
+        self.assertIn('"config/base-branch": "git"', routes)
 
     def test_archived_jobs_are_a_filter_on_home_with_restore(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -1600,7 +1730,7 @@ process.stdout.write(JSON.stringify({gmail, resend, empty}));
         self.assertIn("config/doc?id=", docs)  # read by opaque id: no path is ever sent or shown
         result = self.run_configuration_script("""
 const R = globalThis.ConfigurationPages.render;
-const pages = [R(undefined, {}), R('ai', {ai: {providers: [], plugins: []}, keys: []}), R('base-branch', {branches: []}), R('email', {email: {recipients: []}})];
+const pages = [R(undefined, {}), R('ai', {ai: {providers: [], plugins: []}, keys: []}), R('email', {email: {recipients: []}})];
 process.stdout.write(JSON.stringify(pages.map((page) => page.html).join('')));
 """)
         for terminal_handoff in ('data-action="config_menu"', "Open Full CLI Menu"):
@@ -1799,6 +1929,46 @@ class ReadApiTests(ServerTestCase):
         self.assertTrue(claude["installed"] and claude["ready"])
         self.assertTrue(data["any_ready"])
         self.assertTrue(data["plugins"])
+
+    def test_ai_provider_install_runs_as_a_background_task(self):
+        with patch("orchestrator.ai_providers.install_provider", return_value={"provider": "OpenCode"}) as install:
+            res, data = self.request("POST", "/api/ai-providers/install", {"provider": "opencode"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202, data)
+            for _ in range(50):
+                _, task = self.request("GET", f"/api/product/task/{data['task']}")
+                if task["status"] != "running":
+                    break
+                time.sleep(0.01)
+        self.assertEqual(task, {"status": "done", "result": {"provider": "OpenCode"}})
+        install.assert_called_once_with("opencode")
+
+    def test_ai_provider_machine_check_returns_secondary_computer_statuses(self):
+        result = {"machines": [{"name": "worker", "reachable": True,
+                                "providers": {"claude": {"installed": False, "ready": False}}}]}
+        with patch("orchestrator.web.server.ai_machine_statuses", return_value=result) as check:
+            res, data = self.request("POST", "/api/ai-providers/check-machines", {}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202, data)
+            for _ in range(50):
+                _, task = self.request("GET", f"/api/product/task/{data['task']}")
+                if task["status"] != "running":
+                    break
+                time.sleep(0.01)
+        self.assertEqual(task, {"status": "done", "result": result})
+        check.assert_called_once_with(self.root)
+
+    def test_ai_machine_statuses_probe_only_enabled_secondary_computers(self):
+        config = ui.runtime_dir(self.root) / "config" / "machines.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({"machines": [
+            {"name": "local", "execution_mode": "local", "enabled": True},
+            {"name": "worker", "execution_mode": "ssh", "enabled": True},
+            {"name": "offline", "execution_mode": "ssh", "enabled": False},
+        ]}))
+        probe = {"reachable": True, "llm_providers": {"claude": {"installed": False, "ready": False}}}
+        with patch("orchestrator.scripts.probe_machine.probe_machine", return_value=probe) as run_probe:
+            result = ui.ai_machine_statuses(self.root)
+        self.assertEqual(result["machines"], [{"name": "worker", "reachable": True, "providers": probe["llm_providers"]}])
+        run_probe.assert_called_once_with({"name": "worker", "execution_mode": "ssh", "enabled": True})
 
     def test_jobs_list_and_detail(self):
         _, data = self.request("GET", "/api/jobs")
@@ -2106,10 +2276,18 @@ class ActionTests(unittest.TestCase):
         import subprocess as sp
         sp.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
         sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], cwd=self.root, check=True)
+        sp.run(["git", "remote", "add", "origin", str(self.root / ".git" / "remote.git")], cwd=self.root, check=True)
+        sp.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=self.root, check=True)
+        sp.run(["git", "config", "branch.main.remote", "origin"], cwd=self.root, check=True)
+        sp.run(["git", "config", "branch.main.merge", "refs/heads/main"], cwd=self.root, check=True)
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
                   "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score"}
         (self.root / ".orchestrator" / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "planned", "paths": [], "depends_on": []}]}))
         for key, action in ui.ACTIONS.items():
+            if key == "git_pull":
+                # Earlier builders create spec files. Pull requires a clean working tree.
+                sp.run(["git", "add", "."], cwd=self.root, check=True)
+                sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "Specs"], cwd=self.root, check=True)
             argv = action.build(dict(params, name="feature/x") if key == "git_new_branch" else params, self.root)
             if key == "stash_checkout":
                 self.assertEqual(argv[:2], ["sh", "-c"], key)
@@ -2194,6 +2372,7 @@ class ActionTests(unittest.TestCase):
             ui.build_git_new_branch({"name": "bad..name"}, self.root)
         with self.assertRaises(ui.UIError):
             ui.build_git_new_branch({"name": "-rf"}, self.root)
+        sp.run(["git", "remote", "add", "origin", "git@gitlab.com:team/app.git"], cwd=self.root, check=True)
         self.assertEqual(ui.build_git_push({}, self.root), ["git", "push", "-u", "origin", "main"])
 
     def test_revise_and_test_names_are_validated(self):
@@ -3611,12 +3790,12 @@ class AccessibilityStaticTests(unittest.TestCase):
 
         sidebar = SidebarParser()
         sidebar.feed(self.html)
-        for href in ("#/", "#/activity", "#/product", "#/tests", "#/delivery", "#/git", "#/devlogs", "#/checkup", "#/ux-review",
-                     "#/measure", "#/docs", "#/readiness", "#/help"):
+        for href in ("#/", "#/activity", "#/product", "#/tests", "#/delivery", "#/git", "#/devlogs", "#/ux-review",
+                     "#/measure", "#/docs", "#/help"):
             self.assertIn(href, sidebar.links)
-        for href in ("#/connections", "#/projects"):  # set once: under Settings (Configuration), not the sidebar
+        for href in ("#/connections", "#/projects", "#/checkup"):  # set once: under Settings (Configuration), not the sidebar
             self.assertNotIn(href, sidebar.links)
-        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "lock-btn"):
+        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "lock-btn", "auto-improve-btn"):
             self.assertIn(control, sidebar.controls)
 
     def test_copy_stays_plain_and_consistent(self):
@@ -3710,7 +3889,7 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_help_covers_every_page_it_names_and_the_undo_window(self):
         start = self.js.index("pages.help = async")
         help_page = self.js[start:self.js.index("pages.devlogs = async")]
-        for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/readiness", "#/projects", "#/activity", "#/config"):
+        for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config"):
             self.assertIn(f'"{route}"', help_page, route)
         self.assertIn('href="#/docs"', help_page)
         self.assertIn("10 seconds", help_page)
@@ -3737,11 +3916,11 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
         config = (self.STATIC / "configuration.js").read_text()
-        for label, old in (("Machines & computers", "fleet"), ("Tester builds (Firebase)", "firebase app distribution")):
+        for label, old in (("Machines & computers", "fleet"), ("Tester build setup", "firebase app distribution")):
             line = next(l for l in config.splitlines() if f'label: "{label}"' in l)
             self.assertIn(old, line.lower(), label)
         app = (self.STATIC / "app.js").read_text()
-        checks = app[app.index("const READINESS_CHECKS"):app.index("pages.readiness = async")]
+        checks = app[app.index("const READINESS_CHECKS"):app.index("pages.checkup = async")]
         for label, old in (("Tools and logins", "prerequisite audit"), ("Orchestrator health check", "self-tests")):
             self.assertIn(old, checks[checks.index(label):].split("]")[0].lower(), label)
         for jargon in ('label: "Machine Fleet"', 'label: "Prerequisite Audit"', 'label: "Self-Tests"'):
@@ -3857,11 +4036,12 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('Run all tests', self.js)  # Tests
         self.assertIn('Expand coverage', self.js)
         self.assertNotIn('["Build", act("build")', self.js)
-        readiness = self.js[self.js.index("const READINESS_CHECKS"):self.js.index("pages.help = async")]
-        self.assertIn('Will this computer build it?', readiness)  # Readiness: probes
+        onboarding = self.js[self.js.index("pages.checkup = async"):self.js.index("pages.help = async")]
+        self.assertIn('Tools and environment', onboarding)
+        self.assertIn('Will this computer build it?', onboarding)
         for action in ("check", "check_config", "worker_check", "test"):  # and every environment check, in one place
-            self.assertIn(f'["{action}", ', readiness)
-        self.assertIn('href="#/readiness"', self.js[self.js.index("pages.checkup = async"):])  # Check-up points there
+            self.assertIn(f'["{action}", ', self.js)
+        self.assertNotIn('href="#/readiness"', onboarding)
         self.assertIn('act("distribute")', self.js)  # Delivery
         self.assertIn('act("logs_pull")', self.js)  # Device logs
         self.assertIn("Open full console", self.html + self.js)
@@ -4105,6 +4285,25 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('sendPasswordResetEmail', js)
         self.assertIn('sendSignInLinkToEmail', js)
         self.assertIn('isSignInWithEmailLink', js)
+
+    def test_create_account_email_only_and_signin_link_flow(self):
+        js = self.js
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn(".email-auth-notice", css)
+        self.assertIn(".email-auth-suggestion", css)
+        self.assertIn('id="email-auth-notice"', js)
+        self.assertIn('id="email-auth-suggestion"', js)
+        # Create account starts with email only: password wrap is hidden and password is not required
+        self.assertIn('emailPwWrap.hidden = true', js)
+        self.assertIn('emailPw.required = false', js)
+        # Unregistered suggestion pre-fills email and switches to signup
+        self.assertIn('showUnregisteredSuggestion', js)
+        self.assertIn('suggest-create-account-btn', js)
+        self.assertIn('No account found for', js)
+        # Email sign-in link sends link in lieu of password
+        self.assertIn('sendEmailSignInLink', js)
+        self.assertIn('showEmailConfirmGate', js)
+        self.assertIn('orchestrator_email_for_signin', js)
 
     def test_signin_gate_does_not_refresh_under_user_input(self):
         # Background ticks and refreshState do not clobber inputs or redraw sign-in gate
@@ -5760,7 +5959,7 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("Adopt current files as plan scope", self.job_page)
         self.assertIn("scope-notice-clean", self.job_page)
         self.assertIn('data-scroll-to="#scope-section"', self.job_page)
-        self.assertIn('data-route="checkup"', (static / "index.html").read_text())
+        self.assertIn("pages.checkup = async", self.source)
         self.assertIn('query.get("summary")', self.source)
         self.assertIn('data-route="measure"', (static / "index.html").read_text())
         self.assertIn("testCaseRowsHtml(testCases.cases)", self.job_page)
@@ -6183,7 +6382,7 @@ class MenuParityTests(unittest.TestCase):
     """The web Configuration menu and the terminal console's Configuration menu use the same groups and names."""
     STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
     # Settings both menus have: registry id -> the console letter that opens it.
-    SHARED = {"base-branch": "G", "firebase": "D", "xcode-cloud": "X", "models": "M", "ai-instructions": "I",
+    SHARED = {"firebase": "D", "xcode-cloud": "X", "models": "M", "ai-instructions": "I",
               "fleet": "F", "updates": "U", "email": "E"}
 
     def registry(self):
@@ -6216,13 +6415,13 @@ class MenuParityTests(unittest.TestCase):
 
     def test_moved_settings_have_one_home_and_old_links_land_there(self):
         aliases = (self.STATIC / "routes.js").read_text()
-        for old, new in (("setup-checklist", "readiness"), ("config/audit", "readiness"), ("config/self-tests", "readiness"),
-                         ("config/setup-wizard", "readiness"), ("config/chat", "connections?card=chat"), ("config/api-keys", "config/ai"),
+        for old, new in (("setup-checklist", "checkup"), ("readiness", "checkup"), ("config/audit", "checkup"), ("config/self-tests", "checkup"),
+                         ("config/setup-wizard", "checkup"), ("config/chat", "connections?card=chat"), ("config/api-keys", "config/ai"),
                          ("config/documentation", "docs"), ("config/archived-jobs", "?filter=archived"), ("test-cases", "tests/cases")):
             self.assertIn(f'"{old}": "{new}"', aliases, old)
         html = (self.STATIC / "index.html").read_text()
-        self.assertIn('href="#/readiness" data-route="readiness" id="nav-readiness" hidden', html)  # shown until setup is done
-        self.assertIn('navItem.hidden = !s || s.complete;', app := (self.STATIC / "app.js").read_text())
+        self.assertNotIn('id="nav-checkup"', html)
+        self.assertIn('badge.hidden = !s || !remaining;', app := (self.STATIC / "app.js").read_text())
         app = (self.STATIC / "app.js").read_text()
         connections = app[app.index("pages.connections = async"):]
         self.assertIn('const hook = owner ? (await api("config").catch(() => null))?.webhook : null;', connections)  # owners only
@@ -6235,14 +6434,14 @@ class SidebarLayoutTests(unittest.TestCase):
     def test_most_used_pages_lead_and_set_once_settings_sit_under_settings(self):
         html = (self.STATIC / "index.html").read_text()
         main = html[html.index('<nav class="nav" id="nav"'):html.index("</nav>", html.index('<nav class="nav" id="nav"'))]
-        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["readiness", "home", "activity", "product"])
+        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["home", "activity", "product"])
         tabbar = html[html.index('<nav class="tabbar"'):]
         self.assertEqual(re.findall(r'data-route="([a-z-]+)"', tabbar[:tabbar.index("</nav>")]), ["home", "product", "new", "activity", "tests"])
         out = subprocess.run(["node", "--require", HTML_JS, "-e", "require(process.argv[1]);"
                               "process.stdout.write(JSON.stringify(globalThis.ConfigurationPages.groups('owner')[0]))",
                               str(self.STATIC / "configuration.js")], capture_output=True, text=True)
         first = json.loads(out.stdout)
-        self.assertEqual((first["label"], [e["route"] for e in first["entries"]]), ("Set up", ["#/readiness", "#/connections", "#/projects"]))
+        self.assertEqual((first["label"], [e["route"] for e in first["entries"]]), ("Set up", ["#/checkup", "#/connections", "#/projects"]))
 
 
 class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):

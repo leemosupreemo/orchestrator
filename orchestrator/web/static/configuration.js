@@ -2,8 +2,8 @@
   "use strict";
 
   // Grouped by what a setting affects, the way GitHub splits a repository's settings from your own: this project,
-  // the AI, the computers and who reaches them, and alerts. Each setting has one home: environment checks are on
-  // Readiness, Slack alerts on Connections, guides in Docs, archived jobs on Home, screen setup in UX review.
+  // the AI, the computers and who reaches them, and alerts. Each setting has one home: setup checks are on
+  // the Onboarding checklist, Slack alerts on Connections, guides in Docs, archived jobs on Home, screen setup in UX review.
   // Entries with `listed: false` are left out of menus; their routes still work.
   const registry = [
     {
@@ -11,7 +11,7 @@
       id: "setup",
       label: "Set up",
       entries: [
-        {id: "readiness", label: "Readiness", description: "Whether jobs can run here: what's missing, build tools and checks.", route: "#/readiness", enabled: true, status: null},
+        {id: "checkup", label: "Onboarding checklist", description: "Project requirements, tools, environment checks, and selected workflows.", route: "#/checkup", enabled: true, status: null},
         {id: "connections", label: "Connections", description: "Jira, Trello, Sentry and Figma for jobs, and Slack alerts.", route: "#/connections", enabled: true, status: null},
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
       ],
@@ -20,8 +20,7 @@
       id: "project",
       label: "This project",
       entries: [
-        {id: "base-branch", label: "Base branch", description: "The branch jobs compare their work against.", route: "#/config/base-branch", enabled: true, status: null},
-        {id: "firebase", label: "Tester builds (Firebase)", description: "Send builds to testers through Firebase App Distribution, and set up signing.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
+        {id: "firebase", label: "Tester build setup", description: "Configure Firebase App Distribution, signing, and tester groups. Send and track builds in App delivery.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
         {id: "xcode-cloud", label: "Xcode Cloud", description: "Cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
       ],
     },
@@ -285,8 +284,54 @@
     </details>`;
   }
 
+  function bestDefaultModels(providers = []) {
+    const active = new Set(
+      providers.filter((p) => p.ready).map((p) => p.id)
+    );
+    if (!active.size) {
+      providers.filter((p) => p.installed).forEach((p) => active.add(p.id));
+    }
+    const hasClaude = active.has("claude");
+    const hasGemini = active.has("agy") || active.has("gemini");
+    const hasOpenAI = active.has("codex");
+    const hasOpenCode = active.has("opencode");
+    const hasOllama = active.has("ollama");
+
+    const architect = hasClaude ? "claude-sonnet-4-6"
+      : hasGemini ? "gemini-3.1-pro-preview"
+      : hasOpenAI ? "o3-mini"
+      : hasOpenCode ? "opencode/big-pickle"
+      : hasOllama ? "deepseek"
+      : "claude-sonnet-4-6";
+
+    const planner = hasClaude ? "claude-sonnet-4-6"
+      : hasGemini ? "gemini-3.1-pro-preview"
+      : hasOpenAI ? "gpt-4o"
+      : hasOpenCode ? "opencode/big-pickle"
+      : hasOllama ? "deepseek"
+      : "claude-sonnet-4-6";
+
+    const builder = hasClaude ? "claude-sonnet-4-6"
+      : hasOpenAI ? "gpt-4o"
+      : hasGemini ? "gemini-3.1-pro-preview"
+      : hasOpenCode ? "opencode/big-pickle"
+      : hasOllama ? "deepseek"
+      : "claude-sonnet-4-6";
+
+    const reviewer = hasGemini ? "gemini-3-flash-preview"
+      : hasClaude ? "claude-sonnet-4-6"
+      : hasOpenAI ? "gpt-4o"
+      : hasOpenCode ? "opencode/big-pickle"
+      : hasOllama ? "deepseek"
+      : "claude-sonnet-4-6";
+
+    return { architect, planner, builder, reviewer };
+  }
+
   function roleAssignmentsCard(state = {}) {
     const modelsData = state.models || {};
+    const providers = state.ai?.providers || [];
+    const defaults = bestDefaultModels(providers);
     const assignments = modelsData.assignments || {};
     const available = modelsData.available && modelsData.available.length ? modelsData.available : [
       {id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Recommended)", provider: "Anthropic"},
@@ -294,7 +339,9 @@
       {id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", provider: "Google"},
       {id: "gemini-3-flash-preview", name: "Gemini 3 Flash", provider: "Google"},
       {id: "gpt-4o", name: "GPT-4o", provider: "OpenAI"},
-      {id: "o3-mini", name: "o3-mini", provider: "OpenAI"}
+      {id: "o3-mini", name: "o3-mini", provider: "OpenAI"},
+      {id: "opencode/big-pickle", name: "Big Pickle (Free)", provider: "OpenCode"},
+      {id: "deepseek", name: "DeepSeek Coder", provider: "Ollama"}
     ];
     const roles = [
       {id: "architect", label: "Architect", desc: "Checks the plan and sets the standards it must meet"},
@@ -303,7 +350,7 @@
       {id: "reviewer", label: "Reviewer", desc: "Reads the changes and the test results, and looks for what could break"}
     ];
     const formRows = roles.map((role) => {
-      const currentVal = assignments[role.id] || "claude-sonnet-4-6";
+      const currentVal = assignments[role.id] || defaults[role.id] || "claude-sonnet-4-6";
       const options = available.map((m) => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? " selected" : ""}>${escapeHtml(m.label || m.name || m.id)} (${escapeHtml(m.provider)})</option>`).join("");
       return `<div class="configuration-setting-row">
         <div class="main-col">
@@ -319,42 +366,51 @@
         <p class="muted">Which AI model each role (architect, planner, builder, reviewer) uses by default.</p>
         <div class="configuration-setting-list">${formRows}</div>
         <div class="row end" style="margin-top:16px;">
-          <button class="btn primary" type="submit">Save model team</button>
+          <button class="btn primary" type="submit" disabled title="No changes were made">Save</button>
         </div>
       </form>
     </section>`;
   }
 
-  // Combined Add an AI & Models: each provider with its cost, whether it's ready, expandable model tree, and role models.
+  // Provider setup is a compact inventory; the owner can install a known provider without copying a shell command.
   function renderAi(state) {
+    const available = Array.isArray(state.ai?.providers);
     const ai = state.ai || {providers: [], plugins: []};
-    const copyable = (command) => command
-      ? `<div class="setup-hint"><code>${escapeHtml(command)}</code><button type="button" class="btn small ghost" data-setup-copy="${escapeHtml(command)}">Copy</button></div>` : "";
-    const badge = (p) => p.ready ? `<span class="pill done">Ready</span>`
-      : p.installed ? `<span class="pill">Installed, not signed in</span>` : `<span class="pill">Not installed</span>`;
-    const cards = ai.providers.map((p) => `<section class="card configuration-card ai-provider" data-provider="${escapeHtml(p.id)}">
-        <div class="card-h"><h2>${escapeHtml(p.name)}</h2>${badge(p)}</div>
-        <div class="card-b stack">
-        <p><strong>${escapeHtml(p.cost_label)}.</strong> ${escapeHtml(p.what)}</p>
-        ${p.ready ? "" : `${p.installed ? "" : `<p class="muted">1. Install it:</p>${copyable(p.install)}${copyable(p.install_alt)}${p.install_note ? `<small>${escapeHtml(p.install_note)}</small>` : ""}`}
-          <p class="muted">${p.installed ? "Then" : "2."} ${escapeHtml(p.sign_in)}</p>`}
-        <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
-        ${modelTreeHtml(p.id, p.ready)}
+    const providers = ai.providers || [];
+    const owner = state.viewer?.role !== "member";
+    const status = (p) => p.installed ? p.ready ? `<span class="pill done">Ready</span>` : `<span class="pill attention">Needs sign-in</span>`
+      : p.key_saved ? `<span class="pill attention">Not installed · API key saved</span>` : `<span class="pill">Not installed</span>`;
+    const toolRow = (p) => `<details class="ai-tool" data-provider="${escapeHtml(p.id)}">
+        <summary><span class="ai-tool-name">${escapeHtml(p.name)}</span>${status(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span></summary>
+        <div class="ai-tool-details stack">
+          <p>${escapeHtml(p.what)}</p>
+          ${!p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>` : !p.ready ? `<p class="muted">${escapeHtml(p.sign_in)}</p>` : `<p class="ai-ready-note">Ready to use on this computer.</p>`}
+          <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
+          ${modelTreeHtml(p.id, false)}
         </div>
-      </section>`).join("");
+      </details>`;
+    const providerGroup = (title, items) => {
+      const isNotInstalled = title === "Not installed";
+      const idAttr = isNotInstalled ? ' id="ai-not-installed"' : ' id="ai-installed"';
+      const extraClass = isNotInstalled ? " ai-provider-group-not-installed" : "";
+      return `<section class="card configuration-card ai-provider-group${extraClass}"${idAttr}><div class="card-h"><h2>${title}</h2><span class="count">${items.length}</span></div>
+        <div class="ai-tool-list">${items.map(toolRow).join("") || `<p class="muted ai-empty-group">${title === "Installed" ? "No AI tools installed on this computer yet." : "All listed AI tools are installed."}</p>`}</div></section>`;
+    };
+    const installed = providers.filter((p) => p.installed);
+    const notInstalled = providers.filter((p) => !p.installed);
+    const secondary = (state.machines || []).filter((m) => m.enabled !== false && m.mode === "ssh");
     const plugins = (ai.plugins || []).map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {
-      title: "Add an AI",
-      sub: ai.any_ready ? "You have at least one AI ready. Add more to choose between them per job." : "Orchestrator needs at least one AI to plan, build and review. Free options are first.",
+      title: "Manage AI tools",
+      sub: ai.any_ready ? "Choose which tools are available to your jobs." : "Install and connect an AI tool to plan, build, and review jobs.",
       html: `<div class="configuration-page">
+        ${available ? `${providerGroup("Installed", installed)}
+        ${providerGroup("Not installed", notInstalled)}` : `<section class="card configuration-card"><div class="card-b"><p class="muted">Couldn't check the AI tools on this computer. Refresh the page to try again.</p></div></section>`}
+        ${secondary.length ? `<section class="card configuration-card ai-secondary-card"><div class="card-h"><h2>Other computers</h2><button type="button" class="btn small ghost" id="ai-refresh-machines">Refresh status</button></div>
+          <p class="card-b muted card-note">Checks tool installation and sign-in on enabled secondary computers. It does not run model requests.</p>
+          <div class="ai-machine-status-list" id="ai-secondary-computers">${secondary.map((m) => `<div class="ai-machine-status" data-ai-machine="${escapeHtml(m.name)}"><strong>${escapeHtml(m.name)}</strong><span class="muted">Checking…</span></div>`).join("")}</div>
+        </section>` : ""}
         ${roleAssignmentsCard(state)}
-        <section class="card configuration-card">
-          <div class="card-h"><h2>AI Providers</h2></div>
-          <div class="card-b stack">
-            <p class="muted">Run the install commands in Terminal on the computer Orchestrator runs on, then come back: this page checks again each time it opens. Prices and free allowances change; last checked ${escapeHtml(ai.checked || "")}.</p>
-          </div>
-        </section>
-        ${cards || `<div class="empty">Couldn't check the AI tools on this computer.</div>`}
         ${Array.isArray(state.keys) ? apiKeysCard(state) : ""}
         <section class="card configuration-card">
           <div class="card-h"><h2>Helpful plugins for your AI tools</h2></div>
@@ -366,26 +422,6 @@
             </div>
             ${plugins ? `<details class="fold mt-8"><summary class="muted">See installed plugins list</summary><ul class="plain-list mt-8">${plugins}</ul></details>` : ""}
           </div>
-        </section>
-      </div>`,
-    };
-  }
-
-  function renderBaseBranch(state) {
-    const branches = Array.isArray(state.branches) ? state.branches : [];
-    const options = branches.map((branch) => `<option value="${escapeHtml(branch)}"${branch === state.base_branch ? " selected" : ""}>${escapeHtml(branch)}</option>`).join("");
-    return {
-      title: "Base branch",
-      sub: "Choose the branch jobs use as their comparison point.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Comparison branch</h2></div>
-          <form class="card-b stack" id="config-base-branch-form">
-            <label class="field"><span>Base branch</span><select name="branch" required>${options}</select>
-              <small>Only local branches are available.</small>
-            </label>
-            <div class="row end"><button class="btn primary" type="submit">Save base branch</button></div>
-          </form>
         </section>
       </div>`,
     };
@@ -581,11 +617,11 @@
   function renderFirebase(state) {
     const fb = state.firebase || {};
     return {
-      title: "Tester builds (Firebase)",
-      sub: "Configure automated beta releases and tester distribution.",
+      title: "Tester build setup",
+      sub: "Configure Firebase App Distribution for builds you send from App delivery.",
       html: `<div class="configuration-page">
         <section class="card configuration-card">
-          <div class="card-h"><h2>Distribution Settings</h2><div class="row"><button type="button" class="btn small primary" data-config-action="distribute-now">Distribute current branch</button></div></div>
+          <div class="card-h"><h2>Firebase distribution settings</h2></div>
           <form class="card-b stack" id="config-firebase-form">
             <div class="notice ${fb.cli_installed ? "good" : ""}">
               ${fb.cli_installed ? "✓ Firebase CLI is installed on this system." : "⚠️ Firebase CLI is not installed. Run 'npm install -g firebase-tools' to enable tester releases."}
@@ -647,7 +683,6 @@
 
   function render(section, state = {}) {
     if (section === "ai") return renderAi(state);
-    if (section === "base-branch") return renderBaseBranch(state);
     if (section === "email") return renderEmail(state);
     if (section === "access") return renderAccess(state);
     if (section === "models") return renderModels(state);

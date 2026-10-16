@@ -118,6 +118,9 @@ def prd_reply(prompt: str) -> str:
 
 
 def main() -> int:
+    if "models" in sys.argv:
+        print("opencode/big-pickle\nopencode/deepseek-v4-flash-free")
+        return 0
     prompt = sys.stdin.read()
     state = load()
     role = role_of(prompt)

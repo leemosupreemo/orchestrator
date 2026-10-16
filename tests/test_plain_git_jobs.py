@@ -169,6 +169,26 @@ class PlainGitJobTests(unittest.TestCase):
         github_without_pr = ui.job_state({"status": "review-needed", "branch": "ai/issue-1-x"})
         self.assertEqual(github_without_pr["next"]["action"], "complete")
 
+    def test_a_failed_plain_git_push_is_recorded_for_recovery(self):
+        job = {"branch": "ai/job-fix", "base_branch": "main"}
+        with patch.object(open_or_update_pr, "PROJECT_CONFIG", self.config(git_remote="git@gitlab.com:me/app.git")), \
+                patch.object(open_or_update_pr, "run", side_effect=RuntimeError("Authentication failed")):
+            self.assertEqual(open_or_update_pr.push_branch_for_review(job), "")
+        self.assertIn("Authentication failed", job["publish_error"])
+
+    def test_github_publishing_preserves_push_failure_even_if_a_pr_exists(self):
+        import json
+        path = self.repo.root / "job.json"
+        path.write_text(json.dumps({"branch": "ai/issue-7-fix", "job_id": "job-7", "issue_number": 7, "title": "Fix"}))
+        result = {}
+        with patch.object(open_or_update_pr, "PROJECT_CONFIG", self.config(code_host="github")), \
+                patch.object(open_or_update_pr, "run", side_effect=RuntimeError("Push rejected")), \
+                patch.object(open_or_update_pr, "gh_text", return_value=""), \
+                patch.object(open_or_update_pr, "gh_json", side_effect=[[{"number": 9, "title": "issue #7", "body": ""}], {"url": "https://github.com/me/app/pull/9"}]):
+            number, _ = open_or_update_pr.open_or_update_pr(path, publish_result=result)
+        self.assertEqual(number, 9)
+        self.assertIn("Push rejected", result["publish_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

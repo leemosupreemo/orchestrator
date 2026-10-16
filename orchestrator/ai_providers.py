@@ -7,6 +7,8 @@ checked. The web page shows them with what's already installed and signed in on 
 """
 from __future__ import annotations
 
+import subprocess
+import threading
 from typing import Callable
 
 CHECKED = "October 2026"
@@ -37,7 +39,7 @@ PROVIDERS: list[dict[str, str]] = [
      "key_label": "Claude"},
     {"id": "codex", "name": "Codex (OpenAI)", "cli": "codex", "cost": "subscription",
      "what": "Included with ChatGPT Plus, Pro and Business plans, or pay as you go with an OpenAI API key.",
-     "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh", "install_alt": "brew install --cask codex",
+     "install": "npm install -g @openai/codex@latest", "install_alt": "brew install --cask codex",
      "sign_in": "Run `codex` once and sign in with ChatGPT, or add an OpenAI API key under API Keys.",
      "link": "https://developers.openai.com/codex/cli", "key": "openai_api_key", "env": "OPENAI_API_KEY",
      "key_label": "Codex / OpenAI"},
@@ -59,6 +61,9 @@ PLUGINS: list[dict[str, str]] = [
     {"name": "Playwright MCP", "why": "Drive and inspect web apps in a browser."},
 ]
 
+_INSTALL_LOCK = threading.Lock()
+_INSTALLING: set[str] = set()
+
 
 def with_status(installed: Callable[[str], bool], ready: Callable[[str], bool], saved_keys: set[str]) -> dict:
     """The providers, free first, each with `installed` and `ready` (signed in, or an API key saved), and the plugins."""
@@ -69,3 +74,32 @@ def with_status(installed: Callable[[str], bool], ready: Callable[[str], bool], 
         out.append({**provider, "cost_label": COST_LABELS[provider["cost"]], "installed": has_cli,
                     "ready": (has_cli and ready(provider["cli"])) or key_saved, "key_saved": key_saved})
     return {"providers": out, "any_ready": any(p["ready"] for p in out), "plugins": PLUGINS, "checked": CHECKED}
+
+
+def install_provider(provider_id: str) -> dict[str, str]:
+    """Run the fixed, provider-owned installer after the UI has asked the owner to confirm."""
+    provider = next((item for item in PROVIDERS if item["id"] == provider_id), None)
+    if provider is None:
+        raise ValueError("Unknown AI provider")
+    command = provider.get("install", "").strip()
+    if not command:
+        raise ValueError("This AI tool does not have an automatic installer")
+    with _INSTALL_LOCK:
+        if provider_id in _INSTALLING:
+            raise RuntimeError(f"{provider['name']} is already being installed")
+        _INSTALLING.add(provider_id)
+    try:
+        try:
+            result = subprocess.run(["bash", "-lc", command], stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, timeout=360, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Installing {provider['name']} took too long. Check its official instructions and try again.") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Couldn't start the installer for {provider['name']}: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "Installer exited without details.").strip()[-1200:]
+            raise RuntimeError(f"Couldn't install {provider['name']}. {detail}")
+    finally:
+        with _INSTALL_LOCK:
+            _INSTALLING.discard(provider_id)
+    return {"provider": provider["name"], "detail": "Installed. Finish sign-in if this tool requires it."}

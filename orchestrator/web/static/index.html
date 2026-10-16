@@ -41,6 +41,7 @@
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
     <symbol id="i-key" viewBox="0 0 24 24"><path d="m21 2-2 2m-1.5 1.5L14 9l-2-2-4 4-2-2L2 13l4 4 4-4-2-2 3.5-3.5M15 15l6 6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></symbol>
   </svg>
   <div class="app">
     <header class="mobile-header">
@@ -61,7 +62,6 @@
       <button type="button" class="btn search-btn" id="search-btn" aria-haspopup="dialog"><span>Search Orchestrator</span><kbd>⌘K</kbd></button>
       <!-- What people open most sits at the top; settings they touch once are one place, under Settings. -->
       <nav class="nav" id="nav" aria-label="Main">
-        <a href="#/readiness" data-route="readiness" id="nav-readiness" hidden><svg class="icon"><use href="#i-check"/></svg><span>Finish setup</span><span class="badge" id="setup-badge"></span></a>
         <a href="#/" data-route="home"><svg class="icon"><use href="#i-home"/></svg><span>Home</span><span class="badge" id="inbox-badge" hidden></span></a>
         <a href="#/activity" data-route="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span><span class="badge" id="running-badge" hidden></span></a>
         <a href="#/product" data-route="product"><svg class="icon"><use href="#i-doc"/></svg><span>Product</span></a>
@@ -73,7 +73,6 @@
         <a href="#/git" data-route="git"><span>Git setup</span></a>
         <a href="#/devlogs" data-route="devlogs"><span>Device logs</span></a>
         <span class="label">Review</span>
-        <a href="#/checkup" data-route="checkup"><span>Onboarding checklist</span></a>
         <a href="#/ux-review" data-route="ux-review"><span>UX review</span></a>
         <a href="#/measure" data-route="measure"><span>Measure</span></a>
         <a href="#/docs" data-route="docs"><span>Docs</span></a>
@@ -88,6 +87,7 @@
       </nav>
       <!-- Occasional actions: quiet rows at the foot, not buttons competing with the navigation. -->
       <div class="sidebar-footer">
+        <button type="button" class="btn ghost auto-improve-btn" id="auto-improve-btn" data-action="auto-improve" aria-label="Auto-improve Orchestrator"><svg class="icon" aria-hidden="true"><use href="#i-sparkle"/></svg><span>Auto-improve Orchestrator</span></button>
         <a class="btn ghost help-btn" href="#/help" data-route="help">Help</a>
         <button type="button" class="btn ghost feedback-btn" id="feedback-btn" aria-label="Feedback"><svg class="icon" aria-hidden="true"><use href="#i-feedback"/></svg><span>Feedback</span></button>
         <button class="btn ghost console-btn" data-action="console" data-owner-only><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>Open full console</button>
@@ -102,7 +102,7 @@
             <a class="back-link" id="back-link" href="#/" aria-label="Back" title="Back" hidden><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></a>
             <h1 id="page-title" tabindex="-1">Home</h1>
           </div>
-          <p class="sub" id="page-sub"></p>
+          <div class="sub" id="page-sub"></div>
         </div>
         <div class="topbar-actions" id="topbar-actions"></div>
       </header>

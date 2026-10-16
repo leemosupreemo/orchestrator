@@ -3723,16 +3723,6 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
 
     settings = read_settings(root)
     api_key = os.environ.get("RESEND_API_KEY") or settings.get("resend_api_key")
-    if not api_key:
-        ref_env = Path("/Users/leemosupreemo/Projects/spot-difference-game/functions/.env")
-        if ref_env.is_file():
-            try:
-                for line in ref_env.read_text().splitlines():
-                    if line.startswith("RESEND_API_KEY="):
-                        api_key = line.split("=", 1)[1].strip()
-                        break
-            except Exception:
-                pass
 
     if api_key:
         resend_payload = {
@@ -4143,11 +4133,12 @@ class UIServer(ThreadingHTTPServer):
         self._plan_lock = threading.Lock()   # one plan-run decision at a time (background loop and page requests)
         self._plan_sessions: dict[str, Any] = {}  # feature id -> the planning run started for it
         self.on_reset_tunnel: Callable[[], bool] | None = None
+        self.trigger_heartbeat: Callable[[], None] | None = None
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel"):
+                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -4256,9 +4247,22 @@ class UIServer(ThreadingHTTPServer):
                 print(f"  Account heartbeat: {exc}", flush=True)
             return True
 
+        wake_event = threading.Event()
+        self.trigger_heartbeat = wake_event.set
+
         def loop() -> None:
-            while beat() and not self._stopping.wait(interval):
-                pass
+            while beat():
+                wake_event.clear()
+                t0 = time.time()
+                while not self._stopping.is_set():
+                    if wake_event.wait(timeout=min(interval, 5.0)):
+                        wake_event.clear()
+                        break
+                    now = time.time()
+                    if (now - t0 >= interval) or (now - t0 > 15.0 and now - t0 > interval * 2):
+                        break
+                if self._stopping.is_set():
+                    break
 
         thread = threading.Thread(target=loop, daemon=True, name="heartbeat")
         thread.start()
@@ -6320,6 +6324,7 @@ def start_tunnel(port: int, token: str | None = None, discovery_timeout: float =
     found: queue.Queue[str] = queue.Queue(maxsize=1)
     def discover_and_drain() -> None:
         sink = connection_log.open_tunnel_log()
+        consecutive_errors = 0
         try:
             while proc.stdout:
                 line = proc.stdout.readline()
@@ -6332,6 +6337,13 @@ def start_tunnel(port: int, token: str | None = None, discovery_timeout: float =
                         found.put_nowait(match.group(0))
                     except queue.Full:
                         pass
+                if "control stream encountered a failure" in line or "Serve tunnel error" in line:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 2:
+                        setattr(proc, "broken", True)
+                elif "Registered tunnel connection" in line:
+                    consecutive_errors = 0
+                    setattr(proc, "broken", False)
         except (OSError, ValueError, StopIteration):
             pass
         finally:
@@ -6372,6 +6384,8 @@ class TunnelKeeper:
 
     def _healthy(self) -> bool:
         with self._lock:
+            if getattr(self.proc, "broken", False):
+                return False
             # A quick tunnel that never printed an address isn't usable, even though cloudflared is running.
             return self.proc is not None and self.proc.poll() is None and bool(self.url or self.token)
 
@@ -6382,13 +6396,21 @@ class TunnelKeeper:
 
     def _watch(self) -> None:
         failures = 0
+        last_tick = time.time()
         while not self._stop.wait(min(self.interval * (2 ** failures), self.max_wait)):
+            now = time.time()
+            wait_time = min(self.interval * (2 ** failures), self.max_wait)
+            slept = (now - last_tick) > max(wait_time * 2.5, wait_time + 10.0)
+            last_tick = now
             with self._lock:
-                if self._healthy():
+                if slept and not self.token:
+                    print("  System woke from sleep. Refreshing Cloudflare tunnel…", flush=True)
+                elif self._healthy():
                     failures = 0
                     continue
             before = self.url
-            print("  The tunnel stopped. Starting it again…", flush=True)
+            if not slept:
+                print("  The tunnel stopped. Starting it again…", flush=True)
             if self._launch():
                 failures = 0
                 if self.url != before:
@@ -6526,13 +6548,15 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
         reach["url"] = address
         hosted_url = f"{HOSTED_APP_URL}/?backend={address}&token={server.token}"
         PUBLIC_URL["url"] = hosted_url
+        if getattr(server, "trigger_heartbeat", None):
+            server.trigger_heartbeat()
         if paired and address.startswith("https://"):
             # The hosted app is the address to use: it never changes and finds this computer through the account.
             # The tunnel's own address changes whenever a quick tunnel restarts, so it's only a fallback.
-            print(f"  Direct link (changes when the tunnel restarts): {address}/?token={server.token}")
+            print(f"  Direct link (changes when the tunnel restarts): {address}/?token={server.token}", flush=True)
             return
-        print(f"  \033[92m✓ {label}:\033[0m   {address}/?token={server.token}")
-        print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}")
+        print(f"  \033[92m✓ {label}:\033[0m   {address}/?token={server.token}", flush=True)
+        print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}", flush=True)
 
     if tunnel_token or getattr(args, "tunnel", False):
         print("  Starting Cloudflare Named Tunnel (stable persistent token)..." if tunnel_token

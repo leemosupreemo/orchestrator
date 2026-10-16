@@ -6,10 +6,12 @@
   // the old query string carries over, and the new one wins on a clash. Add an entry whenever a route moves.
   const ALIASES = {
     "test-cases": "tests/cases",
-    "setup-checklist": "readiness",
-    "config/audit": "readiness",
-    "config/self-tests": "readiness",
-    "config/setup-wizard": "readiness",
+    "setup-checklist": "checkup",
+    "readiness": "checkup",
+    "config/audit": "checkup",
+    "config/self-tests": "checkup",
+    "config/setup-wizard": "checkup",
+    "config/base-branch": "git",
     "config/chat": "connections?card=chat",
     "config/api-keys": "config/ai",
     "config/models": "config/ai",

@@ -12,6 +12,7 @@ class OnboardingUITests(unittest.TestCase):
         script = r'''
 const fs = require('fs'), source = fs.readFileSync(process.argv[1], 'utf8');
 const input = JSON.parse(process.argv[2]), pages = {}, state = {you: {role: 'owner'}}, esc = s => String(s ?? '');
+const ConfigurationPages = {canRunAction: () => true}, act = () => '', codeSpans = s => esc(s), $ = () => null;
 let setupState;
 const itemStart = source.indexOf('function setupItem(');
 eval(source.slice(itemStart, source.indexOf('function setupListHtml', itemStart)));
@@ -21,8 +22,9 @@ async function api(path) {
   if(data[path]) return data[path];
   throw new Error('Unavailable');
 }
-const start = source.indexOf('pages.checkup = async');
-eval(source.slice(start, source.indexOf('\n};',start)+3));
+const start = source.indexOf('const READINESS_CHECKS');
+const end = source.indexOf('\n};', source.indexOf('pages.checkup = async', start)) + 3;
+eval(source.slice(start, end));
 pages.checkup().then(page => console.log(JSON.stringify(page)));
 '''
         result = subprocess.run(["node", "-e", script,
@@ -44,6 +46,16 @@ pages.checkup().then(page => console.log(JSON.stringify(page)));
         self.assertIn("Optional", html)
         self.assertIn("Figma", html)
         self.assertNotIn("<h2>Everything</h2>", html)
+
+    def test_tools_and_environment_checks_live_in_the_onboarding_checklist(self):
+        html = self.render(self.setup(), {"integrations": []}, {"items": [
+            {"id": "build-tool", "title": "Xcode command line tools", "status": "fail", "detail": "Install Xcode tools", "route": "#/config/fleet", "fix": "Review machines"}
+        ]})
+        self.assertIn("Tools and environment", html)
+        self.assertIn("Will this computer build it?", html)
+        self.assertIn("Xcode command line tools", html)
+        self.assertIn("Run a check", html)
+        self.assertNotIn("Open Readiness", html)
 
     def test_release_uses_an_action_instead_of_a_shell_command(self):
         html = self.render(self.setup(), {"integrations": []}, {"items": []})
@@ -91,7 +103,7 @@ createReleaseTag().then(() => {
         html = self.render()
         self.assertIn("Status unavailable", html)
         self.assertNotIn("Required setup is complete", html)
-        self.assertIn('href="#/readiness"', html)
+        self.assertIn("Tools and environment", html)
 
     def test_unselected_firebase_does_not_become_a_required_next_step(self):
         setup = self.setup()

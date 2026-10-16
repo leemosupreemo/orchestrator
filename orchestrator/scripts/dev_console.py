@@ -7054,7 +7054,7 @@ def handle_configuration_menu(session_allowed_machines: list[str], session_allow
             print_wrapped_option(f"[\033[93mG\033[0m] Base branch (\033[97m{global_base}\033[0m)")
             print_wrapped_option("[\033[93mC\033[0m] Projects (switch project)")
             print_wrapped_option("[\033[93mA\033[0m] Archived jobs")
-            print_wrapped_option("[\033[93mD\033[0m] Tester builds (Firebase)")
+            print_wrapped_option("[\033[93mD\033[0m] Tester build setup")
             print_wrapped_option("[\033[93mX\033[0m] Xcode Cloud")
 
             print("\n  \033[1;96m--- AI ---\033[0m")

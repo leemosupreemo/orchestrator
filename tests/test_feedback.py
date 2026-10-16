@@ -59,8 +59,11 @@ class FeedbackFrontendFileTests(unittest.TestCase):
     def test_index_html_integration(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
         self.assertIn('id="feedback-btn"', html)
+        self.assertIn('id="auto-improve-btn"', html)
+        self.assertIn('Auto-improve Orchestrator', html)
         self.assertIn('id="feedback-dialog"', html)
         self.assertIn('id="i-feedback"', html)
+        self.assertIn('id="i-sparkle"', html)
         self.assertIn('src="feedback.js"', html)
 
     def test_style_css_integration(self):
@@ -79,10 +82,13 @@ class FeedbackFrontendFileTests(unittest.TestCase):
         self.assertIn(".feedback-job-action-box", css)
         self.assertIn(".feedback-fields-stack", css)
         self.assertIn(".prize-card", css)
+        self.assertIn(".auto-improve-btn", css)
 
     def test_app_js_integration(self):
         app = APP_JS.read_text(encoding="utf-8")
         self.assertIn("#feedback-btn", app)
+        self.assertIn("#auto-improve-btn", app)
+        self.assertIn("Auto-improve Orchestrator", app)
         self.assertIn("Feedback.open", app)
         self.assertIn("Send feedback", app)
         self.assertIn("#help-feature-btn", app)
@@ -230,8 +236,14 @@ class FeedbackBackendTests(unittest.TestCase):
         self.root.mkdir(parents=True)
         (self.root / ".orchestrator").mkdir(parents=True)
         (self.root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "Demo"}))
+        self.env_patcher = patch.dict(os.environ, {"RESEND_API_KEY": ""}, clear=False)
+        self.env_patcher.start()
+        self.urlopen_patcher = patch("urllib.request.urlopen")
+        self.mock_urlopen = self.urlopen_patcher.start()
 
     def tearDown(self):
+        self.urlopen_patcher.stop()
+        self.env_patcher.stop()
         self.tmp.cleanup()
 
     def test_dispatch_feedback_requires_text(self):
@@ -408,8 +420,10 @@ class ServerEndpointFeedbackTests(unittest.TestCase):
         import http.client
         import threading
         self.http_client = http.client
-        self.env = patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(base / "state")})
+        self.env = patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(base / "state"), "RESEND_API_KEY": ""}, clear=False)
         self.env.start()
+        self.urlopen_patcher = patch("urllib.request.urlopen")
+        self.mock_urlopen = self.urlopen_patcher.start()
         self.server = ui.UIServer(("127.0.0.1", 0), self.root, token="test-token")
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -419,6 +433,7 @@ class ServerEndpointFeedbackTests(unittest.TestCase):
         self.server.sessions.stop_all()
         self.server.shutdown()
         self.server.server_close()
+        self.urlopen_patcher.stop()
         self.env.stop()
         self.tmp.cleanup()
 

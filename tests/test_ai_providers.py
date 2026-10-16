@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from orchestrator import ai_providers
@@ -43,6 +44,21 @@ class AiProviderTests(unittest.TestCase):
         doc = (REPO / "docs" / "recommended-mcp-plugins.md").read_text()
         for plugin in ai_providers.PLUGINS:
             self.assertIn(plugin["name"], doc)
+
+    @patch("orchestrator.ai_providers.subprocess.run")
+    def test_install_runs_only_the_registered_provider_command(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = "installed"
+        result = ai_providers.install_provider("opencode")
+        self.assertEqual(result["provider"], "OpenCode")
+        self.assertEqual(run.call_args.args[0], ["bash", "-lc", ai_providers.PROVIDERS[0]["install"]])
+        self.assertIs(run.call_args.kwargs["stdin"], ai_providers.subprocess.DEVNULL)
+
+    def test_install_rejects_unknown_provider_without_running_a_command(self):
+        with patch("orchestrator.ai_providers.subprocess.run") as run:
+            with self.assertRaisesRegex(ValueError, "Unknown AI provider"):
+                ai_providers.install_provider("anything; touch /tmp/not-allowed")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

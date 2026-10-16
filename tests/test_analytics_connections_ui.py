@@ -73,6 +73,8 @@ pages.connections(undefined, new URLSearchParams()).then(page => console.log(JSO
         self.assertIn('href="#/config/email"', html)
         self.assertIn('data-rec-tool="shellfish"', html)
         self.assertIn('data-rec-mcp="context7"', html)
+        self.assertNotIn('id="connections-plugins-title"', html)
+        self.assertNotIn('>Plugins</h2>', html)
 
     def test_plugins_are_grouped_by_purpose_without_losing_unknown_providers(self):
         plugins = [{"id": pid, "name": pid, "blurb": "", "connected": False}
