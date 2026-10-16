@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import base64
 import errno
+import difflib
 import fcntl
 import hashlib
 import hmac
@@ -53,7 +54,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, quote
 import urllib.error
 import urllib.request
 
@@ -78,6 +79,7 @@ from orchestrator import plan_edit
 from orchestrator import prd as prd_doc
 from orchestrator import project_docs
 from orchestrator import project_health
+from orchestrator import repository_health
 from orchestrator import scope_check
 from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
@@ -1570,12 +1572,18 @@ def job_file_diff(root: Path, job: dict[str, Any], path: str) -> dict[str, Any]:
 
 
 def repo_web_url(root: Path) -> str | None:
-    remote = read_json_file(runtime_dir(root) / "project.json").get("git_remote") or git(root, "remote", "get-url", "origin")
-    match = re.match(r"^(?:git@([^:]+):|https?://(?:[^@/]+@)?([^/]+)/)([^/]+/[^/]+?)(?:\.git)?/?$", remote or "")
-    if not match:
+    inspected = git(root, "rev-parse", "--is-inside-work-tree") == "true"
+    remote = git(root, "remote", "get-url", "origin") if inspected else read_json_file(runtime_dir(root) / "project.json").get("git_remote")
+    from orchestrator.code_host import parse_remote
+    parsed = parse_remote(remote or "")
+    if not parsed:
         return None
-    host = match.group(1) or match.group(2)
-    return f"https://{host}/{match.group(3)}"
+    host, path = parsed
+    if host == "ssh.dev.azure.com" and path.startswith("v3/"):
+        parts = path.split("/")
+        return f"https://dev.azure.com/{parts[1]}/{parts[2]}/_git/{parts[3]}" if len(parts) == 4 else None
+    return f"https://{host}/{path}"
+
 
 
 def github_links(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
@@ -1686,37 +1694,251 @@ def docs_export(root: Path) -> str:
     return project_docs.export_all(project_display_name(root), doc.read(), feats, jobs, files)
 
 
+def git_checked(root: Path, *args: str, timeout: float = 20) -> str:
+    """Run a Git setup operation without waiting for a credential prompt."""
+    try:
+        result = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, errors="replace",
+                                timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        raise UIError("Git timed out. Check the connection and credentials on this computer, then try again.")
+    except OSError:
+        raise UIError("Git isn't available on this computer. Install Git, then try again.")
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()[-1000:]
+        detail = re.sub(r"(https?://)[^/@\s]+@", r"\1", detail)
+        raise UIError(detail or "Git could not complete this operation.")
+    return result.stdout
+
+
+def git_connection(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    from orchestrator.code_host import host_kind, parse_remote
+    op = _choice(body, "op", ["connect", "workflow", "check"])
+    if not op:
+        raise UIError("Choose a Git connection operation.")
+    if git(root, "rev-parse", "--is-inside-work-tree") != "true":
+        raise UIError("Initialize this folder as a Git repository first.")
+    if op == "check":
+        if not git(root, "remote", "get-url", "origin"):
+            raise UIError("Connect a remote before checking access.")
+        git_checked(root, "ls-remote", "--heads", "origin")
+        return {"ok": True, "detail": "Remote read access works. Write access is checked when you push."}
+    mode = _choice(body, "mode", ["auto", "github", "git"], default="auto")
+    remote = git(root, "remote", "get-url", "origin")
+    if op == "connect":
+        remote = _text(body, "url", required=True, limit=2000)
+        if (remote.startswith("-") or any(ord(c) < 32 for c in remote)
+                or not (parse_remote(remote) or remote.startswith(("/", "./", "../", "~/")))):
+            raise UIError("Enter an HTTPS or SSH repository URL, or a local repository path.")
+        if re.match(r"https?://[^/]*@", remote):
+            raise UIError("Use a repository URL without embedded credentials. Set up a Git credential helper instead.")
+        if remote.startswith("~/"):
+            remote = str(Path(remote).expanduser())
+    if mode == "github" and host_kind(remote) != "github":
+        raise UIError("The GitHub workflow needs a GitHub remote. Choose the Git workflow for other hosts or local work.")
+    project_file = runtime_dir(root) / "project.json"
+    project = read_json_file(project_file)
+    if op == "connect":
+        command = "set-url" if "origin" in git(root, "remote").splitlines() else "add"
+        git_checked(root, "remote", command, "origin", remote)
+        project["git_remote"] = remote
+        (runtime_dir(root) / "state" / "git-fetch.json").unlink(missing_ok=True)
+    project["code_host"] = mode
+    write_json_file(project_file, project)
+    return {"ok": True}
+
+
+def git_tracking(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    upstream = _text(body, "upstream", required=True, limit=500)
+    if not git(root, "branch", "--show-current"):
+        raise UIError("Switch to a branch before choosing its tracking branch.")
+    choices = git(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/").splitlines()
+    if upstream not in choices or upstream.endswith("/HEAD"):
+        raise UIError("Choose an available remote branch. Fetch updates if it isn't listed yet.")
+    git_checked(root, "branch", f"--set-upstream-to={upstream}")
+    return {"ok": True}
+
+
+def git_fetch(root: Path) -> dict[str, Any]:
+    if not git(root, "remote"):
+        raise UIError("Connect a remote before fetching updates.")
+    git_checked(root, "fetch", "--all", "--prune", timeout=30)
+    fetched = time.time()
+    write_json_file(runtime_dir(root) / "state" / "git-fetch.json", {"at": fetched})
+    return {"ok": True, "last_fetch": fetched, "detail": "Remote branches updated. Your working files are unchanged."}
+
+
+def git_worktree_changes(root: Path) -> list[dict[str, str]]:
+    if git(root, "rev-parse", "--is-inside-work-tree") != "true":
+        return []
+    entries = git_checked(root, "status", "--porcelain=v1", "-z", "--untracked-files=all").split("\0")
+    changes, i = [], 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) <= 3:
+            continue
+        change = {"xy": entry[:2], "path": entry[3:], "old_path": ""}
+        if entry[0] in "RC" and i < len(entries):
+            change["old_path"] = entries[i]
+            i += 1
+        changes.append(change)
+    return changes
+
+
+def git_change_groups(changes: list[dict[str, str]]) -> list[dict[str, Any]]:
+    groups = {k: [] for k in ("staged", "unstaged", "untracked")}
+    labels = {"M": "Modified", "A": "Added", "D": "Deleted", "R": "Renamed", "C": "Copied",
+              "T": "Type changed", "U": "Conflicted", "?": "Untracked"}
+    for change in changes:
+        xy = change["xy"]
+        for kind, code in (("staged", xy[0]), ("unstaged", xy[1])):
+            if code not in " ?!":
+                groups[kind].append({"path": change["path"], "old_path": change["old_path"],
+                                     "label": "Conflicted" if "U" in xy or xy in ("AA", "DD") else labels.get(code, "Changed")})
+        if xy == "??":
+            groups["untracked"].append({"path": change["path"], "old_path": "", "label": "Untracked"})
+    return [{"id": k, "label": k.capitalize(), "changes": v} for k, v in groups.items() if v]
+
+
+def git_file_diff(root: Path, path: str, kind: str) -> dict[str, Any]:
+    relative = PurePosixPath(path)
+    target = safe_resolve(root / path)
+    if (not path or relative.is_absolute() or ".." in relative.parts or "\0" in path
+            or relative.parts[0].lower() == ".git" or safe_resolve(root) not in target.parents):
+        raise UIError("Choose a changed file inside this repository.", HTTPStatus.NOT_FOUND)
+    group = next((g for g in git_change_groups(git_worktree_changes(root)) if g["id"] == kind), None)
+    change = next((c for c in group["changes"] if c["path"] == path), None) if group else None
+    if not change:
+        raise UIError("That file has no changes in this group. Refresh the page.", HTTPStatus.NOT_FOUND)
+    truncated = False
+    if kind == "untracked":
+        if (root / path).is_symlink() or not target.is_file() or ".git" in target.relative_to(safe_resolve(root)).parts:
+            raise UIError("This file is not available for a text preview.", HTTPStatus.NOT_FOUND)
+        with target.open("rb") as file:
+            data = file.read(MAX_DIFF_CHARS + 1)
+        binary = b"\0" in data
+        truncated = len(data) > MAX_DIFF_CHARS
+        text = "" if binary else "".join(difflib.unified_diff([], data.decode("utf-8", errors="replace").splitlines(keepends=True),
+                                                            fromfile="/dev/null", tofile=f"b/{path}"))
+    else:
+        args = ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-U3"]
+        if kind == "staged":
+            args.append("--cached")
+        args += ["--", path]
+        if change["old_path"]:
+            args.append(change["old_path"])
+        text = git_checked(root, *args)
+        binary = text.startswith("Binary files") or "\nBinary files " in text
+    return {"path": path, "binary": binary, "diff": "" if binary else text[:MAX_DIFF_CHARS],
+            "truncated": truncated or len(text) > MAX_DIFF_CHARS}
+
+
 def git_state(root: Path) -> dict[str, Any]:
+    from orchestrator.code_host import host_kind, parse_remote, resolve_mode
+    from orchestrator.setup_checklist import github_cli_state
+    config = read_json_file(runtime_dir(root) / "project.json")
+    origin = git(root, "remote", "get-url", "origin")
+    parsed = parse_remote(origin)
+    provider = {"github": "GitHub", "gitlab": "GitLab", "bitbucket": "Bitbucket", "azure": "Azure DevOps"}.get(
+        host_kind(origin), parsed[0] if parsed else "Git remote" if origin else "On this computer")
+    mode = resolve_mode(config.get("code_host"), origin)
     branch = git(root, "branch", "--show-current")
     counts = git(root, "rev-list", "--left-right", "--count", "@{upstream}...HEAD").split()
     behind, ahead = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (None, None)
-    # Raw, NUL-separated: `git()` strips output, which would eat the leading
-    # space of the first porcelain line and misalign its path.
-    try:
-        raw = subprocess.run(["git", "status", "--porcelain=v1", "-z"], cwd=root, capture_output=True,
-                             text=True, timeout=5).stdout
-    except Exception:
-        raw = ""
-    entries = raw.split("\0")
-    status, i = [], 0
-    while i < len(entries):
-        entry = entries[i]
-        if len(entry) > 3:
-            status.append(entry)
-            if entry[0] in "RC":  # renames/copies carry the source path as the next entry
-                i += 1
-        i += 1
-    return {
+    changes = git_worktree_changes(root)
+    status = [c["xy"] + " " + c["path"] for c in changes]
+    is_repo = git(root, "rev-parse", "--is-inside-work-tree") == "true"
+    has_commits = bool(git(root, "rev-parse", "--verify", "HEAD"))
+    sync_remote, sync_ref = git_sync_target(root)
+    remotes = git(root, "remote").splitlines()
+    tracking = bool(branch and git(root, "config", "--get", f"branch.{branch}.remote")
+                    and git(root, "config", "--get", f"branch.{branch}.merge"))
+    upstream = git(root, "rev-parse", "--abbrev-ref", "@{upstream}") or None
+    common_reason = ("Initialize this folder as a Git repository." if not is_repo else
+                     "Create a first commit before syncing." if not has_commits else
+                     "Switch to a branch before syncing (detached HEAD)." if not branch else
+                     "Choose a remote tracking branch; this branch tracks a local branch." if sync_remote == "." else
+                     "Connect a remote before syncing." if sync_remote not in remotes else "")
+    push_reason = common_reason or ("Pull remote changes before pushing." if behind else "")
+    pull_reason = common_reason or ("Choose a tracking branch before pulling, or push to set one." if not tracking else
+                                   "Fetch updates to find the tracking branch." if not upstream else
+                                   "Commit or stash local changes before pulling." if status else
+                                   "Branches have diverged. Resolve the histories before pulling." if ahead and behind else "")
+    remote_branches = [b for b in git(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/").splitlines()
+                       if not b.endswith("/HEAD")]
+    state = {
+        "is_repo": is_repo,
+        "has_commits": has_commits,
+        "can_push": not push_reason,
+        "can_pull": not pull_reason,
+        "can_fetch": is_repo and bool(remotes),
+        "last_fetch": read_json_file(runtime_dir(root) / "state" / "git-fetch.json").get("at"),
+        "push_reason": push_reason,
+        "pull_reason": pull_reason,
+        "remote_branches": remote_branches,
         "branch": branch,
-        "upstream": git(root, "rev-parse", "--abbrev-ref", "@{upstream}") or None,
+        "upstream": upstream,
         "ahead": ahead, "behind": behind,
         "last_commit": git(root, "log", "-1", "--format=%h %s (%an, %cr)"),
         "changes": [{"status": l[:2].strip() or "?", "path": l[3:]} for l in status[:100]],
         "changes_total": len(status),
+        "change_groups": git_change_groups(changes[:100]),
         "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
         "elsewhere": branches_elsewhere(root),
         "web_url": repo_web_url(root),
+        "origin": re.sub(r"(https?://)[^/@]+@", r"\1", origin),
+        "provider": provider,
+        "code_host": config.get("code_host") or "auto",
+        "mode": mode,
+        "github": github_cli_state() if mode == "github" else None,
+        "base_branch": base_branch(root, read_settings(root)),
+        "sync_remote": sync_remote,
+        "sync_ref": sync_ref,
     }
+    checked = repository_health.saved_check(runtime_dir(root), state["origin"], mode)
+    if mode == "github" and checked and checked.get("account") != (state["github"] or {}).get("user"):
+        checked = None
+    configuration = repository_health.configuration_status(root, runtime_dir(root), state["base_branch"])
+    web = state["web_url"]
+    github_host = bool(parsed and parsed[0] == "github.com")
+    links = [{"label": "Repository", "url": web}] if web else []
+    if github_host and web:
+        links += [{"label": label, "url": f"{web}/{suffix}"} for label, suffix in (
+            ("Issues", "issues"), ("Pull requests", "pulls"), ("Actions", "actions"),
+            ("Repository settings", "settings"), ("Branch rules", "settings/rules"), ("Collaborators", "settings/access"))]
+        if configuration.get("path"):
+            configuration["url"] = f"{web}/blob/{quote(state['base_branch'], safe='')}/{quote(configuration['path'], safe='/')}"
+    state["health"] = {"checked": checked, "configuration": configuration, "links": links,
+                       "publishing": repository_health.publishing_jobs(root, runtime_dir(root), state["origin"], mode, state["base_branch"]),
+                       "labels_url": f"https://github.com/login?return_to={quote('/' + parsed[1] + '/labels', safe='')}" if github_host and web else ""}
+    return state
+
+
+def start_repository_check(server: Any, root: Path, state: dict[str, Any]) -> str | None:
+    """Gather repository status in the background, with a short cache and one request per project."""
+    health = state.get("health", {})
+    checked = health.get("checked")
+    if checked and time.time() - float(checked.get("checked_at", 0)) < 300:
+        return None
+    key = (str(root), repository_health.identity(state.get("origin", ""), state["mode"]))
+    with server._repository_lock:
+        previous = server._repository_check_tasks.get(key)
+        if previous:
+            task = server.tasks.get(previous[0])
+            if task and task.get("status") == "running":
+                return previous[0]
+            if time.time() - previous[1] < 60:
+                return None
+        def work() -> dict[str, Any]:
+            checked_state = repository_health.check_connection(root, runtime_dir(root), state["origin"], state["mode"])
+            from orchestrator.setup_checklist import github_cli_state
+            checked_state["account"] = github_cli_state(fresh=True).get("user") if state["mode"] == "github" else None
+            repository_health.save(runtime_dir(root) / "state" / "repository-health.json", checked_state)
+            return checked_state
+        task_id = server.tasks.start(work)
+        server._repository_check_tasks[key] = (task_id, time.time())
+        return task_id
+
 
 
 def linked_logs(job: dict[str, Any]) -> list[str]:
@@ -1768,48 +1990,34 @@ def device_log_pulls(root: Path) -> list[dict[str, Any]]:
 
 
 def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, git_timeout: float = 2.0) -> tuple[str, str, str | None]:
-    """Determine if a project is GitHub tracked vs Local."""
-    github_repo: str | None = None
-    if isinstance(p_config, dict):
-        cfg_repo = p_config.get("github_repo") or (p_config.get("github") or {}).get("repo")
-        if not cfg_repo and p_config.get("git_remote"):
-            remote = str(p_config.get("git_remote"))
-            m = re.search(r"github\.com[:/]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)", remote)
-            if m:
-                cfg_repo = m.group(1).removesuffix(".git")
-        if cfg_repo and isinstance(cfg_repo, str) and "/" in cfg_repo:
-            github_repo = cfg_repo.strip()
-
-    has_git = False
+    """Prefer the inspected repository; cached metadata is only for unavailable folders."""
+    from orchestrator.code_host import host_kind, parse_remote
+    inspected = git(root, "rev-parse", "--is-inside-work-tree", timeout=git_timeout) == "true"
+    remote = git(root, "remote", "get-url", "origin", timeout=git_timeout) if inspected else str((p_config or {}).get("git_remote") or "")
+    if remote:
+        parsed = parse_remote(remote)
+        kind = host_kind(remote)
+        if kind == "github":
+            return "github", "GitHub Tracked", parsed[1] if parsed else None
+        label = {"gitlab": "GitLab", "bitbucket": "Bitbucket", "azure": "Azure DevOps"}.get(
+            kind, parsed[0] if parsed else "Git remote")
+        return "git", label, None
+    if inspected:
+        return "local", "Local", None
+    config = p_config or {}
+    cached_repo = config.get("github_repo") or (config.get("github") or {}).get("repo")
+    if isinstance(cached_repo, str) and "/" in cached_repo:
+        return "github", "GitHub Tracked", cached_repo.strip()
+    # Permission/TCC restrictions can prevent inspecting a previously tracked project.
     try:
-        has_git = (root / ".git").exists()
-    except (OSError, InterruptedError):
+        result = subprocess.run(["gh", "repo", "view", root.name, "--json", "nameWithOwner"],
+                                capture_output=True, text=True, timeout=1.5)
+        if result.returncode == 0:
+            repo = json.loads(result.stdout).get("nameWithOwner")
+            if repo:
+                return "github", "GitHub Tracked", repo.strip()
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
         pass
-
-    if not github_repo and has_git:
-        origin_url = git(root, "config", "--get", "remote.origin.url", timeout=git_timeout).strip()
-        if origin_url and "github.com" in origin_url:
-            m = re.search(r"github\.com[:/]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)", origin_url)
-            if m:
-                github_repo = m.group(1).removesuffix(".git")
-            else:
-                github_repo = "GitHub Tracked"
-
-    # If git couldn't be inspected (e.g. permission/TCC restriction on ~/Documents),
-    # fallback to checking gh CLI for a repository matching root.name
-    if not github_repo:
-        try:
-            res = subprocess.run(["gh", "repo", "view", root.name, "--json", "nameWithOwner"],
-                                 capture_output=True, text=True, timeout=1.5)
-            if res.returncode == 0 and res.stdout.strip():
-                data = json.loads(res.stdout)
-                if isinstance(data, dict) and data.get("nameWithOwner"):
-                    github_repo = data["nameWithOwner"].strip()
-        except Exception:
-            pass
-
-    if github_repo:
-        return "github", "GitHub Tracked", github_repo
     return "local", "Local", None
 
 
@@ -2080,11 +2288,12 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             source_type, source_label, github_repo = detect_project_source(p_resolved, p_config, git_timeout=1.0)
             p_languages = get_project_languages(p_resolved, github_repo if source_type == "github" else None, scan_local=False)
 
-        if source_type != "github" and p.get("source_type") == "github":
+        unavailable = git(p_resolved, "rev-parse", "--is-inside-work-tree", timeout=0.3) != "true"
+        if unavailable and source_type == "local" and p.get("source_type") == "github":
             source_type = "github"
             source_label = p.get("source_label", "GitHub Tracked")
             github_repo = p.get("github_repo")
-        elif not github_repo and p.get("github_repo"):
+        elif unavailable and source_type == "local" and not github_repo and p.get("github_repo"):
             github_repo = p.get("github_repo")
             source_type = "github"
             source_label = "GitHub Tracked"
@@ -2533,10 +2742,36 @@ def build_git_new_branch(params: dict[str, Any], root: Path) -> list[str]:
     return ["git", "checkout", "-b", name]
 
 
+def git_sync_target(root: Path) -> tuple[str, str]:
+    """Use the branch's tracking destination, including a differently named remote branch."""
+    branch = git(root, "branch", "--show-current")
+    remote = git(root, "config", "--get", f"branch.{branch}.remote") if branch else ""
+    ref = git(root, "config", "--get", f"branch.{branch}.merge") if branch else ""
+    return (remote, ref) if remote and ref else ("origin", f"refs/heads/{branch}")
+
+
+def build_git_pull(params: dict[str, Any], root: Path) -> list[str]:
+    state = git_state(root)
+    if state["pull_reason"]:
+        raise UIError(state["pull_reason"])
+    remote, ref = git_sync_target(root)
+    if not git(root, "rev-parse", "--abbrev-ref", "@{upstream}"):
+        raise UIError("Choose a tracking branch before pulling, or push this branch to set one.")
+    return ["git", "pull", "--ff-only", remote, ref]
+
+
 def build_git_push(params: dict[str, Any], root: Path) -> list[str]:
     branch = git(root, "branch", "--show-current")
     if not branch:
         raise UIError("Not on a branch (detached HEAD)")
+    state = git_state(root)
+    if state["push_reason"]:
+        raise UIError(state["push_reason"])
+    remote, ref = git_sync_target(root)
+    if git(root, "config", "--get", f"branch.{branch}.remote"):
+        if remote == ".":
+            raise UIError("This branch tracks a local branch. Choose a remote tracking branch before pushing.")
+        return ["git", "push", remote, f"{branch}:{ref}"]
     return ["git", "push", "-u", "origin", branch]
 
 
@@ -2707,7 +2942,90 @@ AVAILABLE_MODELS = [
     {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "provider": "Google"},
     {"id": "gpt-4o", "label": "GPT-4o", "provider": "OpenAI"},
     {"id": "o3-mini", "label": "o3-mini", "provider": "OpenAI"},
+    {"id": "opencode/big-pickle", "label": "Big Pickle (Free)", "provider": "OpenCode"},
+    {"id": "deepseek", "label": "DeepSeek Coder", "provider": "Ollama"},
 ]
+
+
+def pick_best_default_models(active_providers: set[str] | list[str] | None = None) -> dict[str, str]:
+    """Picks optimal role model assignments (architect, planner, builder, reviewer) based on active/available AI providers."""
+    active = set(active_providers or [])
+    has_claude = "claude" in active
+    has_gemini = "agy" in active or "gemini" in active
+    has_openai = "codex" in active
+    has_opencode = "opencode" in active
+    has_ollama = "ollama" in active
+
+    if not active:
+        return {
+            "architect": "claude-sonnet-4-6",
+            "planner": "claude-sonnet-4-6",
+            "builder": "claude-sonnet-4-6",
+            "reviewer": "claude-sonnet-4-6",
+        }
+
+    # Architect: deep reasoning, standards & plan checks
+    if has_claude:
+        architect = "claude-sonnet-4-6"
+    elif has_gemini:
+        architect = "gemini-3.1-pro-preview"
+    elif has_openai:
+        architect = "o3-mini"
+    elif has_opencode:
+        architect = "opencode/big-pickle"
+    elif has_ollama:
+        architect = "deepseek"
+    else:
+        architect = "claude-sonnet-4-6"
+
+    # Planner: breaking down goals, reading code
+    if has_claude:
+        planner = "claude-sonnet-4-6"
+    elif has_gemini:
+        planner = "gemini-3.1-pro-preview"
+    elif has_openai:
+        planner = "gpt-4o"
+    elif has_opencode:
+        planner = "opencode/big-pickle"
+    elif has_ollama:
+        planner = "deepseek"
+    else:
+        planner = "claude-sonnet-4-6"
+
+    # Builder: writing code and tests
+    if has_claude:
+        builder = "claude-sonnet-4-6"
+    elif has_openai:
+        builder = "gpt-4o"
+    elif has_gemini:
+        builder = "gemini-3.1-pro-preview"
+    elif has_opencode:
+        builder = "opencode/big-pickle"
+    elif has_ollama:
+        builder = "deepseek"
+    else:
+        builder = "claude-sonnet-4-6"
+
+    # Reviewer: fast verification, large context window
+    if has_gemini:
+        reviewer = "gemini-3-flash-preview"
+    elif has_claude:
+        reviewer = "claude-sonnet-4-6"
+    elif has_openai:
+        reviewer = "gpt-4o"
+    elif has_opencode:
+        reviewer = "opencode/big-pickle"
+    elif has_ollama:
+        reviewer = "deepseek"
+    else:
+        reviewer = "claude-sonnet-4-6"
+
+    return {
+        "architect": architect,
+        "planner": planner,
+        "builder": builder,
+        "reviewer": reviewer,
+    }
 
 
 def settings_path(root: Path) -> Path:
@@ -2728,6 +3046,29 @@ def ai_providers_state(root: Path) -> dict[str, Any]:
     ready = set(checklist.ready_llm_providers({}))  # cached briefly: signing-in checks run the tools
     return ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready,
                                     checklist.saved_api_keys(read_settings(root)))
+
+
+def ai_machine_statuses(root: Path) -> dict[str, Any]:
+    """Check installed and authenticated AI tools on enabled SSH workers without making model requests."""
+    machines_file = runtime_dir(root) / "config" / "machines.json"
+    machines = read_json_file(machines_file).get("machines", [])
+    secondary = [m for m in machines if isinstance(m, dict) and m.get("enabled", True)
+                 and m.get("execution_mode") == "ssh"]
+    if not secondary:
+        return {"machines": []}
+    from orchestrator.scripts.probe_machine import probe_machine
+
+    checked = []
+    for machine in secondary:
+        name = str(machine.get("name") or "Secondary computer")[:80]
+        try:
+            probe = probe_machine(machine)
+            reachable = bool(probe.get("reachable"))
+            checked.append({"name": name, "reachable": reachable,
+                            "providers": probe.get("llm_providers") if reachable else {}})
+        except Exception:
+            checked.append({"name": name, "reachable": False, "providers": {}})
+    return {"machines": checked}
 
 
 def read_settings(root: Path) -> dict[str, Any]:
@@ -2785,6 +3126,15 @@ def config_state(root: Path) -> dict[str, Any]:
     machines_file = runtime_dir(root) / "config" / "machines.json"
     machines_raw = read_json_file(machines_file).get("machines", [])
     provider = settings.get("notification_provider", "gmail")
+    ai_state = ai_providers_state(root)
+    ready_providers = [p["id"] for p in ai_state.get("providers", []) if p.get("ready")]
+    installed_providers = [p["id"] for p in ai_state.get("providers", []) if p.get("installed")]
+    defaults = pick_best_default_models(ready_providers or installed_providers)
+    saved_models = settings.get("default_models")
+    if isinstance(saved_models, dict) and saved_models:
+        model_assignments = {**defaults, **saved_models}
+    else:
+        model_assignments = defaults
     return {
         "base_branch": base_branch(root, settings),
         "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
@@ -2810,19 +3160,9 @@ def config_state(root: Path) -> dict[str, Any]:
                       "xcode": bool(m.get("supports_xcode")), "simulator": bool(m.get("supports_simulator"))}
                      for m in machines_raw if isinstance(m, dict)],
         "models": {
-            "assignments": settings.get("default_models", {
-                "architect": "claude-sonnet-4-6",
-                "planner": "claude-sonnet-4-6",
-                "builder": "claude-sonnet-4-6",
-                "reviewer": "claude-sonnet-4-6",
-            }),
+            "assignments": model_assignments,
             "available": AVAILABLE_MODELS,
-            **settings.get("default_models", {
-                "architect": "claude-sonnet-4-6",
-                "planner": "claude-sonnet-4-6",
-                "builder": "claude-sonnet-4-6",
-                "reviewer": "claude-sonnet-4-6",
-            }),
+            **model_assignments,
         },
         "firebase": {
             "app_id": settings.get("firebase_app_id", ""),
@@ -3269,9 +3609,14 @@ def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) ->
 
 
 def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
-    """Store and dispatch user feedback to support@thejauntcompany.com."""
+    """Store and dispatch user feedback, feature requests, and improvement submissions to support@thejauntcompany.com."""
     user_name = str(payload.get("userName") or payload.get("playerName") or "User").strip()
-    feedback_text = str(payload.get("feedbackText") or "").strip()
+    category = str(payload.get("category") or "general").strip()
+    title = str(payload.get("title") or "").strip()
+    contact_email = str(payload.get("contactEmail") or "").strip()
+    job_id = str(payload.get("jobId") or "").strip()
+    explanation = str(payload.get("explanation") or "").strip()
+    feedback_text = str(payload.get("feedbackText") or explanation or "").strip()
     if not feedback_text:
         raise UIError("Feedback text is required", HTTPStatus.BAD_REQUEST)
     platform = str(payload.get("platform") or "Web").strip()
@@ -3283,6 +3628,11 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     record = {
         "id": feedback_id,
         "userName": user_name,
+        "contactEmail": contact_email,
+        "category": category,
+        "title": title,
+        "jobId": job_id,
+        "explanation": explanation or feedback_text,
         "feedbackText": feedback_text,
         "platform": platform,
         "appVersion": app_version,
@@ -3306,18 +3656,34 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     email_error = None
     target_email = "support@thejauntcompany.com"
     fallback_email = "enmeskin@gmail.com"
-    subject = f"[Orchestrator Feedback] User Feedback - {user_name}"
+    if category == "improve_orchestrator":
+        subject = f"[Orchestrator Improvement Submission] {title or 'Contribution'} - {user_name}"
+    elif category == "feature_request":
+        subject = f"[Orchestrator Feature Request] {title or 'Missing Feature'} - {user_name}"
+    else:
+        subject = f"[Orchestrator Feedback] User Feedback - {user_name}"
 
-    email_body = "\n".join([
-        f"User: {user_name}",
+    body_lines = [
+        f"User / Contributor: {user_name}",
+        f"Contact Email: {contact_email or '(not provided)'}",
+        f"Category: {category}",
         f"Platform: {platform}",
         f"App version: {app_version}",
         f"Attempt: {attempt}",
         f"Date: {created_at}",
+    ]
+    if title:
+        body_lines.append(f"Title: {title}")
+    if job_id:
+        body_lines.append(f"Local Job ID / Reference: {job_id}")
+    if category == "improve_orchestrator":
+        body_lines.append("Prize Eligible: YES (Permanent Inclusion Submission)")
+    body_lines.extend([
         "",
-        "Feedback:",
+        "Explanation / Feedback:",
         feedback_text,
     ])
+    email_body = "\n".join(body_lines)
 
     settings = read_settings(root)
     api_key = os.environ.get("RESEND_API_KEY") or settings.get("resend_api_key")
@@ -3358,7 +3724,7 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 err_data = json.loads(he.read().decode("utf-8"))
                 if he.code == 403 and "own email address" in err_data.get("message", ""):
                     resend_payload["to"] = [fallback_email]
-                    resend_payload["subject"] = f"[Orchestrator Feedback] (Forward to Support) - {user_name}"
+                    resend_payload["subject"] = f"{subject} (Forward to Support)"
                     req2 = urllib.request.Request(
                         "https://api.resend.com/emails",
                         data=json.dumps(resend_payload).encode("utf-8"),
@@ -3389,6 +3755,9 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 "platform": platform,
                 "delivered": email_sent,
                 "queued": not email_sent,
+                "category": category,
+                "has_contact_email": bool(contact_email),
+                "is_improvement_submission": category == "improve_orchestrator",
             },
             runtime_root=runtime_dir(root),
         )
@@ -3529,8 +3898,8 @@ ACTIONS: dict[str, Action] = {
     "test_suite": Action("Run test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-suite", _name(p, "name")), fields=["name"]),
     "test_plan": Action("Run test plan", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-plan", _name(p, "name")), fields=["name"]),
     "coverage": Action("Measure coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "coverage")),
-    "git_pull": Action("Pull", lambda p, r: ["git", "pull"]),
-    "git_push": Action("Push", build_git_push, confirm="Pushes the current branch to origin on GitHub."),
+    "git_pull": Action("Pull", build_git_pull),
+    "git_push": Action("Push", build_git_push, confirm="Pushes commits to this branch’s Git remote."),
     "git_checkout": Action("Switch branch", build_git_checkout, fields=["branch"]),
     "stash_checkout": Action("Stash changes & switch branch", build_stash_checkout, fields=["branch"]),
     "git_new_branch": Action("New branch", build_git_new_branch, fields=["name"]),
@@ -3732,6 +4101,9 @@ class UIServer(ThreadingHTTPServer):
         self.tasks = BackgroundTasks(gate=self.gate)
         self.allowed_hosts = self._allowed_hosts()
         self._stopping = threading.Event()
+        self._repository_lock = threading.Lock()
+        self._repository_check_tasks: dict[tuple[str, str], tuple[str, float]] = {}
+        self._publishing_jobs: set[tuple[str, str]] = set()
         self._plan_lock = threading.Lock()   # one plan-run decision at a time (background loop and page requests)
         self._plan_sessions: dict[str, Any] = {}  # feature id -> the planning run started for it
         self.on_reset_tunnel: Callable[[], bool] | None = None
@@ -3739,7 +4111,7 @@ class UIServer(ThreadingHTTPServer):
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel"):
+                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -5166,6 +5538,17 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(result)
         elif method == "GET" and parts == ["ai-providers"]:
             self._json(ai_providers_state(root))
+        elif method == "POST" and parts == ["ai-providers", "install"]:
+            self._require_owner("install an AI provider")
+            body = self._body()
+            from orchestrator import ai_providers
+            provider_id = _choice(body, "provider", [p["id"] for p in ai_providers.PROVIDERS])
+            self._json({"task": self.server.tasks.start(lambda: ai_providers.install_provider(provider_id))}, HTTPStatus.ACCEPTED)
+            self._audit("ai_provider_install_started", provider=provider_id)
+        elif method == "POST" and parts == ["ai-providers", "check-machines"]:
+            self._require_owner("check AI setup on secondary computers")
+            self._body()
+            self._json({"task": self.server.tasks.start(lambda: ai_machine_statuses(root))}, HTTPStatus.ACCEPTED)
         elif method == "GET" and parts == ["config"]:
             state = {**config_state(root), "sign_ins": self._sign_ins_view()}
             if self._is_owner():
@@ -5205,8 +5588,72 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._require_owner(f"change {parts[1].replace('-', ' ')} settings")
             self._json(config_update(root, parts[1], self._body()))
             self._audit("settings_changed", part=parts[1])  # the section only, never what it was set to
+        elif method == "POST" and (parts == ["git", "check"] or parts == ["git", "labels", "repair"]):
+            self._require_owner("check repository access" if parts[-1] == "check" else "repair GitHub job labels")
+            self._body()
+            state = git_state(root)
+            if not state["is_repo"]:
+                raise UIError("Initialize this repository first.")
+            repair = parts[-1] == "repair"
+            if repair:
+                try:
+                    repository_health.github_repo(state["origin"], state["mode"])
+                except repository_health.RepositoryError as error:
+                    raise UIError(str(error))
+            def work() -> dict[str, Any]:
+                try:
+                    result = repository_health.repair_labels(root, runtime_dir(root), state["origin"], state["mode"]) if repair else {}
+                    checked = repository_health.check_connection(root, runtime_dir(root), state["origin"], state["mode"])
+                    from orchestrator.setup_checklist import github_cli_state
+                    checked["account"] = github_cli_state(fresh=True).get("user") if state["mode"] == "github" else None
+                    repository_health.save(runtime_dir(root) / "state" / "repository-health.json", checked)
+                    return {**checked, "detail": result.get("detail", "Repository check complete")}
+                except repository_health.RepositoryError as error:
+                    raise UIError(str(error))
+            self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
+            self._audit("repository_check" if not repair else "repository_labels_repaired")
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "publish":
+            self._body()
+            job_file = resolve_job_path(root, parts[1])
+            state = git_state(root)
+            key = (str(root), parts[1])
+            with self.server._repository_lock:
+                if parts[1] in self.server.sessions.running_job_ids() or key in self.server._publishing_jobs:
+                    raise UIError("This job is busy. Wait for it to finish before publishing.", HTTPStatus.CONFLICT)
+                self.server._publishing_jobs.add(key)
+            def publish() -> dict[str, Any]:
+                try:
+                    return repository_health.republish(root, runtime_dir(root), state["origin"], state["mode"], job_file, state["base_branch"])
+                except repository_health.RepositoryError as error:
+                    raise UIError(str(error))
+                finally:
+                    with self.server._repository_lock:
+                        self.server._publishing_jobs.discard(key)
+            try:
+                task = self.server.tasks.start(publish)
+            except Exception:
+                with self.server._repository_lock:
+                    self.server._publishing_jobs.discard(key)
+                raise
+            self._json({"task": task}, HTTPStatus.ACCEPTED)
+            self._audit("job_publish_retried", job=parts[1])
+        elif method == "POST" and parts == ["git", "connection"]:
+            self._require_owner("change Git connection settings")
+            self._json(git_connection(root, self._body()))
+            self._audit("settings_changed", part="git-connection")
+        elif method == "POST" and parts == ["git", "tracking"]:
+            self._require_owner("change Git tracking settings")
+            self._json(git_tracking(root, self._body()))
+            self._audit("settings_changed", part="git-tracking")
+        elif method == "POST" and parts == ["git", "fetch"]:
+            self._body()
+            self._json(git_fetch(root))
+        elif method == "GET" and parts == ["git", "diff"]:
+            self._json(git_file_diff(root, (query.get("path") or [""])[0], (query.get("kind") or [""])[0]))
         elif method == "GET" and parts == ["git"]:
-            self._json(git_state(root))
+            state = git_state(root)
+            state["health"]["checking_task"] = start_repository_check(self.server, root, state)
+            self._json(state)
         elif method == "GET" and parts == ["tests"]:
             self._json(self._tests(root, refresh=bool(query.get("refresh"))))
         elif method == "GET" and parts == ["devlogs"]:
@@ -5366,7 +5813,7 @@ class UIHandler(BaseHTTPRequestHandler):
         argv = action.build(params, root)
         title = action.title
         job_id = str(params.get("job") or "") or None
-        if job_id and job_id in self.server.sessions.running_job_ids():
+        if job_id and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
             raise UIError("This job already has a run in progress. Open it from Activity instead.", HTTPStatus.CONFLICT)
         if job_id:
             job_title = job_summary(resolve_job_path(root, job_id), read_json_file(resolve_job_path(root, job_id)))["title"]
@@ -5382,9 +5829,12 @@ class UIHandler(BaseHTTPRequestHandler):
         env = self.server.child_env(terminal=key in TERMINAL_ACTIONS)
         if action.env:
             env.update(action.env(params))
-        session = self.server.sessions.start(key, title, argv, root, env,
-                                             runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
-        session.job_id = job_id
+        with self.server._repository_lock:
+            if job_id and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
+                raise UIError("This job is busy. Wait for it to finish.", HTTPStatus.CONFLICT)
+            session = self.server.sessions.start(key, title, argv, root, env,
+                                                 runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
+            session.job_id = job_id
         self._audit("run_started", action=key, job=job_id)
         if key in ("new_job", "fix"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,

@@ -20,13 +20,18 @@
   async function submitFeedback({
     userName = "",
     playerName = "",
+    contactEmail = "",
     feedbackText = "",
+    category = "general",
+    title = "",
+    jobId = "",
+    explanation = "",
     platform = "Web",
     appVersion = "1.0.0",
     attemptNumber = 1,
     apiClient = null
   } = {}) {
-    const cleanText = String(feedbackText || "").trim();
+    const cleanText = String(feedbackText || explanation || "").trim();
     if (!cleanText) {
       throw new Error("Feedback text is required");
     }
@@ -34,6 +39,11 @@
     const payload = {
       userName: cleanName,
       playerName: cleanName,
+      contactEmail: String(contactEmail || "").trim(),
+      category: String(category || "general").trim(),
+      title: String(title || "").trim(),
+      jobId: String(jobId || "").trim(),
+      explanation: String(explanation || "").trim(),
       feedbackText: cleanText,
       platform: String(platform || "Web"),
       appVersion: String(appVersion || "1.0.0"),
@@ -100,8 +110,12 @@
   }
 
   function createModalController() {
-    let currentStep = "feedback"; // 'prompt' | 'feedback' | 'thankyou'
+    let currentStep = "feedback"; // 'prompt' | 'feedback' | 'improve_orchestrator' | 'thankyou'
+    let currentCategory = "general"; // 'general' | 'feature_request' | 'improve_orchestrator'
     let text = "";
+    let title = "";
+    let contactEmail = "";
+    let jobId = "";
     let submitting = false;
     let deliveryState = "sent"; // 'sent' | 'queued' | 'failed'
     let queuedOffline = false;
@@ -157,19 +171,122 @@
             </button>
           </div>
         `;
-      } else if (currentStep === "feedback") {
+      } else if (currentStep === "thankyou") {
+        const isFailed = deliveryState === "failed";
+        const isQueued = deliveryState === "queued";
+        const isImprovement = currentCategory === "improve_orchestrator";
+        const icon = isFailed ? "📡" : (isImprovement ? "🏆" : (isQueued ? "📥" : "💌"));
+        const titleText = isFailed ? "Couldn't Send" : (isImprovement ? "Submission Received!" : "Thank You!");
+        let message = isImprovement
+          ? "Your Orchestrator improvement submission has been delivered directly to the core team. We will review your contribution for permanent inclusion in Orchestrator. If selected, we will contact your email with your prize!"
+          : "We will review your message as soon as we can.";
+        if (isFailed) {
+          message = "We couldn't reach our servers just now. Your message is still here — try again, or come back to it later.";
+        } else if (isQueued) {
+          message = queuedOffline
+            ? "Saved. We'll send it automatically as soon as you're back online."
+            : "Saved. We're still finishing the send — it will complete on its own.";
+        }
+
+        contentHtml = `
+          <div class="feedback-status-view">
+            <div class="feedback-status-emoji" role="img" aria-label="${isFailed ? "Warning" : (isQueued ? "Outbox tray" : "Mailbox")}">${icon}</div>
+            <h2 class="feedback-status-title ${isFailed ? "error" : ""}">${titleText}</h2>
+            <p class="feedback-status-msg">${message}</p>
+            <div class="feedback-status-actions">
+              ${isFailed ? '<button type="button" class="btn primary" id="feedback-modal-retry">Try Again</button>' : ""}
+              <button type="button" class="btn ${isFailed ? "ghost" : "primary"}" id="feedback-modal-done">${isFailed ? "Not Now" : "Done"}</button>
+            </div>
+          </div>
+        `;
+      } else if (currentStep === "improve_orchestrator" || currentCategory === "improve_orchestrator") {
         contentHtml = `
           <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
-          <h2 class="feedback-title" style="text-align: center;">How can we improve?</h2>
+          <div class="feedback-type-tabs" role="tablist">
+            <button type="button" class="feedback-type-tab" id="feedback-tab-feedback">💡 Feedback & Features</button>
+            <button type="button" class="feedback-type-tab active" id="feedback-tab-improve">🏆 Improve Orchestrator</button>
+          </div>
+          <div class="feedback-prize-banner">
+            <div class="prize-badge">🏆 Prize Challenge</div>
+            <p>Create and run a job locally to improve Orchestrator itself. Submit your explanation and changes here for permanent inclusion. If selected, you'll receive an <strong>awesome prize</strong> and public contributor recognition!</p>
+          </div>
+          <div class="feedback-job-action-box">
+            <span>Want to build your improvement with a local AI job first?</span>
+            <button type="button" class="btn small primary" id="feedback-create-local-job-btn"><svg class="icon icon-sm" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Create job to improve Orchestrator</button>
+          </div>
+          <div class="feedback-fields-stack">
+            <label class="feedback-field">
+              <span>Your Name</span>
+              <input type="text" id="feedback-modal-name" class="feedback-input" value="${escapeHtml(currentUserName)}" placeholder="Your name or handle">
+            </label>
+            <label class="feedback-field">
+              <span>Contact Email <strong class="accent-required">(required for prize delivery)</strong></span>
+              <input type="email" id="feedback-modal-email" class="feedback-input" value="${escapeHtml(contactEmail)}" placeholder="you@example.com">
+            </label>
+            <label class="feedback-field">
+              <span>Improvement Title</span>
+              <input type="text" id="feedback-modal-title" class="feedback-input" value="${escapeHtml(title)}" placeholder="e.g. Add dark mode toggle or parallel run streaming">
+            </label>
+            <label class="feedback-field">
+              <span>Explanation & Implementation Details</span>
+              <textarea
+                id="feedback-modal-text"
+                class="feedback-textarea"
+                placeholder="Explain what you improved in Orchestrator, why it's valuable, and how you tested it locally..."
+              >${escapeHtml(text)}</textarea>
+            </label>
+            ${!hasText ? '<p id="feedback-empty-hint" class="feedback-empty-hint">Write an explanation above before submitting.</p>' : ""}
+            <label class="feedback-field">
+              <span>Local Job ID or Branch / PR reference <span class="muted">(optional)</span></span>
+              <input type="text" id="feedback-modal-job-id" class="feedback-input" value="${escapeHtml(jobId)}" placeholder="e.g. job-abc123 or branch name">
+            </label>
+          </div>
+          <div class="feedback-actions">
+            <button
+              type="button"
+              class="btn primary feedback-submit-btn"
+              id="feedback-modal-send"
+              ${submitting || !hasText ? "disabled" : ""}
+              ${hasText ? "" : 'title="Write an explanation in the field above before submitting." aria-describedby="feedback-empty-hint"'}
+            >
+              ${submitting ? '<span class="feedback-btn-spinner" aria-hidden="true"></span>' : '<span aria-hidden="true">🏆</span>'}
+              <span>${submitting ? "Submitting…" : "Submit for Permanent Inclusion & Prize"}</span>
+            </button>
+            <button type="button" class="btn ghost" id="feedback-modal-cancel">Cancel</button>
+          </div>
+        `;
+      } else {
+        // Standard feedback and feature requests
+        const isFeature = currentCategory === "feature_request";
+        contentHtml = `
+          <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
+          <div class="feedback-type-tabs" role="tablist">
+            <button type="button" class="feedback-type-tab active" id="feedback-tab-feedback">💡 Feedback & Features</button>
+            <button type="button" class="feedback-type-tab" id="feedback-tab-improve">🏆 Improve Orchestrator</button>
+          </div>
+          <h2 class="feedback-title" style="text-align: center;">${isFeature ? "What feature is missing?" : "How can we improve?"}</h2>
           <p class="feedback-subtitle" style="text-align: left;">
-            Tell us what felt off or share any ideas. Your feedback gets sent directly to our team at <span class="feedback-email">${SUPPORT_EMAIL}</span>.
+            ${isFeature ? "Tell us what feature you would want in Orchestrator. We prioritize our roadmap from your requests." : "Tell us what felt off or share any ideas. Your feedback gets sent directly to our team at"} <span class="feedback-email">${SUPPORT_EMAIL}</span>.
           </p>
-          <textarea
-            id="feedback-modal-text"
-            class="feedback-textarea"
-            placeholder="Tell us what could be better, report an issue, or share any suggestions..."
-          >${escapeHtml(text)}</textarea>
-          ${!hasText ? '<p id="feedback-empty-hint" class="feedback-empty-hint">Write something above to send.</p>' : ""}
+          <div class="feedback-fields-stack">
+            <label class="feedback-field">
+              <span>Contact Email <span class="muted">(optional, for follow-up)</span></span>
+              <input type="email" id="feedback-modal-email" class="feedback-input" value="${escapeHtml(contactEmail)}" placeholder="you@example.com (optional)">
+            </label>
+            <label class="feedback-field">
+              <span>${isFeature ? "Feature Title" : "Topic or Feature"} <span class="muted">(optional)</span></span>
+              <input type="text" id="feedback-modal-title" class="feedback-input" value="${escapeHtml(title)}" placeholder="e.g. Missing feature, planning speed, UI suggestion...">
+            </label>
+            <label class="feedback-field">
+              <span>${isFeature ? "Describe the missing feature" : "Your Feedback or Suggestion"}</span>
+              <textarea
+                id="feedback-modal-text"
+                class="feedback-textarea"
+                placeholder="${isFeature ? "Describe what this feature would do and why you'd like it..." : "Tell us what could be better, report an issue, or share any suggestions..."}"
+              >${escapeHtml(text)}</textarea>
+            </label>
+            ${!hasText ? '<p id="feedback-empty-hint" class="feedback-empty-hint">Write something above to send.</p>' : ""}
+          </div>
           <div class="feedback-actions">
             <button
               type="button"
@@ -182,31 +299,6 @@
               <span>${submitting ? "Sending…" : "Send Feedback"}</span>
             </button>
             <button type="button" class="btn ghost" id="feedback-modal-cancel">Cancel</button>
-          </div>
-        `;
-      } else if (currentStep === "thankyou") {
-        const isFailed = deliveryState === "failed";
-        const isQueued = deliveryState === "queued";
-        const icon = isFailed ? "📡" : (isQueued ? "📥" : "💌");
-        const title = isFailed ? "Couldn't Send" : "Thank You!";
-        let message = "We will review your message as soon as we can.";
-        if (isFailed) {
-          message = "We couldn't reach our servers just now. Your message is still here — try again, or come back to it later.";
-        } else if (isQueued) {
-          message = queuedOffline
-            ? "Saved. We'll send it automatically as soon as you're back online."
-            : "Saved. We're still finishing the send — it will complete on its own.";
-        }
-
-        contentHtml = `
-          <div class="feedback-status-view">
-            <div class="feedback-status-emoji" role="img" aria-label="${isFailed ? "Warning" : (isQueued ? "Outbox tray" : "Mailbox")}">${icon}</div>
-            <h2 class="feedback-status-title ${isFailed ? "error" : ""}">${title}</h2>
-            <p class="feedback-status-msg">${message}</p>
-            <div class="feedback-status-actions">
-              ${isFailed ? '<button type="button" class="btn primary" id="feedback-modal-retry">Try Again</button>' : ""}
-              <button type="button" class="btn ${isFailed ? "ghost" : "primary"}" id="feedback-modal-done">${isFailed ? "Not Now" : "Done"}</button>
-            </div>
           </div>
         `;
       }
@@ -225,11 +317,73 @@
       const doneBtn = dlg.querySelector("#feedback-modal-done");
       if (doneBtn) doneBtn.onclick = () => close();
 
+      const tabFeedback = dlg.querySelector("#feedback-tab-feedback");
+      if (tabFeedback) {
+        tabFeedback.onclick = () => {
+          currentCategory = "general";
+          currentStep = "feedback";
+          render();
+          const ta = dlg.querySelector("#feedback-modal-text");
+          if (ta) ta.focus();
+        };
+      }
+
+      const tabImprove = dlg.querySelector("#feedback-tab-improve");
+      if (tabImprove) {
+        tabImprove.onclick = () => {
+          currentCategory = "improve_orchestrator";
+          currentStep = "improve_orchestrator";
+          render();
+          const ta = dlg.querySelector("#feedback-modal-text");
+          if (ta) ta.focus();
+        };
+      }
+
+      const createJobBtn = dlg.querySelector("#feedback-create-local-job-btn");
+      if (createJobBtn) {
+        createJobBtn.onclick = () => {
+          close();
+          const summaryParam = encodeURIComponent("Improve Orchestrator: " + (title || "").trim());
+          const specParam = encodeURIComponent(
+            "Goal: Improve Orchestrator itself.\n\n" +
+            "Describe the improvement you are making to Orchestrator:\n" +
+            "- What it does:\n" +
+            "- Why it's valuable:\n" +
+            "- Files to change:\n" +
+            "- How to test:\n\n" +
+            (text.trim() ? "Notes from submission draft:\n" + text.trim() + "\n" : "")
+          );
+          if (typeof location !== "undefined") {
+            location.hash = `#/new?type=feature&summary=${summaryParam}&spec=${specParam}`;
+          }
+        };
+      }
+
+      const nameInput = dlg.querySelector("#feedback-modal-name");
+      if (nameInput) {
+        nameInput.oninput = (e) => { currentUserName = e.target.value; };
+      }
+
+      const emailInput = dlg.querySelector("#feedback-modal-email");
+      if (emailInput) {
+        emailInput.oninput = (e) => { contactEmail = e.target.value; };
+      }
+
+      const titleInput = dlg.querySelector("#feedback-modal-title");
+      if (titleInput) {
+        titleInput.oninput = (e) => { title = e.target.value; };
+      }
+
+      const jobIdInput = dlg.querySelector("#feedback-modal-job-id");
+      if (jobIdInput) {
+        jobIdInput.oninput = (e) => { jobId = e.target.value; };
+      }
+
       const retryBtn = dlg.querySelector("#feedback-modal-retry");
       if (retryBtn) {
         retryBtn.onclick = () => {
           deliveryState = "sent";
-          currentStep = "feedback";
+          currentStep = currentCategory === "improve_orchestrator" ? "improve_orchestrator" : "feedback";
           render();
           const ta = dlg.querySelector("#feedback-modal-text");
           if (ta) ta.focus();
@@ -239,6 +393,7 @@
       const betterBtn = dlg.querySelector("#feedback-btn-better");
       if (betterBtn) {
         betterBtn.onclick = () => {
+          currentCategory = "general";
           currentStep = "feedback";
           render();
           const ta = dlg.querySelector("#feedback-modal-text");
@@ -289,6 +444,11 @@
           try {
             const report = await submitFeedback({
               userName: currentUserName,
+              contactEmail: contactEmail,
+              category: currentCategory,
+              title: title,
+              jobId: jobId,
+              explanation: text,
               feedbackText: text,
               attemptNumber: currentAttempt
             });
@@ -314,9 +474,13 @@
       };
     }
 
-    function open({ initialStep = "feedback", userName = "", attemptNumber = 1 } = {}) {
-      currentStep = initialStep;
+    function open({ initialStep = "feedback", category = "general", userName = "", contactEmail: initEmail = "", title: initTitle = "", attemptNumber = 1 } = {}) {
+      currentStep = initialStep === "improve_orchestrator" ? "improve_orchestrator" : initialStep;
+      currentCategory = category === "improve_orchestrator" || initialStep === "improve_orchestrator" ? "improve_orchestrator" : (category || "general");
       text = "";
+      title = initTitle || "";
+      contactEmail = initEmail || (userName.includes("@") ? userName : "");
+      jobId = "";
       submitting = false;
       deliveryState = "sent";
       queuedOffline = false;
@@ -361,9 +525,11 @@
       close,
       render,
       getStep: () => currentStep,
+      getCategory: () => currentCategory,
       getText: () => text,
       setText: (val) => { text = val; },
-      setStep: (s) => { currentStep = s; }
+      setStep: (s) => { currentStep = s; },
+      setCategory: (c) => { currentCategory = c; }
     };
   }
 

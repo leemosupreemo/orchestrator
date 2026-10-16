@@ -38,6 +38,12 @@ class FeedbackFrontendFileTests(unittest.TestCase):
         self.assertIn("Tell us what felt off or share any ideas.", js)
         self.assertIn("Write something above to send.", js)
         self.assertIn("Send Feedback", js)
+        # Improvement & Prize flow
+        self.assertIn("Improve Orchestrator", js)
+        self.assertIn("Prize Challenge", js)
+        self.assertIn("Submit for Permanent Inclusion & Prize", js)
+        self.assertIn("Create job to improve Orchestrator", js)
+        self.assertIn("What feature is missing?", js)
         # Emoji satisfaction prompt choices
         self.assertIn("Enjoying Orchestrator?", js)
         self.assertIn("Could be better", js)
@@ -66,12 +72,24 @@ class FeedbackFrontendFileTests(unittest.TestCase):
         self.assertIn(".feedback-textarea", css)
         self.assertIn(".feedback-submit-btn", css)
         self.assertIn(".feedback-btn-spinner", css)
+        self.assertIn(".feedback-type-tabs", css)
+        self.assertIn(".feedback-type-tab", css)
+        self.assertIn(".feedback-prize-banner", css)
+        self.assertIn(".prize-badge", css)
+        self.assertIn(".feedback-job-action-box", css)
+        self.assertIn(".feedback-fields-stack", css)
+        self.assertIn(".prize-card", css)
 
     def test_app_js_integration(self):
         app = APP_JS.read_text(encoding="utf-8")
         self.assertIn("#feedback-btn", app)
         self.assertIn("Feedback.open", app)
         self.assertIn("Send feedback", app)
+        self.assertIn("#help-feature-btn", app)
+        self.assertIn("#help-create-improve-job-btn", app)
+        self.assertIn("#help-submit-improvement-btn", app)
+        self.assertIn("Suggest missing feature", app)
+        self.assertIn("Improve Orchestrator (Win a Prize!)", app)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to run frontend module tests")
@@ -139,6 +157,35 @@ console.log(JSON.stringify({
         self.assertTrue(out["queuedReport"]["success"])
         self.assertFalse(out["queuedReport"]["sent"])
         self.assertTrue(out["queuedReport"]["queued"])
+
+    def test_submit_improvement_payload(self):
+        out = self.run_js("""
+(async () => {
+  let capturedOpts = null;
+  const mockApi = async (path, opts) => {
+    capturedOpts = opts;
+    return { ok: true, delivered: true, id: 'imp-789' };
+  };
+  const report = await Feedback.submitFeedback({
+    userName: 'Contributron',
+    contactEmail: 'prize_winner@example.com',
+    category: 'improve_orchestrator',
+    title: 'Parallel Runner Caching',
+    jobId: 'job-999',
+    explanation: 'Added memory cache for faster replans',
+    apiClient: mockApi
+  });
+
+  const parsedBody = typeof capturedOpts.body === "string" ? JSON.parse(capturedOpts.body) : capturedOpts.body;
+  console.log(JSON.stringify({ report, parsedBody }));
+})();
+""")
+        self.assertTrue(out["report"]["success"])
+        self.assertEqual(out["parsedBody"]["category"], "improve_orchestrator")
+        self.assertEqual(out["parsedBody"]["contactEmail"], "prize_winner@example.com")
+        self.assertEqual(out["parsedBody"]["title"], "Parallel Runner Caching")
+        self.assertEqual(out["parsedBody"]["jobId"], "job-999")
+        self.assertEqual(out["parsedBody"]["explanation"], "Added memory cache for faster replans")
 
 
 class FeedbackBackendTests(unittest.TestCase):
@@ -208,6 +255,77 @@ class FeedbackBackendTests(unittest.TestCase):
             self.assertEqual(body["to"], ["support@thejauntcompany.com"])
             self.assertIn("[Orchestrator Feedback]", body["subject"])
             self.assertIn("Bob", body["subject"])
+
+    def test_dispatch_feedback_orchestrator_improvement_mode(self):
+        with patch("orchestrator.analytics.track_event") as mock_track:
+            res = ui.dispatch_feedback(self.root, {
+                "userName": "Dave",
+                "category": "improve_orchestrator",
+                "title": "Parallel Job Streaming",
+                "contactEmail": "dave@example.com",
+                "jobId": "job-101",
+                "explanation": "Implemented parallel SSE chunks"
+            })
+            self.assertTrue(res["ok"])
+            fb_log = self.root / ".orchestrator" / "feedback" / "feedback.jsonl"
+            self.assertTrue(fb_log.is_file())
+            record = json.loads(fb_log.read_text(encoding="utf-8").strip().splitlines()[-1])
+            self.assertEqual(record["userName"], "Dave")
+            self.assertEqual(record["category"], "improve_orchestrator")
+            self.assertEqual(record["title"], "Parallel Job Streaming")
+            self.assertEqual(record["contactEmail"], "dave@example.com")
+            self.assertEqual(record["jobId"], "job-101")
+            self.assertEqual(record["explanation"], "Implemented parallel SSE chunks")
+
+    def test_dispatch_feedback_resend_improvement_email_format(self):
+        fake_resp = MagicMock()
+        fake_resp.status = 200
+        fake_resp.__enter__.return_value = fake_resp
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_urlopen, \
+             patch.dict(os.environ, {"RESEND_API_KEY": "re_test_dummy_key"}):
+            res = ui.dispatch_feedback(self.root, {
+                "userName": "Dave",
+                "category": "improve_orchestrator",
+                "title": "Parallel Job Streaming",
+                "contactEmail": "dave@example.com",
+                "jobId": "job-101",
+                "explanation": "Implemented parallel SSE chunks"
+            })
+            self.assertTrue(res["delivered"])
+            mock_urlopen.assert_called_once()
+            req = mock_urlopen.call_args[0][0]
+            body = json.loads(req.data.decode("utf-8"))
+            self.assertEqual(body["to"], ["support@thejauntcompany.com"])
+            self.assertIn("[Orchestrator Improvement Submission]", body["subject"])
+            self.assertIn("Parallel Job Streaming", body["subject"])
+            self.assertIn("Dave", body["subject"])
+            self.assertIn("Contact Email: dave@example.com", body["text"])
+            self.assertIn("Prize Eligible: YES", body["text"])
+            self.assertIn("Local Job ID / Reference: job-101", body["text"])
+            self.assertIn("Implemented parallel SSE chunks", body["text"])
+
+    def test_dispatch_feedback_feature_request_mode(self):
+        fake_resp = MagicMock()
+        fake_resp.status = 200
+        fake_resp.__enter__.return_value = fake_resp
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_urlopen, \
+             patch.dict(os.environ, {"RESEND_API_KEY": "re_test_dummy_key"}):
+            res = ui.dispatch_feedback(self.root, {
+                "userName": "Eve",
+                "category": "feature_request",
+                "title": "Dark Mode Support",
+                "contactEmail": "eve@example.com",
+                "feedbackText": "Please add a dark/light toggle in settings"
+            })
+            self.assertTrue(res["delivered"])
+            mock_urlopen.assert_called_once()
+            req = mock_urlopen.call_args[0][0]
+            body = json.loads(req.data.decode("utf-8"))
+            self.assertIn("[Orchestrator Feature Request]", body["subject"])
+            self.assertIn("Dark Mode Support", body["subject"])
+            self.assertIn("Eve", body["subject"])
 
 
 class ServerEndpointFeedbackTests(unittest.TestCase):
@@ -292,6 +410,31 @@ class ServerEndpointFeedbackTests(unittest.TestCase):
         entry = json.loads(log_file.read_text().strip())
         self.assertEqual(entry["userName"], "Charlie")
         self.assertEqual(entry["feedbackText"], "Everything works seamlessly")
+
+    def test_feedback_endpoint_accepts_improvement_submission(self):
+        res, data = self.request(
+            "POST",
+            "/api/feedback",
+            body={
+                "userName": "Grace",
+                "contactEmail": "grace@example.com",
+                "category": "improve_orchestrator",
+                "title": "Model benchmark",
+                "jobId": "job-555",
+                "explanation": "Benchmarked Anthropic vs OpenAI prompt times"
+            },
+            headers={"Content-Type": "application/json", "X-Orchestrator-UI": "1"}
+        )
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        log_file = self.root / ".orchestrator" / "feedback" / "feedback.jsonl"
+        lines = [json.loads(line) for line in log_file.read_text().strip().splitlines()]
+        entry = lines[-1]
+        self.assertEqual(entry["userName"], "Grace")
+        self.assertEqual(entry["category"], "improve_orchestrator")
+        self.assertEqual(entry["title"], "Model benchmark")
+        self.assertEqual(entry["jobId"], "job-555")
+        self.assertEqual(entry["explanation"], "Benchmarked Anthropic vs OpenAI prompt times")
 
 
 if __name__ == "__main__":

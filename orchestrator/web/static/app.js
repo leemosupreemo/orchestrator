@@ -1146,24 +1146,14 @@ function renderProjectSelect(select) {
     });
   }
 
-  const githubProjects = options.filter((o) => o.source_type === "github");
-  const localProjects = options.filter((o) => o.source_type !== "github");
-
-  let html = "";
-  if (githubProjects.length > 0 && localProjects.length > 0) {
-    html += `<optgroup label="── GitHub Tracked ──">`;
-    html += githubProjects.map((o) => `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}</option>`).join("");
-    html += `</optgroup>`;
-
-    html += `<optgroup label="── Local ──">`;
-    html += localProjects.map((o) => `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}</option>`).join("");
-    html += `</optgroup>`;
-  } else {
-    html = options.map((o) => {
-      const tag = o.source_type === "github" ? " 🐙" : "";
-      return `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${tag}</option>`;
-    }).join("");
-  }
+  const groups = [
+    ["GitHub", options.filter(o => o.source_type === "github")],
+    ["Other Git hosts", options.filter(o => o.source_type === "git")],
+    ["On this computer", options.filter(o => !o.source_type || o.source_type === "local")],
+  ].filter(([, projects]) => projects.length);
+  let html = groups.map(([label, projects]) => `<optgroup label="${esc(label)}">${projects.map(o =>
+    `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
+  ).join("")}</optgroup>`).join("");
   if (state.you?.role !== "member") html += `<option value="__manage__" class="manage-projects-option" style="background-color: var(--manage-option-bg, #323947); color: var(--text);">📁 Manage all projects...</option>`;
   if (select.dataset.html !== html) {
     select.innerHTML = html;
@@ -1682,27 +1672,75 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) 
 }
 
 // Complete email link sign-in if returning from an email link
+function showEmailConfirmGate(onConfirm) {
+  document.body.classList.add("signin-gate");
+  view.innerHTML = `
+    <div class="signin-wrap">
+      <div class="signin-card email-confirm-card">
+        <h2>Confirm your email</h2>
+        <p class="muted">To complete signing in with your email link, please confirm your email address:</p>
+        <form id="email-confirm-form" class="stack email-confirm-form">
+          <label class="field">
+            <span>Email address</span>
+            <input type="email" id="email-confirm-input" required placeholder="you@example.com" autocomplete="email">
+          </label>
+          <button type="submit" class="btn primary">
+            <span>Complete Sign In</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  `;
+  const confirmForm = $("#email-confirm-form");
+  const confirmInput = $("#email-confirm-input");
+  confirmInput?.focus();
+  confirmForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const val = (confirmInput?.value || "").trim();
+    if (val) await onConfirm(val);
+  });
+}
+
 if (typeof window !== "undefined" && window.firebase?.auth && Account.providerSignInWorks()) {
   try {
-    if (firebase.auth().isSignInWithEmailLink(window.location.href)) {
+    const href = window.location.href;
+    let isEmailLink = false;
+    try { isEmailLink = firebase.auth().isSignInWithEmailLink(href); } catch {}
+    if (!isEmailLink && window.location.hash.includes("apiKey=")) {
+      try {
+        const hashQuery = window.location.hash.split("?")[1];
+        if (hashQuery) {
+          isEmailLink = firebase.auth().isSignInWithEmailLink(`${window.location.origin}${window.location.pathname}?${hashQuery}`);
+        }
+      } catch {}
+    }
+    if (isEmailLink) {
       let email = "";
       try { email = localStorage.getItem("orchestrator_email_for_signin") || ""; } catch {}
-      if (!email) {
-        email = window.prompt("Please confirm your email address to complete sign in:") || "";
-      }
-      if (email) {
+      const completeSignIn = async (emailToUse) => {
         signingIn = true;
-        showSigningIn("Signing in with email link…");
-        firebase.auth().signInWithEmailLink(email, window.location.href)
-          .then(async (cred) => {
-            try { localStorage.removeItem("orchestrator_email_for_signin"); } catch {}
-            setLastLoginMethod("email");
-            await afterProviderSignIn(cred.user, "Email");
-          })
-          .catch((err) => {
-            endSigningIn();
-            showSignInGate(err.message);
-          });
+        showSigningIn(`Signing in as ${emailToUse}…`);
+        try {
+          const cred = await firebase.auth().signInWithEmailLink(emailToUse, href);
+          try { localStorage.removeItem("orchestrator_email_for_signin"); } catch {}
+          if (window.history?.replaceState) {
+            const clean = window.location.pathname + (window.location.hash.startsWith("#/?apiKey") ? "#/" : window.location.hash || "");
+            window.history.replaceState({}, document.title, clean);
+          }
+          setLastLoginMethod("email");
+          showSigningIn(`Signed in as ${cred.user.email || emailToUse}. Connecting…`);
+          await afterProviderSignIn(cred.user, "Email");
+        } catch (err) {
+          endSigningIn();
+          toast(err.message, true);
+          showSignInGate(err.message);
+        }
+      };
+
+      if (email) {
+        completeSignIn(email);
+      } else {
+        showEmailConfirmGate(completeSignIn);
       }
     }
   } catch {}
@@ -1778,6 +1816,8 @@ function showSignInGate(message) {
               <strong id="email-panel-title">Sign in with email</strong>
               <button type="button" class="linklike muted email-panel-close" id="email-panel-close" title="Close">✕</button>
             </div>
+            <div id="email-auth-notice" class="email-auth-notice" hidden></div>
+            <div id="email-auth-suggestion" class="email-auth-suggestion" hidden></div>
             <label class="field">
               <span>Email address</span>
               <input type="email" id="email-auth-email" name="email" required placeholder="you@example.com" autocomplete="email">
@@ -1940,15 +1980,114 @@ function showSignInGate(message) {
   const emailForm = $("#email-auth-form");
   const emailInput = $("#email-auth-email");
   const emailPw = $("#email-auth-password");
+  const emailPwWrap = $("#email-auth-pw-wrap");
+  const emailNotice = $("#email-auth-notice");
+  const emailSuggestion = $("#email-auth-suggestion");
   const emailModeBtn = $("#email-auth-mode-btn");
   const emailForgotBtn = $("#email-auth-forgot-btn");
   const emailSubmitBtn = $("#email-auth-submit-btn");
   const emailSubmitLabel = $("#email-auth-submit-label");
   const emailPanelTitle = $("#email-panel-title");
+  const emailLinkWrap = $("#email-auth-link-wrap");
   const emailLinkBtn = $("#email-auth-link-btn");
   const emailCloseBtn = $("#email-panel-close");
 
   let emailMode = "signin";
+
+  function setMode(mode, prefillEmail = "") {
+    emailMode = mode;
+    if (emailSuggestion) emailSuggestion.hidden = true;
+    if (prefillEmail && emailInput) {
+      emailInput.value = prefillEmail;
+    }
+    if (emailMode === "signup") {
+      if (emailPanelTitle) emailPanelTitle.textContent = "Create an account";
+      if (emailModeBtn) emailModeBtn.textContent = "Already have an account? Sign in";
+      if (emailSubmitLabel) emailSubmitLabel.textContent = "Create Account";
+      if (emailPwWrap) emailPwWrap.hidden = true;
+      if (emailPw) {
+        emailPw.required = false;
+        emailPw.value = "";
+      }
+      if (emailForgotBtn) emailForgotBtn.hidden = true;
+      if (emailLinkWrap) emailLinkWrap.hidden = true;
+      if (emailNotice) {
+        emailNotice.innerHTML = "Enter your email to get started. We'll send a sign-in link to activate your account — no password needed.";
+        emailNotice.hidden = false;
+      }
+      emailInput?.focus();
+    } else {
+      if (emailPanelTitle) emailPanelTitle.textContent = "Sign in with email";
+      if (emailModeBtn) emailModeBtn.textContent = "Need an account? Sign up";
+      if (emailSubmitLabel) emailSubmitLabel.textContent = "Sign In";
+      if (emailPwWrap) emailPwWrap.hidden = false;
+      if (emailPw) {
+        emailPw.required = true;
+        emailPw.autocomplete = "current-password";
+      }
+      if (emailForgotBtn) emailForgotBtn.hidden = false;
+      if (emailLinkWrap) emailLinkWrap.hidden = false;
+      if (emailNotice) emailNotice.hidden = true;
+    }
+  }
+
+  function showUnregisteredSuggestion(email) {
+    if (emailSubmitBtn) {
+      emailSubmitBtn.disabled = false;
+      if (emailSubmitLabel) emailSubmitLabel.textContent = "Sign In";
+    }
+    if (emailSuggestion) {
+      emailSuggestion.innerHTML = `
+        <p>No account found for <strong>${esc(email)}</strong>.</p>
+        <button type="button" class="btn small primary" id="suggest-create-account-btn">Create account with this email</button>
+      `;
+      emailSuggestion.hidden = false;
+      const btn = $("#suggest-create-account-btn");
+      if (btn) {
+        btn.addEventListener("click", () => {
+          setMode("signup", email);
+        });
+      }
+    } else {
+      toast(`No account found for ${email}. Click 'Need an account? Sign up' to register.`);
+      setMode("signup", email);
+    }
+  }
+
+  async function sendEmailSignInLink(email, isSignup = false) {
+    if (!email) {
+      toast("Enter your email address first", true);
+      emailInput?.focus();
+      return false;
+    }
+    if (!window.firebase?.auth) {
+      toast("Firebase Auth is loading or unavailable", true);
+      return false;
+    }
+    try {
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.hash = "";
+      const actionCodeSettings = {
+        url: cleanUrl.toString(),
+        handleCodeInApp: true,
+      };
+      await firebase.auth().sendSignInLinkToEmail(email, actionCodeSettings);
+      try { localStorage.setItem("orchestrator_email_for_signin", email); } catch {}
+      const msg = isSignup
+        ? `Sign-in link sent to ${email}! Check your inbox to activate your account.`
+        : `Sign-in link sent to ${email}! Check your inbox to sign in without a password.`;
+      toast(msg);
+      if (emailNotice) {
+        emailNotice.innerHTML = `<strong>Sign-in link sent to ${esc(email)}!</strong><br>Check your inbox and click the link to ${isSignup ? "activate your account and sign in" : "sign in without a password"}.`;
+        emailNotice.hidden = false;
+      }
+      if (emailSuggestion) emailSuggestion.hidden = true;
+      return true;
+    } catch (err) {
+      toast(err.message, true);
+      return false;
+    }
+  }
 
   if (emailBtn && emailPanel) {
     emailBtn.addEventListener("click", () => {
@@ -1968,21 +2107,8 @@ function showSignInGate(message) {
 
   if (emailModeBtn) {
     emailModeBtn.addEventListener("click", () => {
-      if (emailMode === "signin") {
-        emailMode = "signup";
-        if (emailPanelTitle) emailPanelTitle.textContent = "Create an account";
-        if (emailModeBtn) emailModeBtn.textContent = "Already have an account? Sign in";
-        if (emailSubmitLabel) emailSubmitLabel.textContent = "Create Account";
-        if (emailForgotBtn) emailForgotBtn.hidden = true;
-        if (emailPw) emailPw.autocomplete = "new-password";
-      } else {
-        emailMode = "signin";
-        if (emailPanelTitle) emailPanelTitle.textContent = "Sign in with email";
-        if (emailModeBtn) emailModeBtn.textContent = "Need an account? Sign up";
-        if (emailSubmitLabel) emailSubmitLabel.textContent = "Sign In";
-        if (emailForgotBtn) emailForgotBtn.hidden = false;
-        if (emailPw) emailPw.autocomplete = "current-password";
-      }
+      const currentEmail = (emailInput?.value || "").trim();
+      setMode(emailMode === "signin" ? "signup" : "signin", currentEmail);
     });
   }
 
@@ -2015,20 +2141,13 @@ function showSignInGate(message) {
         emailInput.focus();
         return;
       }
-      if (!window.firebase?.auth) {
-        toast("Firebase Auth is loading or unavailable", true);
-        return;
-      }
+      emailLinkBtn.disabled = true;
+      emailLinkBtn.textContent = "Sending link…";
       try {
-        const actionCodeSettings = {
-          url: window.location.href,
-          handleCodeInApp: true,
-        };
-        await firebase.auth().sendSignInLinkToEmail(email, actionCodeSettings);
-        try { localStorage.setItem("orchestrator_email_for_signin", email); } catch {}
-        toast(`Sign-in link sent to ${email}! Check your inbox.`);
-      } catch (err) {
-        toast(err.message, true);
+        await sendEmailSignInLink(email, false);
+      } finally {
+        emailLinkBtn.disabled = false;
+        emailLinkBtn.textContent = "Or email me a sign-in link";
       }
     });
   }
@@ -2042,42 +2161,69 @@ function showSignInGate(message) {
       }
       syncBackend();
       const email = (emailInput?.value || "").trim();
+      if (!email) {
+        toast("Enter your email address", true);
+        emailInput?.focus();
+        return;
+      }
+
+      if (emailMode === "signup") {
+        const password = (emailPw?.value || "").trim();
+        if (password) {
+          try {
+            const cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
+            setLastLoginMethod("email");
+            showSigningIn(`Signed in as ${cred.user.email || email}. Connecting…`);
+            await afterProviderSignIn(cred.user, "Email");
+            return;
+          } catch {}
+        }
+        if (emailSubmitBtn) {
+          emailSubmitBtn.disabled = true;
+          if (emailSubmitLabel) emailSubmitLabel.textContent = "Sending link…";
+        }
+        const sent = await sendEmailSignInLink(email, true);
+        if (emailSubmitBtn) {
+          emailSubmitBtn.disabled = false;
+          if (emailSubmitLabel) emailSubmitLabel.textContent = sent ? "Link sent! Check email" : "Create Account";
+        }
+        return;
+      }
+
       const password = (emailPw?.value || "").trim();
-      if (!email || !password) return;
+      if (!password) {
+        toast("Enter your password, or use 'email me a sign-in link'", true);
+        emailPw?.focus();
+        return;
+      }
 
       if (emailSubmitBtn) {
         emailSubmitBtn.disabled = true;
-        if (emailSubmitLabel) emailSubmitLabel.textContent = emailMode === "signup" ? "Creating account…" : "Signing in…";
+        if (emailSubmitLabel) emailSubmitLabel.textContent = "Signing in…";
       }
       signingIn = true;
-      showSigningIn(emailMode === "signup" ? "Creating your account…" : "Signing in…");
+      showSigningIn("Signing in…");
 
       try {
-        let cred;
-        if (emailMode === "signup") {
-          cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
-          try { await cred.user.sendEmailVerification(); } catch {}
-        } else {
-          try {
-            cred = await firebase.auth().signInWithEmailAndPassword(email, password);
-          } catch (signInErr) {
-            if (signInErr.code === "auth/user-not-found") {
-              throw Object.assign(new Error("No account found with this email. Click 'Need an account? Sign up' to register."), { code: "auth/user-not-found" });
-            }
-            throw signInErr;
-          }
-        }
+        const cred = await firebase.auth().signInWithEmailAndPassword(email, password);
         setLastLoginMethod("email");
         showSigningIn(`Signed in as ${cred.user.email || email}. Connecting…`);
         await afterProviderSignIn(cred.user, "Email");
-      } catch (err) {
+      } catch (signInErr) {
         endSigningIn();
         if (emailSubmitBtn) {
           emailSubmitBtn.disabled = false;
-          if (emailSubmitLabel) emailSubmitLabel.textContent = emailMode === "signup" ? "Create Account" : "Sign In";
+          if (emailSubmitLabel) emailSubmitLabel.textContent = "Sign In";
         }
-        toast(err.message, true);
-        showSignInGate(err.message);
+        const isNotFound = signInErr.code === "auth/user-not-found" ||
+          signInErr.code === "auth/user-not-registered" ||
+          /no (?:user|account) found/i.test(signInErr.message || "");
+        if (isNotFound) {
+          showUnregisteredSuggestion(email);
+          return;
+        }
+        toast(signInErr.message, true);
+        showSignInGate(signInErr.message);
       }
     });
   }
@@ -2290,9 +2436,9 @@ function statusLine(p) {
     p.machine_count === 0 ? `<a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>`
       : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
   ].filter(Boolean);
-  // Row 1: the branch. Row 2: the stats, when there are any.
-  return `<span class="status-line status-stack"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>
-    ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</span>`;
+  // The health control sits opposite the branch picker. Detailed fixes stay in its compact disclosure.
+  return `<div class="status-line status-stack home-status-line"><div class="status-main-row"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>${homeHealthIndicator(setupState)}</div>
+    ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</div>`;
 }
 
 // A branch checked out in another worktree folder is labelled: git won't switch to it here.
@@ -2342,7 +2488,7 @@ async function createReleaseTag() {
         <div class="text-sm"><strong>Commit on ${esc(preview.branch)}:</strong> <code class="mono">${esc(preview.commit.slice(0, 10))}</code> · ${esc(preview.subject)}</div>
       </div>
       <label class="field"><span>Release version</span><input name="tag" required maxlength="120" value="${esc(preview.suggested_tag)}" placeholder="v0.1.0" spellcheck="false"></label>
-      ${preview.can_push ? `<label class="check"><input type="checkbox" name="publish" checked><span>Publish this tag to GitHub (origin)</span></label>` : `<p class="muted">No remote is configured. The tag will be saved locally.</p>`}
+      ${preview.can_push ? `<label class="check"><input type="checkbox" name="publish" checked><span>Publish this tag to the Git remote (origin)</span></label>` : `<p class="muted">No remote is configured. The tag will be saved locally.</p>`}
       <p class="muted font-13">Your current branch and uncommitted changes stay as they are.</p>`, "Create release tag");
     if (!values) return;
     const body = {tag: values.tag, commit: preview.commit, push: Boolean(values.publish)};
@@ -2440,10 +2586,11 @@ function renderSetupFab() {
   const show = s && !s.complete && ["home", "checkup"].includes(current.page) && !(current.page === "home" && !s.seen);
   fab.hidden = !show;
   if (s) fab.querySelector("span").textContent = `Setup ${s.required_done}/${s.required_total}`;
-  const navItem = $("#nav-readiness"); // the sidebar's way back to it, until everything required is done
-  if (navItem) {
-    navItem.hidden = !s || s.complete;
-    if (s) $("#setup-badge").textContent = String(s.required_total - s.required_done);
+  const badge = $("#setup-badge");
+  if (badge) {
+    const remaining = s ? s.required_total - s.required_done : 0;
+    badge.textContent = String(remaining);
+    badge.hidden = !s || !remaining;
   }
   if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
 }
@@ -2453,7 +2600,7 @@ function renderSetupPanel() {
   if (!s) return;
   panel.innerHTML = `<div class="setup-panel-h"><strong>Setup</strong><span class="muted">${s.required_done}/${s.required_total} required</span>
     <button class="btn small ghost" data-setup-close aria-label="Close">✕</button></div><div class="setup-panel-b">${setupListHtml(s)}
-    <a class="btn small ghost setup-panel-more" href="#/readiness" data-setup-close>Open Readiness: build tools and checks</a></div>`;
+    <a class="btn small ghost setup-panel-more" href="#/checkup" data-setup-close>Open onboarding checklist</a></div>`;
 }
 
 async function openSetupPanel() {
@@ -2542,6 +2689,68 @@ document.addEventListener("click", async (e) => {
 const HOME_JOBS_SHOWN = 10;
 const STALE_DAYS = 14;
 const isStaleJob = (j) => j.state?.group === "needs_you" && !j.active_run && j.updated && Date.now() / 1000 - j.updated > STALE_DAYS * 86400;
+
+function homeHealthIndicator(s) {
+  if (!s?.items) return `<details class="home-health-inline home-health-yellow"><summary class="home-health-trigger" title="System health: status unavailable"><span class="home-health-light" aria-hidden="true"></span><span>Status unavailable</span></summary><div class="home-health-popover"><strong>System health</strong><p>Setup checks could not be loaded. Reload Home to try again.</p></div></details>`;
+  const required = s.items.filter(item => item.required);
+  const missing = required.filter(item => !item.done);
+  const optional = s.items.filter(item => !item.required);
+  const optionalMissing = optional.filter(item => !item.done);
+  const tone = missing.length ? "red" : "green";
+  const status = missing.length ? "Not ready" : "Ready";
+  const summary = missing.length ? `${missing.length} required item${missing.length === 1 ? "" : "s"} to fix`
+    : optionalMissing.length ? `All ${s.required_total} required items are ready · ${optionalMissing.length} optional to review` : "All required setup is ready";
+  return `<details class="home-health-inline home-health-${tone}">
+    <summary class="home-health-trigger" title="System health: ${esc(status)}${optionalMissing.length ? `; ${optionalMissing.length} optional items available` : ""}"><span class="home-health-light${!missing.length && optionalMissing.length ? " home-health-light-optional" : ""}" aria-hidden="true"></span><span>${esc(status)}</span></summary>
+    <div class="home-health-popover"><div class="home-health-popover-head"><strong>System health</strong><span>${esc(summary)}</span></div>
+      <div class="home-health-section"><h3>Required · ${required.length - missing.length}/${required.length} ready</h3>${required.length ? required.map(setupItem).join("") : `<p class="home-health-ready">No required setup items.</p>`}</div>
+      ${optional.length ? `<div class="home-health-section home-health-optional"><h3>Optional · ${optional.length - optionalMissing.length}/${optional.length} ready</h3>${optional.map(setupItem).join("")}</div>` : ""}
+    </div>
+  </details>`;
+}
+
+function positionHomeHealthPopover(details) {
+  const panel = details.querySelector(":scope > .home-health-popover");
+  const trigger = details.querySelector(":scope > .home-health-trigger");
+  if (!details.open || !panel || !trigger) return;
+
+  const margin = 12;
+  const gap = 8;
+  panel.style.visibility = "hidden";
+  panel.style.maxHeight = "";
+  const triggerRect = trigger.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const left = Math.max(margin, Math.min(triggerRect.right - panelRect.width, window.innerWidth - panelRect.width - margin));
+  const below = window.innerHeight - margin - triggerRect.bottom - gap;
+  const above = triggerRect.top - gap - margin;
+  const placeBelow = below >= Math.min(panelRect.height, 180) || below >= above;
+  const available = Math.max(80, placeBelow ? below : above);
+  panel.style.maxHeight = `${Math.floor(available)}px`;
+  const top = placeBelow
+    ? triggerRect.bottom + gap
+    : Math.max(margin, triggerRect.top - gap - Math.min(panelRect.height, available));
+  panel.style.left = `${Math.round(left)}px`;
+  panel.style.top = `${Math.round(top)}px`;
+  panel.style.visibility = "";
+}
+
+function repositionOpenHomeHealthPopovers() {
+  document.querySelectorAll(".home-health-inline[open]").forEach(positionHomeHealthPopover);
+}
+
+document.addEventListener("toggle", (event) => {
+  const details = event.target.matches?.(".home-health-inline")
+    ? event.target
+    : event.target.closest?.(".home-health-inline");
+  if (details?.open) requestAnimationFrame(() => positionHomeHealthPopover(details));
+}, true);
+document.addEventListener("click", (event) => {
+  document.querySelectorAll(".home-health-inline[open]").forEach((details) => {
+    if (!details.contains(event.target)) details.open = false;
+  });
+});
+document.addEventListener("scroll", repositionOpenHomeHealthPopovers, true);
+window.addEventListener("resize", repositionOpenHomeHealthPopovers);
 
 // Archive keeps the branch and files; Home's Archived filter (or Undo here) brings a job back as it was.
 document.addEventListener("click", async (e) => {
@@ -4375,42 +4584,6 @@ function updateUxReviewWhileEditing(result) {
   return true;
 }
 
-// What jobs need, each with a way to do it in the app (the terminal setup wizard's job, without the terminal).
-// Readiness: can jobs run on this computer? What they need (required, then optional), whether the project's build
-// tools are here, and the checks you can run. Onboarding checklist is about the product; this is about the environment.
-const READINESS_CHECKS = [["check", "Tools and logins", "Command-line tools, sign-ins and keys (prerequisite audit)"],
-  ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"],
-  ["test", "Orchestrator health check", "Orchestrator's own self-tests, to confirm it works on this computer"]];
-
-pages.readiness = async () => {
-  setupState = await api("setup"); // its buttons look items up here
-  const s = setupState, left = s.required_total - s.required_done;
-  return {
-    title: "Readiness",
-    sub: left ? `${left} required step${left > 1 ? "s" : ""} left before jobs can run` : "Everything jobs need is in place",
-    html: `
-      <div class="tasks-progress-wrap mb-16"><div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${Math.round(100 * s.required_done / s.required_total)}%"></div></div><span class="progress-text">${s.required_done}/${s.required_total} required</span></div>
-      <section class="card mb-16">${setupListHtml(s)}</section>
-      <section class="card mb-16"><div class="card-h"><h2>Will this computer build it?</h2><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
-        <div class="list" id="preflight-list"><div class="item"><div class="main-col muted">Checking this computer…</div></div></div></section>
-      <section class="card"><div class="card-h"><h2>Run a check</h2></div>
-        <div class="list">${READINESS_CHECKS.filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
-          `<div class="item"><div class="main-col"><div class="title">${title}</div><div class="meta">${hint}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>`,
-    after: () => {
-      const paint = async (refresh) => {
-        const box = $("#preflight-list");
-        try {
-          const { items } = await api(`preflight${refresh ? "?refresh=1" : ""}`);
-          const icon = { ok: `<span class="setup-icon done" aria-label="fine">✓</span>`, warn: `<span class="pill attention">Maybe</span>`, fail: `<span class="pill failed">Blocks</span>` };
-          box.innerHTML = items.map((i) => `<div class="item">${icon[i.status]}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${codeSpans(i.detail)}${i.fix && !i.route ? ` · ${codeSpans(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.fix || "Open")}</a></div>` : ""}</div>`).join("") || `<div class="empty">Nothing to check.</div>`;
-        } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-      };
-      paint(false);
-      $("#preflight-refresh")?.addEventListener("click", () => paint(true));
-    },
-  };
-};
-
 // GitHub sign-in without a terminal: start GitHub's device flow, show its one-time code and link, and wait here.
 async function signInToGitHub() {
   let start;
@@ -4567,6 +4740,10 @@ pages["ux-review"] = async (_, query) => {
 // Server text marks commands with `backticks`: show them as code, not as literal backticks.
 const codeSpans = (text) => esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
 
+const READINESS_CHECKS = [["check", "Tools and logins", "Command-line tools, sign-ins and keys (prerequisite audit)"],
+  ["check_config", "Project config", "Validate .orchestrator/project.json"], ["worker_check", "Worker machines", "Remote build machines respond"],
+  ["test", "Orchestrator health check", "Orchestrator's own self-tests, to confirm it works on this computer"]];
+
 pages.checkup = async () => {
   const owner = state.you?.role !== "member";
   const responses = await Promise.allSettled([api("health"), api("setup"), api("preflight"), api("integrations"), api("analytics"), owner ? api("config") : Promise.resolve(null)]);
@@ -4593,10 +4770,9 @@ pages.checkup = async () => {
     machine.detail = enabled.length ? `${enabled.length} enabled. Worker connectivity is checked before a job runs.` : "No enabled machines. Add or enable a machine.";
     models.status = enabled.some((m) => m.models > 0) ? "ok" : "todo"; models.done = models.status === "ok";
   }
+  const environmentChecks = (preflight?.items || []).map((i) => ({...i,
+    status: i.status === "fail" ? "todo" : i.status, route: i.route, label: i.route ? i.fix || "Review setup" : "Review setup"}));
   const workflows = (setup?.items || []).filter((i) => i.required && !coreIds.includes(i.id)).map(fromSetup);
-  workflows.push(...(preflight?.items || []).filter((i) => i.id !== "github" || !workflows.some((w) => w.id === "github_cli")).map((i) => ({...i,
-    status: i.status === "fail" ? "todo" : i.status, route: i.route || "#/readiness", label: i.route ? i.fix || "Review setup" : "Open Readiness"})));
-  if (!preflight) workflows.push(missing("build-tools", "Build tools and platform prerequisites", "#/readiness"));
   const signing = setup?.workflow_checks || [missing("signing", "Signing and delivery prerequisites", "#/delivery")];
   workflows.push(...signing.filter((i) => i.selected === true));
   const delivery = (setup?.items || []).find((i) => i.id === "firebase");
@@ -4636,17 +4812,35 @@ pages.checkup = async () => {
   const count = (items) => `${items.filter((i) => i.status === "ok").length} of ${items.length} configured`;
   const group = (title, items, description) => `<section class="card mb-16"><div class="card-h"><h2>${title}</h2><span class="count">${count(items)}</span></div><div class="card-b muted card-note">${description}</div>
     <div class="list onboarding-list">${items.map((i) => i.setup ? setupItem(i) : `<div class="item"><span class="pill ${i.status === "ok" ? "done" : i.status === "todo" || i.status === "warn" ? "attention" : ""}">${i.status === "ok" ? "Configured" : i.status === "unknown" ? "Status unavailable" : i.status === "warn" ? "Needs attention" : "Needs setup"}</span><div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div><div class="side">${action(i)}</div></div>`).join("") || `<div class="empty">No additional prerequisites reported for this project.</div>`}</div></section>`;
-  const next = required.find((i) => i.status !== "ok") || workflows.find((i) => i.status !== "ok");
+  const environmentRow = (i) => {
+    const icon = {ok: `<span class="setup-icon done" aria-label="fine">✓</span>`, warn: `<span class="pill attention">Maybe</span>`, fail: `<span class="pill failed">Blocks</span>`, todo: `<span class="pill failed">Blocks</span>`};
+    return `<div class="item">${icon[i.status] || `<span class="pill">Status unavailable</span>`}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${codeSpans(i.detail)}${i.fix && !i.route ? ` · ${codeSpans(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.label || "Review setup")}</a></div>` : ""}</div>`;
+  };
+  const environmentHtml = (items, available = Boolean(preflight)) => items.length ? items.map(environmentRow).join("") : `<div class="empty">${available ? "No build or machine checks are needed for this project." : "Environment checks are unavailable. Try again."}</div>`;
+  const next = required.find((i) => i.status !== "ok") || workflows.find((i) => i.status !== "ok") || environmentChecks.find((i) => i.status !== "ok" && i.route);
   return {
     title: "Onboarding checklist",
     sub: `${esc(d.name)} · ${esc(d.stage)}`,
     html: `<p class="muted mb-16">Set up the essentials, then the workflows and connections you need. Optional items do not affect required setup counts. Configured does not guarantee access; job checks verify tools and workers when used.</p>
       ${next ? `<section class="card mb-16 card-next"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div><div class="card-b stack">${next.setup ? action(next, true) : `<p>${esc(next.detail)}</p><div>${action(next, true)}</div>`}</div></section>` : ""}
       ${group("Required to run jobs", required, "Project, Git, an AI provider, an enabled machine, and a model assignment.")}
-      ${group("Required for selected workflows", workflows, 'Applies when using GitHub, building or testing this app, or distributing builds. Some checks apply to this computer; remote workers are checked separately. <a href="#/readiness">Open Readiness</a> for detailed checks.')}
+      ${group("Required for selected workflows", workflows, "Applies when using GitHub, building or testing this app, or distributing builds.")}
+      <section class="card mb-16"><div class="card-h"><h2>Tools and environment</h2></div><div class="card-b muted card-note">Build tools on this computer, remote worker access, sign-ins, and project checks.</div>
+        <div class="card-h"><h3>Will this computer build it?</h3><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
+        <div class="list" id="preflight-list">${environmentHtml(environmentChecks)}</div>
+        <div class="card-h"><h3>Run a check</h3></div><div class="list">${READINESS_CHECKS.filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
+          `<div class="item"><div class="main-col"><div class="title">${esc(title)}</div><div class="meta">${esc(hint)}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>
       ${group("Optional", optional, 'Product guidance, milestones, and connections. Add what helps your work. Unavailable or undetected statuses are shown explicitly. <a href="#/connections">Manage connections</a>.')}
       <section class="card mt-16"><div class="card-h"><h2>UX and design</h2><a class="btn small" href="#/ux-review">Open UX review</a></div><div class="card-b muted" id="ux-checkup">Checking…</div></section>`,
     after: () => {
+      const paintPreflight = async (refresh) => {
+        const box = $("#preflight-list");
+        try {
+          const result = refresh ? await api("preflight?refresh=1") : preflight;
+          box.innerHTML = environmentHtml((result?.items || []).map((i) => ({...i, status: i.status === "fail" ? "todo" : i.status, route: i.route, label: i.route ? i.fix || "Review setup" : "Review setup"})), Boolean(result));
+        } catch (error) { box.innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
+      };
+      $("#preflight-refresh")?.addEventListener("click", () => paintPreflight(true));
       api("ux-pass").then(({passes, settings}) => {
         const last = passes[0];
         $("#ux-checkup").textContent = last ? `Last pass ${ago(Date.parse(last.at) / 1000)}: ${plural(last.counts.findings, "finding")}, ${last.counts.major} major or worse.` : settings && (settings.url || settings.simulator) ? "No pass yet. Run one from UX review." : "No pass yet, and no screens set up. UX review shows how.";
@@ -4671,7 +4865,7 @@ pages.help = async () => ({
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
       ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads. Edit it, import a PRD, see its history."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["App delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
-         ["Onboarding checklist", "#/checkup", "What the product has in place and what's missing."], ["Readiness", "#/readiness", "Whether jobs can run here: AI, machines, sign-ins, build tools and checks."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
+         ["Onboarding checklist", "#/checkup", "What the project needs, plus local tools, environment checks, and workflows."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
     </div></section>
     <section class="card mb-16"><div class="card-h"><h2>Words we use</h2></div><div class="card-b"><dl class="help-terms">
@@ -4684,20 +4878,40 @@ pages.help = async () => ({
       <dt>Pause</dt><dd>Stops the worker. The job keeps its work; Resume continues from the next task.</dd>
     </dl></div></section>
     <section class="card"><div class="card-h"><h2>Common questions</h2></div><div class="card-b help-faq">
-      <details><summary>A job won't run</summary><p>Jobs need a machine, a model, a signed-in AI provider and a GitHub remote. <a href="#/readiness">Readiness</a> shows what is missing, each with a way to fix it here.</p></details>
+      <details><summary>A job won't run</summary><p>Jobs need a Git repository, a machine, a model and a ready AI provider. GitHub workflows also need GitHub sign-in. The <a href="#/checkup">Onboarding checklist</a> shows what's missing and where to fix it.</p></details>
       <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. All of it is optional, and “not sure yet” is a fine answer. Draft it from your project, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
       <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from the <a href="#/?filter=archived">Archived</a> filter on Home.</p></details>
       <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends alerts to this device. Turned on in the hosted app, they arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run (on iPhone, add it to your Home Screen first). For Slack, add a webhook under <a href="#/connections?card=chat">Connections</a>.</p></details>
       <details><summary>Where are the full guides?</summary><p><a href="#/docs">Docs</a> has the project's own files and Orchestrator's guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>
-    <section class="card"><div class="card-h"><h2>Have feedback?</h2></div><div class="card-b">
-      <p class="muted mb-12">Tell us what felt off or share ideas to make Orchestrator better. We read every message.</p>
-      <button type="button" class="btn small" id="help-feedback-btn">Send feedback</button>
+    <section class="card"><div class="card-h"><h2>Missing a feature or have feedback?</h2></div><div class="card-b">
+      <p class="muted mb-12">Tell us what felt off, request a missing feature, or share ideas to make Orchestrator better. We read every message.</p>
+      <div class="row gap-8">
+        <button type="button" class="btn small primary" id="help-feature-btn">Request a feature or share feedback</button>
+        <button type="button" class="btn small" id="help-feedback-btn">Send feedback</button>
+      </div>
+    </div></section>
+    <section class="card prize-card"><div class="card-h"><h2>🏆 Improve Orchestrator & Win a Prize</h2></div><div class="card-b">
+      <div class="prize-card-badge mb-8"><span class="prize-badge">🏆 Prize Challenge</span> <span class="muted">Local contribution challenge</span></div>
+      <p class="mb-12">You can use Orchestrator to improve Orchestrator itself! Create an AI job locally to build a feature, UI polish, or workflow upgrade. Submit your explanation and changes to us for permanent inclusion in the core repository. If selected, you'll receive an <strong>awesome prize</strong> and public recognition.</p>
+      <div class="row gap-8">
+        <button type="button" class="btn small primary" id="help-create-improve-job-btn"><svg class="icon icon-sm" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Create job to improve Orchestrator</button>
+        <button type="button" class="btn small" id="help-submit-improvement-btn">Submit improvement for inclusion & prize 🏆</button>
+      </div>
     </div></section>`,
   after: () => {
     $("#help-feedback-btn")?.addEventListener("click", () => {
       Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" });
+    });
+    $("#help-feature-btn")?.addEventListener("click", () => {
+      Feedback.open({ initialStep: "feedback", category: "feature_request", userName: state.you?.email || "" });
+    });
+    $("#help-create-improve-job-btn")?.addEventListener("click", () => {
+      location.hash = "#/new?type=feature&summary=" + encodeURIComponent("Improve Orchestrator: ") + "&spec=" + encodeURIComponent("Goal: Improve Orchestrator itself.\n\nDescribe the improvement you are making:\n- What it does:\n- Why it's valuable:\n- Files to change:\n- How to test:\n");
+    });
+    $("#help-submit-improvement-btn")?.addEventListener("click", () => {
+      Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" });
     });
   }
 });
@@ -6040,36 +6254,213 @@ pages["test-cases"] = async (_, query) => {
 
 pages.git = async () => {
   const g = await api("git");
-  const sync = g.upstream == null ? "No upstream yet — Push sets it."
-    : `${g.ahead} to push · ${g.behind} to pull (vs ${g.upstream})`;
+  const owner = state.you?.role !== "member";
+  const destination = `${g.sync_remote}/${(g.sync_ref || "").replace(/^refs\/heads\//, "")}`;
+  const branchLabel = !g.is_repo ? "Not initialized" : !g.has_commits ? "No commits yet" : g.branch || "Detached HEAD";
+  const sync = g.upstream ? (g.ahead == null ? `Tracking ${g.upstream} · Fetch to check status` : `${g.ahead} to push · ${g.behind} to pull`)
+    : g.can_fetch ? "No tracking branch" : "No remote connected";
+  const blockers = [...new Set([!g.can_pull && g.pull_reason, !g.can_push && g.push_reason].filter(Boolean))];
+  const row = (label, value, action = "") => `<div class="git-setting-row"><dt>${label}</dt><dd><div class="git-setting-value">${value}</div>${action ? `<div class="git-setting-action">${action}</div>` : ""}</dd></div>`;
+  const editButton = (id, label, title) => owner ? `<button type="button" class="btn small ghost" id="${id}" title="${title}">${label}</button>` : "";
+  const workflow = g.mode === "github" ? "GitHub issues and pull requests" : "Local job records and branches";
+  const workflowDetail = g.mode === "github" ? "Approved work is merged on GitHub." : "Approved work is merged on this computer.";
+  const reviewLinks = /GitLab|Bitbucket/.test(g.provider || "") ? " Finished branches include a link to create a review request on your host." : "";
+  const branchCard = `<section class="card">
+    <div class="card-h git-sync-header"><h2>Branch and sync</h2><div class="card-actions">
+      <button type="button" class="btn small ghost" id="git-pull" aria-describedby="git-sync-reason" ${!g.can_pull ? "disabled" : ""}>Pull</button>
+      <button type="button" class="btn small ghost" id="git-push" aria-describedby="git-sync-reason" ${!g.can_push ? "disabled" : ""}>Push</button>
+    </div></div>
+    <div class="card-caption git-sync-caption">${esc(sync)}</div>
+    <div class="card-b git-branch-fields">
+      <div class="git-branch-field">
+        <label class="field" for="git-branch-select"><span>Current branch</span></label>
+        <div class="git-branch-controls"><select id="git-branch-select" name="branch" class="mono" ${!g.branches.length ? "disabled" : ""}>
+          ${g.branches.map(b => branchOption(b, g.branch, g.elsewhere)).join("")}
+        </select><button type="button" class="btn small ghost" ${act("git_new_branch")} ${!g.is_repo ? "disabled" : ""}>New branch…</button></div>
+      </div>
+      ${g.has_commits && g.branch && (g.can_fetch || g.remote_branches?.length) ? `<div class="git-branch-field"><span class="git-field-label">Tracking branch</span><div class="git-tracking-value"><span class="mono">${esc(g.upstream || "Not set")}</span>
+        ${owner ? `<button type="button" class="btn small ghost" id="git-tracking" title="Choose tracking branch" ${!g.remote_branches?.length ? 'disabled aria-describedby="git-tracking-hint"' : ""}>${g.upstream ? "Change" : "Choose"}</button>` : ""}</div>
+        ${!g.remote_branches?.length ? '<small class="muted" id="git-tracking-hint">Fetch updates to list remote branches.</small>' : ""}</div>` : ""}
+    </div>
+    <div class="git-sync-note" id="git-sync-reason" ${!blockers.length ? "hidden" : ""}>${blockers.map(reason => `<p>${esc(reason)}</p>`).join("")}</div>
+    <div class="git-fetch-row"><span class="muted">${g.last_fetch ? `Last fetched ${esc(ago(g.last_fetch))} · cached remote status` : "Remote status uses cached branches."}</span>
+      <button type="button" class="btn small ghost" id="git-fetch" ${!g.can_fetch ? "disabled" : ""}>Fetch updates</button></div>
+    ${g.last_commit ? `<div class="card-caption git-commit-caption"><span>Last commit</span><span>${clamped(g.last_commit, 100)}</span></div>` : ""}
+  </section>`;
+  const changesCard = `<section class="card">
+    <div class="card-h"><h2>Uncommitted changes <span class="count">${g.changes_total}</span></h2></div>
+    ${(g.change_groups || []).map(group => `<section class="git-change-group">
+      <h3>${esc(group.label)} <span class="count">${group.changes.length}</span></h3>
+      <div class="diff-files">${group.changes.map(c => `<details class="diff-file" data-git-diff="${esc(c.path)}" data-kind="${esc(group.id)}">
+        <summary><span class="pill">${esc(c.label)}</span> <span class="mono">${c.old_path ? `${esc(c.old_path)} → ` : ""}${esc(c.path)}</span></summary>
+        <pre class="diff" aria-live="polite">Loading…</pre></details>`).join("")}</div>
+    </section>`).join("") || `<div class="empty">${g.is_repo ? "Working tree clean." : "Initialize Git to inspect changes."}</div>`}
+    ${g.changes_total > g.changes.length ? `<div class="card-caption muted">Showing the first ${g.changes.length} changed files of ${g.changes_total}.</div>` : ""}
+  </section>`;
+  const health = g.health || {};
+  const checked = health.checked;
+  const checks = checked?.checks || [];
+  const labels = checked?.labels || [];
+  const missingLabels = labels.filter(label => !label.present);
+  const publishing = health.publishing || {problems: [], recent: []};
+  const problems = checks.filter(check => check.status === "blocked");
+  const needsSignIn = g.mode === "github" && !g.github?.user;
+  const verified = checks.some(check => check.id === "read" && check.status === "ok") && !problems.length;
+  const connectionLabel = !g.is_repo || !g.has_commits ? "Setup needed" : !g.origin && g.mode === "git" ? "Local Git ready"
+    : !g.origin ? "Connect a GitHub repository" : needsSignIn ? "GitHub sign-in needed" : problems.length ? "Needs attention" : verified ? "Read access verified" : g.health?.checking_task ? "Gathering status…" : "Status unavailable";
+  const statusText = status => ({ok: "Verified", blocked: "Needs attention", unknown: "Not verified", per_job: "Per pull request", local: "Local only"}[status] || "Not checked");
+  const external = (url, label) => `<a class="btn small ghost" href="${esc(url)}" target="_blank" rel="noopener">${label} ↗</a>`;
+  const problemCopy = check => {
+    const detail = String(check.detail || "").toLowerCase();
+    if (check.id === "read") return ["Remote unavailable", "Check the URL, network, and Git credentials or SSH key."];
+    if (check.id === "github") return ["GitHub access failed", "Sign in with GitHub CLI and grant repository access."];
+    if (check.id === "publish" && detail.includes("archived")) return ["Repository is archived", "Unarchive it in GitHub settings or connect another repository."];
+    if (check.id === "publish") return ["Write access needed", "Ask a repository owner to grant this account write access."];
+    if (check.id === "issues" && detail.includes("enable issues")) return ["Issues are disabled", "Enable Issues in GitHub repository settings."];
+    if (check.id === "issues") return ["GitHub job access needed", "Restore write access and sign in to GitHub CLI."];
+    return [check.label || "Repository setup issue", check.remedy || "Review access and repository settings on your Git host."];
+  };
+  const connectionCard = `<section class="card" id="git-connection-card">
+    <div class="card-h"><h2>Connection</h2></div>
+    <div class="card-caption git-provider-caption"><span class="pill ${verified || connectionLabel === "Local Git ready" ? "done" : ""}">${esc(connectionLabel)}</span><span class="muted" id="git-check-status" role="status">${g.health?.checking_task ? "Checking Git and host access…" : checked?.checked_at ? `Status updated ${esc(ago(checked.checked_at))}` : g.is_repo ? "Gathering Git and host access…" : ""}</span></div>
+    ${!g.is_repo ? `<div class="git-setup-message"><p>This folder is not a Git repository yet.</p>${owner ? '<button type="button" class="btn small primary" id="git-init">Initialize repository</button>' : ""}</div>` : !g.has_commits ? '<p class="git-setup-message">Create a first commit before publishing. Creating a GitHub repository also creates the initial commit.</p>' : ""}
+    <dl class="git-settings-list">
+      ${row("Repository", `<span>${esc(g.provider)}</span>${g.origin ? `<small class="mono git-remote-url">${esc(g.origin)}</small>` : '<small>No origin remote. Jobs keep their work on this computer.</small>'}`, g.origin ? editButton("git-connect", "Change", "Change remote origin") : "")}
+      ${g.mode === "github" ? row("GitHub account", g.github?.user ? `<span>${esc(g.github.user)}</span>` : g.github?.installed ? "Not signed in on this computer" : 'GitHub CLI is not installed. Install with <code>brew install gh</code>, then refresh.', !g.github?.user && g.github?.installed && owner ? '<button type="button" class="btn small primary" id="git-signin">Sign in to GitHub</button>' : "") : ""}
+    </dl>
+    ${g.web_url ? `<div class="card-caption git-host-links">${external(g.web_url, `Open on ${g.provider === "Git remote" ? "your Git host" : esc(g.provider)}`)}</div>` : ""}
+    ${checks.length ? `<details class="git-access-details"><summary>Access details</summary><dl class="git-settings-list">${checks.map(check => row(esc(check.label), `<span>${statusText(check.status)}</span><small>${clamped(check.detail, 260)}</small>`)).join("")}</dl></details>` : ""}
+    ${owner && !g.origin ? `<div class="git-connection-options"><h3>Where to keep your code</h3><dl class="git-settings-list">
+      ${row("Existing repository", '<small>Connect GitHub or other Git hosts using a repository URL.</small>', `<button type="button" class="btn small ${g.is_repo && !needsSignIn ? "primary" : ""}" id="git-connect" title="Connect existing repository" ${!g.is_repo ? "disabled" : ""}>Connect</button>`)}
+      ${row("New GitHub repository", '<small>Create a repository with issues and pull requests.</small>', '<button type="button" class="btn small ghost" id="git-create" title="Create GitHub repository">Create</button>')}
+      ${row("On this computer", '<small>Run jobs locally and connect a remote later.</small>', `<button type="button" class="btn small ghost" id="git-local" title="Keep work on this computer" ${!g.is_repo ? "disabled" : ""}>Use local</button>`)}
+    </dl></div>` : ""}
+    ${!owner ? '<p class="card-caption muted">The computer owner can change connection settings and check access.</p>' : ""}
+  </section>`;
+  const baseBranchOptions = g.branches.map(branch => `<option value="${esc(branch)}" ${branch === g.base_branch ? "selected" : ""}>${esc(branch)}</option>`).join("")
+    || `<option value="" selected disabled>No local branches</option>`;
+  const problemCount = problems.length + (missingLabels.length ? 1 : 0) + publishing.problems.length;
+  const problemCard = problemCount ? `<section class="card git-problems-card" id="git-problems-card"><div class="card-h"><h2>Needs attention <span class="count">${problemCount}</span></h2><span class="git-problems-summary">Fix these to restore Git integration.</span></div><dl class="git-settings-list">
+    ${problems.map(check => { const [issue, remedy] = problemCopy(check); return row(esc(issue), `<span>${esc(remedy)}</span>`, check.id === "issues" && g.web_url ? external(`${g.web_url}/settings`, "Settings") : ""); }).join("")}
+    ${missingLabels.length ? row("Job labels missing", `<span>${missingLabels.length} labels</span><small>Create only missing labels. Custom labels stay unchanged.</small>`, owner ? '<button type="button" class="btn small ghost" id="git-repair-labels">Create missing</button>' : "") : ""}
+    ${publishing.problems.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${clamped(job.detail, 120)}</span><small>Review the job result, then retry.</small>`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a><button type="button" class="btn small ghost" data-git-publish="${esc(job.id)}" ${!g.origin ? "disabled" : ""}>Retry</button></div>`)}</div>`).join("")}
+  </dl></section>` : "";
+  const configuration = health.configuration || {};
+  const integrationCard = g.is_repo ? `<section class="card"><div class="card-h"><h2>Job integration</h2></div><dl class="git-settings-list">
+    ${row("Job workflow", `<span>${workflow}</span><small>${workflowDetail}${reviewLinks}</small>`, editButton("git-workflow", "Change", "Change job workflow"))}
+    ${row("Base branch", `<form id="git-base-branch-form" class="git-base-branch-form"><div class="git-base-branch-controls"><label class="sr-only" for="git-base-branch">Base branch for jobs</label><select id="git-base-branch" name="branch" aria-label="Base branch for jobs" ${!g.branches.length ? "disabled" : ""}>${baseBranchOptions}</select><button type="submit" class="btn small ghost" ${!g.branches.length ? "disabled" : ""}>Save</button></div><small>Jobs compare against and merge into this branch.</small></form>`)}
+    ${row("Publishing", `<span>${g.mode === "github" ? "Finished work becomes a draft pull request." : g.origin ? "Finished job branches are pushed to origin." : "Finished work stays on local job branches."}</span><small>Review, revisions and completion stay on each job’s page.</small>`)}
+    ${row("Project configuration", `<span>${esc(configuration.detail || "Fetch remote branches to compare committed configuration.")}</span><small>Compared with the last fetched base branch; changes are not automatically uploaded.</small>`, configuration.url ? external(configuration.url, "View committed file") : "")}
+  </dl>
+  ${g.mode === "github" ? `<details class="git-label-details"><summary>Managed job labels <span class="muted">${labels.length ? `${labels.length - missingLabels.length}/${labels.length} present` : "Not checked"}</span></summary>
+    <p class="git-section-note">Orchestrator updates its generated status labels as jobs progress. Keep your own labels; manage names, colors and descriptions on GitHub.</p>
+    ${labels.length ? `<dl class="git-settings-list">${labels.map(label => row(`<span class="mono">${esc(label.name)}</span>`, `<span>${esc(label.description)}</span><small>${label.present ? "Present" : "Missing"}</small>`)).join("")}</dl>` : '<p class="git-section-note">Job labels appear here after repository status is gathered.</p>'}
+    ${health.labels_url ? `<div class="card-caption git-host-links">${external(health.labels_url, "Manage labels on GitHub")}</div>` : ""}
+  </details>` : ""}
+  ${publishing.recent.length ? `<details class="git-publishing-details"><summary>Recent job publishing</summary><dl class="git-settings-list">${publishing.recent.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${esc(job.detail)}</span>${job.last_published_at ? `<small>Published ${esc(ago(job.last_published_at))}</small>` : ""}`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a>${job.pr_url ? external(job.pr_url, "Pull request") : job.issue_url ? external(job.issue_url, "Issue") : ""}</div>`)}</div>`).join("")}</dl></details>` : ""}
+  ${(health.links || []).some(link => link.label !== "Repository") ? `<div class="card-caption git-host-links" aria-label="GitHub repository pages">${health.links.filter(link => link.label !== "Repository").map(link => external(link.url, esc(link.label))).join("")}</div>` : ""}
+  </section>` : "";
+  const advancedCard = g.is_repo ? `<section class="card"><details class="git-advanced-tools"><summary class="card-h"><h2>Advanced Git tools</h2><span class="git-disclosure" aria-hidden="true">⌄</span></summary><div class="git-advanced-content">
+    <p class="git-section-note">Jobs manage their own branches. Use these tools for manual maintenance of this computer’s checkout.</p>${branchCard}${changesCard}
+  </div></details></section>` : "";
   return {
     title: "Git setup",
-    sub: `<span class="status-line"><span class="mono">${esc(g.branch || "detached")}</span><span class="sep">·</span><span>${esc(sync)}</span></span>`,
-    html: `
-      <section class="card git-branch-card">
-        <div class="card-h"><h2>Switch branch</h2></div>
-        <div class="card-b">
-          <select id="git-branch-select" name="branch" class="mono git-branch-select" aria-label="Switch branch">
-            ${g.branches.map((b) => branchOption(b, g.branch, g.elsewhere)).join("")}
-          </select>
-        </div>
-      </section>
-      <section class="card"><div class="card-h git-sync-header"><h2>Sync branch</h2><div class="git-sync-actions">
-        <button type="button" class="btn" id="git-pull">Pull</button><button type="button" class="btn primary" id="git-push">Push</button>
-        ${moreMenu([["New branch…", act("git_new_branch")], ...(g.web_url ? [["Open repo on GitHub", `data-open="${esc(g.web_url)}"`]] : [])])}
-      </div></div><div class="card-b stack">
-        <div><div class="muted">Last commit</div><div>${esc(g.last_commit || "—")}</div></div>
-      </div></section>
-      <section class="card"><div class="card-h"><h2>Uncommitted changes</h2><span class="count">${g.changes_total}</span></div>
-        <div class="list">${g.changes.map((c) => `<div class="item"><span class="pill">${esc(c.status)}</span><span class="mono">${esc(c.path)}</span></div>`).join("") || `<div class="empty">Working tree clean.</div>`}</div>
-        ${g.changes_total > g.changes.length ? `<div class="empty">…and ${g.changes_total - g.changes.length} more.</div>` : ""}</section>`,
+    sub: esc(!g.is_repo || !g.has_commits ? branchLabel : `${g.provider} · ${g.mode === "github" ? "GitHub workflow" : "Git workflow"}`),
+    html: `<div class="git-page">${problemCard}${connectionCard}${integrationCard}${advancedCard}</div>`,
     after: () => {
-      $("#git-pull").addEventListener("click", async () => {
-        if (await formDialog("Pull branch", `<p>Download and merge remote changes into <strong>${esc(g.branch || "the current branch")}</strong>.</p><p class="muted">${esc(sync)}</p>`, "Pull", { compact: true })) await runAction("git_pull", {}, { skipConfirm: true });
+      if (g.health?.checking_task) {
+        waitForTask({task: g.health.checking_task}).then(async () => {
+          if (location.hash.startsWith("#/git")) { await refreshState(); await route(); }
+        }).catch(error => {
+          const status = $("#git-check-status");
+          if (status) status.textContent = `Status could not be gathered: ${error.message}`;
+          const pill = $("#git-connection-card .pill");
+          if (pill) pill.textContent = "Status unavailable";
+        });
+      }
+      const mutate = async (button, path, body, message) => {
+        button.disabled = true;
+        try {
+          const started = await api(path, {method: "POST", body});
+          const result = started.task ? await waitForTask(started) : started;
+          toast(result.detail || message);
+          await refreshState();
+          await loadSetup(true);
+          await route();
+        } catch (e) { toast(e.message, true); }
+        finally { if (button.isConnected) button.disabled = false; }
+      };
+      $("#git-base-branch-form")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const branch = event.currentTarget.elements.branch.value;
+        return mutate(event.submitter, "config/base-branch", {branch}, "Base branch saved");
       });
-      $("#git-push").addEventListener("click", async () => {
-        if (await formDialog("Push branch", `<p>Upload commits from <strong>${esc(g.branch || "the current branch")}</strong> to origin${g.upstream ? "." : " and set its upstream."}</p><p class="muted">${esc(sync)}</p>`, "Push", { compact: true })) await runAction("git_push", {}, { skipConfirm: true });
+      const modeOptions = `<option value="auto" ${g.code_host === "auto" ? "selected" : ""}>Automatic — follow the remote host</option>
+        <option value="github" ${g.code_host === "github" ? "selected" : ""}>GitHub issues and pull requests</option>
+        <option value="git" ${g.code_host === "git" ? "selected" : ""}>Git branches and local job records</option>`;
+      $("#git-init")?.addEventListener("click", async (e) => {
+        const button = e.currentTarget;
+        if (await formDialog("Initialize repository", "<p>Create a Git repository here and include current project files in the initial commit, using this computer’s Git identity.</p>", "Initialize")) await mutate(button, "setup/git-init", {}, "Git repository initialized");
       });
+      $("#git-tracking")?.addEventListener("click", async (e) => {
+        const button = e.currentTarget;
+        const values = await formDialog("Choose tracking branch", `<label class="field"><span>Remote branch to pull from and push to</span><select name="upstream" required>${(g.remote_branches || []).map(b => `<option value="${esc(b)}" ${b === g.upstream ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></label><p>This changes tracking for the current branch. It does not switch branches or change files.</p>`, "Set tracking branch");
+        if (values) await mutate(button, "git/tracking", values, "Tracking branch saved");
+      });
+      $("#git-fetch")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/fetch", {}, "Remote branches updated"));
+      $("#git-signin")?.addEventListener("click", () => signInToGitHub());
+      $("#git-connect")?.addEventListener("click", async (e) => {
+        const button = e.currentTarget;
+        const values = await formDialog(g.origin ? "Change remote origin" : "Connect existing repository", `
+          <p>Connect GitHub, GitLab, Bitbucket, Azure DevOps, Gitea or another Git host using its clone URL.</p>
+          ${g.origin ? `<p>Future fetches and pushes to origin will use the new address. Current address: <span class="mono">${esc(g.origin)}</span></p>` : ""}
+          <label class="field"><span>Repository URL or local repository path</span><input name="url" required value="${esc(g.origin)}" placeholder="git@gitlab.com:team/app.git" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Job workflow</span><select name="mode">${modeOptions}</select></label>
+          <p class="muted">GitHub mode creates issues and pull requests. Git mode pushes branches and merges locally. Use your computer’s Git credential helper or SSH key for access.</p>`, "Save connection");
+        if (values) await mutate(button, "git/connection", {op: "connect", ...values}, "Repository connected");
+      });
+      $("#git-workflow")?.addEventListener("click", async (e) => {
+        const button = e.currentTarget;
+        const values = await formDialog("Change job workflow", `<label class="field"><span>Project job workflow</span><select name="mode">${modeOptions}</select></label><p>GitHub mode uses issues and pull requests. Git mode uses local job records and merges on this computer. This setting applies when jobs next run, including queued or resumed jobs. Finish active jobs before changing it.</p>`, "Save workflow");
+        if (values) await mutate(button, "git/connection", {op: "workflow", ...values}, "Job workflow saved");
+      });
+      $("#git-local")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/connection", {op: "workflow", mode: "git"}, "Local Git workflow selected"));
+      $("#git-repair-labels")?.addEventListener("click", async e => {
+        const button = e.currentTarget;
+        if (await formDialog("Create missing job labels", "<p>Create only the missing labels Orchestrator uses. Existing labels, custom labels, colors and descriptions will be preserved.</p>", "Create missing labels")) await mutate(button, "git/labels/repair", {}, "Missing job labels created");
+      });
+      view.querySelectorAll("[data-git-publish]").forEach(button => button.addEventListener("click", async () => {
+        if (await formDialog("Retry job publishing", "<p>Publish this job’s branch for review. GitHub jobs open or reuse a draft pull request. This does not rerun the build, change the current branch or merge work.</p>", "Retry publishing")) await mutate(button, `jobs/${encodeURIComponent(button.dataset.gitPublish)}/publish`, {}, "Job published");
+      }));
+      $("#git-create")?.addEventListener("click", async (e) => {
+        const button = e.currentTarget;
+        const dialog = formDialog("Create GitHub repository", `
+          <p>Create a repository on GitHub, connect origin and push this project. If there are no commits, project files are included in the first commit.</p>
+          <label class="field"><span>Repository name</span><input name="name" value="${esc(state.project?.name || "")}" maxlength="80" required></label>
+          <label class="field"><span>Visibility</span><select name="visibility"><option value="private">Private</option><option value="public">Public</option></select></label>
+          <p class="muted">The GitHub CLI must be installed and signed in on this computer. <button type="button" class="btn small" id="git-create-signin">Sign in to GitHub</button></p>`, "Create repository");
+        $("#git-create-signin")?.addEventListener("click", () => { $("#dialog").close("cancel"); signInToGitHub(); });
+        const values = await dialog;
+        if (values) await mutate(button, "setup/github-create", values, "GitHub repository created");
+      });
+      $("#git-pull")?.addEventListener("click", async () => {
+        if (await formDialog("Pull branch", `<p>Update <strong>${esc(g.branch || "the current branch")}</strong> from <strong>${esc(destination)}</strong>. This stops if the branches have diverged.</p><p class="muted">${esc(sync)}</p>`, "Pull", { compact: true })) await runAction("git_pull", {}, { skipConfirm: true });
+      });
+      $("#git-push")?.addEventListener("click", async () => {
+        if (await formDialog("Push branch", `<p>Upload commits from <strong>${esc(g.branch || "the current branch")}</strong> to <strong>${esc(destination)}</strong>${g.upstream ? "." : " and set its tracking branch."}</p><p class="muted">${esc(sync)}</p>`, "Push", { compact: true })) await runAction("git_push", {}, { skipConfirm: true });
+      });
+      view.querySelectorAll("[data-git-diff]").forEach(box => box.addEventListener("toggle", async () => {
+        if (!box.open || box.dataset.loaded) return;
+        box.dataset.loaded = "1";
+        const pre = box.querySelector("pre");
+        try {
+          const d = await api(`git/diff?path=${encodeURIComponent(box.dataset.gitDiff)}&kind=${encodeURIComponent(box.dataset.kind)}`);
+          pre.innerHTML = d.binary ? "Binary file: no text diff." : !d.diff.trim() ? "No changes to show." : d.diff.split("\n").map(line => {
+            const kind = line.startsWith("@@") ? "hunk" : line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "del" : "";
+            return `<span class="diff-line ${kind}">${esc(line)}</span>`;
+          }).join("") + (d.truncated ? '<span class="diff-line hunk">… diff truncated</span>' : "");
+        } catch (error) { pre.textContent = error.message; box.dataset.loaded = ""; }
+      }));
       $("#git-branch-select")?.addEventListener("change", (e) => {
         const branch = e.target.value;
         if (branch && branch !== g.branch) {
@@ -6081,7 +6472,6 @@ pages.git = async () => {
     },
   };
 };
-
 // ---------------------------------------------------------------- configuration
 
 async function runConfigMutation(button, request, successMessage) {
@@ -6156,22 +6546,6 @@ pages.config = async (args = []) => {
     try { config.ai = await api("ai-providers"); } catch { config.ai = null; }
   }
   const result = ConfigurationPages.render(section, config);
-  if (section === "base-branch") {
-    return {
-      ...result,
-      after: () => {
-        const form = $("#config-base-branch-form");
-        const onSubmit = async (event) => {
-          event.preventDefault();
-          const button = event.submitter || form.querySelector('button[type="submit"]');
-          const branch = new FormData(form).get("branch");
-          await runConfigMutation(button, {part: "base-branch", body: {branch}}, "Base branch saved");
-        };
-        form?.addEventListener("submit", onSubmit);
-        cleanup.push(() => form?.removeEventListener("submit", onSubmit));
-      },
-    };
-  }
   if (section === "email") {
     const email = config.email || {};
     return {
@@ -6215,6 +6589,7 @@ pages.config = async (args = []) => {
         };
         view.addEventListener("click", onClick);
         cleanup.push(() => view.removeEventListener("click", onClick));
+
       },
     };
   }
@@ -6253,6 +6628,8 @@ pages.config = async (args = []) => {
         };
         view.addEventListener("click", onClick);
         cleanup.push(() => view.removeEventListener("click", onClick));
+
+
       },
     };
   }
@@ -6261,9 +6638,52 @@ pages.config = async (args = []) => {
       ...result,
       after: () => {
         const form = $("#config-models-form");
+        if (form) {
+          const submitBtn = form.querySelector('button[type="submit"]');
+          if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.title = "No changes were made";
+          }
+
+          const getValues = () => {
+            const vals = {};
+            form.querySelectorAll("select[name]").forEach((sel) => {
+              vals[sel.name] = sel.value;
+            });
+            return vals;
+          };
+          const initialValues = getValues();
+
+          const updateDirty = () => {
+            const current = getValues();
+            let dirty = false;
+            for (const [k, v] of Object.entries(current)) {
+              if (v !== initialValues[k]) {
+                dirty = true;
+                break;
+              }
+            }
+            if (submitBtn) {
+              submitBtn.disabled = !dirty;
+              if (dirty) {
+                submitBtn.removeAttribute("title");
+              } else {
+                submitBtn.title = "No changes were made";
+              }
+            }
+          };
+
+          form.addEventListener("change", updateDirty);
+          form.addEventListener("input", updateDirty);
+          cleanup.push(() => {
+            form.removeEventListener("change", updateDirty);
+            form.removeEventListener("input", updateDirty);
+          });
+        }
         const onSubmit = async (event) => {
           event.preventDefault();
-          const button = event.submitter || form.querySelector('button[type="submit"]');
+          const button = event.submitter || form?.querySelector('button[type="submit"]');
+          if (!button || button.disabled) return;
           const fd = new FormData(form);
           const modelsObj = {
             architect: fd.get("architect"),
@@ -6301,6 +6721,68 @@ pages.config = async (args = []) => {
         };
         view.addEventListener("click", onClick);
         cleanup.push(() => view.removeEventListener("click", onClick));
+        if (section === "ai") {
+          const onInstall = async (event) => {
+            const button = event.target.closest("[data-ai-install]");
+            if (!button || button.disabled) return;
+            const {aiInstall: provider, aiName: name} = button.dataset;
+            const confirmed = await formDialog(`Install ${name}?`, `<p>This downloads and runs the official ${esc(name)} installer on the computer running Orchestrator. It may add software to this computer; it does not install anything on secondary computers.</p>`, "Install");
+            if (!confirmed) return;
+            button.disabled = true;
+            button.textContent = "Installing…";
+            try {
+              const started = await api("ai-providers/install", {method: "POST", body: {provider}});
+              const result = await waitForTask(started);
+              toast(result.detail || `${result.provider} installed`);
+              await route();
+            } catch (error) {
+              toast(error.message, true);
+              if (button.isConnected) button.textContent = "Try again";
+            } finally {
+              if (button.isConnected) button.disabled = false;
+            }
+          };
+          view.addEventListener("click", onInstall);
+          cleanup.push(() => view.removeEventListener("click", onInstall));
+
+          const refreshButton = $("#ai-refresh-machines");
+          const machineBox = $("#ai-secondary-computers");
+          if (refreshButton && machineBox) {
+            const paintMachines = (report) => {
+              machineBox.innerHTML = (report.machines || []).map((machine) => {
+                if (!machine.reachable) return `<div class="ai-machine-status is-unreachable"><strong>${esc(machine.name)}</strong><span class="pill attention">Unavailable</span><span class="muted">Can't check this computer right now.</span></div>`;
+                const providers = machine.providers || {};
+                const rows = (config.ai?.providers || []).map((provider) => {
+                  const status = providers[provider.id];
+                  const label = !status ? "Status unavailable" : status.ready ? "Ready" : status.installed ? "Needs sign-in" : "Not installed";
+                  return `<li><strong>${esc(provider.name || provider.id)}</strong> · ${esc(label)}</li>`;
+                }).join("");
+                const known = (config.ai?.providers || []).filter((provider) => providers[provider.id]);
+                const missing = known.filter((provider) => !providers[provider.id].ready);
+                const unknown = (config.ai?.providers || []).length - known.length;
+                const ready = (config.ai?.providers || []).length - missing.length;
+                const badge = unknown ? `<span class="pill attention">Status incomplete</span>` : missing.length ? `<span class="pill attention">${ready}/${(config.ai?.providers || []).length} ready</span>` : `<span class="pill done">Ready</span>`;
+                const detail = [missing.length ? `Needs setup: ${missing.map((provider) => provider.name).join(", ")}` : "All listed tools are ready.", unknown ? `${unknown} tool status${unknown === 1 ? "" : "es"} unavailable.` : ""].filter(Boolean).join(" ");
+                return `<div class="ai-machine-status"><details><summary><strong>${esc(machine.name)}</strong>${badge}</summary><p class="muted">${esc(detail)}</p><ul class="ai-machine-provider-list">${rows}</ul></details></div>`;
+              }).join("") || `<p class="muted ai-empty-group">No enabled secondary computers.</p>`;
+            };
+            const refreshMachines = async () => {
+              refreshButton.disabled = true;
+              machineBox.innerHTML = `<div class="ai-machine-status"><span class="muted">Checking secondary computers…</span></div>`;
+              try {
+                const started = await api("ai-providers/check-machines", {method: "POST", body: {}});
+                paintMachines(await waitForTask(started));
+              } catch (error) {
+                machineBox.innerHTML = `<div class="ai-machine-status is-unreachable"><span class="muted">${esc(error.message)}</span></div>`;
+              } finally {
+                if (refreshButton.isConnected) refreshButton.disabled = false;
+              }
+            };
+            refreshButton.addEventListener("click", refreshMachines);
+            cleanup.push(() => refreshButton.removeEventListener("click", refreshMachines));
+            refreshMachines();
+          }
+        }
       },
     };
   }
@@ -6391,12 +6873,6 @@ pages.config = async (args = []) => {
         form?.addEventListener("submit", onSubmit);
         cleanup.push(() => form?.removeEventListener("submit", onSubmit));
 
-        const onClick = async (event) => {
-          const button = event.target.closest('[data-config-action="distribute-now"]');
-          if (button) await runAction("distribute");
-        };
-        view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
       },
     };
   }
@@ -6684,12 +7160,11 @@ pages.connections = async (_, query) => {
     title: "Connections",
     sub: "Manage plugins, notifications, Git, analytics, mobile portals, and recommended MCP servers.",
     html: `<div class="connections-sections stack">
-      <section class="connections-section" id="connections-plugins" aria-labelledby="connections-plugins-title">
-        <h2 class="connections-section-title" id="connections-plugins-title">Plugins</h2>
+      <section class="connections-section" id="connections-plugins" aria-label="Plugins">
         ${pluginGroups.map((group) => {
           const providers = list.filter((p) => group.providers.includes(p.id));
           return providers.length ? `<section class="connections-plugin-group" id="connections-plugins-${group.id}" aria-labelledby="connections-plugins-${group.id}-title">
-            <h3 id="connections-plugins-${group.id}-title">${esc(group.name)}</h3>
+            <h3 class="connections-section-title" id="connections-plugins-${group.id}-title">${esc(group.name)}</h3>
             <div class="conn-grid">${providers.map(integrationCard).join("")}</div>
           </section>` : "";
         }).join("") || `<p class="muted">No plugins are available for this Orchestrator.</p>`}
@@ -7217,10 +7692,10 @@ pages["new-project"] = async (_, query) => {
         <div class="np-hosts">
           <label class="np-host ${host === "github" ? "on" : ""}"><input type="radio" name="host" value="github" ${host === "github" ? "checked" : ""}>
             <strong>GitHub <span class="pill done">Recommended</span></strong>
-            <small>Backs your work up, tracks every job as an issue and pull request, and is what the orchestrator is built around.</small></label>
+            <small>Backs your work up, tracks every job as an issue and pull request, and merges approved work on GitHub.</small></label>
           <label class="np-host ${host === "local" ? "on" : ""}"><input type="radio" name="host" value="local" ${host === "local" ? "checked" : ""}>
-            <strong>Local only</strong>
-            <small>Just a folder on this computer. You can publish it to GitHub later, but jobs need GitHub to run.</small></label>
+            <strong>On this computer</strong>
+            <small>Jobs run using local records and branches. Connect a Git host later to publish your work.</small></label>
         </div>
         ${host === "github" ? `${ghPanel()}
           <label class="field"><span>Who can see the repository?</span><select name="visibility"><option value="private" ${draft.visibility !== "public" ? "selected" : ""}>Only me (private)</option><option value="public" ${draft.visibility === "public" ? "selected" : ""}>Anyone (public)</option></select></label>` : ""}
@@ -7263,14 +7738,14 @@ pages["new-project"] = async (_, query) => {
     title: result?.name ? `${result.name} is ready` : "Finish GitHub", sub: npStepper("create"),
     html: `${resume}<section class="card"><div class="list">${steps.map((s) => `<div class="item"><span>${s.ok ? "✅" : "⚠️"}</span><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${esc(s.detail || "")}</div></div></div>`).join("")}</div></section>
       ${githubPending ? `<div class="card card-b stack"><strong>Your project is saved on this computer.</strong>
-        <span class="muted">GitHub isn't done yet. Jobs need it, so finish it now or later from here.</span>${ghPanel()}
+        <span class="muted">GitHub publishing isn't done yet. Finish it here, or use a local Git workflow from Git setup.</span>${ghPanel()}
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
       ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
       ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
       <section class="card mt-16"><div class="card-h"><h2>Product requirements ready</h2></div><div class="card-b stack">
         <div>Your product requirements document is saved with all five PRD sections. You can review or refine it anytime as the project evolves.</div>
         <div><a class="btn" href="#/product">Open the product requirements</a></div></div></section>
-      <div class="row mt-16"><a class="btn primary big" href="#/readiness">Set up this project</a><a class="btn big" href="#/">Open dashboard</a></div>
+      <div class="row mt-16"><a class="btn primary big" href="#/checkup">Set up this project</a><a class="btn big" href="#/">Open dashboard</a></div>
       <p class="muted">“Set up this project” lists what jobs need (an AI, a machine, how it's built and tested), each with a way to do it here.</p>`,
     after: () => {
       $("#np-recheck")?.addEventListener("click", () => route());
@@ -7340,14 +7815,16 @@ pages.projects = async () => {
   }
 
   const githubCount = pList.filter((p) => p.source_type === "github").length;
-  const localCount = pList.filter((p) => p.source_type !== "github").length;
+  const gitCount = pList.filter((p) => p.source_type === "git").length;
+  const localCount = pList.filter((p) => !p.source_type || p.source_type === "local").length;
 
   const renderSourceBadge = (item) => {
     if (item.source_type === "github") {
       const label = item.github_repo || "GitHub Tracked";
       return `<span class="pill-badge github-badge" title="GitHub Remote: ${esc(item.github_repo || "Connected")}"><svg class="icon badge-icon"><use href="#i-github"/></svg>${esc(label)}</span>`;
     }
-    return `<span class="pill-badge local-badge" title="Local workspace only (no GitHub remote)"><svg class="icon badge-icon"><use href="#i-folder"/></svg>Local</span>`;
+    if (item.source_type === "git") return `<span class="pill-badge local-badge" title="Connected Git remote">${esc(item.source_label || "Other Git host")}</span>`;
+    return `<span class="pill-badge local-badge" title="No remote connected"><svg class="icon badge-icon"><use href="#i-folder"/></svg>On this computer</span>`;
   };
 
   const cardsHtml = pList.map((p) => `
@@ -7398,7 +7875,8 @@ pages.projects = async () => {
           <div class="filters projects-filter">
             <button type="button" class="btn small on" data-project-filter="all">All (${pList.length})</button>
             <button type="button" class="btn small" data-project-filter="github"><svg class="icon badge-icon"><use href="#i-github"/></svg>GitHub (${githubCount})</button>
-            <button type="button" class="btn small" data-project-filter="local"><svg class="icon badge-icon"><use href="#i-folder"/></svg>Local (${localCount})</button>
+            <button type="button" class="btn small" data-project-filter="git">Other Git hosts (${gitCount})</button>
+            <button type="button" class="btn small" data-project-filter="local"><svg class="icon badge-icon"><use href="#i-folder"/></svg>On this computer (${localCount})</button>
           </div>
         </div>
         <div class="projects-grid" id="tracked-projects-grid">
@@ -8722,7 +9200,6 @@ function resolveRoute() {
   if (parts[0] === "connect" || parts[0] === "computers") return { page: parts[0], args: [], nav: null, query };
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "config", query };
   if (["connections", "projects"].includes(parts[0])) return { page: parts[0], args: [], nav: "config", query }; // under Settings
-  if (parts[0] === "readiness") return { page: "readiness", args: [], nav: setupState && !setupState.complete ? "readiness" : "config", query };
   if (parts[0] === "product") return { page: "product", args: [], nav: "product", query };
   if (parts[0] === "docs") return { page: "docs", args: parts.slice(1), nav: "docs", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
@@ -8739,7 +9216,7 @@ function routeParent(r) {
   if (r.page === "config" && r.args.length) return "#/config";
   if (r.page === "new-project") return "#/projects";
   if (r.page === "test-cases") return "#/tests";
-  if (["connections", "projects", "readiness"].includes(r.page)) return "#/config";
+  if (["connections", "projects"].includes(r.page)) return "#/config";
   if (r.page === "ux-review") return "#/checkup";
   if (["git", "help", "checkup", "devlogs", "setup"].includes(r.page)) return "#/";
   return null;
@@ -8915,7 +9392,7 @@ const navigationDrawer = NavigationDrawer.mount({document, window});
 const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
-  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Onboarding checklist", "#/checkup", "What the product has and what's missing"], ["Readiness", "#/readiness", "Can jobs run here: setup, build tools, checks"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
+  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
 const palette = { open: false, entries: [], shown: [], active: 0, opener: null };
@@ -8926,6 +9403,11 @@ function paletteBase() {
   const act_ = (label, hint, fn) => entries.push({ label, hint, group: "Actions", order: 0, run: fn });
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
   act_("Send feedback", "Tell us what could be better or share ideas", () => Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" }));
+  act_("Suggest missing feature", "Request a feature or capability you'd like in Orchestrator", () => Feedback.open({ initialStep: "feedback", category: "feature_request", userName: state.you?.email || "" }));
+  act_("Improve Orchestrator (Win a Prize!)", "Submit an Orchestrator improvement for permanent inclusion and prize", () => Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" }));
+  act_("Create job to improve Orchestrator", "Start a new local AI job focused on enhancing Orchestrator itself", () => {
+    location.hash = "#/new?type=feature&summary=" + encodeURIComponent("Improve Orchestrator: ") + "&spec=" + encodeURIComponent("Goal: Improve Orchestrator itself.\n\nDescribe the improvement you are making:\n- What it does:\n- Why it's valuable:\n- Files to change:\n- How to test:\n");
+  });
   act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());
   if (Notifications.supported()) act_(Notifications.enabled() ? "Turn off browser alerts" : "Turn on browser alerts", "Alerts when a run finishes or needs you", () => $("#notify-btn")?.click());
   return entries;
