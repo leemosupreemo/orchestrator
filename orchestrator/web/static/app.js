@@ -4742,7 +4742,7 @@ pages["ux-review"] = async (_, query) => {
         </div>
       </section>
       ${data.error ? `<div class="notice bad mb-16">Screens to review: ${esc(data.error)}</div>` : ""}
-      ${noScreens ? `<div class="notice mb-16">No screens are set up, so a review checks the code only and can't judge layout, spacing or contrast. Add your app's address below.</div>` : ""}
+      ${noScreens ? `<div class="notice mb-16">Reviewing code only. To include visual layout and contrast checks, set your local dev server URL (e.g. http://localhost:3000) under <strong>Screens to review</strong> below.</div>` : ""}
       ${cfg?.url && !data.browser ? `<div class="notice bad mb-16">No Chrome, Chromium or Edge found on this computer, so screens can't be captured.</div>` : ""}
       <section class="card mb-16" id="ux-screenshot-gallery"><div class="card-h"><h2>UI screenshots</h2><span class="count">${selectedCapture?.screens?.length || 0} saved</span></div>
         <div class="card-b stack"><p class="muted">Review screenshots of new and changed screens. Choose a capture, then select an image to inspect it.</p>
@@ -4767,8 +4767,8 @@ pages["ux-review"] = async (_, query) => {
         ` : ""}
       <section class="card mb-16" id="ux-setup"><details class="fold"${query.get("setup") || noScreens ? " open" : ""}><summary class="card-h"><h2>Screens to review</h2></summary>
         <form class="card-b stack" id="ux-settings">
-          <label class="field"><span>Your app's address</span><input type="url" name="url" value="${esc(saved.url || "")}" placeholder="http://localhost:3000" spellcheck="false">
-            <small class="hint-text">Where it runs while you develop. A sign-in token can come from an environment variable: <code class="nowrap">?token=$MY_TOKEN</code>.</small></label>
+          <label class="field"><span>Local dev server URL</span><input type="url" name="url" value="${esc(saved.url || "")}" placeholder="http://localhost:3000" spellcheck="false">
+            <small class="hint-text">Where the app runs locally during development (e.g. http://localhost:3000). A sign-in token can come from an environment variable: <code class="nowrap">?token=$MY_TOKEN</code>.</small></label>
           <label class="field"><span>Pages to capture <span class="muted">(one per line)</span></span><textarea name="routes" rows="4" spellcheck="false">${esc((saved.routes || ["/"]).join("\n"))}</textarea></label>
           <label class="field"><span>Widths <span class="muted">(pixels)</span></span><input type="text" name="widths" value="${esc((saved.widths || [390, 1440]).join(" "))}"></label>
           <details class="np-more"><summary class="np-section-legend">Advanced</summary><div class="stack">
