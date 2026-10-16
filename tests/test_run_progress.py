@@ -232,7 +232,7 @@ globalThis.setHeader = globalThis.hydrateAuthImages = globalThis.wireImagePrevie
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRunStatus', 'nextStep', 'suiteGroupsHtml']) {
+for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRunStatus', 'nextStep', 'suiteGroupsHtml', 'runHeader']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -244,12 +244,16 @@ globalThis.plural = (n, word, many = `${word}s`) => `${n} ${Number(n) === 1 ? wo
 globalThis.act = (action) => `data-action="${action}"`;
 globalThis.stoppingRuns = new Set();
 globalThis.wireRunGuidance = () => {};
+globalThis.current = {page: 'run', args: ['r1']};
 Date.now = () => 1000000;
-const run = {id: 'r1', running: true, started: 875, action: 'execute', title: 'Build',
+const run = {id: 'r1', running: true, started: 875, action: 'execute', title: 'Build', command: 'orchestrator build',
   progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10,
     active_models: ['provider/model-a'], models: ['provider/model-a'], agents: 1}};
+const header = runHeader({...run, command: 'orchestrator script ux_review_run.py pass'});
+assert.doesNotMatch(header.sub, /pill|Running/);
+assert.match(header.sub, /ux_review_run\.py pass/);
 let html = runStatus(run);
-for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '1 active', '2m 5s', 'Add &lt;login&gt;']) assert(html.includes(part), part);
+for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '1 active', '2m 5s', 'Add &lt;login&gt;', 'run-status-pct', '10%']) assert(html.includes(part), part);
 assert.match(runStatus({...run, waiting: true}), /Waiting for you/);
 assert.match(runStatus({...run, stopping: true}), /Stopping/);
 const planning = runStatus({...run, progress: {label: 'Planning implementation', agents: 0, models: [], active_models: []}});
@@ -263,6 +267,8 @@ assert.match(completedCov, /pill done/);
 assert.match(completedCov, /Completed/);
 assert.match(completedCov, /Step 5 of 5/);
 assert.match(completedCov, /View coverage/);
+assert.match(completedCov, /100%/);
+assert.match(completedCov, /Completed \(exit 0\)/);
 assert.match(completedCov, /None \(local run\)/);
 assert.match(html, /Models &amp; agents|Models & agents/);
 assert.match(runStatus({...run, action: 'coverage', progress: {step: 1, total: 5}}), /None \(local run\)/);

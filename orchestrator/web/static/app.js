@@ -8002,7 +8002,7 @@ function runHeader(r) {
   const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   return {
     title: r.title,
-    sub: `<span class="status-line">${runPill(r)}<span class="mono">${esc(r.command)}</span></span>`,
+    sub: r.command ? `<span class="status-line"><span class="mono">${esc(r.command)}</span></span>` : "",
     actions: r.running
       ? `<button class="btn danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…' : "Stop"}</button>`
       : "",
@@ -8632,6 +8632,10 @@ function runStatus(r, vc = null) {
   const showTask = !done && p.task && p.task.toLowerCase() !== (p.label || "").toLowerCase();
   const progressVal = done && numbered ? totalSteps : (numbered ? p.step - 1 : 0);
   const progressMax = numbered ? totalSteps : 1;
+  const pct = done ? 100
+    : Number.isFinite(p.pct) ? Math.min(100, Math.max(0, Math.round(p.pct)))
+    : Number.isFinite(p.percent) ? Math.min(100, Math.max(0, Math.round(p.percent)))
+    : progressMax > 0 ? Math.min(100, Math.max(0, Math.round((progressVal / progressMax) * 100))) : 0;
   const duration = runDuration(r.started, r.ended);
   const actionBtn = done ? (r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
@@ -8639,12 +8643,27 @@ function runStatus(r, vc = null) {
     : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "")
     : "";
 
+  const targetJob = r.job || r.result_job;
+  const jobItem = targetJob
+    ? `<div><dt>Job</dt><dd><a href="#/jobs/${encodeURIComponent(targetJob)}">${esc(targetJob)}</a></dd></div>`
+    : "";
+  const showAction = Boolean(actionName && (!headlineLabel || actionName.toLowerCase() !== headlineLabel.toLowerCase()) && (!p.label || actionName.toLowerCase() !== p.label.toLowerCase()));
+  const actionItem = showAction ? `<div><dt>Action</dt><dd>${esc(actionName)}</dd></div>` : "";
+  const resultText = done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
+  const resultItem = resultText ? `<div><dt>Result</dt><dd class="${done ? "text-ok" : "text-bad"}">${esc(resultText)}</dd></div>` : "";
+  const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
+  const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";
+
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
       <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
     <dl class="run-status-details">
+      ${jobItem}
+      ${actionItem}
       <div><dt>Models & agents</dt><dd>${modelsText}</dd></div>
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
+      ${stateItem}
+      ${resultItem}
     </dl>
     ${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}
     ${guidance ? `
@@ -8656,7 +8675,11 @@ function runStatus(r, vc = null) {
         ${guidance.action || ""}
         ${guidance.secondary || ""}
       </div>` : ""}
-    ${numbered ? `<progress class="run-status-progress" value="${progressVal}" max="${progressMax}" aria-label="Completed steps">${progressVal} of ${progressMax}</progress>` : ""}
+    ${numbered ? `
+      <div class="run-status-progress-wrap">
+        <progress class="run-status-progress" value="${progressVal}" max="${progressMax}" aria-label="Completed steps: ${progressVal} of ${progressMax} (${pct}%)">${progressVal} of ${progressMax}</progress>
+        <span class="run-status-pct">${pct}%</span>
+      </div>` : ""}
   </section>`;
 }
 

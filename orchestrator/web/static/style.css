@@ -466,6 +466,37 @@ a.item:hover { background: var(--panel-2); }
 .banner.failed .run-status-progress { accent-color: var(--bad); }
 .banner.failed .run-status-progress::-webkit-progress-value { background: var(--bad); }
 .banner.failed .run-status-progress::-moz-progress-bar { background: var(--bad); }
+.run-status-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+.run-status-progress-wrap .run-status-progress {
+  flex: 1 1 auto;
+}
+.run-status-pct {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.banner.working .run-status-pct {
+  color: var(--accent);
+}
+.banner.done .run-status-pct {
+  color: var(--ok);
+}
+.banner.failed .run-status-pct {
+  color: var(--bad);
+}
+.run-status-details .text-ok {
+  color: var(--ok);
+}
+.run-status-details .text-bad {
+  color: var(--bad);
+}
 .run-status-actions {
   display: flex;
   align-items: center;
@@ -3375,6 +3406,10 @@ body[data-page="run"] .topbar-actions {
 
   body[data-page="run"] #next-step .run-status-progress {
     height: 3px;
+  }
+
+  body[data-page="run"] #next-step .run-status-pct {
+    font-size: var(--text-2xs);
   }
 
   body[data-page="run"] #next-step .pill {
