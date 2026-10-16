@@ -3860,33 +3860,33 @@ dialog.dialog-image-viewer form {
   color: var(--accent);
 }
 .job-type-auto-improve {
-  background: rgba(245, 158, 11, 0.12) !important;
-  border-color: rgba(245, 158, 11, 0.4) !important;
-  color: #fbbf24 !important;
+  background: var(--warn-soft) !important;
+  border-color: var(--border) !important;
+  color: var(--warn) !important;
   font-weight: 600;
 }
 .prize-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  color: #fbbf24;
+  gap: var(--space-1);
+  background: var(--warn-soft);
+  border: 1px solid var(--border);
+  color: var(--warn);
   font-weight: 600;
   border-radius: var(--r-pill);
-  padding: 2px 10px;
+  padding: 2px var(--space-2\.5);
   font-size: var(--text-xs);
 }
 .prize-btn {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(217, 119, 6, 0.24));
-  border: 1px solid rgba(245, 158, 11, 0.45);
-  color: #fbbf24;
+  background: var(--warn-soft);
+  border: 1px solid var(--border);
+  color: var(--warn);
   font-weight: 600;
 }
 .prize-btn:hover {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.28), rgba(217, 119, 6, 0.35));
-  border-color: rgba(245, 158, 11, 0.65);
-  color: #fde68a;
+  background: var(--panel-2);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 .feedback-dialog {
   padding: 0;
@@ -4095,131 +4095,133 @@ dialog.dialog-image-viewer form {
 /* Feedback Tabs & Improvement Prize Flow */
 .feedback-type-tabs {
   display: flex;
-  gap: 6px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
-  border-radius: 12px;
-  padding: 4px;
-  margin-bottom: 16px;
+  gap: var(--space-1);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--space-1);
+  margin-bottom: var(--space-4);
 }
 .feedback-type-tab {
   flex: 1;
-  padding: 8px 10px;
-  font-size: 0.82rem;
-  font-weight: 700;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
   border: none;
   background: transparent;
-  color: var(--muted, #94a3b8);
-  border-radius: 8px;
+  color: var(--muted);
+  border-radius: var(--r-sm);
   cursor: pointer;
   transition: all 0.15s ease;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1\.5);
 }
 .feedback-type-tab:hover {
-  color: var(--text, #fff);
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  background: var(--panel);
 }
 .feedback-type-tab.active {
-  background: var(--accent, #4f6bed);
-  color: #fff;
+  background: var(--panel);
+  color: var(--text);
   box-shadow: var(--shadow);
+  border: 1px solid var(--border);
 }
 .feedback-prize-banner {
-  background: linear-gradient(135deg, rgba(234, 179, 8, 0.12), rgba(79, 107, 237, 0.12));
-  border: 1px solid rgba(234, 179, 8, 0.35);
-  border-radius: 12px;
-  padding: 12px 14px;
-  margin-bottom: 14px;
+  background: var(--warn-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
   text-align: left;
 }
 .feedback-prize-banner p {
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   line-height: 1.45;
-  color: var(--text, #f1f5f9);
-  margin: 6px 0 0 0;
+  color: var(--text);
+  margin: var(--space-1\.5) 0 0 0;
 }
 .prize-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 0.72rem;
-  font-weight: 800;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background: rgba(234, 179, 8, 0.2);
-  color: #fbbf24;
-  border: 1px solid rgba(234, 179, 8, 0.4);
-  padding: 2px 8px;
-  border-radius: 6px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid var(--border);
+  padding: 2px var(--space-2);
+  border-radius: var(--r-pill);
 }
 .feedback-job-action-box {
-  background: rgba(79, 107, 237, 0.08);
-  border: 1px dashed rgba(79, 107, 237, 0.35);
-  border-radius: 10px;
-  padding: 10px 12px;
-  margin-bottom: 14px;
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  padding: var(--space-2\.5) var(--space-3);
+  margin-bottom: var(--space-3);
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
   text-align: left;
 }
 .feedback-job-action-box span {
-  font-size: 0.8rem;
-  color: var(--muted, #94a3b8);
+  font-size: var(--text-sm);
+  color: var(--muted);
 }
 .feedback-fields-stack {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2\.5);
   text-align: left;
 }
 .feedback-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 0.82rem;
-  color: var(--text, #f1f5f9);
-  font-weight: 600;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text);
+  font-weight: 550;
 }
 .feedback-field span {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1\.5);
 }
 .feedback-field .accent-required {
-  color: #fbbf24;
-  font-weight: 700;
-  font-size: 0.75rem;
+  color: var(--warn);
+  font-weight: 600;
+  font-size: var(--text-xs);
 }
-.feedback-input {
+.feedback-input, .feedback-textarea {
   width: 100%;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--border, #263248);
-  color: var(--text, #fff);
-  font-size: 0.85rem;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--text-sm);
   box-sizing: border-box;
   font-family: inherit;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.feedback-input:focus {
-  border-color: var(--accent, #4f6bed);
+.feedback-input:focus, .feedback-textarea:focus {
+  border-color: var(--accent);
   outline: none;
   box-shadow: 0 0 0 2px var(--accent);
 }
 .prize-card {
-  border: 1px solid rgba(234, 179, 8, 0.3) !important;
-  background: linear-gradient(180deg, rgba(234, 179, 8, 0.04) 0%, rgba(18, 24, 38, 0.6) 100%) !important;
+  border: 1px solid var(--border) !important;
+  background: var(--panel) !important;
 }
 .prize-card-badge {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* Delivery / Distribution: Branch metadata container */

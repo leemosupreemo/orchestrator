@@ -37,12 +37,12 @@ class FeedbackFrontendFileTests(unittest.TestCase):
         self.assertIn("How can we improve?", js)
         self.assertIn("Tell us what felt off or share any ideas.", js)
         self.assertIn("Write something above to send.", js)
-        self.assertIn("Send Feedback", js)
+        self.assertIn("Send feedback", js)
         # Improvement & Prize flow
-        self.assertIn("Improve Orchestrator", js)
+        self.assertIn("Improve", js)
         self.assertIn("Prize Challenge", js)
-        self.assertIn("Submit for Permanent Inclusion & Prize", js)
-        self.assertIn("Create job to improve Orchestrator", js)
+        self.assertIn("Submit improvement", js)
+        self.assertIn("Create job", js)
         self.assertIn("What feature is missing?", js)
         # Emoji satisfaction prompt choices
         self.assertIn("Enjoying Orchestrator?", js)

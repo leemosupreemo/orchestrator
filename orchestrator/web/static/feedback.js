@@ -265,16 +265,16 @@
         contentHtml = `
           <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
           <div class="feedback-type-tabs" role="tablist" aria-label="Feedback mode">
-            <button type="button" class="feedback-type-tab" id="feedback-tab-feedback" role="tab" aria-selected="false" tabindex="-1">💡 Feedback & Features</button>
-            <button type="button" class="feedback-type-tab active" id="feedback-tab-improve" role="tab" aria-selected="true" tabindex="0">🏆 Improve Orchestrator</button>
+            <button type="button" class="feedback-type-tab" id="feedback-tab-feedback" role="tab" aria-selected="false" tabindex="-1">Feedback</button>
+            <button type="button" class="feedback-type-tab active" id="feedback-tab-improve" role="tab" aria-selected="true" tabindex="0">Improve</button>
           </div>
           <div class="feedback-prize-banner">
             <div class="prize-badge">🏆 Prize Challenge</div>
             <p>Build an improvement for Orchestrator. Selected contributions win a prize and core inclusion.</p>
           </div>
           <div class="feedback-job-action-box">
-            <span>Want to build your improvement with a local AI job first?</span>
-            <button type="button" class="btn small primary" id="feedback-create-local-job-btn"><svg class="icon icon-sm" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Create job to improve Orchestrator</button>
+            <span>Build with a local job first?</span>
+            <button type="button" class="btn small primary" id="feedback-create-local-job-btn">Create job</button>
           </div>
           <div class="feedback-fields-stack">
             <label class="feedback-field">
@@ -298,7 +298,7 @@
               >${escapeHtml(text)}</textarea>
             </label>
             ${!hasText ? '<p id="feedback-empty-hint" class="feedback-empty-hint">Write an explanation above before submitting.</p>' : ""}
-            <p id="feedback-email-hint" class="feedback-empty-hint" style="color: #fbbf24;" ${hasEmail || !hasText ? "hidden" : ""}>A valid contact email is required so we can reach you if your improvement is selected for a prize.</p>
+            <p id="feedback-email-hint" class="feedback-empty-hint" style="color: var(--warn);" ${hasEmail || !hasText ? "hidden" : ""}>A valid contact email is required so we can reach you if your improvement is selected for a prize.</p>
             <label class="feedback-field">
               <span>Local Job ID or Branch / PR reference <span class="muted">(optional)</span></span>
               <input type="text" id="feedback-modal-job-id" class="feedback-input" value="${escapeHtml(jobId)}" placeholder="e.g. job-abc123 or branch name">
@@ -313,7 +313,7 @@
               ${canSubmitImprovement ? "" : (hasText ? 'title="Enter a valid contact email to be eligible for the prize." aria-describedby="feedback-email-hint"' : 'title="Write an explanation in the field above before submitting." aria-describedby="feedback-empty-hint"')}
             >
               ${submitting ? '<span class="feedback-btn-spinner" aria-hidden="true"></span>' : '<span aria-hidden="true">🏆</span>'}
-              <span>${submitting ? "Submitting…" : "Submit for Permanent Inclusion & Prize"}</span>
+              <span>${submitting ? "Submitting…" : "Submit improvement"}</span>
             </button>
             <button type="button" class="btn ghost" id="feedback-modal-cancel">Cancel</button>
           </div>
@@ -324,8 +324,8 @@
         contentHtml = `
           <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
           <div class="feedback-type-tabs" role="tablist" aria-label="Feedback mode">
-            <button type="button" class="feedback-type-tab active" id="feedback-tab-feedback" role="tab" aria-selected="true" tabindex="0">💡 Feedback & Features</button>
-            <button type="button" class="feedback-type-tab" id="feedback-tab-improve" role="tab" aria-selected="false" tabindex="-1">🏆 Improve Orchestrator</button>
+            <button type="button" class="feedback-type-tab active" id="feedback-tab-feedback" role="tab" aria-selected="true" tabindex="0">Feedback</button>
+            <button type="button" class="feedback-type-tab" id="feedback-tab-improve" role="tab" aria-selected="false" tabindex="-1">Improve</button>
           </div>
           <h2 class="feedback-title" style="text-align: center;">${isFeature ? "What feature is missing?" : "How can we improve?"}</h2>
           <p class="feedback-subtitle" style="text-align: left;">
@@ -359,7 +359,7 @@
               ${hasText ? "" : 'title="Write something in the field above before sending." aria-describedby="feedback-empty-hint"'}
             >
               ${submitting ? '<span class="feedback-btn-spinner" aria-hidden="true"></span>' : '<svg class="icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>'}
-              <span>${submitting ? "Sending…" : "Send Feedback"}</span>
+              <span>${submitting ? "Sending…" : "Send feedback"}</span>
             </button>
             <button type="button" class="btn ghost" id="feedback-modal-cancel">Cancel</button>
           </div>
