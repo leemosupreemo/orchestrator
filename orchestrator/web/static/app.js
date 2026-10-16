@@ -8433,6 +8433,19 @@ function runFailureGuidance(r) {
     };
   }
 
+  if (lower.includes("thinking:") && (lower.includes("model active") || lower.includes("deep reasoning"))) {
+    const rerunBtn = targetJob
+      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
+      : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
+    const backBtn = targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "";
+    return {
+      title: "Run interrupted while model was thinking",
+      detail: "The run was stopped or the server restarted while waiting for the AI model to respond. You can safely rerun this task.",
+      action: rerunBtn || `<a class="btn small primary" href="#/new">Create new job</a>`,
+      secondary: backBtn,
+    };
+  }
+
   if (err) {
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
@@ -9010,7 +9023,8 @@ pages.run = async ([id]) => {
       } catch {}
       const exitMatch = logText.match(/\[exited(?: with code (\d+))?\]/);
       const exitCode = exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1;
-      const nonExitedLines = logText.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith("[exited"));
+      const cleanLog = logText.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])/g, "").replace(/\r/g, "\n");
+      const nonExitedLines = cleanLog.split(/\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[exited"));
       const recentLines = nonExitedLines.slice(-40);
       const errorCandidates = recentLines.filter((l) => /error|failed|fatal|exception|cannot|command not found|denied|locked|timed? ?out/i.test(l) && !/cleaned up|notification/i.test(l));
       const extractedError = errorCandidates.length ? errorCandidates.slice(-3).join("\n") : recentLines.slice(-4).join("\n");
