@@ -9076,36 +9076,29 @@ pages["auto-improve"] = async (_, query) => {
   // Filter jobs created to improve Orchestrator
   const improvementJobs = jobs.filter((j) => Boolean(j.is_orchestrator_improvement || j.tag === "improve_orchestrator"));
 
-  const currentProject = state.project;
-  const isOrchestrator = currentProject?.name === "swift-orchestrator" || /swift-orchestrator/.test(currentProject?.root || "");
-
   const initialType = query?.get("type") || "feature";
   const initialSummary = query?.get("summary") || "";
   const initialSpec = query?.get("spec") || "";
 
   return {
     title: "Auto-improve Orchestrator",
-    sub: "Build features and fixes for Orchestrator itself using local AI jobs, track your changes, and submit your work for permanent inclusion & prize.",
+    sub: "This is where you can improve Orchestrator itself! Build new features and bug fixes using local AI jobs, track your changes, and submit your work for permanent inclusion & prize.",
     actions: `<button type="button" class="btn small" id="auto-improve-manual-submit-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Submit outside contribution</button>`,
     html: `
       <!-- Orchestrator Job Creation Card -->
       <section class="card mb-16">
         <div class="card-h">
           <h2>Create an Orchestrator improvement job</h2>
-          <span class="muted">${isOrchestrator ? "Targeting swift-orchestrator" : `Current project: ${esc(currentProject?.name || "App")}`}</span>
+          <span class="muted">Improve Orchestrator itself</span>
         </div>
         <form class="card-b stack" id="auto-improve-job-form">
-          ${!isOrchestrator ? `
-            <div class="banner info mb-12">
-              <p>You are currently in <strong>${esc(currentProject?.name || "another project")}</strong>. You can create an improvement job here, or switch to the core repository: <button type="button" class="btn small" id="auto-improve-switch-repo-btn">Switch to swift-orchestrator</button></p>
-            </div>
-          ` : ""}
+          <div class="banner info mb-12">
+            <p><strong>This is where you can improve Orchestrator itself!</strong> Create an AI job to add new features or make fixes on your own first. Jobs created here are tagged and tracked separately, and you can submit your work for permanent inclusion and a contributor prize afterwards.</p>
+          </div>
           <div class="field"><span>What kind of improvement?</span>
             <div class="segmented" role="radiogroup" aria-label="Kind of improvement">
-              <label class="job-type-card job-type-feature"><input type="radio" name="improve_type" value="feature" ${initialType === "feature" ? "checked" : ""}>Feature<small>Add a new capability, tool, or integration</small></label>
+              <label class="job-type-card job-type-feature"><input type="radio" name="improve_type" value="feature" ${initialType !== "bug" ? "checked" : ""}>Feature<small>Add a new capability, tool, or integration</small></label>
               <label class="job-type-card job-type-bug"><input type="radio" name="improve_type" value="bug" ${initialType === "bug" ? "checked" : ""}>Bug fix<small>Fix a bug, error, or unexpected behavior</small></label>
-              <label class="job-type-card job-type-design"><input type="radio" name="improve_type" value="design" ${initialType === "design" ? "checked" : ""}>UI polish<small>Enhance UI, styling, layout, or mobile experience</small></label>
-              <label class="job-type-card job-type-quick"><input type="radio" name="improve_type" value="quick" ${initialType === "quick" ? "checked" : ""}>Quick fix<small>Fast prompt adjustment or single-file tweak</small></label>
             </div>
           </div>
 
@@ -9227,19 +9220,6 @@ pages["auto-improve"] = async (_, query) => {
           });
         });
       }
-
-      $("#auto-improve-switch-repo-btn")?.addEventListener("click", async () => {
-        try {
-          await api("projects/add", {
-            method: "POST",
-            body: { root: "/Users/leemosupreemo/swift-orchestrator", active: true }
-          });
-          toast("Switched to swift-orchestrator");
-          route();
-        } catch (err) {
-          toast("Couldn't switch project: " + err.message, true);
-        }
-      });
 
       const openPrizeModal = (jobId = "", jobTitle = "", jobBranch = "") => {
         Feedback.open({
