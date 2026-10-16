@@ -109,6 +109,66 @@
     }
   }
 
+  async function flushQueuedFeedback(apiClient = null) {
+    if (typeof localStorage === "undefined" || !isOnline()) {
+      return { flushed: 0, remaining: 0 };
+    }
+    let list = [];
+    try {
+      list = JSON.parse(localStorage.getItem("orchestrator_queued_feedback") || "[]");
+    } catch (_) {
+      return { flushed: 0, remaining: 0 };
+    }
+    if (!Array.isArray(list) || list.length === 0) {
+      return { flushed: 0, remaining: 0 };
+    }
+
+    const remaining = [];
+    let flushedCount = 0;
+    const apiFn = apiClient || (typeof root.api === "function" ? root.api : null);
+
+    for (const item of list) {
+      try {
+        let res;
+        if (apiFn) {
+          res = await withTimeout(
+            apiFn("feedback", { method: "POST", body: item }),
+            SUBMIT_TIMEOUT_MS,
+            "Queued feedback flush"
+          );
+        } else if (typeof fetch === "function") {
+          const fetchRes = await withTimeout(
+            fetch("/api/feedback", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Orchestrator-UI": "1" },
+              body: JSON.stringify(item)
+            }),
+            SUBMIT_TIMEOUT_MS,
+            "Queued feedback flush"
+          );
+          res = await fetchRes.json().catch(() => ({}));
+        }
+        if (res && (res.ok || res.success)) {
+          flushedCount++;
+        } else {
+          remaining.push(item);
+        }
+      } catch (_) {
+        remaining.push(item);
+      }
+    }
+
+    try {
+      if (remaining.length > 0) {
+        localStorage.setItem("orchestrator_queued_feedback", JSON.stringify(remaining));
+      } else {
+        localStorage.removeItem("orchestrator_queued_feedback");
+      }
+    } catch (_) {}
+
+    return { flushed: flushedCount, remaining: remaining.length };
+  }
+
   function createModalController() {
     let currentStep = "feedback"; // 'prompt' | 'feedback' | 'improve_orchestrator' | 'thankyou'
     let currentCategory = "general"; // 'general' | 'feature_request' | 'improve_orchestrator'
@@ -200,11 +260,13 @@
           </div>
         `;
       } else if (currentStep === "improve_orchestrator" || currentCategory === "improve_orchestrator") {
+        const hasEmail = contactEmail.trim().length > 0 && contactEmail.includes("@");
+        const canSubmitImprovement = hasText && hasEmail && !submitting;
         contentHtml = `
           <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
-          <div class="feedback-type-tabs" role="tablist">
-            <button type="button" class="feedback-type-tab" id="feedback-tab-feedback">💡 Feedback & Features</button>
-            <button type="button" class="feedback-type-tab active" id="feedback-tab-improve">🏆 Improve Orchestrator</button>
+          <div class="feedback-type-tabs" role="tablist" aria-label="Feedback mode">
+            <button type="button" class="feedback-type-tab" id="feedback-tab-feedback" role="tab" aria-selected="false" tabindex="-1">💡 Feedback & Features</button>
+            <button type="button" class="feedback-type-tab active" id="feedback-tab-improve" role="tab" aria-selected="true" tabindex="0">🏆 Improve Orchestrator</button>
           </div>
           <div class="feedback-prize-banner">
             <div class="prize-badge">🏆 Prize Challenge</div>
@@ -236,6 +298,7 @@
               >${escapeHtml(text)}</textarea>
             </label>
             ${!hasText ? '<p id="feedback-empty-hint" class="feedback-empty-hint">Write an explanation above before submitting.</p>' : ""}
+            <p id="feedback-email-hint" class="feedback-empty-hint" style="color: #fbbf24;" ${hasEmail || !hasText ? "hidden" : ""}>A valid contact email is required so we can reach you if your improvement is selected for a prize.</p>
             <label class="feedback-field">
               <span>Local Job ID or Branch / PR reference <span class="muted">(optional)</span></span>
               <input type="text" id="feedback-modal-job-id" class="feedback-input" value="${escapeHtml(jobId)}" placeholder="e.g. job-abc123 or branch name">
@@ -246,8 +309,8 @@
               type="button"
               class="btn primary feedback-submit-btn"
               id="feedback-modal-send"
-              ${submitting || !hasText ? "disabled" : ""}
-              ${hasText ? "" : 'title="Write an explanation in the field above before submitting." aria-describedby="feedback-empty-hint"'}
+              ${!canSubmitImprovement ? "disabled" : ""}
+              ${canSubmitImprovement ? "" : (hasText ? 'title="Enter a valid contact email to be eligible for the prize." aria-describedby="feedback-email-hint"' : 'title="Write an explanation in the field above before submitting." aria-describedby="feedback-empty-hint"')}
             >
               ${submitting ? '<span class="feedback-btn-spinner" aria-hidden="true"></span>' : '<span aria-hidden="true">🏆</span>'}
               <span>${submitting ? "Submitting…" : "Submit for Permanent Inclusion & Prize"}</span>
@@ -260,9 +323,9 @@
         const isFeature = currentCategory === "feature_request";
         contentHtml = `
           <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
-          <div class="feedback-type-tabs" role="tablist">
-            <button type="button" class="feedback-type-tab active" id="feedback-tab-feedback">💡 Feedback & Features</button>
-            <button type="button" class="feedback-type-tab" id="feedback-tab-improve">🏆 Improve Orchestrator</button>
+          <div class="feedback-type-tabs" role="tablist" aria-label="Feedback mode">
+            <button type="button" class="feedback-type-tab active" id="feedback-tab-feedback" role="tab" aria-selected="true" tabindex="0">💡 Feedback & Features</button>
+            <button type="button" class="feedback-type-tab" id="feedback-tab-improve" role="tab" aria-selected="false" tabindex="-1">🏆 Improve Orchestrator</button>
           </div>
           <h2 class="feedback-title" style="text-align: center;">${isFeature ? "What feature is missing?" : "How can we improve?"}</h2>
           <p class="feedback-subtitle" style="text-align: left;">
@@ -339,11 +402,36 @@
         };
       }
 
+      function updateButtonState() {
+        const sendBtn = dlg.querySelector("#feedback-modal-send");
+        const emptyHint = dlg.querySelector("#feedback-empty-hint");
+        const emailHint = dlg.querySelector("#feedback-email-hint");
+        const has = text.trim().length > 0;
+        const isImprove = currentStep === "improve_orchestrator" || currentCategory === "improve_orchestrator";
+        const emailOk = !isImprove || (contactEmail.trim().length > 0 && contactEmail.includes("@"));
+        const ready = has && emailOk && !submitting;
+        if (sendBtn) {
+          sendBtn.disabled = !ready;
+          if (ready) {
+            sendBtn.removeAttribute("title");
+            sendBtn.removeAttribute("aria-describedby");
+          } else if (!has) {
+            sendBtn.setAttribute("title", isImprove ? "Write an explanation in the field above before submitting." : "Write something in the field above before sending.");
+            sendBtn.setAttribute("aria-describedby", "feedback-empty-hint");
+          } else if (!emailOk) {
+            sendBtn.setAttribute("title", "Enter a valid contact email to be eligible for the prize.");
+            sendBtn.setAttribute("aria-describedby", "feedback-email-hint");
+          }
+        }
+        if (emptyHint) emptyHint.hidden = has;
+        if (emailHint) emailHint.hidden = !has || emailOk;
+      }
+
       const createJobBtn = dlg.querySelector("#feedback-create-local-job-btn");
       if (createJobBtn) {
         createJobBtn.onclick = () => {
           close();
-          const summaryParam = encodeURIComponent("Improve Orchestrator: " + (title || "").trim());
+          const summaryParam = encodeURIComponent("Improve Orchestrator: " + (title.trim() || "Core improvement"));
           const specParam = encodeURIComponent(
             "Goal: Improve Orchestrator itself.\n\n" +
             "Describe the improvement you are making to Orchestrator:\n" +
@@ -366,7 +454,10 @@
 
       const emailInput = dlg.querySelector("#feedback-modal-email");
       if (emailInput) {
-        emailInput.oninput = (e) => { contactEmail = e.target.value; };
+        emailInput.oninput = (e) => {
+          contactEmail = e.target.value;
+          updateButtonState();
+        };
       }
 
       const titleInput = dlg.querySelector("#feedback-modal-title");
@@ -414,29 +505,16 @@
       if (textarea) {
         textarea.oninput = (e) => {
           text = e.target.value;
-          const sendBtn = dlg.querySelector("#feedback-modal-send");
-          const hint = dlg.querySelector("#feedback-empty-hint");
-          const has = text.trim().length > 0;
-          if (sendBtn) {
-            sendBtn.disabled = submitting || !has;
-            if (has) {
-              sendBtn.removeAttribute("title");
-              sendBtn.removeAttribute("aria-describedby");
-            } else {
-              sendBtn.setAttribute("title", "Write something in the field above before sending.");
-              sendBtn.setAttribute("aria-describedby", "feedback-empty-hint");
-            }
-          }
-          if (hint) {
-            hint.hidden = has;
-          }
+          updateButtonState();
         };
       }
 
       const sendBtn = dlg.querySelector("#feedback-modal-send");
       if (sendBtn) {
         sendBtn.onclick = async () => {
-          if (submitting || text.trim().length === 0) return;
+          const isImprove = currentStep === "improve_orchestrator" || currentCategory === "improve_orchestrator";
+          const emailOk = !isImprove || (contactEmail.trim().length > 0 && contactEmail.includes("@"));
+          if (submitting || text.trim().length === 0 || !emailOk) return;
           submitting = true;
           render();
 
@@ -474,18 +552,28 @@
       };
     }
 
-    function open({ initialStep = "feedback", category = "general", userName = "", contactEmail: initEmail = "", title: initTitle = "", attemptNumber = 1 } = {}) {
+    function open({ initialStep = "feedback", category = "general", userName = "", contactEmail: initEmail = "", title: initTitle = "", jobId: initJobId = "", attemptNumber = 1 } = {}) {
       currentStep = initialStep === "improve_orchestrator" ? "improve_orchestrator" : initialStep;
       currentCategory = category === "improve_orchestrator" || initialStep === "improve_orchestrator" ? "improve_orchestrator" : (category || "general");
       text = "";
       title = initTitle || "";
-      contactEmail = initEmail || (userName.includes("@") ? userName : "");
-      jobId = "";
+      contactEmail = initEmail || (userName.includes("@") ? userName : "") || (root.state?.you?.email || "");
+
+      let detectedJobId = initJobId || "";
+      if (!detectedJobId && typeof location !== "undefined" && location.hash) {
+        const jobMatch = location.hash.match(/^#\/jobs\/([a-zA-Z0-9_.-]+)/);
+        if (jobMatch && jobMatch[1]) {
+          detectedJobId = jobMatch[1];
+        }
+      }
+      jobId = detectedJobId;
       submitting = false;
       deliveryState = "sent";
       queuedOffline = false;
-      currentUserName = userName;
+      currentUserName = userName || (root.state?.you?.name || "");
       currentAttempt = attemptNumber;
+
+      flushQueuedFeedback().catch(() => {});
 
       const dlg = ensureDialog();
       if (!dlg) return;
@@ -533,12 +621,19 @@
     };
   }
 
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("online", () => {
+      flushQueuedFeedback().catch(() => {});
+    });
+  }
+
   const modal = createModalController();
 
   const api = {
     SUPPORT_EMAIL,
     FEEDBACK_SUBJECT_PREFIX,
     submitFeedback,
+    flushQueuedFeedback,
     modal,
     open: (opts) => modal.open(opts),
     close: () => modal.close()

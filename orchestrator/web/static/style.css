@@ -3875,6 +3875,8 @@ dialog.dialog-image-viewer form {
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 24px 20px;
   position: relative;
   text-align: center;

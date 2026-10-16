@@ -3625,6 +3625,32 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     created_at = datetime.now().astimezone().isoformat()
 
     feedback_id = secrets.token_hex(12)
+    job_metadata: dict[str, str] = {}
+    if job_id:
+        try:
+            job_path = resolve_job_path(root, job_id)
+            if job_path.is_file():
+                raw_job = read_json_file(job_path)
+                if isinstance(raw_job, dict):
+                    if raw_job.get("title"):
+                        job_metadata["title"] = str(raw_job["title"]).strip()
+                    branch_name = raw_job.get("branch") or raw_job.get("git_branch")
+                    if branch_name:
+                        job_metadata["branch"] = str(branch_name).strip()
+                    kind_name = raw_job.get("kind") or raw_job.get("type")
+                    if kind_name:
+                        job_metadata["kind"] = str(kind_name).strip()
+                    state_val = raw_job.get("state")
+                    if isinstance(state_val, dict):
+                        job_metadata["state"] = str(state_val.get("label") or state_val.get("state") or "").strip()
+                    elif isinstance(state_val, str):
+                        job_metadata["state"] = state_val.strip()
+        except Exception:
+            pass
+
+    if not title and job_metadata.get("title"):
+        title = job_metadata["title"]
+
     record = {
         "id": feedback_id,
         "userName": user_name,
@@ -3641,6 +3667,8 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "createdAt": created_at,
         "status": "new",
     }
+    if job_metadata:
+        record["jobMetadata"] = job_metadata
 
     # 1. Local append to runtime feedback folder so no feedback is ever lost
     try:
@@ -3676,6 +3704,14 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         body_lines.append(f"Title: {title}")
     if job_id:
         body_lines.append(f"Local Job ID / Reference: {job_id}")
+        if job_metadata.get("title"):
+            body_lines.append(f"Local Job Title: {job_metadata['title']}")
+        if job_metadata.get("branch"):
+            body_lines.append(f"Local Job Branch: {job_metadata['branch']}")
+        if job_metadata.get("kind"):
+            body_lines.append(f"Local Job Kind: {job_metadata['kind']}")
+        if job_metadata.get("state"):
+            body_lines.append(f"Local Job State: {job_metadata['state']}")
     if category == "improve_orchestrator":
         body_lines.append("Prize Eligible: YES (Permanent Inclusion Submission)")
     body_lines.extend([

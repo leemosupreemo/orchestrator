@@ -111,6 +111,7 @@ console.log(JSON.stringify({
   email: Feedback.SUPPORT_EMAIL,
   prefix: Feedback.FEEDBACK_SUBJECT_PREFIX,
   hasSubmit: typeof Feedback.submitFeedback === 'function',
+  hasFlush: typeof Feedback.flushQueuedFeedback === 'function',
   hasOpen: typeof Feedback.open === 'function',
   hasClose: typeof Feedback.close === 'function'
 }));
@@ -118,6 +119,7 @@ console.log(JSON.stringify({
         self.assertEqual(out["email"], "support@thejauntcompany.com")
         self.assertEqual(out["prefix"], "[Orchestrator Feedback]")
         self.assertTrue(out["hasSubmit"])
+        self.assertTrue(out["hasFlush"])
         self.assertTrue(out["hasOpen"])
         self.assertTrue(out["hasClose"])
 
@@ -186,6 +188,37 @@ console.log(JSON.stringify({
         self.assertEqual(out["parsedBody"]["title"], "Parallel Runner Caching")
         self.assertEqual(out["parsedBody"]["jobId"], "job-999")
         self.assertEqual(out["parsedBody"]["explanation"], "Added memory cache for faster replans")
+
+    def test_flush_queued_feedback(self):
+        out = self.run_js("""
+(async () => {
+  const fakeStorage = {
+    _data: {},
+    getItem(k) { return this._data[k] || null; },
+    setItem(k, v) { this._data[k] = String(v); },
+    removeItem(k) { delete this._data[k]; }
+  };
+  global.localStorage = fakeStorage;
+  fakeStorage.setItem('orchestrator_queued_feedback', JSON.stringify([
+    { feedbackText: 'Queue item 1', userName: 'User 1' },
+    { feedbackText: 'Queue item 2', userName: 'User 2' }
+  ]));
+
+  let sentCount = 0;
+  const mockApi = async (path, opts) => {
+    sentCount++;
+    return { ok: true, delivered: true };
+  };
+
+  const result = await Feedback.flushQueuedFeedback(mockApi);
+  const remaining = fakeStorage.getItem('orchestrator_queued_feedback');
+  console.log(JSON.stringify({ result, sentCount, remaining }));
+})();
+""")
+        self.assertEqual(out["sentCount"], 2)
+        self.assertEqual(out["result"]["flushed"], 2)
+        self.assertEqual(out["result"]["remaining"], 0)
+        self.assertIsNone(out["remaining"])
 
 
 class FeedbackBackendTests(unittest.TestCase):
@@ -326,6 +359,39 @@ class FeedbackBackendTests(unittest.TestCase):
             self.assertIn("[Orchestrator Feature Request]", body["subject"])
             self.assertIn("Dark Mode Support", body["subject"])
             self.assertIn("Eve", body["subject"])
+
+    def test_dispatch_feedback_enriches_local_job_metadata(self):
+        job_id = "job-review-123"
+        jobs_dir = ui.jobs_dir(self.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+            "title": "Streamline Worker Loop",
+            "branch": "ai/job-review-123-streamline",
+            "kind": "feature",
+            "state": {"label": "Running"}
+        }))
+
+        fake_resp = MagicMock()
+        fake_resp.status = 200
+        fake_resp.__enter__.return_value = fake_resp
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_urlopen, \
+             patch.dict(os.environ, {"RESEND_API_KEY": "re_test_dummy_key"}):
+            res = ui.dispatch_feedback(self.root, {
+                "userName": "Contributor",
+                "category": "improve_orchestrator",
+                "jobId": job_id,
+                "contactEmail": "contributor@example.com",
+                "explanation": "Refactored worker loop"
+            })
+            self.assertTrue(res["ok"])
+            req = mock_urlopen.call_args[0][0]
+            body = json.loads(req.data.decode("utf-8"))
+            self.assertIn("[Orchestrator Improvement Submission] Streamline Worker Loop - Contributor", body["subject"])
+            self.assertIn("Local Job Title: Streamline Worker Loop", body["text"])
+            self.assertIn("Local Job Branch: ai/job-review-123-streamline", body["text"])
+            self.assertIn("Local Job Kind: feature", body["text"])
+            self.assertIn("Local Job State: Running", body["text"])
 
 
 class ServerEndpointFeedbackTests(unittest.TestCase):
