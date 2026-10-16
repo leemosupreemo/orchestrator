@@ -9082,43 +9082,39 @@ pages["auto-improve"] = async (_, query) => {
 
   return {
     title: "Auto-improve Orchestrator",
-    sub: "Build features and fixes for Orchestrator itself, track changes, and submit your work for contributor prizes.",
+    sub: "Build features and fixes for Orchestrator itself.",
     actions: "",
     html: `
-      <!-- New Improvement Job Card -->
-      <section class="card mb-16">
-        <div class="card-h">
-          <h2>New improvement job</h2>
+      <!-- New Improvement Job -->
+      <form class="card card-b stack mb-16" id="auto-improve-job-form">
+        <div class="field"><span>Type</span>
+          <div class="segmented" role="radiogroup" aria-label="Improvement type">
+            <label class="job-type-card job-type-feature"><input type="radio" name="improve_type" value="feature" ${initialType !== "bug" ? "checked" : ""}>Feature</label>
+            <label class="job-type-card job-type-bug"><input type="radio" name="improve_type" value="bug" ${initialType === "bug" ? "checked" : ""}>Bug fix</label>
+          </div>
         </div>
-        <form class="card-b stack" id="auto-improve-job-form">
-          <div class="field"><span>Type</span>
-            <div class="segmented" role="radiogroup" aria-label="Improvement type">
-              <label class="job-type-card job-type-feature"><input type="radio" name="improve_type" value="feature" ${initialType !== "bug" ? "checked" : ""}>Feature<small>New capability or tool</small></label>
-              <label class="job-type-card job-type-bug"><input type="radio" name="improve_type" value="bug" ${initialType === "bug" ? "checked" : ""}>Bug fix<small>Fix a bug or error</small></label>
-            </div>
-          </div>
 
-          <label class="field">
-            <span>Summary</span>
-            <input type="text" name="summary" required maxlength="500" value="${esc(initialSummary)}" placeholder="What should Orchestrator build or fix?">
-          </label>
+        <label class="field">
+          <span>Summary</span>
+          <input type="text" name="summary" required maxlength="500" value="${esc(initialSummary)}" placeholder="What should Orchestrator build or fix?">
+        </label>
 
-          <label class="field">
-            <span>Details <span class="muted">(optional)</span></span>
-            <textarea name="spec" rows="3" placeholder="Requirements, suggested files, or test cases">${esc(initialSpec)}</textarea>
-          </label>
+        <label class="field">
+          <span>Details <span class="muted">(optional)</span></span>
+          <textarea name="spec" rows="2" placeholder="Requirements or notes">${esc(initialSpec)}</textarea>
+        </label>
 
-          <div class="row align-center justify-between">
-            <label class="check"><input type="checkbox" name="yolo"><span>Autopilot <small class="muted">(runs without pauses)</small></span></label>
-            <button class="btn primary" type="submit">Start job</button>
-          </div>
-        </form>
-      </section>
+        <div class="row align-center justify-between">
+          <label class="check"><input type="checkbox" name="yolo"><span>Autopilot</span></label>
+          <button class="btn primary" type="submit">Start job</button>
+        </div>
+      </form>
 
       <!-- Tracked Improvements -->
-      <section class="card mb-16">
+      <section class="card">
         <div class="card-h">
           <h2>Tracked improvements <span class="count">${improvementJobs.length}</span></h2>
+          <button type="button" class="btn small ghost" id="auto-improve-manual-submit-btn">Submit outside PR</button>
         </div>
         ${improvementJobs.length ? `
           <div class="job-table">
@@ -9166,22 +9162,8 @@ pages["auto-improve"] = async (_, query) => {
         ` : `
           <div class="empty">
             <p>No improvement jobs yet.</p>
-            <p class="muted">Jobs started here are tracked and can be submitted for inclusion.</p>
           </div>
         `}
-      </section>
-
-      <!-- Contributor Prize -->
-      <section class="card prize-card">
-        <div class="card-h">
-          <h2>Contributor prize 🏆</h2>
-        </div>
-        <div class="card-b stack">
-          <p class="muted">Build features and fixes for Orchestrator itself. Completed jobs can be submitted for review. When accepted for permanent inclusion, you'll receive a contributor prize and recognition.</p>
-          <div class="row">
-            <button type="button" class="btn small ghost" id="auto-improve-manual-submit-btn">Submit outside branch or PR</button>
-          </div>
-        </div>
       </section>
     `,
     after: () => {
