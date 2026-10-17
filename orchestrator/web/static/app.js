@@ -8435,14 +8435,15 @@ function runFailureGuidance(r) {
 
   if (lower.includes("thinking:") && (lower.includes("model active") || lower.includes("deep reasoning"))) {
     const rerunBtn = targetJob
-      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
-      : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
+      ? `<button type="button" class="btn small primary" data-auto-recover="5" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Auto-recovering in <span data-recover-countdown>5</span>s…</button>`
+      : r.action ? `<button type="button" class="btn small primary" data-auto-recover="5" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Auto-recovering in <span data-recover-countdown>5</span>s…</button>` : "";
+    const cancelBtn = `<button type="button" class="btn small ghost" data-cancel-autorecover>Cancel</button>`;
     const backBtn = targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "";
     return {
       title: "Run interrupted while model was thinking",
-      detail: "The run was stopped or the server restarted while waiting for the AI model to respond. You can safely rerun this task.",
+      detail: "The run was stopped or the server restarted while waiting for the AI model to respond. Orchestrator can automatically recover and resume this task.",
       action: rerunBtn || `<a class="btn small primary" href="#/new">Create new job</a>`,
-      secondary: backBtn,
+      secondary: rerunBtn ? cancelBtn : backBtn,
     };
   }
 
@@ -8843,11 +8844,53 @@ function wireApiKeyForm(container) {
   }
 }
 
+function wireInterruptedAutoRecovery(container) {
+  if (!container) return;
+  const btn = container.querySelector("[data-auto-recover]");
+  if (!btn || btn.dataset.wired === "true") return;
+  btn.dataset.wired = "true";
+  let count = parseInt(btn.dataset.autoRecover || "5", 10);
+  const countdownSpan = btn.querySelector("[data-recover-countdown]");
+  const cancelBtn = container.querySelector("[data-cancel-autorecover]");
+  let timer = null;
+
+  const cancel = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+    btn.removeAttribute("data-auto-recover");
+    btn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun`;
+    if (cancelBtn) cancelBtn.hidden = true;
+  };
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      cancel();
+    });
+  }
+
+  timer = setInterval(() => {
+    count -= 1;
+    if (countdownSpan) countdownSpan.textContent = count;
+    if (count <= 0) {
+      if (timer) clearInterval(timer);
+      timer = null;
+      btn.removeAttribute("data-auto-recover");
+      btn.click();
+    }
+  }, 1000);
+
+  if (typeof cleanup !== "undefined" && Array.isArray(cleanup)) {
+    cleanup.push(() => { if (timer) clearInterval(timer); });
+  }
+}
+
 function wireRunGuidance(container) {
   if (!container) return;
   wireKeychainUnlock(container);
   wireAutoRecovery(container);
   wireApiKeyForm(container);
+  wireInterruptedAutoRecovery(container);
 }
 
 function updateRunStatus(r) {

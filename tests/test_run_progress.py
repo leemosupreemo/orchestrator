@@ -329,6 +329,11 @@ const failedCheck = runStatus({...run, action: 'check_config', running: false, e
 assert.match(failedCheck, /Configuration check reported issues/);
 assert.match(failedCheck, /Open Settings/);
 
+const failedThinking = runStatus({...run, action: 'ux_pass', running: false, exit_code: 1, error_summary: "Thinking: Deep Reasoning model active... (3m 22s)"});
+assert.match(failedThinking, /Run interrupted while model was thinking/);
+assert.match(failedThinking, /data-auto-recover/);
+assert.match(failedThinking, /data-cancel-autorecover/);
+
 const nextFailed = nextStep({...run, action: 'coverage', running: false, exit_code: 1, error_summary: "No Swift source files or Package.swift manifest found yet"});
 assert.match(nextFailed, /banner failed/);
 assert.match(nextFailed, /No source files or tests yet/);
