@@ -9,6 +9,8 @@ __pycache__/
 venv/
 build/
 dist/
+.coverage
+.coverage.*
 
 # Logs and temporary test projects
 logs/
@@ -24,3 +26,7 @@ test_onboarding_proj/
 *.pcm
 exports/
 *.zip
+.firebase/
+
+# Cloud Functions virtualenv (rebuilt from cloud/functions/requirements.txt)
+cloud/functions/venv/

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from copy import deepcopy
@@ -10,6 +11,7 @@ from typing import Any
 
 from common import CONFIG_DIR, ROOT, now_iso, read_json, run, write_json, print_phase
 from model_registry import get_model
+from orchestrator.run_check import MIN_DISK_GB, equivalent_model_names, model_names_overlap  # noqa: F401
 from probe_machine import load_machines, probe_machine
 from worker_tools import remote_env_prefix, remote_import_check_command
 
@@ -116,17 +118,6 @@ def ready_groups(job: dict[str, Any]) -> list[dict[str, Any]]:
     return ready
 
 
-def equivalent_model_names(model_name: str) -> set[str]:
-    model = get_model(model_name)
-    if not model:
-        return {model_name}
-    return {model.id, *model.aliases}
-
-
-def model_names_overlap(left: str, right: str) -> bool:
-    return bool(equivalent_model_names(left).intersection(equivalent_model_names(right)))
-
-
 def machine_supports_model(machine: dict[str, Any], candidate: str) -> bool:
     return any(model_names_overlap(candidate, machine_model) for machine_model in machine.get("models", []))
 
@@ -187,7 +178,6 @@ def format_ineligible_machines(ineligible: list[tuple[dict[str, Any], str]]) -> 
 
 
 STICKINESS_BONUS = 150.0  # Strong preference for remaining on previous machine to preserve state
-MIN_DISK_GB = 15  # Minimum required to start a build
 LOW_DISK_THRESHOLD = 30 # Threshold for applying penalties
 
 def score_machine(machine: dict[str, Any], probe: dict[str, Any], group: dict[str, Any], previously_assigned: str | None = None) -> tuple[float, list[str]]:
@@ -389,6 +379,11 @@ def schedule_ready_group(
     job: dict[str, Any],
     machines: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        machines = [machine for machine in machines if machine.get("execution_mode") == "local"]
+        if not machines:
+            raise RuntimeError("Design and Tests jobs require a local worker.")
     groups = ready_groups(job)
 
     if not groups:
@@ -483,6 +478,9 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
         execute_job(job_path, resume=resume)
         return
 
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if read_json(job_path).get("type") in NONPRODUCTION_TYPES:
+        raise RuntimeError("Design and Tests jobs require a local worker.")
     remote_repo = machine["repo_path"]
     job_basename = job_path.name
     ssh_target = remote_probe.get("active_ssh_target") or machine.get("ssh_target")

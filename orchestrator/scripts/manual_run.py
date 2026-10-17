@@ -257,6 +257,8 @@ def stream_command(
             formatter_proc = None
 
     captured_lines: list[str] = []
+    child_env = dict(os.environ)
+    child_env.pop("ORCHESTRATOR_NONINTERACTIVE", None)
     with open(log_file, "w", encoding="utf-8") as f:
         process = subprocess.Popen(
             cmd,
@@ -264,6 +266,7 @@ def stream_command(
             stderr=subprocess.STDOUT,
             shell=True,
             cwd=str(ROOT),
+            env=child_env,
             text=True,
             bufsize=1,
             executable="/bin/bash"

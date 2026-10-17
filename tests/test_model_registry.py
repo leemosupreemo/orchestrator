@@ -286,17 +286,27 @@ opencode/north-mini-code-free
     def test_llm_command_routing_for_qwen_and_ollama(self) -> None:
         from orchestrator.scripts.llm import get_llm_command
         
-        # 1. Test qwen2.5-coder routing (should route to: ollama run qwen2.5-coder)
+        # 1. Test qwen2.5-coder routing (should route to: ollama run qwen2.5-coder --nowordwrap)
         cmd_qwen = get_llm_command("qwen2.5-coder", "prompt.txt")
-        self.assertIn("ollama run qwen2.5-coder", cmd_qwen)
+        self.assertIn("ollama run qwen2.5-coder --nowordwrap", cmd_qwen)
         
-        # 2. Test qwen-3.7-max routing (should route to: ollama run qwen-3.7-max)
+        # 2. Test qwen-3.7-max routing (should route to: ollama run qwen-3.7-max --nowordwrap)
         cmd_qwen_max = get_llm_command("qwen-3.7-max", "prompt.txt")
-        self.assertIn("ollama run qwen-3.7-max", cmd_qwen_max)
+        self.assertIn("ollama run qwen-3.7-max --nowordwrap", cmd_qwen_max)
+
+        # 3. Test deepseek routing (should route to: ollama run deepseek-coder --nowordwrap)
+        cmd_deepseek = get_llm_command("deepseek", "prompt.txt")
+        self.assertIn("ollama run deepseek-coder --nowordwrap", cmd_deepseek)
         
-        # 3. Test opencode/qwen-3.7-max routing (should route to opencode)
+        # 4. Test opencode/qwen-3.7-max routing (should route to opencode)
         cmd_opencode_qwen = get_llm_command("opencode/qwen-3.7-max", "prompt.txt")
         self.assertIn("opencode run --model opencode/qwen-3.7-max", cmd_opencode_qwen)
+
+    def test_copilot_has_reasoning_and_is_free(self) -> None:
+        copilot = model_registry.get_model("copilot")
+        self.assertIsNotNone(copilot)
+        self.assertEqual(copilot.cost_factor, 0.0)
+        self.assertIn(model_registry.ModelCapability.REASONING, copilot.capabilities)
 
     @patch("orchestrator.scripts.llm.preferred_cli")
     def test_llm_command_routing_for_gemini(self, mock_preferred_cli) -> None:

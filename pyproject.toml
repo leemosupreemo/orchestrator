@@ -19,4 +19,4 @@ include-package-data = true
 include = ["orchestrator*"]
 
 [tool.setuptools.package-data]
-orchestrator = ["config/*.json", "prompts/*.md", "templates/*"]
+orchestrator = ["config/*.json", "prompts/*.md", "templates/*", "web/static/*"]

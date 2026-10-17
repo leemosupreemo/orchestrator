@@ -248,7 +248,7 @@
       "id": "copilot",
       "family": "copilot",
       "tier": "HIGH",
-      "capabilities": ["coding", "speed"],
+      "capabilities": ["coding", "reasoning", "speed"],
       "cost_factor": 0.0,
       "required_clis": ["gh"]
     },
