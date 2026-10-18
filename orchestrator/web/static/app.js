@@ -1423,7 +1423,7 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
     } else if (action === "sign-out") {
       stopAccountPoll();
       endSigningIn();
-      lockSession();
+      signOut();
     }
   };
 }
@@ -2325,7 +2325,7 @@ function showLocked(message) {
   showSignInGate(message);
 }
 
-async function lockSession() {
+async function signOut() {
   try {
     await api("auth/logout", { method: "POST", body: {} });
   } catch {}
@@ -2343,8 +2343,8 @@ async function lockSession() {
   }
   state = { project: null, runs: [], actions: {} };
   for (const badge of document.querySelectorAll("#running-badge, .tabbar .badge")) badge.hidden = true;
-  toast("Session locked", "info");
-  showSignInGate("Session locked. Please sign in again.");
+  toast("Signed out", "info");
+  showSignInGate("You're signed out. Sign in again to continue.");
 }
 
 // `titleHtml` replaces the plain title with markup (Home's project switcher); `title` stays the page's name for the
@@ -6830,7 +6830,7 @@ pages.config = async (args = []) => {
           } else if (action === "access-remove") {
             await runConfigMutation(button, {part: "allowed-email", body: {op: "remove", email: button.dataset.email}}, "Email removed and signed out");
           } else if (action === "access-revoke") {
-            if (button.hasAttribute("data-current")) { await lockSession(); return; }
+            if (button.hasAttribute("data-current")) { await signOut(); return; }
             button.disabled = true;
             try {
               await api("sign-ins/revoke", {method: "POST", body: {id: button.dataset.id}});
@@ -9898,7 +9898,7 @@ function paletteBase() {
   act_("Auto-improve Orchestrator", "Create an AI job to improve Orchestrator itself and track submissions", () => { location.hash = "#/auto-improve"; });
   act_("Improve Orchestrator (Win a Prize!)", "Submit an Orchestrator improvement for permanent inclusion and prize", () => Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" }));
   act_("Create job to improve Orchestrator", "Start a new local AI job focused on enhancing Orchestrator itself", () => { location.hash = "#/auto-improve"; });
-  act_("Lock session", "Sign out of this browser", () => $("#lock-btn")?.click());
+  act_("Sign out", "Sign out of this browser", () => $("#signout-btn")?.click());
   if (Notifications.supported()) act_(Notifications.enabled() ? "Turn off browser alerts" : "Turn on browser alerts", "Alerts when a run finishes or needs you", () => $("#notify-btn")?.click());
   return entries;
 }
@@ -10061,9 +10061,9 @@ notifyBtn?.addEventListener("click", async () => {
   renderNotifyBtn();
 });
 renderNotifyBtn();
-const lockBtn = $("#lock-btn");
-if (lockBtn) {
-  lockBtn.addEventListener("click", lockSession);
+const signOutBtn = $("#signout-btn");
+if (signOutBtn) {
+  signOutBtn.addEventListener("click", signOut);
 }
 const feedbackBtn = $("#feedback-btn");
 if (feedbackBtn) {

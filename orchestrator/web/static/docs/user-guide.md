@@ -6,7 +6,15 @@ If you are new to Orchestrator, start with [Getting Started](getting-started.md)
 
 ## Install
 
-Recommended CLI install:
+Quickest, on a Mac or Linux computer: one command installs what's missing, installs Orchestrator, adds the computer to your account and starts it at login (see [Web UI](#web-ui) for what that gives you):
+
+```bash
+curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh
+```
+
+It needs Python 3.11+, Git, pipx and cloudflared, and installs the ones that are missing (on a Mac through Homebrew). Add `--no-service` to skip the start at login, or `--dry-run` to only print what it would do. On Windows, run it from a WSL terminal.
+
+To install by hand instead, the CLI install is:
 
 ```bash
 brew install pipx
@@ -364,7 +372,18 @@ To customize them per project, run the wizard with `--copy-prompt-overrides` or 
 .orchestrator/prompts/
 ```
 
-Project-local prompt files with matching names take precedence over package defaults.
+Project-local prompt files with matching names take precedence over package defaults, one file at a time: a prompt you haven't customised keeps using the built-in one.
+
+In the Web UI, **Configuration → Instructions for AI helpers** lists the four roles you are most likely to tune. **Customize** opens the built-in instructions as the starting point, so you edit rather than write from nothing; **Reset** goes back to them, and saving the built-in text unchanged doesn't count as a customisation.
+
+| Role | File | What it does |
+|---|---|---|
+| Architect | `verifier.md` | Reviews each plan before it is built (the "Senior Architect Review" on a job). |
+| Planner | `planner_feature.md` | Researches the project and turns a request into tasks with acceptance criteria. |
+| Builder | `builder_feature_task.md` | Writes the failing test, then the code, and reports what changed. |
+| Reviewer | `reviewer.md` | Reviews the diff against the brief: blockers, medium-risk concerns, minor suggestions, verdict. |
+
+Jobs read the Architect's, Planner's and Builder's replies as JSON, so their instructions must keep asking for those fields (`status` and `comments`; `tasks` and `acceptance_criteria`; `files_changed`, `test_command` and `summary`). Saving instructions that drop them is refused, with the missing fields named. The Reviewer replies in free text and has no such rule. The same instructions apply to every job in the project.
 
 ## Run The Console
 
@@ -417,7 +436,9 @@ overlap, responsiveness, contrast, dark mode, focus). The checklist is
 - **Product pass.** Web UI > UX review > Run a pass, or `orchestrator script ux_review_run.py pass`. It captures every
   configured screen, runs a UX pass and a design pass (two model calls), and writes one report with findings ranked by
   severity, the checklist, and the screenshots, under `.orchestrator/output/ux-pass/<when>/`. "Create a job to fix"
-  turns the findings into a job.
+  turns the findings into a job. A pass that couldn't capture screenshots finishes as "Completed with notes" (yellow)
+  and says only the code was read; in a project with no interface files it skips the model calls and reports
+  "Nothing to review".
 - **Change check.** After the code review, every job whose diff touches interface files (HTML, CSS, JSX/TSX, Vue,
   Svelte, SwiftUI views, storyboards, scripts in UI folders, or anything matching `ui_review.paths`) gets the same
   checklist on just what it changed. The job page shows a "UX and design check" card, and the hero warns before you
@@ -473,11 +494,17 @@ For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://s
 
 ## Web UI
 
-> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have, or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. See [Product requirements](product-requirements.md).
+The Web UI is how most people use Orchestrator. The work runs on your own computer; you reach it from a browser at **https://swift-orch-web-20260923.web.app**, which never changes. Your code, files and assets stay on your computer, never on our servers: the hosted site only knows your account, which computers are on it, and where to reach them (see [Control plane](control-plane.md)). Home starts with a short setup checklist until the basics are done, then shows what needs you next.
+
+> **Setup checklist.** Four things make a computer ready: a project, Git, an AI model (a provider you can use, with a model selected), and an enabled machine. Each row has one button that opens the right place, and the rest, such as role instructions and screens to review, is optional.
+
+> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have (it is summarised into the sections, and the full file stays attached for jobs to read), or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. Every section is optional. Once there is something in it, **Suggest features** proposes epic-level features and requirements to approve or pick from. See [Product requirements](product-requirements.md).
+
+> **New project.** The wizard asks for a name and platforms, then one question for each section of the product requirements (pitch, who it's for, core features, look and feel, what to exclude). Everything after the name and platforms can be skipped. Its last screen offers **Suggest features**.
 
 > **Docs.** The **Docs** page (under *Review*) is the project's documentation in one place: the product requirements, a page for every feature and every job (what it is, what was decided, what was built, how it was tested, what the review said), and the project's own `README`, `AGENTS.md` and `docs/` files. Job and feature pages are generated from the live project, so they can't go stale. Search them, and **Download everything** gives one markdown file. See [Product requirements](product-requirements.md) for the PRD.
 
-`orchestrator ui` starts a local web interface for the current project and opens it in your browser:
+`orchestrator ui` is the part that runs on your computer. With the one-command install it starts at login and keeps a tunnel open, so you rarely run it yourself. To run it by hand, or to use it only on this computer, start it for the current project:
 
 ```bash
 orchestrator ui                  # http://127.0.0.1:8765/?token=...
@@ -499,6 +526,8 @@ Every action runs the same CLI command you would type, inside a real terminal th
 
 Use it from anywhere:
 
+Quickest on a Mac or Linux computer: run `curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh`. It installs what's missing (Python 3.11+, Git, pipx, cloudflared), installs Orchestrator, shows the code to confirm, and starts Orchestrator at login. Add `--no-service` to skip the login start, or `--dry-run` to only print what it would do. The steps below do the same by hand.
+
 1. On the computer with your projects, run `orchestrator connect`. It shows a code and a link.
 2. Open the link (or go to https://swift-orch-web-20260923.web.app and enter the code), sign in with Google, and confirm. The computer is now on your account.
 3. Start `orchestrator ui --tunnel` on it. Signing in to the hosted app from any browser opens it; with more than one computer you choose which. **Configuration → Your computers** switches between them.
@@ -508,14 +537,19 @@ Use it from anywhere:
 Access and security:
 
 - The server listens on `127.0.0.1` only. The printed URL carries the access token, kept in `~/.orchestrator/ui_token` (delete the file and restart to change it). Opening the URL once stores the token in a cookie, and every API call needs it. The access token is the owner's key: anyone holding it can do everything, so don't share it.
-- Signing in with Google (or another provider) works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page where it can be ended, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
+- On the hosted app, a link can never supply a backend address or an access token: it only talks to computers your account vouches for, and the sign-in token for your account goes only to those. A link with `?backend=` or `?token=` in it is ignored there. (On a computer's own address, `?token=` still works, as above.)
+- Signing in with Google, Apple, GitHub or email works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page where it can be ended, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
 - Browsers can call the server only from its own pages, pages on this computer, and the hosted app. Add other origins (a custom domain, say) with `ORCHESTRATOR_ALLOWED_ORIGINS`, comma-separated.
 - The browser can only start a fixed set of actions. It never sends a command line, and file reads are limited to `.orchestrator/`.
-- **One address from anywhere:** connect this computer to your account once (`orchestrator connect`) and run
-  `orchestrator ui --tunnel`. Then https://swift-orch-web-20260923.web.app is the address to use on any device: it
-  never changes, and after you sign in it finds this computer, because the computer reports its current tunnel address
-  every 60 seconds. The tunnel's own `trycloudflare.com` link changes on every restart; the startup output lists it as
-  a fallback.
+- **One address from anywhere:** connect this computer to your account once (`orchestrator connect`, or the install
+  command above) and run `orchestrator ui --tunnel`. Then https://swift-orch-web-20260923.web.app is the address to use
+  on any device: it never changes, and after you sign in it finds this computer, because the computer reports its
+  current tunnel address every 60 seconds. The tunnel's own `trycloudflare.com` link changes on every restart. When the
+  page loses the computer it keeps retrying quietly and looks the computer up again by account, so a changed tunnel
+  address needs nothing from you; a notice appears only if the computer stays unreachable. The startup output no longer
+  prints a link with your token in it.
+- **Starting at login:** `orchestrator service install` runs `orchestrator ui --tunnel` as a background service, and
+  `orchestrator service uninstall` removes it. `orchestrator service status` shows whether it is running.
 - From a phone without an account, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
 - Stopping the server (Ctrl-C) also stops the commands it started.
 

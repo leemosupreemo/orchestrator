@@ -54,12 +54,16 @@ The Product page (**Product** card on Home, then **Open**) offers these, most us
 
 - **Write it.** Click **Write** on a section and type. Every section is optional: write what you know and leave the rest. Anything written is enough for the document to start doing its job.
 - **Draft it from my project.** For a project that already has code (a README, notes, a manifest or source files), the app reads a bounded summary of it: the README, `AGENTS.md`/`CLAUDE.md`, a few files in `docs/`, manifests (`package.json`, `pyproject.toml`, `Package.swift`, …), the top-level layout, source files by type and the last 30 commit subjects. A model proposes a first PRD from that. It describes what the product does today, says what it inferred and what it couldn't tell, and writes `TBD:` questions for the rest. **It never writes "Not this"**: only the person can say what the product shouldn't be, and builders and reviewers treat that section as law.
-- **Import PRD.** Drag a file onto the drop zone (on a computer) or browse files. A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. It is rearranged into the five sections keeping the person's wording; what doesn't fit is summarised in a line or left out, and the proposal says which.
-- **New project wizard.** The answers to the wizard's questions (name, one-sentence pitch, audience, problem, day-one features, platforms, technology preferences, how you'll know v1 works) write the first version. "Not sure: recommend for me" becomes a note telling the first plan to recommend platforms, with reasons.
+- **Import PRD.** Drag a file onto the drop zone (on a computer) or browse files. A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. A model reads it and writes a short summary for each of the five sections, so the document stays readable and every section is filled in; the proposal says what it summarised or left out. **The full file is kept** as a [source document](#source-documents) and handed to the AI helpers alongside the summaries, so the nuance isn't lost.
+- **New project wizard.** After the name and platforms (the only required answers), it asks one question per section: pitch, who it's for, core features, look and feel, and what to exclude. Each answer is written into its section as given and any of them can be skipped. "Not sure: recommend for me" for platforms becomes a note telling the first plan to recommend platforms, with reasons. The last screen offers **Suggest features**.
 
 Drafts and imports are always shown as a diff with **Accept and save** / **Discard**. Nothing is written until the person accepts.
 
 **With no PRD at all** nothing breaks. Jobs run as before with no product context, the automatic update never runs (there is nothing to keep true) and never creates a document, and Home, Check-up and the New job form point at the Product page. Before the first feature or design in a project with no Pitch, New job suggests defining the product first (it can be skipped).
+
+### Source documents
+
+When a PRD is imported, the original file is saved under `docs/product/source/` and listed in the PRD under a `## Source documents` heading. The summaries in the five sections say what matters; the source holds the detail behind them. Every reader in the table below is told the source documents exist and where, so a planner or builder that needs the detail can read the file. The Product page lists them with a download link. Only the first 40,000 characters of an import are sent to the model to summarise; the saved file is always whole. Saving a section by hand, a draft or an update keeps the source list.
 
 ### 2. Editing by hand
 
@@ -117,12 +121,22 @@ Sections are trimmed one at a time, so a long feature list never squeezes out "N
 
 Check-up has one **Product requirements** item: *todo* with nothing in the Pitch, *todo* naming what's missing if "Who it's for" or "Core features" is empty, *ok* once those three are written (and it says if automatic updates are off). The `Built for:` line also feeds the **Platforms** item.
 
+### 8. Suggesting features
+
+Once the PRD has something in it (written in the wizard or later), **Suggest features** on the Product page (and on the new project's last screen) proposes epic-level features for the person to approve or cherry-pick. It runs only when asked, never in the background.
+
+- **Technique follows the information.** The model picks, and names, the planning technique that fits what the PRD says: a **story map** (activities, then stories, grouped into slices such as the first thing that works, then later), a **work breakdown** (deliverables and the pieces under them), or a **short list**.
+- **Detail follows the detail you gave.** The app measures how much the PRD (and any attached source document) says. A short PRD gets a few epics (3 to 6) with one sentence each and *questions* instead of invented detail; a fuller one gets up to about 10 epics with requirements and user stories; a detailed one gets up to 15 epics with 3 to 6 testable requirements each, drawn from the text. An epic's requirements are never made up where the text doesn't state them.
+- **Approve or pick.** Each proposed feature has a checkbox, its requirements, and a note if it needs another one first. Accept the ones you want; they join the project's features (the Features pages and the planner see them). Nothing is saved until accepted, and features that already exist are shown to the model so it doesn't repeat them.
+
 ## What is stored where
 
 | What | Where | Committed? |
 |---|---|---|
 | The document | `docs/product/prd.md` | Yes, with the project |
 | Designs and sketches | `docs/product/designs/` | Yes |
+| Imported source documents | `docs/product/source/` | Yes |
+| Features (including accepted suggestions) | `.orchestrator/features.json` | No (local runtime state) |
 | Version history | `.orchestrator/prd-history.json` (latest 60, full text of each) | No (local runtime state) |
 | Auto-update switch and the latest unseen update notice | `.orchestrator/prd.json` | No |
 | "This job has been checked" | `prd_checked` on the job file | No |
@@ -135,7 +149,7 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 
 ## Developer reference
 
-- **Module:** `orchestrator/prd.py`: the section model, parsing, `context_block`, the `Prd` class (document, history, settings, notice, migration), the prompts and reply parsers (`questions_prompt`, `refine_prompt`, `import_prompt`, `draft_prompt`, `update_prompt`), `extract_text`, `project_digest`, `unsafe_update` and `run_update`. It never calls a model itself; callers pass one in.
+- **Module:** `orchestrator/prd.py`: the section model, parsing, `context_block`, the `Prd` class (document, history, settings, notice, migration), the prompts and reply parsers (`questions_prompt`, `refine_prompt`, `import_prompt`, `draft_prompt`, `update_prompt`), `extract_text`, `project_digest`, `unsafe_update` and `run_update`, plus the source-document helpers (`sources`, `attach_source`). It never calls a model itself; callers pass one in. `orchestrator/feature_map.py` builds the feature-suggestion prompt (`detail_level`, `prompt`) and checks the reply (`parse`, `validate`, `accept`).
 - **Worker hook:** `update_product_requirements` in `orchestrator/scripts/worker_run.py`, run after a job's review and before its status report. Failures print a note and never fail the job.
 - **Prompt wiring:** `new_job.py` (planner and verifier), `run_builder.py`, `debug_job.py`, `review_ready.py` call `prd.context_block(ROOT, audience)`.
 - **API** (all under `/api/product`; writes need the UI header and a signed-in session):
@@ -155,6 +169,9 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 | `POST /product/design?name=` | Upload a design (raw body, up to 25 MB). |
 | `GET /product/design/<name>` | A saved design: images inline, anything else as a download. |
 | `POST /product/reference` `{label, url}` or `{links}` | Add a link, or items picked from a connected app. |
+| `GET /product/source/<name>` | Download an attached source document. |
+| `POST /features/propose` | Suggest features from the PRD (and any source document). Starts the work and returns `{task}` at once (202); poll `GET /product/task/<id>`. |
+| `POST /features/accept` `{features, chosen}` | Add the chosen suggestions to the project's features. The proposal is validated again; nothing sent from the page is trusted. |
 
   `GET /api/state` also carries `product_notice` (the latest unseen automatic update), which the page polls to announce it.
 - **Slow model calls run in the background.** Import and Draft return a task id straight away and the page polls `GET /product/task/<id>` every 1.5 s, so no single request stays open (a quick tunnel closes one after about 100 s, which made a slow model look like a failure). If the model's reply isn't in the expected format it is asked once more, with the format restated, before an error is shown.
@@ -169,4 +186,6 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 - How closely any given model follows the product context, and how good its automatic edits are, has not been measured. The safety check refuses damaging edits; it can't judge whether a good-looking edit is right. That is what the banner and Undo are for.
 - A draft is built from what the project contains. A thin project (no README, few files) gives a thin draft, and a model can still misread what a project is for; the proposal states what it inferred so the person can correct it.
 - The history is local runtime state, not committed.
+- An import sends the model at most its first 40,000 characters to summarise (the whole file is still saved), and a source document is read for feature suggestions up to 30,000 characters.
+- An accepted feature keeps the requirements and slice it was suggested with. Its name, summary, files and dependencies can be edited later, or the feature deleted, but its requirements and slice can't yet.
 - Drift between the document and the code is only caught when a job's own information contradicts the document. There is no separate periodic review.

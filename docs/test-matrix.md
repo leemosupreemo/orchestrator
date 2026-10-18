@@ -116,7 +116,7 @@ This document catalogs the complete test matrix for Swift Orchestrator and its W
 | **TC-SEC-06** | Static File Path Traversal Defense | SEC | Malicious URL path requested | Issue `GET /../server.py` or `GET /%2e%2e/server.py` | Server rejects path and returns `HTTP 404 Not Found`. | Automated (`test_static_traversal_blocked`) |
 | **TC-SEC-07** | Firebase ID Token Authentication | SEC | Firebase configured; valid user ID token | Post ID token to `/api/auth` | Server validates token against Google Identity Toolkit; checks email against allowed list; logs in. | Automated (`test_auth_endpoint_valid_id_token`) |
 | **TC-SEC-08** | Unverified Email Address Rejection | SEC | Firebase account with unverified email | Attempt login with unverified token | Server refuses login with `email isn't verified` error (HTTP 403). | Automated (`test_auth_refuses_accounts_without_a_verified_email`) |
-| **TC-SEC-09** | Session Lock Button | BFT / SEC | User logged in | Click "Lock session" in sidebar | Client clears local token; state resets; sign-in gate modal immediately blocks screen. | Manual |
+| **TC-SEC-09** | Sign Out Button | BFT / SEC | User logged in | Click "Sign out" in sidebar | Client clears local token; state resets; sign-in gate modal immediately blocks screen. | Manual |
 | **TC-SEC-10** | Non-Localhost Binding Warning | SEC | Server started with `--host 0.0.0.0` | Observe terminal output on startup | Server displays high-visibility warning advising token requirement and private network (Tailscale) usage. | Manual |
 
 ---
@@ -164,8 +164,8 @@ This document catalogs the complete test matrix for Swift Orchestrator and its W
   2. Authenticates via Firebase Google sign-in with company email.
   3. Top bar displays project name and language pills formatted for compact mobile viewport.
   4. Terminal displays with touch-friendly keybar buttons (`Ctrl-C`, `Enter`, `Esc`).
-  5. Dave taps "Lock session" when done to invalidate cached tokens on his phone.
-- **Success Criteria**: Mobile-responsive layout (< 400px width); keyboard doesn't obscure terminal; session locks securely.
+  5. Dave taps "Sign out" when done to invalidate cached tokens on his phone.
+- **Success Criteria**: Mobile-responsive layout (< 400px width); keyboard doesn't obscure terminal; sign-out clears the session securely.
 
 ### Scenario 4: Fast Bug Triage & Quick Fix
 - **Persona**: Morgan, investigating a test failure reported on main branch.

@@ -51,7 +51,7 @@
     dismiss.addEventListener("click", () => close());
     backdrop.addEventListener("click", () => close());
     sidebar.addEventListener("click", (event) => {
-      if (event.target.closest("a[href], [data-config-route], [data-action], #lock-btn, #search-btn")) close();
+      if (event.target.closest("a[href], [data-config-route], [data-action], #signout-btn, #search-btn")) close();
     });
     sidebar.addEventListener("change", (event) => {
       if (event.target.id === "project-select") close();

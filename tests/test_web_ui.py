@@ -544,6 +544,20 @@ class FakeTunnelProcess:
         self.exit_code = -9
 
 
+class SignOutTests(unittest.TestCase):
+    def test_the_sidebar_offers_sign_out_not_a_session_lock(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        html, js = (static / "index.html").read_text(), (static / "app.js").read_text()
+        button = html[html.index('id="signout-btn"'):][:200]
+        self.assertIn("Sign out</button>", button)
+        self.assertNotIn("Lock session", html + js)
+        self.assertNotIn("Session locked", js)
+        self.assertIn('act_("Sign out", "Sign out of this browser"', js)  # also in the command palette
+        sign_out = js[js.index("async function signOut"):][:900]
+        self.assertIn('toast("Signed out"', sign_out)
+        self.assertIn('auth/logout', sign_out)  # the server ends the sign-in, not just the browser
+
+
 class SignInPrivacyTests(unittest.TestCase):
     def test_sign_in_promises_code_and_assets_stay_on_the_users_computer(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -918,7 +932,7 @@ process.stdout.write(JSON.stringify({ids: entries.map((e) => e.id), menu}));"""
         self.assertLess(worker.index('addEventListener("notificationclick"'), worker.index("importScripts("))
         js = (static / "app.js").read_text()
         self.assertIn('serviceWorker.register("firebase-messaging-sw.js")', js)
-        self.assertIn("await disablePush()", js[js.index("async function lockSession"):][:300])  # signing out stops alerts
+        self.assertIn("await disablePush()", js[js.index("async function signOut"):][:300])  # signing out stops alerts
         follow = js[js.index("function followAlertLink"):][:900]
         self.assertIn('params.get("machine")', follow)
         self.assertLess(js.index("function followAlertLink"), js.index("refreshState().then(() => { if (!signingIn) route(); });"))
@@ -3558,7 +3572,7 @@ class Element {
   getClientRects() { return this.hidden ? [] : [{}]; }
   closest(selector) {
     if (selector.includes('[data-action]') && this.attrs['data-action']) return this;
-    if (selector.includes('#lock-btn') && this.name === 'lock') return this;
+    if (selector.includes('#signout-btn') && this.name === 'lock') return this;
     if (selector.includes('#search-btn') && this.name === 'search') return this;
     return null;
   }
@@ -3570,7 +3584,7 @@ const link = new Element('link'), actionBtn = new Element('action');
 actionBtn.attrs['data-action'] = 'true';
 const lockBtn = new Element('lock'), searchBtn = new Element('search');
 const elements = {'.app': app, '#sidebar': sidebar, '#nav-toggle': toggle,
-  '#nav-close': close, '#sidebar-backdrop': backdrop, '#lock-btn': lockBtn, '#search-btn': searchBtn};
+  '#nav-close': close, '#sidebar-backdrop': backdrop, '#signout-btn': lockBtn, '#search-btn': searchBtn};
 const document = new Element('document');
 document.body = new Element('body');
 document.querySelector = selector => {
@@ -3878,7 +3892,7 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertIn(href, sidebar.links)
         for href in ("#/connections", "#/projects", "#/checkup"):  # set once: under Settings (Configuration), not the sidebar
             self.assertNotIn(href, sidebar.links)
-        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "lock-btn", "auto-improve-btn"):
+        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "signout-btn", "auto-improve-btn"):
             self.assertIn(control, sidebar.controls)
 
     def test_copy_stays_plain_and_consistent(self):
