@@ -243,6 +243,25 @@ def _git_remote(root: Path) -> str | None:
         return None
 
 
+class PromptFolder:
+    """Where role prompts are read from. A prompt the project has customised wins; every other prompt comes from the
+    built-in set, so customising one role never hides the rest."""
+
+    def __init__(self, project: Path, package: Path):
+        self.project = project
+        self.package = package
+
+    def __truediv__(self, name: str) -> Path:
+        mine = self.project / name
+        return mine if mine.is_file() else self.package / name
+
+    def __fspath__(self) -> str:
+        return str(self.package)
+
+    def __str__(self) -> str:
+        return str(self.package)
+
+
 @dataclass(frozen=True)
 class ProjectConfig:
     root: Path
@@ -393,9 +412,8 @@ class ProjectConfig:
         return errors
 
     @property
-    def prompts_dir(self) -> Path:
-        project_prompts = self.runtime_dir / "prompts"
-        return project_prompts if project_prompts.exists() else self.package_prompts_dir
+    def prompts_dir(self) -> "PromptFolder":
+        return PromptFolder(self.runtime_dir / "prompts", self.package_prompts_dir)
 
 
 def load_project_config(root: Path | None = None) -> ProjectConfig:

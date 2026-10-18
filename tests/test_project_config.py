@@ -265,3 +265,19 @@ class ProjectConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromptFolderTests(unittest.TestCase):
+    def test_a_customised_prompt_wins_and_every_other_prompt_still_comes_from_the_built_in_set(self):
+        from orchestrator.project_config import PromptFolder
+        with tempfile.TemporaryDirectory() as tmp:
+            project, package = Path(tmp) / "project", Path(tmp) / "package"
+            project.mkdir()
+            package.mkdir()
+            (package / "reviewer.md").write_text("built-in reviewer")
+            (package / "verifier.md").write_text("built-in verifier")
+            (project / "reviewer.md").write_text("my reviewer")  # the only customised role
+            folder = PromptFolder(project, package)
+            self.assertEqual((folder / "reviewer.md").read_text(), "my reviewer")
+            self.assertEqual((folder / "verifier.md").read_text(), "built-in verifier")
+            self.assertFalse((folder / "missing.md").exists())

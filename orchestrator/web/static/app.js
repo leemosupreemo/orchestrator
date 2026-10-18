@@ -7014,7 +7014,7 @@ pages.config = async (args = []) => {
           if (configAction === "prompt-edit") {
             showConfigMutationDialog(
               `Customize ${name} Instructions`,
-              `<label class="field"><span>Prompt Instructions (.md)</span>
+              `<label class="field"><span>Prompt Instructions (.md)</span><small>Starts from the built-in instructions. Edit them, or use Reset to go back.</small>
                <textarea name="content" style="min-height:220px; font-family:var(--mono); font-size:12px;" required>${esc(content || "")}</textarea></label>`,
               "Save Instructions",
               (values) => ({part: "role-prompts", body: {id, content: values.content}}),

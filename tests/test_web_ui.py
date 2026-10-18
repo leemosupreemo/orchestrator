@@ -2993,6 +2993,21 @@ class RunApiTests(ServerTestCase):
         self.assertTrue(architect_prompt["customized"])
         self.assertIn("Custom architect system instructions", architect_prompt["content"])
 
+    def test_role_prompts_start_from_the_built_in_text_and_unchanged_saves_are_not_overrides(self):
+        state = ui.config_state(self.root)
+        reviewer = next(p for p in state["role_prompts"] if p["id"] == "reviewer")
+        self.assertFalse(reviewer["custom"])
+        self.assertIn("reviewer agent", reviewer["content"])  # the editor opens on the standard definition
+        res, _ = self.request("POST", "/api/config/role-prompts", body={"id": "reviewer", "content": reviewer["content"]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertFalse((ui.runtime_dir(self.root) / "prompts" / "reviewer.md").exists())
+        res, _ = self.request("POST", "/api/config/role-prompts", body={"id": "reviewer", "content": reviewer["content"] + "\nAlso check accessibility."}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        state = ui.config_state(self.root)
+        reviewer = next(p for p in state["role_prompts"] if p["id"] == "reviewer")
+        self.assertTrue(reviewer["custom"])
+        self.assertIn("Also check accessibility.", reviewer["content"])
+
     def test_config_fleet_actions(self):
         res, data = self.request("POST", "/api/config/fleet", body={
             "op": "add", "name": "build-mac-1", "ssh_target": "user@mac1", "repo_path": "/Users/user/repo", "mode": "remote"

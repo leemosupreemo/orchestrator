@@ -2911,12 +2911,13 @@ def get_role_prompts(root: Path) -> list[dict[str, Any]]:
     for r in roles:
         custom_file = prompts_dir / r["file"]
         is_custom = custom_file.is_file()
-        content = ""
+        default = role_prompt_default(r["file"])
+        content = default
         if is_custom:
             try:
                 content = custom_file.read_text(encoding="utf-8")
             except Exception:
-                content = ""
+                content = default
         results.append({
             "id": r["id"],
             "name": r["name"],
@@ -2924,9 +2925,17 @@ def get_role_prompts(root: Path) -> list[dict[str, Any]]:
             "description": r["desc"],
             "custom": is_custom,
             "customized": is_custom,
-            "content": content[:10_000] if is_custom else "",
+            "content": content[:20_000],  # what the editor starts from: the built-in text until it is customised
         })
     return results
+
+
+def role_prompt_default(filename: str) -> str:
+    """The built-in instructions for a role, which is what it uses until the project customises it."""
+    try:
+        return (Path(__file__).resolve().parent.parent / "prompts" / filename).read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 # --------------------------------------------------------------------------- configuration
@@ -3338,8 +3347,8 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
         if role_id not in filename_map:
             raise UIError("Unknown role ID")
         target_file = prompts_dir / filename_map[role_id]
-        if body.get("revert"):
-            if target_file.exists():
+        if body.get("revert") or content.strip() == role_prompt_default(filename_map[role_id]).strip():
+            if target_file.exists():  # saving the built-in text unchanged is not a customisation
                 target_file.unlink()
         else:
             target_file.write_text(content + "\n", encoding="utf-8")
