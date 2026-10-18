@@ -2983,7 +2983,7 @@ class RunApiTests(ServerTestCase):
     def test_config_role_prompts_update(self):
         body = {
             "id": "architect",
-            "content": "Custom architect system instructions"
+            "content": 'Custom architect system instructions. Reply as JSON with "status" and "comments".'
         }
         res, data = self.request("POST", "/api/config/role-prompts", body=body, headers=UI_HEADERS)
         self.assertEqual(res.status, 200)
@@ -3007,6 +3007,20 @@ class RunApiTests(ServerTestCase):
         reviewer = next(p for p in state["role_prompts"] if p["id"] == "reviewer")
         self.assertTrue(reviewer["custom"])
         self.assertIn("Also check accessibility.", reviewer["content"])
+
+    def test_architect_edits_the_plan_verifier_and_saves_must_keep_the_response_fields(self):
+        state = ui.config_state(self.root)
+        architect = next(p for p in state["role_prompts"] if p["id"] == "architect")
+        self.assertEqual(architect["file"], "verifier.md")  # the "Senior Architect Review" of a plan, not the agent-loop lead
+        res, data = self.request("POST", "/api/config/role-prompts", body={"id": "architect", "content": "Be strict."}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn('"status"', data["error"])
+        self.assertFalse((ui.runtime_dir(self.root) / "prompts" / "verifier.md").exists())
+        for role in ("planner", "builder"):
+            res, _ = self.request("POST", "/api/config/role-prompts", body={"id": role, "content": "Do it well."}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 400, role)
+        res, _ = self.request("POST", "/api/config/role-prompts", body={"id": "reviewer", "content": "Review kindly."}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)  # the reviewer replies in free markdown
 
     def test_config_fleet_actions(self):
         res, data = self.request("POST", "/api/config/fleet", body={
@@ -3099,7 +3113,7 @@ class InboxEndpointTests(ServerTestCase):
 
 
 class WebhookNotificationTests(ServerTestCase):
-    URL = "https://hooks.slack.com/services/T000/B000/secret"
+    URL = "https://hooks.slack.com/services/T000/B000/hook-token-4821"
 
     def post_hook(self, body):
         return self.request("POST", "/api/config/webhook", body=body, headers=UI_HEADERS)
@@ -3109,7 +3123,7 @@ class WebhookNotificationTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         _, config = self.request("GET", "/api/config")
         self.assertEqual(config["webhook"], {"set": True, "host": "hooks.slack.com"})
-        self.assertNotIn("secret", json.dumps(config))
+        self.assertNotIn("hook-token-4821", json.dumps(config))
         self.post_hook({"op": "clear"})
         _, config = self.request("GET", "/api/config")
         self.assertEqual(config["webhook"], {"set": False, "host": ""})
@@ -3174,7 +3188,7 @@ class WebhookNotificationTests(ServerTestCase):
         ui.write_settings(self.root, {"notification_webhook": self.URL})
         _, state = self.request("GET", "/api/state")
         self.assertEqual(state["alerts"], {"webhook": True})
-        self.assertNotIn("secret", json.dumps(state))
+        self.assertNotIn("hook-token-4821", json.dumps(state))
 
     def test_state_carries_the_inbox_items_the_browser_notifies_from(self):
         _, state = self.request("GET", "/api/state")

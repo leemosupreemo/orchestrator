@@ -2901,7 +2901,7 @@ def visual_check_video(root: Path, run_id: str, name: str) -> Path | None:
 
 def get_role_prompts(root: Path) -> list[dict[str, Any]]:
     roles = [
-        {"id": "architect", "name": "Architect", "file": "agent_lead.md", "desc": "Reviews proposals, sets architecture standards & acceptance criteria"},
+        {"id": "architect", "name": "Architect", "file": "verifier.md", "desc": "Reviews proposals, sets architecture standards & acceptance criteria"},
         {"id": "planner", "name": "Planner", "file": "planner_feature.md", "desc": "Breaks down requirements, investigates codebase, designs task plans"},
         {"id": "builder", "name": "Builder", "file": "builder_feature_task.md", "desc": "Implements code changes, tests, and resolves compilation errors"},
         {"id": "reviewer", "name": "Reviewer", "file": "reviewer.md", "desc": "Evaluates diffs, checks test coverage and regression risks"},
@@ -2928,6 +2928,14 @@ def get_role_prompts(root: Path) -> list[dict[str, Any]]:
             "content": content[:20_000],  # what the editor starts from: the built-in text until it is customised
         })
     return results
+
+
+# Fields a job reads from each role's reply. The instructions can change, but they must keep asking for these.
+ROLE_RESPONSE_FIELDS = {
+    "architect": ('"status"', '"comments"'),
+    "planner": ('"tasks"', '"acceptance_criteria"'),
+    "builder": ('"files_changed"', '"test_command"', '"summary"'),
+}
 
 
 def role_prompt_default(filename: str) -> str:
@@ -3339,7 +3347,7 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
         prompts_dir = runtime_dir(root) / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
         filename_map = {
-            "architect": "agent_lead.md",
+            "architect": "verifier.md",
             "planner": "planner_feature.md",
             "builder": "builder_feature_task.md",
             "reviewer": "reviewer.md",
@@ -3347,6 +3355,9 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
         if role_id not in filename_map:
             raise UIError("Unknown role ID")
         target_file = prompts_dir / filename_map[role_id]
+        missing = [m for m in ROLE_RESPONSE_FIELDS.get(role_id, ()) if m not in content]
+        if missing and not body.get("revert"):
+            raise UIError("Keep the response format section: jobs read these fields from the reply (" + ", ".join(missing) + ").")
         if body.get("revert") or content.strip() == role_prompt_default(filename_map[role_id]).strip():
             if target_file.exists():  # saving the built-in text unchanged is not a customisation
                 target_file.unlink()
