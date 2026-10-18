@@ -467,6 +467,7 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--update", help="Path to an existing job JSON to update/re-plan")
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
     parser.add_argument("--feature", help="Put the new job under this feature (its id)")
+    parser.add_argument("--epic", help="This job plans that epic (its id): it takes the place of the epic's waiting job")
     # Set by "Build the plan" (orchestrator/plan_run.py): the run this job belongs to.
     parser.add_argument("--plan-run", help=argparse.SUPPRESS)
     parser.add_argument("--summary", help="Summary or area of focus for the job (skips interactive input prompt if provided)")
@@ -1090,6 +1091,8 @@ def main(args_override: list[str] | None = None) -> None:
                 pass  # a feature deleted meanwhile: the job still exists, unassigned work shows up on the page
         if args.plan_run:
             job["plan_run"] = args.plan_run
+        if args.epic:
+            job["epic"] = args.epic
         
         # Special override for design-to-feature transition
         if existing_job and args.job_type == "feature":
@@ -1120,6 +1123,12 @@ def main(args_override: list[str] | None = None) -> None:
 
         write_json(paths.job_file, job)
         write_text(paths.brief_file, body)
+        if args.epic and not existing_job:
+            try:
+                from orchestrator import epics as epic_store
+                epic_store.attach_job(PROJECT_CONFIG.runtime_dir, args.epic, job_id)
+            except Exception:
+                pass  # the epic was removed meanwhile: the job still exists
 
     # --- DESIGN PREVIEW ---
     if (args.stitch or args.job_type == "design") and not clarification:

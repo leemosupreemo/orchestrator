@@ -351,4 +351,5 @@ def create_project(draft: dict[str, Any]) -> dict[str, Any]:
     steps.append({"name": "Added to your projects", "ok": True, "detail": answers["name"]})
     return {"root": str(root), "name": answers["name"], "steps": steps, "github": github,
             "platform_needs": platform_needs(answers.get("platform", "")), "recommend_platform": RECOMMEND in platform_list(answers.get("platform", "")),
-            "github_ok": (not github) or steps[-2]["ok"]}
+            "github_ok": (not github) or steps[-2]["ok"],
+            "prd_filled": any(str(answers.get(key) or "").strip() for key in ("pitch", "audience", "features", "look", "not"))}

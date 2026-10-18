@@ -171,6 +171,8 @@ globalThis.act = (action) => `data-action="${action}"`;
 globalThis.stoppingRuns = new Set();
 globalThis.ago = () => 'just now';
 globalThis.jobPill = () => '<span class="pill working">Running</span>';
+globalThis.jobKind = (j) => j.kind;
+globalThis.jiraChip = () => '';
 Date.now = () => 1000000;
 const run = {id: 'r1', job: 'job-1', running: true, started: 875, title: 'Build',
   progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10,

@@ -274,6 +274,15 @@ class Prd:
         s["auto_update"] = bool(on)
         self._save_json(self._state_file(), s)
 
+    def breakdown_offered(self) -> bool:
+        """Whether the person has been offered a breakdown into epics (asked once, the first time the PRD is filled in)."""
+        return self.state().get("breakdown_offered") is True
+
+    def set_breakdown_offered(self, offered: bool = True) -> None:
+        s = self.state()
+        s["breakdown_offered"] = bool(offered)
+        self._save_json(self._state_file(), s)
+
     def notice(self) -> dict[str, Any] | None:
         n = self.state().get("notice")
         return n if isinstance(n, dict) and not n.get("seen") else None
@@ -377,7 +386,7 @@ class Prd:
     def overview(self) -> dict[str, Any]:
         text = self.read()
         return {"exists": text is not None, "text": text if text is not None else template(), "sections": sections_view(text),
-                "sources": sources(text), "auto_update": self.auto_update(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
+                "sources": sources(text), "auto_update": self.auto_update(), "breakdown_offered": self.breakdown_offered(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
                 "history": self.history()}
 
     # ---- an old project's documents become the PRD (the old files are left where they are)

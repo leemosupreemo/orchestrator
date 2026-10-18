@@ -498,9 +498,9 @@ The Web UI is how most people use Orchestrator. The work runs on your own comput
 
 > **Setup checklist.** Four things make a computer ready: a project, Git, an AI model (a provider you can use, with a model selected), and an enabled machine. Each row has one button that opens the right place, and the rest, such as role instructions and screens to review, is optional.
 
-> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have (it is summarised into the sections, and the full file stays attached for jobs to read), or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. Every section is optional. Once there is something in it, **Suggest features** proposes epic-level features and requirements to approve or pick from. See [Product requirements](product-requirements.md).
+> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have (it is summarised into the sections, and the full file stays attached for jobs to read), or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. Every section is optional. Once there is something in it, **Break down** splits it into epics to approve or decline. See [Epics](#epics) and [Product requirements](product-requirements.md).
 
-> **New project.** The wizard asks for a name and platforms, then one question for each section of the product requirements (pitch, who it's for, core features, look and feel, what to exclude). Everything after the name and platforms can be skipped. Its last screen offers **Suggest features**.
+> **New project.** The wizard asks for a name and platforms, then one question for each section of the product requirements (pitch, who it's for, core features, look and feel, what to exclude). Everything after the name and platforms can be skipped. Its last step offers **Break it down** into epics, and can be skipped.
 
 > **Docs.** The **Docs** page (under *Review*) is the project's documentation in one place: the product requirements, a page for every feature and every job (what it is, what was decided, what was built, how it was tested, what the review said), and the project's own `README`, `AGENTS.md` and `docs/` files. Job and feature pages are generated from the live project, so they can't go stale. Search them, and **Download everything** gives one markdown file. See [Product requirements](product-requirements.md) for the PRD.
 
@@ -552,6 +552,14 @@ Access and security:
   `orchestrator service uninstall` removes it. `orchestrator service status` shows whether it is running.
 - From a phone without an account, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
 - Stopping the server (Ctrl-C) also stops the commands it started.
+
+## Epics
+
+**Epics** (in the sidebar, under Product) breaks the product requirements down into epics, the big pieces of the product, for you to approve or decline. It is offered once, the first time the requirements have something in them, as the last step of the new project wizard, and is always on the Epics page.
+
+- **Break down from the PRD** uses the technique that fits what you've written (a story map for the flows people follow, a top-down work breakdown for technical products, a short list when there's little to go on), or the one you pick in the Technique menu. A short PRD gets a few broad epics and questions; a detailed one gets a finer breakdown with requirements.
+- **Approve** the ones you want (ticking one ticks what it builds on). Each approved epic becomes a feature and a **job marked Epic** that waits in the Backlog filter on Home. **Plan it** runs the usual planning for it; nothing runs, and nothing is asked of you, until you do. Declined epics are kept and can be brought back.
+- **Jira.** With Jira connected and a project key set, **Send approved epics to Jira** creates them there (a Jira icon and key then appear on the epic and its job), and **Import epics from Jira** brings the project's open epics in as approved epics with waiting jobs. Only the owner of the computer can do either, and nothing is sent until you press the button. See [Product requirements](product-requirements.md#jira).
 
 ## Device Logs
 

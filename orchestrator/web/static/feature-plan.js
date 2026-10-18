@@ -1,7 +1,7 @@
 (function (root) {
   "use strict";
 
-  // The Features page's planning views: a drafted feature map to review, and (later) a plan being built.
+  // The planning views: the epic breakdown to review and approve, and the plan being built.
   // Pure string rendering, so it can be tested without a browser.
 
   const escapeHtml = root.Html.escape;
@@ -20,43 +20,101 @@
 
   const SLICE_TITLES = {MVP: "MVP: the smallest version that works end to end", Next: "Next", Later: "Later", "": "Not placed yet"};
 
-  // A proposal from /api/features/propose: epics in build order, each with a layer (and a release slice for a story map),
-  // with the technique the model chose and why, how much detail it went into, and what it still needs to know.
-  function renderProposal(proposal) {
-    const features = proposal?.features || [];
-    const storyMap = proposal?.technique === "story_map";
-    const featureHtml = (f) => `<label class="feature-proposal-item">
-        <input type="checkbox" name="chosen" data-needs="${escapeHtml((f.depends_on || []).join("\u001f"))}" value="${escapeHtml(f.name)}" checked>
-        <span class="stack">
-          <strong>${escapeHtml(f.name)}${!storyMap || !f.slice ? "" : ` <span class="pill">${escapeHtml(f.slice)}</span>`}</strong>
-          ${f.summary ? `<span>${escapeHtml(f.summary)}</span>` : ""}
-          ${requirementsList(f.requirements)}
-          ${storiesList(f.stories)}
-          ${f.depends_on?.length ? `<span class="muted">Builds on ${f.depends_on.map(escapeHtml).join(", ")}</span>` : ""}
-          ${f.paths?.length ? `<span class="muted mono">${f.paths.map(escapeHtml).join(" · ")}</span>` : ""}
-        </span></label>`;
-    const layers = [...new Set(features.map((f) => f.layer))].sort((a, b) => a - b);
+  // The Epics page: the breakdown of the product, split into what is waiting for a decision, what is approved, and what was declined.
+  // Each takes the overview from /api/epics.
+  const TECHNIQUES = [["", "Let Orchestrator choose"], ["story_map", "Story map: the flows people follow"], ["wbs", "Work breakdown: top-down deliverables"], ["list", "Short list"]];
+
+  const jiraLink = (epic) => {
+    const jira = epic.jira;
+    if (!jira?.key) return "";
+    const icon = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-jira"/></svg>`;
+    return /^https:\/\//.test(jira.url || "")
+      ? `<a class="jira-chip" href="${escapeHtml(jira.url)}" target="_blank" rel="noopener" title="Open ${escapeHtml(jira.key)} in Jira" aria-label="Open ${escapeHtml(jira.key)} in Jira">${icon}${escapeHtml(jira.key)}</a>`
+      : `<span class="jira-chip" title="Linked to Jira epic ${escapeHtml(jira.key)}">${icon}${escapeHtml(jira.key)}</span>`;
+  };
+
+  function techniqueSelect(selected) {
+    return `<label class="field epic-technique"><span>Technique</span><select id="epic-technique">${TECHNIQUES.map(([value, label]) =>
+      `<option value="${value}" ${value === (selected || "") ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>`;
+  }
+
+  // How the breakdown was made: the technique and why, how much detail, and what is still unanswered.
+  function renderBreakdownInfo(breakdown) {
+    if (!breakdown) return "";
+    const how = breakdown.technique_name ? `<p><strong>${escapeHtml(breakdown.technique_name)}.</strong> ${escapeHtml(breakdown.rationale || "")}</p>` : "";
+    const brief = breakdown.detail === "sparse"
+      ? `<p class="muted">Your requirements are short, so these are broad. Add more to Product and break down again for a finer result.</p>` : "";
+    const warnings = (breakdown.warnings || []).map((w) => `<div class="banner attention"><p>${escapeHtml(w)}</p></div>`).join("");
+    const questions = breakdown.open_questions?.length
+      ? `<div class="feature-proposal-questions"><div class="tc-area-h">To break this down further, answer</div><ul>${breakdown.open_questions.map((q) => `<li>${escapeHtml(q)}</li>`).join("")}</ul></div>` : "";
+    return `${how}${brief}${warnings}${questions}`;
+  }
+
+  function epicDetails(e) {
+    return `${e.summary ? `<span>${escapeHtml(e.summary)}</span>` : ""}${requirementsList(e.requirements)}${storiesList(e.stories)}
+      ${e.depends_on?.length ? `<span class="muted">Builds on ${e.depends_on.map(escapeHtml).join(", ")}</span>` : ""}
+      ${e.paths?.length ? `<span class="muted mono">${e.paths.map(escapeHtml).join(" · ")}</span>` : ""}`;
+  }
+
+  // Epics waiting for a decision, grouped by release slice (story map) or in build order, each with a checkbox.
+  function renderSuggested(epics, breakdown) {
+    const list = (epics || []).filter((e) => e.status === "suggested");
+    if (!list.length) return "";
+    const storyMap = breakdown?.technique === "story_map";
+    const idOf = new Map((epics || []).filter((e) => e.status !== "approved").map((e) => [e.name.toLowerCase(), e.id]));
+    const item = (e) => `<label class="feature-proposal-item" data-epic="${escapeHtml(e.id)}">
+        <input type="checkbox" name="chosen" data-needs="${escapeHtml((e.depends_on || []).map((d) => idOf.get(String(d).toLowerCase())).filter(Boolean).join("\u001f"))}" value="${escapeHtml(e.id)}" checked>
+        <span class="stack"><strong>${escapeHtml(e.name)}${!storyMap || !e.slice ? "" : ` <span class="pill">${escapeHtml(e.slice)}</span>`}</strong>${epicDetails(e)}</span></label>`;
+    const layers = [...new Set(list.map((e) => e.layer || 0))].sort((a, b) => a - b);
     const groups = storyMap
-      ? ["MVP", "Next", "Later", ""].map((slice) => ({title: SLICE_TITLES[slice], items: features.filter((f) => (f.slice || "") === slice)})).filter((g) => g.items.length)
-      : layers.map((layer) => ({title: layerTitle(layer), items: features.filter((f) => f.layer === layer)}));
-    const how = proposal?.technique_name
-      ? `<p><strong>${escapeHtml(proposal.technique_name)}.</strong> ${escapeHtml(proposal.rationale || "")}</p>` : "";
-    const brief = proposal?.detail === "sparse"
-      ? `<p class="muted">Your requirements are short, so these are broad. Add more to Product and suggest again for a finer breakdown.</p>` : "";
-    const questions = proposal?.open_questions?.length
-      ? `<div class="feature-proposal-questions"><div class="tc-area-h">To break this down further, answer</div><ul>${proposal.open_questions.map((q) => `<li>${escapeHtml(q)}</li>`).join("")}</ul></div>` : "";
-    return `<section class="card mb-16" id="feature-proposal">
-      <div class="card-h"><h2>Suggested features</h2><span class="count">${features.length}</span></div>
-      <form class="card-b stack" id="feature-proposal-form">
-        ${how}${brief}
-        <p class="muted">Drafted from your product requirements, in the order to build them. Untick any you don't want; nothing is saved until you add them.</p>
-        ${(proposal?.warnings || []).map((w) => `<div class="banner attention"><p>${escapeHtml(w)}</p></div>`).join("")}
-        ${groups.map((g) => `<div class="feature-proposal-layer"><div class="tc-area-h">${escapeHtml(g.title)}</div>${g.items.map(featureHtml).join("")}</div>`).join("")}
-        ${questions}
+      ? ["MVP", "Next", "Later", ""].map((slice) => ({title: SLICE_TITLES[slice], items: list.filter((e) => (e.slice || "") === slice)})).filter((g) => g.items.length)
+      : layers.map((layer) => ({title: layerTitle(layer), items: list.filter((e) => (e.layer || 0) === layer)}));
+    return `<section class="card mb-16" id="epic-suggested">
+      <div class="card-h"><h2>Suggested</h2><span class="count">${list.length}</span></div>
+      <form class="card-b stack" id="epic-suggested-form">
+        <p class="muted">In the order to build them. Untick any you don't want, then approve. An approved epic becomes a feature and a job marked Epic that waits until you plan it.</p>
+        ${groups.map((g) => `<div class="feature-proposal-layer"><div class="tc-area-h">${escapeHtml(g.title)}</div>${g.items.map(item).join("")}</div>`).join("")}
         <div class="row"><span class="spacer"></span>
-          <button type="button" class="btn ghost" id="feature-proposal-discard">Discard</button>
-          <button type="submit" class="btn primary">Add selected</button></div>
+          <button type="button" class="btn ghost" id="epic-decline">Decline selected</button>
+          <button type="submit" class="btn primary">Approve selected</button></div>
       </form></section>`;
+  }
+
+  // Approved epics: where each one's job is up to, the Jira epic it is linked to, and the one next step.
+  function renderApproved(epics, {act, jiraConnected} = {}) {
+    const list = (epics || []).filter((e) => e.status === "approved");
+    if (!list.length) return "";
+    const row = (e) => {
+      const job = e.job_info;
+      const status = job ? `<span class="pill ${escapeHtml(job.backlog ? "idle" : job.tone || "")}">${escapeHtml(job.backlog ? "Not planned" : job.label || "")}</span>` : `<span class="pill idle">No job</span>`;
+      const plan = !job || job.backlog ? `<button type="button" class="btn small primary" ${act ? act("plan_epic", {epic: e.id}) : ""}>Plan it</button>` : "";
+      const open = job ? `<a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a>` : "";
+      const send = jiraConnected && !e.jira ? `<button type="button" class="btn small ghost" data-epic-send="${escapeHtml(e.id)}">Send to Jira</button>` : "";
+      return `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${escapeHtml(e.name)} <span class="job-type-tag job-type-epic">Epic</span> ${jiraLink(e)}</div>
+        ${e.summary ? `<div class="meta">${escapeHtml(e.summary)}</div>` : ""}
+        ${e.requirements?.length ? `<div class="meta">${e.requirements.length} requirement${e.requirements.length === 1 ? "" : "s"}${e.stories?.length ? ` · ${e.stories.length} stor${e.stories.length === 1 ? "y" : "ies"}` : ""}</div>` : ""}</div>
+        <div class="side">${status}${plan}${open}${send}</div></div>`;
+    };
+    return `<section class="card mb-16" id="epic-approved"><div class="card-h"><h2>Approved</h2><span class="count">${list.length}</span></div>
+      <div class="list">${list.map(row).join("")}</div></section>`;
+  }
+
+  function renderDeclined(epics) {
+    const list = (epics || []).filter((e) => e.status === "declined");
+    if (!list.length) return "";
+    return `<section class="card mb-16" id="epic-declined"><details class="fold"><summary class="card-h"><h2>Declined</h2><span class="count">${list.length}</span></summary>
+      <div class="list">${list.map((e) => `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${escapeHtml(e.name)}</div>
+        ${e.summary ? `<div class="meta">${escapeHtml(e.summary)}</div>` : ""}</div>
+        <div class="side"><button type="button" class="btn small" data-epic-restore="${escapeHtml(e.id)}">Bring back</button></div></div>`).join("")}</div></details></section>`;
+  }
+
+  // Epics found in the Jira project that are not here yet, to pick from.
+  function renderJiraImport(found, project) {
+    if (!found.length) return `<p class="muted">Every open epic in ${escapeHtml(project)} is already here.</p>`;
+    return `<form class="stack" id="epic-jira-form"><p class="muted">Open epics in ${escapeHtml(project)}. Each you import becomes an approved epic with a job that waits until you plan it, and stays linked to its Jira epic.</p>
+      ${found.map((i) => `<label class="feature-proposal-item"><input type="checkbox" name="keys" value="${escapeHtml(i.key)}" checked>
+        <span class="stack"><strong>${escapeHtml(i.summary)} <span class="muted">${escapeHtml(i.key)}</span></strong>${i.description ? `<span class="muted">${escapeHtml(i.description.slice(0, 240))}</span>` : ""}</span></label>`).join("")}
+      <div class="row"><span class="spacer"></span><button type="button" class="btn ghost" id="epic-jira-cancel">Cancel</button><button type="submit" class="btn primary">Import selected</button></div></form>`;
   }
 
   function renderStories(stories) {
@@ -102,5 +160,6 @@
         <div class="list">${rows}</div></div></section>`;
   }
 
-  root.FeaturePlan = {renderProposal, renderStories, requirementsList, renderStartForm, chosenFeatures, renderRun};
+  root.FeaturePlan = {renderBreakdownInfo, renderSuggested, renderApproved, renderDeclined, renderJiraImport, techniqueSelect, jiraLink,
+    renderStories, requirementsList, renderStartForm, chosenFeatures, renderRun};
 })(typeof globalThis !== "undefined" ? globalThis : window);

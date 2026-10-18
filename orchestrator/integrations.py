@@ -225,10 +225,12 @@ class Jira(Provider):
         ("site", "Jira site", False, "yourteam.atlassian.net", "Your Jira Cloud address."),
         ("email", "Account email", False, "you@company.com", "The email you sign in to Atlassian with."),
         ("token", "API token", True, "", "Create one at id.atlassian.com → Security → API tokens."),
+        ("project", "Project key for epics (optional)", False, "ABC", "Where Orchestrator creates epics, and where it looks for ones to import."),
     ]
     token_url = "https://id.atlassian.com/manage-profile/security/api-tokens"
     token_max_days = 365
     KEY = re.compile(r"\b([A-Z][A-Z0-9_]+-\d+)\b")
+    PROJECT = re.compile(r"^[A-Z][A-Z0-9_]{1,9}$")
 
     def _site(self) -> str:
         return _base_url(self.c.get("site", ""), "Jira site")
@@ -292,6 +294,35 @@ class Jira(Provider):
             raise IntegrationError(f"{key} has no transition to '{target or self.move_default}' (available: {names}).")
         self._write(f"/rest/api/3/issue/{urllib.parse.quote(key)}/transitions", {"transition": {"id": match["id"]}})
         return f"Moved {key} to {(match.get('to') or {}).get('name') or match.get('name')}"
+
+    def project_key(self) -> str:
+        key = self.c.get("project", "").strip().upper()
+        if not self.PROJECT.match(key):
+            raise IntegrationError("Set the Jira project key (like ABC) that epics belong to.")
+        return key
+
+    def create_epic(self, summary: str, description: str = "") -> Item:
+        """A new epic in the configured project; returns it with its key and link."""
+        paragraphs = [p.strip() for p in (description or "").split("\n\n") if p.strip()] or [""]
+        adf = {"type": "doc", "version": 1, "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": text}] if text else []} for text in paragraphs[:60]]}
+        made = self._write("/rest/api/3/issue", {"fields": {
+            "project": {"key": self.project_key()}, "summary": " ".join(summary.split())[:250] or "Epic",
+            "issuetype": {"name": "Epic"}, "description": adf}})
+        key = str(made.get("key") or "")
+        if not self.KEY.fullmatch(key):
+            raise IntegrationError("Jira didn't say which epic it created.")
+        return Item("jira", key, summary, f"{self._site()}/browse/{key}", "To Do")
+
+    def list_epics(self, limit: int = 50) -> list[dict[str, str]]:
+        """The project's epics that aren't done, newest first, with their text."""
+        jql = f'project = "{self.project_key()}" AND issuetype = Epic AND statusCategory != Done ORDER BY created DESC'
+        data = self._get("/rest/api/3/search/jql?" + urllib.parse.urlencode(
+            {"jql": jql, "maxResults": max(1, min(limit, 100)), "fields": "summary,description,status"}))
+        site = self._site()
+        return [{"key": i["key"], "summary": i["fields"].get("summary", ""), "url": f"{site}/browse/{i['key']}",
+                 "status": (i["fields"].get("status") or {}).get("name", ""),
+                 "description": _clip(_adf_to_text(i["fields"].get("description")).strip(), 2000)} for i in data.get("issues", [])]
 
     def lookup(self, ref: str) -> Context:
         match = self.KEY.search(ref.upper() if "://" not in ref else ref)

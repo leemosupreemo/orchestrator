@@ -50,14 +50,16 @@ def detail_level(prd_text: str, extra_chars: int = 0) -> str:
     return "sparse"
 
 
-def prompt(prd_text: str, existing: list[dict[str, Any]], layout: str, level: str = "moderate", source_text: str = "") -> str:
+def prompt(prd_text: str, existing: list[dict[str, Any]], layout: str, level: str = "moderate", source_text: str = "", technique: str = "") -> str:
     have = "\n".join(f"- {f['name']}: {f.get('summary') or ''} (owns {', '.join(f.get('paths') or []) or 'no paths yet'})"
                      for f in existing) or "(none yet)"
     detail = DETAIL.get(level, DETAIL["moderate"])
+    chosen = (f'The person chose the technique, so use "{technique}" ({TECHNIQUES[technique]}) and name it. Its meaning:'
+              if technique in TECHNIQUES else "Choose the planning technique that fits what the requirements say, and name it:")
     attached = f"\n## Attached source document (the detail behind the requirements)\n{source_text.strip()[:30000]}\n" if source_text.strip() else ""
     return f"""You are planning a product's epic-level features from its product requirements, for the person to approve or pick from.
 
-Choose the planning technique that fits what the requirements say, and name it:
+{chosen}
 - "story_map": people use the product through flows (an app, site, game, tool). Make each main thing a person does an epic, in the order they do it, with the stories under it. Put each epic in a release slice: "MVP" (the smallest thing that works end to end), "Next" or "Later".
 - "wbs": the work is mostly technical or deliverable-based (an API, library, command-line tool, data pipeline, infrastructure), or the requirements are organised by component. Break it into deliverables by component, each with its requirements. Use stories only where a person interacts with it. No slices.
 - "list": the requirements are too thin for either. A short list of epics only, and the questions that would let you break it down.
@@ -110,14 +112,14 @@ def _strings(value: Any, limit: int, each: int) -> list[str]:
     return out[:limit]
 
 
-def parse(reply: str, existing: list[dict[str, Any]], level: str | None = None) -> dict[str, Any]:
+def parse(reply: str, existing: list[dict[str, Any]], level: str | None = None, technique: str = "") -> dict[str, Any]:
     """A model's reply, checked (see `validate`), with the technique it chose, why, and what it still needs to know."""
     try:
         data = prd.json_reply(reply)
     except prd.PrdError:
         data = {}
     proposal = validate(_features_from(reply), existing, level)
-    technique = data.get("technique") if data.get("technique") in TECHNIQUES else "list"
+    technique = technique if technique in TECHNIQUES else data.get("technique") if data.get("technique") in TECHNIQUES else "list"
     if technique != "story_map":  # release slices belong to a story map
         for feature in proposal["features"]:
             feature["slice"] = ""

@@ -67,6 +67,7 @@ from orchestrator import delivery as delivery_view
 from orchestrator import releases
 from orchestrator import features as feature_store
 from orchestrator import feature_map
+from orchestrator import epics as epic_store
 from orchestrator import plan_run
 from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
@@ -153,7 +154,9 @@ class BackgroundTasks:
         self._items: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-    def start(self, work: Callable[[], Any]) -> str:
+    def start(self, work: Callable[[], Any], commit: Callable[[Any], Any] | None = None) -> str:
+        """Run `work` in the background. `commit` (if given) saves its result, and is skipped when the person cancelled meanwhile;
+        what it returns is what the page gets."""
         release = self.gate.hold()
         task_id = secrets.token_hex(6)
         item: dict[str, Any] = {"status": "running", "at": time.time()}
@@ -167,7 +170,7 @@ class BackgroundTasks:
                 result = work()
                 with self._lock:
                     if item.get("status") != "canceled":
-                        item.update(status="done", result=result)
+                        item.update(status="done", result=commit(result) if commit else result)
             except UIError as exc:
                 with self._lock:
                     if item.get("status") != "canceled":
@@ -623,7 +626,7 @@ def allowed_auth_emails(root: Path) -> set[str]:
 KIND_LABELS = {
     "bug": "Bug fix", "bug-fix": "Bug fix", "bug-investigate": "Bug fix", "quick": "Quick change",
     "quick-fix": "Quick change", "feature": "Feature", "feature-plan": "Feature", "feature-task": "Feature task",
-    "feature-design": "Design", "design": "Design", "coverage": "Tests", "test-audit": "Tests",
+    "feature-design": "Design", "design": "Design", "coverage": "Tests", "test-audit": "Tests", "epic": "Epic",
 }
 FAILING_TEST_STATUSES = {"tests-failed", "build-failed", "failed"}
 
@@ -706,6 +709,8 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
             label = "Build failing" if tests == "build-failed" else "Tests failing"
             return state("needs_you", "failed", label, "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
         return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
+    if status == "backlog":
+        return state("backlog", "idle", "Epic · not planned", "Approved, and waiting. Plan it when you're ready; nothing runs until then.", "plan_epic", "Plan it")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
     if status in {"executing", "running", "in-progress"} and worker_alive(job) is False:
@@ -753,6 +758,9 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "approach": approach,
         "state": job_state(job),
         "feature": job.get("feature") or None,
+        "epic": job.get("epic") or None,
+        "jira": next(({"key": l.get("ref"), "url": l.get("url") or ""} for l in job.get("external_links") or []
+                      if isinstance(l, dict) and l.get("provider") == "jira" and l.get("ref")), None),
         "plan_run": job.get("plan_run") or None,
         "branch": job.get("branch"),
         "base_branch": job.get("base_branch") or "main",
@@ -959,6 +967,33 @@ def features_overview(root: Path) -> dict[str, Any]:
                         "stale": integration_check.is_stale(result, base_head, integration_check.branch_heads(root, branches))}
     return {"features": rolled, "archived_jobs": archived, "overlaps": feature_store.overlaps(features, jobs, files),
             "unassigned": [j["id"] for j in jobs if not j.get("feature") and j["state"]["group"] != "done"]}
+
+
+def epics_overview(root: Path) -> dict[str, Any]:
+    """The Epics page: every epic with where its job is up to, how the breakdown was made, and what Jira can do."""
+    runtime = runtime_dir(root)
+    data = epic_store.load(runtime)
+    jobs = {j["id"]: j for j in archived_feature_jobs(root) + list_jobs(root)}
+    features = {f["id"]: f for f in feature_store.load(runtime)}
+    epics = []
+    for epic in data["epics"]:
+        job = jobs.get(epic.get("job") or "")
+        state = (job or {}).get("state") or {}
+        epics.append({**epic, "feature_name": (features.get(epic.get("feature") or "") or {}).get("name") or "",
+                      "job_info": {"id": job["id"], "label": state.get("label", ""), "group": state.get("group", ""), "tone": state.get("tone", ""),
+                                   "backlog": job.get("status") == "backlog"} if job else None})
+    jira = saved_integrations(root).get("jira") or {}
+    site = re.sub(r"^https?://", "", str(jira.get("site") or "")).strip("/")
+    prd_text = prd_doc.Prd(root, runtime).read() or ""
+    return {"epics": epics, "breakdown": data["breakdown"], "prd_filled": prd_doc.is_filled_doc(prd_text),
+            "jira": {"connected": bool(jira), "site": site, "project": jira.get("project", "")}}
+
+
+def jira_for_epics(root: Path) -> "integrations.Jira":
+    creds = saved_integrations(root).get("jira")
+    if not creds:
+        raise UIError("Connect Jira first (Connections).")
+    return integrations.Jira(creds)
 
 
 def list_jobs(root: Path) -> list[dict[str, Any]]:
@@ -2551,6 +2586,16 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     all_logs = [str(runtime_file(root, r).relative_to(safe_resolve(root))) for r in log_rels + [r for r in file_rels if new_job_form.upload_kind(r) == "log"]]
     params["_attachments"] = {"logs": all_logs, "refs": refs}
 
+    epic_id = str(params.get("epic") or "").strip()
+    if epic_id:
+        try:
+            epic = epic_store.get(runtime_dir(root), epic_id)
+        except epic_store.EpicError as exc:
+            raise UIError(str(exc))
+        params["_epic"] = epic_id
+        if not params.get("feature") and epic.get("feature"):
+            params["feature"] = epic["feature"]
+        spec += "\n" + epic_store.brief(epic)
     feature = str(params.get("feature") or "").strip()
     if feature:
         features = feature_store.load(runtime_dir(root))
@@ -2570,6 +2615,8 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     argv = orchestrator_argv("script", "new_job.py", job_type, "--summary", summary)
     if params.get("_feature"):
         argv += ["--feature", params["_feature"]]
+    if params.get("_epic"):
+        argv += ["--epic", params["_epic"]]
     if spec:
         spec_dir = runtime_dir(root) / "ui" / "specs"
         spec_dir.mkdir(parents=True, exist_ok=True)
@@ -2588,6 +2635,22 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     if params.get("is_orchestrator_improvement") or params.get("tag") == "improve_orchestrator":
         params["_tag"] = "improve_orchestrator"
     return argv
+
+
+def build_plan_epic(params: dict[str, Any], root: Path) -> list[str]:
+    """Plan an approved epic as a feature job. It takes the place of the epic's waiting job (new_job.py --epic)."""
+    epic_id = str(params.get("epic") or "").strip()
+    if not epic_id and params.get("job"):
+        epic_id = str(read_json_file(resolve_job_path(root, str(params["job"]))).get("epic") or "")
+    try:
+        epic = epic_store.get(runtime_dir(root), epic_id)
+    except epic_store.EpicError as exc:
+        raise UIError(str(exc))
+    if epic["status"] != "approved":
+        raise UIError("Approve the epic before planning it.")
+    summary = epic["name"] + (f": {epic['summary']}" if epic.get("summary") else "")
+    return build_new_job({"type": "feature", "summary": summary[:500], "feature": epic.get("feature") or "", "epic": epic["id"],
+                          "branch_mode": "new", "no_dispatch": True}, root)
 
 
 RECENT_LOG_ACTIONS = {"test": "Test run", "build": "Build", "distribute": "Tester build", "fix": "Fix attempt", "debug": "Fix attempt",
@@ -3952,8 +4015,9 @@ ACTIONS: dict[str, Action] = {
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
     "worker_check": Action("Worker check", lambda p, r: orchestrator_argv("worker-check")),
-    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "test_cases", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "logs", "files", "urls", "tag", "is_orchestrator_improvement"]),
+    "new_job": Action("New job", build_new_job, fields=["type", "title", "summary", "spec", "repro", "expected", "vibe", "subsystems", "test_cases", "branch_mode", "no_dispatch", "yolo", "free", "links", "feature", "epic", "logs", "files", "urls", "tag", "is_orchestrator_improvement"]),
     "fix": Action("Fix", build_fix, fields=["feedback", "job"]),
+    "plan_epic": Action("Plan epic", build_plan_epic, fields=["job", "epic"]),
     "schedule": Action("Start", lambda p, r: orchestrator_argv("script", "schedule_job.py", _job_path(p, r)), fields=["job"]),
     "execute": Action("Run now", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r)), fields=["job"]),
     "resume": Action("Resume", lambda p, r: orchestrator_argv("script", "worker_run.py", _job_path(p, r), "--resume"), fields=["job"]),
@@ -4381,6 +4445,9 @@ class UIServer(ThreadingHTTPServer):
                 feature = by_id[fid]
                 params = {"type": "feature", "summary": f"{feature['name']}: {feature.get('summary') or feature['name']}"[:500],
                           "feature": fid, "branch_mode": "new", "no_dispatch": True}
+                epic = epic_store.for_feature(runtime, fid)
+                if epic and epic["status"] == "approved":
+                    params["epic"] = epic["id"]  # the epic's waiting job gives way to this planned one
                 argv = build_new_job(params, root) + ["--plan-run", run["id"]]
                 session = self.sessions.start("new_job", f"Build the plan · {feature['name']}", argv, root, self.child_env(),
                                               runtime / "logs" / "ui")
@@ -4717,7 +4784,11 @@ class UIHandler(BaseHTTPRequestHandler):
                     doc.write(str(body.get("text") or ""), source, summary)
                 self._json(doc.overview())
             elif method == "POST" and parts == ["product", "settings"]:
-                doc.set_auto_update(bool(self._body().get("auto_update")))
+                body = self._body()
+                if "auto_update" in body:
+                    doc.set_auto_update(bool(body["auto_update"]))
+                if "breakdown_offered" in body:
+                    doc.set_breakdown_offered(bool(body["breakdown_offered"]))
                 self._json(doc.overview())
             elif method == "POST" and parts == ["product", "dismiss"]:
                 doc.dismiss_notice()
@@ -5268,35 +5339,115 @@ class UIHandler(BaseHTTPRequestHandler):
                     plan_run.save(runtime_dir(root), run)
             stopped = parts[1] == "stop"
             self._json({"plan": None if stopped else (self.server.plan_tick() if not run["paused"] else None) or self.server.plan_view(root)})
-        elif method == "POST" and parts == ["features", "propose"]:
-            # Draft a feature map from the product requirements in the background; the page polls /api/product/task/<id>.
+        elif method == "GET" and parts == ["epics"]:
+            self._json(epics_overview(root))
+        elif method == "POST" and parts == ["epics", "breakdown"]:
+            # Break the product requirements down into epics in the background; the page polls /api/product/task/<id>.
+            body = self._body()
+            technique = str(body.get("technique") or "")
+            if technique and technique not in feature_map.TECHNIQUES:
+                raise UIError("Choose story map, work breakdown or short list, or let Orchestrator choose.")
             prd_text = prd_doc.Prd(root, runtime_dir(root)).read() or ""
             if not prd_doc.is_filled_doc(prd_text):
-                raise UIError("Write the product requirements first (Product), so there's something to plan features from.")
+                raise UIError("Write the product requirements first (Product), so there's something to break down.")
             existing = feature_store.load(runtime_dir(root))
             # An attached source document holds the detail behind the short sections: it sets how much to break down, and is read.
             source_text = "\n\n".join((read_limited(p) or "") for p in sorted((root / prd_doc.SOURCES_DIR).glob("*"))
                                        if p.suffix.lower() in {".md", ".markdown", ".txt"} and p.is_file())[:30000] \
                 if (root / prd_doc.SOURCES_DIR).is_dir() else ""
             level = feature_map.detail_level(prd_text, len(source_text))
-            request = feature_map.prompt(prd_text, existing, prd_doc.project_digest(root), level, source_text)
+            request = feature_map.prompt(prd_text, existing, prd_doc.project_digest(root), level, source_text, technique)
 
             def work() -> dict[str, Any]:
                 try:
-                    return feature_map.parse(self._model_call(root, request, timeout=240), existing, level)
+                    return feature_map.parse(self._model_call(root, request, timeout=240), existing, level, technique)
                 except feature_map.FeatureMapError:
-                    return feature_map.parse(self._model_call(root, request + prd_doc.FORMAT_REMINDER, timeout=240), existing, level)
+                    return feature_map.parse(self._model_call(root, request + prd_doc.FORMAT_REMINDER, timeout=240), existing, level, technique)
 
-            self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
-        elif method == "POST" and parts == ["features", "accept"]:
+            def commit(proposal: dict[str, Any]) -> dict[str, Any]:  # only if the person didn't cancel while the model worked
+                try:
+                    epic_store.add_suggestions(runtime_dir(root), proposal)
+                except epic_store.EpicError as exc:
+                    raise UIError(str(exc))
+                return epics_overview(root)
+
+            self._json({"task": self.server.tasks.start(work, commit)}, HTTPStatus.ACCEPTED)
+        elif method == "POST" and parts == ["epics", "decide"]:
             body = self._body()
-            existing = feature_store.load(runtime_dir(root))
-            try:  # what comes back from the page is checked again, never trusted
-                proposal = feature_map.validate(body.get("features"), existing)
-                feature_map.accept(runtime_dir(root), proposal["features"], [str(c) for c in body.get("chosen") or [] if isinstance(c, str)])
-            except (feature_map.FeatureMapError, feature_store.FeatureError) as exc:
+            ids = [str(i) for i in body.get("ids") or [] if isinstance(i, str)][:100]
+            decision = _choice(body, "decision", ["approve", "decline", "restore"])
+            also: list[str] = []
+            try:
+                if decision == "approve":
+                    approved = epic_store.approve(runtime_dir(root), ids)
+                    also = [e["name"] for e in approved if e["id"] not in ids]
+                elif decision == "decline":
+                    epic_store.decline(runtime_dir(root), ids)
+                else:
+                    epic_store.restore(runtime_dir(root), ids)
+            except epic_store.EpicError as exc:
                 raise UIError(str(exc))
-            self._json(features_overview(root))
+            self._json({**epics_overview(root), "also_approved": also})
+        elif method == "POST" and parts == ["epics", "jira", "project"]:
+            self._require_owner("choose the Jira project for epics")
+            project = str(self._body().get("project") or "").strip().upper()
+            if not integrations.Jira.PROJECT.match(project):
+                raise UIError("A Jira project key is capital letters and digits, like ABC.")
+            jira_for_epics(root)
+            settings = read_settings(root)
+            settings["integrations"]["jira"]["project"] = project
+            write_settings(root, settings)
+            self._audit("settings_changed", part="integrations")
+            self._json(epics_overview(root))
+        elif method == "GET" and parts == ["epics", "jira"]:
+            self._require_owner("read epics from Jira")
+            jira = jira_for_epics(root)
+            have = {(e.get("jira") or {}).get("key") for e in epic_store.load(runtime_dir(root))["epics"]}
+            try:
+                found = [i for i in jira.list_epics() if i["key"] not in have]
+            except integrations.IntegrationError as exc:
+                raise integration_error(exc, root, "jira")
+            self._json({"epics": found, "project": jira.c.get("project", "")})
+        elif method == "POST" and parts == ["epics", "jira", "import"]:
+            self._require_owner("import epics from Jira")
+            keys = {str(k).upper() for k in self._body().get("keys") or [] if isinstance(k, str)}
+            if not keys:
+                raise UIError("Choose at least one Jira epic.")
+            try:
+                found = [i for i in jira_for_epics(root).list_epics() if i["key"] in keys]  # read again: what is imported is Jira's text, not the page's
+                if not found:
+                    raise UIError("Those epics weren't found in the Jira project. Refresh the list.")
+                epic_store.import_issues(runtime_dir(root), found)
+            except integrations.IntegrationError as exc:
+                raise integration_error(exc, root, "jira")
+            except epic_store.EpicError as exc:
+                raise UIError(str(exc))
+            self._audit("epics_imported_from_jira", count=len(found))
+            self._json(epics_overview(root))
+        elif method == "POST" and parts == ["epics", "jira", "send"]:
+            self._require_owner("create epics in Jira")
+            ids = {str(i) for i in self._body().get("ids") or [] if isinstance(i, str)}
+            jira = jira_for_epics(root)
+            todo = [e for e in epic_store.load(runtime_dir(root))["epics"]
+                    if e["status"] == "approved" and not e.get("jira") and (not ids or e["id"] in ids)]
+            if not todo:
+                raise UIError("Every approved epic is already in Jira.")
+            try:
+                jira.project_key()
+            except integrations.IntegrationError as exc:
+                raise UIError(str(exc))
+            sent, errors = [], []
+            for epic in todo:
+                try:
+                    made = jira.create_epic(epic["name"], epic_store.brief(epic, heading=False).strip())
+                    epic_store.link_jira(runtime_dir(root), epic["id"], made.ref, made.url)
+                    sent.append(made.ref)
+                except integrations.IntegrationError as exc:
+                    errors.append(f"{epic['name']}: {integration_error(exc, root, 'jira')}")
+                    if isinstance(exc, integrations.RejectedCredentials):
+                        break  # every other epic would be turned down the same way
+            self._audit("epics_sent_to_jira", count=len(sent))
+            self._json({**epics_overview(root), "sent": sent, "errors": errors})
         elif method == "POST" and parts == ["features"]:
             body = self._body()
             try:
@@ -5959,7 +6110,7 @@ class UIHandler(BaseHTTPRequestHandler):
                                                  runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
             session.job_id = job_id
         self._audit("run_started", action=key, job=job_id)
-        if key in ("new_job", "fix"):
+        if key in ("new_job", "fix", "plan_epic"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
                                         params.get("_attachments") if key == "new_job" else None,
                                         tag=params.get("_tag") or params.get("tag") if key == "new_job" else None)

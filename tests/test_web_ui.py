@@ -102,7 +102,7 @@ class AuthTests(ServerTestCase):
 
     def test_changes_without_the_page_header_are_refused_even_with_no_body(self):
         # These routes never read a body, so a check made only when reading one used to miss them.
-        for method, path in (("POST", "/api/product/draft"), ("POST", "/api/product/dismiss"), ("POST", "/api/features/propose"),
+        for method, path in (("POST", "/api/product/draft"), ("POST", "/api/product/dismiss"), ("POST", "/api/epics/breakdown"),
                              ("POST", "/api/auth/logout"), ("DELETE", "/api/jobs/20260922-bug-1")):
             with self.subTest(path=path):
                 res, data = self.request(method, path)
@@ -542,6 +542,128 @@ class FakeTunnelProcess:
 
     def kill(self):
         self.exit_code = -9
+
+
+class EpicsJiraTests(ServerTestCase):
+    sign_in = SignInTests.sign_in  # the same helpers, without re-running that class's tests
+    as_user = SignInTests.as_user
+    CREDS = {"site": "team.atlassian.net", "email": "me@x.co", "token": "tok", "project": "APP"}
+
+    def setUp(self):
+        super().setUp()
+        ui.write_settings(self.root, {"integrations": {"jira": dict(self.CREDS)}})
+        self.approved = self.approve_one("Play a round")
+
+    def approve_one(self, name):
+        epic_store = ui.epic_store
+        epic_store.add_suggestions(ui.runtime_dir(self.root), {"technique": "list", "features": [
+            {"name": name, "summary": "One game", "requirements": ["A round has 6 turns"], "stories": [], "slice": "", "paths": [], "depends_on": [], "serves": "", "layer": 0}]})
+        epic = next(e for e in epic_store.load(ui.runtime_dir(self.root))["epics"] if e["name"] == name)
+        epic_store.approve(ui.runtime_dir(self.root), [epic["id"]])
+        return epic_store.get(ui.runtime_dir(self.root), epic["id"])
+
+    def http(self, routes):
+        calls = []
+
+        def http_json(url, headers=None, secrets=None, method="GET", body=None):
+            calls.append((method, url, body))
+            for key, value in routes.items():
+                if key in url:
+                    if isinstance(value, Exception):
+                        raise value
+                    return value
+            raise AssertionError(f"unexpected request: {method} {url}")
+        http_json.calls = calls
+        return http_json
+
+    def test_overview_says_what_jira_can_do(self):
+        _, data = self.request("GET", "/api/epics")
+        self.assertEqual(data["jira"], {"connected": True, "site": "team.atlassian.net", "project": "APP"})
+        self.assertNotIn("tok", json.dumps(data))  # the token never leaves the computer
+        self.assertEqual(data["epics"][0]["job_info"]["label"], "Epic · not planned")
+
+    def test_send_to_jira_creates_each_approved_epic_once_and_links_it_to_its_job(self):
+        http = self.http({"/rest/api/3/issue": {"key": "APP-5"}})
+        with patch.object(ui.integrations, "http_json", http):
+            res, data = self.request("POST", "/api/epics/jira/send", {}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200, data)
+        self.assertEqual(data["sent"], ["APP-5"])
+        epic = data["epics"][0]
+        self.assertEqual(epic["jira"], {"key": "APP-5", "url": "https://team.atlassian.net/browse/APP-5"})
+        texts = [p["content"][0]["text"] for p in http.calls[0][2]["fields"]["description"]["content"] if p["content"]]
+        self.assertIn("A round has 6 turns", " ".join(texts))  # the epic's requirements go to Jira with it
+        _, jobs = self.request("GET", "/api/jobs")
+        self.assertEqual(next(j for j in jobs["jobs"] if j["id"] == epic["job"])["jira"]["key"], "APP-5")  # the Jira icon on the job
+        res, data = self.request("POST", "/api/epics/jira/send", {}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)  # nothing left to send; no duplicates
+        self.assertEqual(len(http.calls), 1)
+
+    def test_send_reports_which_epics_jira_refused_and_keeps_the_ones_it_took(self):
+        self.approve_one("Scores")
+        answers = iter([{"key": "APP-5"}, ui.integrations.IntegrationError("The service rejected the request.")])
+
+        def http_json(url, headers=None, secrets=None, method="GET", body=None):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        with patch.object(ui.integrations, "http_json", http_json):
+            _, data = self.request("POST", "/api/epics/jira/send", {}, headers=UI_HEADERS)
+        self.assertEqual(data["sent"], ["APP-5"])
+        self.assertEqual(len(data["errors"]), 1)
+        self.assertIn("Scores", data["errors"][0])
+        self.assertEqual(sorted(bool(e["jira"]) for e in data["epics"]), [False, True])
+
+    def test_sending_needs_a_project_key_and_a_connection(self):
+        ui.write_settings(self.root, {"integrations": {"jira": {**self.CREDS, "project": ""}}})
+        res, data = self.request("POST", "/api/epics/jira/send", {}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn("project key", data["error"])
+        res, data = self.request("POST", "/api/epics/jira/project", {"project": 'x" OR 1=1'}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        res, data = self.request("POST", "/api/epics/jira/project", {"project": "web"}, headers=UI_HEADERS)
+        self.assertEqual((res.status, data["jira"]["project"]), (200, "WEB"))
+        ui.write_settings(self.root, {})
+        res, data = self.request("GET", "/api/epics/jira")
+        self.assertEqual(res.status, 400)
+        self.assertIn("Connect Jira", data["error"])
+
+    def test_importing_reads_the_epics_again_from_jira_instead_of_trusting_the_page(self):
+        listing = {"/rest/api/3/search/jql": {"issues": [
+            {"key": "APP-1", "fields": {"summary": "Lobby", "status": {"name": "To Do"}, "description": None}},
+            {"key": "APP-2", "fields": {"summary": "Chat", "status": {"name": "To Do"}, "description": None}}]}}
+        with patch.object(ui.integrations, "http_json", self.http(listing)):
+            _, found = self.request("GET", "/api/epics/jira")
+            self.assertEqual([e["key"] for e in found["epics"]], ["APP-1", "APP-2"])
+            res, data = self.request("POST", "/api/epics/jira/import", {"keys": ["APP-2", "APP-99"], "summary": "ignored"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 200, data)
+            imported = [e for e in data["epics"] if e["source"] == "jira"]
+            self.assertEqual([(e["name"], e["status"], e["jira"]["key"]) for e in imported], [("Chat", "approved", "APP-2")])
+            _, again = self.request("GET", "/api/epics/jira")
+            self.assertEqual([e["key"] for e in again["epics"]], ["APP-1"])  # already imported ones are not offered again
+            res, _ = self.request("POST", "/api/epics/jira/import", {"keys": ["APP-77"]}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 400)
+
+    def test_only_the_owner_can_touch_jira(self):
+        token = self.sign_in(source="settings")
+        member = {"tester@example.com": "settings"}
+        for method, path, body in (("POST", "/api/epics/jira/send", {}), ("POST", "/api/epics/jira/import", {"keys": ["APP-1"]}),
+                                   ("POST", "/api/epics/jira/project", {"project": "APP"}), ("GET", "/api/epics/jira", None)):
+            with self.subTest(path=path):
+                res, _ = self.as_user(token, method, path, body, sources=member)
+                self.assertEqual(res.status, 403)
+
+    def test_planning_an_epic_builds_a_feature_job_that_replaces_the_waiting_one(self):
+        argv = ui.build_plan_epic({"epic": self.approved["id"]}, self.root)
+        self.assertEqual(argv[argv.index("--epic") + 1], self.approved["id"])
+        self.assertEqual(argv[argv.index("--feature") + 1], self.approved["feature"])
+        self.assertIn("--no-dispatch", argv)
+        spec = Path(argv[argv.index("--spec-file") + 1]).read_text()
+        self.assertIn("A round has 6 turns", spec)  # the epic's requirements ride along
+        by_job = ui.build_plan_epic({"job": self.approved["job"]}, self.root)
+        self.assertEqual(by_job[by_job.index("--epic") + 1], self.approved["id"])  # the Plan it button on the job page
+        with self.assertRaises(ui.UIError):
+            ui.build_plan_epic({"epic": "ep-gone"}, self.root)
 
 
 class SignOutTests(unittest.TestCase):
@@ -1376,49 +1498,90 @@ process.stdout.write(JSON.stringify({
         self.assertIn("The plan is built", out["finished"])
         self.assertEqual(out["none"], "")
 
-    def test_feature_proposal_view_shows_the_technique_slices_requirements_and_questions(self):
+    def run_feature_plan(self, source):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
-        source = """
-const P = globalThis.FeaturePlan;
-const map = P.renderProposal({technique: "story_map", technique_name: "Story map", rationale: "People use it <through> a flow.", detail: "sparse",
-  open_questions: ["Who pays?"], features: [
-  {name: "Later thing", summary: "", requirements: [], stories: [], depends_on: [], paths: [], layer: 0, slice: "Later"},
-  {name: "Play", summary: "One game", requirements: ["A round has 6 turns <b>"], stories: ["As a player"], depends_on: [], paths: [], layer: 0, slice: "MVP"}]});
-const wbs = P.renderProposal({technique: "wbs", technique_name: "Work breakdown", rationale: "It is an API.", features: [
-  {name: "Auth", summary: "", requirements: ["Tokens expire"], stories: [], depends_on: [], paths: [], layer: 0, slice: ""}]});
-process.stdout.write(JSON.stringify({map, wbs}));"""
         result = subprocess.run(["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        out = json.loads(result.stdout)
-        self.assertIn("Story map.", out["map"])
-        self.assertIn("People use it &lt;through&gt; a flow.", out["map"])
+        return json.loads(result.stdout)
+
+    def test_epic_views_show_the_technique_slices_requirements_and_questions(self):
+        out = self.run_feature_plan("""
+const P = globalThis.FeaturePlan;
+const epic = (o) => ({id: "ep-" + o.name, status: "suggested", summary: "", requirements: [], stories: [], depends_on: [], paths: [], layer: 0, slice: "", ...o});
+const story = {technique: "story_map", technique_name: "Story map", rationale: "People use it <through> a flow.", detail: "sparse", open_questions: ["Who pays?"]};
+const mapEpics = [epic({name: "Later thing", slice: "Later"}),
+  epic({name: "Play", summary: "One game", requirements: ["A round has 6 turns <b>"], stories: ["As a player"], slice: "MVP"})];
+const wbsEpics = [epic({name: "Auth", requirements: ["Tokens expire"]})];
+process.stdout.write(JSON.stringify({info: P.renderBreakdownInfo(story), map: P.renderSuggested(mapEpics, story),
+  wbs: P.renderSuggested(wbsEpics, {technique: "wbs"}), none: P.renderSuggested([], story), noInfo: P.renderBreakdownInfo(null)}));""")
+        self.assertIn("Story map.", out["info"])
+        self.assertIn("People use it &lt;through&gt; a flow.", out["info"])
+        self.assertIn("so these are broad", out["info"])  # a brief PRD says so
+        self.assertIn("Who pays?", out["info"])
         self.assertLess(out["map"].index("MVP: the smallest version"), out["map"].index("Later</div>"))  # slices, not layers
         self.assertIn("A round has 6 turns &lt;b&gt;", out["map"])
-        self.assertIn("so these are broad", out["map"])  # a brief PRD says so
-        self.assertIn("Who pays?", out["map"])
         self.assertIn("Start with these", out["wbs"])  # other techniques group by build order
         self.assertNotIn('class="pill"', out["wbs"])
+        self.assertEqual((out["none"], out["noInfo"]), ("", ""))
 
-    def test_feature_proposal_view_groups_by_build_order_and_escapes(self):
-        helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
-        source = """
+    def test_suggested_epics_are_ticked_escaped_and_know_what_they_build_on(self):
+        out = self.run_feature_plan("""
 const P = globalThis.FeaturePlan;
-const html = P.renderProposal({warnings: ["\\"<b>\\" overlaps"], features: [
-  {name: "Play a round", summary: "One game", stories: ["As a player I can play."], depends_on: [], paths: ["app/game/"], layer: 0},
-  {name: "Chat <script>", summary: "", stories: [], depends_on: ["Play a round"], paths: [], layer: 1}]});
-process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]), none: P.renderStories([])}));"""
-        result = subprocess.run(["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        out = json.loads(result.stdout)
+const epic = (o) => ({status: "suggested", summary: "", requirements: [], stories: [], depends_on: [], paths: [], layer: 0, slice: "", ...o});
+const html = P.renderSuggested([
+  epic({id: "ep-1", name: "Play a round", summary: "One game", stories: ["As a player I can play."], paths: ["app/game/"]}),
+  epic({id: "ep-2", name: "Chat <script>", depends_on: ["Play a round"], layer: 1}),
+  epic({id: "ep-3", name: "Done already", status: "approved"})], {technique: "list"});
+process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]), none: P.renderStories([])}));""")
         html = out["html"]
         self.assertLess(html.index("Start with these"), html.index("Then these (layer 2)"))
         self.assertLess(html.index("Play a round"), html.index("Chat &lt;script&gt;"))
-        self.assertIn('value="Play a round" checked', html)
-        self.assertIn("&quot;&lt;b&gt;&quot; overlaps", html)
+        self.assertIn('value="ep-1" checked', html)
+        self.assertIn('data-needs="ep-1"', html)  # ticking Chat also ticks Play a round
         self.assertNotIn("<script>", html)
+        self.assertNotIn("Done already", html)  # approved epics are listed elsewhere
         self.assertIn("Builds on Play a round", html)
         self.assertIn("As &lt;a&gt;", out["stories"])
         self.assertEqual(out["none"], "")
+
+    def test_approved_epics_show_their_job_state_and_a_jira_icon_when_linked(self):
+        out = self.run_feature_plan("""
+const P = globalThis.FeaturePlan;
+const act = (action, params) => `data-action="${action}" data-params='${JSON.stringify(params)}'`;
+const epic = (o) => ({status: "approved", summary: "", requirements: [], stories: [], jira: null, ...o});
+const epics = [
+  epic({id: "ep-1", name: "Waiting", job_info: {id: "j-1", label: "Epic · not planned", tone: "idle", backlog: true}}),
+  epic({id: "ep-2", name: "Underway <b>", requirements: ["a", "b"], jira: {key: "APP-5", url: "https://t.atlassian.net/browse/APP-5"}, job_info: {id: "j-2", label: "Approve plan", tone: "attention", backlog: false}}),
+  epic({id: "ep-3", name: "Odd link", jira: {key: "APP-6", url: "javascript:alert(1)"}, job_info: null}),
+  epic({id: "ep-4", name: "Gone", status: "declined"})];
+process.stdout.write(JSON.stringify({html: P.renderApproved(epics, {act, jiraConnected: true}), plain: P.renderApproved(epics, {act}),
+  declined: P.renderDeclined(epics), none: P.renderApproved([], {act})}));""")
+        html = out["html"]
+        self.assertIn('data-action="plan_epic" data-params=\'{"epic":"ep-1"}\'', html)  # Plan it
+        self.assertIn("Not planned", html)
+        self.assertIn('href="#/jobs/j-2"', html)
+        self.assertIn("Approve plan", html)
+        self.assertNotIn(">Plan it<", html[html.index('data-epic="ep-2"'):html.index('data-epic="ep-3"')])  # already planned
+        self.assertIn('href="https://t.atlassian.net/browse/APP-5"', html)
+        self.assertIn('<use href="#i-jira"/>', html)
+        self.assertNotIn("javascript:", html)  # a link that isn't https is shown as text, never as a link
+        self.assertIn("APP-6", html)
+        self.assertIn("Underway &lt;b&gt;", html)
+        self.assertIn('data-epic-send="ep-1"', html)  # Send to Jira when connected
+        self.assertNotIn("data-epic-send", out["plain"])
+        self.assertNotIn('data-epic-send="ep-2"', html)  # already in Jira
+        self.assertIn("Bring back", out["declined"])
+        self.assertNotIn("Waiting", out["declined"])
+        self.assertEqual(out["none"], "")
+
+    def test_jira_import_list_escapes_and_says_when_nothing_is_left(self):
+        out = self.run_feature_plan("""
+const P = globalThis.FeaturePlan;
+process.stdout.write(JSON.stringify({list: P.renderJiraImport([{key: "APP-1", summary: "Lobby <i>", description: "Friends meet."}], "APP"),
+  empty: P.renderJiraImport([], "APP")}));""")
+        self.assertIn('name="keys" value="APP-1" checked', out["list"])
+        self.assertIn("Lobby &lt;i&gt;", out["list"])
+        self.assertIn("already here", out["empty"])
 
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
@@ -1927,65 +2090,89 @@ class ReadApiTests(ServerTestCase):
             time.sleep(0.05)
         self.fail("the task never finished")
 
-    def test_feature_draft_needs_product_requirements(self):
-        res, data = self.request("POST", "/api/features/propose", {}, headers=UI_HEADERS)
+    def break_down(self, answer, body=None):
+        with patch.object(ui.UIHandler, "_model_call", lambda handler, root, prompt, model="", timeout=150: answer):
+            res, started = self.request("POST", "/api/epics/breakdown", body or {}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202, started)
+            return self.wait_task(started["task"])
+
+    def test_breakdown_needs_product_requirements(self):
+        res, data = self.request("POST", "/api/epics/breakdown", {}, headers=UI_HEADERS)
         self.assertEqual(res.status, 400)
-        res, _ = self.request("POST", "/api/features/propose", {})
+        res, _ = self.request("POST", "/api/epics/breakdown", {})
         self.assertEqual(res.status, 403)  # another site can't start a model run
         self.assertIn("product requirements", data["error"])
 
-    def test_feature_draft_proposes_then_accept_creates_chosen_in_order(self):
+    def test_breakdown_saves_suggestions_and_approving_makes_features_and_waiting_epic_jobs(self):
         self.write_prd()
-        answer = json.dumps({"features": [
+        answer = json.dumps({"technique": "story_map", "rationale": "It is used through a flow.", "features": [
             {"name": "Challenge a friend", "summary": "Invite someone", "stories": ["As a player I can invite a friend."],
              "paths": ["app/social/"], "depends_on": ["Play a round"], "serves": "Playing with friends"},
             {"name": "Play a round", "summary": "One game", "stories": ["As a player I can play a round."], "paths": ["app/game/"],
              "depends_on": [], "serves": "Play"}]})
-        calls = []
-        with patch.object(ui.UIHandler, "_model_call", lambda handler, root, prompt, model="", timeout=150: calls.append(prompt) or answer):
-            res, started = self.request("POST", "/api/features/propose", {}, headers=UI_HEADERS)
-            self.assertEqual(res.status, 202)
-            task = self.wait_task(started["task"])
+        task = self.break_down(answer, {"technique": "story_map"})
         self.assertEqual(task["status"], "done", task)
-        self.assertIn("A turn-based word game", calls[0])
-        proposal = task["result"]
-        self.assertEqual([f["name"] for f in proposal["features"]], ["Play a round", "Challenge a friend"])
-        self.assertEqual(self.request("GET", "/api/features")[1]["features"], [])  # nothing saved yet
+        overview = task["result"]
+        self.assertEqual(overview["breakdown"]["technique"], "story_map")
+        self.assertEqual([e["name"] for e in overview["epics"]], ["Play a round", "Challenge a friend"])
+        self.assertEqual({e["status"] for e in overview["epics"]}, {"suggested"})
+        self.assertEqual(self.request("GET", "/api/features")[1]["features"], [])  # nothing is a feature until approved
+        self.assertEqual(self.request("GET", "/api/epics")[1]["epics"][0]["name"], "Play a round")  # kept on the server, not the page
 
-        res, data = self.request("POST", "/api/features/accept", {"features": proposal["features"], "chosen": ["Challenge a friend"]}, headers=UI_HEADERS)
-        self.assertEqual(res.status, 400)  # it builds on a feature that wasn't chosen
-        res, data = self.request("POST", "/api/features/accept", {"features": proposal["features"], "chosen": ["Play a round", "Challenge a friend"]}, headers=UI_HEADERS)
+        challenge = next(e for e in overview["epics"] if e["name"] == "Challenge a friend")
+        res, data = self.request("POST", "/api/epics/decide", {"ids": [challenge["id"]], "decision": "approve"}, headers=UI_HEADERS)
         self.assertEqual(res.status, 200, data)
-        saved = {f["name"]: f for f in data["features"]}
-        self.assertEqual(saved["Challenge a friend"]["depends_on"], [saved["Play a round"]["id"]])
-        self.assertEqual(saved["Play a round"]["stories"], [])  # the requirements here are brief, so no stories are kept
-        self.assertEqual(proposal["detail"], "sparse")
-        self.assertEqual(proposal["technique"], "list")  # the model named none
+        self.assertEqual(data["also_approved"], ["Play a round"])  # what it builds on comes with it
+        approved = {e["name"]: e for e in data["epics"]}
+        self.assertEqual({e["status"] for e in approved.values()}, {"approved"})
+        features = {f["name"]: f for f in self.request("GET", "/api/features")[1]["features"]}
+        self.assertEqual(features["Challenge a friend"]["depends_on"], [features["Play a round"]["id"]])
+        job = ui.read_json_file(ui.jobs_dir(self.root) / f"{approved['Play a round']['job']}.json")
+        self.assertEqual((job["status"], job["type"], job["epic"]), ("backlog", "epic", approved["Play a round"]["id"]))
+        _, jobs = self.request("GET", "/api/jobs")
+        waiting = next(j for j in jobs["jobs"] if j["id"] == approved["Play a round"]["job"])
+        self.assertEqual((waiting["kind"], waiting["state"]["group"], waiting["state"]["next"]["action"]), ("Epic", "backlog", "plan_epic"))
+        self.assertEqual(waiting["epic"], approved["Play a round"]["id"])
+        res, page = self.request("GET", f"/api/jobs/{waiting['id']}")
+        self.assertEqual(res.status, 200, page)  # the job page opens on a waiting epic
+        self.assertEqual(page["summary"]["state"]["next"]["action"], "plan_epic")
 
-    def test_feature_proposal_keeps_stories_and_requirements_when_the_requirements_are_detailed(self):
+    def test_declined_epics_stay_listed_and_can_come_back(self):
+        self.write_prd()
+        task = self.break_down(json.dumps({"features": [{"name": "Play a round", "summary": "One game"}]}))
+        epic = task["result"]["epics"][0]
+        _, data = self.request("POST", "/api/epics/decide", {"ids": [epic["id"]], "decision": "decline"}, headers=UI_HEADERS)
+        self.assertEqual(data["epics"][0]["status"], "declined")
+        self.assertEqual(self.request("GET", "/api/features")[1]["features"], [])
+        _, data = self.request("POST", "/api/epics/decide", {"ids": [epic["id"]], "decision": "restore"}, headers=UI_HEADERS)
+        self.assertEqual(data["epics"][0]["status"], "suggested")
+        res, _ = self.request("POST", "/api/epics/decide", {"ids": [epic["id"]], "decision": "nonsense"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+
+    def test_breakdown_keeps_detail_matched_to_the_requirements_and_a_chosen_technique(self):
         self.write_prd()
         prd_path = self.root / "docs" / "product" / "prd.md"
         prd_path.write_text(prd_path.read_text() + "\n## Who it's for\n" + "Friends who like word games. " * 30)
-        answer = json.dumps({"technique": "story_map", "rationale": "It is used through a flow.", "features": [
+        answer = json.dumps({"technique": "list", "rationale": "x", "features": [
             {"name": "Play a round", "summary": "One game", "stories": ["As a player I can play a round."], "slice": "MVP",
              "requirements": ["A round has 6 turns"], "paths": [], "depends_on": []}]})
-        with patch.object(ui.UIHandler, "_model_call", lambda handler, root, prompt, model="", timeout=150: answer):
-            res, started = self.request("POST", "/api/features/propose", {}, headers=UI_HEADERS)
-            proposal = self.wait_task(started["task"])["result"]
-        self.assertEqual((proposal["detail"], proposal["technique"]), ("moderate", "story_map"))
-        feature = proposal["features"][0]
-        self.assertEqual((feature["stories"], feature["requirements"], feature["slice"]),
-                         (["As a player I can play a round."], ["A round has 6 turns"], "MVP"))
-        _, data = self.request("POST", "/api/features/accept", {"features": proposal["features"], "chosen": ["Play a round"]}, headers=UI_HEADERS)
-        saved = data["features"][0]
-        self.assertEqual((saved["requirements"], saved["slice"]), (["A round has 6 turns"], "MVP"))
-
-    def test_feature_accept_rechecks_what_the_page_sends(self):
-        tampered = [{"name": "A", "depends_on": ["B"], "layer": 0}, {"name": "B", "depends_on": ["A"], "layer": 0}]
-        res, data = self.request("POST", "/api/features/accept", {"features": tampered, "chosen": ["A", "B"]}, headers=UI_HEADERS)
+        task = self.break_down(answer, {"technique": "wbs"})
+        overview = task["result"]
+        self.assertEqual((overview["breakdown"]["detail"], overview["breakdown"]["technique"]), ("moderate", "wbs"))  # the person's choice wins
+        epic = overview["epics"][0]
+        self.assertEqual((epic["stories"], epic["requirements"], epic["slice"]), (["As a player I can play a round."], ["A round has 6 turns"], ""))
+        res, data = self.request("POST", "/api/epics/breakdown", {"technique": "mind-map"}, headers=UI_HEADERS)
         self.assertEqual(res.status, 400)
-        self.assertIn("circle", data["error"])
-        self.assertEqual(self.request("GET", "/api/features")[1]["features"], [])
+
+    def test_a_new_breakdown_replaces_undecided_suggestions_and_keeps_approved_epics(self):
+        self.write_prd()
+        first = self.break_down(json.dumps({"features": [{"name": "Play a round", "summary": "One game"}, {"name": "Scores", "summary": "Keep score"}]}))["result"]
+        play = next(e for e in first["epics"] if e["name"] == "Play a round")
+        self.request("POST", "/api/epics/decide", {"ids": [play["id"]], "decision": "approve"}, headers=UI_HEADERS)
+        second = self.break_down(json.dumps({"features": [{"name": "Play a round", "summary": "again"}, {"name": "Chat", "summary": "Talk"}]}))["result"]
+        by_name = {e["name"]: e for e in second["epics"]}
+        self.assertEqual(sorted(by_name), ["Chat", "Play a round"])  # the undecided "Scores" went; the approved epic stayed, not repeated
+        self.assertEqual((by_name["Play a round"]["status"], by_name["Chat"]["status"]), ("approved", "suggested"))
 
     def test_ai_providers_lists_free_first_with_status_here(self):
         with patch("orchestrator.setup_checklist.ready_llm_providers", return_value=["claude"]), \
@@ -2349,7 +2536,9 @@ class ActionTests(unittest.TestCase):
         sp.run(["git", "config", "branch.main.remote", "origin"], cwd=self.root, check=True)
         sp.run(["git", "config", "branch.main.merge", "refs/heads/main"], cwd=self.root, check=True)
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
-                  "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score"}
+                  "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test"}
+        (self.root / ".orchestrator" / "epics.json").write_text(json.dumps({"epics": [
+            {"id": "ep-test", "name": "Word score", "summary": "", "status": "approved", "feature": "word-score", "requirements": [], "stories": [], "depends_on": []}]}))
         (self.root / ".orchestrator" / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "planned", "paths": [], "depends_on": []}]}))
         for key, action in ui.ACTIONS.items():
             if key == "git_pull":
@@ -4064,7 +4253,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
         self.assertIn('class="col-type"', row)
         self.assertIn('class="job-mobile-info"', row)
-        self.assertIn('class="job-type-tag"', row)
+        self.assertIn('<span class="job-type-tag', row)
+        self.assertIn("job-type-epic", row)  # an epic's job is marked Epic
         self.assertIn('class="col-status"', row)
         self.assertIn('class="col-date"', row)
 
@@ -4324,7 +4514,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('Connected apps:', picker)
         self.assertIn('href="#/connections"', picker)
         self.assertIn('.prd-drop.reference-file-picker { background: var(--panel); }', self.css)
-        self.assertIn('.reference-file-picker .file-picker-target { background: var(--panel-2); }', self.css)
+        rule = self.css[self.css.index(".prd-drop.file-picker { width: 100%"):][:500]
+        self.assertIn("border: 2px dashed var(--border)", rule)  # the title, button, hint and types sit in one dashed container...
+        self.assertNotIn(".file-picker-target { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); width: 100%; min-height", self.css)
+        target = self.css[self.css.index(".file-picker-target {"):][:200]
+        self.assertNotIn("border:", target)  # ...not a second box inside the first
 
     def test_hosted_self_healing_and_reconnection(self):
         # Hosted app auto-reconnects and relocates without locking user into sign-in gate
@@ -4448,18 +4642,40 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_slow_model_work_is_started_and_polled_not_held_open(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        self.assertEqual(page.count("waitForTask("), 3)  # draft, import and suggesting features
+        self.assertEqual(page.count("waitForTask("), 2)  # draft and import; the epic breakdown polls the same way from its own page
+        epics = self.js[self.js.index("pages.epics = async"):self.js.index("pages.devlogs = async")]
+        self.assertEqual(epics.count("waitForTask("), 1)
         fn = self.js[self.js.index("async function waitForTask"):self.js.index("function productStripHtml")]
         self.assertIn("product/task/", fn)
         self.assertIn("e.status === 404 || ++misses >= 4", fn)  # a dropped connection is retried, a vanished task is not
         self.assertIn("7 * 60 * 1000", fn)  # and it never spins for ever
 
-    def test_the_product_page_can_suggest_features_and_add_only_the_ones_ticked(self):
+    def test_the_product_page_leads_to_epics_and_offers_the_breakdown_once(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        for part in ('api("features/propose"', 'api("features/accept"', "FeaturePlan.renderProposal", 'id="prd-suggest"', "open.suggest",
-                     "dataset.needs"):  # ticking a feature also ticks what it builds on
+        self.assertIn('href="#/epics?start=1"', page)  # Break down into epics
+        self.assertIn('id="prd-epics"', page)
+        self.assertNotIn("suggestFeatures", self.js)  # one way to break the PRD down, on the Epics page
+        self.assertNotIn('api("features/propose"', self.js)
+        offer = page[page.index("function offerBreakdown"):][:1500]
+        for part in ("prdFilled()", "p.breakdown_offered", "productEpics.length", "formDialog(", '"Not now"', "breakdown_offered: true", "#/epics?start=1"):
+            self.assertIn(part, offer, part)
+        self.assertGreaterEqual(page.count("offerBreakdown();"), 2)  # when the page opens, and after the first thing is saved
+        self.assertIn('query?.get("suggest") === "1"', page)  # the old link still lands somewhere useful
+
+    def test_the_epics_page_breaks_down_approves_declines_and_works_with_jira(self):
+        page = self.js[self.js.index("pages.epics = async"):self.js.index("pages.devlogs = async")]
+        for part in ('api("epics")', 'api("epics/breakdown"', 'api("epics/decide"', 'api("epics/jira")', 'api("epics/jira/send"', 'api("epics/jira/import"',
+                     'api("epics/jira/project"', "FeaturePlan.renderSuggested", "FeaturePlan.renderApproved", "FeaturePlan.renderDeclined",
+                     "FeaturePlan.renderJiraImport", "dataset.needs", 'method: "DELETE"', "#/connections?card=jira"):
             self.assertIn(part, page, part)
-        self.assertIn('href="#/product?suggest=1"', self.js)  # offered when a new project is created
+        self.assertIn('query?.get("start") === "1"', page)  # opened from the wizard or the first-time offer, it starts straight away
+        self.assertLess(page.index("Nothing is sent until you press the button"), page.index('id="epic-jira-panel"'))
+
+    def test_the_new_project_wizard_ends_with_an_optional_break_it_down_step(self):
+        self.assertIn('["breakdown", "Break it down"]', self.js)
+        done = self.js[self.js.index("// step === \"create\""):][:5200]
+        for part in ("offerBreakdown", 'href="#/epics?start=1"', "Skip for now", "data-np-breakdown", "breakdown_offered: true"):
+            self.assertIn(part, done, part)
 
     def test_working_on_it_is_a_prominent_spinner_with_a_timer(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
@@ -6616,7 +6832,7 @@ class SidebarLayoutTests(unittest.TestCase):
     def test_most_used_pages_lead_and_set_once_settings_sit_under_settings(self):
         html = (self.STATIC / "index.html").read_text()
         main = html[html.index('<nav class="nav" id="nav"'):html.index("</nav>", html.index('<nav class="nav" id="nav"'))]
-        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["home", "activity", "product"])
+        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["home", "activity", "product", "epics"])
         tabbar = html[html.index('<nav class="tabbar"'):]
         self.assertEqual(re.findall(r'data-route="([a-z-]+)"', tabbar[:tabbar.index("</nav>")]), ["home", "product", "new", "activity", "tests"])
         out = subprocess.run(["node", "--require", HTML_JS, "-e", "require(process.argv[1]);"

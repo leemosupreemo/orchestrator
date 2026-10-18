@@ -184,6 +184,48 @@ class PlainGitPipelineTests(unittest.TestCase):
         self.assertEqual(p.jobs(), [], "the job should be archived")
 
 
+class PlanAnEpicTests(unittest.TestCase):
+    """An approved epic waits as a job marked Epic. Planning it (new_job.py --epic, what "Plan it" runs) makes the real
+    feature job, which takes the waiting one's place and keeps the epic's Jira link."""
+
+    @classmethod
+    def setUpClass(cls):
+        from orchestrator import epics
+        cls.epics = epics
+        cls.project = DummyProject([FREE]).create(code_host="git").fake_models("prose_first")
+        cls.runtime = cls.project.root / ".orchestrator"
+        epics.add_suggestions(cls.runtime, {"technique": "list", "features": [
+            {"name": "Long-word bonus", "summary": "Reward long words", "requirements": ["A 7-letter word scores 10 extra"], "stories": [],
+             "slice": "", "paths": ["wordgame/"], "depends_on": [], "serves": "", "layer": 0}]})
+        epic = epics.load(cls.runtime)["epics"][0]
+        epics.approve(cls.runtime, [epic["id"]])
+        epics.link_jira(cls.runtime, epic["id"], "WORD-3", "https://team.atlassian.net/browse/WORD-3")
+        cls.epic = epics.get(cls.runtime, epic["id"])
+        cls.waiting = cls.epic["job"]
+        cls.step = cls.project.orchestrator(
+            "script", "new_job.py", "feature", "--summary", "Long-word bonus: Reward long words", "--branch-mode", "new", "--no-dispatch",
+            "--feature", cls.epic["feature"], "--epic", cls.epic["id"], "--planner", FREE, "--builder", FREE, "--reviewer", FREE,
+            "--allowed-models", FREE, "--allowed-machines", "local")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def test_the_waiting_job_is_replaced_by_the_planned_one_marked_as_the_epics(self):
+        self.assertEqual(self.step.returncode, 0, self.step.stdout[-1500:] + self.step.stderr[-800:])
+        files = [p.stem for p in self.project.jobs()]
+        self.assertNotIn(self.waiting, files)  # the waiting job is gone
+        self.assertEqual(len(files), 1, files)
+        job = json.loads(self.project.jobs()[0].read_text())
+        self.assertEqual((job["epic"], job["feature"]), (self.epic["id"], self.epic["feature"]))
+        self.assertEqual(self.epics.get(self.runtime, self.epic["id"])["job"], job["job_id"])
+        self.assertNotEqual(job["status"], "backlog")
+
+    def test_the_planned_job_stays_linked_to_the_jira_epic(self):
+        job = json.loads(self.project.jobs()[0].read_text())
+        self.assertEqual([l["ref"] for l in job.get("external_links") or []], ["WORD-3"])
+
+
 class LivingPrdTests(unittest.TestCase):
     """When a job finishes the worker asks whether it changes the product requirements, and keeps them true."""
 
