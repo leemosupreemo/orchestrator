@@ -21,25 +21,29 @@ from typing import Any
 from orchestrator import prd
 from orchestrator.project_config import remember_project, safe_resolve, user_state_dir
 
-# (key, label, help, kind, required, options, section)
+
+def _prd_question(section_id: str, key: str, required: bool = False) -> dict[str, Any]:
+    """A question for one field of the product requirements doc, worded exactly as that field is (its title and hint),
+    so the wizard and the Product page can't drift apart."""
+    section = prd.BY_ID[section_id]
+    return {"key": key, "label": section["title"], "help": section["hint"], "kind": "area", "required": required, "section": section_id}
+
+
+# One question per field of the product requirements doc (see orchestrator/prd.py), in its order, after the two things
+# that aren't part of it: the project's name and what it is built for. Like the doc's own fields, they are all optional.
 QUESTIONS: list[dict[str, Any]] = [
     {"key": "name", "label": "What's it called?", "help": "A working name is fine. It becomes the folder name.", "kind": "text", "required": True, "section": "project"},
-    {"key": "pitch", "label": "What is it, in one sentence?", "help": "e.g. A turn-based word game you can play with friends.", "kind": "text", "required": True, "section": "pitch"},
-    {"key": "audience", "label": "Who is it for?", "help": "The people who'll use it. e.g. Friends who want a quick game on their phones, or small-shop owners tracking inventory.", "kind": "text", "required": True, "section": "who"},
-    {"key": "problem", "label": "What itch does this scratch?", "help": "Why would they want it?", "kind": "area", "required": True, "section": "pitch"},
-    {"key": "features", "label": "What must it do on day one?", "help": "List your top features, up to five, one per line. Keep it to the essentials.", "kind": "area", "required": True, "section": "features"},
     {"key": "platform", "label": "What are you building it for?", "help": "Pick every platform you want, or let the AI recommend.", "kind": "multi", "required": True,
      "options": ["iOS app", "Android app", "macOS app", "Windows or Linux app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"], "section": "project"},
-    {"key": "stack", "label": "Any technology you want, or want to avoid?", "help": "Optional. e.g. SwiftUI, no third-party UI kits.", "kind": "area", "required": False, "section": "pitch"},
-    {"key": "look", "label": "What should it look and feel like?", "help": "Optional. Visual style, design references, or sketch notes.", "kind": "area", "required": False, "section": "look"},
-    {"key": "not", "label": "What should it NOT be or include?", "help": "Optional. Features to avoid, competitors not to copy, or anti-patterns.", "kind": "area", "required": False, "section": "not"},
+    _prd_question("pitch", "pitch"),
+    _prd_question("who", "audience"),
+    _prd_question("features", "features"),
+    _prd_question("look", "look"),
+    _prd_question("not", "not"),
 ]
 PRD_SECTIONS: list[dict[str, Any]] = [
-    {"id": "pitch", "title": "Pitch", "keys": ["pitch", "problem", "stack"], "description": "What this product is, the problem it solves, and technical preferences."},
-    {"id": "who", "title": "Who it's for", "keys": ["audience"], "description": "The ideal user, target audience, or context of use."},
-    {"id": "features", "title": "Core features", "keys": ["features"], "description": "What it must do on day one."},
-    {"id": "look", "title": "Look and feel", "keys": ["look"], "description": "Visual style, design language, or reference apps."},
-    {"id": "not", "title": "What to exclude", "keys": ["not"], "description": "What it should NOT be or do: features or anti-patterns to avoid."},
+    {"id": s["id"], "title": s["title"], "keys": [q["key"] for q in QUESTIONS if q["section"] == s["id"]], "description": s["hint"]}
+    for s in prd.SECTIONS
 ]
 REQUIRED = [q["key"] for q in QUESTIONS if q["required"]]
 PLATFORMS = next(q["options"] for q in QUESTIONS if q["key"] == "platform")
@@ -69,12 +73,25 @@ def draft_path() -> Path:
     return user_state_dir() / "new-project-draft.json"
 
 
+def _fold_legacy(answers: dict[str, Any]) -> dict[str, Any]:
+    """Earlier drafts asked "what itch" and "technology" as questions of their own; both belong to the Pitch now."""
+    folded = {k: v for k, v in answers.items() if k not in ("problem", "stack")}
+    extra = [f"{label}: {str(answers[key]).strip()}" for key, label in (("problem", "Problem"), ("stack", "Technology preferences")) if str(answers.get(key) or "").strip()]
+    if extra:
+        folded["pitch"] = "\n\n".join([str(folded.get("pitch") or "").strip(), *extra]).strip()
+    return folded
+
+
 def load_draft() -> dict[str, Any] | None:
     try:
         data = json.loads(draft_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("answers"), dict):
+        data["answers"] = _fold_legacy(data["answers"])
+    return data
 
 
 def designs_dir() -> Path:
@@ -111,7 +128,8 @@ def add_design(name: str, data: bytes) -> dict[str, Any]:
 def save_draft(raw: dict[str, Any]) -> dict[str, Any]:
     """Keep only known fields, so a draft can't smuggle anything else in."""
     prior = load_draft() or {}
-    answers = {q["key"]: str(((raw.get("answers") or {}).get(q["key"])) or "").strip()[:2000] for q in QUESTIONS}
+    given = _fold_legacy(raw.get("answers") or {})
+    answers = {q["key"]: str(given.get(q["key"]) or "").strip()[:2000] for q in QUESTIONS}
     step = raw.get("step") if raw.get("step") in STEPS[:3] else prior.get("step", "describe")
     choice = raw.get("host") if raw.get("host") in ("github", "local") else prior.get("host")
     visibility = raw.get("visibility") if raw.get("visibility") in ("private", "public") else prior.get("visibility", "private")
@@ -182,7 +200,7 @@ def render_prd(a: dict[str, str]) -> str:
     chosen = platform_list(a.get("platform", ""))
     recommend = RECOMMEND in chosen
     chosen = [p for p in chosen if p != RECOMMEND]
-    pitch = [a["pitch"].strip()]
+    pitch = [a.get("pitch", "").strip()]
     if a.get("problem", "").strip():
         pitch.append(f"Problem: {a['problem'].strip()}")
     if chosen:
@@ -191,8 +209,11 @@ def render_prd(a: dict[str, str]) -> str:
         pitch.append("Built for: not decided yet. The AI should recommend platforms, with reasons, in its first plan.")
     if a.get("stack", "").strip():
         pitch.append(f"Technology preferences: {a['stack'].strip()}")
-    text = prd.replace_section(text, "pitch", "\n\n".join(pitch))
-    text = prd.replace_section(text, "who", a["audience"].strip())
+    pitch = [part for part in pitch if part]
+    if pitch:
+        text = prd.replace_section(text, "pitch", "\n\n".join(pitch))
+    if a.get("audience", "").strip():
+        text = prd.replace_section(text, "who", a["audience"].strip())
     features = feature_lines(a.get("features", ""))
     if features:
         body = "\n".join(f"- {f}" for f in features)
@@ -275,7 +296,8 @@ def create_local(answers: dict[str, str], parent: str, designs: list[dict[str, s
         prd_text = prd.replace_section(prd_text, "look", (look + "\n" if look else "") + "\n".join(links))
     (root / prd.PATH).write_text(prd_text, encoding="utf-8")
     (root / "AGENTS.md").write_text(render_agents(answers["name"]), encoding="utf-8")
-    (root / "README.md").write_text(f"# {answers['name']}\n\n{answers['pitch']}\n\nSee [the product requirements](docs/product/prd.md).\n", encoding="utf-8")
+    summary = answers.get("pitch", "").strip()
+    (root / "README.md").write_text(f"# {answers['name']}\n\n{summary + chr(10) + chr(10) if summary else ''}See [the product requirements](docs/product/prd.md).\n", encoding="utf-8")
     steps.append({"name": "Created the folder and product requirements", "ok": True, "detail": str(root)})
 
     # The same setup `orchestrator init` does, so jobs can run without a separate "configure project" step.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -61,9 +62,31 @@ class PrdTests(unittest.TestCase):
         self.assertTrue(prd.is_filled(parts["not"]))
         self.assertEqual(parts["not"], "No social login, no ads.")
 
+    def test_a_project_can_be_started_with_none_of_the_product_fields_answered(self):
+        parts = prd.split(np.render_prd({"name": "Bare", "platform": "Web app"}))
+        self.assertEqual(parts["who"], "")
+        self.assertFalse(prd.is_filled(parts["features"]))
+        self.assertEqual(np.missing_answers({"name": "Bare", "platform": "Web app"}), [])
+
     def test_only_the_lean_questions_are_required(self):
-        self.assertEqual(len(np.REQUIRED), 6)
+        self.assertEqual(np.REQUIRED, ["name", "platform"])  # every product requirements field is optional, as on the Product page
         self.assertEqual(np.missing_answers({"name": "x"}), [q["label"] for q in np.QUESTIONS if q["required"] and q["key"] != "name"])
+
+
+class WizardMatchesPrdTests(Isolated):
+    def test_each_prd_field_is_asked_once_with_its_own_title_and_hint_in_prd_order(self):
+        asked = [q for q in np.QUESTIONS if q["section"] != "project"]
+        self.assertEqual([q["section"] for q in asked], [s["id"] for s in prd.SECTIONS])
+        self.assertEqual([(q["label"], q["help"]) for q in asked], [(s["title"], s["hint"]) for s in prd.SECTIONS])
+        self.assertEqual([s["keys"] for s in np.PRD_SECTIONS], [[q["key"]] for q in asked])
+
+    def test_an_older_draft_keeps_what_it_said_about_the_problem_and_technology(self):
+        saved = np.save_draft({"answers": {"name": "X", "pitch": "A word game.", "problem": "Async games are clunky.", "stack": "SwiftUI"}})
+        self.assertEqual(saved["answers"]["pitch"], "A word game.\n\nProblem: Async games are clunky.\n\nTechnology preferences: SwiftUI")
+        self.assertNotIn("problem", saved["answers"])
+        legacy = {"answers": {"pitch": "A word game.", "problem": "Clunky."}, "step": "describe"}
+        np.draft_path().write_text(json.dumps(legacy))
+        self.assertEqual(np.load_draft()["answers"], {"pitch": "A word game.\n\nProblem: Clunky."})
 
 
 class PlatformTests(unittest.TestCase):
@@ -123,7 +146,7 @@ class CreateTests(Isolated):
 
     def test_refuses_unsafe_or_incomplete_requests(self):
         with self.assertRaises(np.NewProjectError):
-            np.create_local({**ANSWERS, "pitch": ""}, str(self.home))
+            np.create_local({**ANSWERS, "platform": ""}, str(self.home))
         with self.assertRaises(np.NewProjectError):
             np.create_local(ANSWERS, "/tmp/elsewhere")  # outside the home folder
         with self.assertRaises(np.NewProjectError):
@@ -237,8 +260,9 @@ class CliFlowTests(Isolated):
         return result, asked, said
 
     def local_answers(self):
-        # name, pitch, audience, problem(area: 2 lines + blank), features(area: 2 lines + blank), stack(blank), done(blank), look(blank), not(blank), parent
-        return ["Pocket Notes", "A tiny notes app.", "Busy people", "Notes apps are heavy.", "", "Write a note", "Search notes", "", "", "", "", "", str(self.home)]
+        # name, then (platform is picked, not typed) the product requirements fields as lines ending in a blank one:
+        # pitch, audience, features (2 lines), look (blank), not (blank), then the folder
+        return ["Pocket Notes", "A tiny notes app. Notes apps are heavy.", "", "Busy people", "", "Write a note", "Search notes", "", "", "", str(self.home)]
 
     def test_local_only_flow_creates_the_project_and_returns_it_for_the_wizard(self):
         (code, root), asked, said = self.drive(self.local_answers(), ["Local only"], [{"installed": False, "user": None}])

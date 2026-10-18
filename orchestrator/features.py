@@ -129,8 +129,27 @@ def clean_stories(raw: Any, limit: int = 12) -> list[str]:
     return out[:limit]
 
 
+def clean_requirements(raw: Any, limit: int = 12) -> list[str]:
+    """What the feature must satisfy, one testable statement each; trimmed, deduplicated, at most `limit`."""
+    items = raw.splitlines() if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    out = []
+    for item in items:
+        text = " ".join(str(item).split()).lstrip("-• ").strip()[:400]
+        if text and text not in out:
+            out.append(text)
+    return out[:limit]
+
+
+SLICES = ("MVP", "Next", "Later")
+
+
+def clean_slice(raw: Any) -> str:
+    """The release slice a story map puts a feature in; anything else is no slice."""
+    return next((s for s in SLICES if str(raw or "").strip().lower() == s.lower()), "")
+
+
 def create(runtime: Path, name: str, summary: str = "", paths: Any = None, depends_on: Any = None, serves: str = "",
-           stories: Any = None) -> dict[str, Any]:
+           stories: Any = None, requirements: Any = None, slice: str = "") -> dict[str, Any]:
     name = (name or "").strip()
     if not name:
         raise FeatureError("A feature needs a name")
@@ -144,7 +163,7 @@ def create(runtime: Path, name: str, summary: str = "", paths: Any = None, depen
         fid, n = f"{base}-{n}", n + 1
     feature = {"id": fid, "name": name, "summary": (summary or "").strip()[:500], "paths": _paths(paths),
                "depends_on": _deps(depends_on, features, None), "serves": (serves or "").strip()[:300], "stories": clean_stories(stories),
-               "status": "planned", "created": time.time(), "completed_at": None, "reopened": False}
+               "requirements": clean_requirements(requirements), "slice": clean_slice(slice), "status": "planned", "created": time.time(), "completed_at": None, "reopened": False}
     save(runtime, features + [feature])
     return feature
 
@@ -165,6 +184,10 @@ def update(runtime: Path, feature_id: str, **fields: Any) -> dict[str, Any]:
         feature["serves"] = str(fields["serves"] or "").strip()[:300]
     if "stories" in fields:
         feature["stories"] = clean_stories(fields["stories"])
+    if "requirements" in fields:
+        feature["requirements"] = clean_requirements(fields["requirements"])
+    if "slice" in fields:
+        feature["slice"] = clean_slice(fields["slice"])
     if "depends_on" in fields:
         deps = _deps(fields["depends_on"], features, feature_id)
         if would_cycle(features, feature_id, deps):

@@ -14,26 +14,45 @@
     return stories?.length ? `<ul class="feature-stories">${stories.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>` : "";
   }
 
-  // A proposal from /api/features/propose: features in build order, each with a layer, plus warnings.
+  function requirementsList(requirements) {
+    return requirements?.length ? `<ul class="feature-requirements">${requirements.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>` : "";
+  }
+
+  const SLICE_TITLES = {MVP: "MVP: the smallest version that works end to end", Next: "Next", Later: "Later", "": "Not placed yet"};
+
+  // A proposal from /api/features/propose: epics in build order, each with a layer (and a release slice for a story map),
+  // with the technique the model chose and why, how much detail it went into, and what it still needs to know.
   function renderProposal(proposal) {
     const features = proposal?.features || [];
-    const layers = [...new Set(features.map((f) => f.layer))].sort((a, b) => a - b);
+    const storyMap = proposal?.technique === "story_map";
     const featureHtml = (f) => `<label class="feature-proposal-item">
-        <input type="checkbox" name="chosen" value="${escapeHtml(f.name)}" checked>
+        <input type="checkbox" name="chosen" data-needs="${escapeHtml((f.depends_on || []).join("\u001f"))}" value="${escapeHtml(f.name)}" checked>
         <span class="stack">
-          <strong>${escapeHtml(f.name)}</strong>
+          <strong>${escapeHtml(f.name)}${!storyMap || !f.slice ? "" : ` <span class="pill">${escapeHtml(f.slice)}</span>`}</strong>
           ${f.summary ? `<span>${escapeHtml(f.summary)}</span>` : ""}
+          ${requirementsList(f.requirements)}
           ${storiesList(f.stories)}
           ${f.depends_on?.length ? `<span class="muted">Builds on ${f.depends_on.map(escapeHtml).join(", ")}</span>` : ""}
           ${f.paths?.length ? `<span class="muted mono">${f.paths.map(escapeHtml).join(" · ")}</span>` : ""}
         </span></label>`;
+    const layers = [...new Set(features.map((f) => f.layer))].sort((a, b) => a - b);
+    const groups = storyMap
+      ? ["MVP", "Next", "Later", ""].map((slice) => ({title: SLICE_TITLES[slice], items: features.filter((f) => (f.slice || "") === slice)})).filter((g) => g.items.length)
+      : layers.map((layer) => ({title: layerTitle(layer), items: features.filter((f) => f.layer === layer)}));
+    const how = proposal?.technique_name
+      ? `<p><strong>${escapeHtml(proposal.technique_name)}.</strong> ${escapeHtml(proposal.rationale || "")}</p>` : "";
+    const brief = proposal?.detail === "sparse"
+      ? `<p class="muted">Your requirements are short, so these are broad. Add more to Product and suggest again for a finer breakdown.</p>` : "";
+    const questions = proposal?.open_questions?.length
+      ? `<div class="feature-proposal-questions"><div class="tc-area-h">To break this down further, answer</div><ul>${proposal.open_questions.map((q) => `<li>${escapeHtml(q)}</li>`).join("")}</ul></div>` : "";
     return `<section class="card mb-16" id="feature-proposal">
-      <div class="card-h"><h2>Proposed features</h2><span class="count">${features.length}</span></div>
+      <div class="card-h"><h2>Suggested features</h2><span class="count">${features.length}</span></div>
       <form class="card-b stack" id="feature-proposal-form">
+        ${how}${brief}
         <p class="muted">Drafted from your product requirements, in the order to build them. Untick any you don't want; nothing is saved until you add them.</p>
         ${(proposal?.warnings || []).map((w) => `<div class="banner attention"><p>${escapeHtml(w)}</p></div>`).join("")}
-        ${layers.map((layer) => `<div class="feature-proposal-layer"><div class="tc-area-h">${escapeHtml(layerTitle(layer))}</div>
-          ${features.filter((f) => f.layer === layer).map(featureHtml).join("")}</div>`).join("")}
+        ${groups.map((g) => `<div class="feature-proposal-layer"><div class="tc-area-h">${escapeHtml(g.title)}</div>${g.items.map(featureHtml).join("")}</div>`).join("")}
+        ${questions}
         <div class="row"><span class="spacer"></span>
           <button type="button" class="btn ghost" id="feature-proposal-discard">Discard</button>
           <button type="submit" class="btn primary">Add selected</button></div>
@@ -83,5 +102,5 @@
         <div class="list">${rows}</div></div></section>`;
   }
 
-  root.FeaturePlan = {renderProposal, renderStories, renderStartForm, chosenFeatures, renderRun};
+  root.FeaturePlan = {renderProposal, renderStories, requirementsList, renderStartForm, chosenFeatures, renderRun};
 })(typeof globalThis !== "undefined" ? globalThis : window);

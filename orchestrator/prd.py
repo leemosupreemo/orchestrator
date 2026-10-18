@@ -31,6 +31,8 @@ from typing import Any, Callable
 
 PATH = "docs/product/prd.md"
 DESIGNS_DIR = "docs/product/designs"
+SOURCES_DIR = "docs/product/source"  # a detailed document the person imported: kept whole, beside the short summaries
+SOURCES_HEADING = "## Source documents"
 MAX_DOC_CHARS = 100_000
 MAX_VERSIONS = 60
 MAX_IMPORT_CHARS = 40_000
@@ -80,7 +82,7 @@ def split(text: str) -> dict[str, str]:
     for line in (text or "").splitlines():
         m = re.match(r"^##\s+(.*?)\s*$", line)
         if m:
-            current = by_heading.get(m.group(1).lower())
+            current = by_heading.get(m.group(1).lower().replace("\u2019", "'"))  # models often write a curly apostrophe
             if current:
                 found.setdefault(current, [])
             continue
@@ -124,6 +126,38 @@ def normalise(text: str) -> str:
         if s["id"] not in present:
             text = text.rstrip() + f"\n\n{HEADING[s['id']]}\n\n{_guidance(s)}\n"
     return text.rstrip() + "\n"
+
+
+_SOURCE_LINE = re.compile(r"^\s*[-*]\s*\[([^\]]+)\]\(([^)]+)\)\s*$")
+
+
+def sources(text: str | None) -> list[dict[str, str]]:
+    """The documents attached to the PRD: [{label, target}], target relative to docs/product/."""
+    out, inside = [], False
+    for line in (text or "").splitlines():
+        if re.match(r"^##\s", line):
+            inside = line.strip().lower() == SOURCES_HEADING.lower()
+            continue
+        m = _SOURCE_LINE.match(line) if inside else None
+        if m:
+            out.append({"label": m.group(1), "target": m.group(2)})
+    return out
+
+
+def set_sources(text: str, items: list[dict[str, str]]) -> str:
+    """The document with its "Source documents" list replaced (last in the document, outside the five sections)."""
+    kept = re.sub(rf"(^|\n){re.escape(SOURCES_HEADING)}\s*\n.*?(?=\n##\s|\Z)", "", text, flags=re.S | re.I).rstrip()
+    if not items:
+        return kept + "\n"
+    lines = [f"- [{re.sub(r'[\[\]\n]', ' ', i['label']).strip()}]({i['target']})" for i in items]
+    return kept + f"\n\n{SOURCES_HEADING}\n\n" + "\n".join(lines) + "\n"
+
+
+def keep_sources(before: str | None, after: str) -> str:
+    """Edits that rewrite the whole document (a model's update, a restored version) don't know about attachments:
+    carry them over unless the new text says its own."""
+    attached = sources(before)
+    return set_sources(after, attached) if attached and not sources(after) else after
 
 
 def platforms(text: str | None) -> tuple[list[str], bool]:
@@ -175,7 +209,12 @@ def context_block(root: Path, audience: str = "planner") -> str:
         blocks.append(f"### {s['title']}\n{body}")
     if not blocks:
         return ""
-    return f"\n\n## Product context (source of truth, `{PATH}`)\n{cfg['rule']}\n\n" + "\n\n".join(blocks) + "\n"
+    attached = ""
+    if sources(text):
+        listing = "\n".join(f"- docs/product/{i['target']} ({i['label']})" for i in sources(text))
+        attached = ("\n\n### Full source documents\nThe sections above summarise these. Read the part that matters when a detail isn't settled above; "
+                    f"if a source and a summary disagree, say so instead of guessing.\n{listing}")
+    return f"\n\n## Product context (source of truth, `{PATH}`)\n{cfg['rule']}\n\n" + "\n\n".join(blocks) + attached + "\n"
 
 
 # --------------------------------------------------------------------------- the document, its history and settings
@@ -279,6 +318,7 @@ class Prd:
             raise PrdError("That document is too long.")
         text = normalise(text) if text.strip() else template()
         before = self.read()
+        text = keep_sources(before, text)
         if before is not None and before == text:
             return None
         if record and before is not None and not self._versions():
@@ -308,13 +348,36 @@ class Prd:
             return
         self.write(replace_section(text, "look", (body + "\n" if body else "") + line), "you", f"Added {label} to Look and feel")
 
+    def sources(self) -> list[dict[str, str]]:
+        return sources(self.read())
+
+    def attach_source(self, name: str, data: bytes, text: str) -> list[dict[str, str]]:
+        """Keep an imported document whole in the project, and return the entries to list it under "Source documents".
+        Jobs read these when the short sections don't settle a detail. A Word or PDF file is kept as it came, plus its text."""
+        folder = self.root / SOURCES_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        clean = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(name or "").name).strip(".-") or "product-requirements.md"
+        stem, ext = Path(clean).stem[:80] or "document", Path(clean).suffix.lower()
+        taken = {p.name for p in folder.iterdir()}
+        n = 1
+        while f"{stem}{ext}" in taken or f"{stem}.txt" in taken:
+            n += 1
+            stem = f"{Path(clean).stem[:76]}-{n}"
+        label = Path(name or "").name or "Pasted document"
+        if ext in {".md", ".markdown", ".txt", ".text", ""}:
+            (folder / f"{stem}{ext or '.md'}").write_text(text, encoding="utf-8")
+            return [{"label": label, "target": f"source/{stem}{ext or '.md'}"}]
+        (folder / f"{stem}{ext}").write_bytes(data)
+        (folder / f"{stem}.txt").write_text(text, encoding="utf-8")
+        return [{"label": label, "target": f"source/{stem}{ext}"}, {"label": f"{label}, as text", "target": f"source/{stem}.txt"}]
+
     def sections(self) -> list[dict[str, Any]]:
         return sections_view(self.read())
 
     def overview(self) -> dict[str, Any]:
         text = self.read()
         return {"exists": text is not None, "text": text if text is not None else template(), "sections": sections_view(text),
-                "auto_update": self.auto_update(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
+                "sources": sources(text), "auto_update": self.auto_update(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
                 "history": self.history()}
 
     # ---- an old project's documents become the PRD (the old files are left where they are)
@@ -391,16 +454,27 @@ SHAPE = ("Keep exactly these five sections, with these headings, in this order: 
          "and the question that would settle it. Short lists, no marketing language.")
 
 
-def import_prompt(source: str, name: str = "") -> str:
-    return f"""Someone already has a product requirements document{(' (' + name + ')') if name else ''}. Restructure it into this short format without losing what they wrote.
+SHAPE_SUMMARY = ("Keep exactly these five sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
+                 ". Use the person's own words wherever you can. Do not invent facts; where something is unknown write \"TBD:\" and the question that would settle it. Short lines, no marketing language.")
 
-Their document:
+
+def import_prompt(source: str, name: str = "") -> str:
+    clipped = len(source) > MAX_IMPORT_CHARS
+    return f"""Someone already has a detailed product requirements document{(' (' + name + ')') if name else ''}. Summarise it into this short format.
+The full document stays attached to the project and every AI working on it can read it, so do not copy it. Each section is a SHORT SUMMARY in plain words.
+
+Their document{' (only the first ' + str(MAX_IMPORT_CHARS) + ' characters are shown here)' if clipped else ''}:
 {source[:MAX_IMPORT_CHARS]}
 
-{SHAPE}
-Put each part of their document under the closest section. Anything that doesn't fit (technical design, schedules) can be summarised in one line under "Core features" or left out; say what you left out in the summary.
+{SHAPE_SUMMARY}
+- Pitch: two to four lines: what it is, the problem it solves, and what it is built for (put the platforms on a "Built for:" line).
+- Who it's for: the main users or situations, a few short lines.
+- Core features: one line per feature, the most important first, up to about twelve. Add a short phrase for a rule or number that changes how it is built.
+- Look and feel: only what the document says about style, tone or design; otherwise leave the guidance text.
+- What to exclude: only non-goals the document states; otherwise leave the guidance text.
+- Where the document has detail that matters (a rule, a number, a named screen), keep a short phrase and say where it is, for example "(see 'Checkout rules' in the attached document)".
 
-Reply with ONLY JSON: {{"summary": "what you kept, moved and left out", "markdown": "the complete document"}}"""
+Reply with ONLY JSON: {{"summary": "bulleted: what you captured in each section, and what lives only in the attached document", "markdown": "the complete short document"}}"""
 
 
 def parse_proposal(reply: str) -> dict[str, str]:

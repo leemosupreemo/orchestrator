@@ -2483,6 +2483,8 @@ def feature_context(chosen: dict[str, Any], features: list[dict[str, Any]]) -> s
         lines.append(f"It serves this use case: {chosen['serves']}. Say so in the plan's summary, and check each task still serves it.")
     if chosen.get("stories"):
         lines.append("Its user stories (the plan should deliver these):\n" + "\n".join(f"- {s}" for s in chosen["stories"]))
+    if chosen.get("requirements"):
+        lines.append("Its requirements (the plan and its checks should cover these):\n" + "\n".join(f"- {r}" for r in chosen["requirements"]))
     if chosen.get("paths"):
         lines.append("It owns these paths; keep changes inside them where you can: " + ", ".join(chosen["paths"]))
     deps = [names[d] for d in chosen.get("depends_on") or [] if d in names]
@@ -4673,6 +4675,13 @@ class UIHandler(BaseHTTPRequestHandler):
                 if not inline:
                     headers["Content-Disposition"] = f'attachment; filename="{name}"'
                 self._send(HTTPStatus.OK, target.read_bytes(), inline or "application/octet-stream", headers)
+            elif method == "GET" and len(parts) == 3 and parts[1] == "source":
+                name = parts[2]
+                target = root / prd_doc.SOURCES_DIR / name
+                if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or not target.is_file():
+                    raise UIError("That document isn't there.", HTTPStatus.NOT_FOUND)
+                # Always a download, never shown in place: an imported file can never run in the app's origin.
+                self._send(HTTPStatus.OK, target.read_bytes(), "application/octet-stream", {"Content-Disposition": f'attachment; filename="{name}"'})
             elif method == "GET" and len(parts) == 3 and parts[1] == "history":
                 v = doc.version(parts[2])
                 older = [x for x in doc._versions() if x["at"] < v["at"]]
@@ -4681,7 +4690,7 @@ class UIHandler(BaseHTTPRequestHandler):
             elif method == "POST" and parts == ["product"]:
                 body = self._body()
                 source = _choice(body, "source", ["you", "import", "draft"]) if body.get("source") else "you"
-                summary = _text(body, "summary", limit=300)
+                summary = _text(body, "summary", limit=1000)  # a draft's summary runs to a few bullets; history keeps the first 300 characters
                 if "section" in body:
                     doc.set_section(str(body["section"]), str(body.get("body") or ""), source, summary)
                 else:
@@ -4758,14 +4767,24 @@ class UIHandler(BaseHTTPRequestHandler):
             elif method == "POST" and parts == ["product", "import"]:
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
                     body = self._body()
-                    source, name = _text(body, "text", required=True, limit=prd_doc.MAX_IMPORT_CHARS * 2), "pasted text"
+                    source, name, raw = _text(body, "text", required=True, limit=prd_doc.MAX_IMPORT_CHARS * 2), "pasted text", b""
                 else:
                     name = (query.get("name") or [""])[0]
-                    source = prd_doc.extract_text(name, self._read_upload())
+                    raw = self._read_upload()
+                    source = prd_doc.extract_text(name, raw)
                 if not source.strip():
                     raise UIError("There was no text in that.")
                 current = doc.read() or prd_doc.template()
-                self._start_proposal(root, current, prd_doc.import_prompt(source, name), prd_doc.parse_proposal, 240)
+
+                def summarise(reply: str) -> dict[str, Any]:
+                    """The short sections, plus the whole document kept in the project and listed under Source documents."""
+                    proposal = prd_doc.parse_proposal(reply)
+                    added = doc.attach_source("" if name == "pasted text" else name, raw, source)
+                    proposal["markdown"] = prd_doc.set_sources(proposal["markdown"], doc.sources() + added)
+                    proposal["attached"] = [i["label"] for i in added]
+                    return proposal
+
+                self._start_proposal(root, current, prd_doc.import_prompt(source, name), summarise, 240)
             else:
                 raise UIError("Not found", HTTPStatus.NOT_FOUND)
         except prd_doc.PrdError as exc:
@@ -5235,13 +5254,18 @@ class UIHandler(BaseHTTPRequestHandler):
             if not prd_doc.is_filled_doc(prd_text):
                 raise UIError("Write the product requirements first (Product), so there's something to plan features from.")
             existing = feature_store.load(runtime_dir(root))
-            request = feature_map.prompt(prd_text, existing, prd_doc.project_digest(root))
+            # An attached source document holds the detail behind the short sections: it sets how much to break down, and is read.
+            source_text = "\n\n".join((read_limited(p) or "") for p in sorted((root / prd_doc.SOURCES_DIR).glob("*"))
+                                       if p.suffix.lower() in {".md", ".markdown", ".txt"} and p.is_file())[:30000] \
+                if (root / prd_doc.SOURCES_DIR).is_dir() else ""
+            level = feature_map.detail_level(prd_text, len(source_text))
+            request = feature_map.prompt(prd_text, existing, prd_doc.project_digest(root), level, source_text)
 
             def work() -> dict[str, Any]:
                 try:
-                    return feature_map.parse(self._model_call(root, request, timeout=240), existing)
+                    return feature_map.parse(self._model_call(root, request, timeout=240), existing, level)
                 except feature_map.FeatureMapError:
-                    return feature_map.parse(self._model_call(root, request + prd_doc.FORMAT_REMINDER, timeout=240), existing)
+                    return feature_map.parse(self._model_call(root, request + prd_doc.FORMAT_REMINDER, timeout=240), existing, level)
 
             self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
         elif method == "POST" and parts == ["features", "accept"]:

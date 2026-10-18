@@ -98,5 +98,59 @@ class FeatureMapTests(unittest.TestCase):
         self.assertEqual(store.load(self.runtime), [])
 
 
+
+class DetailAndTechniqueTests(unittest.TestCase):
+    THIN = "# X\n\n## Pitch\nA notes app.\n"
+    FAIR = PRD + "\n## Who it's for\nFriends who like games.\n\n## Core features\n- Play a round\n- Challenge a friend\n- See scores\n- Rematch\n"
+    RICH = FAIR + "\n## Look and feel\n" + ("Warm, paper-like, large type. " * 100)
+
+    def test_the_level_follows_how_much_the_person_has_said(self):
+        self.assertEqual(feature_map.detail_level(self.THIN), "sparse")
+        self.assertEqual(feature_map.detail_level(self.FAIR), "moderate")
+        self.assertEqual(feature_map.detail_level(self.RICH), "detailed")
+        self.assertEqual(feature_map.detail_level(self.THIN, extra_chars=20000), "detailed")  # an attached document counts
+
+    def test_the_prompt_asks_for_less_when_there_is_less_to_go_on(self):
+        thin, rich = feature_map.prompt(self.THIN, [], "", "sparse"), feature_map.prompt(self.RICH, [], "", "detailed")
+        self.assertIn("3 to 6", thin)
+        self.assertIn("No user stories", thin)
+        self.assertIn("up to 15 epics", rich)
+        for name in ("story_map", "wbs", "list"):
+            self.assertIn(f'"{name}"', thin)
+
+    def test_the_prompt_includes_an_attached_source_document(self):
+        self.assertIn("Refunds need a manager", feature_map.prompt(self.FAIR, [], "", "detailed", "Refunds need a manager"))
+
+    def test_a_sparse_answer_is_trimmed_to_what_a_thin_brief_supports(self):
+        entries = [{**item(f"Epic {n}"), "requirements": ["a", "b", "c", "d"], "stories": ["As a x", "As a y"]} for n in range(9)]
+        proposal = feature_map.parse(reply(entries), [], "sparse")
+        self.assertEqual(len(proposal["features"]), 6)
+        self.assertTrue(all(len(f["requirements"]) == 2 and f["stories"] == [] for f in proposal["features"]))
+        self.assertEqual(proposal["detail"], "sparse")
+
+    def test_the_technique_open_questions_and_slices_come_back_checked(self):
+        body = json.dumps({"technique": "story_map", "rationale": "People use it through a flow.", "open_questions": ["Who pays?", "Who pays?", ""],
+                           "features": [{**item("Play a round"), "slice": "mvp", "requirements": ["A round has 6 turns"]},
+                                        {**item("Chat", ["Play a round"]), "slice": "someday"}]})
+        proposal = feature_map.parse(body, [], "detailed")
+        self.assertEqual((proposal["technique"], proposal["technique_name"]), ("story_map", "Story map"))
+        self.assertEqual(proposal["open_questions"], ["Who pays?"])
+        self.assertEqual([f["slice"] for f in proposal["features"]], ["MVP", ""])
+        self.assertEqual(proposal["features"][0]["requirements"], ["A round has 6 turns"])
+
+    def test_slices_are_dropped_unless_it_is_a_story_map_and_an_unknown_technique_is_a_list(self):
+        body = json.dumps({"technique": "something odd", "features": [{**item("Core"), "slice": "MVP"}]})
+        proposal = feature_map.parse(body, [], "moderate")
+        self.assertEqual((proposal["technique"], proposal["features"][0]["slice"]), ("list", ""))
+
+    def test_accepting_keeps_the_requirements_and_slice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            proposal = feature_map.validate([{**item("Play a round"), "requirements": ["A round has 6 turns"], "slice": "MVP"}], [])
+            feature_map.accept(runtime, proposal["features"], ["Play a round"])
+            saved = store.load(runtime)[0]
+            self.assertEqual((saved["requirements"], saved["slice"]), (["A round has 6 turns"], "MVP"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1352,6 +1352,29 @@ process.stdout.write(JSON.stringify({
         self.assertIn("The plan is built", out["finished"])
         self.assertEqual(out["none"], "")
 
+    def test_feature_proposal_view_shows_the_technique_slices_requirements_and_questions(self):
+        helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
+        source = """
+const P = globalThis.FeaturePlan;
+const map = P.renderProposal({technique: "story_map", technique_name: "Story map", rationale: "People use it <through> a flow.", detail: "sparse",
+  open_questions: ["Who pays?"], features: [
+  {name: "Later thing", summary: "", requirements: [], stories: [], depends_on: [], paths: [], layer: 0, slice: "Later"},
+  {name: "Play", summary: "One game", requirements: ["A round has 6 turns <b>"], stories: ["As a player"], depends_on: [], paths: [], layer: 0, slice: "MVP"}]});
+const wbs = P.renderProposal({technique: "wbs", technique_name: "Work breakdown", rationale: "It is an API.", features: [
+  {name: "Auth", summary: "", requirements: ["Tokens expire"], stories: [], depends_on: [], paths: [], layer: 0, slice: ""}]});
+process.stdout.write(JSON.stringify({map, wbs}));"""
+        result = subprocess.run(["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIn("Story map.", out["map"])
+        self.assertIn("People use it &lt;through&gt; a flow.", out["map"])
+        self.assertLess(out["map"].index("MVP: the smallest version"), out["map"].index("Later</div>"))  # slices, not layers
+        self.assertIn("A round has 6 turns &lt;b&gt;", out["map"])
+        self.assertIn("so these are broad", out["map"])  # a brief PRD says so
+        self.assertIn("Who pays?", out["map"])
+        self.assertIn("Start with these", out["wbs"])  # other techniques group by build order
+        self.assertNotIn('class="pill"', out["wbs"])
+
     def test_feature_proposal_view_groups_by_build_order_and_escapes(self):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
         source = """
@@ -1911,7 +1934,27 @@ class ReadApiTests(ServerTestCase):
         self.assertEqual(res.status, 200, data)
         saved = {f["name"]: f for f in data["features"]}
         self.assertEqual(saved["Challenge a friend"]["depends_on"], [saved["Play a round"]["id"]])
-        self.assertEqual(saved["Play a round"]["stories"], ["As a player I can play a round."])
+        self.assertEqual(saved["Play a round"]["stories"], [])  # the requirements here are brief, so no stories are kept
+        self.assertEqual(proposal["detail"], "sparse")
+        self.assertEqual(proposal["technique"], "list")  # the model named none
+
+    def test_feature_proposal_keeps_stories_and_requirements_when_the_requirements_are_detailed(self):
+        self.write_prd()
+        prd_path = self.root / "docs" / "product" / "prd.md"
+        prd_path.write_text(prd_path.read_text() + "\n## Who it's for\n" + "Friends who like word games. " * 30)
+        answer = json.dumps({"technique": "story_map", "rationale": "It is used through a flow.", "features": [
+            {"name": "Play a round", "summary": "One game", "stories": ["As a player I can play a round."], "slice": "MVP",
+             "requirements": ["A round has 6 turns"], "paths": [], "depends_on": []}]})
+        with patch.object(ui.UIHandler, "_model_call", lambda handler, root, prompt, model="", timeout=150: answer):
+            res, started = self.request("POST", "/api/features/propose", {}, headers=UI_HEADERS)
+            proposal = self.wait_task(started["task"])["result"]
+        self.assertEqual((proposal["detail"], proposal["technique"]), ("moderate", "story_map"))
+        feature = proposal["features"][0]
+        self.assertEqual((feature["stories"], feature["requirements"], feature["slice"]),
+                         (["As a player I can play a round."], ["A round has 6 turns"], "MVP"))
+        _, data = self.request("POST", "/api/features/accept", {"features": proposal["features"], "chosen": ["Play a round"]}, headers=UI_HEADERS)
+        saved = data["features"][0]
+        self.assertEqual((saved["requirements"], saved["slice"]), (["A round has 6 turns"], "MVP"))
 
     def test_feature_accept_rechecks_what_the_page_sends(self):
         tampered = [{"name": "A", "depends_on": ["B"], "layer": 0}, {"name": "B", "depends_on": ["A"], "layer": 0}]
@@ -4352,11 +4395,18 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_slow_model_work_is_started_and_polled_not_held_open(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        self.assertEqual(page.count("waitForTask("), 2)  # draft and import
+        self.assertEqual(page.count("waitForTask("), 3)  # draft, import and suggesting features
         fn = self.js[self.js.index("async function waitForTask"):self.js.index("function productStripHtml")]
         self.assertIn("product/task/", fn)
         self.assertIn("e.status === 404 || ++misses >= 4", fn)  # a dropped connection is retried, a vanished task is not
         self.assertIn("7 * 60 * 1000", fn)  # and it never spins for ever
+
+    def test_the_product_page_can_suggest_features_and_add_only_the_ones_ticked(self):
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        for part in ('api("features/propose"', 'api("features/accept"', "FeaturePlan.renderProposal", 'id="prd-suggest"', "open.suggest",
+                     "dataset.needs"):  # ticking a feature also ticks what it builds on
+            self.assertIn(part, page, part)
+        self.assertIn('href="#/product?suggest=1"', self.js)  # offered when a new project is created
 
     def test_working_on_it_is_a_prominent_spinner_with_a_timer(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
@@ -5408,6 +5458,15 @@ class ProductEndpointTests(ServerTestCase):
         self.assertEqual(d["history"][0]["source"], "import")
         self.assertEqual(self.post("/api/product", {"text": text, "source": "ai"})[0].status, 400)  # that was "Help me with this", now gone
 
+    def test_a_drafts_long_summary_does_not_stop_the_draft_being_saved(self):
+        text = prd_mod.replace_section(prd_mod.template(), "pitch", self.PITCH)
+        summary = "\n".join(f"- Inferred point {n}: it appears to do something specific from the project files" for n in range(8))
+        self.assertGreater(len(summary), 300)
+        res, d = self.post("/api/product", {"text": text, "source": "draft", "summary": summary})
+        self.assertEqual(res.status, 200)
+        self.assertIn("A word game", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertLessEqual(len(d["history"][0]["summary"]), 300)
+
     def test_saving_requires_the_ui_header(self):
         res, _ = self.request("POST", "/api/product", body={"section": "pitch", "body": "x"}, headers={"Content-Type": "application/json"})
         self.assertIn(res.status, (400, 403))
@@ -5506,6 +5565,40 @@ class ProductEndpointTests(ServerTestCase):
             task = self.finish((res, data))
         self.assertEqual(task["status"], "done")
         self.assertIn("+From the model", task["result"]["diff"])
+
+    def test_an_imported_document_is_summarised_into_the_fields_and_kept_whole(self):
+        full = "# Big spec\n\n" + "Checkout rules: orders over $500 need a second approver. " * 30
+        summary = prd_mod.replace_section(prd_mod.template(), "pitch", "A checkout tool with approvals")
+        prompts = []
+
+        def fake(self_, root, prompt, model="", timeout=150):
+            prompts.append(prompt)
+            return json.dumps({"summary": "- Pitch captured\n- Rules stay in the document", "markdown": summary})
+
+        with patch.object(ui.UIHandler, "_model_call", fake):
+            res, data = self.raw_post("/api/product/import?name=Big%20Spec.md", full.encode(), ctype="application/octet-stream")
+            task = self.finish((res, data))
+        self.assertEqual(task["status"], "done")
+        self.assertIn("SHORT SUMMARY", prompts[0])
+        self.assertEqual(task["result"]["attached"], ["Big Spec.md"])
+        self.assertIn("(source/Big-Spec.md)", task["result"]["markdown"])
+        self.assertEqual((self.root / "docs/product/source/Big-Spec.md").read_text(), full)
+        # accepting the proposal saves the summary and the attachment together
+        _, saved = self.post("/api/product", {"text": task["result"]["markdown"], "source": "import", "summary": "x"})
+        self.assertEqual([i["target"] for i in saved["sources"]], ["source/Big-Spec.md"])
+        self.assertEqual([s["body"] for s in saved["sections"] if s["id"] == "pitch"], ["A checkout tool with approvals"])
+        res, body = self.raw_get("/api/product/source/Big-Spec.md")
+        self.assertEqual((res.status, body.decode()), (200, full))
+        self.assertIn("attachment", res.getheader("Content-Disposition"))
+        self.assertEqual(self.raw_get("/api/product/source/..%2Fprd.md")[0].status, 404)
+
+    def test_importing_a_second_document_keeps_the_first_attached(self):
+        reply = lambda self_, root, prompt, model="", timeout=150: json.dumps({"summary": "- ok", "markdown": prd_mod.template()})
+        with patch.object(ui.UIHandler, "_model_call", reply):
+            for name in ("one.md", "two.md"):
+                task = self.finish(self.raw_post(f"/api/product/import?name={name}", b"words " + name.encode()))
+                self.post("/api/product", {"text": task["result"]["markdown"], "source": "import"})
+        self.assertEqual([i["target"] for i in self.doc().overview()["sources"]], ["source/one.md", "source/two.md"])
 
     def test_a_reply_in_the_wrong_format_is_asked_for_again_once(self):
         calls = []

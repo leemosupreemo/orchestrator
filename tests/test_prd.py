@@ -30,6 +30,9 @@ class ParsingTests(unittest.TestCase):
         self.assertTrue(all(s["optional"] for s in view))  # every section is optional
         self.assertNotIn("Optional", " ".join(s["hint"] for s in view))  # and none says so as if the others weren't
 
+    def test_a_curly_apostrophe_in_a_heading_still_finds_the_section(self):
+        self.assertEqual(prd.split("## Who it\u2019s for\n\nParents of toddlers\n")["who"], "Parents of toddlers")
+
     def test_guidance_lines_do_not_count_as_content(self):
         self.assertEqual(prd.split(prd.template())["pitch"], "")
         self.assertFalse(prd.is_filled("_Say what you have in mind._"))
@@ -58,6 +61,60 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(prd.platforms(FILLED), (["iOS app", "web app"], False))
         self.assertEqual(prd.platforms("Built for: not decided yet, please recommend"), ([], True))
         self.assertEqual(prd.platforms("nothing"), ([], False))
+
+
+class SourceDocumentTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.doc = prd.Prd(self.root, self.root / ".orchestrator")
+
+    def test_an_imported_text_file_is_kept_whole_and_listed_under_source_documents(self):
+        items = self.doc.attach_source("Big Spec.md", b"", "# The full spec\n\nEvery detail.")
+        self.assertEqual(items, [{"label": "Big Spec.md", "target": "source/Big-Spec.md"}])
+        self.assertEqual((self.root / prd.SOURCES_DIR / "Big-Spec.md").read_text(), "# The full spec\n\nEvery detail.")
+        text = prd.set_sources(prd.template(), items)
+        self.assertEqual(prd.sources(text), items)
+        self.assertEqual(prd.split(text)["pitch"], "")  # the five fields are untouched
+
+    def test_a_word_or_pdf_file_is_kept_as_it_came_with_its_text_beside_it(self):
+        items = self.doc.attach_source("Spec.pdf", b"%PDF-binary", "Extracted words")
+        self.assertEqual([i["target"] for i in items], ["source/Spec.pdf", "source/Spec.txt"])
+        self.assertEqual((self.root / prd.SOURCES_DIR / "Spec.pdf").read_bytes(), b"%PDF-binary")
+        self.assertEqual((self.root / prd.SOURCES_DIR / "Spec.txt").read_text(), "Extracted words")
+
+    def test_a_second_file_with_the_same_name_does_not_overwrite_the_first(self):
+        first = self.doc.attach_source("spec.md", b"", "one")
+        second = self.doc.attach_source("spec.md", b"", "two")
+        self.assertNotEqual(first[0]["target"], second[0]["target"])
+        self.assertEqual((self.root / prd.SOURCES_DIR / "spec.md").read_text(), "one")
+
+    def test_a_path_in_the_name_cannot_leave_the_source_folder(self):
+        items = self.doc.attach_source("../../etc/passwd.md", b"", "x")
+        self.assertTrue((self.root / prd.SOURCES_DIR / Path(items[0]["target"]).name).is_file())
+        self.assertFalse((self.root / "etc").exists())
+
+    def test_edits_that_rewrite_the_whole_document_keep_the_attachments(self):
+        items = self.doc.attach_source("spec.md", b"", "full")
+        self.doc.write(prd.set_sources(prd.replace_section(prd.template(), "pitch", "First"), items))
+        self.doc.write(prd.replace_section(prd.template(), "pitch", "A model rewrote this and forgot the attachments"), "auto")
+        self.assertEqual(self.doc.sources(), items)
+        self.assertEqual(prd.split(self.doc.read())["pitch"], "A model rewrote this and forgot the attachments")
+        self.assertEqual(self.doc.overview()["sources"], items)
+
+    def test_jobs_are_told_where_the_full_document_is(self):
+        items = self.doc.attach_source("spec.md", b"", "full")
+        self.doc.write(prd.set_sources(prd.replace_section(prd.template(), "pitch", "A notes app"), items))
+        block = prd.context_block(self.root, "builder")
+        self.assertIn("docs/product/source/spec.md", block)
+        self.assertIn("A notes app", block)
+
+    def test_the_import_prompt_asks_for_short_summaries_because_the_whole_file_is_kept(self):
+        prompt = prd.import_prompt("long document", "spec.md")
+        self.assertIn("SHORT SUMMARY", prompt)
+        self.assertIn("stays attached", prompt)
+        self.assertNotIn("without losing", prompt)
 
 
 class ContextTests(unittest.TestCase):
