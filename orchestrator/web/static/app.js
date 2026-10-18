@@ -1834,6 +1834,7 @@ function showSignInGate(message) {
         </div>
         <figure class="signin-preview">
           <h3>The app in your head. Made real.</h3>
+          <p class="signin-privacy">Completely private: your code and assets stay on your computer, never on our servers.</p>
           <picture>
             <source media="(prefers-reduced-motion: reduce)" srcset="signin-preview.png">
             <img src="signin-preview.gif" width="720" height="540" alt="Orchestrator screens with a sample Family Recipes project: describe an idea, shape its product brief, approve a plan, and follow build progress through completed checks.">

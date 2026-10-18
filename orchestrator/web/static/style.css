@@ -1282,6 +1282,7 @@ dialog h2 {
 }
 .signin-preview { margin: var(--space-1) 0; display: grid; gap: var(--space-3); }
 .signin-preview h3 { font-size: var(--text-xl); font-weight: 750; letter-spacing: -.025em; text-align: center; }
+.signin-preview .signin-privacy { margin: calc(var(--space-1) * -1) 0 0; text-align: center; color: var(--muted); font-size: var(--text-sm); }
 .signin-preview picture { display: block; overflow: hidden; border-radius: var(--r-md); background: var(--term-bg); box-shadow: var(--shadow); }
 .signin-preview img { display: block; width: 100%; height: auto; }
 .signin-brand .brand-mark {

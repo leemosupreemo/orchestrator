@@ -544,6 +544,16 @@ class FakeTunnelProcess:
         self.exit_code = -9
 
 
+class SignInPrivacyTests(unittest.TestCase):
+    def test_sign_in_promises_code_and_assets_stay_on_the_users_computer(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
+        preview = js[js.index('<figure class="signin-preview">'):][:500]
+        self.assertLess(preview.index("<h3>"), preview.index('class="signin-privacy"'))  # sits under the tagline
+        self.assertIn("your code and assets stay on your computer, never on our servers", preview)
+        self.assertIn(".signin-preview .signin-privacy", css)
+
+
 class ProjectTitleTests(unittest.TestCase):
     def test_home_names_the_project_without_a_second_switcher_and_branch_is_labelled(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
