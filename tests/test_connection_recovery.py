@@ -9,7 +9,7 @@ SCRIPT = r"""
 const fs = require('fs'), vm = require('vm'), assert = require('assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
 const scenario = process.argv[2];
-let now = 1000000, resets = 0, authCalls = 0, unlocked = '', failure = null;
+let now = 1000000, resets = 0, authCalls = 0, unlocked = '', failure = null, refreshed = 0;
 const storage = new Map([['machine', 'mac']]);
 let machine = {id: 'mac', name: 'Mac', online: true, reachable: true,
                endpoint: 'https://old.trycloudflare.com', last_seen: now / 1000};
@@ -20,11 +20,12 @@ const context = {
   localStorage: {getItem: key => storage.get(key) ?? null,
     setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key)},
   setTimeout: (callback, ms) => { now += ms; queueMicrotask(callback); },
-  Account: {MACHINE_KEY: 'machine', pendingIdea: () => null, active: () => true},
+  Account: {MACHINE_KEY: 'machine', pendingIdea: () => null, active: () => true}, ACCOUNT_BACKEND_KEY: 'backend_account',
   stopAccountPoll() {}, showSigningIn() {}, signingIn: false, pollFailures: 2,
   state: {project: {name: 'Project'}}, getBackendUrl: () => machine.endpoint, getToken: () => 'existing',
   ConnectionLog: {add() {}},
   unlockWith: async token => { unlocked = token; },
+  refreshState: async () => { refreshed++; },
   openAccount: async options => { failure = options; },
   cpApi: async (path, options) => {
     if (path === 'machine/ticket') {
@@ -38,7 +39,7 @@ const context = {
     }
     assert.equal(path, 'machines');
     if (scenario === 'offline-during-lookup') context.navigator.onLine = false;
-    if (scenario === 'new-address' || (resets && scenario !== 'timeout' && scenario !== 'same-address')) {
+    if (scenario === 'new-address' || scenario === 'quiet' || (resets && scenario !== 'timeout' && scenario !== 'same-address')) {
       machine = {...machine, endpoint: 'https://new.trycloudflare.com', last_seen: now / 1000};
     } else if (resets && scenario === 'same-address') {
       machine = {...machine, last_seen: now / 1000};
@@ -52,7 +53,7 @@ const context = {
     if (scenario === 'auth-error') throw Object.assign(new Error('Invalid ticket'), {status: 401});
     if (scenario === 'cloudflare-origin' && authCalls === 1) throw Object.assign(new Error('Origin unavailable'), {status: 530});
     if (scenario === 'gateway' && authCalls === 1) throw Object.assign(new Error('Bad Gateway'), {status: 502});
-    if (authCalls === 1 || scenario === 'timeout' || scenario === 'cooldown' || scenario === 'offline' || scenario === 'sleeping') throw networkError();
+    if ((authCalls === 1 && scenario !== 'quiet') || scenario === 'quiet-fail' || scenario === 'timeout' || scenario === 'cooldown' || scenario === 'offline' || scenario === 'sleeping') throw networkError();
     return {token: 'new-token'};
   },
 };
@@ -72,12 +73,16 @@ vm.runInContext(source.slice(source.indexOf('// Open one computer:'), source.ind
     releaseRepairLock?.();
     await opening;
   } else if (scenario === 'relocate') await context.relocateMachine();
+  else if (scenario.startsWith('quiet')) {
+    vm.runInContext(`outageStartedAt = ${scenario === 'quiet-expired' ? now - 60000 : now - 5000}`, context);
+    await context.relocateMachine();
+  }
   else await context.enterMachine(machine);
   if (scenario === 'cooldown') {
     vm.runInContext('machineRepairAttempts.clear()', context); // emulate a fresh tab sharing storage
     await context.enterMachine(machine);
   }
-  process.stdout.write(JSON.stringify({resets, resetsWhileLocked, authCalls, unlocked, failure, elapsed: now - 1000000}));
+  process.stdout.write(JSON.stringify({resets, resetsWhileLocked, authCalls, unlocked, failure, refreshed, token: storage.get('orchestrator_token') ?? '', elapsed: now - 1000000}));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
 
@@ -143,5 +148,22 @@ class ConnectionRecoveryTests(unittest.TestCase):
 
     def test_loaded_session_recovers_when_the_address_has_not_changed(self):
         result = self.run_flow('relocate')
+        self.assertEqual(result['resets'], 1)
+        self.assertEqual(result['unlocked'], 'new-token')
+
+    def test_a_loaded_page_reconnects_quietly_to_the_new_address(self):
+        result = self.run_flow('quiet')
+        self.assertEqual((result['resets'], result['authCalls'], result['refreshed']), (0, 1, 1))
+        self.assertEqual(result['token'], 'new-token')
+        self.assertEqual(result['unlocked'], '')  # no sign-in screen, no route reset
+        self.assertIsNone(result['failure'])  # and never sent to the computers list
+
+    def test_a_failed_quiet_attempt_stays_on_the_page_and_waits_for_the_next_poll(self):
+        result = self.run_flow('quiet-fail')
+        self.assertEqual((result['resets'], result['unlocked'], result['refreshed']), (0, '', 0))
+        self.assertIsNone(result['failure'])
+
+    def test_a_long_outage_falls_back_to_the_full_reconnect(self):
+        result = self.run_flow('quiet-expired')
         self.assertEqual(result['resets'], 1)
         self.assertEqual(result['unlocked'], 'new-token')

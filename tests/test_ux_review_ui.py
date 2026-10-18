@@ -85,6 +85,19 @@ pages['ux-review']([], new URLSearchParams(input.latest ? 'id=older' : '')).then
         self.assertIn("Previous results", page["html"])
         self.assertNotIn("Results unavailable", page["html"])
 
+    def test_a_review_of_an_empty_project_is_marked_as_a_caution_not_a_success(self):
+        report = {**self.report(), "coverage": "empty", "summary": "Nothing to review."}
+        page = self.render(report=report)
+        self.assertIn('<span class="pill attention">Nothing to review</span>', page["html"])
+        self.assertIn("no interface files or screens yet", page["html"])
+        self.assertNotIn("Review complete", page["html"])
+        self.assertNotIn("checklist items pass", page["html"])
+
+    def test_a_review_without_screenshots_says_only_the_code_was_read(self):
+        page = self.render(report={**self.report(), "coverage": "code_only"})
+        self.assertIn('<span class="pill attention">Code only</span>', page["html"])
+        self.assertIn("No screenshots were captured, so only the interface code was reviewed", page["html"])
+
     def test_completion_uses_server_epoch_instead_of_browser_local_date(self):
         report = {**self.report(), "at": "2099-01-01T00:00:00", "completed_at": 1500000000}
         page = self.render(report=report, runs=[{

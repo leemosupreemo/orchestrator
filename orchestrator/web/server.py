@@ -1313,7 +1313,7 @@ def ux_passes(root: Path) -> list[dict[str, Any]]:
         result = read_json_file(child / "result.json") if UX_PASS_RE.match(child.name) else {}
         if result:
             out.append({"id": child.name, "at": result.get("at"), "completed_at": (child / "result.json").stat().st_mtime,
-                        "summary": result.get("summary", ""),
+                        "summary": result.get("summary", ""), "coverage": result.get("coverage", ""),
                         "counts": ux_review.counts(ux_review.parse_result(json.dumps(result)))})
     return out
 
@@ -5529,6 +5529,18 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["new-project", "draft"]:
             self._require_owner("create a project")
             self._json({"draft": new_project.save_draft(self._body())})
+        elif method == "POST" and parts == ["new-project", "design"]:
+            self._require_owner("create a project")
+            name = (query.get("name") or [""])[0]
+            data = self._read_upload()
+            try:
+                if new_job_form.upload_kind(name) == "log":
+                    raise UIError("Add an image, PDF, Figma export or HTML file.")
+                self._json({"draft": new_project.add_design(name, data)})
+            except new_job_form.FormError as exc:
+                raise UIError(str(exc))
+            except new_project.NewProjectError as exc:
+                raise UIError(str(exc))
         elif method == "POST" and parts == ["new-project", "discard"]:
             self._require_owner("create a project")
             self._body()
@@ -5586,6 +5598,15 @@ class UIHandler(BaseHTTPRequestHandler):
             result = init_git_repo(root)
             self._audit("git_initialized", root=str(root))
             self._json(result)
+        elif method == "POST" and parts == ["setup", "configure"]:
+            self._require_owner("configure the project")
+            self._body()
+            try:
+                new_project.configure(root, project_display_name(root))
+            except Exception as exc:
+                raise UIError(f"Couldn't configure the project: {exc}")
+            self._audit("project_configured", root=str(root))
+            self._json({"ok": True})
         elif method == "POST" and parts == ["setup", "github-create"]:
             self._require_owner("create a GitHub repository")
             body = self._body()
@@ -6580,8 +6601,9 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
 
     def announce(label: str, address: str) -> None:
         reach["url"] = address
-        hosted_url = f"{HOSTED_APP_URL}/?backend={address}&token={server.token}"
-        PUBLIC_URL["url"] = hosted_url
+        # Links people are sent (Slack, say) carry no token: the hosted app finds a paired computer through the account,
+        # and the tunnel's own page asks for a sign-in. The hosted app never takes a backend or token from a link.
+        PUBLIC_URL["url"] = f"{HOSTED_APP_URL}/" if paired and address.startswith("https://") else f"{address}/"
         if getattr(server, "trigger_heartbeat", None):
             server.trigger_heartbeat()
         if paired and address.startswith("https://"):
@@ -6590,7 +6612,6 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
             print(f"  Direct link (changes when the tunnel restarts): {address}/?token={server.token}", flush=True)
             return
         print(f"  \033[92m✓ {label}:\033[0m   {address}/?token={server.token}", flush=True)
-        print(f"  \033[92m✓ Phone Web UI:\033[0m {hosted_url}", flush=True)
 
     if tunnel_token or getattr(args, "tunnel", False):
         print("  Starting Cloudflare Named Tunnel (stable persistent token)..." if tunnel_token

@@ -417,7 +417,9 @@ overlap, responsiveness, contrast, dark mode, focus). The checklist is
 - **Product pass.** Web UI > UX review > Run a pass, or `orchestrator script ux_review_run.py pass`. It captures every
   configured screen, runs a UX pass and a design pass (two model calls), and writes one report with findings ranked by
   severity, the checklist, and the screenshots, under `.orchestrator/output/ux-pass/<when>/`. "Create a job to fix"
-  turns the findings into a job.
+  turns the findings into a job. A pass that couldn't capture screenshots finishes as "Completed with notes" (yellow)
+  and says only the code was read; in a project with no interface files it skips the model calls and reports
+  "Nothing to review".
 - **Change check.** After the code review, every job whose diff touches interface files (HTML, CSS, JSX/TSX, Vue,
   Svelte, SwiftUI views, storyboards, scripts in UI folders, or anything matching `ui_review.paths`) gets the same
   checklist on just what it changed. The job page shows a "UX and design check" card, and the hero warns before you
@@ -498,6 +500,8 @@ Pages refresh themselves every few seconds, but never while you're typing, have 
 Every action runs the same CLI command you would type, inside a real terminal that is shown in the page. Prompts that need you (y/n, menus, pasted logs, passwords) appear there, and you answer them by typing into the terminal. On a phone, use the key bar under it (Enter, Esc, arrows, y/n/q, Ctrl-C, Ctrl-D). **Open full console** runs the regular `orchestrator console` in the browser for what has no page of its own: Ask AI about changes, reset & rerun, discard & revert, export context, model and API-key settings, the machine fleet, email recipients, Xcode Cloud and archived jobs. Each run's output is also saved to `.orchestrator/logs/ui/`.
 
 Use it from anywhere:
+
+Quickest on a Mac or Linux computer: run `curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh`. It installs what's missing (Python 3.11+, Git, pipx, cloudflared), installs Orchestrator, shows the code to confirm, and starts Orchestrator at login. Add `--no-service` to skip the login start, or `--dry-run` to only print what it would do. The steps below do the same by hand.
 
 1. On the computer with your projects, run `orchestrator connect`. It shows a code and a link.
 2. Open the link (or go to https://swift-orch-web-20260923.web.app and enter the code), sign in with Google, and confirm. The computer is now on your account.

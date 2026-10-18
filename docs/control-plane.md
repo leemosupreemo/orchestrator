@@ -67,10 +67,11 @@ The Python venv must be built with Python 3.12 (the function's runtime): the CLI
 firebase functions:artifacts:setpolicy --location us-central1 --days 1 --force
 ```
 
-Optional: Firestore TTL policies on the `pairings` and `enrollments` collections' `expire_at` field sweep old codes and enrollment tokens. Expired ones are refused either way.
+Optional: Firestore TTL policies on the `pairings`, `enrollments` and `rate_limits` collections' `expire_at` field sweep old codes, enrollment tokens and counters. Expired ones are refused (or ignored) either way.
+
+`pair/start` is limited to 10 codes per hour from one address (`PAIR_START_LIMIT`), read from Fastly's `Fastly-Client-IP` header, else the first `X-Forwarded-For`. Counting is best effort, enough to stop a flood of writes.
 
 ## Not yet
 
 - Computers are reachable only with an `https://` address the person sets up (`--tunnel`). Next: the control plane provisions a stable tunnel for each computer during pairing.
 - Only the owner can open a computer from the hosted app. Sharing one with teammates comes later.
-- `pair/start` has no rate limit beyond the function's instance cap.

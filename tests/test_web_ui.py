@@ -804,7 +804,7 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def test_account_mode_is_the_hosted_app_without_an_explicit_backend(self):
+    def test_account_mode_is_the_hosted_app_whatever_the_link_says(self):
         result = self.run_account_script("""
 const A = globalThis.Account;
 const hosted = A.HOSTED_ORIGINS[0];
@@ -814,7 +814,7 @@ process.stdout.write(JSON.stringify([
   A.active({origin: "http://127.0.0.1:8765", search: ""}),
   A.active({origin: "https://abc.trycloudflare.com", search: ""}),
 ]));""")
-        self.assertEqual(result, [True, False, False, False])
+        self.assertEqual(result, [True, True, False, False])  # a link can't switch the hosted app to another backend
 
     def test_codes_from_links_are_kept_for_the_visit(self):
         result = self.run_account_script("""
@@ -862,6 +862,7 @@ process.stdout.write(JSON.stringify({
         self.assertIn("<code>orchestrator ui --tunnel</code>", result["list"])
         self.assertIn("Set up where it runs", result["empty"])  # once they've said what they're building
         self.assertIn("pipx install", result["empty"])
+        self.assertIn("web.app/install.sh | sh</pre>", result["empty"])  # the one-command install is offered first
         self.assertIn('data-account-form="code"', result["empty"])
         self.assertIn("<code>orchestrator connect</code>", result["empty"])  # the message's `code` is shown as code
         self.assertIn("ABCD-2345", result["pair"])
@@ -4161,7 +4162,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertLess(home.index("productStripHtml(product"), home.index('class="job-table"'))  # toward the top of the main screen
         self.assertIn('"#/product"', self.js)
         self.assertIn('<script src="markdown.js">', self.html)
-        self.assertIn('href="#/product">Open the product requirements', self.js)
+        self.assertIn('class="product-pitch" href="#/product"', self.js)  # the home strip opens the document
+        self.assertNotIn("Product requirements ready", self.js)  # the new-project result goes straight to setup instead
+        self.assertIn('href="#/checkup">Set up this project', self.js)
         self.assertIn("How do I get better plans?", self.js)
         self.assertNotIn("#/product/", self.js)  # one document, no sub-pages
 
@@ -6342,6 +6345,16 @@ class SetupActionEndpointTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         self.assertTrue(data.get("ok"))
         self.assertTrue((new_folder / ".git").is_dir())
+
+    def test_setup_configure_endpoint_writes_project_json(self):
+        folder = Path(self.tmp.name) / "unconfigured_project"
+        folder.mkdir()
+        self.server.set_root(folder)
+        with patch("orchestrator.cli.remember_project"):
+            res, data = self.request("POST", "/api/setup/configure", body={}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertTrue((folder / ".orchestrator" / "project.json").is_file())
 
     def test_setup_github_create_endpoint(self):
         with patch("orchestrator.new_project.publish_to_github") as mock_pub:

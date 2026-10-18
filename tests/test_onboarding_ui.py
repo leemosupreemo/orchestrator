@@ -35,13 +35,13 @@ pages.checkup().then(page => console.log(JSON.stringify(page)));
 
     def setup(self):
         return {"items": [{"id": key, "title": key, "done": True, "required": True}
-                          for key in ("project", "git", "llm", "machines", "models")],
+                          for key in ("project", "git", "llm", "machines")],
                 "workflow_checks": []}
 
     def test_optional_missing_items_do_not_lower_required_count(self):
         html = self.render(self.setup(), {"integrations": [{"id": "figma", "name": "Figma", "connected": False}]}, {"items": []})
         self.assertIn("Required to run jobs", html)
-        self.assertIn("5 of 5 configured", html)
+        self.assertIn("4 of 4 configured", html)
         self.assertIn("Required for selected workflows", html)
         self.assertIn("Optional", html)
         self.assertIn("Figma", html)

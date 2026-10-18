@@ -463,6 +463,9 @@ a.item:hover { background: var(--panel-2); }
 .banner.done .run-status-progress { accent-color: var(--ok); }
 .banner.done .run-status-progress::-webkit-progress-value { background: var(--ok); }
 .banner.done .run-status-progress::-moz-progress-bar { background: var(--ok); }
+.banner.attention .run-status-progress { accent-color: var(--warn); }
+.banner.attention .run-status-progress::-webkit-progress-value { background: var(--warn); }
+.banner.attention .run-status-progress::-moz-progress-bar { background: var(--warn); }
 .banner.failed .run-status-progress { accent-color: var(--bad); }
 .banner.failed .run-status-progress::-webkit-progress-value { background: var(--bad); }
 .banner.failed .run-status-progress::-moz-progress-bar { background: var(--bad); }
@@ -491,6 +494,10 @@ a.item:hover { background: var(--panel-2); }
 .banner.failed .run-status-pct {
   color: var(--bad);
 }
+.banner.attention .run-status-pct {
+  color: var(--warn);
+}
+.run-status .run-status-caveat { display: flex; align-items: flex-start; gap: var(--space-2); flex: none; font-size: var(--text-sm); line-height: 1.5; }
 .run-status-details .text-ok {
   color: var(--ok);
 }
@@ -2203,6 +2210,9 @@ dialog h2 {
   .onboarding-list > :is(.item, .setup-item) > :is(.side, .btn) { grid-column: 2; width: auto; justify-content: flex-start; justify-self: start; }
   .onboarding-list .btn { max-width: 100%; white-space: normal; text-align: left; }
 }
+/* Checklist rows lead with a 20px check, not a status pill: size the first column to it and keep the button in the row. */
+.onboarding-list > .setup-item { grid-template-columns: auto minmax(0, 1fr) auto; column-gap: var(--space-3); align-items: start; }
+.onboarding-list > .setup-item > .btn { grid-column: 3; justify-self: end; white-space: nowrap; }
 .setup-icon { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border); margin-top: var(--space-0); display: grid; place-items: center; font-size: var(--text-xs); }
 .setup-icon.todo { border-color: var(--accent); }
 .setup-icon.done { background: var(--ok-solid); border-color: var(--ok-solid); color: var(--ok-solid-ink); }
@@ -2559,6 +2569,7 @@ body[data-page="connections"] .configuration-card .card-b {
 .status-stack .status-stats { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 
 /* Start a new project */
+body[data-page="new-project"] #page-sub { margin-top: var(--space-2); }
 .np-stepper { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-sm); }
 .np-step { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--muted); }
 .np-step.on { color: var(--text); font-weight: 600; }

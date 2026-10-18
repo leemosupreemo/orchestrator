@@ -45,7 +45,7 @@ class SetupChecklistTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             result = _checklist(Path(d), gh={"installed": False, "user": None}, providers=[])
             items = _by_id(result)
-            for key in ("project", "git", "llm", "machines", "models"):
+            for key in ("project", "git", "llm", "machines"):
                 self.assertTrue(items[key]["required"] and not items[key]["done"], key)
             self.assertFalse(result["complete"])
             # No GitHub remote, so plain git: GitHub isn't asked for, and a remote is optional.
@@ -69,7 +69,7 @@ class SetupChecklistTests(unittest.TestCase):
                 {"name": "paused", "enabled": False, "models": ["claude-x"]}]}))
             result = _checklist(root)
             self.assertFalse(_by_id(result)["machines"]["done"])
-            self.assertFalse(_by_id(result)["models"]["done"])
+            self.assertFalse(_by_id(result)["llm"]["done"])
             self.assertFalse(result["complete"])
 
     def test_fully_configured_project_is_complete(self):
@@ -109,6 +109,12 @@ class SetupChecklistTests(unittest.TestCase):
             items = _by_id(result)
             self.assertFalse(items["git"]["done"])
             self.assertEqual(items["git"]["action"], {"type": "git_init", "label": "Initialize"})
+
+    def test_unconfigured_project_offers_one_click_configure(self):
+        with tempfile.TemporaryDirectory() as d:
+            items = _by_id(_checklist(Path(d), gh={"installed": True, "user": "dev"}, providers=[]))
+            self.assertFalse(items["project"]["done"])
+            self.assertEqual(items["project"]["action"], {"type": "configure_project", "label": "Configure"})
 
     def test_git_repo_without_origin_offers_github_create_when_signed_in(self):
         with tempfile.TemporaryDirectory() as d:

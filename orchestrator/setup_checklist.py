@@ -127,7 +127,7 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
 
     items = [
         _item("project", "Project configured", True, bool(project), "Name, build and test settings" if project else "No .orchestrator/project.json yet",
-              action=page("#/setup"), group="Project"),
+              action=None if project else {"type": "configure_project", "label": "Configure"}, group="Project"),
         _item("git", "Git repository", True, is_git, "Initialized" if is_git else "This folder isn't a git repository",
               action=None if is_git else {"type": "git_init", "label": "Initialize"},
               hint=None if is_git else "git init", group="GitHub" if github else "Git"),
@@ -152,16 +152,14 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
                            action=remote_action,
                            hint=None if origin else "git remote add origin <url>", group="Git"))
     items += [
-        _item("llm", "An AI provider is ready", True, bool(providers),
-              ", ".join(providers[:4]) if providers else "No AI is set up yet. Free options are available.",
-              action={"type": "route", "to": "#/config/ai"}, group="AI"),
+        _item("llm", "An AI model is ready", True, bool(providers) and bool(models),
+              "No AI is set up yet. Free options are available." if not providers
+              else "No model is assigned to a machine" if not models else "Ready to run jobs",
+              action={"type": "route", "to": "#/config/ai" if not providers else "#/config/models"}, group="AI"),
         _item("machines", "A machine to run jobs on", True, bool(enabled_machines),
               (f"{len(enabled_machines)} enabled, {ssh_machines} remote over SSH" if ssh_machines else f"{len(enabled_machines)} enabled. Add other Macs to run jobs side by side.")
               if enabled_machines else "No enabled machines. Add or enable a machine.",
               action=page("#/config/fleet"), group="AI"),
-        _item("models", "At least one model selected", True, bool(models),
-              f"{len(models)} selected" if models else "No models are assigned to a machine",
-              action=page("#/config/models"), group="AI"),
         _item("docs", "Grounding docs (AGENTS.md, docs/)", False,
               (root / "AGENTS.md").exists() and (root / "docs" / "architecture.md").exists(),
               "Give the AI the project's rules and architecture", action=page("#/config/ai-instructions"), group="Recommended"),

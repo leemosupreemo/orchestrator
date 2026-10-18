@@ -66,7 +66,18 @@ let current = { page: null, args: [], query: null, rendered: "" };
 
 const DEFAULT_REMOTE_BACKEND = "";
 
+// The hosted app only talks to a computer its own account vouched for: the address signInToMachine got from the control
+// plane, marked here. Nothing else on that origin (a link's ?backend=, a typed address, an old value) can choose a backend,
+// since the app sends sign-in tokens, including a Firebase ID token, to the backend it is using.
+const ACCOUNT_BACKEND_KEY = "orchestrator_backend_account";
+
 function getBackendUrl() {
+  if (Account.isHosted()) {
+    const stored = localStorage.getItem("orchestrator_backend");
+    if (stored && stored === localStorage.getItem(ACCOUNT_BACKEND_KEY)) return stored;
+    if (stored) localStorage.removeItem("orchestrator_backend");
+    return "";
+  }
   const params = new URLSearchParams(window.location.search);
   const qb = params.get("backend");
   if (qb) {
@@ -88,7 +99,7 @@ function getBackendUrl() {
 
 function getToken() {
   const params = new URLSearchParams(window.location.search);
-  const qt = params.get("token");
+  const qt = Account.isHosted() ? "" : params.get("token"); // on the hosted app sign-in comes from the account, never a link
   if (qt) {
     localStorage.setItem("orchestrator_token", qt);
     try {
@@ -1051,6 +1062,7 @@ async function refreshState() {
     if (configurationMenu) configurationMenu.innerHTML = ConfigurationPages.renderMenu(viewerRole);
     consecutiveAuthFailures = 0;
     pollFailures = 0;
+    outageStartedAt = 0;
     if (connectionLost) {
       connectionLost = false;
       ConnectionLog.add("reconnected", { down_ms: Date.now() - connectionLostAt });
@@ -1079,13 +1091,14 @@ async function refreshState() {
     // Transient network errors, tunnel drops, or 502/504 errors should NEVER lock the user out!
     console.warn("Background state refresh notice (will retry):", e.message);
     pollFailures += 1;
+    outageStartedAt ||= Date.now();
     // Opening the hosted app with an old saved address: the account screen below finds the computer, so no warning.
     const reopening = !state.project && Account.active();
     if (pollFailures >= 2 && !connectionLost && !reopening) { // two misses in a row: say so, rather than showing stale data silently
       connectionLost = true;
       connectionLostAt = Date.now();
       ConnectionLog.add("connection_lost", { failures: pollFailures, error: e.message, ua: navigator.userAgent });
-      notify("warning", "Can't reach Orchestrator. Check that it's running and that you're online.", { id: "connection", sticky: true });
+      notify("warning", Account.active() ? "Lost the connection to your computer. Reconnecting…" : "Can't reach Orchestrator. Check that it's running and that you're online.", { id: "connection", sticky: true });
     }
     if (Account.active()) {
       if (window.firebase?.auth?.().currentUser) {
@@ -1486,6 +1499,7 @@ async function signInToMachine(machine, deadline = Date.now() + 16000) {
     method: "POST", body: { machine_id: machine.id }, signal: signal(),
   });
   localStorage.setItem("orchestrator_backend", endpoint);
+  localStorage.setItem(ACCOUNT_BACKEND_KEY, endpoint);
   localStorage.setItem(Account.MACHINE_KEY, machine.id);
   localStorage.removeItem("orchestrator_token");
   try {
@@ -1642,6 +1656,16 @@ async function enterMachine(machine) {
 // new one each time it restarts), so when calls keep failing, ask the account where the computer is now and move there.
 let relocating = false;
 let lastRelocateTry = 0;
+let outageStartedAt = 0; // when the poll first failed in a row; 0 while the connection is fine
+// For this long after a loss, a loaded page reconnects without a word: no sign-in screen, no leaving the page you're on.
+// Past it, the full flow below takes over (it can also ask the computer to restart its tunnel).
+const QUIET_RECONNECT_MS = 45000;
+async function reconnectQuietly(machine) {
+  const res = await signInToMachine(machine);
+  localStorage.setItem("orchestrator_token", res.token);
+  pollFailures = 0;
+  await refreshState();
+}
 async function relocateMachine() {
   if (relocating || signingIn || !Account.active() || Date.now() - lastRelocateTry < 10000) return;
   let remembered = null;
@@ -1668,6 +1692,10 @@ async function relocateMachine() {
     }
     if (endpoint !== getBackendUrl() || !state.project || !getToken() || pollFailures >= 2) {
       ConnectionLog.add("relocated", { backend: new URL(endpoint).host });
+      if (state.project && outageStartedAt && Date.now() - outageStartedAt < QUIET_RECONNECT_MS) {
+        try { await reconnectQuietly(machine); } catch { /* the next poll tries again */ }
+        return;
+      }
       await enterMachine(machine);
     }
   } catch (err) {
@@ -1922,6 +1950,7 @@ function showSignInGate(message) {
     const el = $("#signin-backend");
     if (!el) return;
     const b = el.value.trim().replace(/\/+$/, "");
+    if (Account.isHosted()) return;
     if (b) localStorage.setItem("orchestrator_backend", b);
     else localStorage.removeItem("orchestrator_backend");
   };
@@ -2676,6 +2705,20 @@ document.addEventListener("click", async (e) => {
       try {
         await api("setup/git-init", { method: "POST", body: {} });
         toast("Initialized git repository");
+        await loadState();
+        await loadSetup(true);
+        if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
+        route();
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        go.disabled = false;
+      }
+    } else if (item.action.type === "configure_project") {
+      go.disabled = true;
+      try {
+        await api("setup/configure", { method: "POST", body: {} });
+        toast("Project configured");
         await loadState();
         await loadSetup(true);
         if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
@@ -4707,7 +4750,11 @@ pages["ux-review"] = async (_, query) => {
   const running = Boolean(run?.running);
   const progress = run?.progress || {};
   const hasSteps = Number.isInteger(progress.step) && progress.total === 4 && progress.step >= 1 && progress.step <= 4;
-  const status = running ? "Review running" : failed ? (run.stopped ? "Review stopped" : "Review failed") : latest && !newerRun ? (timingUnknown ? "Saved results available" : "Review complete") : newerRun ? "Results unavailable" : "Not started";
+  // A review can finish without having judged much: say so instead of calling it complete.
+  const caveat = pass && !newerRun ? pass.coverage === "empty" ? "Nothing to review" : pass.coverage === "code_only" ? "Code only" : "" : "";
+  const caveatText = caveat === "Nothing to review" ? "This project has no interface files or screens yet, so there was nothing to review. Add some UI, then run the review again."
+    : caveat ? `No screenshots were captured, so only the interface code was reviewed. Layout, spacing and contrast were not judged.${cfg?.url ? " Check that the app is running at the address below." : ""}` : "";
+  const status = running ? "Review running" : failed ? (run.stopped ? "Review stopped" : "Review failed") : latest && !newerRun ? (caveat ? caveat : timingUnknown ? "Saved results available" : "Review complete") : newerRun ? "Results unavailable" : "Not started";
   const areaCard = (area, title) => {
     const findings = (pass?.findings || []).filter((f) => f.area === area);
     const reported = new Map((pass?.checklist || []).map((c) => [c.id, c]));
@@ -4731,7 +4778,7 @@ pages["ux-review"] = async (_, query) => {
           ${cfg?.url ? `<p class="muted">App address: ${esc(cfg.url)} · ${plural((cfg.routes || []).length, "page")} · ${(cfg.widths || []).map((w) => `${esc(w)}px`).join(", ")}${cfg.dark_mode ? " · light and dark mode" : ""}</p>` : ""}
         </div>
       </section>
-      <section class="card mb-16" id="ux-current-progress" aria-labelledby="ux-progress-title"><div class="card-h"><h2 id="ux-progress-title">Current progress</h2><span class="pill ${failed ? "failed" : running ? "working" : pass && !newerRun ? "done" : ""}">${status}</span></div>
+      <section class="card mb-16" id="ux-current-progress" aria-labelledby="ux-progress-title"><div class="card-h"><h2 id="ux-progress-title">Current progress</h2><span class="pill ${failed ? "failed" : running ? "working" : caveat ? "attention" : pass && !newerRun ? "done" : ""}">${status}</span></div>
         <div class="card-b stack" role="status" aria-live="polite">
           ${running ? `<p>${hasSteps ? `Step ${progress.step} of 4: ` : ""}${esc(progress.label || "Waiting for the reviewer to report its stage")}</p>
             ${hasSteps ? `<progress class="ux-review-progress" value="${progress.step - 1}" max="4" aria-label="Completed review stages">${progress.step - 1} of 4</progress>` : ""}
@@ -4752,13 +4799,14 @@ pages["ux-review"] = async (_, query) => {
             ${uxScreensHtml(selectedCapture.screens, captureBase)}
             ${!selectedCapture.screens?.length ? `<div class="notice">This capture saved no screenshots. Check the setup and capture limits below, then retry.</div>` : ""}
             ${captureLimits.length ? `<p class="muted">Capture limits: ${esc(captureLimits.join(" "))}</p>` : ""}`
-          : `<p>No UI screenshots have been saved yet.</p><a class="btn small" href="#/ux-review?setup=1">Set up screenshot capture</a>`}
+          : `<p>${pass && !newerRun ? "The last review captured no screenshots." : "No UI screenshots have been saved yet."}</p>${pass?.limits ? `<p class="muted">Capture limits: ${esc(pass.limits)}</p>` : ""}<a class="btn small" href="#/ux-review?setup=1">Set up screenshot capture</a>`}
         </div></section>
       ${pass ? `
         <section class="card mb-16"><div class="card-h"><h2>${previousResults ? "Previous results" : "Review results"}</h2><span class="count">${esc(ago(Date.parse(pass.at) / 1000))}</span></div>
           <div class="card-b stack">
-            <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings ? "attention" : "done"}">${plural(pass.counts.findings, "finding")}</span>
-              ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span></div>
+            ${caveatText ? `<div class="notice">${esc(caveatText)}</div>` : ""}
+            <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings || caveat ? "attention" : "done"}">${caveat === "Nothing to review" ? "Nothing reviewed" : plural(pass.counts.findings, "finding")}</span>
+              ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}${caveat === "Nothing to review" ? "" : `<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span>`}</div>
             ${pass.summary ? `<p>${clamped(pass.summary, 500)}</p>` : ""}
             ${pass.limits ? `<p class="muted">${esc(pass.limits)}</p>` : ""}
             ${pass.findings?.length ? `<div>${uxFixLink(pass.fix_text, "Create a job to fix the main ones")}</div>` : ""}
@@ -4827,9 +4875,9 @@ pages.checkup = async () => {
     : i.id === "release" && i.status === "todo" ? {...i, hint: "", release: true, detail: "Mark a version as released so you can track changes since it shipped.", label: "Create release tag"} : i);
   const missing = (id, title, route) => ({id, title, status: "unknown", detail: "Status unavailable. Open settings to check.", route, label: "Check setup"});
   const fromSetup = (i) => ({...i, status: i.done ? "ok" : "todo", setup: true});
-  const coreIds = ["project", "git", "llm", "machines", "models"];
-  const coreNames = ["Project configuration", "Git repository", "An AI provider is ready", "An enabled machine", "Model assigned to a machine"];
-  const coreRoutes = ["#/setup", "#/git", "#/config/ai", "#/config/fleet", "#/config/models"];
+  const coreIds = ["project", "git", "llm", "machines"];
+  const coreNames = ["Project configuration", "Git repository", "An AI model is ready", "An enabled machine"];
+  const coreRoutes = ["#/setup", "#/git", "#/config/ai", "#/config/fleet"];
   const required = coreIds.map((id, n) => {
     const item = setup?.items.find((i) => i.id === id);
     return item ? fromSetup(item) : missing(id, coreNames[n], coreRoutes[n]);
@@ -4837,10 +4885,10 @@ pages.checkup = async () => {
   // Older servers count disabled machines; use their public machine inventory when available.
   if (config?.machines) {
     const enabled = config.machines.filter((m) => m.enabled !== false);
-    const machine = required.find((i) => i.id === "machines"), models = required.find((i) => i.id === "models");
+    const machine = required.find((i) => i.id === "machines"), ai = required.find((i) => i.id === "llm");
     machine.status = enabled.length ? "ok" : "todo"; machine.done = Boolean(enabled.length);
     machine.detail = enabled.length ? `${enabled.length} enabled. Worker connectivity is checked before a job runs.` : "No enabled machines. Add or enable a machine.";
-    models.status = enabled.some((m) => m.models > 0) ? "ok" : "todo"; models.done = models.status === "ok";
+    if (ai.done && !enabled.some((m) => m.models > 0)) { ai.status = "todo"; ai.done = false; ai.detail = "No model is assigned to a machine"; ai.route = "#/config/models"; }
   }
   const environmentChecks = (preflight?.items || []).map((i) => ({...i,
     status: i.status === "fail" ? "todo" : i.status, route: i.route, label: i.route ? i.fix || "Review setup" : "Review setup"}));
@@ -4895,7 +4943,7 @@ pages.checkup = async () => {
     sub: `${esc(d.name)} · ${esc(d.stage)}`,
     html: `<p class="muted mb-16">Set up the essentials, then the workflows and connections you need. Optional items do not affect required setup counts. Configured does not guarantee access; job checks verify tools and workers when used.</p>
       ${next ? `<section class="card mb-16 card-next"><div class="card-h"><h2>Next: ${esc(next.title)}</h2></div><div class="card-b stack">${next.setup ? action(next, true) : `<p>${esc(next.detail)}</p><div>${action(next, true)}</div>`}</div></section>` : ""}
-      ${group("Required to run jobs", required, "Project, Git, an AI provider, an enabled machine, and a model assignment.")}
+      ${group("Required to run jobs", required, "Project, Git, an AI model, and an enabled machine.")}
       ${group("Required for selected workflows", workflows, "Applies when using GitHub, building or testing this app, or distributing builds.")}
       <section class="card mb-16"><div class="card-h"><h2>Tools and environment</h2></div><div class="card-b muted card-note">Build tools on this computer, remote worker access, sign-ins, and project checks.</div>
         <div class="card-h"><h3>Will this computer build it?</h3><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
@@ -7675,7 +7723,7 @@ pages["new-project"] = async (_, query) => {
   // An idea told before setup (Mac app, the hosted app's first screen, the no-project screen) is saved as the draft
   // straight away, so it can't be lost, and never silently swapped for a different draft already in progress.
   const idea = query.get("pitch") ? { pitch: query.get("pitch"), name: query.get("name") || "" } : Account.pendingIdea();
-  const ideaAnswers = idea?.pitch ? { pitch: idea.pitch.trim().slice(0, 200), name: (idea.name || "").trim().slice(0, 200) } : null;
+  const ideaAnswers = idea?.pitch ? { pitch: idea.pitch.trim().slice(0, 600), name: (idea.name || "").trim().slice(0, 200) } : null;
   const forgetIdea = () => { Account.clearIdea(); if (query.get("pitch")) history.replaceState(null, "", "#/new-project"); };
   let ideaChoice = "";
   if (ideaAnswers) {
@@ -7711,6 +7759,11 @@ pages["new-project"] = async (_, query) => {
     ? `<div class="banner attention np-resume"><p><strong>Picking up where you left off</strong>${draft.answers.name ? ` on “${esc(draft.answers.name)}”` : ""}.${draft.waiting_on_github ? " You were finishing GitHub." : ""}</p></div>` : "";
   const discard = data.draft ? `<button type="button" class="btn ghost" id="np-discard">Start over</button>` : "";
 
+  const npDesignPicker = () => `<div class="field"><span>Design references <span class="muted">(optional)</span></span>
+      <input type="file" id="np-design-file" class="sr-only" multiple accept="image/*,.pdf,.fig,.html,.htm" aria-label="Upload design references">
+      <label class="prd-drop upload-drop file-picker" for="np-design-file" id="np-design-drop">${filePickerContent("Add design references", "Images, a PDF, a .fig file or an HTML mockup: screens you like, a sketch, an existing design.")}</label>
+      <div class="upload-chips row" id="np-design-chips" aria-live="polite"></div></div>`;
+
   const ghPanel = () => {
     if (gh.user) return `<div class="np-gh ok">✓ Signed in to GitHub as <strong>${esc(gh.user)}</strong></div>`;
     if (!gh.installed) return `<div class="np-gh warn"><strong>GitHub needs a one-time setup.</strong> Install the GitHub CLI, then check again.
@@ -7727,15 +7780,15 @@ pages["new-project"] = async (_, query) => {
     const filledOptional = optional.some((q) => (draft.answers[q.key] || "").trim());
     const sectionsHtml = `<fieldset class="np-section-card stack"><legend class="np-section-legend">The basics</legend>
         ${needed.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}</fieldset>
-      ${optional.length ? `<details class="np-section-card np-more"${filledOptional ? " open" : ""}><summary class="np-section-legend">Add more detail (optional)</summary>
-        <div class="stack">${optional.map((q) => npQuestion(q, draft.answers[q.key] || "")).join("")}</div></details>` : ""}`;
+      ${optional.length ? `<details class="np-section-card np-more"${filledOptional || (draft.designs || []).length ? " open" : ""}><summary class="np-section-legend">Add more detail (optional)</summary>
+        <div class="stack">${optional.map((q) => npQuestion(q, draft.answers[q.key] || "") + (q.key === "look" ? npDesignPicker() : "")).join("")}</div></details>` : ""}`;
 
     return {
       title: "Start a new project", sub: npStepper("describe"),
       html: `${resume}<form class="card card-b stack np-form" id="np-describe">
         <p class="muted">Short answers are fine. They become your product description, which you can change any time.</p>
         ${sectionsHtml}
-        <div class="row"><span class="spacer"></span>${discard}<button class="btn primary big" type="submit">Next: where it lives</button></div></form>`,
+        <div class="row">${discard}<span class="spacer"></span><button class="btn primary" type="submit">Next: where it lives</button></div></form>`,
       after: () => {
         wireIdeaChoice();
         // "Not sure" and a platform contradict each other: picking one clears the other.
@@ -7751,6 +7804,36 @@ pages["new-project"] = async (_, query) => {
           try { await npSave({ ...draft, answers: picked, step: "where" }); location.hash = "#/new-project?step=where"; route(); } catch (err) { toast(err.message, true); }
         });
         $("#np-discard")?.addEventListener("click", async () => { await api("new-project/discard", { method: "POST", body: {} }); route(); });
+        let uploading = 0;
+        const chips = () => {
+          const box = $("#np-design-chips"); if (!box) return;
+          box.innerHTML = (draft.designs || []).map((d, i) => `<span class="chip">${esc(d.name)}<button type="button" data-np-design-remove="${i}" aria-label="Remove ${esc(d.name)}">✕</button></span>`).join("")
+            + (uploading ? `<span class="muted">Uploading…</span>` : "");
+        };
+        chips();
+        $("#np-design-chips")?.addEventListener("click", (e) => {
+          const b = e.target.closest("[data-np-design-remove]"); if (!b) return;
+          draft.designs.splice(Number(b.dataset.npDesignRemove), 1); chips();
+          npSave({ ...draft, answers: answersFrom($("#np-describe")) }).catch((err) => toast(err.message, true));
+        });
+        const input = $("#np-design-file"), drop = $("#np-design-drop");
+        drop?.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+        drop?.addEventListener("dragleave", () => drop.classList.remove("over"));
+        drop?.addEventListener("drop", (e) => {
+          e.preventDefault(); drop.classList.remove("over");
+          if (e.dataTransfer?.files?.length) { input.files = e.dataTransfer.files; input.dispatchEvent(new Event("change")); }
+        });
+        input?.addEventListener("change", async () => {
+          const files = [...input.files]; input.value = "";
+          // The draft must exist before a file can be held with it; saving the answers so far also keeps them.
+          try { await npSave({ ...draft, answers: answersFrom($("#np-describe")) }); } catch (err) { toast(err.message, true); return; }
+          for (const f of files) {
+            if (f.size > NJ_UPLOAD_LIMIT) { toast(`${f.name} is over ${NJ_UPLOAD_LIMIT / 1048576} MB`, "warning"); continue; }
+            uploading += 1; chips();
+            try { draft.designs = (await uploadFile(f, "new-project/design")).draft.designs; } catch (err) { toast(`${f.name}: ${err.message}`, true); }
+            uploading -= 1; chips();
+          }
+        });
       },
     };
   }
@@ -7775,7 +7858,7 @@ pages["new-project"] = async (_, query) => {
           <small class="hint-text">A folder named “${esc(answersSlug(draft))}” is created inside this one.</small></label>
         <div class="row"><button type="button" class="btn ghost" id="np-back">Back</button><span class="spacer"></span>
           ${host === "github" && !ready ? `<button type="button" class="btn" id="np-local">Use local only for now</button>` : ""}
-          <button class="btn primary big" type="submit" ${ready ? "" : "disabled"}>Create project</button></div>
+          <button class="btn primary" type="submit" ${ready ? "" : "disabled"}>Create project</button></div>
         ${host === "github" && !ready ? `<small class="hint-text">Create is available once GitHub is signed in.</small>` : ""}</form>`,
       after: () => {
         wireIdeaChoice();
@@ -7814,11 +7897,7 @@ pages["new-project"] = async (_, query) => {
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
       ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
       ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
-      <section class="card mt-16"><div class="card-h"><h2>Product requirements ready</h2></div><div class="card-b stack">
-        <div>Your product requirements document is saved with all five PRD sections. You can review or refine it anytime as the project evolves.</div>
-        <div><a class="btn" href="#/product">Open the product requirements</a></div></div></section>
-      <div class="row mt-16"><a class="btn primary big" href="#/checkup">Set up this project</a><a class="btn big" href="#/">Open dashboard</a></div>
-      <p class="muted">“Set up this project” lists what jobs need (an AI, a machine, how it's built and tested), each with a way to do it here.</p>`,
+      <div class="row mt-16"><a class="btn primary big" href="#/checkup">Set up this project</a></div>`,
     after: () => {
       $("#np-recheck")?.addEventListener("click", () => route());
       $("#np-signin")?.addEventListener("click", () => signInToGitHub());
@@ -8582,8 +8661,9 @@ function runStatus(r, vc = null) {
     </section>`;
   }
 
-  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : "Completed";
-  const tone = stopping || r.waiting ? "attention" : r.running ? "working" : failed ? "failed" : "done";
+  const caveat = done ? p.notice || "" : ""; // a run that finished but only partly did its job
+  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : caveat ? "Completed with notes" : "Completed";
+  const tone = stopping || r.waiting || caveat ? "attention" : r.running ? "working" : failed ? "failed" : "done";
   const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
   const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
   const totalSteps = numbered ? (p.total || 5) : 1;
@@ -8664,7 +8744,7 @@ function runStatus(r, vc = null) {
   const showAction = Boolean(actionName && (!headlineLabel || actionName.toLowerCase() !== headlineLabel.toLowerCase()) && (!p.label || actionName.toLowerCase() !== p.label.toLowerCase()));
   const actionItem = showAction ? `<div><dt>Action</dt><dd>${esc(actionName)}</dd></div>` : "";
   const resultText = done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
-  const resultItem = resultText ? `<div><dt>Result</dt><dd class="${done ? "text-ok" : "text-bad"}">${esc(resultText)}</dd></div>` : "";
+  const resultItem = resultText ? `<div><dt>Result</dt><dd class="${caveat ? "" : done ? "text-ok" : "text-bad"}">${esc(resultText)}</dd></div>` : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";
 
@@ -8679,6 +8759,7 @@ function runStatus(r, vc = null) {
       ${stateItem}
       ${resultItem}
     </dl>
+    ${caveat ? `<p class="run-status-caveat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> ${esc(caveat)}</p>` : ""}
     ${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}
     ${guidance ? `
       <div class="run-status-guidance">
@@ -9641,7 +9722,7 @@ async function route() {
     let result;
     try {
       result = r.page === "setup" ? await DesktopSetup.render({api, esc, root: r.query.get("root"),
-        onReady: async () => { await refreshState(); location.hash = "#/"; await route(); }})
+        onReady: async () => { await refreshState(); location.hash = "#/checkup"; await route(); }})
         : await pages[r.page](r.args, r.query);
     } finally { clearTimeout(slow); }
     if (current.page === r.page && current.args.join() === r.args.join()) {

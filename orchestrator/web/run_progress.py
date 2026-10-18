@@ -30,6 +30,7 @@ class RunProgress:
         self.models: list[str] = []
         self.active: list[str] = []
         self.is_coverage = False
+        self.notice = ""
 
     def feed(self, chunk: bytes) -> None:
         # PTY reads can split a UTF-8 character or ANSI sequence. Decode complete lines only.
@@ -69,6 +70,10 @@ class RunProgress:
                     self.task = desc.capitalize() if desc else ""
                     self.label = desc.capitalize() if desc else "Running step"
 
+            notice = re.fullmatch(r"\[notice\]\s*(.+)", line)
+            if notice:  # a finished run can say it only partly did its job
+                self.notice = notice[1].strip()[:400]
+
             start = re.search(r"Running LLM \(([^,)]+)", line)
             if start:
                 model = start[1].strip()
@@ -93,4 +98,4 @@ class RunProgress:
     def snapshot(self, running: bool = True) -> dict:
         active = self.active if running else []
         return {"label": self.label, "task": self.task, "step": self.step, "total": self.total,
-                "models": list(self.models), "active_models": list(dict.fromkeys(active)), "agents": len(active)}
+                "notice": self.notice, "models": list(self.models), "active_models": list(dict.fromkeys(active)), "agents": len(active)}

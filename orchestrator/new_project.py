@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -23,9 +25,9 @@ from orchestrator.project_config import remember_project, safe_resolve, user_sta
 QUESTIONS: list[dict[str, Any]] = [
     {"key": "name", "label": "What's it called?", "help": "A working name is fine. It becomes the folder name.", "kind": "text", "required": True, "section": "project"},
     {"key": "pitch", "label": "What is it, in one sentence?", "help": "e.g. A turn-based word game you can play with friends.", "kind": "text", "required": True, "section": "pitch"},
-    {"key": "audience", "label": "Who is it for?", "help": "The people who'll use it.", "kind": "text", "required": True, "section": "who"},
-    {"key": "problem", "label": "What problem does it solve for them?", "help": "Why would they want it?", "kind": "area", "required": True, "section": "pitch"},
-    {"key": "features", "label": "What must it do on day one?", "help": "Up to five things, one per line. Keep it to the essentials.", "kind": "area", "required": True, "section": "features"},
+    {"key": "audience", "label": "Who is it for?", "help": "The people who'll use it. e.g. Friends who want a quick game on their phones, or small-shop owners tracking inventory.", "kind": "text", "required": True, "section": "who"},
+    {"key": "problem", "label": "What itch does this scratch?", "help": "Why would they want it?", "kind": "area", "required": True, "section": "pitch"},
+    {"key": "features", "label": "What must it do on day one?", "help": "List your top features, up to five, one per line. Keep it to the essentials.", "kind": "area", "required": True, "section": "features"},
     {"key": "platform", "label": "What are you building it for?", "help": "Pick every platform you want, or let the AI recommend.", "kind": "multi", "required": True,
      "options": ["iOS app", "Android app", "macOS app", "Windows or Linux app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"], "section": "project"},
     {"key": "stack", "label": "Any technology you want, or want to avoid?", "help": "Optional. e.g. SwiftUI, no third-party UI kits.", "kind": "area", "required": False, "section": "pitch"},
@@ -75,6 +77,37 @@ def load_draft() -> dict[str, Any] | None:
         return None
 
 
+def designs_dir() -> Path:
+    return user_state_dir() / "new-project-designs"
+
+
+def _kept_designs(value: Any) -> list[dict[str, str]]:
+    """Only uploads that are really in the designs folder, so a draft can't point anywhere else."""
+    kept: list[dict[str, str]] = []
+    for item in value if isinstance(value, list) else []:
+        file = Path(str((item or {}).get("file") or "")).name
+        if file and (designs_dir() / file).is_file():
+            kept.append({"name": str(item.get("name") or file)[:120], "file": file})
+    return kept[:20]
+
+
+def add_design(name: str, data: bytes) -> dict[str, Any]:
+    """Hold a design reference with the draft until the project exists to keep it in."""
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(name or "").name).strip(".-")[:80]
+    if not clean:
+        raise NewProjectError("Give the file a name.")
+    if not data:
+        raise NewProjectError("That file is empty.")
+    prior = load_draft() or {}
+    designs = _kept_designs(prior.get("designs"))
+    if len(designs) >= 20:
+        raise NewProjectError("That's plenty of references. Remove one to add another.")
+    designs_dir().mkdir(parents=True, exist_ok=True)
+    file = f"{secrets.token_hex(3)}-{clean}"
+    (designs_dir() / file).write_bytes(data)
+    return save_draft({**prior, "designs": designs + [{"name": clean, "file": file}]})
+
+
 def save_draft(raw: dict[str, Any]) -> dict[str, Any]:
     """Keep only known fields, so a draft can't smuggle anything else in."""
     prior = load_draft() or {}
@@ -89,6 +122,7 @@ def save_draft(raw: dict[str, Any]) -> dict[str, Any]:
         "waiting_on_github": bool(raw.get("waiting_on_github", False)),
         # Set once the local project exists, so finishing GitHub later publishes it instead of recreating it.
         "created_root": str(raw.get("created_root") or prior.get("created_root") or "")[:500],
+        "designs": _kept_designs(raw["designs"] if "designs" in raw else prior.get("designs")),
     }
     path = draft_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +137,7 @@ def clear_draft() -> None:
         draft_path().unlink()
     except OSError:
         pass
+    shutil.rmtree(designs_dir(), ignore_errors=True)
 
 
 def default_parent() -> str:
@@ -201,7 +236,19 @@ def target_dir(parent: str, name: str) -> Path:
     return base / slug
 
 
-def create_local(answers: dict[str, str], parent: str) -> tuple[Path, list[dict[str, Any]]]:
+def configure(root: Path, name: str) -> None:
+    """Write .orchestrator/project.json and its config, exactly as `orchestrator init` does, with detected defaults."""
+    import argparse
+    import contextlib
+    import io
+    from orchestrator.cli import init_project
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_project(argparse.Namespace(root=None, project=str(root), project_name=name, scheme=None, test_target=None,
+                                        build_command=None, test_command=None, base_branch="main", force=False,
+                                        with_starter_docs=False, with_helper_script=False))
+
+
+def create_local(answers: dict[str, str], parent: str, designs: list[dict[str, str]] | None = None) -> tuple[Path, list[dict[str, Any]]]:
     """Folder + brief + git repo. Returns (root, steps). Raises NewProjectError if it can't start."""
     missing = missing_answers(answers)
     if missing:
@@ -215,10 +262,28 @@ def create_local(answers: dict[str, str], parent: str) -> tuple[Path, list[dict[
     except OSError as exc:
         raise NewProjectError(f"Couldn't create {root}: {exc.strerror}") from None
     (root / prd.PATH).parent.mkdir(parents=True, exist_ok=True)
-    (root / prd.PATH).write_text(render_prd(answers), encoding="utf-8")
+    prd_text = render_prd(answers)
+    kept = _kept_designs(designs)
+    if kept:
+        (root / prd.DESIGNS_DIR).mkdir(parents=True, exist_ok=True)
+        links = []
+        for item in kept:
+            shutil.copyfile(designs_dir() / item["file"], root / prd.DESIGNS_DIR / item["file"])
+            label = re.sub(r"[\[\]\n]", " ", item["name"]).strip()
+            links.append(f"- [{label}](designs/{item['file']})")
+        look = prd.split(prd_text).get("look", "")
+        prd_text = prd.replace_section(prd_text, "look", (look + "\n" if look else "") + "\n".join(links))
+    (root / prd.PATH).write_text(prd_text, encoding="utf-8")
     (root / "AGENTS.md").write_text(render_agents(answers["name"]), encoding="utf-8")
     (root / "README.md").write_text(f"# {answers['name']}\n\n{answers['pitch']}\n\nSee [the product requirements](docs/product/prd.md).\n", encoding="utf-8")
     steps.append({"name": "Created the folder and product requirements", "ok": True, "detail": str(root)})
+
+    # The same setup `orchestrator init` does, so jobs can run without a separate "configure project" step.
+    try:
+        configure(root, answers["name"])
+        steps.append({"name": "Configured the project for Orchestrator", "ok": True, "detail": ".orchestrator/project.json"})
+    except Exception as exc:  # the project itself exists; the checkup can still configure it
+        steps.append({"name": "Configured the project for Orchestrator", "ok": False, "detail": f"Not done yet ({exc}). Finish it from Set up this project."})
 
     init = _git(["init", "-q", "-b", "main"], root)
     if init.returncode != 0:
@@ -256,7 +321,7 @@ def create_project(draft: dict[str, Any]) -> dict[str, Any]:
     """Run the whole creation from a saved draft. Local creation is all-or-nothing up front;
     GitHub is attempted after, and a GitHub failure keeps the local project and says what's left."""
     answers = draft.get("answers") or {}
-    root, steps = create_local(answers, draft.get("parent") or default_parent())
+    root, steps = create_local(answers, draft.get("parent") or default_parent(), draft.get("designs"))
     github = draft.get("host") == "github"
     if github:
         steps.append(publish_to_github(root, answers["name"], draft.get("visibility", "private")))

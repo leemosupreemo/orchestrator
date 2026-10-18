@@ -5,6 +5,8 @@
 
   const HOSTED_ORIGINS = ["https://swift-orch-web-20260923.web.app", "https://swift-orch-web-20260923.firebaseapp.com"];
   const INSTALL_COMMAND = 'pipx install "git+https://github.com/leemosupreemo/orchestrator.git"';
+  // One step for Mac and Linux: installs what's missing, shows the code to confirm, and starts Orchestrator at login.
+  const QUICK_INSTALL_COMMAND = `curl -fsSL ${HOSTED_ORIGINS[0]}/install.sh | sh`;
   // Add a Mac (over SSH) stays hidden until signed app releases are published: install-mac.sh and releases/macos.json
   // must be in this folder first (a test holds the two together). See docs/macos-desktop.md.
   const MAC_APP_RELEASED = false;
@@ -58,9 +60,10 @@
     return isHosted(loc?.origin) || loc?.hostname === "localhost";
   }
 
-  // On the hosted app your computers are found through your account, unless a link named one (?backend=…).
+  // On the hosted app your computers are found through your account, and only through it: a link can't name a backend
+  // (?backend=…), because the app sends sign-in tokens to whichever backend it is using.
   function active(loc = root.location) {
-    return isHosted(loc?.origin) && !new URLSearchParams(loc?.search || "").get("backend");
+    return isHosted(loc?.origin);
   }
 
   function normalizeCode(value) {
@@ -93,7 +96,7 @@
 
   function cleanIdea(value) {
     if (!value || typeof value !== "object") return null;
-    const idea = {pitch: String(value.pitch || "").trim().slice(0, 300), name: String(value.name || "").trim().slice(0, 80),
+    const idea = {pitch: String(value.pitch || "").trim().slice(0, 600), name: String(value.name || "").trim().slice(0, 80),
                   existing: value.existing === true};
     return idea.pitch || idea.existing ? idea : null;
   }
@@ -125,7 +128,7 @@
   function ideaStep() {
     return `<form class="stack account-idea-form" data-account-form="idea">
         <label class="field"><span>What do you want to build?</span>
-          <input name="pitch" required maxlength="300" autocomplete="off" placeholder="e.g. A turn-based word game to play with friends"></label>
+          <textarea name="pitch" rows="4" required maxlength="600" placeholder="e.g. A turn-based word game to play with friends"></textarea></label>
         <label class="field"><span>Name it <span class="muted">(optional, a working name is fine)</span></span>
           <input name="name" maxlength="80" autocomplete="off"></label>
         <div class="row gap-10"><button type="submit" class="btn primary">Next: where it runs</button>
@@ -200,6 +203,12 @@
       <h3>Set up your Mac</h3>
       <p>Install the Orchestrator app on your Mac, then use this website from your computer or phone.</p>
       <p class="muted">On a phone or tablet? Complete installation on your Mac first. Windows and Linux app setup is not available yet.</p>
+      <div class="stack" data-quick-install>
+        <strong>Quickest: one command</strong>
+        <p>Open Terminal on that computer and paste this. It installs what's missing, shows a code to confirm here, and keeps Orchestrator running.</p>
+        <pre class="mono" data-cli-quick>${escapeHtml(QUICK_INSTALL_COMMAND)}</pre>
+        <div class="row gap-10"><button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="${escapeHtml(QUICK_INSTALL_COMMAND)}">Copy command</button></div>
+      </div>
       <ol class="account-steps">
         <li><strong>Download Orchestrator</strong>
           <div data-mac-downloads>${release ? `<p>Requires macOS ${escapeHtml(release.minimum_macos)} or later. Version ${escapeHtml(release.version)}.</p>
@@ -326,7 +335,7 @@
         <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
         <p class="muted account-sub">${list.length
           ? "Your code stays on your computer."
-          : askIdea ? "Say it in a sentence. It becomes the start of your product's plan, and you can change it any time."
+          : askIdea ? "Keep it short, like an elevator pitch. It becomes the start of your product's plan, and you can change it any time."
           : "Private and secure by design. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there. Add it once and use it from anywhere."}</p>
         ${unmatchedTrouble ? renderTroubleshoot(troubleshoot) : (message && !troubleshoot ? `<p class="account-message" role="alert">${code(message)}</p>` : "")}
       </div>
@@ -426,7 +435,7 @@
   }
 
   root.Account = {
-    HOSTED_ORIGINS, INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
+    HOSTED_ORIGINS, INSTALL_COMMAND, QUICK_INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
     enrollCommand, renderEnroll, outdated, macRelease, renderMacSetup,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
     renderMachines, renderPair, renderSnapshot, providerSignInWorks, pendingIdea, saveIdea, clearIdea, ideaRoute,

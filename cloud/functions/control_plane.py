@@ -57,6 +57,7 @@ CODE_LENGTH = 8
 MAX_MACHINES_PER_USER = 20
 MAX_DEVICES_PER_USER = 20
 MAX_EVENTS_PER_CALL = 10
+PAIR_START_LIMIT = (10, 3600)  # at most this many pairing codes (count, seconds) from one address
 HOSTED_APP_URL = "https://swift-orch-web-20260923.web.app"
 
 
@@ -140,6 +141,20 @@ class ControlPlane:
         self.store = store
         self.now = now
         self.pusher = pusher
+
+    def _rate_limit(self, scope: str, client: str, limit: tuple[int, int]) -> None:
+        """Count calls per address in fixed windows; best effort (no transaction), enough to stop a flood of writes.
+        An unknown address isn't limited: behind the hosted app there is always one."""
+        count, window = limit
+        if not client:
+            return
+        now = self.now()
+        start = int(now // window) * window
+        doc_id = _hash(f"{scope}:{client}:{start}")[:40]
+        used = (self.store.get("rate_limits", doc_id) or {}).get("count", 0)
+        if used >= count:
+            raise ControlError("Too many attempts from this network. Try again later.", 429)
+        self.store.set("rate_limits", doc_id, {"count": used + 1, "expires": start + window + 60})
 
     # -- pairing, from the computer
 
@@ -450,7 +465,8 @@ class ControlPlane:
         route = "/" + "/".join(p for p in path.split("/") if p and p != "cp")
         try:
             computer = {
-                ("POST", "/pair/start"): lambda: self.start_pairing(body),
+                ("POST", "/pair/start"): lambda: (self._rate_limit("pair-start", _client_address(headers), PAIR_START_LIMIT),
+                                                  self.start_pairing(body))[1],
                 ("POST", "/pair/poll"): lambda: self.poll_pairing(body),
                 ("POST", "/machine/heartbeat"): lambda: self.heartbeat(headers.get("authorization", ""), body),
                 ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
@@ -488,6 +504,11 @@ class ControlPlane:
             return 200, person(user, body)
         except ControlError as exc:
             return exc.status, {"error": str(exc)}
+
+
+def _client_address(headers: dict[str, str]) -> str:
+    """The caller's address as the hosting layer saw it: Fastly's own header, else the first forwarded address."""
+    return (headers.get("fastly-client-ip") or headers.get("x-forwarded-for", "").split(",")[0]).strip()[:64]
 
 
 def _message(key: str, title: str, body: str, link: str) -> dict[str, str]:

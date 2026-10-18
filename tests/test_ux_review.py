@@ -42,7 +42,7 @@ class ProductReviewProgressTests(unittest.TestCase):
                 patch.object(runner, "ROOT", root),
                 patch.object(runner, "OUTPUT_DIR", root / "output"),
                 patch.object(runner, "project_settings", return_value=ux.settings({})),
-                patch.object(runner, "git_out", return_value=""),
+                patch.object(runner, "git_out", return_value="src/App.tsx"),
                 patch.object(runner, "capture", side_effect=capture_stage),
                 patch.object(runner, "review", side_effect=observe_stage),
                 contextlib.redirect_stdout(output),
@@ -55,6 +55,43 @@ class ProductReviewProgressTests(unittest.TestCase):
             self.assertEqual((progress.snapshot()["step"], progress.snapshot()["total"]), (4, 4))
             self.assertEqual(progress.snapshot()["label"], "Save report")
             self.assertEqual(len(list((root / "output" / "ux-pass").glob("*/result.json"))), 1)
+
+    def run_pass(self, tracked, shots):
+        import ux_review_run as runner
+        from orchestrator.web.run_progress import RunProgress
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = io.StringIO()
+            with (
+                patch.object(runner, "ROOT", root),
+                patch.object(runner, "OUTPUT_DIR", root / "output"),
+                patch.object(runner, "project_settings", return_value=ux.settings({})),
+                patch.object(runner, "git_out", return_value=tracked),
+                patch.object(runner, "capture", return_value=(shots, [])),
+                patch.object(runner, "review", return_value=(ux.parse_result('{}'), '{}', 'fixture-model')) as reviewer,
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(runner.product_pass(False, "fixture-model"), 0)
+            progress = RunProgress()
+            progress.feed(output.getvalue().encode())
+            result = json.loads(next((root / "output" / "ux-pass").glob("*/result.json")).read_text())
+            return result, progress.snapshot()["notice"], reviewer.call_count, progress.snapshot()["label"]
+
+    def test_an_empty_project_is_reported_as_nothing_to_review_without_calling_a_model(self):
+        result, notice, reviews, label = self.run_pass("README.md", [])
+        self.assertEqual((result["coverage"], reviews), ("empty", 0))
+        self.assertIn("nothing to review", notice)
+        self.assertEqual(label, "No interface to review")
+
+    def test_a_review_without_screenshots_says_only_the_code_was_read(self):
+        result, notice, reviews, _ = self.run_pass("src/App.tsx", [])
+        self.assertEqual((result["coverage"], reviews), ("code_only", 2))
+        self.assertIn("No screenshots were captured", notice)
+
+    def test_a_review_with_screenshots_has_no_notice(self):
+        result, notice, _, _ = self.run_pass("src/App.tsx", [{"file": "home.png", "route": "/", "width": 390, "dark": False}])
+        self.assertEqual((result["coverage"], notice), ("full", ""))
 
 
 class ScreenshotEvidenceTests(unittest.TestCase):

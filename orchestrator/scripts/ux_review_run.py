@@ -77,9 +77,9 @@ def review(prompt: str, shots: list[dict], screens_dir: Path, *, model: str, all
     return ux.parse_result(raw), raw, used
 
 
-def write_outputs(out_dir: Path, result: dict, raw: str, *, title: str, scope: str, shots: list[dict]) -> None:
+def write_outputs(out_dir: Path, result: dict, raw: str, *, title: str, scope: str, shots: list[dict], **extra: object) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_json(out_dir / "result.json", {**result, "screens": shots, "title": title, "scope": scope, "at": datetime.now().astimezone().isoformat()})
+    write_json(out_dir / "result.json", {**result, **extra, "screens": shots, "title": title, "scope": scope, "at": datetime.now().astimezone().isoformat()})
     write_text(out_dir / "raw.md", raw)
     write_text(out_dir / "report.md", ux.report_markdown(result, title=title, scope=scope, shots=shots, when=now_iso()[:16].replace("T", " ")))
 
@@ -101,6 +101,15 @@ def product_pass(no_screens: bool, model: str) -> int:
     save_screens(out_dir, shots, limits, title="Whole-product review")
     tracked = git_out("ls-files").splitlines()
     interface = ux.frontend_files(tracked, cfg["paths"])
+    coverage = "empty" if not interface and not shots else "full" if shots else "code_only"
+    if coverage == "empty":  # nothing to look at: don't spend model calls on it
+        note = "This project has no interface files or screens yet, so there is nothing to review."
+        result = {"summary": note, "checklist": [], "findings": [], "limits": " ".join(limits)}
+        print("[4/4] No interface to review", flush=True)
+        write_outputs(out_dir, result, "", title="UX and design pass", scope="Whole product", shots=shots, coverage=coverage, interface_files=0)
+        print(f"[notice] {note} Add some UI, then run the review again.", flush=True)
+        print(f"\nNothing to review. Report: {(out_dir / 'report.md').relative_to(ROOT)}")
+        return 0
     from orchestrator import prd
     checklist = (PROMPTS_DIR / "ux_reviewer.md").read_text(encoding="utf-8")
     merged = {"summary": [], "checklist": {}, "findings": [], "limits": set(limits)}
@@ -126,7 +135,10 @@ def product_pass(no_screens: bool, model: str) -> int:
               "findings": sorted(merged["findings"], key=lambda f: -f["severity"]),
               "limits": " ".join(sorted(merged["limits"]))}
     print("[4/4] Save report", flush=True)
-    write_outputs(out_dir, result, "\n\n".join(raws), title="UX and design pass", scope="Whole product", shots=shots)
+    write_outputs(out_dir, result, "\n\n".join(raws), title="UX and design pass", scope="Whole product", shots=shots,
+                  coverage=coverage, interface_files=len(interface))
+    if coverage == "code_only":
+        print("[notice] No screenshots were captured, so only the interface code was reviewed. Layout, spacing and contrast were not judged.", flush=True)
     c = ux.counts(result)
     print(f"\n{c['findings']} findings ({c['major']} major or worse). Report: {(out_dir / 'report.md').relative_to(ROOT)}")
     return 0

@@ -66,6 +66,24 @@ class PlaneCase(unittest.TestCase):
         return self.call("POST", "/cp/machine/heartbeat", {"endpoint": endpoint}, machine_auth=f"Machine {machine_id}:{secret}")
 
 
+class RateLimitTests(PlaneCase):
+    def start(self, ip):
+        return self.plane.handle("POST", "/cp/pair/start", {"fastly-client-ip": ip}, {}, verify_user)[0]
+
+    def test_one_address_gets_a_limited_number_of_pairing_codes_per_hour(self):
+        limit = cp.PAIR_START_LIMIT[0]
+        self.assertEqual([self.start("203.0.113.5") for _ in range(limit)], [200] * limit)
+        self.assertEqual(self.start("203.0.113.5"), 429)
+        self.assertEqual(self.start("203.0.113.6"), 200)  # someone else is unaffected
+        self.clock.t += cp.PAIR_START_LIMIT[1]
+        self.assertEqual(self.start("203.0.113.5"), 200)  # the next window starts fresh
+
+    def test_the_forwarded_address_is_used_when_the_hosting_header_is_missing(self):
+        for _ in range(cp.PAIR_START_LIMIT[0]):
+            self.plane.handle("POST", "/cp/pair/start", {"x-forwarded-for": "198.51.100.9, 10.0.0.1"}, {}, verify_user)
+        self.assertEqual(self.plane.handle("POST", "/cp/pair/start", {"x-forwarded-for": "198.51.100.9"}, {}, verify_user)[0], 429)
+
+
 class ControlPlaneTests(PlaneCase):
     def test_pairing_hands_over_the_secret_once(self):
         status, started = self.call("POST", "/cp/pair/start", {"name": "Studio Mac"})
