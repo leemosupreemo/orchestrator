@@ -51,6 +51,7 @@ from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator import scope_check, task_growth
 
 
 from typing import List, Optional, Tuple
@@ -377,6 +378,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
     job["updated_at"] = now_iso()
     if "completed_task_indices" not in job:
         job["completed_task_indices"] = []
+    if job.pop("task_growth", None):
+        print("      - Continuing past the task that grew beyond its plan.")  # running this again is the person saying keep going
     write_json(job_path, job)
 
     status_bar = StatusBar(job, is_processing=True)
@@ -593,6 +596,22 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     job["completed_task_indices"].append(i)
                     checkpoint_task(job, i, len(tasks), task['title'], files_touched)
                     write_json(job_path, job)
+
+                    # A task that has outgrown its plan is where a small job starts to grow: stop and ask before building
+                    # more on top. (After the last task there is nothing left to stop; the review's scope check covers it.)
+                    growth = check_task_growth(job, i, task) if i < len(tasks) - 1 else None
+                    if growth:
+                        said = task_growth.sentence(i, growth["reasons"])
+                        print(f"\n      - ⚠️  {said} Pausing before Task {i+2}.")
+                        job["task_growth"] = {"task": i, "text": said, "added": growth["added"], "files": growth["files"]}
+                        job["status"] = "human-needed"
+                        job["worker_pid"] = None
+                        job["updated_at"] = now_iso()
+                        write_json(job_path, job)
+                        remove_task_views(job_path)
+                        update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+                        send_notifications(job, "Job Paused: a task grew past its plan", f"{said}\nTitle: {job['title']}")
+                        return
                 elif build_ok and test_ok and not was_implemented:
                     print(f"      - Task {i+1} investigation successful, but no code changed. Halting to prevent phantom completion.")
                     # We mark it as human-needed to break the loop and avoid infinite recursion
@@ -1029,6 +1048,24 @@ def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[s
     job.setdefault("task_commits", {})[str(index)] = sha
     job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(files))
     print(f"      - Task {index + 1} committed ({sha[:7]}).")
+
+
+def check_task_growth(job: dict, index: int, task: dict) -> Optional[dict]:
+    """What task `index` committed, against what its plan said it would touch. None when it stayed inside the plan,
+    or when it can't be measured (no commit was recorded)."""
+    sha = (job.get("task_commits") or {}).get(str(index))
+    if not sha:
+        return None
+
+    def git(*args: str) -> Optional[str]:
+        res = subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True, text=True)
+        return res.stdout if res.returncode == 0 else None
+
+    numstat = git("diff", "--numstat", "--no-renames", f"{sha}~1", sha)
+    names = git("diff", "--name-status", "--no-renames", f"{sha}~1", sha)
+    if numstat is None or names is None:
+        return None
+    return task_growth.check(task, scope_check.parse_numstat(numstat, names))
 
 
 def remove_task_views(job_path: Path) -> None:

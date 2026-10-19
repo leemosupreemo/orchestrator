@@ -230,6 +230,67 @@ class WorkerRunTests(unittest.TestCase):
             self.assertEqual(job['task_commits'], {'0': 'abc123'})
             self.assertFalse(list(path.parent.glob('*_task_*.json')))
 
+    def two_task_job(self, **extra):
+        task = lambda n: {'title': f'Task {n}', 'description': 'd', 'acceptance_criteria': ['ok'], 'likely_files': ['app.py'], 'tests': ['test_screen']}  # noqa: E731
+        return {'type': 'feature-plan', 'approved': True, 'plan': {'tasks': [task(1), task(2)], 'test_cases': []}, **extra}
+
+    GROWN = {'reasons': ['added 950 lines (about 400 is typical)'], 'added': 950, 'files': ['a.py', 'b.py', 'c.py', 'd.py']}
+    EDITED = [{'modified': [], 'untracked': []}] + [{'modified': ['app.py'], 'untracked': []}] * 10
+    PATCHED = (True, True, Path('summary'), {'action': 'patch'})
+
+    def test_a_task_that_outgrew_its_plan_pauses_the_job_before_the_next_task(self):
+        with self.pipeline(self.two_task_job(), results=[self.PATCHED] * 2, states=self.EDITED) as (path, calls), \
+             patch.object(worker, 'checkpoint_task'), patch.object(worker, 'check_task_growth', return_value=self.GROWN):
+            worker.execute_job(path)
+            job = worker.read_json(path)
+            self.assertEqual(calls['run_builder'].call_count, 1)  # Task 2 was not started
+            self.assertEqual((job['status'], job['completed_task_indices'], job['worker_pid']), ('human-needed', [0], None))
+            self.assertEqual(job['task_growth']['task'], 0)
+            self.assertEqual(job['task_growth']['text'], 'Task 1 added 950 lines (about 400 is typical).')
+            self.assertFalse(job.get('last_error'))  # a pause to decide, not a failure
+            calls['send_notifications'].assert_called_once()
+            calls['debug'].assert_not_called()
+
+    def test_a_task_inside_its_plan_goes_straight_on_to_the_next(self):
+        with self.pipeline(self.two_task_job(), results=[self.PATCHED] * 2, states=self.EDITED) as (path, calls), \
+             patch.object(worker, 'checkpoint_task'), patch.object(worker, 'check_task_growth', return_value=None) as check:
+            worker.execute_job(path)
+            job = worker.read_json(path)
+            self.assertEqual(calls['run_builder'].call_count, 2)
+            self.assertEqual(job['completed_task_indices'], [0, 1])
+            self.assertNotIn('task_growth', job)
+            check.assert_called_once()  # not after the last task: review's scope check covers it
+
+    def test_resuming_a_paused_job_is_the_person_saying_keep_going(self):
+        paused = self.two_task_job(status='human-needed', completed_task_indices=[0], task_growth={'task': 0, 'text': 'Task 1 grew.'})
+        with self.pipeline(paused, results=[self.PATCHED], states=self.EDITED) as (path, calls), \
+             patch.object(worker, 'checkpoint_task'), patch.object(worker, 'check_task_growth') as check:
+            worker.execute_job(path, resume=True)
+            job = worker.read_json(path)
+            self.assertEqual(calls['run_builder'].call_count, 1)  # only Task 2
+            self.assertEqual(job['completed_task_indices'], [0, 1])
+            self.assertNotIn('task_growth', job)
+            check.assert_not_called()  # Task 1 is not measured again, and Task 2 is the last
+
+    def test_growth_is_measured_from_the_commit_the_task_made(self):
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git = lambda *a: sp.run(['git', *a], cwd=root, check=True, capture_output=True, text=True).stdout.strip()  # noqa: E731
+            git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+            (root / 'README').write_text('x\n'); git('add', '.'); git('commit', '-qm', 'base')
+            (root / 'app.py').write_text('x = 1\n' * 900)
+            for n in range(5):
+                (root / f'extra{n}.py').write_text('y = 1\n')
+            git('add', '.'); git('commit', '-qm', 'task')
+            job = {'task_commits': {'0': git('rev-parse', 'HEAD')}}
+            task = {'title': 't', 'likely_files': ['app.py']}
+            with patch.object(worker, 'ROOT', root):
+                grown = worker.check_task_growth(job, 0, task)
+                self.assertEqual(len(grown['reasons']), 2)  # 905 lines, and 5 files nobody planned
+                self.assertIsNone(worker.check_task_growth(job, 1, task))  # no commit recorded: nothing to measure
+                self.assertIsNone(worker.check_task_growth({'task_commits': {'0': 'deadbeef'}}, 0, task))  # not in this repository
+
     def test_feature_validation_refuses_phantom_or_unrelated_test_success(self):
         cases = [
             ({'action': 'patch'}, ['other.py'], True, 'expected files'),

@@ -3170,7 +3170,8 @@ pages.job = async ([id]) => {
     ? (isStoppingActive
       ? `<button class="btn" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : "";
+    : next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>${job.task_growth && data.undoable_task === job.task_growth.task
+      ? `<button class="btn" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}` : "";
 
   // 4-Phase Lifecycle determination
   const status = s.status || "";

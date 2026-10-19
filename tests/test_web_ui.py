@@ -5193,6 +5193,33 @@ class BuildingMeansActiveTests(unittest.TestCase):
         self.assertEqual(self.state(worker_pid=1, worker_host="some-other-mac")["label"], "Building")
 
 
+class TaskGrowthStateTests(unittest.TestCase):
+    """A job the worker paused because a finished task outgrew its plan: keep going, or undo that task."""
+    PLAN = {"tasks": [{"title": "a"}, {"title": "b"}, {"title": "c"}]}
+
+    def state(self, **job):
+        return ui.job_state({"status": "human-needed", "type": "feature-plan", "plan": self.PLAN, "completed_task_indices": [0],
+                             "task_growth": {"task": 0, "text": "Task 1 added 950 lines (about 400 is typical)."}, **job})
+
+    def test_the_pause_says_which_task_and_offers_keep_going(self):
+        st = self.state()
+        self.assertEqual((st["label"], st["group"], st["next"]["action"], st["next"]["label"]), ("Task 1 grew past its plan", "needs_you", "resume", "Keep going"))
+        self.assertIn("added 950 lines", st["reason"])
+        self.assertIn("undo the task", st["reason"])
+
+    def test_undoing_that_task_ends_the_pause(self):
+        st = self.state(completed_task_indices=[])  # the task was reverted, so the stored note no longer applies
+        self.assertNotEqual(st["label"], "Task 1 grew past its plan")
+
+    def test_a_note_on_a_job_that_is_not_waiting_is_ignored(self):
+        self.assertNotEqual(self.state(status="executing")["label"], "Task 1 grew past its plan")
+
+    def test_the_page_puts_undo_beside_keep_going(self):
+        source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('data.undoable_task === job.task_growth.task', source)
+        self.assertIn('data-undo-task="${job.task_growth.task}"', source)
+
+
 class KeepAliveBodyTests(ServerTestCase):
     """A request body no route reads must not leak into the next request on the same connection."""
 

@@ -683,6 +683,12 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         return state("needs_you", "attention", "Review suggestions",
                      f"The architect has {verification['status']}: {verification.get('comments') or 'see details'}".strip(),
                      "approve", "Accept suggestions")
+    growth = job.get("task_growth")
+    if (status == "human-needed" and isinstance(growth, dict) and isinstance(growth.get("task"), int)
+            and growth["task"] in (job.get("completed_task_indices") or [])):  # undoing that task ends the pause
+        return state("needs_you", "attention", f"Task {growth['task'] + 1} grew past its plan",
+                     f"{growth.get('text') or ''} Keep going if that's fine, or undo the task and revise the plan to make it smaller.".strip(),
+                     "resume", "Keep going")
     if status == "human-needed":
         if job.get("human_clarification_question"):
             return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
