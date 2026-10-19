@@ -2181,12 +2181,8 @@ function showSignInGate(message) {
         toast("Firebase Auth is loading or unavailable", true);
         return;
       }
-      try {
-        await firebase.auth().sendPasswordResetEmail(email);
-        toast(`Password reset link sent to ${email}`);
-      } catch (err) {
-        toast(err.message, true);
-      }
+      const result = await PasswordReset.requestReset(firebase.auth(), email); // the same answer whether or not the address has an account
+      toast(result.message, !result.ok);
     });
   }
 

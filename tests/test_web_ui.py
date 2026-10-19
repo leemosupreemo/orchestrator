@@ -4582,7 +4582,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('id="email-auth-form"', js)
         self.assertIn('signInWithEmailAndPassword', js)
         self.assertIn('createUserWithEmailAndPassword', js)
-        self.assertIn('sendPasswordResetEmail', js)
+        self.assertIn('PasswordReset.requestReset(', js)  # reset-password.js sends it, and says the same thing for every address
         self.assertIn('sendSignInLinkToEmail', js)
         self.assertIn('isSignInWithEmailLink', js)
 
