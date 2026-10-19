@@ -202,6 +202,23 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertTrue(job["plan"]["slice_warnings"])
         self.assertEqual(job["status"], "planned")
 
+    BIG = list(map(lambda i, base=SLICED[0]: {**base, "title": f"Player can do thing {i}"}, range(6)))
+
+    def test_a_plan_too_big_for_one_job_is_sent_back_once_and_the_smaller_plan_is_kept(self):
+        prompts, job = self.run_planner([self.plan_json(self.BIG), self.plan_json(self.SLICED)])
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("PLAN SIZE (re-plan requested)", prompts[1])
+        self.assertIn("`deferred`", prompts[1])
+        self.assertEqual(len(job["plan"]["tasks"]), 2)
+
+    def test_a_plan_that_stays_too_big_is_kept_so_the_page_can_offer_a_split(self):
+        from orchestrator import plan_size
+        prompts, job = self.run_planner([self.plan_json(self.BIG)])
+        self.assertEqual(len(prompts), 2)  # one re-plan, no loop
+        self.assertEqual(len(job["plan"]["tasks"]), 6)
+        self.assertTrue(plan_size.measure(job["plan"])["too_large"])
+        self.assertEqual(job["status"], "planned")
+
     def test_a_replan_keeps_the_jobs_own_models_and_machines(self):
         # Answering a question or accepting the architect's suggestions re-plans with --update. It used to fall back to the
         # paid defaults, so a free-only job quietly started calling paid models.
@@ -242,6 +259,7 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIn("Vertical slices, not layers", text)
         self.assertIn("after the FIRST task something real runs end to end", text)
         self.assertIn("Serve the product", text)
+        self.assertIn("One job stays small", text)  # the budget the page enforces (orchestrator/plan_size.py)
 
     @patch("orchestrator.scripts.new_job.flush_stdin")
     @patch("orchestrator.scripts.new_job.run_llm")

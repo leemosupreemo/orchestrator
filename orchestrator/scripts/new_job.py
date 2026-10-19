@@ -36,7 +36,7 @@ from manual_run import capture_logs
 import test_cases as tc
 from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import prd
-from orchestrator import slice_check
+from orchestrator import plan_size, slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -933,11 +933,39 @@ def main(args_override: list[str] | None = None) -> None:
                     plan.pop("slice_warnings", None)
                 return plan, llm_output, actual_planner
 
+            def enforce_size(plan: dict, llm_output: str, actual_planner: str) -> tuple[dict, str, str]:
+                """One job has to stay small. A plan over the budget is sent back once to be cut down; if it is still
+                too big it is kept as it is, and the page offers to split it into jobs instead of approving it."""
+                found = plan_size.measure(plan)["reasons"]
+                if not found:
+                    return plan, llm_output, actual_planner
+                print("      - The plan is too big for one job; asking the planner to cut it down...", flush=True)
+                for reason in found:
+                    print(f"        · {reason}")
+                retry_input = (f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}{extra_input}\n\n"
+                               f"### YOUR PREVIOUS PLAN ###\n{llm_output}\n\n{plan_size.replan_request(found)}")
+                try:
+                    retry_raw, actual_planner, retry_sid = run_llm(planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+                    llm_sessions.append({"id": retry_sid, "model": actual_planner})
+                    llm_output = extract_json_block(retry_raw)
+                    plan = normalize_plan_dict(
+                        json.loads(llm_output, strict=False),
+                        default_title=title_input,
+                        default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
+                        job_type=args.job_type,
+                    )
+                except Exception as e:
+                    print(f"\033[1;91m      - Size re-plan failed: {e}\033[0m")
+                if plan_size.measure(plan)["too_large"]:
+                    print("\033[1;93m      - Plan is still too big for one job; it will be offered as a split.\033[0m")
+                return plan, llm_output, actual_planner
+
             slices_matter = args.job_type == "feature" and not args.stitch
 
             if needs_test_cases and not clarification:
                 plan, llm_output, actual_planner = enforce_test_cases(plan, llm_output, actual_planner)
             if slices_matter and not clarification:
+                plan, llm_output, actual_planner = enforce_size(plan, llm_output, actual_planner)
                 plan, llm_output, actual_planner = enforce_slices(plan, llm_output, actual_planner)
 
             # --- VERIFICATION STEP ---

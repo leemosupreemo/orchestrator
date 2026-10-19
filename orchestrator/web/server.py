@@ -81,6 +81,7 @@ from orchestrator import prd as prd_doc
 from orchestrator import project_docs
 from orchestrator import project_health
 from orchestrator import repository_health
+from orchestrator import plan_size
 from orchestrator import scope_check
 from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
@@ -1490,6 +1491,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "links": github_links(root, job),
         "test_summary": test_summary,
         "scope": job_scope(root, job),
+        "plan_size": plan_size.measure(job.get("plan")),
         "ux_review": job_ux_review(root, job_id, job),
         "context": job_context(root, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),

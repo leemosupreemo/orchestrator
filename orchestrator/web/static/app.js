@@ -3268,18 +3268,32 @@ pages.job = async ([id]) => {
         <hr><button class="btn small" data-task-op="remove" data-i="${i}">Remove</button></div></details></div>` : "";
     const undo = data.undoable_task === i && !activeRun ? `<div class="side task-controls"><button class="btn small ghost" data-undo-task="${i}" aria-label="Undo task: ${esc(title)}">Undo</button></div>` : "";
     const marker = `<span class="task-number${isDone ? " is-done" : ""}" role="img" aria-label="${isDone ? "Done" : "To do"}">${isDone ? "✓" : i + 1}</span>`;
-    return `<div class="item task-row">${marker}<div class="main-col"><div class="title">${esc(title)}</div>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}
+    const more = withDetail && (detail || doneWhen.length || files.length);
+    return `<div class="item task-row">${marker}<div class="main-col"><div class="title">${esc(title)}</div>${!withDetail && detail ? `<div class="meta">${esc(detail)}</div>` : ""}
+      ${more ? `<details class="task-detail"><summary class="linklike muted">Details</summary>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}
       ${doneWhen.length ? `<div class="task-done-when"><span class="label">Done when</span><ul>${doneWhen.slice(0, 4).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
-      ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</div>${controls}${undo}</div>`;
+      ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}</div>${controls}${undo}</div>`;
   }).join("") || `<div class="empty">No tasks yet.</div>`;
-  const planCardHtml = `<section class="card mb-16 plan-review${nextAction === "approve" ? " needs-approval" : ""}" id="plan-section">
-      <div class="card-h"><h2>${nextAction === "approve" ? "The plan to approve" : "The plan"} <span class="count">${plural(tasks.length, "task")}</span></h2>
-        <div class="card-actions"><button class="btn small" ${act("revise", { job: s.id })} title="Ask the AI to re-plan with what should change">Revise…</button>${next ? `<button class="btn small primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : ""}</div></div>
-      ${showSummary ? `<div class="card-b plan-summary">${esc(planSummary)}</div>` : ""}
-      ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
-        <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions">${list.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
+  // One decision: what it is (a sentence), how big it is, and the one button. The tasks are one line each; the rest is a tap away.
+  const size = data.plan_size || { label: "", files: 0, too_large: false, reasons: [], deferred: [] };
+  const sliceWarnings = job.plan?.slice_warnings || [];
+  const sizeLine = [plural(tasks.length, "task"), size.files ? plural(size.files, "file") : "", size.too_large ? "" : size.label].filter(Boolean).join(" · ");
+  const splitInstead = size.too_large && canSplinter;
+  const approveBtn = (primary) => next ? `<button class="btn small${primary ? " primary" : ""}" ${act(next.action, { job: s.id })}>${esc(splitInstead ? `${next.label} anyway` : next.label)}</button>` : "";
+  const planCardHtml = `<section class="card mb-16 plan-review${size.too_large ? " too-large" : nextAction === "approve" ? " needs-approval" : ""}" id="plan-section">
+      <div class="card-h"><h2>${size.too_large ? "Too big for one job" : nextAction === "approve" ? "Approve this plan" : "The plan"}</h2>
+        <div class="card-actions"><button class="btn small" ${act("revise", { job: s.id })} title="Ask the AI to re-plan with what should change">Revise…</button>${splitInstead
+          ? `<button class="btn small primary" ${act("splinter_job", { job: s.id })} title="Each task becomes its own job">Split into ${tasks.length} jobs</button>` : approveBtn(true)}</div></div>
+      ${showSummary ? `<div class="card-b plan-summary">${clamped(planSummary, 160)}</div>` : ""}
+      <div class="plan-verdict${size.too_large ? " bad" : ""}"><span class="plan-size">${esc(sizeLine)}</span>
+        ${size.too_large ? `<span>${esc(size.reasons.join(" "))}</span>${splitInstead ? approveBtn(false) : ""}` : ""}
+        ${sliceWarnings.length ? `<span class="plan-flag" title="${esc(sliceWarnings.join(" "))}">Tasks look layered, not working slices</span>` : ""}</div>
       <div class="list">${taskRowsHtml(true)}</div>
       ${canEditPlan ? `<div class="card-b card-b-split"><button class="btn small" data-task-op="add">Add a task</button></div>` : ""}
+      ${size.deferred.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Left for later <span class="count">${size.deferred.length}</span></h2></summary>
+        <div class="card-b"><ul class="assumptions">${size.deferred.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div></details>` : ""}
+      ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
+        <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
     </section>`;
   const architectConcerns = s.question && /architect/i.test(s.question) && /architect/i.test(s.state.reason || "");
   const heroReason = architectConcerns ? "The architect raised concerns (below). Answer them, or accept its suggestions and re-plan."
@@ -3346,7 +3360,7 @@ pages.job = async ([id]) => {
 
       ${(data.blockers || []).map((b) => `<div class="banner attention"><p><strong>This job can't start yet.</strong> ${esc(b.text)}${b.route ? ` <a class="btn small" href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</p></div>`).join("")}
 
-      ${(job.plan?.slice_warnings || []).length ? `<section class="card mb-16"><div class="card-h"><h2>Plan check</h2></div><div class="card-b stack">
+      ${(job.plan?.slice_warnings || []).length && !reviewingPlan ? `<section class="card mb-16"><div class="card-h"><h2>Plan check</h2></div><div class="card-b stack">
         <div>This plan looks like a stack of layers, not working slices. Mistakes in an early layer won't show until the last task.</div>
         <ul class="assumptions">${job.plan.slice_warnings.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">It was already sent back once. Use Revise plan in the More menu and ask for working slices.</div></div></section>` : ""}

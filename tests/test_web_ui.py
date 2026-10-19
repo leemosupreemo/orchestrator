@@ -4844,6 +4844,11 @@ class ScopeEndpointTests(ServerTestCase):
         _, data = self.request("GET", f"/api/jobs/{self.JOB}")
         return data["scope"]
 
+    def test_the_detail_says_how_big_the_plan_is(self):
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        size = data["plan_size"]
+        self.assertEqual((size["label"], size["tasks"], size["too_large"]), ("Small", 1, False))
+
     def test_reports_what_went_beyond_the_plan(self):
         scope = self.scope()
         by_kind = {f["kind"]: f for f in scope["findings"]}
@@ -6319,6 +6324,19 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn('data-scroll-to="#plan-section">the plan below</button>', self.job_page)
         self.assertIn("!ctx.planShown &&", self.source)  # no second Revise plan in More while the card offers it
         self.assertIn("tasks.length && !reviewingPlan ? fold(\"Tasks\"", self.job_page)  # one task list, not two
+
+    def test_the_approval_card_is_one_decision_with_the_detail_a_tap_away(self):
+        start = self.job_page.index("const planCardHtml")
+        card = self.job_page[start:self.job_page.index("const architectConcerns", start)]
+        self.assertIn("clamped(planSummary, 160)", card)  # a sentence, not the whole summary
+        self.assertIn('class="plan-size"', card)  # tasks, files and how big
+        self.assertIn('<details class="task-detail">', self.job_page)  # description, done-when and files fold away
+        # a plan past the budget leads with splitting it; approving it anyway is the quiet option
+        self.assertIn('act("splinter_job", { job: s.id })', card)
+        self.assertIn("${next.label} anyway", self.job_page)
+        self.assertIn("Too big for one job", card)
+        # the layered-plan warning is one line in the card while approving, not a second card above it
+        self.assertIn("&& !reviewingPlan ? `<section", self.job_page)
 
     def test_each_secondary_action_appears_once(self):
         for action in ("revise", "select_models", "ask_ai", "link_logs", "attach_mockup", "discard_job"):
