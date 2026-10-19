@@ -65,7 +65,7 @@
     if (!questions.length) return "";
     return `<section class="card mb-16" id="epic-questions"><div class="card-h"><h2>Questions to answer</h2><span class="count">${questions.length}</span></div>
       <form class="card-b stack" id="epic-questions-form">
-        <p class="muted">Answer any you can. Each answer is added to your product requirements (you can see and undo it in Product's History), so the next breakdown, and every job, can use it. Leave the rest blank.</p>
+        <p class="muted">Based on your product requirements, these are still unclear. Answer any you can: each answer is added to the requirements above, for the next breakdown and every job to use.</p>
         ${questions.map((q, i) => `<div class="epic-question" data-question="${escapeHtml(q)}">
           <label class="field"><span>${escapeHtml(q)}</span><textarea name="a${i}" rows="2" maxlength="1000"></textarea></label>
           <label class="field epic-question-where"><span>Goes in</span><select name="s${i}">${SECTION_CHOICES.map(([id, title]) =>

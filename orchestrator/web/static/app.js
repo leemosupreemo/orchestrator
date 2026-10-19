@@ -5944,7 +5944,7 @@ function epicsSection(initial, { onPrdChanged }) {
       <span class="muted">Anything in any field is enough: the breakdown follows how much you've said.</span>
       </div></section>`;
     return `<section class="card mb-16" id="epic-breakdown"><div class="card-h"><h2>Break down from the PRD</h2></div><div class="card-b stack">
-      <p class="muted">Orchestrator reads your product requirements and splits them into epics, using the technique that fits what you've written (a story map for flows people follow, a top-down work breakdown for technical products), and as much detail as you gave. You approve the ones you want.</p>
+      <p class="muted">Splits your requirements into epics. You pick the ones to keep.</p>
       ${ov.epics.length ? "" : `<div class="row"><button type="button" class="btn primary" id="epic-break">Break down from the PRD</button></div>`}
       <details class="advanced"><summary>Advanced options</summary><div class="stack">
         ${FeaturePlan.techniqueSelect(technique)}
