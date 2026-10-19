@@ -403,6 +403,7 @@ class PtySession:
         with self._cond:
             tail = bytes(self._buffer[-2000:])
         text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").replace("\r", "\n")
+        text = re.sub("[⠀-⣿]", "", text)  # braille spinner frames draw as empty boxes in the run card
         lines = [l.strip() for l in text.splitlines() if l.strip() and not re.match(r"^\[exited(?: with code \d+)?\]$", l.strip())]
         return lines[-1][:200] if lines else ""
 

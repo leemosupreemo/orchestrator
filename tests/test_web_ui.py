@@ -2860,6 +2860,13 @@ class RunApiTests(ServerTestCase):
         stream = conn.getresponse()
         self.assertEqual(stream.getheader("Content-Type"), "text/event-stream")
         text = stream.read().decode()
+    def test_last_line_drops_braille_spinner_frames(self):
+        script = "print('\\u280b 8s')"
+        with tempfile.TemporaryDirectory() as tmp:
+            session = ui.PtySession("t0", "test", "Test", [sys.executable, "-c", script], Path(tmp), dict(os.environ))
+            self.collect(session, lambda o: False)
+            self.assertEqual(session._last_line(), "8s")
+
         conn.close()
         chunks = [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ") and '"data"' in line]
         output = b"".join(base64.b64decode(c["data"]) for c in chunks)
@@ -6466,6 +6473,12 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn(".dialog-tab-panel {", css)
         self.assertIn("max-height: calc(100dvh - 24px);", css)
         self.assertIn("flex-direction: row;", css)
+    def test_waiting_epic_that_is_being_planned_says_so(self):
+        # status stays "backlog" while the plan run is active; the page must not say "nothing runs" or offer Pause
+        self.assertIn('const planningEpic = Boolean(activeRun) && s.state.group === "backlog";', self.job_page)
+        self.assertIn('label: "Planning the epic"', self.job_page)
+        self.assertIn('const heroAction = planningEpic ? ""', self.job_page)
+
         self.assertIn("width: min(var(--dialog-width), calc(100% - 2 * var(--space-4))", css)
         self.assertNotIn("width: calc(100vw - 2 * var(--space-3));", css)
 

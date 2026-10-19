@@ -3070,6 +3070,9 @@ pages.job = async ([id]) => {
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
 
   const activeRun = runs.find((r) => r.running);
+  // A waiting epic keeps its "backlog" status while the epic is being planned; say so instead of "nothing runs".
+  const planningEpic = Boolean(activeRun) && s.state.group === "backlog";
+  if (planningEpic) s.state = { group: "working", tone: "working", label: "Planning the epic", reason: "The AI is breaking the epic into tasks.", next: null };
   const summary = { ...s, active_run: !!activeRun };
 
   const pipeline = {
@@ -3137,7 +3140,8 @@ pages.job = async ([id]) => {
 
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
-  const heroAction = activeRun
+  const heroAction = planningEpic ? "" // nothing to resume from yet; Stop is on the run card
+    : activeRun
     ? (isStoppingActive
       ? `<button class="btn" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
@@ -3201,7 +3205,9 @@ pages.job = async ([id]) => {
 
   // Contextual consequence preview for hero
   let nextExecutionPreview = "";
-  if (activeRun) {
+  if (planningEpic) {
+    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the plan appears here for you to approve`;
+  } else if (activeRun) {
     nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> working on <strong>${esc(nextTask || "the tasks")}</strong>`;
   } else if (s.state.next?.action === "approve") {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
