@@ -2468,7 +2468,7 @@ function elapsed(ts) {
 
 // A running task: status, how long, its newest output line, and open/stop.
 function liveRunCard(r) {
-  const target = r.job || r.result_job;
+  const target = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job; // planning removes the epic's waiting job
   const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   const overlayHtml = isStopping
     ? `<div class="live-run-overlay" role="status" aria-label="Stopping…"><div class="spinner" aria-hidden="true"></div><span class="live-run-overlay-text">Stopping…</span></div>`
@@ -3065,14 +3065,44 @@ function formatJobTests(t) {
   return "Tests not run yet";
 }
 
+// An approved epic waits as a placeholder job. Planning it makes a new feature job and removes this one, so this page
+// says what the epic is, what "Plan it" does, and (while planning) hands over to the new job as soon as it exists.
+function waitingEpicPage({ id, s, job, runs, docs, links }) {
+  const planning = runs.find((r) => r.running);
+  if (planning?.result_job && planning.result_job !== id) location.hash = `#/jobs/${encodeURIComponent(planning.result_job)}`;
+  const failed = !planning && runs.find((r) => r.action === "plan_epic" && r.exit_code);
+  const brief = (docs || []).find((d) => d.name === "brief.md");
+  return {
+    title: s.title,
+    sub: `<span class="status-line"><span>Epic</span><span class="sep">·</span><span>${planning ? "Planning" : "Not planned yet"}</span></span>`,
+    actions: jobHeaderActions({ ...s, active_run: Boolean(planning) }, links, {}),
+    html: `<div class="job-layout"><div class="job-top">
+      ${planning ? `<section class="card mb-16"><div class="list">${liveRunCard(planning)}</div></section>` : ""}
+      <section class="job-hero tone-${planning ? "working" : "attention"}">
+        <div class="job-hero-main">
+          <h2 class="job-hero-title">${planning ? "Planning this epic" : "Ready to plan"}</h2>
+          <p class="job-hero-reason">${planning ? "The AI is breaking this epic into tasks." : "You approved this epic, but nothing is built from it yet. Planning asks the AI to break it into tasks."}</p>
+          <div class="job-hero-next-preview"><span class="job-hero-next-label">Then:</span> ${planning
+            ? "the plan opens as its own job and you're taken there"
+            : "the plan opens as its own job, which replaces this page. You read it and approve it before anything is built"}</div>
+          ${failed ? `<p class="job-hero-reason">The last planning attempt failed. <a href="#/runs/${encodeURIComponent(failed.id)}">Open its log</a>, or plan it again.</p>` : ""}
+        </div>
+        <div class="job-hero-action">${planning ? "" : `<button class="btn primary" ${act("plan_epic", { job: s.id })}>Plan it</button>`}</div>
+      </section>
+      <section class="card mb-16" id="brief-section">
+        <div class="card-h"><h2>What this epic covers</h2></div>
+        <div class="md brief-content">${brief?.text ? Markdown.render(brief.text) : `<p class="muted">${esc(job.summary || s.title)}</p>`}</div>
+      </section>
+    </div></div>`,
+  };
+}
+
 pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
 
   const activeRun = runs.find((r) => r.running);
-  // A waiting epic keeps its "backlog" status while the epic is being planned; say so instead of "nothing runs".
-  const planningEpic = Boolean(activeRun) && s.state.group === "backlog";
-  if (planningEpic) s.state = { group: "working", tone: "working", label: "Planning the epic", reason: "The AI is breaking the epic into tasks.", next: null };
+  if (s.status === "backlog") return waitingEpicPage({ id, s, job, runs, docs, links });
   const summary = { ...s, active_run: !!activeRun };
 
   const pipeline = {
@@ -3140,8 +3170,7 @@ pages.job = async ([id]) => {
 
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
-  const heroAction = planningEpic ? "" // nothing to resume from yet; Stop is on the run card
-    : activeRun
+  const heroAction = activeRun
     ? (isStoppingActive
       ? `<button class="btn" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
@@ -3205,9 +3234,7 @@ pages.job = async ([id]) => {
 
   // Contextual consequence preview for hero
   let nextExecutionPreview = "";
-  if (planningEpic) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the plan appears here for you to approve`;
-  } else if (activeRun) {
+  if (activeRun) {
     nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> working on <strong>${esc(nextTask || "the tasks")}</strong>`;
   } else if (s.state.next?.action === "approve") {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;

@@ -2815,6 +2815,13 @@ class PtySessionTests(unittest.TestCase):
             self.assertIn(b"got alice", out)
             self.assertEqual(session.exit_code, 0)
 
+    def test_last_line_drops_braille_spinner_frames(self):
+        script = "print('\\u280b 8s')"
+        with tempfile.TemporaryDirectory() as tmp:
+            session = ui.PtySession("t0", "test", "Test", [sys.executable, "-c", script], Path(tmp), dict(os.environ))
+            self.collect(session, lambda o: False)
+            self.assertEqual(session._last_line(), "8s")
+
     def test_has_controlling_terminal_for_getpass(self):
         script = "import os; fd = os.open('/dev/tty', os.O_RDWR); os.write(fd, b'ctty ok\\n')"
         with tempfile.TemporaryDirectory() as tmp:
@@ -2860,13 +2867,6 @@ class RunApiTests(ServerTestCase):
         stream = conn.getresponse()
         self.assertEqual(stream.getheader("Content-Type"), "text/event-stream")
         text = stream.read().decode()
-    def test_last_line_drops_braille_spinner_frames(self):
-        script = "print('\\u280b 8s')"
-        with tempfile.TemporaryDirectory() as tmp:
-            session = ui.PtySession("t0", "test", "Test", [sys.executable, "-c", script], Path(tmp), dict(os.environ))
-            self.collect(session, lambda o: False)
-            self.assertEqual(session._last_line(), "8s")
-
         conn.close()
         chunks = [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ") and '"data"' in line]
         output = b"".join(base64.b64decode(c["data"]) for c in chunks)
@@ -6425,6 +6425,21 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         # The stepper shows the stage and the hero's title and button say what's needed: no badge row repeating them.
         self.assertNotIn("job-hero-badge-row", self.job_page)
 
+    def test_waiting_epic_has_its_own_page(self):
+        # Planning replaces the waiting job with a new one, so the page explains that and hands over to the new job.
+        start = self.source.index("function waitingEpicPage")
+        page = self.source[start:self.source.index("pages.job = async", start)]
+        self.assertIn('if (s.status === "backlog") return waitingEpicPage(', self.job_page)
+        self.assertIn("Ready to plan", page)
+        self.assertIn("replaces this page", page)
+        self.assertIn('act("plan_epic", { job: s.id })', page)
+        self.assertIn("location.hash = `#/jobs/${encodeURIComponent(planning.result_job)}`", page)
+        # none of the generic job page's progress furniture, and no Pause, on something nothing has started
+        for generic in ("job-stepper", "Pause", "Changes", "Test cases"):
+            self.assertNotIn(generic, page)
+        # the run card points at the planned job, not the waiting one that planning removes
+        self.assertIn('r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job', self.source)
+
     def test_brief_section_positioned_near_top_and_editable(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         css = (static / "style.css").read_text()
@@ -6473,12 +6488,6 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn(".dialog-tab-panel {", css)
         self.assertIn("max-height: calc(100dvh - 24px);", css)
         self.assertIn("flex-direction: row;", css)
-    def test_waiting_epic_that_is_being_planned_says_so(self):
-        # status stays "backlog" while the plan run is active; the page must not say "nothing runs" or offer Pause
-        self.assertIn('const planningEpic = Boolean(activeRun) && s.state.group === "backlog";', self.job_page)
-        self.assertIn('label: "Planning the epic"', self.job_page)
-        self.assertIn('const heroAction = planningEpic ? ""', self.job_page)
-
         self.assertIn("width: min(var(--dialog-width), calc(100% - 2 * var(--space-4))", css)
         self.assertNotIn("width: calc(100vw - 2 * var(--space-3));", css)
 
