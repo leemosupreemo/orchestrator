@@ -185,7 +185,7 @@ class PlainGitPipelineTests(unittest.TestCase):
 
 
 class PlanAnEpicTests(unittest.TestCase):
-    """An approved epic waits as a job marked Epic. Planning it (new_job.py --epic, what "Plan it" runs) makes the real
+    """An approved epic waits as a job marked Epic. Planning it (new_job.py --epic, what "Make a plan" runs) makes the real
     feature job, which takes the waiting one's place and keeps the epic's Jira link."""
 
     @classmethod

@@ -718,7 +718,7 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
             return state("needs_you", "failed", label, "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
         return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
     if status == "backlog":
-        return state("backlog", "idle", "Epic · not planned", "Approved, and waiting. Plan it when you're ready; nothing runs until then.", "plan_epic", "Plan it")
+        return state("backlog", "idle", "Epic · no plan yet", "Approved, and waiting. Make a plan when you're ready; nothing runs until then.", "plan_epic", "Make a plan")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
     if status in {"executing", "running", "in-progress"} and worker_alive(job) is False:
@@ -989,7 +989,7 @@ def epics_overview(root: Path) -> dict[str, Any]:
         state = (job or {}).get("state") or {}
         epics.append({**epic, "feature_name": (features.get(epic.get("feature") or "") or {}).get("name") or "",
                       "job_info": {"id": job["id"], "label": state.get("label", ""), "group": state.get("group", ""), "tone": state.get("tone", ""),
-                                   "backlog": job.get("status") == "backlog"} if job else None})
+                                   "backlog": job.get("status") == "backlog", "plan_ready": state.get("label") == "Approve plan"} if job else None})
     jira = saved_integrations(root).get("jira") or {}
     site = re.sub(r"^https?://", "", str(jira.get("site") or "")).strip("/")
     prd_text = prd_doc.Prd(root, runtime).read() or ""

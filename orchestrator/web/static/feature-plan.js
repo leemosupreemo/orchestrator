@@ -112,9 +112,10 @@
     if (!list.length) return "";
     const row = (e) => {
       const job = e.job_info;
-      const status = job ? `<span class="pill ${escapeHtml(job.backlog ? "idle" : job.tone || "")}">${escapeHtml(job.backlog ? "Not planned" : job.label || "")}</span>` : `<span class="pill idle">No job</span>`;
-      const plan = !job || job.backlog ? `<button type="button" class="btn small primary" ${act ? act("plan_epic", {epic: e.id}) : ""}>Plan it</button>` : "";
-      const open = job ? `<a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a>` : "";
+      const label = job ? (job.backlog ? "No plan yet" : job.plan_ready ? "Plan ready" : job.label || "") : "No job";
+      const status = `<span class="pill ${escapeHtml(job ? (job.backlog ? "idle" : job.tone || "") : "idle")}">${escapeHtml(label)}</span>`;
+      const plan = !job || job.backlog ? `<button type="button" class="btn small primary" ${act ? act("plan_epic", {epic: e.id}) : ""}>Make a plan</button>` : "";
+      const open = job ? `<a class="btn small ${job.plan_ready ? "primary" : "ghost"}" href="#/jobs/${encodeURIComponent(job.id)}">${job.plan_ready ? "Review plan" : "Open job"}</a>` : "";
       const send = jiraConnected && !e.jira ? `<button type="button" class="btn small ghost" data-epic-send="${escapeHtml(e.id)}">Send to Jira</button>` : "";
       return `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${escapeHtml(e.name)} <span class="job-type-tag job-type-epic">Epic</span> ${jiraLink(e)}</div>
         ${e.summary ? `<div class="meta">${escapeHtml(e.summary)}</div>` : ""}

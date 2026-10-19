@@ -3062,7 +3062,7 @@ function formatJobTests(t) {
 }
 
 // An approved epic waits as a placeholder job. Planning it makes a new feature job and removes this one, so this page
-// says what the epic is, what "Plan it" does, and (while planning) hands over to the new job as soon as it exists.
+// says what the epic is, what "Make a plan" does, and (while planning) hands over to the new job as soon as it exists.
 function waitingEpicPage({ id, s, job, runs, docs, links }) {
   const planning = runs.find((r) => r.running);
   if (planning?.result_job && planning.result_job !== id) location.hash = `#/jobs/${encodeURIComponent(planning.result_job)}`;
@@ -3070,7 +3070,7 @@ function waitingEpicPage({ id, s, job, runs, docs, links }) {
   const brief = (docs || []).find((d) => d.name === "brief.md");
   return {
     title: s.title,
-    sub: `<span class="status-line"><span>Epic</span><span class="sep">·</span><span>${planning ? "Planning" : "Not planned yet"}</span></span>`,
+    sub: `<span class="status-line"><span>Epic</span><span class="sep">·</span><span>${planning ? "Planning" : "No plan yet"}</span></span>`,
     actions: jobHeaderActions({ ...s, active_run: Boolean(planning) }, links, {}),
     html: `<div class="job-layout"><div class="job-top">
       ${planning ? `<section class="card mb-16"><div class="list">${liveRunCard(planning)}</div></section>` : ""}
@@ -3083,7 +3083,7 @@ function waitingEpicPage({ id, s, job, runs, docs, links }) {
             : "the plan opens as its own job, which replaces this page. You read it and approve it before anything is built"}</div>
           ${failed ? `<p class="job-hero-reason">The last planning attempt failed. <a href="#/runs/${encodeURIComponent(failed.id)}">Open its log</a>, or plan it again.</p>` : ""}
         </div>
-        <div class="job-hero-action">${planning ? "" : `<button class="btn primary" ${act("plan_epic", { job: s.id })}>Plan it</button>`}</div>
+        <div class="job-hero-action">${planning ? "" : `<button class="btn primary" ${act("plan_epic", { job: s.id })}>Make a plan</button>`}</div>
       </section>
       <section class="card mb-16" id="brief-section">
         <div class="card-h"><h2>What this epic covers</h2></div>

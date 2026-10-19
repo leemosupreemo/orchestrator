@@ -140,7 +140,7 @@ How the breakdown is made:
 Each epic is **Suggested**, **Approved** or **Declined**:
 
 - **Approve** (or **Decline**) the ones ticked. Ticking an epic also ticks what it builds on, and approving brings those along. Declined epics stay in a list and can be brought back.
-- **An approved epic becomes a feature and a job marked Epic.** The feature is how the planner, the plan run and the feature pages already work. The job waits in the **Backlog** (a filter on Home appears once there is one) and does nothing until you press **Plan it**. Planning runs the usual feature job, with the epic's requirements and stories in its brief, and that job takes the waiting one's place, still marked Epic. **Build the plan** does the same for epics it starts.
+- **An approved epic becomes a feature and a job marked Epic.** The feature is how the planner, the plan run and the feature pages already work. The job waits in the **Backlog** (a filter on Home appears once there is one) and does nothing until you press **Make a plan**. Planning runs the usual feature job, with the epic's requirements and stories in its brief, and that job takes the waiting one's place, still marked Epic. **Build the plan** does the same for epics it starts.
 - Waiting jobs are never counted as "needs you", so a dozen approved epics don't fill Home or send notifications.
 
 #### Jira

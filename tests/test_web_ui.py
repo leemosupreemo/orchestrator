@@ -580,7 +580,7 @@ class EpicsJiraTests(ServerTestCase):
         _, data = self.request("GET", "/api/epics")
         self.assertEqual(data["jira"], {"connected": True, "site": "team.atlassian.net", "project": "APP"})
         self.assertNotIn("tok", json.dumps(data))  # the token never leaves the computer
-        self.assertEqual(data["epics"][0]["job_info"]["label"], "Epic · not planned")
+        self.assertEqual(data["epics"][0]["job_info"]["label"], "Epic · no plan yet")
 
     def test_send_to_jira_creates_each_approved_epic_once_and_links_it_to_its_job(self):
         http = self.http({"/rest/api/3/issue": {"key": "APP-5"}})
@@ -661,7 +661,7 @@ class EpicsJiraTests(ServerTestCase):
         spec = Path(argv[argv.index("--spec-file") + 1]).read_text()
         self.assertIn("A round has 6 turns", spec)  # the epic's requirements ride along
         by_job = ui.build_plan_epic({"job": self.approved["job"]}, self.root)
-        self.assertEqual(by_job[by_job.index("--epic") + 1], self.approved["id"])  # the Plan it button on the job page
+        self.assertEqual(by_job[by_job.index("--epic") + 1], self.approved["id"])  # the Make a plan button on the job page
         with self.assertRaises(ui.UIError):
             ui.build_plan_epic({"epic": "ep-gone"}, self.root)
 
@@ -1570,18 +1570,19 @@ const P = globalThis.FeaturePlan;
 const act = (action, params) => `data-action="${action}" data-params='${JSON.stringify(params)}'`;
 const epic = (o) => ({status: "approved", summary: "", requirements: [], stories: [], jira: null, ...o});
 const epics = [
-  epic({id: "ep-1", name: "Waiting", job_info: {id: "j-1", label: "Epic · not planned", tone: "idle", backlog: true}}),
-  epic({id: "ep-2", name: "Underway <b>", requirements: ["a", "b"], jira: {key: "APP-5", url: "https://t.atlassian.net/browse/APP-5"}, job_info: {id: "j-2", label: "Approve plan", tone: "attention", backlog: false}}),
+  epic({id: "ep-1", name: "Waiting", job_info: {id: "j-1", label: "Epic · no plan yet", tone: "idle", backlog: true}}),
+  epic({id: "ep-2", name: "Underway <b>", requirements: ["a", "b"], jira: {key: "APP-5", url: "https://t.atlassian.net/browse/APP-5"}, job_info: {id: "j-2", label: "Approve plan", tone: "attention", backlog: false, plan_ready: true}}),
   epic({id: "ep-3", name: "Odd link", jira: {key: "APP-6", url: "javascript:alert(1)"}, job_info: null}),
   epic({id: "ep-4", name: "Gone", status: "declined"})];
 process.stdout.write(JSON.stringify({html: P.renderApproved(epics, {act, jiraConnected: true}), plain: P.renderApproved(epics, {act}),
   declined: P.renderDeclined(epics), none: P.renderApproved([], {act})}));""")
         html = out["html"]
-        self.assertIn('data-action="plan_epic" data-params=\'{"epic":"ep-1"}\'', html)  # Plan it
-        self.assertIn("Not planned", html)
-        self.assertIn('href="#/jobs/j-2"', html)
-        self.assertIn("Approve plan", html)
-        self.assertNotIn(">Plan it<", html[html.index('data-epic="ep-2"'):html.index('data-epic="ep-3"')])  # already planned
+        self.assertIn('data-action="plan_epic" data-params=\'{"epic":"ep-1"}\'', html)  # Make a plan
+        self.assertIn("No plan yet", html)
+        self.assertIn('href="#/jobs/j-2">Review plan</a>', html)
+        self.assertIn("Plan ready", html)
+        self.assertNotIn("Not planned", html)
+        self.assertNotIn(">Make a plan<", html[html.index('data-epic="ep-2"'):html.index('data-epic="ep-3"')])  # already planned
         self.assertIn('href="https://t.atlassian.net/browse/APP-5"', html)
         self.assertIn('<use href="#i-jira"/>', html)
         self.assertNotIn("javascript:", html)  # a link that isn't https is shown as text, never as a link
