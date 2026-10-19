@@ -686,7 +686,7 @@ class SignInPrivacyTests(unittest.TestCase):
         js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
         preview = js[js.index('<figure class="signin-preview">'):][:500]
         self.assertLess(preview.index("<h3>"), preview.index('class="signin-privacy"'))  # sits under the tagline
-        self.assertIn("your code and assets stay on your computer, never on our servers", preview)
+        self.assertIn("your code and assets stay on your computer.", preview)
         self.assertIn(".signin-preview .signin-privacy", css)
 
 
@@ -1517,12 +1517,32 @@ process.stdout.write(JSON.stringify({info: P.renderBreakdownInfo(story), map: P.
         self.assertIn("Story map.", out["info"])
         self.assertIn("People use it &lt;through&gt; a flow.", out["info"])
         self.assertIn("so these are broad", out["info"])  # a brief PRD says so
-        self.assertIn("Who pays?", out["info"])
+        self.assertNotIn("Who pays?", out["info"])  # the questions have their own card, beneath this one
         self.assertLess(out["map"].index("MVP: the smallest version"), out["map"].index("Later</div>"))  # slices, not layers
         self.assertIn("A round has 6 turns &lt;b&gt;", out["map"])
         self.assertIn("Start with these", out["wbs"])  # other techniques group by build order
         self.assertNotIn('class="pill"', out["wbs"])
         self.assertEqual((out["none"], out["noInfo"]), ("", ""))
+
+    def test_open_questions_get_answer_boxes_that_say_where_the_answer_goes(self):
+        out = self.run_feature_plan("""
+const P = globalThis.FeaturePlan;
+const questions = ["What controls does the game use (swipe, on-screen D-pad, tilt)?", "How does the player lose <b>?", "Is there a high-score system?",
+  "Should the Nokia look be monochrome green LCD, and is there sound?", "Is this one shared codebase or separate native iOS and Android builds?", "Which features should we leave out of scope?",
+  "Who is the target audience?"];
+process.stdout.write(JSON.stringify({html: P.renderQuestions({open_questions: questions.slice(0, 2)}), none: P.renderQuestions({open_questions: []}), nobreakdown: P.renderQuestions(null),
+  guesses: questions.map((q) => P.guessSection(q))}));""")
+        html = out["html"]
+        self.assertIn('id="epic-questions"', html)
+        self.assertIn('data-question="How does the player lose &lt;b&gt;?"', html)
+        self.assertIn('name="a0"', html)
+        self.assertIn('name="s1"', html)
+        self.assertIn("Save and break down again", html)
+        self.assertIn("Save to the PRD", html)
+        self.assertIn('data-after="again"', html)
+        self.assertNotIn("<b>?", html)
+        self.assertEqual(out["guesses"], ["features", "features", "features", "look", "pitch", "not", "who"])
+        self.assertEqual((out["none"], out["nobreakdown"]), ("", ""))
 
     def test_suggested_epics_are_ticked_escaped_and_know_what_they_build_on(self):
         out = self.run_feature_plan("""
@@ -2163,6 +2183,31 @@ class ReadApiTests(ServerTestCase):
         self.assertEqual((epic["stories"], epic["requirements"], epic["slice"]), (["As a player I can play a round."], ["A round has 6 turns"], ""))
         res, data = self.request("POST", "/api/epics/breakdown", {"technique": "mind-map"}, headers=UI_HEADERS)
         self.assertEqual(res.status, 400)
+
+    def test_answering_the_breakdown_questions_writes_them_into_the_chosen_prd_sections_and_closes_them(self):
+        self.write_prd()
+        task = self.break_down(json.dumps({"technique": "list", "rationale": "x", "open_questions": ["What controls does it use?", "Is there sound?"],
+                                           "features": [{"name": "Play a round", "summary": "One game"}]}))
+        self.assertEqual(task["result"]["breakdown"]["open_questions"], ["What controls does it use?", "Is there sound?"])
+        res, data = self.request("POST", "/api/epics/answers", {"answers": [
+            {"question": "What controls does it use?", "answer": "Swipe, with an on-screen D-pad as a setting.", "section": "features"},
+            {"question": "Is there sound?", "answer": "  ", "section": "look"}]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200, data)
+        self.assertEqual(data["breakdown"]["open_questions"], ["Is there sound?"])  # only the answered one is closed
+        _, product = self.request("GET", "/api/product")
+        features = next(s for s in product["sections"] if s["id"] == "features")["body"]
+        self.assertIn("- What controls does it use? → Swipe, with an on-screen D-pad as a setting.", features)
+        self.assertEqual(product["history"][0]["source"], "answers")
+        self.assertEqual(product["history"][0]["summary"], "Answered 1 breakdown question")
+        self.assertIn("A turn-based word game", next(s for s in product["sections"] if s["id"] == "pitch")["body"])  # nothing else changed
+        _, again = self.request("POST", "/api/epics/answers", {"answers": [{"question": "Is there sound?", "answer": "Beeps only.", "section": "look"}]}, headers=UI_HEADERS)
+        self.assertEqual(again["breakdown"]["open_questions"], [])
+        res, data = self.request("POST", "/api/epics/answers", {"answers": [{"question": "Q?", "answer": "A", "section": "nope"}]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        res, data = self.request("POST", "/api/epics/answers", {"answers": [{"question": "Q?", "answer": "", "section": "look"}]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)  # nothing to save
+        res, _ = self.request("POST", "/api/epics/answers", {"answers": []})
+        self.assertEqual(res.status, 403)
 
     def test_a_new_breakdown_replaces_undecided_suggestions_and_keeps_approved_epics(self):
         self.write_prd()
@@ -4676,6 +4721,9 @@ class AccessibilityStaticTests(unittest.TestCase):
                      "FeaturePlan.renderJiraImport", "dataset.needs", 'method: "DELETE"', "#/connections?card=jira"):
             self.assertIn(part, page, part)
         self.assertIn('query?.get("start") === "1"', page)  # opened from the wizard or the first-time offer, it starts straight away
+        self.assertIn('api("epics/answers"', page)
+        self.assertLess(page.index("breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions"), page.index("FeaturePlan.renderSuggested(ov.epics"))  # the questions sit beneath the breakdown card
+        self.assertIn('event.submitter?.dataset.after === "again"', page)  # "Save and break down again" carries straight on
         self.assertLess(page.index("Nothing is sent until you press the button"), page.index('id="epic-jira-panel"'))
 
     def test_the_new_project_wizard_ends_with_an_optional_break_it_down_step(self):
@@ -6364,6 +6412,15 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         self.assertIn("Too big for one job", card)
         # the layered-plan warning is one line in the card while approving, not a second card above it
         self.assertIn("&& !reviewingPlan ? `<section", self.job_page)
+
+    def test_the_epics_page_keeps_technique_and_break_down_again_under_advanced_options(self):
+        start = self.source.index("const breakdownCard = () =>")
+        card = self.source[start:self.source.index("const jiraCard", start)]
+        advanced = card[card.index('<details class="advanced"><summary>Advanced options</summary>'):]
+        self.assertIn("techniqueSelect(technique)", advanced)
+        self.assertIn(">Break down again</button>", advanced)
+        self.assertNotIn("techniqueSelect(technique)", card[:card.index("<details")])  # not beside the first button
+        self.assertEqual(card.count('id="epic-break"'), 2)  # first run, or later: never both at once (see the ov.epics.length switch)
 
     def test_each_secondary_action_appears_once(self):
         for action in ("revise", "select_models", "ask_ai", "link_logs", "attach_mockup", "discard_job"):

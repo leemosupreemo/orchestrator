@@ -63,6 +63,21 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(prd.platforms("nothing"), ([], False))
 
 
+class AppendToSectionTests(unittest.TestCase):
+    def test_lines_are_added_after_what_is_already_there_and_other_sections_are_untouched(self):
+        text = prd.replace_section(prd.template("Demo"), "pitch", "A word game.")
+        text = prd.replace_section(text, "features", "- Score a word")
+        out = prd.append_to_section(text, "features", ["- Controls → swipe"])
+        parts = prd.split(out)
+        self.assertEqual(parts["features"], "- Score a word\n- Controls → swipe")
+        self.assertEqual(parts["pitch"], "A word game.")
+
+    def test_an_empty_section_gets_the_lines_and_not_the_guidance(self):
+        out = prd.append_to_section(prd.template("Demo"), "look", ["- Monochrome green → yes"])
+        self.assertEqual(prd.split(out)["look"], "- Monochrome green → yes")
+        self.assertTrue(prd.is_filled(prd.split(out)["look"]))
+
+
 class SourceDocumentTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

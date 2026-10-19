@@ -1834,7 +1834,7 @@ function showSignInGate(message) {
         </div>
         <figure class="signin-preview">
           <h3>The app in your head. Made real.</h3>
-          <p class="signin-privacy">Completely private: your code and assets stay on your computer, never on our servers.</p>
+          <p class="signin-privacy">Private: your code and assets stay on your computer.</p>
           <picture>
             <source media="(prefers-reduced-motion: reduce)" srcset="signin-preview.png">
             <img src="signin-preview.gif" width="720" height="540" alt="Orchestrator screens with a sample Family Recipes project: describe an idea, shape its product brief, approve a plan, and follow build progress through completed checks.">
@@ -5210,7 +5210,7 @@ pages.docs = async (args, query) => {
 // with a history that can be restored and a switch for automatic updates.
 
 const PRD_SOURCE = { you: "You", auto: "Updated automatically after a job", import: "Imported", ai: "AI help (you accepted it)", draft: "Drafted from your project", revert: "Restored an earlier version",
-  migration: "Built from the earlier documents", earlier: "Before changes were tracked" };
+  migration: "Built from the earlier documents", earlier: "Before changes were tracked", answers: "Answered a breakdown question" };
 const DESIGN_IMAGE = /^designs\/([A-Za-z0-9._-]+\.(?:png|jpe?g|gif|webp))$/i;
 
 function prdSnippet(md, n = 180) {
@@ -5952,9 +5952,11 @@ pages.epics = async (_, query) => {
       <div class="row"><a class="btn primary" href="#/product">Open Product</a></div></div></section>`;
     return `<section class="card mb-16" id="epic-breakdown"><div class="card-h"><h2>Break down from the PRD</h2></div><div class="card-b stack">
       <p class="muted">Orchestrator reads your product requirements and splits them into epics, using the technique that fits what you've written (a story map for flows people follow, a top-down work breakdown for technical products), and as much detail as you gave. You approve the ones you want.</p>
-      <div class="row gap-10 end wrap">${FeaturePlan.techniqueSelect(technique)}
-        <button type="button" class="btn primary" id="epic-break">${ov.epics.length ? "Break down again" : "Break down from the PRD"}</button></div>
-      ${ov.epics.length ? `<p class="muted">Breaking down again replaces the suggestions you haven't decided on. Approved and declined epics stay.</p>` : ""}
+      ${ov.epics.length ? "" : `<div class="row"><button type="button" class="btn primary" id="epic-break">Break down from the PRD</button></div>`}
+      <details class="advanced"><summary>Advanced options</summary><div class="stack">
+        ${FeaturePlan.techniqueSelect(technique)}
+        ${ov.epics.length ? `<div class="row"><button type="button" class="btn" id="epic-break">Break down again</button></div>
+          <p class="muted">Breaking down again replaces the suggestions you haven't decided on. Approved and declined epics stay.</p>` : ""}</div></details>
       ${FeaturePlan.renderBreakdownInfo(ov.breakdown)}
       <div id="epics-busy"></div></div></section>`;
   };
@@ -5976,7 +5978,7 @@ pages.epics = async (_, query) => {
     return `<section class="card mb-16" id="epic-jira"><div class="card-h"><h2>Jira</h2><span class="muted">${esc(j.site)}</span></div><div class="card-b stack">${body}</div></section>`;
   };
 
-  const body = () => `${breakdownCard()}${FeaturePlan.renderSuggested(ov.epics, ov.breakdown)}
+  const body = () => `${breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions(ov.breakdown) : ""}${FeaturePlan.renderSuggested(ov.epics, ov.breakdown)}
     ${FeaturePlan.renderApproved(ov.epics, { act, jiraConnected: ov.jira?.connected && owner && !!ov.jira.project })}
     ${FeaturePlan.renderDeclined(ov.epics)}${jiraCard()}`;
 
@@ -6067,6 +6069,17 @@ pages.epics = async (_, query) => {
   const onSubmit = async (event) => {
     const form = event.target;
     if (form.id === "epic-suggested-form") { event.preventDefault(); return decide("approve", chosen(), "Approved. Each is a feature and a waiting job marked Epic."); }
+    if (form.id === "epic-questions-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const answers = [...form.querySelectorAll(".epic-question")].map((box, i) => ({ question: box.dataset.question, answer: String(data.get(`a${i}`) || "").trim(), section: data.get(`s${i}`) }))
+        .filter((a) => a.answer);
+      if (!answers.length) return toast("Write an answer to at least one question.", "warning");
+      try {
+        take(await api("epics/answers", { method: "POST", body: { answers } }), `${plural(answers.length, "answer")} added to your product requirements`);
+        if (event.submitter?.dataset.after === "again") breakDown();
+      } catch (e) { failed(e); }
+    }
     if (form.id === "epic-jira-project") {
       event.preventDefault();
       try { take(await api("epics/jira/project", { method: "POST", body: { project: new FormData(form).get("project") } }), "Jira project saved"); } catch (e) { failed(e); }

@@ -4458,5 +4458,9 @@ body[data-page="home"] #page-sub { grid-column: 1 / -1; grid-row: 2; width: 100%
 a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 .epic-row .side { flex-wrap: wrap; justify-content: flex-end; }
 .epic-technique { min-width: 16rem; margin: 0; }
+.epic-question { display: grid; grid-template-columns: minmax(0, 1fr) 12rem; gap: var(--space-3); align-items: end; padding-bottom: var(--space-3); border-bottom: 1px solid var(--border); }
+.epic-question .field { margin: 0; }
+.epic-question:last-of-type { border-bottom: 0; }
+@media (max-width: 760px) { .epic-question { grid-template-columns: minmax(0, 1fr); } }
 .pill.idle { background: var(--panel-2); color: var(--muted); }
 #epics-body .row.end { align-items: flex-end; }

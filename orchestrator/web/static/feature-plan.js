@@ -45,9 +45,35 @@
     const brief = breakdown.detail === "sparse"
       ? `<p class="muted">Your requirements are short, so these are broad. Add more to Product and break down again for a finer result.</p>` : "";
     const warnings = (breakdown.warnings || []).map((w) => `<div class="banner attention"><p>${escapeHtml(w)}</p></div>`).join("");
-    const questions = breakdown.open_questions?.length
-      ? `<div class="feature-proposal-questions"><div class="tc-area-h">To break this down further, answer</div><ul>${breakdown.open_questions.map((q) => `<li>${escapeHtml(q)}</li>`).join("")}</ul></div>` : "";
-    return `${how}${brief}${warnings}${questions}`;
+    return `${how}${brief}${warnings}`;
+  }
+
+  // Where an answer most likely belongs in the PRD, guessed from the question; the person can change it.
+  const SECTION_CHOICES = [["features", "Core features"], ["pitch", "Pitch"], ["who", "Who it's for"], ["look", "Look and feel"], ["not", "What to exclude"]];
+  function guessSection(question) {
+    const q = String(question || "").toLowerCase();
+    if (/\b(exclude|avoid|won't|will not|out of scope|non-goal|not include)\b/.test(q)) return "not";
+    if (/\b(platform|native|cross-platform|codebase|stack|built for|ios|android|web app|language|framework|engine)\b/.test(q)) return "pitch";
+    if (/\b(look|feel|style|visual|colou?r|theme|sound|animation|design|font|brand|monochrome|pixel|aesthetic)\b/.test(q)) return "look";
+    if (/\b(who|audience|target|persona|customers?|age group)\b/.test(q)) return "who";
+    return "features";
+  }
+
+  // What the breakdown still needs to know: an answer box for each, and where in the PRD the answer goes.
+  function renderQuestions(breakdown) {
+    const questions = breakdown?.open_questions || [];
+    if (!questions.length) return "";
+    return `<section class="card mb-16" id="epic-questions"><div class="card-h"><h2>Questions to answer</h2><span class="count">${questions.length}</span></div>
+      <form class="card-b stack" id="epic-questions-form">
+        <p class="muted">Answer any you can. Each answer is added to your product requirements (you can see and undo it in Product's History), so the next breakdown, and every job, can use it. Leave the rest blank.</p>
+        ${questions.map((q, i) => `<div class="epic-question" data-question="${escapeHtml(q)}">
+          <label class="field"><span>${escapeHtml(q)}</span><textarea name="a${i}" rows="2" maxlength="1000"></textarea></label>
+          <label class="field epic-question-where"><span>Goes in</span><select name="s${i}">${SECTION_CHOICES.map(([id, title]) =>
+            `<option value="${id}" ${id === guessSection(q) ? "selected" : ""}>${escapeHtml(title)}</option>`).join("")}</select></label></div>`).join("")}
+        <div class="row"><span class="spacer"></span>
+          <button type="submit" class="btn" data-after="save">Save to the PRD</button>
+          <button type="submit" class="btn primary" data-after="again">Save and break down again</button></div>
+      </form></section>`;
   }
 
   function epicDetails(e) {
@@ -160,6 +186,6 @@
         <div class="list">${rows}</div></div></section>`;
   }
 
-  root.FeaturePlan = {renderBreakdownInfo, renderSuggested, renderApproved, renderDeclined, renderJiraImport, techniqueSelect, jiraLink,
+  root.FeaturePlan = {renderBreakdownInfo, renderQuestions, guessSection, renderSuggested, renderApproved, renderDeclined, renderJiraImport, techniqueSelect, jiraLink,
     renderStories, requirementsList, renderStartForm, chosenFeatures, renderRun};
 })(typeof globalThis !== "undefined" ? globalThis : window);

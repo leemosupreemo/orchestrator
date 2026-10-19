@@ -139,6 +139,16 @@ def approve(runtime: Path, ids: list[str]) -> list[dict[str, Any]]:
     return picked
 
 
+def answered(runtime: Path, questions: list[str]) -> None:
+    """These breakdown questions were answered (in the PRD), so they are no longer open."""
+    data = load(runtime)
+    breakdown = data["breakdown"]
+    if breakdown:
+        done = {" ".join(q.split()) for q in questions}
+        breakdown["open_questions"] = [q for q in breakdown.get("open_questions") or [] if " ".join(q.split()) not in done]
+        save(runtime, data)
+
+
 def decline(runtime: Path, ids: list[str]) -> None:
     data = load(runtime)
     for epic in data["epics"]:

@@ -109,6 +109,12 @@ def sections_view(text: str | None) -> list[dict[str, Any]]:
              "filled": is_filled(parts.get(s["id"]))} for s in SECTIONS]
 
 
+def append_to_section(text: str, section_id: str, lines: list[str]) -> str:
+    """The document with `lines` (bullets) added to the end of one section, after whatever the person already wrote there."""
+    body = split(text).get(section_id, "").strip()
+    return replace_section(text, section_id, (body + "\n" if body else "") + "\n".join(lines))
+
+
 def replace_section(text: str, section_id: str, body: str) -> str:
     """The document with one section's body replaced; everything else (including headings the person added) is kept."""
     section = BY_ID[section_id]

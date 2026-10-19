@@ -5381,6 +5381,31 @@ class UIHandler(BaseHTTPRequestHandler):
                 return epics_overview(root)
 
             self._json({"task": self.server.tasks.start(work, commit)}, HTTPStatus.ACCEPTED)
+        elif method == "POST" and parts == ["epics", "answers"]:
+            # The breakdown's open questions, answered: each answer goes into the PRD section the person chose, as a bullet.
+            body = self._body()
+            doc = prd_doc.Prd(root, runtime_dir(root))
+            text, done = doc.read() or prd_doc.template(), []
+            by_section: dict[str, list[str]] = {}
+            for item in [i for i in body.get("answers") or [] if isinstance(i, dict)][:12]:
+                answer = " ".join(str(item.get("answer") or "").split())[:1000]
+                question = " ".join(str(item.get("question") or "").split())[:300]
+                section = str(item.get("section") or "features")
+                if section not in prd_doc.BY_ID:
+                    raise UIError("Choose where each answer goes.")
+                if answer and question:
+                    by_section.setdefault(section, []).append(f"- {question} → {answer}")
+                    done.append(question)
+            if not done:
+                raise UIError("Write an answer to at least one question.")
+            for section, lines in by_section.items():
+                text = prd_doc.append_to_section(text, section, lines)
+            try:
+                doc.write(text, "answers", f"Answered {len(done)} breakdown question{'' if len(done) == 1 else 's'}")
+            except prd_doc.PrdError as exc:
+                raise UIError(str(exc))
+            epic_store.answered(runtime_dir(root), done)
+            self._json(epics_overview(root))
         elif method == "POST" and parts == ["epics", "decide"]:
             body = self._body()
             ids = [str(i) for i in body.get("ids") or [] if isinstance(i, str)][:100]
