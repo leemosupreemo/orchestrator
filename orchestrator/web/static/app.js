@@ -5034,8 +5034,7 @@ pages.help = async () => ({
         <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
-      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads. Edit it, import a PRD, see its history."],
-         ["Epics", "#/epics", "Your product broken into epics to approve. Approved ones become jobs marked Epic; link them to Jira."],
+      ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads, and the epics it breaks down into. Edit it, import a PRD, see its history, link epics to Jira."],
          ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["App delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
          ["Onboarding checklist", "#/checkup", "What the project needs, plus local tools, environment checks, and workflows."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
@@ -5292,15 +5291,19 @@ function productStripHtml(p) {
 }
 
 pages.product = async (_, query) => {
-  if (query?.get("suggest") === "1") { location.hash = "#/epics?start=1"; return { title: "Product", html: "" }; } // the old link to suggesting features
-  let [p, integrationsData, epicsData] = await Promise.all([
+  const [p0, integrationsData0, epicsData] = await Promise.all([
     api("product"),
     api("integrations").catch(() => ({ integrations: [] })),
-    api("epics").catch(() => ({ epics: [] })),
+    api("epics").catch(() => null),
   ]);
+  let p = p0, integrationsData = integrationsData0;
   let connectedApps = (integrationsData?.integrations || []).filter((i) => i.connected);
-  let productEpics = epicsData?.epics || [];
-  const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1", section: query?.get("section") || "" };
+  let reloadPage = async () => {};
+  const epics = epicsData ? epicsSection(epicsData, { onPrdChanged: () => reloadPage() }) : null;
+  const productEpics = () => epics?.data().epics || [];
+  const start = query?.get("start") === "1" || query?.get("suggest") === "1"; // the wizard's and the old links to breaking it down
+  const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1",
+    section: query?.get("section") || (start ? "epics" : "") };
   const sectionCard = (s) => {
     const designs = s.id === "look" ? [...s.body.matchAll(/\]\((designs\/[^)\s]+)\)/g)].map((m) => m[1]).filter((d) => DESIGN_IMAGE.test(d)) : [];
     return `<section class="card mb-16" id="sec-${s.id}"><div class="card-h"><h2>${esc(s.title)}</h2>
@@ -5336,21 +5339,6 @@ pages.product = async (_, query) => {
       <div class="meta">${esc(ago(v.at))}${v.summary ? ` · ${esc(v.summary)}` : ""}</div><div class="prd-diff" hidden></div></div>
       <div class="side"><button type="button" class="btn small ghost" data-prd-diff="${esc(v.id)}">See changes</button>${i === 0 ? "" : `<button type="button" class="btn small" data-prd-restore="${esc(v.id)}">Restore</button>`}</div></div>`).join("");
   const prdFilled = () => (p.sections || []).some((x) => x.filled);
-  // Where a filled-in PRD leads: the epics it is broken into (the work happens on the Epics page).
-  const epicsCard = () => {
-    const by = (status) => productEpics.filter((e) => e.status === status);
-    const approved = by("approved"), suggested = by("suggested");
-    const counts = [approved.length && `${approved.length} approved`, suggested.length && `${suggested.length} waiting for your decision`].filter(Boolean).join(" · ");
-    const lead = !prdFilled() ? "Fill in any field above first, then Orchestrator can break it down into epics."
-      : productEpics.length ? `Your product, broken into epics. ${counts || "Nothing approved yet."}`
-        : "Break your requirements down into epics with a story map or a top-down work breakdown. You approve the ones you want, and they become jobs that wait for you to plan them.";
-    const rows = approved.slice(0, 5).map((e) => `<div class="item"><div class="main-col"><div class="title">${esc(e.name)} ${FeaturePlan.jiraLink(e)}</div>${e.summary ? `<div class="meta">${esc(e.summary)}</div>` : ""}</div></div>`).join("");
-    return `<section class="card mb-16" id="prd-epics"><div class="card-h"><h2>Epics</h2><span class="count">${approved.length}</span></div>
-      <div class="card-b stack"><div class="muted">${lead}</div>
-        <div class="row gap-10">${productEpics.length ? `<a class="btn small primary" href="#/epics">Open epics</a>`
-          : prdFilled() ? `<a class="btn small primary" href="#/epics?start=1">Break down into epics</a>` : `<button type="button" class="btn small" disabled>Break down into epics</button>`}</div></div>
-      ${rows ? `<div class="list">${rows}</div>` : ""}</section>`;
-  };
   const render = () => `
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2></div>
         <div class="card-b stack">
@@ -5359,7 +5347,6 @@ pages.product = async (_, query) => {
         </div></section>
       <div id="prd-panel"></div>
       ${p.sections.map(sectionCard).join("")}
-      ${epicsCard()}
       ${p.sources?.length ? `<section class="card mb-16" id="prd-sources"><div class="card-h"><h2>Source documents</h2><span class="count">${p.sources.length}</span></div>
         <div class="card-b stack"><div class="muted">The fields above are short summaries. These are the full documents you imported; jobs read them when they need the detail.</div>
         <div class="list">${p.sources.map((d) => `<div class="item"><div class="main-col"><div class="title">${esc(d.label)}</div><div class="meta mono">docs/product/${esc(d.target)}</div></div>
@@ -5383,7 +5370,8 @@ pages.product = async (_, query) => {
         </div>
         <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
-        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
+        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>
+      ${epics ? epics.html() : ""}`;
   return {
     title: "Product",
     sub: "",
@@ -5392,12 +5380,14 @@ pages.product = async (_, query) => {
     after: () => {
       const panel = () => $("#prd-panel");
       const reload = async () => {
-        [p, integrationsData, epicsData] = await Promise.all([api("product"), api("integrations").catch(() => ({ integrations: [] })), api("epics").catch(() => ({ epics: [] }))]);
-        productEpics = epicsData?.epics || [];
+        let epicsData;
+        [p, integrationsData, epicsData] = await Promise.all([api("product"), api("integrations").catch(() => ({ integrations: [] })), api("epics").catch(() => null)]);
+        if (epicsData) epics?.set(epicsData);
         connectedApps = (integrationsData?.integrations || []).filter((i) => i.connected);
         $("#view").innerHTML = render(); wire(); hydrateAuthImages(); wireExpandables(view);
         offerBreakdown();
       };
+      reloadPage = reload;
       const save = async (body) => { p = await api("product", { method: "POST", body }); };
 
       const showSectionEditor = (id, box, currentBody, hint, title, onSave, onCancel) => {
@@ -5900,22 +5890,23 @@ pages.product = async (_, query) => {
       // and not on top of an import or a draft the person is looking at.
       let offering = false;
       function offerBreakdown() {
-        if (offering || !prdFilled() || p.breakdown_offered || productEpics.length || open.imp || open.draft || $("#dialog")?.open) return;
+        if (offering || !epics || start || !prdFilled() || p.breakdown_offered || productEpics().length || open.imp || open.draft || $("#dialog")?.open) return;
         if (panel()?.children.length) return;
         offering = true;
         const asked = formDialog("Break your product down?",
           `<p>Your requirements have something in them now. Orchestrator can split them into <strong>epics</strong>: the big pieces of the product, using a story map or a top-down work breakdown, as detailed as what you've written.</p>
-           <p class="muted">You approve the ones you want. Each becomes a job marked Epic that waits until you plan it. You can do this any time from Epics.</p>`, "Break it down", { compact: true });
+           <p class="muted">You approve the ones you want. Each becomes a job marked Epic that waits until you plan it. You can do this any time from Epics, at the bottom of this page.</p>`, "Break it down", { compact: true });
         $("#dialog-cancel").textContent = "Not now";
         asked.then((answer) => {
           p.breakdown_offered = true;
           api("product/settings", { method: "POST", body: { breakdown_offered: true } }).catch(() => {});
-          if (answer) location.hash = "#/epics?start=1";
+          if (answer) { $("#sec-epics")?.scrollIntoView({ block: "start" }); epics.breakDown(); }
         });
       }
 
       wire();
       hydrateAuthImages();
+      epics?.mount(start);
       offerBreakdown();
       if (open.imp) importPanel();
       else if (open.draft && p.can_draft) draftPanel();
@@ -5937,19 +5928,21 @@ async function hydrateAuthImages(root = document) {
 }
 
 // ---------------------------------------------------------------- epics
-// The product broken down into epics: suggested from the requirements, approved or declined here, each approved one a
-// waiting job marked Epic. With Jira connected they can be sent to Jira, and Jira's epics imported as jobs.
-pages.epics = async (_, query) => {
-  let ov = await api("epics"); // the overview
+// The product broken down into epics, the second half of the Product page: suggested from the requirements, approved or
+// declined here, each approved one a waiting job marked Epic. With Jira connected they can be sent to Jira, and Jira's
+// epics imported as jobs. `onPrdChanged` reloads the page when answering a question added to the requirements.
+function epicsSection(initial, { onPrdChanged }) {
+  let ov = initial; // the overview
   const owner = state.you?.role !== "member";
   let technique = "";
   let jiraList = null; // epics found in Jira, while the import panel is open
   let working = null;  // the breakdown in flight: { abort }
+  let busy = "";       // its spinner, kept when the page around it redraws
 
   const breakdownCard = () => {
     if (!ov.prd_filled) return `<section class="card mb-16"><div class="card-b stack"><strong>Write your product requirements first.</strong>
       <span class="muted">Anything in any field is enough: the breakdown follows how much you've said.</span>
-      <div class="row"><a class="btn primary" href="#/product">Open Product</a></div></div></section>`;
+      </div></section>`;
     return `<section class="card mb-16" id="epic-breakdown"><div class="card-h"><h2>Break down from the PRD</h2></div><div class="card-b stack">
       <p class="muted">Orchestrator reads your product requirements and splits them into epics, using the technique that fits what you've written (a story map for flows people follow, a top-down work breakdown for technical products), and as much detail as you gave. You approve the ones you want.</p>
       ${ov.epics.length ? "" : `<div class="row"><button type="button" class="btn primary" id="epic-break">Break down from the PRD</button></div>`}
@@ -5958,7 +5951,7 @@ pages.epics = async (_, query) => {
         ${ov.epics.length ? `<div class="row"><button type="button" class="btn" id="epic-break">Break down again</button></div>
           <p class="muted">Breaking down again replaces the suggestions you haven't decided on. Approved and declined epics stay.</p>` : ""}</div></details>
       ${FeaturePlan.renderBreakdownInfo(ov.breakdown)}
-      <div id="epics-busy"></div></div></section>`;
+      <div id="epics-busy">${busy}</div></div></section>`;
   };
 
   const jiraCard = () => {
@@ -5994,7 +5987,7 @@ pages.epics = async (_, query) => {
     if (!box) return;
     working = { abort: new AbortController() };
     technique = $("#epic-technique")?.value || technique;
-    box.innerHTML = `<div class="prd-busy" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
+    box.innerHTML = busy = `<div class="prd-busy" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
       <div><strong>Reading your requirements and breaking them down…</strong><div class="prd-busy-sub">This can take a minute. It carries on if you leave this page.</div></div>
       <button type="button" class="btn small" id="epic-break-cancel">Cancel</button></div>`;
     $("#epic-break")?.setAttribute("disabled", "");
@@ -6008,6 +6001,7 @@ pages.epics = async (_, query) => {
       if (!mine.abort.signal.aborted) { failed(e); $("#epics-busy") && ($("#epics-busy").innerHTML = `<div class="notice bad">${esc(e.message)}</div>`); }
     } finally {
       working = null;
+      busy = "";
       if (mine.abort.signal.aborted) redraw();
     }
   };
@@ -6077,6 +6071,7 @@ pages.epics = async (_, query) => {
       if (!answers.length) return toast("Write an answer to at least one question.", "warning");
       try {
         take(await api("epics/answers", { method: "POST", body: { answers } }), `${plural(answers.length, "answer")} added to your product requirements`);
+        await onPrdChanged();
         if (event.submitter?.dataset.after === "again") breakDown();
       } catch (e) { failed(e); }
     }
@@ -6093,18 +6088,22 @@ pages.epics = async (_, query) => {
   };
 
   return {
-    title: "Epics",
-    sub: "Your product broken into epics. Approved ones become jobs marked Epic, waiting until you plan them.",
-    html: `<div id="epics-body">${body()}</div>`,
-    after: () => {
+    data: () => ov,
+    set: (data) => { ov = data; },
+    html: () => `<div class="page-part" id="sec-epics"><h2>Epics</h2>
+      <p class="muted">Your product broken into epics. Approved ones become jobs marked Epic, waiting until you plan them.</p></div>
+      <div id="epics-body">${body()}</div>`,
+    breakDown,
+    // Listens on the view, so it keeps working when the Product page redraws around it.
+    mount: (start) => {
       view.addEventListener("click", onClick);
       view.addEventListener("change", onChange);
       view.addEventListener("submit", onSubmit);
       cleanup.push(() => { working?.abort.abort(); /* stop polling; the computer keeps going and saves the result */ view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); });
-      if (query?.get("start") === "1" && ov.prd_filled && !ov.epics.length) breakDown();
+      if (start && ov.prd_filled && !ov.epics.length) breakDown();
     },
   };
-};
+}
 
 pages.devlogs = async () => {
   setHeader({ title: "Device logs" });
@@ -8189,7 +8188,7 @@ pages["new-project"] = async (_, query) => {
       ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
       ${offerBreakdown ? `<section class="card mt-16" id="np-breakdown"><div class="card-b stack"><strong>Next: break it down into epics</strong>
         <span class="muted">Optional. Orchestrator reads what you've told it and suggests the big pieces of the product, as detailed as your answers, using a story map or a top-down work breakdown. You approve the ones you want, and they become jobs that wait until you plan them.</span>
-        <div class="row"><a class="btn primary big" href="#/epics?start=1" data-np-breakdown>Break it down</a><a class="btn big" href="#/checkup" data-np-breakdown>Skip for now</a></div></div></section>`
+        <div class="row"><a class="btn primary big" href="#/product?start=1" data-np-breakdown>Break it down</a><a class="btn big" href="#/checkup" data-np-breakdown>Skip for now</a></div></div></section>`
         : `<div class="row mt-16"><a class="btn primary big" href="#/checkup">Set up this project</a></div>`}`,
     after: () => {
       // Either choice counts as having been asked, so the Product page doesn't ask again.
@@ -10079,7 +10078,7 @@ $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScr
 const navigationDrawer = NavigationDrawer.mount({document, window});
 
 // ---------------------------------------------------------------- command palette
-const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Epics", "#/epics", "Break the product down into epics, approve them, and link them to Jira"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
+const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Epics", "#/product?section=epics", "Break the product down into epics, approve them, and link them to Jira"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
   ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],

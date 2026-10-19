@@ -17,6 +17,7 @@
     "config/models": "config/ai",
     "config/documentation": "docs",
     "config/archived-jobs": "?filter=archived",
+    "epics": "product?section=epics",
   };
 
   function redirect(hash, aliases = ALIASES) {

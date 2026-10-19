@@ -4464,3 +4464,7 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 760px) { .epic-question { grid-template-columns: minmax(0, 1fr); } }
 .pill.idle { background: var(--panel-2); color: var(--muted); }
 #epics-body .row.end { align-items: flex-end; }
+/* The second half of a page (Epics, under the Product requirements): a heading of its own, set apart from the cards above. */
+.page-part { margin: var(--space-8) 0 var(--space-4); padding-top: var(--space-6); border-top: 1px solid var(--border); }
+.page-part h2 { margin: 0 0 var(--space-1); font-size: var(--text-xl); }
+.page-part p { margin: 0; }

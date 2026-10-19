@@ -126,16 +126,16 @@ Check-up has one **Product requirements** item: *todo* with nothing in the Pitch
 Once the PRD has something in it, **Break down** splits it into epics: the big pieces of the product, for the person to approve or decline. It is one option in three places, and it runs only when asked, never in the background:
 
 - **In the new project wizard**, as the last, optional step (**Break it down** or **Skip for now**).
-- **On the Product page**, the first time the PRD has something in it, a dialog offers it once (**Break it down** or **Not now**; it isn't asked again, on any device). After that, the Product page's **Epics** card links to the Epics page.
-- **On the Epics page** (in the sidebar, under Product), any time.
+- **On the Product page**, the first time the PRD has something in it, a dialog offers it once (**Break it down** or **Not now**; it isn't asked again, on any device). After that, the **Epics** section at the bottom of the Product page is where it happens.
+- **In the Epics section** at the bottom of the Product page, any time.
 
 How the breakdown is made:
 
-- **Technique follows the information, or the person's choice.** By default the model picks, and names, the technique that fits what the PRD says: a **story map** (the flows people follow, grouped into release slices: MVP, Next, Later), a **work breakdown** (WBS: top-down deliverables by component, for technical products), or a **short list**. The Technique menu on the Epics page lets the person choose one instead.
+- **Technique follows the information, or the person's choice.** By default the model picks, and names, the technique that fits what the PRD says: a **story map** (the flows people follow, grouped into release slices: MVP, Next, Later), a **work breakdown** (WBS: top-down deliverables by component, for technical products), or a **short list**. The Technique menu in the Epics section lets the person choose one instead.
 - **Detail follows the detail you gave.** The app measures how much the PRD (and any attached source document) says. A short PRD gets a few epics (3 to 6) with one sentence each and *questions* instead of invented detail; a fuller one gets up to about 10 epics with requirements and user stories; a detailed one gets up to 15 epics with 3 to 6 testable requirements each, drawn from the text.
 - **Run again whenever.** Breaking down again replaces the suggestions nobody has decided on. Approved and declined epics stay, and nothing already there is suggested twice.
 
-#### The Epics page
+#### The Epics section
 
 Each epic is **Suggested**, **Approved** or **Declined**:
 
@@ -145,9 +145,9 @@ Each epic is **Suggested**, **Approved** or **Declined**:
 
 #### Jira
 
-With Jira connected (Connections) and a project key set (on the Epics page, or in the Jira connection), the Epics page can work both ways. Both are owner-only, and nothing is sent unless a button is pressed:
+With Jira connected (Connections) and a project key set (in the Epics section, or in the Jira connection), the Epics section can work both ways. Both are owner-only, and nothing is sent unless a button is pressed:
 
-- **Send approved epics to Jira** creates each approved epic that isn't there yet as an Epic issue in the project (with its requirements and stories as the description). It then shows a Jira icon with the key and a link, on the Epics page, on Home, and on the epic's job. The job is linked to the Jira epic, so the pull request and merge notes that Orchestrator already posts to linked tickets go to it.
+- **Send approved epics to Jira** creates each approved epic that isn't there yet as an Epic issue in the project (with its requirements and stories as the description). It then shows a Jira icon with the key and a link, in the Epics section, on Home, and on the epic's job. The job is linked to the Jira epic, so the pull request and merge notes that Orchestrator already posts to linked tickets go to it.
 - **Import epics from Jira** lists the project's open epics that aren't here yet. The ones ticked become approved epics, each with a feature and a waiting Epic job, linked to the Jira epic. Orchestrator reads them from Jira again when importing; it doesn't take their text from the page.
 
 ## What is stored where

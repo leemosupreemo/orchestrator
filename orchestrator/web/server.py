@@ -978,7 +978,7 @@ def features_overview(root: Path) -> dict[str, Any]:
 
 
 def epics_overview(root: Path) -> dict[str, Any]:
-    """The Epics page: every epic with where its job is up to, how the breakdown was made, and what Jira can do."""
+    """The Epics section of the Product page: every epic with where its job is up to, how the breakdown was made, and what Jira can do."""
     runtime = runtime_dir(root)
     data = epic_store.load(runtime)
     jobs = {j["id"]: j for j in archived_feature_jobs(root) + list_jobs(root)}

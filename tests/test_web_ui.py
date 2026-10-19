@@ -4695,34 +4695,40 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_slow_model_work_is_started_and_polled_not_held_open(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        self.assertEqual(page.count("waitForTask("), 2)  # draft and import; the epic breakdown polls the same way from its own page
-        epics = self.js[self.js.index("pages.epics = async"):self.js.index("pages.devlogs = async")]
+        self.assertEqual(page.count("waitForTask("), 2)  # draft and import; the epic breakdown polls the same way from its own section
+        epics = self.js[self.js.index("function epicsSection("):self.js.index("pages.devlogs = async")]
         self.assertEqual(epics.count("waitForTask("), 1)
         fn = self.js[self.js.index("async function waitForTask"):self.js.index("function productStripHtml")]
         self.assertIn("product/task/", fn)
         self.assertIn("e.status === 404 || ++misses >= 4", fn)  # a dropped connection is retried, a vanished task is not
         self.assertIn("7 * 60 * 1000", fn)  # and it never spins for ever
 
-    def test_the_product_page_leads_to_epics_and_offers_the_breakdown_once(self):
+    def test_epics_are_the_second_half_of_the_product_page_and_the_breakdown_is_offered_once(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        self.assertIn('href="#/epics?start=1"', page)  # Break down into epics
-        self.assertIn('id="prd-epics"', page)
-        self.assertNotIn("suggestFeatures", self.js)  # one way to break the PRD down, on the Epics page
+        self.assertNotIn("pages.epics", self.js)
+        self.assertNotIn('data-route="epics"', (self.STATIC / "index.html").read_text())
+        self.assertIn('"epics": "product?section=epics"', (self.STATIC / "routes.js").read_text())  # old links land on the section
+        self.assertIn("epicsSection(epicsData", page)
+        self.assertLess(page.index('<h2>History</h2>'), page.index("epics.html()"))  # at the bottom
+        self.assertIn('id="sec-epics"', self.js)
+        self.assertNotIn("suggestFeatures", self.js)  # one way to break the PRD down
         self.assertNotIn('api("features/propose"', self.js)
         offer = page[page.index("function offerBreakdown"):][:1500]
-        for part in ("prdFilled()", "p.breakdown_offered", "productEpics.length", "formDialog(", '"Not now"', "breakdown_offered: true", "#/epics?start=1"):
+        for part in ("prdFilled()", "p.breakdown_offered", "productEpics().length", "formDialog(", '"Not now"', "breakdown_offered: true", "epics.breakDown()"):
             self.assertIn(part, offer, part)
         self.assertGreaterEqual(page.count("offerBreakdown();"), 2)  # when the page opens, and after the first thing is saved
         self.assertIn('query?.get("suggest") === "1"', page)  # the old link still lands somewhere useful
+        self.assertIn("epics?.mount(start)", page)  # opened from the wizard, it starts straight away
 
-    def test_the_epics_page_breaks_down_approves_declines_and_works_with_jira(self):
-        page = self.js[self.js.index("pages.epics = async"):self.js.index("pages.devlogs = async")]
-        for part in ('api("epics")', 'api("epics/breakdown"', 'api("epics/decide"', 'api("epics/jira")', 'api("epics/jira/send"', 'api("epics/jira/import"',
+    def test_the_epics_section_breaks_down_approves_declines_and_works_with_jira(self):
+        page = self.js[self.js.index("function epicsSection("):self.js.index("pages.devlogs = async")]
+        for part in ('api("epics/breakdown"', 'api("epics/decide"', 'api("epics/jira")', 'api("epics/jira/send"', 'api("epics/jira/import"',
                      'api("epics/jira/project"', "FeaturePlan.renderSuggested", "FeaturePlan.renderApproved", "FeaturePlan.renderDeclined",
                      "FeaturePlan.renderJiraImport", "dataset.needs", 'method: "DELETE"', "#/connections?card=jira"):
             self.assertIn(part, page, part)
-        self.assertIn('query?.get("start") === "1"', page)  # opened from the wizard or the first-time offer, it starts straight away
+        self.assertIn("if (start && ov.prd_filled && !ov.epics.length) breakDown()", page)
         self.assertIn('api("epics/answers"', page)
+        self.assertIn("await onPrdChanged()", page)  # an answer changed the requirements above, so they redraw
         self.assertLess(page.index("breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions"), page.index("FeaturePlan.renderSuggested(ov.epics"))  # the questions sit beneath the breakdown card
         self.assertIn('event.submitter?.dataset.after === "again"', page)  # "Save and break down again" carries straight on
         self.assertLess(page.index("Nothing is sent until you press the button"), page.index('id="epic-jira-panel"'))
@@ -4730,7 +4736,7 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_the_new_project_wizard_ends_with_an_optional_break_it_down_step(self):
         self.assertIn('["breakdown", "Break it down"]', self.js)
         done = self.js[self.js.index("// step === \"create\""):][:5200]
-        for part in ("offerBreakdown", 'href="#/epics?start=1"', "Skip for now", "data-np-breakdown", "breakdown_offered: true"):
+        for part in ("offerBreakdown", 'href="#/product?start=1"', "Skip for now", "data-np-breakdown", "breakdown_offered: true"):
             self.assertIn(part, done, part)
 
     def test_working_on_it_is_a_prominent_spinner_with_a_timer(self):
@@ -6957,7 +6963,7 @@ class SidebarLayoutTests(unittest.TestCase):
     def test_most_used_pages_lead_and_set_once_settings_sit_under_settings(self):
         html = (self.STATIC / "index.html").read_text()
         main = html[html.index('<nav class="nav" id="nav"'):html.index("</nav>", html.index('<nav class="nav" id="nav"'))]
-        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["home", "activity", "product", "epics"])
+        self.assertEqual(re.findall(r'data-route="([a-z-]+)"', main), ["home", "activity", "product"])  # epics are the second half of Product
         tabbar = html[html.index('<nav class="tabbar"'):]
         self.assertEqual(re.findall(r'data-route="([a-z-]+)"', tabbar[:tabbar.index("</nav>")]), ["home", "product", "new", "activity", "tests"])
         out = subprocess.run(["node", "--require", HTML_JS, "-e", "require(process.argv[1]);"

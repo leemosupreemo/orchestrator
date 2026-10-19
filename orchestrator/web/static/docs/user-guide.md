@@ -555,7 +555,7 @@ Access and security:
 
 ## Epics
 
-**Epics** (in the sidebar, under Product) breaks the product requirements down into epics, the big pieces of the product, for you to approve or decline. It is offered once, the first time the requirements have something in them, as the last step of the new project wizard, and is always on the Epics page.
+**Epics** (the second half of the Product page, below the requirements) breaks the product requirements down into epics, the big pieces of the product, for you to approve or decline. It is offered once, the first time the requirements have something in them, as the last step of the new project wizard, and is always there at the bottom of the Product page.
 
 - **Break down from the PRD** uses the technique that fits what you've written (a story map for the flows people follow, a top-down work breakdown for technical products, a short list when there's little to go on), or the one you pick in the Technique menu. A short PRD gets a few broad epics and questions; a detailed one gets a finer breakdown with requirements.
 - **Approve** the ones you want (ticking one ticks what it builds on). Each approved epic becomes a feature and a **job marked Epic** that waits in the Backlog filter on Home. **Make a plan** runs the usual planning for it; nothing runs, and nothing is asked of you, until you do. Once the plan is written the epic says **Plan ready**, and **Review plan** opens it for your approval. Declined epics are kept and can be brought back.

@@ -20,7 +20,7 @@
 
   const SLICE_TITLES = {MVP: "MVP: the smallest version that works end to end", Next: "Next", Later: "Later", "": "Not placed yet"};
 
-  // The Epics page: the breakdown of the product, split into what is waiting for a decision, what is approved, and what was declined.
+  // The Epics section of the Product page: the breakdown of the product, split into what is waiting for a decision, what is approved, and what was declined.
   // Each takes the overview from /api/epics.
   const TECHNIQUES = [["", "Let Orchestrator choose"], ["story_map", "Story map: the flows people follow"], ["wbs", "Work breakdown: top-down deliverables"], ["list", "Short list"]];
 
@@ -43,7 +43,7 @@
     if (!breakdown) return "";
     const how = breakdown.technique_name ? `<p><strong>${escapeHtml(breakdown.technique_name)}.</strong> ${escapeHtml(breakdown.rationale || "")}</p>` : "";
     const brief = breakdown.detail === "sparse"
-      ? `<p class="muted">Your requirements are short, so these are broad. Add more to Product and break down again for a finer result.</p>` : "";
+      ? `<p class="muted">Your requirements are short, so these are broad. Add more above and break down again for a finer result.</p>` : "";
     const warnings = (breakdown.warnings || []).map((w) => `<div class="banner attention"><p>${escapeHtml(w)}</p></div>`).join("");
     return `${how}${brief}${warnings}`;
   }
