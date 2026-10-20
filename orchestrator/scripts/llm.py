@@ -155,7 +155,7 @@ JSON_REMINDER = (
 )
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False) -> tuple[str, str, str]:
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model
@@ -185,7 +185,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, **protection)
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, web=web, **protection)
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
@@ -247,7 +247,18 @@ def image_args(cmd_base: str, images: list[Path] | None) -> str:
     return ""
 
 
-def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None) -> str:
+def web_capable(model: str) -> bool:
+    """Can this model look things up on the web when asked (`web=True`)? Claude Code and the Gemini CLI can; the others answer from memory."""
+    m_meta = get_model(model)
+    model_id = m_meta.id if m_meta else model
+    if model_id.startswith("claude-") or model_id == "claude":
+        return True
+    if model_id.startswith("gemini-") or model_id == "gemini" or (m_meta and m_meta.family == "gemini"):
+        return preferred_cli("gemini") != "agy"
+    return False
+
+
+def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, web: bool = False) -> str:
     # Resolve actual model ID
     m_meta = get_model(model)
     model_id = m_meta.id if m_meta else model
@@ -270,6 +281,8 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         safe_tools = "read_file,grep_search,glob"
         if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
             safe_tools += ",replace,write_file"
+        if web:
+            safe_tools += ",google_web_search,web_fetch"
         if provider_cli == "agy":
             cmd_base = f"agy --model {shlex.quote(cli_model_id)} --dangerously-skip-permissions"
             if session_id:
@@ -289,6 +302,8 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
             safe_tools = "read_file,grep_search,glob"
             if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
                 safe_tools += ",replace,write_file"
+            if web:
+                safe_tools += ",google_web_search,web_fetch"
             cmd_base = f"{provider_cli} --skip-trust --prompt - --yolo --allowed-mcp-server-names {safe_servers} --allowed-tools {safe_tools} --raw-output --accept-raw-output-risk"
             if session_id:
                 cmd_base += f" --session-id {session_id}"
@@ -296,10 +311,14 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         cmd_base = f"claude -p --model {model_id}"
         if session_id:
             cmd_base += f" --session-id {session_id}"
+        if web:
+            cmd_base += ' --allowedTools "WebSearch,WebFetch"'
     elif model_id == "claude":
         cmd_base = "claude -p --model claude-sonnet-4-6"
         if session_id:
             cmd_base += f" --session-id {session_id}"
+        if web:
+            cmd_base += ' --allowedTools "WebSearch,WebFetch"'
     elif model_id == "deepseek":
         cmd_base = "ollama run deepseek-coder --nowordwrap"
     elif m_meta and ("ollama" in m_meta.required_clis or m_meta.family == "ollama" or m_meta.family == "qwen"):
@@ -362,7 +381,7 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
-def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None) -> str:
+def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
         prompt = f"[SOURCE: {source}]\n\n{prompt}"
@@ -372,7 +391,7 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
         prompt_file = f.name
 
     actual_session_id = session_id or str(uuid.uuid4())
-    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id, images=images)
+    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id, images=images, web=web)
     if protected_paths:
         from orchestrator.job_scope import protect_command
         cmd = protect_command(cmd, protected_paths)

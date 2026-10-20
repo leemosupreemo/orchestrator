@@ -66,7 +66,7 @@ from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import releases
 from orchestrator import features as feature_store
-from orchestrator import feature_map, kpi_suggest
+from orchestrator import bug_split, feature_map, kpi_suggest, packages as package_store, run_result, source_control
 from orchestrator import epics as epic_store
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -224,6 +224,7 @@ class PtySession:
         self.ended: float | None = None
         self.exit_code: int | None = None
         self.stopped: bool = False
+        self.result: dict[str, Any] | None = None  # what it found, read from the output once it ends
         self._buffer = bytearray()
         self._progress = RunProgress()
         self._base = 0  # absolute offset of _buffer[0]
@@ -273,6 +274,15 @@ class PtySession:
             self._transcript.close()
         if self._on_exit:
             self._on_exit()
+        with self._cond:
+            tail = bytes(self._buffer[-60000:])
+        job_title = ""
+        if self.result_job:
+            try:
+                job_title = str(read_json_file(jobs_dir(self.cwd) / f"{self.result_job}.json").get("title") or "")
+            except Exception:
+                pass
+        self.result = None if self.stopped else run_result.summarize(self.action, tail.decode("utf-8", "replace"), code, job_title)
         with self._cond:
             self.exit_code = code
             self.ended = time.time()
@@ -395,7 +405,7 @@ class PtySession:
             "job": self.job_id, "result_job": self.result_job,
             # Quiet for a while with a prompt-shaped last line: probably waiting on you.
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
-            "last_line": self._last_line(), "error_summary": self._error_summary(), "idle": int(idle),
+            "last_line": self._last_line(), "error_summary": self._error_summary(), "idle": int(idle), "result": self.result,
             "progress": progress,
         }
 
@@ -1951,6 +1961,8 @@ def git_state(root: Path) -> dict[str, Any]:
         "code_host": config.get("code_host") or "auto",
         "mode": mode,
         "github": github_cli_state() if mode == "github" else None,
+        "source_control": {"current": source_control.current_key(host_kind(origin), origin, config.get("code_host")),
+                           "blurb": source_control.BLURB, "options": source_control.OPTIONS},
         "base_branch": base_branch(root, read_settings(root)),
         "sync_remote": sync_remote,
         "sync_ref": sync_ref,
@@ -1972,6 +1984,68 @@ def git_state(root: Path) -> dict[str, Any]:
                        "publishing": repository_health.publishing_jobs(root, runtime_dir(root), state["origin"], mode, state["base_branch"]),
                        "labels_url": f"https://github.com/login?return_to={quote('/' + parsed[1] + '/labels', safe='')}" if github_host and web else ""}
     return state
+
+
+def research_call(server: Any, root: Path, prompt: str, timeout: int = 240) -> tuple[str, bool]:
+    """One model turn that may search the web (job_chat_run.py --web), in an empty scratch folder. Returns (answer, whether it searched)."""
+    with tempfile.TemporaryDirectory(prefix="orchestrator-model-") as scratch:
+        argv = orchestrator_argv("script", "job_chat_run.py", "--web", "--timeout", str(max(30, timeout - 15)), "--cwd", scratch)
+        try:
+            res = subprocess.run(argv, input=prompt, cwd=root, env=server.child_env(), capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise UIError("The research took too long. Try again.", HTTPStatus.GATEWAY_TIMEOUT)
+    marker = "<<<ORCHESTRATOR-REPLY>>>"
+    if res.returncode != 0 or marker not in res.stdout:
+        raise UIError((res.stderr.strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
+    head, reply = res.stdout.split(marker, 1)
+    return reply, "<<<ORCHESTRATOR-WEB>>>on" in head
+
+
+def package_review_job(server: Any, root: Path, research: Callable[[Path, str], tuple[str, bool]]) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
+    """The two halves of a package review for BackgroundTasks.start(work, commit): a model reads the product requirements and features and
+    suggests packages; the suggestions are saved as 'suggested' for the person to accept or reject. Raises UIError if there's nothing to read."""
+    rt = runtime_dir(root)
+    prd_text = prd_doc.context_block(root, "planner")
+    features = feature_store.load(rt)
+    if not prd_text.strip() and not features:
+        raise UIError("Write the product requirements or define a feature first (Product), so there is something to review.")
+    installed = package_store.detect(root)
+    decided = package_store.load(rt)["packages"]
+    raw_prd = prd_doc.Prd(root, rt).read() or ""
+    fingerprint = package_store.prd_fingerprint(raw_prd)
+    try:
+        stack = detect_project_stack(root).display_name
+    except Exception:
+        stack = ""
+
+    def work() -> dict[str, Any]:
+        def ask(extra: str = "") -> tuple[dict[str, Any], bool]:
+            reply, searched = research(root, package_store.review_prompt(prd_text, features, installed, stack, web=True, decided=decided) + extra)
+            return package_store.parse_suggestions(reply, features, installed, decided), searched
+
+        try:
+            try:
+                found, searched = ask()
+            except package_store.PackageError:
+                found, searched = ask(package_store.REMINDER)
+        except package_store.PackageError as exc:
+            package_store.note_prd(rt, fingerprint, error=f"{exc} Try again, or add packages yourself.", snapshot=raw_prd)
+            raise UIError(f"{exc} Try again, or add packages yourself.", HTTPStatus.BAD_GATEWAY)
+        except UIError as exc:
+            package_store.note_prd(rt, fingerprint, error=str(exc), snapshot=raw_prd)
+            raise
+        found["searched"] = searched
+        return found
+
+    def commit(found: dict[str, Any]) -> dict[str, Any]:
+        review = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), "searched": bool(found.get("searched")), "notes": found.get("notes", ""),
+                  "sources": found.get("sources", []), "suggested": len(found["packages"]), "prd_hash": fingerprint, "prd_text": raw_prd}
+        package_store.merge_suggestions(rt, found["packages"], review)
+        view = package_store.overview(root, rt)
+        view["features"] = [{"id": f["id"], "name": f.get("name", f["id"])} for f in feature_store.load(rt)]
+        return view
+
+    return work, commit
 
 
 def start_repository_check(server: Any, root: Path, state: dict[str, Any]) -> str | None:
@@ -2573,7 +2647,7 @@ def upload_display_name(path: Path) -> str:
 
 def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     job_type = _choice(params, "type", JOB_TYPES, "bug")
-    summary_in = _text(params, "summary", required=True, limit=20_000 if job_type == "quick" else 500)
+    summary_in = _text(params, "summary", required=True, limit=20_000 if job_type in ("quick", "bug") else 500)
     fields = {"summary": summary_in, "details": _text(params, "spec", limit=200_000), "repro": _text(params, "repro", limit=20_000),
               "expected": _text(params, "expected", limit=20_000), "vibe": _text(params, "vibe", limit=200),
               "subsystems": _text(params, "subsystems", limit=5_000), "test_cases": _text(params, "test_cases", limit=20_000)}
@@ -4448,6 +4522,10 @@ class UIServer(ThreadingHTTPServer):
                     self.plan_tick(jobs)
                 except Exception as exc:  # a bad job file mustn't stop the loop; the run shows what's stuck
                     print(f"  Build the plan: {exc}", flush=True)
+                try:
+                    self.packages_tick()
+                except Exception as exc:  # a package review is a nicety: never let it stop the loop
+                    print(f"  Package review: {exc}", flush=True)
 
         thread = threading.Thread(target=loop, daemon=True, name="notifier")
         self._tracker = tracker
@@ -4478,6 +4556,56 @@ class UIServer(ThreadingHTTPServer):
         features, jobs, slots = self._plan_inputs(root)
         decision = plan_run.decide(run, features, jobs, slots, self._planning_alive(run.get("starting") or {}), can_start=False)
         return self._plan_payload(run, decision)
+
+    PACKAGE_REVIEW_SETTLE_SECONDS = 90  # the requirements must sit unchanged this long, so an edit in progress doesn't start a review
+    PACKAGE_REVIEW_STALE_SECONDS = 20 * 60  # a review "running" for longer than this crashed with the server; start over
+
+    def packages_tick(self) -> bool:
+        """After the product requirements are set or changed (and left alone for a minute or so), review them for packages worth adding.
+        The first look at a project only records the requirements it has now, so existing projects aren't reviewed out of the blue."""
+        root = self.root
+        if root is None:
+            return False
+        rt = runtime_dir(root)
+        prd_path = root / prd_doc.PATH
+        text = prd_doc.Prd(root, rt).read() or ""
+        fingerprint = package_store.prd_fingerprint(text if prd_doc.is_filled_doc(text) else "")
+        data = package_store.load(rt)
+        if data["prd_hash"] is None:  # the first look: a baseline, not a review
+            package_store.note_prd(rt, fingerprint, snapshot=text)
+            return False
+        if data["running"]:
+            try:
+                age = time.time() - datetime.fromisoformat(data["running"]).timestamp()
+            except ValueError:
+                age = self.PACKAGE_REVIEW_STALE_SECONDS + 1
+            if age <= self.PACKAGE_REVIEW_STALE_SECONDS:
+                return False
+            package_store.note_prd(rt, data["prd_hash"])  # it never finished: let it run again
+        if not data["auto"] or fingerprint == data["prd_hash"]:
+            return False
+        if not prd_doc.is_filled_doc(text):  # emptied: remember it, nothing to review
+            package_store.note_prd(rt, fingerprint, snapshot=text)
+            return False
+        small = self.__dict__.setdefault("_packages_small", {})  # requirements already measured as a tweak: don't measure them again every few seconds
+        if small.get(str(root)) == fingerprint:
+            return False
+        if not package_store.is_substantial(data["prd_snapshot"], text):  # a tweak: small edits add up until they're about a paragraph of new requirements
+            small[str(root)] = fingerprint
+            return False
+        try:
+            if time.time() - prd_path.stat().st_mtime < self.PACKAGE_REVIEW_SETTLE_SECONDS:
+                return False
+        except OSError:
+            pass
+        try:
+            work, commit = package_review_job(self, root, lambda r, prompt: research_call(self, r, prompt))
+        except UIError:
+            package_store.note_prd(rt, fingerprint, snapshot=text)
+            return False
+        package_store.note_prd(rt, data["prd_hash"], running=datetime.now().astimezone().isoformat(timespec="seconds"))
+        self.tasks.start(work, commit)
+        return True
 
     def plan_tick(self, jobs: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
         """Advance "Build the plan": start ready features, approve plans when asked to, and record what finished.
@@ -5118,6 +5246,15 @@ class UIHandler(BaseHTTPRequestHandler):
             raise UIError((res.stderr.strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
         return res.stdout.split(marker, 1)[1]
 
+    def _packages_view(self, root: Path) -> dict[str, Any]:
+        view = package_store.overview(root, runtime_dir(root))
+        view["features"] = [{"id": f["id"], "name": f.get("name", f["id"])} for f in feature_store.load(runtime_dir(root))]
+        return view
+
+    def _research_call(self, root: Path, prompt: str, timeout: int = 240) -> tuple[str, bool]:
+        """Like _model_call, but the model may search the web when one that can is available. Returns (answer, searched)."""
+        return research_call(self.server, root, prompt, timeout)
+
     def _static(self, path: str, query: dict[str, list[str]]) -> None:
         if path in ("/", "/index.html"):
             try:
@@ -5175,6 +5312,7 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"project": project_state(root), "runs": visible_runs,
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
                         "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
+                        "packages_suggested": package_store.suggested_count(runtime_dir(root)),  # waiting for you to accept or reject
                         "alerts": {"webhook": bool(read_settings(root).get("notification_webhook")),
                                    "webhook_paused": bool(read_settings(root).get("notification_webhook_paused"))},
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields,
@@ -5716,6 +5854,79 @@ class UIHandler(BaseHTTPRequestHandler):
             job["updated_at"] = datetime.now().isoformat()
             write_json_file(job_path, job)
             self._json({"ok": True, "commit": commit, "completed": job.get("completed_task_indices", [])})
+        elif method == "GET" and parts == ["jobs", "archived"]:
+            self._json({"archived": archived_jobs(root)})
+        elif method == "POST" and parts == ["git", "setup-help"]:
+            # Optional: setup steps for the chosen source control, written for where this project is now, by a model in the background.
+            key = _choice(self._body(), "option", list(source_control.BY_KEY))
+            if not key:
+                raise UIError("Choose an option first.")
+            import platform
+            from orchestrator.setup_checklist import github_cli_state
+            state = git_state(root)
+            facts = {"is_repo": state["is_repo"], "has_commits": state["has_commits"], "origin": state["origin"], "provider": state["provider"],
+                     "project": project_display_name(root), "system": {"Darwin": "a Mac", "Linux": "Linux", "Windows": "Windows"}.get(platform.system(), platform.system()),
+                     "github": state.get("github") or github_cli_state()}
+            try:
+                facts["stack"] = detect_project_stack(root).display_name
+            except Exception:
+                pass
+            request = source_control.help_prompt(key, facts)
+
+            def work() -> dict[str, Any]:
+                text = self._model_call(root, request, timeout=120).strip()
+                if not text:
+                    raise UIError("The model didn't write any steps. Try again.", HTTPStatus.BAD_GATEWAY)
+                return {"option": key, "text": text[:4000]}
+
+            self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
+        elif method == "GET" and parts == ["packages"]:
+            self._json(self._packages_view(root))
+        elif method == "POST" and parts == ["packages"]:
+            body = self._body()
+            op = _choice(body, "op", ["add", "update", "status", "remove", "auto"])
+            rt = runtime_dir(root)
+            try:
+                if op == "auto":
+                    package_store.set_auto(rt, bool(body.get("enabled")))
+                elif op == "add":
+                    package_store.add(rt, body, [i["ecosystem"] for i in package_store.detect(root)])
+                elif op == "update":
+                    package_store.update(rt, str(body.get("id") or ""), body)
+                elif op == "status":
+                    package_store.set_status(rt, str(body.get("id") or ""), str(body.get("status") or ""))
+                else:
+                    package_store.remove(rt, str(body.get("id") or ""))
+            except package_store.PackageError as exc:
+                raise UIError(str(exc), HTTPStatus.NOT_FOUND if "isn't in the list" in str(exc) else HTTPStatus.BAD_REQUEST)
+            self._json(self._packages_view(root))
+        elif method == "POST" and parts == ["packages", "review"]:
+            # A model reads the product requirements and features, searches the web where it can, and suggests packages: in the background.
+            self._body()
+            work, commit = package_review_job(self.server, root, lambda r, prompt: self._research_call(r, prompt))
+            self._json({"task": self.server.tasks.start(work, commit)}, HTTPStatus.ACCEPTED)
+        elif method == "POST" and parts == ["jobs", "split-bugs"]:
+            # Pasted notes about several bugs, separated into one each in the background; the page shows them for review first.
+            text = _text(self._body(), "text", required=True, limit=20_000)
+            try:
+                titles = [j["title"] for j in list_jobs(root) if str(j.get("type") or "").startswith("bug") and j["state"]["group"] != "done"]
+            except Exception:
+                titles = []
+            request = bug_split.prompt(text, titles)
+
+            def work() -> dict[str, Any]:
+                try:
+                    return bug_split.parse(self._model_call(root, request, timeout=150))
+                except bug_split.BugSplitError:
+                    try:
+                        return bug_split.parse(self._model_call(root, request + bug_split.REMINDER, timeout=150))
+                    except bug_split.BugSplitError as exc:
+                        raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
+
+            self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
+        elif method == "POST" and parts == ["jobs", "yolo-all"]:
+            self._body()
+            self._json(self._yolo_all(root))
         elif method == "POST" and parts == ["jobs", "archive"]:
             ids = self._body().get("ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids) or len(ids) > 500:
@@ -6182,16 +6393,13 @@ class UIHandler(BaseHTTPRequestHandler):
         remember_project(candidate, active=True, source_type=s_type, source_label=s_label, github_repo=g_repo)
         self._json({"project": project_state(candidate)})
 
-    def _start_run(self, body: dict[str, Any], root: Path) -> None:
-        key = str(body.get("action") or "")
+    def _launch_run(self, key: str, params: dict[str, Any], root: Path, cols: int = 110, rows: int = 32) -> PtySession:
+        """Start one action as a run. Raises UIError when it can't (unknown action, owner-only, the job is busy)."""
         action = ACTIONS.get(key)
         if not action:
             raise UIError(f"Unknown action '{key}'")
         if key in OWNER_ONLY_ACTIONS:
             self._require_owner(f"use {action.title.lower()}")
-        params = body.get("params") or {}
-        if not isinstance(params, dict):
-            raise UIError("params must be an object")
         argv = action.build(params, root)
         title = action.title
         job_id = str(params.get("job") or "") or None
@@ -6204,10 +6412,6 @@ class UIHandler(BaseHTTPRequestHandler):
             title = str(params["title"]).strip()
         elif key == "new_job" and str(params.get("type") or "") == "coverage":
             title = "Coverage expanding"
-        try:
-            cols, rows = int(body.get("cols") or 110), int(body.get("rows") or 32)
-        except (TypeError, ValueError):
-            raise UIError("cols/rows must be numbers")
         env = self.server.child_env(terminal=key in TERMINAL_ACTIONS)
         if action.env:
             env.update(action.env(params))
@@ -6218,11 +6422,55 @@ class UIHandler(BaseHTTPRequestHandler):
                                                  runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
             session.job_id = job_id
         self._audit("run_started", action=key, job=job_id)
+        return session
+
+    def _start_run(self, body: dict[str, Any], root: Path) -> None:
+        key = str(body.get("action") or "")
+        params = body.get("params") or {}
+        if not isinstance(params, dict):
+            raise UIError("params must be an object")
+        try:
+            cols, rows = int(body.get("cols") or 110), int(body.get("rows") or 32)
+        except (TypeError, ValueError):
+            raise UIError("cols/rows must be numbers")
+        session = self._launch_run(key, params, root, cols, rows)
         if key in ("new_job", "fix", "plan_epic"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
                                         params.get("_attachments") if key == "new_job" else None,
                                         tag=params.get("_tag") or params.get("tag") if key == "new_job" else None)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
+
+    def _yolo_all(self, root: Path) -> dict[str, Any]:
+        """Continue every in-progress job in YOLO mode: it builds on without stopping for review. A job with a worker running is
+        switched over (it takes effect at its next step); one that stopped or is queued is started again from where it left off."""
+        self._require_owner("continue jobs in YOLO mode")
+        running = set(self.server.sessions.running_job_ids())
+        started, switched, failed = [], [], []
+        for job in list_jobs(root):
+            state = job["state"]
+            if not (state["group"] == "working" or state["label"] == "Paused" or job["id"] in running):  # the Home page's In progress list
+                continue
+            path = jobs_dir(root) / f"{job['id']}.json"
+            record = read_json_file(path)
+            if not record:
+                continue
+            if not (record.get("yolo") and record.get("is_yolo")):  # the worker reads both spellings
+                record["yolo"] = record["is_yolo"] = True
+                write_json_file(path, record)
+            entry = {"id": job["id"], "title": job["title"]}
+            if job["id"] in running or (state["group"] == "working" and not state.get("next")):  # building now: nothing to restart
+                switched.append(entry)
+                continue
+            action = (state.get("next") or {}).get("action") or "resume"
+            if action not in ("execute", "resume"):
+                action = "resume"
+            try:
+                session = self._launch_run(action, {"job": job["id"]}, root)
+                started.append({**entry, "run": session.id})
+            except UIError as exc:
+                failed.append({**entry, "error": str(exc)})
+        self._audit("jobs_yolo_all", started=len(started), switched=len(switched), failed=len(failed))
+        return {"started": started, "switched": switched, "failed": failed}
 
     def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None,
                                 attachments: dict[str, Any] | None = None,

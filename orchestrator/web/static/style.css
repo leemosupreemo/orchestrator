@@ -4375,7 +4375,7 @@ body[data-page="home"] #page-sub { grid-column: 1 / -1; grid-row: 2; width: 100%
 .status-line.status-stack.home-status-line { display: flex; flex-direction: column; align-items: stretch; width: 100%; gap: var(--space-2); }
 .home-status-line .status-main-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-3); width: 100%; }
 .home-status-line .status-branch { flex: 0 1 16rem; }
-.home-health-inline { position: relative; flex: none; margin-bottom: 1px; }
+.home-health-inline { position: relative; flex: none; } /* bottom-aligned with the branch dropdown: same height, no offset */
 .home-health-trigger { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--control-md); padding: var(--space-1) var(--space-3); border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--panel); color: var(--text); cursor: pointer; list-style: none; font-size: var(--text-md); font-weight: 560; }
 .home-health-trigger::-webkit-details-marker { display: none; }
 .home-health-light { width: 10.8px; height: 10.8px; flex: none; border-radius: var(--r-pill); background: var(--ok); }
@@ -4449,3 +4449,37 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 body[data-page="checkup"] .item :is(.title, .meta) { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 /* "Show N more" on a long list reads as a link, not a row of data. */
 .sign-in-rest > summary { justify-content: flex-start; color: var(--accent); }
+
+/* What the run found: a headline in the result's colour and the lines behind it. */
+.run-status-result { display: flex; flex-direction: column; gap: var(--space-1); width: 100%; text-align: left; font-size: var(--text-md); line-height: 1.45; }
+.run-status-result > strong { font-size: var(--text-lg); font-weight: 650; overflow-wrap: anywhere; }
+.run-status-result.ok > strong { color: var(--ok); }
+.run-status-result.warn > strong { color: var(--warn); }
+.run-status-result.bad > strong { color: var(--bad); }
+.run-status-result ul { margin: 0; padding-left: var(--space-5); color: var(--text); }
+.run-status-result li { overflow-wrap: anywhere; }
+.run-status-notice-list { margin: var(--space-1) 0 0; padding-left: var(--space-5); font-size: var(--text-sm); line-height: 1.45; color: var(--text); }
+.run-status-notice-list li { overflow-wrap: anywhere; }
+
+/* Several bugs found in pasted text: one editable line each. */
+.bug-split-list { display: flex; flex-direction: column; gap: var(--space-2); max-height: 50vh; overflow-y: auto; }
+.bug-split-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+.bug-split-row small { grid-column: 2; }
+
+/* Packages page */
+.package-row .package-meta { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.package-row .title { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.package-row .side { flex-wrap: wrap; justify-content: flex-end; }
+input.package-find { width: 12rem; max-width: 100%; min-height: var(--control-sm); margin-left: auto; }
+.package-sources { margin: var(--space-2) 0 0; padding-left: var(--space-5); font-size: var(--text-sm); overflow-wrap: anywhere; }
+@media (max-width: 760px) { .package-row .side { justify-content: flex-start; flex: 1 1 100%; } }
+
+/* Source control chooser on Git setup */
+.sc-blurb { margin: 0; line-height: 1.5; }
+.sc-option { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+.sc-option h3 { font-size: var(--text-md); margin: 0 0 var(--space-1); }
+.sc-option ul, .sc-option ol { margin: 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-md); line-height: 1.45; }
+.sc-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.sc-actions { align-items: center; }
+.sc-ai { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); }
+@media (max-width: 760px) { .sc-cols { grid-template-columns: minmax(0, 1fr); } }

@@ -497,6 +497,36 @@ Anything that fails is listed in the review's capture limits, and the review car
 Models see the screenshots as attachments (Codex, opencode) or through their file tools (Claude, Gemini, agy); a model
 that can't open images says so in the report's limits.
 
+## Source control
+
+The **Git setup** page (under *Build & ship*) starts with a **Source control** card. It opens with one line on why source control matters, then a dropdown of where your code can be kept:
+GitHub, GitLab, Bitbucket, Azure DevOps, another Git host, or on this computer only.
+
+- **Nothing chosen yet:** the dropdown says "Choose one…". Pick an option to see what it's good at, what to watch out for, how Orchestrator works with it, and the
+  steps to set it up, with the buttons for those steps right there (Initialize repository, Sign in to GitHub, Create a GitHub repository, Connect a repository,
+  Use this computer only).
+- **Already connected:** the dropdown shows the current one. Pick another to see the steps to switch. Switching changes where jobs push; your history comes with you.
+- **Help me set this up with AI** is optional. A model reads where the project is now (a repository or not, commits, remote, GitHub sign-in) and writes steps from there.
+- GitHub gets the fullest workflow (an issue and a draft pull request per job). The others use plain Git: jobs work on branches and merge on this computer, with a link
+  to open a review request.
+
+## Packages
+
+The **Packages** page (under *Build & ship*) lists the libraries and plugins this project uses, and ones worth adding. It's per project.
+
+- **In this project** is read from the project's manifests: `package.json`, `requirements.txt`, `pyproject.toml`, `Package.swift`, `Cargo.toml`,
+  `go.mod`, `Gemfile`, `Podfile`, `build.gradle`, Unity's `Packages/manifest.json` and `pubspec.yaml`. Nothing is run, and vendored folders are skipped.
+- **Suggested packages appear on their own.** When your product requirements are set or change in a meaningful way (about a paragraph of new content, left unchanged for a minute or so; small tweaks and one-line additions don't count by themselves, but add up), a model reads them
+  and your features, searches the web where it can, and suggests packages the project doesn't have yet, each tied to the feature it helps. Each is one line with a
+  link: **Accept** it or **Reject** it. A rejected package isn't suggested again. The sidebar shows how many are waiting. The first time a project is looked at it only
+  notes the requirements it has, so existing projects aren't reviewed until they change. Turn the automatic review off with the checkbox on the page, or run one any
+  time with **Find packages with AI**. It uses Claude Code or the Gemini CLI for the search; with any other model it answers from what it knows, and the page says
+  versions may be out of date.
+- **Accepted** packages are yours to manage: add your own with **Add package** (paste a link from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub, and the name and ecosystem are filled in), edit, reject or remove. These are notes about the
+  project; they never change your code.
+- **Add to project**, and **Update** or **Remove** on an installed package, open the New job form with the instruction filled in. The change is made
+  by a job, so it is planned, reviewed and tested like any other. Once a job installs a package, it moves to **In this project** by itself.
+
 ## Firebase Delivery
 
 Firebase delivery is opt-in:

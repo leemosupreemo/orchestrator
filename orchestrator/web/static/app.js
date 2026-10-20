@@ -348,7 +348,7 @@ async function projectHasTests() {
 async function runAction(action, params = {},{ skipConfirm = false } = {}) {
   const meta = state.actions[action] || {};
   if (action === "test" && !(await projectHasTests())) {
-    if (await formDialog("No tests to run", `<p>This project has no tests yet. Create a job to add tests and measure code coverage.</p>`, "Add tests", { compact: true })) location.hash = "#/new?type=coverage";
+    if (await formDialog("No tests to run", `<p>This project has no tests yet. Add them now: a job writes tests for your code and measures coverage.</p>`, "Add tests", { compact: true })) await dialogs.add_tests();
     return;
   }
   if (meta.confirm && !skipConfirm && !(await formDialog(meta.title, `<p>${esc(meta.confirm)}</p>`, "Continue", { compact: true }))) return;
@@ -849,6 +849,10 @@ const dialogs = {
   async run_visual_check(params) {
     await runAction("visual_check", params?.job ? { job: params.job } : {});
   },
+  // One click: a job plans, writes and measures tests, with no form first (the same job as Expand coverage > Add tests automatically).
+  async add_tests() {
+    try { await runAction("new_job", coverageJobParams({}, {}, { execution: "automatic" })); } catch (e) { toast(e.message, true); }
+  },
 };
 
 const stoppingRuns = new Set();
@@ -1072,6 +1076,7 @@ async function refreshState() {
     checkRunnerVersion(newState.runner);
     state = newState;
     renderSlackBtn();
+    renderPackagesBadge();
     const viewerRole = state.you?.role || "owner";
     ConfigurationPages.applyRole(viewerRole, document);
     if (configurationMenu) configurationMenu.innerHTML = ConfigurationPages.renderMenu(viewerRole);
@@ -2498,7 +2503,7 @@ function liveRunCard(r) {
 
 function runItem(r) {
   return `<a class="item" href="#/runs/${encodeURIComponent(r.id)}">
-    <div class="main-col"><div class="title">${esc(r.title)}</div><div class="meta">${esc(ago(r.started))}</div></div>
+    <div class="main-col"><div class="title">${esc(r.title)}</div><div class="meta">${esc(ago(r.started))}${!r.running && r.result?.headline ? ` · ${esc(r.result.headline)}` : ""}</div></div>
     <div class="side">${runPill(r)}</div></a>`;
 }
 
@@ -2846,7 +2851,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("scroll", repositionOpenHomeHealthPopovers, true);
 if (typeof window !== "undefined") window.addEventListener("resize", repositionOpenHomeHealthPopovers);
 
-// Archive keeps the branch and files; Home's Archived filter (or Undo here) brings a job back as it was.
+// Archive keeps the branch and files; Home's Completed & archived section (or Undo here) brings a job back as it was.
 document.addEventListener("click", async (e) => {
   const button = e.target.closest("[data-archive-jobs]");
   if (!button) return;
@@ -2870,10 +2875,35 @@ function elsewhereLine(items) {
   return `<div class="card-b muted">Also waiting in other projects: ${[...byProject].map(([root, p]) => `<button type="button" class="linklike" data-switch-project="${esc(root)}" data-then="#/">${esc(p.name)} (${p.n})</button>`).join(", ")}</div>`;
 }
 
+// Continue every in-progress job in YOLO mode: queued and paused ones start again where they left off, building ones are switched over.
+async function yoloAll(button, jobs) {
+  const list = jobs.slice(0, 6).map((j) => `<li>${esc(j.title)} <span class="muted">· ${esc(j.state.label)}</span></li>`).join("");
+  const more = jobs.length > 6 ? `<li class="muted">and ${jobs.length - 6} more</li>` : "";
+  const ok = await formDialog(`Continue ${jobs.length === 1 ? "1 job" : `${jobs.length} jobs`} in YOLO mode?`,
+    `<p>They keep building without stopping for review or confirmations. Queued and paused jobs start again where they left off; a job that's already building is switched over.</p><ul>${list}${more}</ul>`,
+    "YOLO all", { danger: true });
+  if (!ok) return;
+  const idle = button.innerHTML;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Starting…`;
+  try {
+    const r = await api("jobs/yolo-all", { method: "POST", body: {} });
+    const parts = [r.started.length && `${r.started.length} started`, r.switched.length && `${r.switched.length} already building, switched to YOLO`, r.failed.length && `${r.failed.length} couldn't start`].filter(Boolean);
+    toast(parts.join(" · ") || "Nothing to continue.", r.failed.length > 0);
+    await refreshState();
+    route();
+  } catch (err) {
+    toast(err.message, true);
+    if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; }
+  }
+}
+
 pages.home = async (_, query) => {
   await loadSetup();
   if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
-  const [{ jobs }, waiting, product] = await Promise.all([api("jobs"), api("inbox"), api("product").catch(() => null)]);
+  const [{ jobs }, waiting, product, archivedList] = await Promise.all([api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null)]);
+  const archivedJobs = archivedList?.archived || [];
   const p = state.project;
   if (!p.branches) { // server predates the project-state branch list: use the Git endpoint
     try { p.branches = (await api("git")).branches || []; } catch { p.branches = []; }
@@ -2881,18 +2911,22 @@ pages.home = async (_, query) => {
   // 1) Default ordered by most recent
   const sortedJobs = sortJobs(jobs);
 
+  // Two sections: the work still going, and what's finished or put away. Old links with filter=done or filter=archived land on the second.
+  const isFinished = (j) => j.state.group === "done";
   const HOME_FILTERS = {
-    all: ["All", () => true],
+    all: ["All", (j) => !isFinished(j)],
     needs_you: ["Needs you", (j) => j.state.group === "needs_you" && !j.active_run],
-    working: ["In progress", (j) => j.state.group === "working" || j.active_run],
+    working: ["In progress", (j) => j.state.group === "working" || j.active_run || j.state.label === "Paused"], // a paused job is mid-build
     backlog: ["Backlog", (j) => j.state.group === "backlog"],
-    done: ["Completed", (j) => j.state.group === "done"],
   };
-  let filter = (query && query.get("filter")) || "all";
-  if (!HOME_FILTERS[filter] && filter !== "archived") filter = "all";
-  // Archived jobs are put away, not in the list: this filter reads them separately, each with Restore.
-  const archived = filter === "archived" ? ((await api("config").catch(() => null))?.archived || []) : null;
-  const filteredJobs = archived ? [] : sortedJobs.filter(HOME_FILTERS[filter][1]);
+  const requested = (query && query.get("filter")) || "all";
+  const filter = HOME_FILTERS[requested] ? requested : "all";
+  const jumpToFinished = requested === "done" || requested === "archived";
+  const activeJobs = sortedJobs.filter((j) => !isFinished(j));
+  const filteredJobs = sortedJobs.filter(HOME_FILTERS[filter][1]);
+  const finishedJobs = sortedJobs.filter(isFinished);
+  // What YOLO all continues is exactly the In progress list: work that is mid-build, never a job waiting for your decision.
+  const inProgress = sortedJobs.filter(HOME_FILTERS.working[1]);
   // Jobs that have waited on you for weeks fold into one line you can clear, so the list shows what's current.
   const staleJobs = filteredJobs.filter(isStaleJob);
   const currentJobs = filteredJobs.filter((j) => !isStaleJob(j));
@@ -2912,23 +2946,21 @@ pages.home = async (_, query) => {
 
       ${runningBanner}
 
-      <section class="card">
+      <section class="card" id="home-jobs">
         <div class="card-h card-h-wrap">
-          <h2>Jobs <span class="count">${archived ? archived.length : filteredJobs.length}</span></h2>
-          <div class="filters">
-            ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
-              const count = sortedJobs.filter(fn).length;
-              if (key === "backlog" && !count && filter !== "backlog") return ""; // waiting epics only get a filter once there are some
-              return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
-            }).join("")}
-            <a class="btn small ${archived ? "on" : ""}" href="#/?filter=archived">Archived${archived ? ` (${archived.length})` : ""}</a>
+          <h2>Jobs <span class="count">${filteredJobs.length}</span></h2>
+          <div class="row">
+            <div class="filters">
+              ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
+                const count = sortedJobs.filter(fn).length;
+                if (key === "backlog" && !count && filter !== "backlog") return ""; // waiting epics only get a filter once there are some
+                return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
+              }).join("")}
+            </div>
+            ${inProgress.length && state.you?.role !== "member" ? `<button type="button" class="btn small primary" id="yolo-all" data-yolo-count="${inProgress.length}" title="Continue every in-progress job without stopping for review">YOLO all (${inProgress.length})</button>` : ""}
           </div>
         </div>
-        ${archived ? (archived.length ? `<div class="list">${archived.map((j) => `<div class="item"><div class="main-col"><div class="title">${esc(j.title)}</div>
-            <div class="meta"><span class="mono">${esc(j.job_id)}</span> · ${esc(j.status)}${j.corrupt ? " · this archive can't be read" : ""}</div></div>
-            <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div>`
-          : `<div class="empty">No archived jobs. Archive a finished job from its More menu; it comes back here with Restore.</div>`)
-        : filteredJobs.length ? `
+        ${filteredJobs.length ? `
           <div class="job-table">
             <div class="job-table-header">
               <div class="col-job">Job</div>
@@ -2948,9 +2980,20 @@ pages.home = async (_, query) => {
               </div>
               <div class="job-table-body" id="stale-list">${staleJobs.map((j) => jobTableRow(j, { hidden: true })).join("")}</div>` : ""}
           </div>
-        ` : `<div class="empty">${!jobs.length ? 'No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.' : 'No jobs match this filter.'}</div>`}
+        ` : `<div class="empty">${!activeJobs.length ? (jobs.length ? "Nothing in progress. Finished jobs are below." : 'No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.') : "No jobs match this filter."}</div>`}
         ${elsewhereLine(waiting.elsewhere)}
-      </section>`,
+      </section>
+
+      ${finishedJobs.length || archivedJobs.length ? `<section class="card" id="home-finished">
+        <div class="card-h"><h2>Completed &amp; archived <span class="count">${finishedJobs.length + archivedJobs.length}</span></h2></div>
+        ${finishedJobs.length ? `<div class="job-table"><div class="job-table-body" id="finished-list">
+          ${finishedJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}</div>
+          ${finishedJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="finished-list">Show all ${finishedJobs.length}</button></div>` : ""}</div>` : ""}
+        ${archivedJobs.length ? `<details class="fold" id="home-archived"${requested === "archived" ? " open" : ""}><summary class="card-h"><h2>Archived <span class="count">${archivedJobs.length}</span></h2></summary>
+          <div class="list">${archivedJobs.map((j) => `<div class="item"><div class="main-col"><div class="title">${esc(j.title)}</div>
+            <div class="meta"><span class="mono">${esc(j.job_id)}</span> · ${esc(j.status)}${j.corrupt ? " · this archive can't be read" : ""}</div></div>
+            <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div></details>` : ""}
+      </section>` : ""}`,
     after: () => {
       const homeModelSelect = view.querySelector("#prd-home-model-select");
       if (homeModelSelect) {
@@ -2971,6 +3014,8 @@ pages.home = async (_, query) => {
           }
         });
       }
+      if (jumpToFinished) $("#home-finished")?.scrollIntoView({ block: "start" });
+      $("#yolo-all")?.addEventListener("click", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
         try { await api("config/archived-restore", { method: "POST", body: { id: b.dataset.restoreJob } }); toast("Job restored"); route(); }
@@ -3713,6 +3758,59 @@ function filePickerContent(title, types = "", multiple = true) {
     </span>`;
 }
 
+// Pasted notes that probably describe more than one bug: a list, several lines, or a long message. One short line never does.
+function looksLikeSeveralBugs(text) {
+  const t = String(text || "").trim();
+  if (t.length < 80) return false;
+  const lines = t.split(/\r?\n/).filter((l) => l.trim());
+  const listed = lines.filter((l) => /^\s*(?:[-*•]|\d+[.)]|#\d+|bug\s*\d+\b)/i.test(l)).length;
+  return listed >= 2 || lines.length >= 3 || t.length > 400;
+}
+
+// Several bugs pasted into one box: a model separates them, the person checks the list, and each becomes its own job.
+// Returns "single" (carry on creating one job with `params`), "created" or "cancel".
+async function splitBugsAndCreate(params, button) {
+  const idle = button?.innerHTML;
+  if (button) { button.disabled = true; button.setAttribute("aria-busy", "true"); button.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Separating the bugs…`; }
+  let bugs = null, failure = "";
+  try { bugs = (await waitForTask(await api("jobs/split-bugs", { method: "POST", body: { text: params.summary } }))).bugs; }
+  catch (e) { failure = e.message; }
+  finally { if (button?.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; } }
+  if (failure) {
+    const one = await formDialog("Couldn't separate the bugs", `<p>${esc(failure)}</p><p>Create it as one job instead, or go back and split it yourself.</p>`, "Create one job", { compact: true });
+    return one ? "single" : "cancel";
+  }
+  if (bugs.length === 1) { // it was one bug after all: use the tidied-up version
+    Object.assign(params, { summary: bugs[0].summary, repro: bugs[0].repro || params.repro, expected: bugs[0].expected || params.expected });
+    return "single";
+  }
+  let keepOne = false;
+  const rows = bugs.map((b, i) => `<div class="bug-split-row"><label class="check"><input type="checkbox" name="on${i}" checked><span class="sr-only">Create a job for this bug</span></label>
+    <input type="text" name="s${i}" value="${esc(b.summary)}" maxlength="200" aria-label="Bug ${i + 1}">
+    ${b.repro || b.expected ? `<small class="muted">${esc([b.repro && "has repro steps", b.expected && "has expected behaviour"].filter(Boolean).join(" · "))}</small>` : ""}</div>`).join("");
+  const dialog = formDialog(`Found ${bugs.length} bugs`, `<p>Each becomes its own job. Untick any you don't want, and fix a summary if it isn't right.</p>
+    <div class="bug-split-list">${rows}</div>
+    <p class="muted">Attached logs, files and links are added to every job.</p>
+    <p><button type="button" class="btn small ghost" id="bugs-keep-one">Keep it as one job</button></p>`, "Create the jobs");
+  $("#bugs-keep-one")?.addEventListener("click", () => { keepOne = true; $("#dialog").close("cancel"); });
+  const values = await dialog;
+  if (keepOne) return "single";
+  if (!values) return "cancel";
+  const chosen = bugs.map((b, i) => ({ ...b, summary: String(values[`s${i}`] || "").trim(), on: values[`on${i}`] === "on" })).filter((b) => b.on && b.summary);
+  if (!chosen.length) { toast("Tick at least one bug.", "warning"); return "cancel"; }
+  const started = [], failed = [];
+  for (const bug of chosen) {
+    try {
+      await api("runs", { method: "POST", body: { action: "new_job", params: { ...params, summary: bug.summary, repro: bug.repro || "", expected: bug.expected || "" }, ...terminalSize() } });
+      started.push(bug.summary);
+    } catch (e) { failed.push(`${bug.summary}: ${e.message}`); }
+  }
+  await refreshState();
+  toast(failed.length ? `Started ${started.length} of ${chosen.length} bug jobs. ${failed[0]}` : `Started ${chosen.length} bug jobs. Each is being planned now.`, failed.length > 0);
+  location.hash = "#/activity";
+  return "created";
+}
+
 pages.new = async (_, query) => {
   let features = [];
   try { features = (await api("features")).features; } catch { /* the field just doesn't show */ }
@@ -3756,8 +3854,9 @@ pages.new = async (_, query) => {
       case "bug": {
         const picker = await linkPickerHtml({ prefer: ["sentry", "unity", "jira"], label: "Link a Sentry error, build or ticket", emptyHint: "" });
         return { picker, html: `
-          ${field("What's going wrong?", `<input type="text" name="summary" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">`)}
-          ${field(`Describe repro steps 1 line at a time.${opt("optional")}`, `<textarea name="repro" rows="3" placeholder="1. Join a lobby&#10;2. Background the app for 30 seconds&#10;3. Come back">${esc(v.repro)}</textarea>`, "One step per line.")}
+          ${field("What's going wrong?", `<textarea name="summary" required rows="3" maxlength="20000" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">${esc(v.summary)}</textarea>`,
+            "Have more than one bug? Paste them all here: a list, notes or an email. Orchestrator separates them into one job each, and you check the list before anything is created.")}
+          ${field(`Describe repro steps 1 line at a time.${opt("optional")}`, `<textarea name="repro" rows="3" placeholder="1. Join a lobby&#10;2. Background the app for 30 seconds&#10;3. Come back">${esc(v.repro)}</textarea>`, "One step per line. If you pasted several bugs above, put each one's steps with it instead.")}
           ${field(`What should happen instead?${opt("optional")}`, `<input type="text" name="expected" maxlength="2000" value="${esc(v.expected)}" placeholder="The seat is still mine">`)}
           ${logPicker()}${picker.html}` };
       }
@@ -3951,7 +4050,7 @@ pages.new = async (_, query) => {
     after: async () => {
       form().querySelectorAll("input[name=type]").forEach((r) => r.addEventListener("change", async () => { capture(); st.type = r.value; await render(); }));
       await render();
-      form().addEventListener("submit", (e) => {
+      form().addEventListener("submit", async (e) => {
         e.preventDefault();
         if (st.uploading) { toast("Wait for the upload to finish.", "warning"); return; }
         capture();
@@ -3965,6 +4064,10 @@ pages.new = async (_, query) => {
         if (st.type === "feature") params.spec = featureSpec(v);
         if (st.type === "design") Object.assign(params, { spec: v.details, vibe: v.vibe === "other" ? (v.customVibe.trim() || "minimalist") : v.vibe, urls: v.url.trim() ? [v.url.trim()] : [] });
         if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems || v.summary, spec: v.details, test_cases: v.test_cases, logs: [...st.logs], title: "Coverage expanding" });
+        if (st.type === "bug" && looksLikeSeveralBugs(v.summary)) {
+          const outcome = await splitBugsAndCreate(params, form().querySelector('button[type="submit"]'));
+          if (outcome !== "single") return;
+        }
         runAction("new_job", params);
       });
     },
@@ -4430,6 +4533,135 @@ function analyticsConnectionCards(data, manageOnly = false) {
     </section>`;
   }).join("");
 }
+
+// ---------------------------------------------------------------- packages and plugins
+
+const PKG_STATUS_ORDER = ["suggested", "planned", "dismissed"];
+
+// A job that changes a manifest goes through the usual job flow (planned, reviewed, tested), so these only fill in its instruction.
+function packageJobHref(kind, p, data) {
+  const label = data.ecosystems[p.ecosystem] || p.ecosystem;
+  const manifest = (data.installed.find((i) => i.ecosystem === p.ecosystem) || {}).manifest;
+  const where = manifest ? ` (the manifest is ${manifest})` : "";
+  const feature = data.features.find((f) => f.id === p.feature)?.name;
+  const text = {
+    add: [`Add the package ${p.name} (${label})${p.version ? `, version ${p.version}` : ""} to this project.`, "",
+      p.why || p.purpose ? `Why: ${p.why || p.purpose}` : "", feature ? `Used for: the ${feature} feature.` : "", p.url ? `Docs: ${p.url}` : "", "",
+      `Add it to the project's dependencies the normal way for ${label}${where}, install it, make the smallest change that uses it for the purpose above, run the tests, and don't touch unrelated dependencies.`],
+    update: [`Update the package ${p.name} (${label}) from ${p.version || "its current version"} to the latest compatible version.`, "",
+      `Change it in the manifest${where}, install, read its release notes for breaking changes, fix what they break, and run the tests. Don't touch other dependencies.`],
+    remove: [`Remove the package ${p.name} (${label}) from this project.`, "",
+      `Take it out of the manifest${where}, remove or replace the code that uses it, make sure nothing else depends on it, and run the tests. Don't touch other dependencies.`],
+  }[kind].filter((line, i, all) => line !== "" || (all[i - 1] !== "" && i > 0)).join("\n");
+  return `#/new?type=quick&summary=${encodeURIComponent(text)}`;
+}
+
+function packageFormBody(p = {}, data) {
+  const adding = !p.id; // a new package can be added from its link alone
+  const eco = (adding ? [["", "Work it out from the link"]] : []).concat(Object.entries(data.ecosystems)).map(([k, label]) => `<option value="${k}" ${k === (p.ecosystem || "") ? "selected" : ""}>${esc(label)}</option>`).join("");
+  const feats = data.features.map((f) => `<option value="${esc(f.id)}" ${f.id === p.feature ? "selected" : ""}>${esc(f.name)}</option>`).join("");
+  return `${adding ? `<label class="field"><span>Package link</span><input type="url" name="url" maxlength="500" value="${esc(p.url || "")}" placeholder="https://www.npmjs.com/package/lodash" autocapitalize="off" spellcheck="false">
+      <small class="hint-text">Paste a page from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub and the name and ecosystem are filled in. Or leave it and type the name.</small></label>` : ""}
+    <label class="field"><span>Package name${adding ? ` <span class="muted">(optional with a link)</span>` : ""}</span><input type="text" name="name" ${adding ? "" : "required"} maxlength="100" value="${esc(p.name || "")}" placeholder="e.g. lodash, requests, pointfreeco/swift-snapshot-testing" autocapitalize="off" spellcheck="false"></label>
+    <div class="row gap-10">
+      <label class="field flex-1"><span>Ecosystem</span><select name="ecosystem">${eco}</select></label>
+      <label class="field flex-1"><span>Version <span class="muted">(optional)</span></span><input type="text" name="version" maxlength="40" value="${esc(p.version || "")}" placeholder="latest"></label>
+    </div>
+    <label class="field"><span>What it's for <span class="muted">(optional)</span></span><input type="text" name="purpose" maxlength="300" value="${esc(p.purpose || "")}" placeholder="e.g. Realtime updates for the lobby"></label>
+    ${data.features.length ? `<label class="field"><span>Feature <span class="muted">(optional)</span></span><select name="feature"><option value="">The whole project</option>${feats}</select></label>` : ""}
+    ${adding ? "" : `<label class="field"><span>Link <span class="muted">(optional)</span></span><input type="url" name="url" maxlength="500" value="${esc(p.url || "")}" placeholder="https://…"></label>`}
+    <label class="field"><span>Notes <span class="muted">(optional)</span></span><textarea name="notes" rows="2" maxlength="1000">${esc(p.notes || "")}</textarea></label>`;
+}
+
+pages.packages = async () => {
+  const data = await api("packages");
+  const { installed, packages, review, features, auto, running } = data;
+  const owner = state.you?.role !== "member";
+  const featureName = (id) => features.find((f) => f.id === id)?.name || "";
+  const mine = (status) => packages.filter((p) => p.status === status && !p.installed);
+  const suggested = mine("suggested"), planned = mine("planned"), dismissed = packages.filter((p) => p.status === "dismissed");
+  const SHOWN = 15;
+  const eco = (p) => `<span class="pill">${esc(data.ecosystems[p.ecosystem]?.split(" (")[0] || p.ecosystem)}</span>`;
+  const row = (p, actions) => `<div class="item package-row" data-pkg-id="${esc(p.id)}"><div class="main-col">
+      <div class="title">${esc(p.name)} ${eco(p)}${p.version ? ` <span class="muted mono">${esc(p.version)}</span>` : ""}${p.feature && featureName(p.feature) ? ` <span class="pill idle">${esc(featureName(p.feature))}</span>` : ""}</div>
+      <div class="meta package-meta">${[p.purpose, p.why && p.why !== p.purpose ? p.why : ""].filter(Boolean).map(esc).join(" · ") || "No description yet"}${p.link ? ` · <a href="${esc(p.link)}" target="_blank" rel="noopener">Link ↗</a>` : ""}</div>
+      ${p.notes ? `<div class="meta">${esc(p.notes)}</div>` : ""}</div>
+      <div class="side">${owner ? actions : ""}</div></div>`;
+  const addBtn = (p) => `<a class="btn small primary" href="${packageJobHref("add", p, data)}">Add to project</a>`;
+  const menu = (p, extra = []) => moreMenu([["Edit", `data-pkg="edit" data-id="${esc(p.id)}"`], ...extra,
+    ["Remove from the list", `data-pkg="remove" data-id="${esc(p.id)}"`, "This only removes it from this list; nothing in your code changes", "danger"]], { compact: true });
+  const suggestedRow = (p) => row(p, `<button type="button" class="btn small primary" data-pkg="plan" data-id="${esc(p.id)}">Accept</button><button type="button" class="btn small" data-pkg="dismiss" data-id="${esc(p.id)}">Reject</button>`);
+  const plannedRow = (p) => row(p, `${addBtn(p)}${menu(p, [["Reject", `data-pkg="dismiss" data-id="${esc(p.id)}"`]])}`);
+  const dismissedRow = (p) => row(p, `<button type="button" class="btn small" data-pkg="restore" data-id="${esc(p.id)}">Restore</button>${menu(p)}`);
+  const installedRow = (i, n) => `<div class="item package-row" ${n >= SHOWN ? "hidden" : ""} data-find="${esc(`${i.name} ${i.ecosystem} ${i.manifest}`.toLowerCase())}"><div class="main-col">
+      <div class="title">${esc(i.name)} ${eco(i)}${i.version ? ` <span class="muted mono">${esc(i.version)}</span>` : ""}${i.kind === "dev" ? ` <span class="pill idle">dev</span>` : ""}</div>
+      <div class="meta mono">${esc(i.manifest)}</div></div>
+      <div class="side">${owner ? moreMenu([["Update…", `data-href="${packageJobHref("update", i, data)}"`, "Starts a job that updates it and fixes what breaks"],
+        ["Remove…", `data-href="${packageJobHref("remove", i, data)}"`, "Starts a job that removes it and the code that uses it", "danger"]], { compact: true }) : ""}</div></div>`;
+  const reviewNote = review?.at && review.suggested !== undefined ? `<p class="muted">Last reviewed ${esc(ago(Date.parse(review.at) / 1000))} · ${review.searched ? "searched the web" : "couldn't search the web, so versions may be out of date"} · ${plural(review.suggested || 0, "suggestion")}.${review.notes ? ` ${esc(review.notes)}` : ""}</p>
+      ${review.sources?.length ? `<details class="fold"><summary class="np-section-legend">Pages it used (${review.sources.length})</summary><ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul></details>` : ""}` : "";
+  return {
+    title: "Packages",
+    sub: "The libraries and plugins this project uses, and ones worth adding.",
+    actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn primary" id="pkg-review">Find packages with AI</button>` : "",
+    html: `
+      <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
+        <p>When your product requirements are set or change in a meaningful way (about a paragraph of new content, not a small tweak), Orchestrator looks for packages and tools that would help, searching the web where it can. Each one is listed below with a link: accept the ones you want, reject the rest. Nothing is installed until you add it.</p>
+        ${running ? `<p class="muted" id="pkg-running" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Reviewing your requirements for packages…</p>` : ""}
+        ${review?.error ? `<div class="notice bad">${esc(review.error)}</div>` : ""}
+        <p class="muted" id="pkg-progress" role="status" hidden></p>${reviewNote}
+        ${owner ? `<label class="check"><input type="checkbox" id="pkg-auto" ${auto ? "checked" : ""}><span>Review automatically when the requirements change meaningfully</span></label>` : ""}</div></section>
+      ${suggested.length ? `<section class="card mb-16" id="pkg-suggested"><div class="card-h"><h2>Suggested</h2><span class="count">${suggested.length}</span></div><div class="list">${suggested.map(suggestedRow).join("")}</div></section>` : ""}
+      ${planned.length ? `<section class="card mb-16" id="pkg-planned"><div class="card-h"><h2>Accepted</h2><span class="count">${planned.length}</span></div><div class="list">${planned.map(plannedRow).join("")}</div></section>` : ""}
+      <section class="card mb-16" id="pkg-installed"><div class="card-h"><h2>In this project</h2><span class="count">${installed.length}</span>
+        ${installed.length > SHOWN ? `<input type="search" id="pkg-find" class="package-find" placeholder="Filter" aria-label="Filter installed packages">` : ""}</div>
+        <div class="list" id="pkg-installed-list">${installed.length ? installed.map(installedRow).join("") : `<div class="empty">No packages found. Orchestrator reads package.json, requirements.txt, pyproject.toml, Package.swift, Cargo.toml, go.mod, Gemfile, Podfile, build.gradle, Unity's Packages/manifest.json and pubspec.yaml.</div>`}</div>
+        ${installed.length > SHOWN ? `<div class="card-b"><button type="button" class="btn small" id="pkg-more">Show all ${installed.length}</button></div>` : ""}</section>
+      ${dismissed.length ? `<section class="card"><details class="fold"><summary class="card-h"><h2>Rejected</h2><span class="count">${dismissed.length}</span></summary><div class="list">${dismissed.map(dismissedRow).join("")}</div></details></section>` : ""}`,
+    after: () => {
+      const call = async (body, ok) => { try { await api("packages", { method: "POST", body }); if (ok) toast(ok); route(); } catch (e) { toast(e.message, true); } };
+      $("#pkg-auto")?.addEventListener("change", (e) => call({ op: "auto", enabled: e.target.checked }, e.target.checked ? "Packages will be reviewed when the requirements change." : "Automatic reviews are off."));
+      if (running) { // an automatic review is going: check back until it's done
+        const timer = setInterval(() => { if (current.page === "packages") route(); else clearInterval(timer); }, 8000);
+        cleanup.push(() => clearInterval(timer));
+      }
+      $("#pkg-add")?.addEventListener("click", async () => {
+        const v = await formDialog("Add a package", packageFormBody({}, data), "Add");
+        if (v) call({ op: "add", ...v }, "Added to the list");
+      });
+      view.querySelectorAll("[data-pkg]").forEach((btn) => btn.addEventListener("click", async () => {
+        const id = btn.dataset.id, p = packages.find((x) => x.id === id), op = btn.dataset.pkg;
+        btn.closest("details.more")?.removeAttribute("open");
+        if (op === "edit") { const v = await formDialog(`Edit ${p.name}`, packageFormBody(p, data), "Save"); if (v) call({ op: "update", id, ...v }, "Saved"); }
+        else if (op === "remove") call({ op: "remove", id }, "Removed from the list");
+        else call({ op: "status", id, status: { plan: "planned", dismiss: "dismissed", restore: "suggested" }[op] }, op === "dismiss" ? "Rejected. It won't be suggested again." : op === "plan" ? "Accepted. Add it to the project when you're ready." : "");
+      }));
+      $("#pkg-more")?.addEventListener("click", (e) => { view.querySelectorAll("#pkg-installed-list .item[hidden]").forEach((r) => { r.hidden = false; }); e.currentTarget.hidden = true; });
+      $("#pkg-find")?.addEventListener("input", (e) => {
+        const term = e.target.value.trim().toLowerCase();
+        view.querySelectorAll("#pkg-installed-list .item").forEach((r, n) => { r.hidden = term ? !r.dataset.find.includes(term) : n >= SHOWN; });
+        $("#pkg-more")?.toggleAttribute("hidden", Boolean(term));
+      });
+      $("#pkg-review")?.addEventListener("click", async (e) => {
+        const button = e.currentTarget, idle = button.innerHTML, note = $("#pkg-progress");
+        button.disabled = true; button.setAttribute("aria-busy", "true");
+        button.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Researching…`;
+        if (note) { note.hidden = false; note.textContent = "Reading your requirements and features, then looking for packages. This can take a minute or two."; }
+        try {
+          const before = packages.filter((p) => p.status === "suggested").length;
+          const result = await waitForTask(await api("packages/review", { method: "POST", body: {} }));
+          const added = result.packages.filter((p) => p.status === "suggested").length - before;
+          toast(added > 0 ? `${plural(added, "suggestion")} added.` : "Nothing new to suggest right now.");
+          route();
+        } catch (err) {
+          toast(err.message, true);
+          if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; }
+          if (note) note.hidden = true;
+        }
+      });
+    },
+  };
+};
 
 pages.measure = async (_, query) => {
   const data = await api("analytics");
@@ -5093,7 +5325,7 @@ pages.help = async () => {
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
       ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads, and the epics it breaks down into. Edit it, import a PRD, see its history, link epics to Jira."],
-         ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["App delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
+         ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Packages", "#/packages", "The libraries and plugins the project uses; an AI review suggests more, and adding one starts a job."], ["App delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
          ["Onboarding checklist", "#/checkup", "What the project needs, plus local tools, environment checks, and workflows."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
     </div></section>
@@ -5110,7 +5342,7 @@ pages.help = async () => {
       <details><summary>A job won't run</summary><p>Jobs need a Git repository, a machine, a model and a ready AI provider. GitHub workflows also need GitHub sign-in. The <a href="#/checkup">Onboarding checklist</a> shows what's missing and where to fix it.</p></details>
       <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. All of it is optional, and “not sure yet” is a fine answer. Draft it from your project, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
-      <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from the <a href="#/?filter=archived">Archived</a> filter on Home.</p></details>
+      <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job you archived can be restored from <a href="#/?filter=archived">Archived</a>, in the Completed &amp; archived section at the bottom of Home.</p></details>
       <details><summary>How do I get alerts when I'm away?</summary><p>Everything is under <a href="#/config/alerts">Configuration → Alerts</a>: this browser or phone (turned on in the hosted app, alerts arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run; on iPhone, add it to your Home Screen first), Slack, email, and a notification on your Mac. The sidebar's <strong>Notify me when done</strong> is a shortcut for this device.</p></details>
       <details><summary>Where are the full guides?</summary><p>In <strong>Orchestrator guides</strong> below. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>
@@ -6214,7 +6446,7 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
   if (!suites.length) {
     return `<div class="empty stack gap-8">
       <p>No test suites found in this project${open ? " matching your filter" : ""}.</p>
-      ${!open ? `<div class="row gap-8 justify-center"><a class="btn small primary" href="#/new?type=coverage"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Add tests</a></div>` : ""}
+      ${!open ? `<div class="row gap-8 justify-center"><button type="button" class="btn small primary" ${act("add_tests")}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Add tests</button></div>` : ""}
     </div>`;
   }
   const groups = new Map();
@@ -6743,13 +6975,17 @@ pages.git = async () => {
     </dl>
     ${g.web_url ? `<div class="card-caption git-host-links">${external(g.web_url, `Open on ${g.provider === "Git remote" ? "your Git host" : esc(g.provider)}`)}</div>` : ""}
     ${checks.length ? `<details class="git-access-details"><summary>Access details</summary><dl class="git-settings-list">${checks.map(check => row(esc(check.label), `<span>${statusText(check.status)}</span><small>${clamped(check.detail, 260)}</small>`)).join("")}</dl></details>` : ""}
-    ${owner && !g.origin ? `<div class="git-connection-options"><h3>Where to keep your code</h3><dl class="git-settings-list">
-      ${row("Existing repository", '<small>Connect GitHub or other Git hosts using a repository URL.</small>', `<button type="button" class="btn small ${g.is_repo && !needsSignIn ? "primary" : ""}" id="git-connect" title="Connect existing repository" ${!g.is_repo ? "disabled" : ""}>Connect</button>`)}
-      ${row("New GitHub repository", '<small>Create a repository with issues and pull requests.</small>', '<button type="button" class="btn small ghost" id="git-create" title="Create GitHub repository">Create</button>')}
-      ${row("On this computer", '<small>Run jobs locally and connect a remote later.</small>', `<button type="button" class="btn small ghost" id="git-local" title="Keep work on this computer" ${!g.is_repo ? "disabled" : ""}>Use local</button>`)}
-    </dl></div>` : ""}
     ${!owner ? '<p class="card-caption muted">The computer owner can change connection settings and check access.</p>' : ""}
   </section>`;
+  const sc = g.source_control;
+  const sourceControlCard = sc ? `<section class="card" id="git-source-control">
+    <div class="card-h"><h2>Source control</h2>${sc.current ? `<span class="pill done">${esc(sc.options.find(o => o.key === sc.current)?.label || "")}</span>` : `<span class="pill attention">Not chosen yet</span>`}</div>
+    <div class="card-b stack">
+      <p class="sc-blurb">${esc(sc.blurb)}</p>
+      <label class="field"><span>${sc.current ? "Change where your code is kept" : "Where will your code be kept?"}</span>
+        <select id="sc-select" ${owner ? "" : "disabled"}>${sc.current ? "" : '<option value="" selected>Choose one…</option>'}${sc.options.map(o => `<option value="${esc(o.key)}" ${o.key === sc.current ? "selected" : ""}>${esc(o.label)}${o.key === sc.current ? " (current)" : ""}</option>`).join("")}</select></label>
+      <div id="sc-detail" aria-live="polite"></div>
+    </div></section>` : "";
   const baseBranchOptions = g.branches.map(branch => `<option value="${esc(branch)}" ${branch === g.base_branch ? "selected" : ""}>${esc(branch)}</option>`).join("")
     || `<option value="" selected disabled>No local branches</option>`;
   const problemCount = problems.length + (missingLabels.length ? 1 : 0) + publishing.problems.length;
@@ -6778,8 +7014,8 @@ pages.git = async () => {
   </div></details></section>` : "";
   return {
     title: "Git setup",
-    sub: esc(!g.is_repo || !g.has_commits ? branchLabel : `${g.provider} · ${g.mode === "github" ? "GitHub workflow" : "Git workflow"}`),
-    html: `<div class="git-page">${problemCard}${connectionCard}${integrationCard}${advancedCard}</div>`,
+    sub: !g.is_repo || !g.has_commits ? esc(branchLabel) : "", // the Source control dropdown says what's in use; only a repo that isn't ready needs a line here
+    html: `<div class="git-page">${problemCard}${sourceControlCard}${connectionCard}${integrationCard}${advancedCard}</div>`,
     after: () => {
       if (g.health?.checking_task) {
         waitForTask({task: g.health.checking_task}).then(async () => {
@@ -6817,10 +7053,10 @@ pages.git = async () => {
       const modeOptions = `<option value="auto" ${g.code_host === "auto" ? "selected" : ""}>Automatic — follow the remote host</option>
         <option value="github" ${g.code_host === "github" ? "selected" : ""}>GitHub issues and pull requests</option>
         <option value="git" ${g.code_host === "git" ? "selected" : ""}>Git branches and local job records</option>`;
-      $("#git-init")?.addEventListener("click", async (e) => {
-        const button = e.currentTarget;
+      const gitInit = async (button) => {
         if (await formDialog("Initialize repository", "<p>Create a Git repository here and include current project files in the initial commit, using this computer’s Git identity.</p>", "Initialize")) await mutate(button, "setup/git-init", {}, "Git repository initialized", "Initializing…");
-      });
+      };
+      $("#git-init")?.addEventListener("click", (e) => gitInit(e.currentTarget));
       $("#git-tracking")?.addEventListener("click", async (e) => {
         const button = e.currentTarget;
         const values = await formDialog("Choose tracking branch", `<label class="field"><span>Remote branch to pull from and push to</span><select name="upstream" required>${(g.remote_branches || []).map(b => `<option value="${esc(b)}" ${b === g.upstream ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></label><p>This changes tracking for the current branch. It does not switch branches or change files.</p>`, "Set tracking branch");
@@ -6828,8 +7064,7 @@ pages.git = async () => {
       });
       $("#git-fetch")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/fetch", {}, "Remote branches updated", "Updating…"));
       $("#git-signin")?.addEventListener("click", () => signInToGitHub());
-      $("#git-connect")?.addEventListener("click", async (e) => {
-        const button = e.currentTarget;
+      const gitConnect = async (button) => {
         const values = await formDialog(g.origin ? "Change remote origin" : "Connect existing repository", `
           <p>Connect GitHub, GitLab, Bitbucket, Azure DevOps, Gitea or another Git host using its clone URL.</p>
           ${g.origin ? `<p>Future fetches and pushes to origin will use the new address. Current address: <span class="mono">${esc(g.origin)}</span></p>` : ""}
@@ -6837,13 +7072,15 @@ pages.git = async () => {
           <label class="field"><span>Job workflow</span><select name="mode">${modeOptions}</select></label>
           <p class="muted">GitHub mode creates issues and pull requests. Git mode pushes branches and merges locally. Use your computer’s Git credential helper or SSH key for access.</p>`, "Save connection");
         if (values) await mutate(button, "git/connection", {op: "connect", ...values}, "Repository connected", "Connecting…");
-      });
+      };
+      $("#git-connect")?.addEventListener("click", (e) => gitConnect(e.currentTarget));
       $("#git-workflow")?.addEventListener("click", async (e) => {
         const button = e.currentTarget;
         const values = await formDialog("Change job workflow", `<label class="field"><span>Project job workflow</span><select name="mode">${modeOptions}</select></label><p>GitHub mode uses issues and pull requests. Git mode uses local job records and merges on this computer. This setting applies when jobs next run, including queued or resumed jobs. Finish active jobs before changing it.</p>`, "Save workflow");
         if (values) await mutate(button, "git/connection", {op: "workflow", ...values}, "Job workflow saved", "Saving…");
       });
-      $("#git-local")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/connection", {op: "workflow", mode: "git"}, "Local Git workflow selected", "Saving…"));
+      const gitLocal = (button) => mutate(button, "git/connection", {op: "workflow", mode: "git"}, "Local Git workflow selected", "Saving…");
+      $("#git-local")?.addEventListener("click", (e) => gitLocal(e.currentTarget));
       $("#git-repair-labels")?.addEventListener("click", async e => {
         const button = e.currentTarget;
         if (await formDialog("Create missing job labels", "<p>Create only the missing labels Orchestrator uses. Existing labels, custom labels, colors and descriptions will be preserved.</p>", "Create missing labels")) await mutate(button, "git/labels/repair", {}, "Missing job labels created", "Creating labels…");
@@ -6851,8 +7088,7 @@ pages.git = async () => {
       view.querySelectorAll("[data-git-publish]").forEach(button => button.addEventListener("click", async () => {
         if (await formDialog("Retry job publishing", "<p>Publish this job’s branch for review. GitHub jobs open or reuse a draft pull request. This does not rerun the build, change the current branch or merge work.</p>", "Retry publishing")) await mutate(button, `jobs/${encodeURIComponent(button.dataset.gitPublish)}/publish`, {}, "Job published", "Publishing…");
       }));
-      $("#git-create")?.addEventListener("click", async (e) => {
-        const button = e.currentTarget;
+      const gitCreate = async (button) => {
         const dialog = formDialog("Create GitHub repository", `
           <p>Create a repository on GitHub, connect origin and push this project. If there are no commits, project files are included in the first commit.</p>
           <label class="field"><span>Repository name</span><input name="name" value="${esc(state.project?.name || "")}" maxlength="80" required></label>
@@ -6861,7 +7097,52 @@ pages.git = async () => {
         $("#git-create-signin")?.addEventListener("click", () => { $("#dialog").close("cancel"); signInToGitHub(); });
         const values = await dialog;
         if (values) await mutate(button, "setup/github-create", values, "GitHub repository created", "Creating…");
-      });
+      };
+      $("#git-create")?.addEventListener("click", (e) => gitCreate(e.currentTarget));
+      if (sc) {
+        const pick = $("#sc-select"), detail = $("#sc-detail");
+        const rich = (text) => esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+        const aiHelp = {}; // the AI's steps, kept per option while you compare
+        const draw = () => {
+          const o = sc.options.find(x => x.key === pick.value);
+          if (!o) { detail.innerHTML = `<p class="muted">Pick one to see what it's good and bad at, and the steps to set it up.</p>`; return; }
+          const here = o.key === sc.current, off = !owner ? "disabled" : "";
+          const button = (id, label, primary = false, disabled = false) => `<button type="button" class="btn small ${primary ? "primary" : ""}" data-sc="${id}" ${off || disabled ? "disabled" : ""}>${label}</button>`;
+          const actions = here ? `<span class="muted">This is what the project uses now.</span>`
+            : !g.is_repo ? `${button("init", "Initialize repository", true)}<span class="muted">Do this first: it turns this folder into a Git repository.</span>`
+            : o.action === "github" ? `${needsSignIn || !g.github?.user ? button("signin", "Sign in to GitHub", true) : ""}${g.origin ? button("connect", "Switch to a GitHub repository", !(needsSignIn || !g.github?.user)) : `${button("create", "Create a GitHub repository", !(needsSignIn || !g.github?.user))}${button("connect", "Connect an existing one")}`}`
+            : o.action === "local" ? button("local", g.origin ? "Use local branches only" : "Use this computer only", true)
+            : button("connect", g.origin ? `Switch to ${esc(o.label)}` : "Connect a repository", true);
+          detail.innerHTML = `<div class="sc-option">
+            <div><strong>${esc(o.label)}</strong> <span class="muted">${esc(o.tagline)}</span></div>
+            <p class="muted">With Orchestrator: ${esc(o.workflow)}.</p>
+            <div class="sc-cols"><div><h3>Good at</h3><ul>${o.good.map(t => `<li>${rich(t)}</li>`).join("")}</ul></div>
+              <div><h3>Watch out for</h3><ul>${o.watch.map(t => `<li>${rich(t)}</li>`).join("")}</ul></div></div>
+            <div><h3>${here ? "How it was set up" : g.origin ? "Steps to switch" : "Steps to set it up"}</h3><ol>${o.steps.map(t => `<li>${rich(t)}</li>`).join("")}</ol>
+              ${g.origin && !here && o.action !== "local" ? `<p class="muted">Switching changes where jobs push. Your history comes with you when you push to the new repository.</p>` : ""}</div>
+            <div class="row gap-8 sc-actions">${actions}${owner ? `<button type="button" class="btn small ghost" id="sc-ai">${aiHelp[o.key] ? "Refresh the AI steps" : "Help me set this up with AI"}</button>` : ""}<a class="btn small ghost" href="${esc(o.docs)}" target="_blank" rel="noopener">Official guide ↗</a></div>
+            <div id="sc-ai-out" aria-live="polite">${aiHelp[o.key] ? aiBlock(aiHelp[o.key]) : ""}</div></div>`;
+        };
+        const aiBlock = (text) => `<div class="sc-ai"><strong>For this project</strong><div class="md">${Markdown.render(text)}</div><small class="muted">Written by an AI from this project's state. Check it against your host's own instructions.</small></div>`;
+        pick.addEventListener("change", draw);
+        detail.addEventListener("click", async (e) => {
+          const btn = e.target.closest("button");
+          if (!btn || btn.disabled) return;
+          if (btn.dataset.sc) return ({init: gitInit, signin: () => signInToGitHub(), connect: gitConnect, create: gitCreate, local: gitLocal})[btn.dataset.sc]?.(btn);
+          if (btn.id !== "sc-ai") return;
+          const key = pick.value, idle = btn.innerHTML, out = $("#sc-ai-out");
+          btn.disabled = true; btn.setAttribute("aria-busy", "true");
+          btn.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Writing steps…`;
+          try {
+            aiHelp[key] = (await waitForTask(await api("git/setup-help", { method: "POST", body: { option: key } }))).text;
+            if (pick.value === key) draw();
+          } catch (err) {
+            toast(err.message, true);
+            if (btn.isConnected) { btn.disabled = false; btn.removeAttribute("aria-busy"); btn.innerHTML = idle; }
+          }
+        });
+        draw();
+      }
       $("#git-pull")?.addEventListener("click", async () => {
         if (await formDialog("Pull branch", `<p>Update <strong>${esc(g.branch || "the current branch")}</strong> from <strong>${esc(destination)}</strong>. This stops if the branches have diverged.</p><p class="muted">${esc(sync)}</p>`, "Pull", { compact: true })) await runAction("git_pull", {}, { skipConfirm: true });
       });
@@ -8746,7 +9027,9 @@ function runFailureGuidance(r) {
       return {
         title: "No source files or tests yet",
         detail: "Create a test job to add tests and measure code coverage.",
-        action: `<a class="btn small primary" href="#/new?type=coverage"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Add tests</a>`,
+        action: onTestsPage
+          ? `<button type="button" class="btn small primary" ${act("add_tests")}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Add tests</button>`
+          : `<a class="btn small primary" href="#/new?type=coverage"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Add tests</a>`,
         secondary: onTestsPage ? "" : `<a class="btn small" href="#/tests">Back to Tests</a>`,
       };
     }
@@ -9032,7 +9315,9 @@ function runStatus(r, vc = null) {
     return `<section class="banner failed attention run-status run-status-notice" aria-label="Run status">
       <div class="run-status-notice-body">
         <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
-        <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
+        ${guidance.title === "Execution error" && r.result?.headline
+          ? `<p class="run-status-notice-desc"><strong>${esc(r.result.headline)}</strong></p>${r.result.details?.length ? `<ul class="run-status-notice-list">${r.result.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}` // what the run found, instead of only its last line
+          : `<p class="run-status-notice-desc">${esc(guidance.detail)}</p>`}
       </div>
       <div class="run-status-notice-actions row gap-8">
         ${guidance.action || ""}
@@ -9050,6 +9335,7 @@ function runStatus(r, vc = null) {
   const stepPrefix = numbered ? `Step ${currentStep} of ${totalSteps}: ` : "";
   const completionLabel = r.action === "coverage" ? "Coverage measurement complete"
     : r.action === "logs_pull" ? "Logs pulled"
+    : r.action === "plan_epic" ? "Plan ready to review"
     : r.result_job && !r.job ? "Job created"
     : (r.job || r.result_job) ? "Job execution complete"
     : "Run complete";
@@ -9058,7 +9344,7 @@ function runStatus(r, vc = null) {
     : r.action === "build" ? "Build"
     : r.action === "test" ? "Run all tests"
     : r.title || (r.action ? r.action.replace(/_/g, " ") : "Run");
-  const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : (p.label || completionLabel))
+  const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : (p.label || completionLabel))
     : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
     : (p.label || r.title || "Starting run");
   const headline = `${stepPrefix}${headlineLabel}`;
@@ -9112,18 +9398,23 @@ function runStatus(r, vc = null) {
     : progressMax > 0 ? Math.min(100, Math.max(0, Math.round((progressVal / progressMax) * 100))) : 0;
   const duration = runDuration(r.started, r.ended);
   const actionBtn = done ? (r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
+    : r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>` // the epic's waiting job is gone: planning replaced it
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
     : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "")
     : "";
 
-  const targetJob = r.job || r.result_job;
+  const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;
   const jobItem = targetJob
     ? `<div><dt>Job</dt><dd><a href="#/jobs/${encodeURIComponent(targetJob)}">${esc(targetJob)}</a></dd></div>`
     : "";
   const showAction = Boolean(actionName && (!headlineLabel || actionName.toLowerCase() !== headlineLabel.toLowerCase()) && (!p.label || actionName.toLowerCase() !== p.label.toLowerCase()));
   const actionItem = showAction ? `<div><dt>Action</dt><dd>${esc(actionName)}</dd></div>` : "";
-  const resultText = done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
+  const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
+  const showFound = Boolean(found && (done || !guidance || found.details?.length)); // a failure with guidance and nothing more to add would only repeat it
+  const foundBlock = showFound ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
+      <strong>${esc(found.headline)}</strong>${found.details?.length ? `<ul>${found.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}</div>` : "";
+  const resultText = showFound ? "" : done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
   const resultItem = resultText ? `<div><dt>Result</dt><dd class="${caveat ? "" : done ? "text-ok" : "text-bad"}">${esc(resultText)}</dd></div>` : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";
@@ -9131,6 +9422,7 @@ function runStatus(r, vc = null) {
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
       <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
+    ${foundBlock}
     <dl class="run-status-details">
       ${jobItem}
       ${actionItem}
@@ -9369,7 +9661,7 @@ function updateRunStatus(r) {
       }
       return;
     }
-    const signature = JSON.stringify([r.running, r.exit_code, r.progress, r.title, r.error_summary, r.last_line]);
+    const signature = JSON.stringify([r.running, r.exit_code, r.progress, r.title, r.error_summary, r.last_line, r.result]);
     if (container.runStatusSignature !== signature) {
       container.innerHTML = runStatus(r);
       container.runStatusSignature = signature;
@@ -9502,7 +9794,7 @@ async function finishRunStatus(run) {
   setHeader(runHeader(run));
   const isVisualCheck = run.action === "visual_check" || /visual check/i.test(run.title);
   container.innerHTML = (isVisualCheck && !run.exit_code && (vc?.screenshots?.length || vc?.video)) ? nextStep(run, vc) : runStatus(run, vc);
-  container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.title]);
+  container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.title, run.error_summary, run.last_line, run.result]);
   hydrateAuthImages(container);
   wireImagePreviews(container);
   wireRunGuidance(container);
@@ -10164,6 +10456,7 @@ const navigationDrawer = NavigationDrawer.mount({document, window});
 // ---------------------------------------------------------------- command palette
 const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Epics", "#/product?section=epics", "Break the product down into epics, approve them, and link them to Jira"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
+  ["Packages", "#/packages", "Libraries and plugins this project uses, and ones worth adding"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
   ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
@@ -10325,11 +10618,19 @@ function renderNotifyBtn() {
 }
 // iPhone only allows web push for apps on the Home Screen, so say how, rather than just refusing.
 function showHomeScreenGuide() {
+  const g = HomeScreen.guide(navigator); // the steps for this device and browser
+  if (!g) return;
+  const bold = (text) => esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   const slack = state.alerts?.webhook ? `<p class="muted">Slack alerts are already connected, so you'll still hear about finished runs there in the meantime.</p>` : "";
-  formDialog("Add Orchestrator to your Home Screen", `<p>iPhone only allows alerts for apps on the Home Screen.</p>
-    <ol><li>In Safari, tap <strong>Share</strong> (the square with an arrow).</li><li>Choose <strong>Add to Home Screen</strong>.</li>
-    <li>Open <strong>Orchestrator</strong> from your Home Screen, sign in, and tap <strong>Get alerts</strong> again.</li></ol>${slack}`, "Got it", { compact: true });
+  formDialog(g.title, `<p>${esc(g.intro)}</p><ol>${g.steps.map((step) => `<li>${bold(step)}</li>`).join("")}</ol>
+    ${g.note ? `<p class="notice">${esc(g.note)}</p>` : ""}${slack}`, "Got it", { compact: true });
   $("#dialog-cancel").hidden = true;
+}
+
+// How many suggested packages are waiting for you to accept or reject, on the sidebar's Packages link.
+function renderPackagesBadge() {
+  const badge = $("#packages-badge"), waiting = state.packages_suggested || 0;
+  if (badge) { badge.hidden = !waiting; badge.textContent = waiting; }
 }
 
 // Slack alerts are one webhook for the project, so only the owner can pause them, and the button appears only once Slack is connected.

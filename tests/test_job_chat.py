@@ -89,5 +89,43 @@ class JobChatTests(unittest.TestCase):
         self.assertNotIn("conversation", read(self.path))
 
 
+
+class WebResearchRunTests(unittest.TestCase):
+    """job_chat_run.py --web: the same one-turn script, with a model that can search when one is available."""
+
+    def run_script(self, candidates, args=("--web",)):
+        import io
+        from contextlib import redirect_stdout
+        scripts = Path(__file__).resolve().parents[1] / "orchestrator" / "scripts"
+        sys.path.insert(0, str(scripts))
+        import job_chat_run
+        out = io.StringIO()
+        with patch.object(job_chat_run, "get_prioritized_models", return_value=candidates), \
+                patch.object(job_chat_run, "run_llm", return_value=("the answer", "m", "s")) as llm_call, \
+                patch.object(sys, "stdin", io.StringIO("prompt")), redirect_stdout(out):
+            code = job_chat_run.main(list(args))
+        return code, out.getvalue(), llm_call
+
+    def test_it_picks_a_model_that_can_search_and_says_so(self):
+        code, out, llm_call = self.run_script(["deepseek", "claude-sonnet-4-6"])
+        self.assertEqual(code, 0)
+        self.assertEqual(llm_call.call_args.args[0], "claude-sonnet-4-6")  # not the first, which can't search
+        self.assertTrue(llm_call.call_args.kwargs["web"])
+        self.assertLess(out.index("<<<ORCHESTRATOR-WEB>>>on"), out.index("<<<ORCHESTRATOR-REPLY>>>"))
+        self.assertTrue(out.rstrip().endswith("the answer"))
+
+    def test_with_no_model_that_can_search_it_still_answers_and_says_it_did_not(self):
+        code, out, llm_call = self.run_script(["deepseek"])
+        self.assertEqual(code, 0)
+        self.assertEqual(llm_call.call_args.args[0], "deepseek")
+        self.assertFalse(llm_call.call_args.kwargs["web"])
+        self.assertIn("<<<ORCHESTRATOR-WEB>>>off", out)
+
+    def test_without_the_flag_nothing_searches(self):
+        _, out, llm_call = self.run_script(["claude-sonnet-4-6"], args=())
+        self.assertFalse(llm_call.call_args.kwargs["web"])
+        self.assertIn("<<<ORCHESTRATOR-WEB>>>off", out)
+
+
 if __name__ == "__main__":
     unittest.main()

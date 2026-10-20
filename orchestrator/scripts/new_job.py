@@ -638,7 +638,10 @@ def main(args_override: list[str] | None = None) -> None:
     elif branch_mode == "new":
         # Keep it None, the scheduler/builder will create one based on the job ID
         selected_branch = None
-        print("      - A new branch will be created automatically.")
+        if args.no_dispatch:  # planning only: nothing is checked out or created yet
+            print("      - No branch is created while planning; one is made when the job starts building.")
+        else:
+            print("      - A new branch will be created automatically.")
 
     print("\n" + "="*40)
     print(f"   CREATING NEW {args.job_type.upper()}")

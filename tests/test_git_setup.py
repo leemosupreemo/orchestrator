@@ -1,6 +1,7 @@
 """Git setup behavior against isolated repositories; no external hosts are contacted."""
 import json
 import subprocess
+from unittest.mock import patch
 import shutil
 import tempfile
 import unittest
@@ -290,6 +291,9 @@ class GitSetupUITests(unittest.TestCase):
                 "mode": "git", "code_host": "auto", "provider": "On this computer", "base_branch": "main",
                 "is_repo": True, "has_commits": True, "can_pull": False, "can_push": False,
                 "can_fetch": False, "push_reason": "Connect a remote to publish commits.", "pull_reason": "Connect a remote to download changes."}
+        from orchestrator import source_control
+        data["source_control"] = {"current": source_control.current_key("none", data["origin"], data["code_host"]), "blurb": source_control.BLURB,
+                                  "options": source_control.OPTIONS}
         data.update(overrides)
         static = Path(__file__).resolve().parents[1] / "orchestrator/web/static"
         script = r'''
@@ -341,12 +345,32 @@ pages.git().then(async result => {
         self.assertIn({"path": "config/base-branch", "body": {"branch": "develop"}}, result["effects"]["calls"])
         self.assertEqual(result["effects"]["routed"], 1)
 
-    def test_local_repository_offers_all_connection_choices(self):
+    def test_with_no_source_control_chosen_the_page_asks_and_says_why_it_matters(self):
         html = self.render()["html"]
-        self.assertIn("Connect existing repository", html)
-        self.assertIn("Create GitHub repository", html)
-        self.assertIn("Keep work on this computer", html)
-        self.assertIn("Local job records", html)
+        self.assertIn('id="git-source-control"', html)
+        self.assertIn("Source control keeps a history of every change", html)  # the one-line reason, always shown
+        self.assertIn("Where will your code be kept?", html)
+        self.assertIn('<option value="" selected>Choose one…</option>', html)
+        self.assertIn("Not chosen yet", html)
+        for label in ("GitHub", "GitLab", "Bitbucket", "Azure DevOps", "Another Git host", "On this computer only"):
+            self.assertIn(f">{label}</option>", html)
+        self.assertIn("Local job records", html)  # the connection card still says how jobs work
+
+    def test_the_page_has_no_provider_subtitle_because_the_dropdown_shows_it(self):
+        connected = self.render(origin="git@github.com:team/app.git", provider="GitHub", mode="github", source_control={
+            "current": "github", "blurb": "Why.", "options": [{"key": "github", "label": "GitHub"}]})
+        self.assertEqual(connected["sub"], "")  # not "GitHub · GitHub workflow"
+        self.assertIn('<option value="github" selected>GitHub (current)</option>', connected["html"])
+        self.assertEqual(self.render(has_commits=False)["sub"], "No commits yet")  # a repository that isn't ready still says so
+        self.assertEqual(self.render(is_repo=False, has_commits=False)["sub"], "Not initialized")
+
+    def test_a_connected_project_shows_its_choice_as_current_and_offers_to_change_it(self):
+        html = self.render(origin="git@gitlab.com:team/app.git", provider="GitLab", source_control={
+            "current": "gitlab", "blurb": "Why.", "options": [{"key": "gitlab", "label": "GitLab"}, {"key": "github", "label": "GitHub"}]})["html"]
+        self.assertIn("Change where your code is kept", html)
+        self.assertIn('<option value="gitlab" selected>GitLab (current)</option>', html)
+        self.assertNotIn("Choose one…", html)
+        self.assertIn('<span class="pill done">GitLab</span>', html)
 
     def test_other_hosts_show_their_provider_and_workflow(self):
         html = self.render(origin="git@gitlab.com:group/app.git", provider="GitLab")["html"]
@@ -439,7 +463,8 @@ console.log(JSON.stringify(select.innerHTML));
     def test_local_repository_keeps_connection_choices_expanded(self):
         html = self.render()["html"]
         self.assertIn('id="git-connection-card"', html)
-        self.assertIn("other Git hosts", html)
+        self.assertIn('id="sc-select"', html)  # the choices are the dropdown, not a list of rows
+        self.assertNotIn("Where to keep your code", html)
 
     def test_a_shared_sync_blocker_is_explained_once(self):
         page = self.render(push_reason="Connect a remote before syncing.", pull_reason="Connect a remote before syncing.")
@@ -453,7 +478,7 @@ console.log(JSON.stringify(select.innerHTML));
 
     def test_setup_does_not_add_a_second_primary_when_sync_is_available(self):
         html = self.render(can_push=True, can_pull=True, can_fetch=True, upstream="team/review", remote_branches=["team/review"])["html"]
-        self.assertEqual(html.count('class="btn small primary"'), 1)
+        self.assertEqual(html.count('class="btn small primary"'), 0)  # no primary on the page itself; the chooser draws its own only once an option is picked
 
     def test_long_commit_subject_can_expand_instead_of_filling_the_screen(self):
         html = self.render(last_commit="abc123 " + "X" * 200)["html"]
@@ -518,6 +543,52 @@ class GitSetupApiTests(web_tests.ServerTestCase):
         self.assertEqual(data["upstream"], "origin/review")
         self.assertTrue(data["can_pull"])
         self.assertTrue(data["last_fetch"])
+
+    def wait_task(self, task):
+        for _ in range(100):
+            _, data = self.request("GET", f"/api/product/task/{task}")
+            if data["status"] != "running":
+                return data
+            time.sleep(0.05)
+        self.fail("the task never finished")
+
+    def test_the_page_state_says_which_source_control_is_in_use_and_lists_the_options(self):
+        _, data = self.request("GET", "/api/git")
+        self.assertEqual(data["source_control"]["current"], "")  # a repository with no remote and no choice made
+        self.assertEqual([o["key"] for o in data["source_control"]["options"]], ["github", "gitlab", "bitbucket", "azure", "other", "local"])
+        self.assertTrue(data["source_control"]["blurb"].startswith("Source control keeps a history"))
+        self.request("POST", "/api/git/connection", body={"op": "workflow", "mode": "git"}, headers=web_tests.UI_HEADERS)
+        self.assertEqual(self.request("GET", "/api/git")[1]["source_control"]["current"], "local")
+        self.request("POST", "/api/git/connection", body={"op": "connect", "url": "git@gitlab.com:team/app.git", "mode": "git"}, headers=web_tests.UI_HEADERS)
+        self.assertEqual(self.request("GET", "/api/git")[1]["source_control"]["current"], "gitlab")
+        self.git("remote", "set-url", "origin", "git@git.example.com:team/app.git")
+        self.assertEqual(self.request("GET", "/api/git")[1]["source_control"]["current"], "other")
+
+    def test_optional_ai_help_writes_steps_for_the_chosen_option(self):
+        prompts = []
+
+        def fake(handler, root, prompt, model="", timeout=150):
+            prompts.append(prompt)
+            return "You have a repository with commits and no remote.\n1. Press **Sign in to GitHub**."
+
+        with patch.object(web_tests.ui.UIHandler, "_model_call", fake):
+            res, started = self.request("POST", "/api/git/setup-help", body={"option": "github"}, headers=web_tests.UI_HEADERS)
+            self.assertEqual(res.status, 202, started)
+            task = self.wait_task(started["task"])
+        self.assertEqual((task["status"], task["result"]["option"]), ("done", "github"))
+        self.assertIn("Sign in to GitHub", task["result"]["text"])
+        self.assertIn("chose: GitHub", prompts[0])
+        self.assertIn("is a Git repository, with commits", prompts[0])  # where this project actually is
+        self.assertIn("Remote ('origin'): none", prompts[0])
+
+    def test_ai_help_needs_a_known_option_and_the_page_header(self):
+        self.assertEqual(self.request("POST", "/api/git/setup-help", body={"option": "svn"}, headers=web_tests.UI_HEADERS)[0].status, 400)
+        self.assertEqual(self.request("POST", "/api/git/setup-help", body={})[0].status, 403)  # another site can't start a model run
+        with patch.object(web_tests.ui.UIHandler, "_model_call", lambda *a, **k: "   "):
+            _, started = self.request("POST", "/api/git/setup-help", body={"option": "local"}, headers=web_tests.UI_HEADERS)
+            task = self.wait_task(started["task"])
+        self.assertEqual(task["status"], "error")
+        self.assertIn("didn't write any steps", task["error"])
 
     def test_repository_health_is_gathered_in_the_background_on_get(self):
         response, data = self.request("GET", "/api/git")

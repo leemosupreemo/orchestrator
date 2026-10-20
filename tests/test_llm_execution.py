@@ -30,6 +30,33 @@ class LLMEnvironmentAndQuotaTests(unittest.TestCase):
         self.assertFalse(llm.is_quota_error(""))
 
 
+class LLMWebSearchTests(unittest.TestCase):
+    def test_claude_and_gemini_can_be_allowed_to_search_the_web_and_nothing_else_changes(self):
+        plain = llm.get_llm_command("claude-sonnet-4-6", "p.md")
+        web = llm.get_llm_command("claude-sonnet-4-6", "p.md", web=True)
+        self.assertNotIn("WebSearch", plain)
+        self.assertIn('--allowedTools "WebSearch,WebFetch"', web)
+        self.assertTrue(web.startswith(plain.split(" | ")[0]) and plain.split(" | ")[1] in web)  # the same command, plus the tool list
+        self.assertIn('--allowedTools "WebSearch,WebFetch"', llm.get_llm_command("claude", "p.md", web=True))
+        with patch.object(llm, "preferred_cli", return_value="gemini"):
+            gemini = llm.get_llm_command("gemini-3-flash-preview", "p.md", web=True)
+            self.assertIn("google_web_search,web_fetch", gemini)
+            self.assertNotIn("google_web_search", llm.get_llm_command("gemini-3-flash-preview", "p.md"))
+
+    def test_other_models_are_unchanged_and_say_they_cannot_search(self):
+        for model in ("deepseek", "opencode/big-pickle", "gpt-5.5-medium"):
+            self.assertEqual(llm.get_llm_command(model, "p.md", web=True), llm.get_llm_command(model, "p.md"), model)
+            self.assertFalse(llm.web_capable(model), model)
+        self.assertTrue(llm.web_capable("claude-sonnet-4-6"))
+        with patch.object(llm, "preferred_cli", return_value="agy"):
+            self.assertFalse(llm.web_capable("gemini-3-flash-preview"))  # Antigravity has no search switch to turn on
+
+    def test_the_flag_reaches_the_command_from_run_llm(self):
+        with patch.object(llm, "_run_llm_single", return_value="ok") as single:
+            llm.run_llm("claude-sonnet-4-6", "prompt", web=True)
+        self.assertTrue(single.call_args.kwargs["web"])
+
+
 class LLMRunSingleTests(unittest.TestCase):
     def _create_mock_popen(self, stdout_lines: list[str], stderr_lines: list[str] = None, returncode: int = 0):
         mock_proc = MagicMock()

@@ -12,6 +12,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
+from types import SimpleNamespace
 import threading
 import time
 import unittest
@@ -23,6 +25,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from orchestrator import packages as package_store
 from orchestrator import prd as prd_mod
 from orchestrator.web import server as ui  # noqa: E402
 
@@ -1929,14 +1932,20 @@ process.stdout.write(JSON.stringify({
         routes = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "routes.js").read_text()
         self.assertIn('"config/base-branch": "git"', routes)
 
-    def test_archived_jobs_are_a_filter_on_home_with_restore(self):
+    def test_home_has_a_jobs_section_and_a_completed_and_archived_section(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
-        self.assertIn('href="#/?filter=archived"', home)
+        self.assertIn('id="home-jobs"', home)
+        self.assertIn('id="home-finished"', home)
+        self.assertLess(home.index('id="home-jobs"'), home.index('id="home-finished"'))
+        self.assertIn("Completed &amp; archived", home)
+        self.assertIn('api("jobs/archived")', home)
+        self.assertNotIn('done: ["Completed"', home)  # finished work isn't a filter of the first list any more
+        self.assertIn("all: [\"All\", (j) => !isFinished(j)]", home)
+        self.assertIn('requested === "done" || requested === "archived"', home)  # old links land on the second section
         self.assertIn("data-restore-job", home)
         self.assertIn('api("config/archived-restore"', home)
         self.assertIn("this archive can't be read", home)  # a corrupt archive is listed, without Restore
-        self.assertIn("No archived jobs", home)
 
     def test_empty_jobs_on_home_has_simplified_message_and_link_to_start_new_job(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -4410,6 +4419,29 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("button.innerHTML = idle", body)  # put back when it fails
         self.assertIn('"Missing job labels created", "Creating labels…")', self.js)
 
+    def test_add_tests_on_the_tests_page_starts_the_job_without_a_form(self):
+        app = self.js
+        action = app[app.index("  async add_tests() {"):][:400]
+        self.assertIn('runAction("new_job", coverageJobParams({}, {}, { execution: "automatic" }))', action)  # the Expand coverage > automatic job
+        self.assertEqual(app.count('${act("add_tests")}'), 2)  # the empty Suites card and the no-tests notice on Tests (Run all tests asks in a dialog)
+        suites = app[app.index("function suiteGroupsHtml"):][:700]
+        self.assertIn('act("add_tests")', suites)
+        self.assertNotIn("#/new?type=coverage", suites)
+        guidance = app[app.index('title: "No source files or tests yet"'):][:900]
+        self.assertIn("onTestsPage", guidance)
+        self.assertIn('act("add_tests")', guidance)
+        self.assertIn('href="#/new?type=coverage"', guidance)  # off the Tests page (a run page) it still opens the form
+        run_all = app[app.index('"No tests to run"'):][:420]
+        self.assertIn("dialogs.add_tests()", run_all)
+        self.assertNotIn('location.hash = "#/new?type=coverage"', run_all)
+
+    def test_the_health_pill_lines_up_with_the_branch_dropdown(self):
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn(".home-health-inline { position: relative; flex: none; }", css)  # no margin nudging it off the dropdown's bottom edge
+        self.assertIn("align-items: flex-end", css[css.index(".home-status-line .status-main-row"):][:200])  # both sit on the same line
+        self.assertIn("min-height: var(--control-md)", css[css.index(".home-health-trigger {"):][:300])  # and are the same height as the dropdown
+        self.assertIn("min-height: var(--control-md)", css[css.index(".status-line .branch-select"):][:200])
+
     def test_layout_rules_that_keep_every_page_on_one_system(self):
         css = (self.STATIC / "style.css").read_text()
         self.assertIn("--control-md: 40px;", css)  # the height buttons actually render at, so inputs can match it
@@ -4452,7 +4484,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('id="inbox-badge"', self.html.split('data-route="home"')[1].split("</a>")[0])  # the count lives on Home
         home = self.js[self.js.index("pages.home = async"):self.js.index("function jobHeaderActions")]
         self.assertNotIn("waitingSectionHtml", self.js)  # no second list above the jobs
-        self.assertEqual(home.count('class="job-table"'), 1)
+        self.assertEqual(home.count('class="job-table"'), 2)  # the work still going, and (below it) what's completed or archived
         self.assertIn('needs_you: ["Needs you"', home)  # a filter, not a separate section
         self.assertIn('all: ["All"', home)
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
@@ -5226,6 +5258,463 @@ class UndoEndpointTests(ServerTestCase):
         with patch.object(self.server.sessions, "running_job_ids", return_value=[self.JOB]):
             res, data = self.post("/api/jobs/archive", {"ids": [self.JOB]})
         self.assertEqual((res.status, data["archived"]), (200, []))
+
+
+class PackagesApiTests(ServerTestCase):
+    """The Packages page: what the project uses, a model's suggestions, and the person's own list."""
+
+    def post(self, path, body=None):
+        return self.request("POST", path, body=body if body is not None else {}, headers=UI_HEADERS)
+
+    def wait_task(self, task):
+        for _ in range(100):
+            _, data = self.request("GET", f"/api/product/task/{task}")
+            if data["status"] != "running":
+                return data
+            time.sleep(0.05)
+        self.fail("the task never finished")
+
+    def write_prd(self):
+        from orchestrator import prd as prd_doc
+        path = self.root / prd_doc.PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(prd_doc.replace_section(prd_doc.template("Word Duel"), "pitch", "A turn-based word game to play with friends."))
+
+    def research(self, answers, searched=True):
+        replies, prompts = iter(answers), []
+
+        def fake(handler, root, prompt, timeout=240):
+            prompts.append(prompt)
+            return next(replies), searched
+
+        with patch.object(ui.UIHandler, "_research_call", fake):
+            res, started = self.post("/api/packages/review")
+            if res.status != 202:
+                return res, started, prompts
+            return res, self.wait_task(started["task"]), prompts
+
+    def test_it_lists_what_the_project_uses_and_marks_the_list_entries_a_manifest_has(self):
+        (self.root / "requirements.txt").write_text("PyYAML==6.0\nrequests\n")
+        self.post("/api/packages", {"op": "add", "name": "pyyaml", "ecosystem": "pip", "purpose": "Config files"})
+        self.post("/api/packages", {"op": "add", "name": "rich", "ecosystem": "pip"})
+        self.post("/api/features", {"name": "Lobby"})
+        _, data = self.request("GET", "/api/packages")
+        self.assertEqual([i["name"] for i in data["installed"]], ["PyYAML", "requests"])
+        self.assertEqual({p["name"]: p["installed"] for p in data["packages"]}, {"pyyaml": True, "rich": False})
+        self.assertEqual([f["name"] for f in data["features"]], ["Lobby"])
+        self.assertIn("swiftpm", data["ecosystems"])
+
+    def test_add_edit_dismiss_restore_and_remove(self):
+        res, data = self.post("/api/packages", {"op": "add", "name": "lodash", "ecosystem": "npm", "version": "4"})
+        self.assertEqual(res.status, 200)
+        pid = data["packages"][0]["id"]
+        _, data = self.post("/api/packages", {"op": "update", "id": pid, "notes": "Pin it"})
+        self.assertEqual((data["packages"][0]["notes"], data["packages"][0]["version"]), ("Pin it", "4"))
+        _, data = self.post("/api/packages", {"op": "status", "id": pid, "status": "dismissed"})
+        self.assertEqual(data["packages"][0]["status"], "dismissed")
+        _, data = self.post("/api/packages", {"op": "remove", "id": pid})
+        self.assertEqual(data["packages"], [])
+
+    def test_a_package_can_be_added_from_its_link_alone(self):
+        res, data = self.post("/api/packages", {"op": "add", "url": "https://www.npmjs.com/package/zod"})
+        self.assertEqual((res.status, data["packages"][0]["name"], data["packages"][0]["ecosystem"]), (200, "zod", "npm"))
+        # a GitHub link takes the project's ecosystem when it has just one
+        (self.root / "Package.swift").write_text('let package = Package(name: "A", dependencies: [.package(url: "https://github.com/Quick/Nimble.git", from: "13.0.0")])')
+        res, data = self.post("/api/packages", {"op": "add", "url": "https://github.com/pointfreeco/swift-snapshot-testing", "purpose": "Visual tests"})
+        self.assertEqual(res.status, 200)
+        self.assertEqual([(p["name"], p["ecosystem"]) for p in data["packages"]], [("zod", "npm"), ("pointfreeco/swift-snapshot-testing", "swiftpm")])
+        res, data = self.post("/api/packages", {"op": "add", "url": "https://example.com/lib"})
+        self.assertEqual(res.status, 400)
+        self.assertIn("I don't know that link", data["error"])
+
+    def test_bad_requests_are_refused_with_a_reason(self):
+        self.assertEqual(self.post("/api/packages", {"op": "add", "name": "x", "ecosystem": "cobol"})[0].status, 400)
+        self.assertEqual(self.post("/api/packages", {"op": "add", "name": "has space", "ecosystem": "npm"})[0].status, 400)
+        self.assertEqual(self.post("/api/packages", {"op": "update", "id": "ghost", "notes": "x"})[0].status, 404)
+        self.assertEqual(self.post("/api/packages", {"op": "dance"})[0].status, 400)
+        self.assertEqual(self.request("POST", "/api/packages", {"op": "add", "name": "x", "ecosystem": "npm"})[0].status, 403)  # another site can't change it
+
+    def test_the_review_needs_something_to_read(self):
+        res, data = self.post("/api/packages/review")
+        self.assertEqual(res.status, 400)
+        self.assertIn("product requirements", data["error"])
+
+    def test_the_review_suggests_packages_for_review_and_remembers_how_it_went(self):
+        self.write_prd()
+        self.post("/api/features", {"name": "Lobby", "summary": "Friends meet and pick seats"})
+        (self.root / "package.json").write_text('{"dependencies": {"react": "^18"}}')
+        answer = json.dumps({"packages": [
+            {"name": "socket.io", "ecosystem": "npm", "purpose": "Realtime", "why": "Lobby needs live seats", "feature": "Lobby", "url": "https://socket.io", "version": "4.7"},
+            {"name": "react", "ecosystem": "npm", "purpose": "UI", "why": "x"}], "notes": "Checked npm.", "sources": ["https://socket.io/docs"]})
+        res, task, prompts = self.research([answer])
+        self.assertEqual((res.status, task["status"]), (202, "done"), task)
+        view = task["result"]
+        self.assertEqual([(p["name"], p["status"], p["origin"], p["feature"]) for p in view["packages"]], [("socket.io", "suggested", "ai", "lobby")])  # react is already there
+        self.assertEqual((view["review"]["searched"], view["review"]["suggested"], view["review"]["sources"]), (True, 1, ["https://socket.io/docs"]))
+        self.assertIn("A turn-based word game", prompts[0])
+        self.assertIn("- Lobby: Friends meet and pick seats", prompts[0])
+        self.assertIn("npm: react", prompts[0])
+        # a second review doesn't suggest it again, and a dismissed one stays dismissed
+        self.post("/api/packages", {"op": "status", "id": "npm-socket-io", "status": "dismissed"})
+        _, task, prompts = self.research([answer])
+        self.assertEqual(len(task["result"]["packages"]), 1)
+        self.assertEqual(task["result"]["packages"][0]["status"], "dismissed")
+        self.assertIn("npm: socket.io (dismissed)", prompts[0])
+
+    def test_it_says_when_the_model_could_not_search_and_retries_once_on_a_bad_answer(self):
+        self.write_prd()
+        good = '{"packages": [], "notes": "Nothing needed."}'
+        _, task, prompts = self.research(["I would suggest a few.", good], searched=False)
+        self.assertEqual(task["status"], "done", task)
+        self.assertFalse(task["result"]["review"]["searched"])  # the page says versions may be out of date
+        self.assertIn("could not be used", prompts[1])
+        _, task, _ = self.research(["no", "still no"])
+        self.assertEqual(task["status"], "error")
+        self.assertIn("add packages yourself", task["error"])
+
+    def start_server_review(self, answer, settle=0):
+        self.server.PACKAGE_REVIEW_SETTLE_SECONDS = settle
+        calls = []
+
+        def fake(server, root, prompt, timeout=240):
+            calls.append(prompt)
+            return answer, True
+
+        patcher = patch.object(ui, "research_call", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def wait_review_done(self):
+        for _ in range(100):
+            if not package_store.load(ui.runtime_dir(self.root))["running"]:
+                return
+            time.sleep(0.05)
+        self.fail("the review never finished")
+
+    def edit_prd(self, text):
+        from orchestrator import prd as prd_doc
+        path = self.root / prd_doc.PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(prd_doc.replace_section(prd_doc.template("Word Duel"), "pitch", text))
+
+    ANSWER = json.dumps({"packages": [{"name": "socket.io", "ecosystem": "npm", "purpose": "Realtime", "why": "Live seats", "url": ""}], "notes": "ok", "sources": []})
+
+    BIG = ("Players can start a daily puzzle that everyone solves once, share their result as a grid of coloured squares, and see a streak counter. "
+           "Friends can challenge each other to rematches, chat during a match, and keep a leaderboard that resets every week. Purchases are handled "
+           "with the platform's store, and sign in uses Apple or Google.")
+
+    def test_changed_requirements_start_a_review_on_their_own_and_the_first_look_does_not(self):
+        calls = self.start_server_review(self.ANSWER)
+        rt = ui.runtime_dir(self.root)
+        self.edit_prd("A turn-based word game to play with friends.")
+        self.assertFalse(self.server.packages_tick())  # the first look only records what's there: existing projects aren't reviewed out of the blue
+        self.assertIsNotNone(package_store.load(rt)["prd_hash"])
+        self.assertFalse(self.server.packages_tick())  # unchanged: nothing to do
+        self.edit_prd("A turn-based word game to play with friends. " + self.BIG)
+        self.assertTrue(self.server.packages_tick())  # changed in a meaningful way: a review starts
+        self.wait_review_done()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("daily puzzle", calls[0])
+        data = package_store.load(rt)
+        self.assertEqual([(p["name"], p["status"], p["origin"]) for p in data["packages"]], [("socket.io", "suggested", "ai")])
+        self.assertEqual(data["prd_hash"], package_store.prd_fingerprint(self.read_prd()))
+        self.assertFalse(self.server.packages_tick())  # and it isn't repeated for the same requirements
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual(state["packages_suggested"], 1)  # the sidebar badge
+
+    def read_prd(self):
+        from orchestrator import prd as prd_doc
+        return prd_doc.Prd(self.root, ui.runtime_dir(self.root)).read()
+
+    def test_small_changes_do_not_start_a_review_until_they_add_up(self):
+        calls = self.start_server_review(self.ANSWER)
+        self.edit_prd("A turn-based word game to play with friends.")
+        self.server.packages_tick()  # baseline
+        self.edit_prd("A turn-based word game to play with friends. Add a dark mode toggle.")
+        self.assertFalse(self.server.packages_tick())  # a one-line feature: not worth a review
+        self.edit_prd("A turn-based word game to play with friends. Add a dark mode toggle. Show a streak counter on the home screen.")
+        self.assertFalse(self.server.packages_tick())
+        self.assertEqual(calls, [])
+        self.edit_prd("A turn-based word game to play with friends. " + self.BIG)  # a larger change qualifies, measured from what was last reviewed
+        self.assertTrue(self.server.packages_tick())
+        self.wait_review_done()
+        self.assertEqual(len(calls), 1)
+
+    def test_it_waits_for_edits_to_settle_and_respects_the_switch(self):
+        self.start_server_review(self.ANSWER, settle=3600)
+        rt = ui.runtime_dir(self.root)
+        self.server.packages_tick()  # baseline
+        self.edit_prd(self.BIG)
+        self.assertFalse(self.server.packages_tick())  # just edited: still being written
+        self.server.PACKAGE_REVIEW_SETTLE_SECONDS = 0
+        self.post("/api/packages", {"op": "auto", "enabled": False})
+        self.assertFalse(self.server.packages_tick())  # switched off
+        self.assertFalse(package_store.load(rt)["auto"])
+        self.post("/api/packages", {"op": "auto", "enabled": True})
+        self.assertTrue(self.server.packages_tick())
+        self.wait_review_done()
+
+    def test_a_review_in_progress_is_not_started_twice_and_a_stale_one_is_retried(self):
+        self.start_server_review(self.ANSWER)
+        rt = ui.runtime_dir(self.root)
+        self.server.packages_tick()
+        self.edit_prd(self.BIG)
+        package_store.note_prd(rt, package_store.load(rt)["prd_hash"], running=datetime.now().astimezone().isoformat(timespec="seconds"))
+        self.assertFalse(self.server.packages_tick())  # one is going
+        package_store.note_prd(rt, package_store.load(rt)["prd_hash"], running="2020-01-01T00:00:00+00:00")
+        self.assertTrue(self.server.packages_tick())  # that one never finished (the server restarted): go again
+        self.wait_review_done()
+
+    def test_a_failed_automatic_review_says_why_and_is_not_retried_in_a_loop(self):
+        rt = ui.runtime_dir(self.root)
+        self.server.PACKAGE_REVIEW_SETTLE_SECONDS = 0
+
+        def boom(server, root, prompt, timeout=240):
+            raise ui.UIError("The research took too long. Try again.")
+
+        with patch.object(ui, "research_call", boom):
+            self.server.packages_tick()
+            self.edit_prd(self.BIG)
+            self.assertTrue(self.server.packages_tick())
+            self.wait_review_done()
+            self.assertFalse(self.server.packages_tick())  # the same requirements aren't tried again
+        data = package_store.load(rt)
+        self.assertEqual(data["review"]["error"], "The research took too long. Try again.")
+        _, view = self.request("GET", "/api/packages")
+        self.assertEqual(view["review"]["error"], "The research took too long. Try again.")  # the page shows it
+        self.assertFalse(view["running"])
+
+    def test_emptied_requirements_are_remembered_without_a_review(self):
+        self.start_server_review(self.ANSWER)
+        self.edit_prd("Something.")
+        self.server.packages_tick()
+        (self.root / ".orchestrator" / "docs").mkdir(parents=True, exist_ok=True)
+        from orchestrator import prd as prd_doc
+        (self.root / prd_doc.PATH).write_text(prd_doc.template("Word Duel"))
+        self.assertFalse(self.server.packages_tick())  # nothing written any more: nothing to review
+
+    def test_the_page_lists_suggests_and_starts_jobs_instead_of_editing_manifests(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        page = app[app.index("pages.packages = async"):app.index("pages.measure = async")]
+        for needle in ('api("packages")', 'api("packages/review"', "Find packages with AI", "Researching…", "Add to project", ">Suggested<", ">Accepted<",
+                       ">In this project<", ">Rejected<", "couldn't search the web", 'data-pkg="dismiss"', ">Accept</button>", ">Reject</button>", "Show all ${installed.length}"):
+            self.assertTrue(needle in page, needle)
+        form = app[app.index("function packageFormBody("):app.index("pages.packages = async")]
+        for needle in ("Package link", "Paste a page from npm, PyPI, crates.io", "Work it out from the link", "optional with a link"):
+            self.assertTrue(needle in form, needle)  # a new package can be added from its link alone
+        self.assertTrue('${adding ? "" : "required"}' in form)  # the name is only required when editing
+        jobs = app[app.index("function packageJobHref("):app.index("function packageFormBody(")]
+        self.assertTrue("#/new?type=quick&summary=" in jobs)  # a manifest change is a job: planned, reviewed and tested
+        for kind in ("add:", "update:", "remove:"):
+            self.assertTrue(kind in jobs, kind)
+        self.assertTrue('href="#/packages" data-route="packages"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())
+        self.assertTrue('["Packages", "#/packages"' in app)  # the command palette
+        for needle in ("Review automatically when the requirements change meaningfully", "about a paragraph of new content", 'id="pkg-auto"', "Reviewing your requirements for packages…", "p.link ?"):
+            self.assertTrue(needle in page, needle)  # it runs on its own, says so while it works, and every line has a link
+        self.assertTrue('id="packages-badge"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())  # the sidebar count
+        self.assertTrue("renderPackagesBadge();" in app and "state.packages_suggested" in app)
+
+
+class SplitBugsTests(ServerTestCase):
+    """Pasted notes about several bugs are separated into one each, for the New job form to confirm."""
+
+    NOTES = "1. Empty seat after rejoining a lobby\n2. Score banner overlaps the timer on small phones\n- Crash when tapping Rematch twice"
+
+    def wait_task(self, task):
+        for _ in range(100):
+            _, data = self.request("GET", f"/api/product/task/{task}")
+            if data["status"] != "running":
+                return data
+            time.sleep(0.05)
+        self.fail("the task never finished")
+
+    def split(self, answers, text=None):
+        replies, prompts = iter(answers), []
+
+        def fake(handler, root, prompt, model="", timeout=150):
+            prompts.append(prompt)
+            return next(replies)
+
+        with patch.object(ui.UIHandler, "_model_call", fake):
+            res, started = self.request("POST", "/api/jobs/split-bugs", {"text": text or self.NOTES}, headers=UI_HEADERS)
+            if res.status != 202:
+                return res, started, prompts
+            return res, self.wait_task(started["task"]), prompts
+
+    def test_it_separates_the_bugs_and_includes_the_open_ones_in_the_prompt(self):
+        directory = ui.jobs_dir(self.root)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "open.json").write_text(json.dumps({"job_id": "open", "title": "Fix login crash", "type": "bug-fix", "status": "planned"}))
+        answer = json.dumps({"bugs": [{"summary": "Empty seat after rejoining a lobby", "repro": "Join\nBackground", "expected": "Seat kept"},
+                                      {"summary": "Score banner overlaps the timer"}, {"summary": "Crash when tapping Rematch twice"}]})
+        res, task, prompts = self.split([answer])
+        self.assertEqual((res.status, task["status"]), (202, "done"), task)
+        self.assertEqual([b["summary"] for b in task["result"]["bugs"]], ["Empty seat after rejoining a lobby", "Score banner overlaps the timer", "Crash when tapping Rematch twice"])
+        self.assertIn("Rematch twice", prompts[0])
+        self.assertIn("- Fix login crash", prompts[0])  # so an open bug isn't made again
+
+    def test_it_retries_once_then_says_what_went_wrong(self):
+        good = '{"bugs": [{"summary": "One bug"}]}'
+        _, task, prompts = self.split(["I think there are three.", good])
+        self.assertEqual(task["status"], "done")
+        self.assertIn("could not be used", prompts[1])
+        _, task, _ = self.split(["nope", "still nope"])
+        self.assertEqual(task["status"], "error")
+        self.assertIn("didn't separate the bugs", task["error"])
+
+    def test_it_needs_text_the_page_header_and_stays_in_bounds(self):
+        self.assertEqual(self.request("POST", "/api/jobs/split-bugs", {"text": "x"})[0].status, 403)  # another site can't start a model run
+        self.assertEqual(self.request("POST", "/api/jobs/split-bugs", {"text": "  "}, headers=UI_HEADERS)[0].status, 400)
+        self.assertEqual(self.request("POST", "/api/jobs/split-bugs", {"text": "x" * 20_001}, headers=UI_HEADERS)[0].status, 400)
+
+    def test_a_long_pasted_bug_is_accepted_and_the_cli_still_gets_a_short_title(self):
+        long_text = "The lobby shows an empty seat after rejoining.\n" + "More detail. " * 200
+        argv = ui.build_new_job({"type": "bug", "summary": long_text, "repro": "", "expected": ""}, self.root)
+        title = argv[argv.index("--summary") + 1]
+        self.assertEqual(title, "The lobby shows an empty seat after rejoining.")  # first line only
+        spec_file = Path(argv[argv.index("--spec-file") + 1])
+        self.assertIn(long_text.strip(), spec_file.read_text())  # the whole text is in the spec the planner reads
+        with self.assertRaises(ui.UIError):
+            ui.build_new_job({"type": "feature", "summary": "x" * 501}, self.root)  # other kinds keep their limit
+
+
+class SplitBugsFormTests(unittest.TestCase):
+    APP = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js"
+
+    def looks(self, *texts):
+        source = self.APP.read_text()
+        start = source.index("function looksLikeSeveralBugs(")
+        body = source[start:source.index("\n}\n", start) + 3]
+        script = body + "\nprocess.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).map(looksLikeSeveralBugs)));"
+        result = subprocess.run(["node", "-e", script, json.dumps(list(texts))], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_one_short_line_is_one_bug_and_lists_or_long_messages_may_be_several(self):
+        numbered = "1. Empty seat after rejoining a lobby\n2. Score banner overlaps the timer on phones"
+        self.assertEqual(self.looks("Rejoining a lobby shows an empty seat", "", "x" * 79), [False, False, False])
+        bullets = "- the first problem is described here in enough words to be a real report\n- the second problem is described here too"
+        lines = "line one of the notes, with enough words\nline two of the notes, with enough words\nline three of the notes, with enough words"
+        self.assertEqual(self.looks(numbered, bullets, lines, "y" * 401), [True, True, True, True])
+        self.assertEqual(self.looks("One long single bug described in a single line of text that goes on and on, but stays under the limit."), [False])
+
+    def test_the_bug_form_tells_people_they_can_paste_several(self):
+        app = self.APP.read_text()
+        form = app[app.index('case "bug": {'):][:1800]
+        self.assertIn('<textarea name="summary" required rows="3" maxlength="20000"', form)  # room to paste
+        self.assertIn("Have more than one bug? Paste them all here", form)
+        self.assertIn("separates them into one job each", form)
+        self.assertIn("check the list before anything is created", form)
+
+    def test_several_bugs_are_confirmed_then_each_becomes_its_own_job(self):
+        app = self.APP.read_text()
+        flow = app[app.index("async function splitBugsAndCreate("):app.index("pages.new = async")]
+        for needle in ('api("jobs/split-bugs"', "Separating the bugs…", "formDialog(`Found ${bugs.length} bugs`", "Keep it as one job",
+                       '"Create the jobs"', 'action: "new_job"', 'location.hash = "#/activity"', "Couldn't separate the bugs"):
+            self.assertTrue(needle in flow, needle)
+        submit = app[app.index('form().addEventListener("submit"'):][:2600]
+        self.assertTrue('st.type === "bug" && looksLikeSeveralBugs(v.summary)' in submit)
+        self.assertTrue('outcome !== "single"' in submit)  # one bug (or "keep as one") carries on as before
+
+
+class YoloAllTests(ServerTestCase):
+    """YOLO all continues every in-progress job without stopping for review."""
+
+    def post(self, path, body=None):
+        return self.request("POST", path, body=body or {}, headers=UI_HEADERS)
+
+    def write(self, job_id, status, **extra):
+        directory = ui.jobs_dir(self.root)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{job_id}.json").write_text(json.dumps({"job_id": job_id, "title": f"Job {job_id}", "type": "feature", "status": status, **extra}))
+
+    def read(self, job_id):
+        return json.loads((ui.jobs_dir(self.root) / f"{job_id}.json").read_text())
+
+    def launcher(self):
+        started = []
+
+        def fake(handler, key, params, root, cols=110, rows=32):
+            started.append((key, params["job"]))
+            return SimpleNamespace(id=f"run-{len(started)}")
+
+        return started, patch.object(ui.UIHandler, "_launch_run", fake)
+
+    def test_it_continues_paused_and_queued_jobs_and_leaves_the_rest_alone(self):
+        self.write("queued", "scheduled")
+        self.write("paused", "executing", worker_pid=0, tasks=[{"x": 1}, {"x": 2}], completed_tasks=[0])
+        self.write("waiting", "planned")  # waits on your decision
+        self.write("review", "review-needed")
+        self.write("done", "completed")
+        started, patcher = self.launcher()
+        with patcher:
+            res, data = self.post("/api/jobs/yolo-all")
+        self.assertEqual(res.status, 200, data)
+        self.assertEqual(sorted(started), [("execute", "queued"), ("resume", "paused")])  # each picks up where it was
+        self.assertEqual(sorted(e["id"] for e in data["started"]), ["paused", "queued"])
+        for job in ("queued", "paused"):
+            self.assertTrue(self.read(job)["yolo"] and self.read(job)["is_yolo"], job)  # the worker reads both spellings
+        for job in ("waiting", "review", "done"):
+            self.assertNotIn("yolo", self.read(job), job)
+
+    def test_a_job_that_is_building_is_switched_over_not_started_twice(self):
+        self.write("building", "executing", worker_pid=os.getpid())
+        self.write("busy", "scheduled")
+        started, patcher = self.launcher()
+        with patcher, patch.object(self.server.sessions, "running_job_ids", return_value={"busy"}):
+            _, data = self.post("/api/jobs/yolo-all")
+        self.assertEqual(started, [])
+        self.assertEqual(sorted(e["id"] for e in data["switched"]), ["building", "busy"])
+        self.assertTrue(self.read("building")["is_yolo"])
+
+    def test_a_job_with_a_run_going_counts_as_in_progress_even_if_it_waits_on_you(self):
+        self.write("fixing", "debugging")  # needs you, but a fix run is on it
+        started, patcher = self.launcher()
+        with patcher, patch.object(self.server.sessions, "running_job_ids", return_value={"fixing"}):
+            _, data = self.post("/api/jobs/yolo-all")
+        self.assertEqual((started, [e["id"] for e in data["switched"]]), ([], ["fixing"]))
+
+    def test_a_job_that_cannot_start_is_reported_and_the_others_still_go(self):
+        self.write("a", "scheduled")
+        self.write("b", "scheduled")
+
+        def fake(handler, key, params, root, cols=110, rows=32):
+            if params["job"] == "a":
+                raise ui.UIError("This job is busy.", 409)
+            return SimpleNamespace(id="run-b")
+
+        with patch.object(ui.UIHandler, "_launch_run", fake):
+            _, data = self.post("/api/jobs/yolo-all")
+        self.assertEqual([e["id"] for e in data["started"]], ["b"])
+        self.assertEqual([(e["id"], e["error"]) for e in data["failed"]], [("a", "This job is busy.")])
+
+    def test_it_needs_the_page_header_and_nothing_in_progress_is_fine(self):
+        self.assertEqual(self.request("POST", "/api/jobs/yolo-all", {})[0].status, 403)
+        started, patcher = self.launcher()
+        with patcher:
+            _, data = self.post("/api/jobs/yolo-all")
+        self.assertEqual((started, data), ([], {"started": [], "switched": [], "failed": []}))
+
+    def test_archived_jobs_have_their_own_light_endpoint(self):
+        directory = ui.jobs_dir(self.root) / "archive"
+        directory.mkdir(parents=True)
+        (directory / "old.json").write_text(json.dumps({"job_id": "old", "title": "Old work", "status": "completed"}))
+        res, data = self.request("GET", "/api/jobs/archived")
+        self.assertEqual(res.status, 200)
+        self.assertEqual([(j["id"], j["title"]) for j in data["archived"]], [("old", "Old work")])
+
+    def test_the_home_page_offers_it_with_a_confirmation_and_progress(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
+        self.assertIn('id="yolo-all"', home)
+        self.assertIn("inProgress.length", home)  # only when there is something to continue
+        self.assertIn("const inProgress = sortedJobs.filter(HOME_FILTERS.working[1])", home)  # the button counts exactly what the In progress filter shows
+        self.assertIn('j.state.label === "Paused"', home)
+        yolo = app[app.index("async function yoloAll("):app.index("pages.home = async")]
+        self.assertIn("formDialog(", yolo)  # asks first: it removes the review stops
+        self.assertIn('api("jobs/yolo-all"', yolo)
+        self.assertIn("Starting…", yolo)
 
 
 class RunHistoryTests(ServerTestCase):
@@ -6509,6 +6998,134 @@ class FeatureEndpointTests(ServerTestCase):
         self.assertEqual(res.status, 404)
         res, _ = self.request("POST", "/api/features", body={"name": "x"}, headers={"Content-Type": "application/json"})
         self.assertIn(res.status, (400, 403))
+
+
+class RunResultSessionTests(unittest.TestCase):
+    """A finished run carries what it found, read from its output, so the page can say more than "exit 0"."""
+
+    def finish(self, action, code, stop=False):
+        sessions = ui.SessionManager()
+        with tempfile.TemporaryDirectory() as tmp:
+            session = sessions.start(action, "Run", [sys.executable, "-u", "-c", code], Path(tmp), dict(os.environ), None)
+            if stop:
+                time.sleep(0.3)
+                session.stop()
+            for _ in range(200):
+                if not session.running:
+                    break
+                time.sleep(0.05)
+            self.assertFalse(session.running)
+            return session
+
+    def test_a_fleet_sync_says_what_it_synced(self):
+        code = ("print(\"Local state: branch='main', hash='5fe39fa0123456', dirty=False\")\n"
+                "print('--- Machine: local (Local) ---')\nprint('      - Skipping synchronization for local machine.')\n"
+                "print('Fleet Synchronization Summary:')\nprint('  local          : \u2705 OK')")
+        result = self.finish("sync_fleet", code).summary()["result"]
+        self.assertEqual(result["headline"], "No other machines to sync")
+        self.assertIn("local: this computer, nothing to sync", result["details"])
+
+    def test_a_planning_run_names_the_job_it_made(self):
+        sessions = ui.SessionManager()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ui.jobs_dir(root).mkdir(parents=True)
+            (ui.jobs_dir(root) / "j-1.json").write_text(json.dumps({"title": "Nokia-style presentation", "status": "planned"}))
+            code = "import time; time.sleep(0.4); print('- Created issue: #3'); print('[3/3] Skipping dispatch (--no-dispatch).')"
+            session = sessions.start("plan_epic", "Plan epic", [sys.executable, "-u", "-c", code], root, dict(os.environ), None)
+            session.result_job = "j-1"  # what the watcher records once the job file appears
+            for _ in range(200):
+                if not session.running:
+                    break
+                time.sleep(0.05)
+            result = session.summary()["result"]
+        self.assertEqual(result["headline"], "Plan ready to review")
+        self.assertEqual(result["details"][0], "Job: Nokia-style presentation")
+
+    def test_a_failed_run_leads_with_its_error_and_a_stopped_one_says_nothing(self):
+        failed = self.finish("git_pull", "import sys; print('\u274c Error: branches have diverged'); sys.exit(1)").summary()
+        self.assertEqual((failed["exit_code"], failed["result"]["headline"], failed["result"]["tone"]), (1, "branches have diverged", "bad"))
+        stopped = self.finish("git_pull", "import time; print('working'); time.sleep(30)", stop=True).summary()
+        self.assertTrue(stopped["stopped"])
+        self.assertIsNone(stopped["result"])  # someone stopped it: there is no result to report
+
+    def test_the_run_page_shows_the_result_instead_of_a_bare_exit_code(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        status = app[app.index("function runStatus("):app.index("function wireKeychainUnlock(")]
+        for needle in ("run-status-result", "r.result?.headline", '"Completed (exit 0)"'):  # the last is still the fallback when the output says nothing
+            self.assertTrue(needle in status, needle)
+        self.assertTrue("r.error_summary, r.last_line, r.result]);" in app, "a late result redraws the container")
+        self.assertTrue("r.result.headline" in app[app.index("function runItem("):][:700], "and the Activity list says it too")
+
+
+class PlanEpicRunPageTests(unittest.TestCase):
+    def test_after_planning_an_epic_the_run_page_leads_to_the_plan_not_the_job_planning_replaced(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        status = app[app.index("function runStatus("):app.index("function wireKeychainUnlock(")]
+        self.assertIn('r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>`', status)
+        self.assertIn('const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;', status)
+        self.assertIn('r.action === "plan_epic" ? "Plan ready to review"', status)  # not the last step's "Skipping dispatch"
+
+    def test_planning_only_does_not_promise_a_branch(self):
+        script = (PACKAGE_ROOT / "orchestrator" / "scripts" / "new_job.py").read_text()
+        self.assertIn("No branch is created while planning; one is made when the job starts building.", script)
+        self.assertIn('if args.no_dispatch:', script[script.index('elif branch_mode == "new":'):][:300])
+
+
+class HomeScreenGuideTests(unittest.TestCase):
+    MODULE = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "home-screen.js"
+    IPHONE_SAFARI = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
+
+    def guide(self, user_agent, platform="iPhone", touch=5):
+        script = "const h = require(process.argv[1]); process.stdout.write(JSON.stringify(h.guide(JSON.parse(process.argv[2]))));"
+        nav = {"userAgent": user_agent, "platform": platform, "maxTouchPoints": touch}
+        result = subprocess.run(["node", "-e", script, str(self.MODULE), json.dumps(nav)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_iphone_safari_points_at_the_bottom_toolbar(self):
+        g = self.guide(self.IPHONE_SAFARI)
+        self.assertEqual(g["title"], "Add Orchestrator to your Home Screen")
+        self.assertIn("iPhone only allows alerts", g["intro"])
+        self.assertIn("toolbar at the bottom", g["steps"][0])
+        self.assertEqual(g["note"], "")
+
+    def test_ipad_reports_itself_as_a_mac_and_gets_the_top_toolbar(self):
+        g = self.guide("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15", "MacIntel", 5)
+        self.assertIn("iPad only allows alerts", g["intro"])
+        self.assertIn("toolbar at the top of the screen, beside the address bar", g["steps"][0])
+
+    def test_a_real_mac_gets_no_guide(self):
+        self.assertIsNone(self.guide("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15", "MacIntel", 0))
+        self.assertIsNone(self.guide("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36", "Linux armv8l", 5))
+
+    def test_other_browsers_say_where_their_own_controls_are(self):
+        chrome = self.guide("Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 CriOS/120.0 Mobile/15E148 Safari/604.1")
+        self.assertIn("right end of the address bar", chrome["steps"][0])
+        firefox = self.guide("Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 FxiOS/121.0 Mobile/15E148 Safari/605.1.15")
+        self.assertIn("**⋯** menu in Firefox", firefox["steps"][0])
+        self.assertIn("open this page in Safari", firefox["steps"][0])
+        self.assertNotIn("In Safari", " ".join(chrome["steps"]))
+
+    def test_an_in_app_browser_is_told_to_open_safari_first(self):
+        g = self.guide("Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Instagram 320.0")
+        self.assertEqual(g["title"], "Open Orchestrator in Safari first")
+        self.assertIn("**Open in Safari**", g["steps"][0])
+        self.assertIn("toolbar at the bottom", g["steps"][1])
+
+    def test_an_ios_too_old_for_web_push_is_told_to_update(self):
+        g = self.guide("Mozilla/5.0 (iPhone; CPU iPhone OS 15_7 like Mac OS X) AppleWebKit/605.1.15 Version/15.6 Mobile/15E148 Safari/604.1")
+        self.assertIn("16.4 or newer", g["note"])
+        self.assertIn("15.7", g["note"])
+        self.assertEqual(self.guide(self.IPHONE_SAFARI.replace("17_2", "16_4"))["note"], "")  # 16.4 is the first that works
+
+    def test_the_app_renders_the_guide_from_the_module(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        self.assertIn('src="home-screen.js"', (static / "index.html").read_text())
+        app = (static / "app.js").read_text()
+        body = app[app.index("function showHomeScreenGuide()"):][:900]
+        self.assertIn("HomeScreen.guide(navigator)", body)
+        self.assertNotIn("In Safari, tap", body)  # no fixed iPhone-Safari wording left
 
 
 class NotificationLogicTests(unittest.TestCase):
