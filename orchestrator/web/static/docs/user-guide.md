@@ -444,7 +444,7 @@ overlap, responsiveness, contrast, dark mode, focus). The checklist is
   checklist on just what it changed. The job page shows a "UX and design check" card, and the hero warns before you
   merge when something major was found. It is a prompt to look, never a gate.
 
-Screens come from `ui_review` in `.orchestrator/project.json` (or Web UI > Configuration > Screens to review):
+Screens come from `ui_review` in `.orchestrator/project.json` (or Web UI > UX review > Screens):
 
 ```json
 "ui_review": {
@@ -466,6 +466,33 @@ URL are read from the environment, so a sign-in token needn't be written into th
 the URL isn't answering, and is stopped afterwards. `simulator: true` adds the iOS simulator check's screenshots.
 Without screens, the review works from the code and says what it couldn't judge. Screens are first-load views: no
 scrolling, signing in or interaction.
+
+Native apps need no URL. Set up any of these (together with, or instead of, `url`):
+
+```json
+"ui_review": {
+  "simulator": true,
+  "simulator_screens": ["myapp://settings", "myapp://profile"],
+  "android": {
+    "package": "com.example.app",
+    "apk": "app/build/outputs/apk/debug/app-debug.apk",
+    "build_command": "./gradlew assembleDebug",
+    "avd": "Pixel_8_API_34",
+    "screens": ["myapp://settings"]
+  },
+  "macos": { "app": "build/Debug/MyApp.app", "build_command": "xcodebuild -scheme MyApp build" }
+}
+```
+
+- **iOS:** the simulator check launches the app, then opens each `simulator_screens` link (a URL scheme or universal
+  link your app handles) and captures it, in light and dark.
+- **Android:** needs `adb` (Android platform-tools, found on your PATH, in `ANDROID_HOME`, or in
+  `~/Library/Android/sdk`). It uses a running emulator or device, or starts `avd`; installs `apk` (after
+  `build_command`, if set), launches `package`, opens each link in `screens`, and captures light and dark.
+- **Mac:** launches the built `.app` and captures its window in light mode. The app running Orchestrator needs Screen
+  Recording permission (System Settings > Privacy & Security), or the capture is refused and the report says so.
+
+Anything that fails is listed in the review's capture limits, and the review carries on from the code.
 
 Models see the screenshots as attachments (Codex, opencode) or through their file tools (Claude, Gemini, agy); a model
 that can't open images says so in the report's limits.
@@ -502,7 +529,7 @@ The Web UI is how most people use Orchestrator. The work runs on your own comput
 
 > **New project.** The wizard asks for a name and platforms, then one question for each section of the product requirements (pitch, who it's for, core features, look and feel, what to exclude). Everything after the name and platforms can be skipped. Its last step offers **Break it down** into epics, and can be skipped.
 
-> **Docs.** The **Docs** page (under *Review*) is the project's documentation in one place: the product requirements, a page for every feature and every job (what it is, what was decided, what was built, how it was tested, what the review said), and the project's own `README`, `AGENTS.md` and `docs/` files. Job and feature pages are generated from the live project, so they can't go stale. Search them, and **Download everything** gives one markdown file. See [Product requirements](product-requirements.md) for the PRD.
+> **Documentation.** There is no Docs page. Orchestrator's own guides are on the **Help** page. A job's page, written from the live project (what it is, what was decided, what was built, how it was tested, what the review said), is under **Documentation** in the job's More menu, and the PRD's Markdown file is linked from the Product page. See [Product requirements](product-requirements.md) for the PRD.
 
 `orchestrator ui` is the part that runs on your computer. With the one-command install it starts at login and keeps a tunnel open, so you rarely run it yourself. To run it by hand, or to use it only on this computer, start it for the current project:
 
@@ -538,7 +565,7 @@ Access and security:
 
 - The server listens on `127.0.0.1` only. The printed URL carries the access token, kept in `~/.orchestrator/ui_token` (delete the file and restart to change it). Opening the URL once stores the token in a cookie, and every API call needs it. The access token is the owner's key: anyone holding it can do everything, so don't share it.
 - On the hosted app, a link can never supply a backend address or an access token: it only talks to computers your account vouches for, and the sign-in token for your account goes only to those. A link with `?backend=` or `?token=` in it is ignored there. (On a computer's own address, `?token=` still works, as above.)
-- Signing in with Google, Apple, GitHub or email works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page where it can be ended, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
+- Signing in with Google, Apple, GitHub or email works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
 - Browsers can call the server only from its own pages, pages on this computer, and the hosted app. Add other origins (a custom domain, say) with `ORCHESTRATOR_ALLOWED_ORIGINS`, comma-separated.
 - The browser can only start a fixed set of actions. It never sends a command line, and file reads are limited to `.orchestrator/`.
 - **One address from anywhere:** connect this computer to your account once (`orchestrator connect`, or the install

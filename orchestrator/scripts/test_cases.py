@@ -55,7 +55,7 @@ PRIORITIES = ("high", "medium", "low")
 CASE_ID_RE = re.compile(r"\bTC-\d+-\d{2,}\b")
 # Where test code lives, by convention across the stacks the orchestrator supports.
 TEST_FILE_RE = re.compile(
-    r"(Tests?\.swift|Spec\.swift|^test_.*\.py|_test\.py|_test\.go|\.test\.[jt]sx?|\.spec\.[jt]sx?|Tests?\.kt|Test\.java|_test\.rs)$"
+    r"(Tests?\.swift|Spec\.swift|^test_.*\.py|_test\.py|_test\.go|\.test\.[jt]sx?|\.spec\.[jt]sx?|Tests?\.kt|Test\.java|_test\.rs|Tests?\.cs)$"
 )
 TEST_DIR_HINTS = ("test", "tests", "spec", "specs", "__tests__")
 SKIP_DIRS = {".git", ".build", ".swiftpm", "DerivedData", "node_modules", "Pods", "build", "dist", "target",
@@ -362,6 +362,7 @@ _METHOD_RES = (
     re.compile(r"\bfunc\s+(Test\w+)\s*\(\s*t\s+\*testing"),    # Go
     re.compile(r"\b(?:it|test)\(\s*['\"]([^'\"]+)['\"]"),       # JS/TS
     re.compile(r"#\[test\]\s*(?:#\[[^\]]*\]\s*)*fn\s+(\w+)"),   # Rust
+    re.compile(r"\[(?:Test|UnityTest)\b[^\]]*\]\s*(?:\[[^\]]*\]\s*)*(?:public\s+)?(?:async\s+)?[\w<>\[\].]+\s+(\w+)\s*\("),  # NUnit / Unity
 )
 
 
@@ -390,7 +391,7 @@ def scan_tests(root: Path) -> dict[str, Any]:
             if path.suffix == ".xctestplan":
                 plans.add(path.stem)
                 continue
-            if path.suffix not in (".swift", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".kt", ".java", ".rs", ".m"):
+            if path.suffix not in (".swift", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".kt", ".java", ".rs", ".m", ".cs"):
                 continue
             if not _is_test_file(path, root):
                 continue

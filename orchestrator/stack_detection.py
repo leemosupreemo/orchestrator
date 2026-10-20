@@ -10,8 +10,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class DetectedStack:
-    language: str              # "swift", "python", "rust", "typescript", "javascript", "go", "generic"
-    framework: str | None      # "xcode", "spm", "pytest", "unittest", "cargo", "npm", "yarn", "pnpm", "bun", "go test"
+    language: str              # "swift", "python", "rust", "typescript", "javascript", "go", "csharp", "generic"
+    framework: str | None      # "xcode", "spm", "pytest", "unittest", "cargo", "npm", "yarn", "pnpm", "bun", "go test", "unity"
     display_name: str          # e.g. "Swift (Xcode)", "Rust (Cargo)", "Python (pytest)", "TypeScript (npm)", "Go"
     build_command: str | None  # e.g. "cargo build", "npm run build", "go build ./..."
     test_command: str | None   # e.g. "cargo test", "npm test", "go test ./..."
@@ -25,11 +25,48 @@ class DetectedStack:
     manifest_file: str | None = None
 
 
+UNITY_VERSION_FILE = Path("ProjectSettings") / "ProjectVersion.txt"
+UNITY_EDITOR_ROOT = "/Applications/Unity/Hub/Editor"
+
+
+def unity_editor_version(root: Path) -> str | None:
+    """The editor version a Unity project was last saved with, e.g. "2022.3.10f1"."""
+    try:
+        text = (root / UNITY_VERSION_FILE).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    match = re.search(r"^m_EditorVersion:\s*(\S+)", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def unity_command(root: Path, *arguments: str) -> str:
+    """A batchmode Unity command for this project. `UNITY_PATH` names the editor binary; without it, the Hub's
+    default location for the project's own editor version is used."""
+    version = unity_editor_version(root) or "<version>"
+    default = f"{UNITY_EDITOR_ROOT}/{version}/Unity.app/Contents/MacOS/Unity"
+    return " ".join([f'"${{UNITY_PATH:-{default}}}"', "-batchmode", "-nographics", "-projectPath", ".", *arguments, "-logFile", "-"])
+
+
 def detect_project_stack(root: Path) -> DetectedStack:
     """
     Inspects a repository root to determine its primary language, toolchain,
     default build/test commands, and whether it relies on Xcode.
     """
+    # 0. Unity project (checked first: a Unity repo can carry generated Xcode or SPM files)
+    if (root / UNITY_VERSION_FILE).is_file() and (root / "Assets").is_dir():
+        version = unity_editor_version(root)
+        return DetectedStack(
+            language="csharp",
+            framework="unity",
+            display_name=f"Unity {version}" if version else "Unity",
+            # batchmode has no compile-only switch; importing and quitting fails on script compile errors
+            build_command=unity_command(root, "-quit"),
+            test_command=unity_command(root, "-runTests", "-testPlatform", "EditMode",
+                                       "-testResults", "Temp/unity-editmode-results.xml"),
+            uses_xcode=False,
+            manifest_file=str(UNITY_VERSION_FILE),
+        )
+
     # 1. Xcode Project or Workspace
     xcode_proj = next(iter(sorted(root.glob("*.xcodeproj"))), None)
     xcode_ws = next(iter(sorted(root.glob("*.xcworkspace"))), None)

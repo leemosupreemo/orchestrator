@@ -335,8 +335,22 @@ function terminalSize() {
   return { cols: Math.max(40, Math.floor(width / cellW)), rows: Math.max(12, Math.floor(Math.max(height, 240) / cellH)) };
 }
 
-async function runAction(action, params = {}, { skipConfirm = false } = {}) {
+// False only when discovery succeeds and finds no tests; if it can't tell, let the run go ahead.
+async function projectHasTests() {
+  try {
+    const data = await api("tests");
+    return (data.suites || []).some((s) => s.tests > 0);
+  } catch {
+    return true;
+  }
+}
+
+async function runAction(action, params = {},{ skipConfirm = false } = {}) {
   const meta = state.actions[action] || {};
+  if (action === "test" && !(await projectHasTests())) {
+    if (await formDialog("No tests to run", `<p>This project has no tests yet. Create a job to add tests and measure code coverage.</p>`, "Add tests", { compact: true })) location.hash = "#/new?type=coverage";
+    return;
+  }
   if (meta.confirm && !skipConfirm && !(await formDialog(meta.title, `<p>${esc(meta.confirm)}</p>`, "Continue", { compact: true }))) return;
   try {
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
@@ -347,13 +361,13 @@ async function runAction(action, params = {}, { skipConfirm = false } = {}) {
   }
 }
 
-function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact = false } = {}) {
+function formDialog(title, bodyHtml, okLabel = "Run", { danger = false, compact = false, cancelLabel = "Cancel" } = {}) {
   const dlg = $("#dialog");
   if (dlg) dlg.tabIndex = -1;
   if (compact) dlg.classList.add("dialog-compact");
   else dlg.classList.remove("dialog-compact");
   $("#dialog-cancel").hidden = false;
-  $("#dialog-cancel").textContent = "Cancel";
+  $("#dialog-cancel").textContent = cancelLabel;
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = bodyHtml;
   $("#dialog-ok").textContent = okLabel;
@@ -1057,6 +1071,7 @@ async function refreshState() {
     showPrdUpdate(newState.product_notice);
     checkRunnerVersion(newState.runner);
     state = newState;
+    renderSlackBtn();
     const viewerRole = state.you?.role || "owner";
     ConfigurationPages.applyRole(viewerRole, document);
     if (configurationMenu) configurationMenu.innerHTML = ConfigurationPages.renderMenu(viewerRole);
@@ -2991,7 +3006,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
         && ["Submit for Prize 🏆", `data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title || '')}"`, "Submit this improvement to the core team for permanent inclusion"],
     ]],
     ["Open", [
-      ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page in Docs"],
+      ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page, written from the live project"],
       ...links.map((link) => [`${link.where ? `Open a ${link.label}` : link.label} ↗`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]),
     ]],
     ["Settings", [
@@ -3739,7 +3754,7 @@ pages.new = async (_, query) => {
     const v = st.v;
     switch (st.type) {
       case "bug": {
-        const picker = await linkPickerHtml({ prefer: ["sentry", "jira"], label: "Link a Sentry error or ticket", emptyHint: "" });
+        const picker = await linkPickerHtml({ prefer: ["sentry", "unity", "jira"], label: "Link a Sentry error, build or ticket", emptyHint: "" });
         return { picker, html: `
           ${field("What's going wrong?", `<input type="text" name="summary" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">`)}
           ${field(`Describe repro steps 1 line at a time.${opt("optional")}`, `<textarea name="repro" rows="3" placeholder="1. Join a lobby&#10;2. Background the app for 30 seconds&#10;3. Come back">${esc(v.repro)}</textarea>`, "One step per line.")}
@@ -4432,13 +4447,14 @@ pages.measure = async (_, query) => {
       ${k.measurements.length ? `<details class="kpi-log"><summary>Learning log (${k.measurements.length})</summary>${k.measurements.slice().reverse().map((m) => `<div class="kpi-entry"><span class="mono">${esc(m.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</span> <span class="muted">${esc(ago(m.t))}</span>${m.decision ? ` <span class="pill ${m.decision === "drop" ? "failed" : m.decision === "iterate" ? "attention" : "done"}">${esc(DECISION_LABEL[m.decision])}</span>` : ""}${m.note ? ` <span>${esc(m.note)}</span>` : ""}</div>`).join("")}</details>` : ""}
     </div>`;
   };
-  const card = (f) => `<section class="card mb-16"><div class="card-h"><h2>${esc(f.name)}</h2><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div>
-    <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working?</div>`}</div></section>`;
+  const card = (f) => `<section class="card mb-16"><div class="card-h"><h2>${esc(f.name)}</h2><div class="row"><button class="btn small" data-kpi="autofill" data-f="${esc(f.id)}" title="A model suggests the one metric that best shows this feature is working">Auto-fill</button><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div></div>
+    <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working? Add one, or let Auto-fill suggest it.</div>`}</div></section>`;
   return {
     title: "Measure",
     sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
     actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
     html: `
+      ${features.map(card).join("") || `<div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div>`}
       <section class="card mb-16">
         <div class="card-h"><h2>Analytics Connections</h2></div>
         <div class="card-b stack">
@@ -4447,8 +4463,7 @@ pages.measure = async (_, query) => {
             ${analyticsConnectionCards(data)}
           </div>
         </div>
-      </section>
-      ${features.map(card).join("") || `<div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div>`}`,
+      </section>`,
     after: () => {
       const selectedProvider = (data.providers || []).find((p) => p.id === query?.get("provider"));
       if (selectedProvider) view.querySelector(`[data-analytics-p="${selectedProvider.id}"]`)?.scrollIntoView({ block: "start" });
@@ -4485,6 +4500,23 @@ pages.measure = async (_, query) => {
         const fid = btn.dataset.f, f = features.find((x) => x.id === fid), k = f?.kpis.find((x) => x.id === btn.dataset.k), op = btn.dataset.kpi;
         const path = `features/${encodeURIComponent(fid)}/kpis`;
         if (op === "add") { const v = await formDialog(`New KPI for ${f.name}`, kpiFormBody(), "Add"); if (v) call(path, { op: "add", ...v }, "KPI added"); }
+        else if (op === "autofill") {
+          // A model picks the one metric; it opens in the Add form to check, and nothing is saved until you add it.
+          const idle = btn.innerHTML;
+          document.querySelectorAll('[data-kpi="autofill"]').forEach((b) => { b.disabled = true; });
+          btn.setAttribute("aria-busy", "true");
+          btn.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Choosing a metric…`;
+          let suggestion;
+          try { suggestion = await waitForTask(await api(`${path}/suggest`, { method: "POST", body: {} })); }
+          catch (e) { toast(e.message, true); }
+          finally {
+            document.querySelectorAll('[data-kpi="autofill"]').forEach((b) => { b.disabled = false; });
+            if (btn.isConnected) { btn.removeAttribute("aria-busy"); btn.innerHTML = idle; }
+          }
+          if (!suggestion) return;
+          const v = await formDialog(`Suggested KPI for ${f.name}`, `${suggestion.why ? `<p class="muted">${esc(suggestion.why)}</p>` : ""}${kpiFormBody(suggestion)}`, "Add");
+          if (v) call(path, { op: "add", ...v }, "KPI added");
+        }
         else if (op === "edit") { const v = await formDialog("Edit KPI", kpiFormBody(k), "Save"); if (v) call(path, { op: "update", kpi: k.id, ...v }, "KPI saved"); }
         else if (op === "delete") {
           try {
@@ -4783,7 +4815,7 @@ pages["ux-review"] = async (_, query) => {
   const id = query.get("id") || data.passes[0]?.id;
   const pass = id ? await api(`ux-pass/${encodeURIComponent(id)}`).catch(() => null) : null;
   const cfg = data.settings;
-  const noScreens = cfg && !cfg.url && !cfg.simulator;
+  const noInterface = data.has_interface === false; // no UI files and no screens configured: a run would have nothing to review
   const saved = data.saved || {};
   const captures = data.captures?.length ? data.captures : pass?.screens?.length ? [{kind: "pass", id: pass.id, title: "Whole-product review", screens: pass.screens, at: pass.at, limits: pass.limits ? [pass.limits] : []}] : [];
   const captureKey = (capture) => `${capture.kind}:${capture.id}:${capture.capture_id || ""}`;
@@ -4806,83 +4838,99 @@ pages["ux-review"] = async (_, query) => {
   const caveatText = caveat === "Nothing to review" ? "This project has no interface files or screens yet, so there was nothing to review. Add some UI, then run the review again."
     : caveat ? `No screenshots were captured, so only the interface code was reviewed. Layout, spacing and contrast were not judged.${cfg?.url ? " Check that the app is running at the address below." : ""}` : "";
   const status = running ? "Review running" : failed ? (run.stopped ? "Review stopped" : "Review failed") : latest && !newerRun ? (caveat ? caveat : timingUnknown ? "Saved results available" : "Review complete") : newerRun ? "Results unavailable" : "Not started";
-  const areaCard = (area, title) => {
-    const findings = (pass?.findings || []).filter((f) => f.area === area);
+  const checklistSection = (area, title) => {
     const reported = new Map((pass?.checklist || []).map((c) => [c.id, c]));
     const checks = Object.keys(UX_CHECKS).filter((id) => id.startsWith(`${area}.`)).map((id) => reported.get(id) || { id, status: "pending", note: "" });
-    const checked = checks.filter((c) => ["pass", "partial", "fail"].includes(c.status)).length;
-    return `<section class="card mb-16"><div class="card-h"><h2>${title}</h2><span class="count">${checked} of ${checks.length} evaluated</span></div>
-      <div class="card-b stack"><div><button type="button" class="btn primary" ${act("ux_pass")} ${running ? "disabled" : ""}>${running ? "Review running…" : `Run all ${checks.length} checks`}</button></div>
-        <p class="muted">Runs a full review of usability and visual design. Results appear here when it finishes.</p></div>
-      ${findings.length ? uxFindingsHtml(findings, { listId: `ux-${area}` }) : ""}
-      ${uxChecklistHtml(checks)}</section>`;
+    return { title, checks, checked: checks.filter((c) => ["pass", "partial", "fail"].includes(c.status)).length };
   };
+  const sections = [checklistSection("ux", "Usability heuristics"), checklistSection("design", "Visual design checks")];
+  const evaluated = sections.reduce((n, sec) => n + sec.checked, 0), totalChecks = sections.reduce((n, sec) => n + sec.checks.length, 0);
+
+  // What the project is set up to capture, from the saved settings (so a half-valid config still shows what was typed).
+  const set = { web: Boolean(saved.url), ios: Boolean(saved.simulator), android: Boolean(saved.android), mac: Boolean(saved.macos) };
+  const anySet = Object.values(set).some(Boolean);
+  const summaryLine = [set.web && `Web ${saved.url}`, set.ios && "iOS simulator", set.android && `Android ${saved.android.package || ""}`, set.mac && `Mac ${saved.macos.app || ""}`].filter(Boolean).join(" · ");
+  const field = (label, name, value, { hint = "", placeholder = "", optional = false } = {}) =>
+    `<label class="field"><span>${label}${optional ? ` <span class="muted">(optional)</span>` : ""}</span><input type="text" name="${name}" value="${esc(value || "")}" placeholder="${esc(placeholder)}" spellcheck="false">${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
+  const lines = (label, name, values, placeholder, hint = "") =>
+    `<label class="field"><span>${label} <span class="muted">(one per line${hint ? "" : ", optional"})</span></span><textarea name="${name}" rows="3" spellcheck="false" placeholder="${esc(placeholder)}">${esc((values || []).join("\n"))}</textarea>${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
+  const platformBox = (key, title) => `<label class="check ux-platform-choice"><input type="checkbox" name="p_${key}" ${set[key] ? "checked" : ""}><span>${title}</span></label>`;
+  const platformFields = {
+    web: `${field("Address of your running app", "url", saved.url, { placeholder: "http://localhost:3000", hint: "Where the app runs during development. A sign-in token can come from an environment variable: <code class=\"nowrap\">?token=$MY_TOKEN</code>." })}
+      <label class="field"><span>Pages to capture <span class="muted">(one per line)</span></span><textarea name="routes" rows="3" spellcheck="false">${esc((saved.routes || ["/"]).join("\n"))}</textarea></label>
+      <label class="field"><span>Widths <span class="muted">(pixels)</span></span><input type="text" name="widths" value="${esc((saved.widths || [390, 1440]).join(" "))}"></label>
+      ${field("Command that starts the app", "start_command", saved.start_command, { optional: true, placeholder: "npm run dev", hint: "Used only when the address isn't answering; stopped afterwards." })}`,
+    ios: `<p class="muted">Builds and launches the app in the Xcode simulator.</p>
+      ${lines("Screens to open", "simulator_screens", saved.simulator_screens, "myapp://settings", "")}`,
+    android: `${field("App id", "android_package", saved.android?.package, { placeholder: "com.example.app", hint: "Needs adb (Android platform-tools) and a running emulator or device, or the name of one below." })}
+      ${field("Built app (.apk)", "android_apk", saved.android?.apk, { optional: true, placeholder: "app/build/outputs/apk/debug/app-debug.apk" })}
+      ${field("Build command", "android_build", saved.android?.build_command, { optional: true, placeholder: "./gradlew assembleDebug" })}
+      ${field("Emulator to start (AVD name)", "android_avd", saved.android?.avd, { optional: true, placeholder: "Pixel_8_API_34" })}
+      ${lines("Screens to open", "android_screens", saved.android?.screens, "myapp://settings", "")}`,
+    mac: `${field("Built app (.app)", "macos_app", saved.macos?.app, { placeholder: "build/Debug/MyApp.app", hint: "Its window is captured in light mode. The app running Orchestrator needs Screen Recording permission in System Settings." })}
+      ${field("Build command", "macos_build", saved.macos?.build_command, { optional: true, placeholder: "xcodebuild -scheme MyApp build" })}`,
+  };
+  const platformTitles = { web: "Web app", ios: "iOS app", android: "Android app", mac: "Mac app" };
+  const setupCard = `<section class="card mb-16" id="ux-setup"><details class="fold"${query.get("setup") || !anySet ? " open" : ""}>
+      <summary class="card-h"><h2>Screens</h2><span class="muted">${anySet ? esc(summaryLine) : "Not set up: reviewing code only"}</span></summary>
+      <form class="card-b stack" id="ux-settings">
+        <fieldset class="ux-platforms"><legend>What does your app run on?</legend><div class="row gap-8">${Object.keys(platformTitles).map((key) => platformBox(key, platformTitles[key])).join("")}</div></fieldset>
+        ${Object.keys(platformTitles).map((key) => `<div class="ux-platform stack" data-platform="${key}"${set[key] ? "" : " hidden"}><strong>${platformTitles[key]}</strong>${platformFields[key]}</div>`).join("")}
+        <details class="np-more"><summary class="np-section-legend">More options</summary><div class="stack">
+          ${field("Your UI conventions file", "conventions", saved.conventions, { optional: true, placeholder: "docs/ui-conventions.md", hint: "Found automatically when it's named like docs/*ui*conventions*.md or DESIGN.md." })}
+          <label class="check"><input type="checkbox" name="dark_mode" ${saved.dark_mode !== false ? "checked" : ""}><span>Also capture dark mode</span></label>
+          <label class="check"><input type="checkbox" name="review_changes" ${saved.review_changes !== false ? "checked" : ""}><span>Review each UI job's changes automatically</span></label>
+        </div></details>
+        <div><button class="btn" type="submit">Save</button></div>
+      </form></details></section>`;
+
+  const statusTone = failed ? "failed" : running ? "working" : caveat ? "attention" : pass && !newerRun ? "done" : "";
+  const statusMessage = running ? `${hasSteps ? `Step ${progress.step} of 4: ` : ""}${esc(progress.label || "Waiting for the reviewer to report its stage")}`
+    : failed ? "This attempt did not finish. Open the run details to see what stopped it, then try again."
+    : pass && !newerRun ? "The saved report is shown below. Unreported checks remain marked Not checked."
+    : newerRun ? "The run ended, but no saved report is available. Open its details before starting another review."
+    : "Find usability and design issues. Choose what to fix.";
+  const statusStrip = `<div class="banner ${statusTone}" id="ux-current-progress" role="status" aria-live="polite">
+      <span class="pill ${statusTone}">${status}</span><p>${statusMessage}</p>
+      ${running && hasSteps ? `<progress class="ux-review-progress" value="${progress.step - 1}" max="4" aria-label="Completed review stages">${progress.step - 1} of 4</progress>` : ""}
+      ${running ? `<span class="muted">Started ${esc(ago(run.started))}</span>` : ""}
+      ${newerRun && run.last_line ? `<span class="muted">Latest activity: ${esc(run.last_line)}</span>` : ""}
+      ${run ? `<a class="btn small" href="#/runs/${encodeURIComponent(run.id)}">Open run details</a>` : ""}</div>`;
+
   return {
     title: "UX review",
     sub: "Review your app and choose what to improve.",
-    actions: `<button class="btn primary" ${act("ux_pass")} ${running ? "disabled" : ""}>${running ? "Review running…" : "Run full review"}</button>`,
+    actions: `<button class="btn primary" ${act("ux_pass")} ${running || noInterface ? "disabled" : ""}>${running ? "Review running…" : "Run full review"}</button>`,
     html: `
-      <section class="card mb-16"><div class="card-h"><h2>Improve your app</h2></div>
-        <div class="card-b stack">
-          <p>Find usability and design issues. Choose what to fix.</p>
-          <div class="row"><strong>Reviewing:</strong><span>${noScreens ? "Code only" : "Configured screens and interface code"}</span></div>
-          ${cfg?.url ? `<p class="muted">App address: ${esc(cfg.url)} · ${plural((cfg.routes || []).length, "page")} · ${(cfg.widths || []).map((w) => `${esc(w)}px`).join(", ")}${cfg.dark_mode ? " · light and dark mode" : ""}</p>` : ""}
-        </div>
-      </section>
-      <section class="card mb-16" id="ux-current-progress" aria-labelledby="ux-progress-title"><div class="card-h"><h2 id="ux-progress-title">Current progress</h2><span class="pill ${failed ? "failed" : running ? "working" : caveat ? "attention" : pass && !newerRun ? "done" : ""}">${status}</span></div>
-        <div class="card-b stack" role="status" aria-live="polite">
-          ${running ? `<p>${hasSteps ? `Step ${progress.step} of 4: ` : ""}${esc(progress.label || "Waiting for the reviewer to report its stage")}</p>
-            ${hasSteps ? `<progress class="ux-review-progress" value="${progress.step - 1}" max="4" aria-label="Completed review stages">${progress.step - 1} of 4</progress>` : ""}
-            <p class="muted">Started ${esc(ago(run.started))}. Check results appear when the report is saved.</p>` : `<p>${failed ? "This attempt did not finish. Open the run details to see what stopped it, then try again." : pass && !newerRun ? "The saved report is shown below. Unreported checks remain marked Not checked." : newerRun ? "The run ended, but no saved report is available. Open its details before starting another review." : "Start a review to capture screens and evaluate the checks below."}</p>`}
-          <ol class="ux-review-stages"><li>Capture screens or read interface code</li><li>Check usability</li><li>Check visual design</li><li>Save report</li></ol>
-          ${newerRun && run.last_line ? `<p class="muted">Latest activity: ${esc(run.last_line)}</p>` : ""}
-          ${run ? `<div><a class="btn small" href="#/runs/${encodeURIComponent(run.id)}">Open run details</a></div>` : ""}
-        </div>
-      </section>
-      ${data.error ? `<div class="notice bad mb-16">Screens to review: ${esc(data.error)}</div>` : ""}
-      ${noScreens ? `<div class="notice mb-16">Reviewing code only. To include visual layout and contrast checks, set your local dev server URL (e.g. http://localhost:3000) under <strong>Screens to review</strong> below.</div>` : ""}
+      ${data.error ? `<div class="notice bad mb-16">Screens: ${esc(data.error)}</div>` : ""}
+      ${noInterface ? `<div class="notice mb-16">No interface files or screens found yet, so there is nothing to review. Once the project has some UI, you can run the review.</div>` : ""}
       ${cfg?.url && !data.browser ? `<div class="notice bad mb-16">No Chrome, Chromium or Edge found on this computer, so screens can't be captured.</div>` : ""}
+      ${statusStrip}
+      ${setupCard}
+      ${pass ? `
+        <section class="card mb-16" id="ux-results"><div class="card-h"><h2>${previousResults ? "Previous results" : "Review results"}</h2><span class="count">${esc(ago(Date.parse(pass.at) / 1000))}</span></div>
+          <div class="card-b stack">
+            ${caveatText ? `<div class="notice">${esc(caveatText)}</div>` : ""}
+            <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings || caveat ? "attention" : "done"}">${caveat === "Nothing to review" ? "Nothing reviewed" : plural(pass.counts.findings, "finding")}</span>
+              ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}${caveat === "Nothing to review" ? "" : `<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span>`}
+              <span class="spacer"></span>${pass.findings?.length ? uxFixLink(pass.fix_text, "Create a job to fix the main ones") : ""}</div>
+            ${pass.summary ? `<p>${clamped(pass.summary, 500)}</p>` : ""}
+            ${pass.limits ? `<p class="muted">${esc(pass.limits)}</p>` : ""}
+          </div>
+          ${pass.findings?.length ? uxFindingsHtml(pass.findings, { listId: "ux-findings" }) : ""}
+        </section>` : ""}
       <section class="card mb-16" id="ux-screenshot-gallery"><div class="card-h"><h2>UI screenshots</h2><span class="count">${selectedCapture?.screens?.length || 0} saved</span></div>
-        <div class="card-b stack"><p class="muted">Review screenshots of new and changed screens. Choose a capture, then select an image to inspect it.</p>
+        <div class="card-b stack">
           ${captures.length ? `<label class="field"><span>Capture history</span><select id="ux-capture-select">${captures.map((capture) => `<option value="${esc(captureKey(capture))}" ${capture === selectedCapture ? "selected" : ""}>${esc(capture.title || capture.id)} · ${esc(capture.at || "")}</option>`).join("")}</select></label>
             ${selectedCapture.kind === "job" ? `<a href="#/jobs/${encodeURIComponent(selectedCapture.id)}">Source job: ${esc(selectedCapture.title || selectedCapture.id)}</a>` : ""}
             ${selectedCapture.branch ? `<p class="muted">Job branch: ${esc(selectedCapture.branch)}</p>` : ""}
             ${uxScreensHtml(selectedCapture.screens, captureBase)}
             ${!selectedCapture.screens?.length ? `<div class="notice">This capture saved no screenshots. Check the setup and capture limits below, then retry.</div>` : ""}
             ${captureLimits.length ? `<p class="muted">Capture limits: ${esc(captureLimits.join(" "))}</p>` : ""}`
-          : `<p>${pass && !newerRun ? "The last review captured no screenshots." : "No UI screenshots have been saved yet."}</p>${pass?.limits ? `<p class="muted">Capture limits: ${esc(pass.limits)}</p>` : ""}<a class="btn small" href="#/ux-review?setup=1">Set up screenshot capture</a>`}
+          : `<p class="muted">${pass && !newerRun ? "The last review captured no screenshots." : "No UI screenshots have been saved yet."}</p>${pass?.limits ? `<p class="muted">Capture limits: ${esc(pass.limits)}</p>` : ""}`}
         </div></section>
-      ${pass ? `
-        <section class="card mb-16"><div class="card-h"><h2>${previousResults ? "Previous results" : "Review results"}</h2><span class="count">${esc(ago(Date.parse(pass.at) / 1000))}</span></div>
-          <div class="card-b stack">
-            ${caveatText ? `<div class="notice">${esc(caveatText)}</div>` : ""}
-            <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings || caveat ? "attention" : "done"}">${caveat === "Nothing to review" ? "Nothing reviewed" : plural(pass.counts.findings, "finding")}</span>
-              ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}${caveat === "Nothing to review" ? "" : `<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span>`}</div>
-            ${pass.summary ? `<p>${clamped(pass.summary, 500)}</p>` : ""}
-            ${pass.limits ? `<p class="muted">${esc(pass.limits)}</p>` : ""}
-            ${pass.findings?.length ? `<div>${uxFixLink(pass.fix_text, "Create a job to fix the main ones")}</div>` : ""}
-          </div>
-        </section>
-        ` : ""}
-      <section class="card mb-16" id="ux-setup"><details class="fold"${query.get("setup") || noScreens ? " open" : ""}><summary class="card-h"><h2>Screens to review</h2></summary>
-        <form class="card-b stack" id="ux-settings">
-          <label class="field"><span>Local dev server URL</span><input type="url" name="url" value="${esc(saved.url || "")}" placeholder="http://localhost:3000" spellcheck="false">
-            <small class="hint-text">Where the app runs locally during development (e.g. http://localhost:3000). A sign-in token can come from an environment variable: <code class="nowrap">?token=$MY_TOKEN</code>.</small></label>
-          <label class="field"><span>Pages to capture <span class="muted">(one per line)</span></span><textarea name="routes" rows="4" spellcheck="false">${esc((saved.routes || ["/"]).join("\n"))}</textarea></label>
-          <label class="field"><span>Widths <span class="muted">(pixels)</span></span><input type="text" name="widths" value="${esc((saved.widths || [390, 1440]).join(" "))}"></label>
-          <details class="np-more"><summary class="np-section-legend">Advanced</summary><div class="stack">
-            <label class="field"><span>Command that starts the app <span class="muted">(optional)</span></span><input type="text" name="start_command" value="${esc(saved.start_command || "")}" placeholder="npm run dev" spellcheck="false">
-              <small class="hint-text">Used only when the address isn't answering; stopped afterwards.</small></label>
-            <label class="field"><span>Your UI conventions file <span class="muted">(optional)</span></span><input type="text" name="conventions" value="${esc(saved.conventions || "")}" placeholder="docs/ui-conventions.md" spellcheck="false">
-              <small class="hint-text">Found automatically when it's named like docs/*ui*conventions*.md or DESIGN.md.</small></label>
-            <label class="check"><input type="checkbox" name="dark_mode" ${saved.dark_mode !== false ? "checked" : ""}><span>Also capture dark mode</span></label>
-            <label class="check"><input type="checkbox" name="simulator" ${saved.simulator ? "checked" : ""}><span>Also capture the iOS simulator</span></label>
-            <label class="check"><input type="checkbox" name="review_changes" ${saved.review_changes !== false ? "checked" : ""}><span>Run AI review after UI jobs (screenshots are always captured when configured)</span></label>
-          </div></details>
-          <div><button class="btn" type="submit">Save</button></div>
-        </form></details></section>
-      ${areaCard("ux", "Usability heuristics")}
-      ${areaCard("design", "Visual design checks")}
+      <section class="card mb-16" id="ux-checklist"><details class="fold"><summary class="card-h"><h2>Checklist</h2><span class="count">${evaluated} of ${totalChecks} evaluated</span></summary>
+        ${sections.map((sec) => `<div class="card-b stack"><h3>${sec.title}</h3></div>${uxChecklistHtml(sec.checks)}`).join("")}</details></section>
       ${data.passes.length > 1 ? `<section class="card"><div class="card-h"><h2>Earlier reviews</h2></div><div class="list">${data.passes.map((p) => `<a class="item" href="#/ux-review?id=${encodeURIComponent(p.id)}">
         <div class="main-col"><div class="title">${esc(ago(Date.parse(p.at) / 1000))}${p.id === id ? " · showing" : ""}</div><div class="meta">${plural(p.counts.findings, "finding")}, ${p.counts.major} major</div></div></a>`).join("")}</div></section>` : ""}`,
     after: () => {
@@ -4896,11 +4944,18 @@ pages["ux-review"] = async (_, query) => {
       const markDirty = () => { settingsForm.dataset.dirty = "true"; };
       settingsForm.addEventListener("input", markDirty);
       settingsForm.addEventListener("change", markDirty);
+      // Only the platforms ticked show their fields, and only those are saved.
+      const ownFields = { web: ["url", "start_command"], ios: ["simulator_screens"], android: ["android_package", "android_apk", "android_build", "android_avd", "android_screens"], mac: ["macos_app", "macos_build"] };
+      settingsForm.querySelectorAll('input[name^="p_"]').forEach((box) => box.addEventListener("change", () => {
+        settingsForm.querySelector(`[data-platform="${box.name.slice(2)}"]`).hidden = !box.checked;
+      }));
       settingsForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const f = new FormData(e.target);
+        const body = { ...Object.fromEntries(f), dark_mode: f.has("dark_mode"), simulator: f.has("p_ios"), review_changes: f.has("review_changes") };
+        for (const [key, names] of Object.entries(ownFields)) if (!f.has(`p_${key}`)) for (const name of names) body[name] = "";
         try {
-          await api("ui-review", { method: "POST", body: { ...Object.fromEntries(f), dark_mode: f.has("dark_mode"), simulator: f.has("simulator"), review_changes: f.has("review_changes") } });
+          await api("ui-review", { method: "POST", body });
           toast("Saved"); route();
         } catch (err) { toast(err.message, true); }
       });
@@ -4961,8 +5016,8 @@ pages.checkup = async () => {
   else optional.push(missing("plugins", "Plugins", "#/connections?section=plugins"));
   const email = config?.email;
   const emailReady = email && email.recipients?.length && (email.provider === "resend" ? email.resend_api_key_set && email.resend_from_email : email.smtp_email && email.smtp_password_set);
-  optional.push(config?.webhook ? {id: "slack", title: "Slack alerts", status: config.webhook.set ? "ok" : "todo", detail: "Receive job updates in Slack.", route: "#/connections?section=alerts", label: "Manage alerts"} : missing("slack", "Slack alerts", "#/connections?section=alerts"));
-  optional.push(email ? {id: "email", title: "Email alerts", status: emailReady ? "ok" : "todo", detail: "Requires recipients and a configured sender.", route: "#/config/email", label: "Manage email"} : missing("email", "Email alerts", "#/config/email"));
+  optional.push(config?.webhook ? {id: "slack", title: "Slack alerts", status: config.webhook.set ? "ok" : "todo", detail: "Receive job updates in Slack.", route: "#/config/alerts", label: "Manage alerts"} : missing("slack", "Slack alerts", "#/config/alerts"));
+  optional.push(email ? {id: "email", title: "Email alerts", status: emailReady ? "ok" : "todo", detail: "Requires recipients and a configured sender.", route: "#/config/alerts", label: "Manage email"} : missing("email", "Email alerts", "#/config/alerts"));
   if (analytics) {
     optional.push(...(analytics.providers || []).map((p) => ({id: `analytics-${p.id}`, title: `${p.name} analytics`, status: analytics.provider === p.id && analytics.key_set ? "ok" : "todo", detail: "Optional event tracking. Send a test event to verify access.", route: `#/measure?provider=${encodeURIComponent(p.id)}`, label: "Manage analytics"})));
     const mcps = Object.entries(analytics.provider_mcp || {}).flatMap(([provider, entries]) => entries.map((m) => ({provider, ...m})));
@@ -5014,13 +5069,16 @@ pages.checkup = async () => {
       $("#preflight-refresh")?.addEventListener("click", () => paintPreflight(true));
       api("ux-pass").then(({passes, settings}) => {
         const last = passes[0];
-        $("#ux-checkup").textContent = last ? `Last pass ${ago(Date.parse(last.at) / 1000)}: ${plural(last.counts.findings, "finding")}, ${last.counts.major} major or worse.` : settings && (settings.url || settings.simulator) ? "No pass yet. Run one from UX review." : "No pass yet, and no screens set up. UX review shows how.";
+        $("#ux-checkup").textContent = last ? `Last pass ${ago(Date.parse(last.at) / 1000)}: ${plural(last.counts.findings, "finding")}, ${last.counts.major} major or worse.` : settings && (settings.url || settings.simulator || settings.android || settings.macos) ? "No pass yet. Run one from UX review." : "No pass yet, and no screens set up. UX review shows how.";
       }).catch(() => { $("#ux-checkup").textContent = "Couldn't read the UX review."; });
     },
   };
 };
 
-pages.help = async () => ({
+pages.help = async () => {
+  const config = await api("config").catch(() => null);
+  const guides = (config?.docs || []).filter((g) => g.section === "Orchestrator docs"); // how Orchestrator itself works
+  return {
   title: "Help",
   sub: "How Orchestrator works, where things are, and what the words mean.",
   html: `
@@ -5053,9 +5111,12 @@ pages.help = async () => ({
       <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. All of it is optional, and “not sure yet” is a fine answer. Draft it from your project, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
       <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job marked complete can be restored from the <a href="#/?filter=archived">Archived</a> filter on Home.</p></details>
-      <details><summary>How do I get alerts when I'm away?</summary><p>The sidebar's <strong>Notify me when done</strong> sends alerts to this device. Turned on in the hosted app, they arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run (on iPhone, add it to your Home Screen first). For Slack, add a webhook under <a href="#/connections?card=chat">Connections</a>.</p></details>
-      <details><summary>Where are the full guides?</summary><p><a href="#/docs">Docs</a> has the project's own files and Orchestrator's guides. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
+      <details><summary>How do I get alerts when I'm away?</summary><p>Everything is under <a href="#/config/alerts">Configuration → Alerts</a>: this browser or phone (turned on in the hosted app, alerts arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run; on iPhone, add it to your Home Screen first), Slack, email, and a notification on your Mac. The sidebar's <strong>Notify me when done</strong> is a shortcut for this device.</p></details>
+      <details><summary>Where are the full guides?</summary><p>In <strong>Orchestrator guides</strong> below. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>
+    ${guides.length ? `<section class="card mb-16" id="help-guides"><div class="card-h"><h2>Orchestrator guides</h2><span class="count">${guides.length}</span></div>
+      <div class="list">${guides.map((g) => `<div class="item"><div class="main-col"><div class="title">${esc(g.name)}</div></div>
+        <div class="side"><button type="button" class="btn small" data-guide="${esc(g.id)}">Read</button></div></div>`).join("")}</div></section>` : ""}
     <section class="card"><div class="card-h"><h2>Missing a feature or have feedback?</h2></div><div class="card-b">
       <p class="muted mb-12">Tell us what felt off, request a missing feature, or share ideas to make Orchestrator better. We read every message.</p>
       <div class="row gap-8">
@@ -5072,6 +5133,15 @@ pages.help = async () => ({
       </div>
     </div></section>`,
   after: () => {
+    view.querySelectorAll("[data-guide]").forEach((b) => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        const g = await api(`config/doc?id=${encodeURIComponent(b.dataset.guide)}`);
+        const closed = formDialog(g.name, `<pre class="doc-text">${esc(g.text)}</pre>`, "Close");
+        $("#dialog-cancel").hidden = true;
+        await closed;
+      } catch (err) { toast(err.message, true); } finally { if (b.isConnected) b.disabled = false; }
+    }));
     $("#help-feedback-btn")?.addEventListener("click", () => {
       Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" });
     });
@@ -5085,7 +5155,8 @@ pages.help = async () => ({
       Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" });
     });
   }
-});
+  };
+};
 
 // ---------------------------------------------------------------- docs hub
 // Everything written about the project in one place: the product requirements, a page for every feature and every job (composed
@@ -5120,7 +5191,7 @@ pages.docs = async (args, query) => {
     const path = kind === "file" ? `docs/file?path=${encodeURIComponent(query?.get("path") || "")}` : `docs/${kind}/${encodeURIComponent(id || "")}`;
     let doc;
     try { doc = await api(path); } catch (e) {
-      return { title: "Docs", html: `<div class="notice">${esc(e.message)} <a href="#/docs">Back to all docs</a></div>` };
+      return { title: "Document", html: `<div class="notice">${esc(e.message)} <a href="#/">Back to Home</a></div>` };
     }
     const open = kind === "job" ? `<a class="btn" href="#/jobs/${encodeURIComponent(id)}">Open the job</a>` : "";
     return {
@@ -5132,76 +5203,9 @@ pages.docs = async (args, query) => {
     };
   }
 
-  const [d, config] = await Promise.all([api("docs"), api("config").catch(() => null)]);
-  const guides = (config?.docs || []).filter((g) => g.section === "Orchestrator docs"); // how Orchestrator itself works
-  const SHOWN = 15;
-  const featureRow = (f) => `<a class="item doc-row" href="#/docs/feature/${encodeURIComponent(f.id)}" data-find="${esc(`${f.name} ${f.summary}`.toLowerCase())}"><div class="main-col"><div class="title">${esc(f.name)}</div>
-      <div class="meta">${f.summary ? `${esc(f.summary)} · ` : ""}${f.jobs ? `${f.jobs_done} of ${f.jobs} jobs done` : "no jobs yet"}</div></div><div class="side"><span class="pill ${f.status === "complete" ? "done" : "working"}">${esc(f.status === "in-progress" ? "In progress" : f.status === "complete" ? "Complete" : "Planned")}</span></div></a>`;
-  const jobRow = (j, n) => `<a class="item doc-row" ${n >= SHOWN ? "hidden" : ""} href="#/docs/job/${encodeURIComponent(j.id)}" data-group="${esc(j.group || "")}" data-find="${esc(`${j.title} ${j.feature_name} ${j.blurb} ${j.kind}`.toLowerCase())}"><div class="main-col"><div class="title">${esc(j.title)}</div>
-      <div class="meta">${[j.kind, j.feature_name, ago(j.updated)].filter(Boolean).map(esc).join(" · ")}${j.blurb ? `<br><span class="doc-blurb">${esc(j.blurb)}</span>` : ""}</div></div><div class="side"><span class="pill ${esc(j.group === "done" ? "done" : j.group === "needs_you" ? "attention" : "working")}">${esc(j.label)}</span></div></a>`;
-  const groups = [...new Set(d.files.map((f) => f.group))];
-  const fileRows = groups.map((g) => `<div class="tc-area-h">${esc(g)}</div>${d.files.filter((f) => f.group === g).map((f) => `<a class="item doc-row" href="#/docs/file?path=${encodeURIComponent(f.path)}" data-find="${esc(`${f.title} ${f.path}`.toLowerCase())}"><div class="main-col"><div class="title">${esc(f.title)}</div><div class="meta mono">${esc(f.path)}</div></div></a>`).join("")}`).join("");
-  const pr = d.product;
-  return {
-    title: "Docs",
-    sub: "Everything about this project in one place. Job and feature pages are generated from the live project, so they stay true.",
-    actions: `<button class="btn" id="docs-export">Download everything (.md)</button>`,
-    html: `
-      <label class="field docs-search"><span class="sr-only">Search the docs</span><input type="search" id="docs-q" placeholder="Search features, jobs and files" autocomplete="off" aria-label="Search the docs"></label>
-      <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2><a href="#/product">${pr.exists ? "Open" : "Write it"}</a></div>
-        <div class="card-b">${pr.exists && pr.pitch ? `<p class="product-pitch">${esc(prdSnippet(pr.pitch, 220))}</p><div class="muted">${pr.written} of ${pr.total} sections written · <span class="mono">${esc(pr.path)}</span></div>`
-          : `<div class="muted">Nothing says what this product is yet. <a href="#/product">Write the pitch</a>, import a PRD, or draft one from the project.</div>`}</div></section>
-      <section class="card mb-16"><div class="card-h"><h2>Features</h2><span class="count">${d.features.length}</span></div>
-        <div class="list" id="docs-features">${d.features.length ? d.features.map(featureRow).join("") : `<div class="empty">No features yet. Group your jobs into features in <a href="#/product">product requirements</a> and each gets a page here.</div>`}</div></section>
-      <section class="card mb-16"><div class="card-h"><h2>Jobs</h2><span class="count">${d.jobs.length}</span>
-        <div class="filters"><button type="button" class="btn small on" data-docs-group="">All</button><button type="button" class="btn small" data-docs-group="done">Done</button><button type="button" class="btn small" data-docs-group="open">Not done</button></div></div>
-        <div class="list" id="docs-jobs">${d.jobs.length ? d.jobs.map(jobRow).join("") : `<div class="empty">No jobs yet. <a href="#/new">Start a new job</a>.</div>`}</div>
-        ${d.jobs.length > SHOWN ? `<div class="card-b"><button type="button" class="btn small" id="docs-more">Show all ${d.jobs.length}</button></div>` : ""}</section>
-      <section class="card"><div class="card-h"><h2>Project files</h2><span class="count">${d.files.length}</span></div>
-        <div class="list" id="docs-files">${d.files.length ? fileRows : `<div class="empty">No README or docs/ folder found.</div>`}</div></section>
-      ${guides.length ? `<section class="card mt-16"><div class="card-h"><h2>Orchestrator guides</h2><span class="count">${guides.length}</span></div>
-        <div class="list">${guides.map((g) => `<div class="item doc-row" data-find="${esc(g.name.toLowerCase())}"><div class="main-col"><div class="title">${esc(g.name)}</div></div>
-          <div class="side"><button type="button" class="btn small" data-guide="${esc(g.id)}">Read</button></div></div>`).join("")}</div></section>` : ""}`,
-    after: () => {
-      const q = $("#docs-q"), rows = () => [...view.querySelectorAll(".doc-row")];
-      let group = "", all = false;
-      const apply = () => {
-        const term = q.value.trim().toLowerCase();
-        let shown = 0;
-        for (const r of rows()) {
-          const inJobs = r.closest("#docs-jobs");
-          const okTerm = !term || r.dataset.find.includes(term);
-          const g = r.dataset.group;
-          const okGroup = !inJobs || !group || (group === "done" ? g === "done" : g !== "done");
-          let visible = okTerm && okGroup;
-          if (inJobs && visible) { shown++; if (!all && !term && shown > SHOWN) visible = false; }
-          r.hidden = !visible;
-        }
-        $("#docs-more")?.toggleAttribute("hidden", all || !!term);
-      };
-      q.addEventListener("input", apply);
-      $("#docs-more")?.addEventListener("click", () => { all = true; apply(); });
-      view.querySelectorAll("[data-docs-group]").forEach((b) => b.addEventListener("click", () => {
-        group = b.dataset.docsGroup; all = false;
-        view.querySelectorAll("[data-docs-group]").forEach((x) => x.classList.toggle("on", x === b));
-        apply();
-      }));
-      view.querySelectorAll("[data-guide]").forEach((b) => b.addEventListener("click", async () => {
-        b.disabled = true;
-        try {
-          const g = await api(`config/doc?id=${encodeURIComponent(b.dataset.guide)}`);
-          const closed = formDialog(g.name, `<pre class="doc-text">${esc(g.text)}</pre>`, "Close");
-          $("#dialog-cancel").hidden = true;
-          await closed;
-        } catch (err) { toast(err.message, true); } finally { if (b.isConnected) b.disabled = false; }
-      }));
-      $("#docs-export").addEventListener("click", async (e) => {
-        e.target.disabled = true;
-        try { const r = await api("docs/export"); downloadText(r.name.replace(/[^A-Za-z0-9._-]+/g, "-"), r.markdown); } catch (err) { toast(err.message, true); }
-        e.target.disabled = false;
-      });
-    },
-  };
+  // There is no index any more: the guides are on Help, and each job, feature and file page is reached from where it is used.
+  location.replace("#/help");
+  return { title: "Help", sub: "", actions: "", html: "" };
 };
 
 // ---------------------------------------------------------------- product requirements
@@ -6066,13 +6070,13 @@ function epicsSection(initial, { onPrdChanged }) {
     if (form.id === "epic-questions-form") {
       event.preventDefault();
       const data = new FormData(form);
-      const answers = [...form.querySelectorAll(".epic-question")].map((box, i) => ({ question: box.dataset.question, answer: String(data.get(`a${i}`) || "").trim(), section: data.get(`s${i}`) }))
+      const answers = [...form.querySelectorAll(".epic-question")].map((box, i) => ({ question: box.dataset.question, answer: String(data.get(`a${i}`) || "").trim(), section: FeaturePlan.guessSection(box.dataset.question) }))
         .filter((a) => a.answer);
       if (!answers.length) return toast("Write an answer to at least one question.", "warning");
       try {
         take(await api("epics/answers", { method: "POST", body: { answers } }), `${plural(answers.length, "answer")} added to your product requirements`);
         await onPrdChanged();
-        if (event.submitter?.dataset.after === "again") breakDown();
+        if (await formDialog("Break down again?", `<p>Your answers are in the product requirements. Break down again so the suggested epics use them?</p>`, "Break down again", { compact: true, cancelLabel: "Not now" })) breakDown();
       } catch (e) { failed(e); }
     }
     if (form.id === "epic-jira-project") {
@@ -6387,7 +6391,10 @@ pages.tests = async (_, query) => {
                   <div class="framework-guide-row"><strong>How to use:</strong> <span>${codeSpans(guide.howToUse)}</span></div>
                 </div>
                 <p class="muted">${esc(guide.status)}</p>
-                ${key === "canary_suite" && !f.installed ? `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>` : key === "coverage_py" && !f.installed ? `<div><button type="button" class="btn small" ${act("coverage")}>Auto-add coverage.py</button></div>` : key !== "xcbeautify" && key !== "canary_suite" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`;
+                ${key === "canary_suite" ? (f.installed ? "" : `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>`)
+                  : key === "coverage_py" && !f.installed ? `<div><button type="button" class="btn small" ${act("coverage")}>Auto-add coverage.py</button></div>`
+                  : f.auto && !f.installed ? `<div><button type="button" class="btn small" ${act("add_framework", { framework: key })}>${f.auto === "brew" ? "Install with Homebrew" : f.auto === "spm" ? "Add package &amp; starter test" : "Add starter test"}</button></div>`
+                  : key !== "xcbeautify" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`;
             }).join("")}</div>
           </div></details></section>`;
       })() : ""}`,
@@ -6784,8 +6791,12 @@ pages.git = async () => {
           if (pill) pill.textContent = "Status unavailable";
         });
       }
-      const mutate = async (button, path, body, message) => {
+      // Disables the button and shows a spinner with `busy` until the work (often a background task) is done.
+      const mutate = async (button, path, body, message, busy = "Working…") => {
+        const idle = button.innerHTML;
         button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        button.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>${esc(busy)}`;
         try {
           const started = await api(path, {method: "POST", body});
           const result = started.task ? await waitForTask(started) : started;
@@ -6794,7 +6805,9 @@ pages.git = async () => {
           await loadSetup(true);
           await route();
         } catch (e) { toast(e.message, true); }
-        finally { if (button.isConnected) button.disabled = false; }
+        finally {
+          if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; }
+        }
       };
       $("#git-base-branch-form")?.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -6806,14 +6819,14 @@ pages.git = async () => {
         <option value="git" ${g.code_host === "git" ? "selected" : ""}>Git branches and local job records</option>`;
       $("#git-init")?.addEventListener("click", async (e) => {
         const button = e.currentTarget;
-        if (await formDialog("Initialize repository", "<p>Create a Git repository here and include current project files in the initial commit, using this computer’s Git identity.</p>", "Initialize")) await mutate(button, "setup/git-init", {}, "Git repository initialized");
+        if (await formDialog("Initialize repository", "<p>Create a Git repository here and include current project files in the initial commit, using this computer’s Git identity.</p>", "Initialize")) await mutate(button, "setup/git-init", {}, "Git repository initialized", "Initializing…");
       });
       $("#git-tracking")?.addEventListener("click", async (e) => {
         const button = e.currentTarget;
         const values = await formDialog("Choose tracking branch", `<label class="field"><span>Remote branch to pull from and push to</span><select name="upstream" required>${(g.remote_branches || []).map(b => `<option value="${esc(b)}" ${b === g.upstream ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></label><p>This changes tracking for the current branch. It does not switch branches or change files.</p>`, "Set tracking branch");
-        if (values) await mutate(button, "git/tracking", values, "Tracking branch saved");
+        if (values) await mutate(button, "git/tracking", values, "Tracking branch saved", "Saving…");
       });
-      $("#git-fetch")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/fetch", {}, "Remote branches updated"));
+      $("#git-fetch")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/fetch", {}, "Remote branches updated", "Updating…"));
       $("#git-signin")?.addEventListener("click", () => signInToGitHub());
       $("#git-connect")?.addEventListener("click", async (e) => {
         const button = e.currentTarget;
@@ -6823,20 +6836,20 @@ pages.git = async () => {
           <label class="field"><span>Repository URL or local repository path</span><input name="url" required value="${esc(g.origin)}" placeholder="git@gitlab.com:team/app.git" autocomplete="off" spellcheck="false"></label>
           <label class="field"><span>Job workflow</span><select name="mode">${modeOptions}</select></label>
           <p class="muted">GitHub mode creates issues and pull requests. Git mode pushes branches and merges locally. Use your computer’s Git credential helper or SSH key for access.</p>`, "Save connection");
-        if (values) await mutate(button, "git/connection", {op: "connect", ...values}, "Repository connected");
+        if (values) await mutate(button, "git/connection", {op: "connect", ...values}, "Repository connected", "Connecting…");
       });
       $("#git-workflow")?.addEventListener("click", async (e) => {
         const button = e.currentTarget;
         const values = await formDialog("Change job workflow", `<label class="field"><span>Project job workflow</span><select name="mode">${modeOptions}</select></label><p>GitHub mode uses issues and pull requests. Git mode uses local job records and merges on this computer. This setting applies when jobs next run, including queued or resumed jobs. Finish active jobs before changing it.</p>`, "Save workflow");
-        if (values) await mutate(button, "git/connection", {op: "workflow", ...values}, "Job workflow saved");
+        if (values) await mutate(button, "git/connection", {op: "workflow", ...values}, "Job workflow saved", "Saving…");
       });
-      $("#git-local")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/connection", {op: "workflow", mode: "git"}, "Local Git workflow selected"));
+      $("#git-local")?.addEventListener("click", (e) => mutate(e.currentTarget, "git/connection", {op: "workflow", mode: "git"}, "Local Git workflow selected", "Saving…"));
       $("#git-repair-labels")?.addEventListener("click", async e => {
         const button = e.currentTarget;
-        if (await formDialog("Create missing job labels", "<p>Create only the missing labels Orchestrator uses. Existing labels, custom labels, colors and descriptions will be preserved.</p>", "Create missing labels")) await mutate(button, "git/labels/repair", {}, "Missing job labels created");
+        if (await formDialog("Create missing job labels", "<p>Create only the missing labels Orchestrator uses. Existing labels, custom labels, colors and descriptions will be preserved.</p>", "Create missing labels")) await mutate(button, "git/labels/repair", {}, "Missing job labels created", "Creating labels…");
       });
       view.querySelectorAll("[data-git-publish]").forEach(button => button.addEventListener("click", async () => {
-        if (await formDialog("Retry job publishing", "<p>Publish this job’s branch for review. GitHub jobs open or reuse a draft pull request. This does not rerun the build, change the current branch or merge work.</p>", "Retry publishing")) await mutate(button, `jobs/${encodeURIComponent(button.dataset.gitPublish)}/publish`, {}, "Job published");
+        if (await formDialog("Retry job publishing", "<p>Publish this job’s branch for review. GitHub jobs open or reuse a draft pull request. This does not rerun the build, change the current branch or merge work.</p>", "Retry publishing")) await mutate(button, `jobs/${encodeURIComponent(button.dataset.gitPublish)}/publish`, {}, "Job published", "Publishing…");
       }));
       $("#git-create")?.addEventListener("click", async (e) => {
         const button = e.currentTarget;
@@ -6847,7 +6860,7 @@ pages.git = async () => {
           <p class="muted">The GitHub CLI must be installed and signed in on this computer. <button type="button" class="btn small" id="git-create-signin">Sign in to GitHub</button></p>`, "Create repository");
         $("#git-create-signin")?.addEventListener("click", () => { $("#dialog").close("cancel"); signInToGitHub(); });
         const values = await dialog;
-        if (values) await mutate(button, "setup/github-create", values, "GitHub repository created");
+        if (values) await mutate(button, "setup/github-create", values, "GitHub repository created", "Creating…");
       });
       $("#git-pull")?.addEventListener("click", async () => {
         if (await formDialog("Pull branch", `<p>Update <strong>${esc(g.branch || "the current branch")}</strong> from <strong>${esc(destination)}</strong>. This stops if the branches have diverged.</p><p class="muted">${esc(sync)}</p>`, "Pull", { compact: true })) await runAction("git_pull", {}, { skipConfirm: true });
@@ -6897,13 +6910,124 @@ async function runConfigMutation(button, request, successMessage) {
   }
 }
 
+// Email alert actions, shared by the email page and the Alerts page.
+async function handleEmailAction(action, button, email) {
+  if (action === "email-add") {
+    showConfigMutationDialog(
+      "Add recipient",
+      `<label class="field"><span>Email address</span><input type="email" name="email" required autocapitalize="off"></label>`,
+      "Add",
+      (values) => ({part: "email", body: {op: "add", email: values.email}}),
+      "Recipient added",
+    );
+  } else if (action === "email-remove") {
+    await runConfigMutation(
+      button,
+      {part: "email", body: {op: "remove", email: button.dataset.email}},
+      "Recipient removed",
+    );
+  } else if (action === "email-sender") {
+    showConfigMutationDialog(
+      "Configure email sender",
+      `<label class="field"><span>Provider</span><select name="provider">${(email.providers || []).map((provider) => `<option value="${esc(provider)}"${provider === email.provider ? " selected" : ""}>${esc(provider === "gmail" ? "Gmail" : "Resend")}</option>`).join("")}</select></label>
+       <small class="hint-text">Leave a secret field blank to keep its saved value.</small>
+       <label class="field"><span>Gmail address</span><input type="email" name="smtp_email" value="${esc(email.smtp_email || "")}"></label>
+       <label class="field"><span>Gmail app password</span><input type="password" name="smtp_password" autocomplete="off" placeholder="${email.smtp_password_set ? "Saved — leave blank to keep" : "Not set"}"></label>
+       <label class="field"><span>Resend API key</span><input type="password" name="resend_api_key" autocomplete="off" placeholder="${email.resend_api_key_set ? "Saved — leave blank to keep" : "Not set"}"></label>
+       <label class="field"><span>Resend from email</span><input type="email" name="resend_from_email" value="${esc(email.resend_from_email || "")}"></label>
+       <label class="field"><span>Display name</span><input type="text" name="resend_display_name" value="${esc(email.resend_display_name || "")}"></label>`,
+      "Save",
+      (values) => ({part: "email", body: {op: "provider", ...values}}),
+      "Email sender saved",
+    );
+  } else if (action === "email-test") {
+    await runAction("test_email");
+  }
+}
+
+// Slack alert actions, on the Alerts page.
+async function handleChatAction(action, button) {
+  if (action === "chat-set") {
+    showConfigMutationDialog(
+      "Slack webhook",
+      `<label class="field"><span>Webhook URL</span><input type="url" name="url" required autocomplete="off" placeholder="https://hooks.slack.com/services/…"></label>`,
+      "Save",
+      (values) => ({part: "webhook", body: {op: "set", url: values.url}}),
+      "Webhook saved. Sending a test message…",
+      async () => {
+        try { await api("config/webhook", {method: "POST", body: {op: "test"}}); toast("Webhook saved and tested: check your channel for the message."); }
+        catch (error) { toast(`Saved, but the test message failed: ${error.message}`, true); }
+      },
+    );
+  } else if (action === "chat-clear") {
+    await runConfigMutation(button, {part: "webhook", body: {op: "clear"}}, "Webhook removed");
+  } else if (action === "chat-test") {
+    await runConfigMutation(button, {part: "webhook", body: {op: "test"}}, "Test message sent");
+  } else if (action === "chat-pause" || action === "chat-resume") {
+    const pausing = action === "chat-pause";
+    if (await runConfigMutation(button, {part: "webhook", body: {op: pausing ? "pause" : "resume"}}, pausing ? "Slack alerts paused." : "Slack alerts are on.")) {
+      state.alerts = { ...state.alerts, webhook_paused: pausing };
+      renderSlackBtn();
+    }
+  }
+}
+
+// This browser or phone, on the Alerts page: whether alerts are on here, and turning them on or off.
+function renderDeviceAlerts() {
+  const body = $("#device-alerts-body"), actions = $("#device-alerts-actions");
+  if (!body || !actions) return;
+  if (needsHomeScreen()) {
+    body.innerHTML = `<strong>Needs the Home Screen</strong><span class="muted">iPhone only allows alerts for apps on the Home Screen. Share, then Add to Home Screen, and open it from there.</span>`;
+    actions.innerHTML = "";
+    return;
+  }
+  if (!Notifications.supported()) {
+    body.innerHTML = `<strong>Not available</strong><span class="muted">This browser can't show notifications.</span>`;
+    actions.innerHTML = "";
+    return;
+  }
+  const on = Notifications.enabled();
+  const pushOn = (() => { try { return Boolean(localStorage.getItem(PUSH_KEY)); } catch { return false; } })();
+  actions.innerHTML = `<button type="button" class="btn small ${on ? "" : "primary"}" data-config-action="device-toggle">${on ? "Turn off" : "Turn on"}</button>
+    ${on && Account.active() ? `<button type="button" class="btn small" data-config-action="device-test">Send test alert</button>` : ""}`;
+  body.innerHTML = `<strong>${on ? "On" : "Off"}</strong>
+    <span class="muted">${on ? (Account.active() ? (pushOn ? "Alerts arrive here even when Orchestrator is closed." : "Alerts show while Orchestrator is open. Turn it off and on again to receive them when it's closed.")
+      : "Alerts show while Orchestrator is open.") : "Shows an alert here when a run finishes, fails or needs you. Each browser or phone is set up separately."}</span>`;
+}
+
+async function handleDeviceAction(action) {
+  if (action === "device-toggle") {
+    if (Notifications.enabled()) { Notifications.disable(); await disablePush(); renderNotifyBtn(); renderDeviceAlerts(); return; }
+    const result = await Notifications.enable();
+    if (result !== "granted") toast("Allow notifications in your browser to turn this on.", "warning");
+    else if (Account.active()) {
+      try { await enablePush(); toast("Alerts are on for this device, even when Orchestrator is closed."); }
+      catch (err) { toast(`Alerts work while Orchestrator is open, but not when it's closed: ${err.message}`, "warning"); }
+    }
+    renderNotifyBtn();
+    renderDeviceAlerts();
+  } else if (action === "device-test") {
+    try {
+      const res = await cpApi("push/test", { method: "POST", body: {} });
+      toast(res?.sent ? "Test alert sent to your devices." : "No device is registered for alerts yet.", res?.sent ? undefined : "warning");
+    } catch (err) { toast(err.message, true); }
+  }
+}
+
 function showConfigMutationDialog(title, bodyHtml, okLabel, buildRequest, successMessage, afterSave = null) {
   const dlg = $("#dialog");
   const form = $("#dialog-form");
   const ok = $("#dialog-ok");
   $("#dialog-cancel").hidden = false;
+  $("#dialog-cancel").textContent = "Cancel";
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = bodyHtml;
+  // The dialog is shared: reset the button, or it keeps the last dialog's label and red "danger" style (a stopped run's "Stop run").
+  ok.textContent = okLabel;
+  ok.hidden = false;
+  ok.className = "btn primary";
+  ok.disabled = false;
+  dlg?.classList.remove("dialog-compact");
   if (dlg) dlg.tabIndex = -1;
   dlg.returnValue = "";
   dlg.showModal();
@@ -6960,42 +7084,34 @@ pages.config = async (args = []) => {
         const onClick = async (event) => {
           const button = event.target.closest("[data-config-action]");
           if (!button || button.disabled) return;
+          await handleEmailAction(button.dataset.configAction, button, email);
+        };
+        view.addEventListener("click", onClick);
+        cleanup.push(() => view.removeEventListener("click", onClick));
+      },
+    };
+  }
+  if (section === "alerts") {
+    const email = config.email || {};
+    return {
+      ...result,
+      after: () => {
+        ConfigurationPages.applyRole(state.you?.role || "owner", view);
+        renderDeviceAlerts();
+        const onClick = async (event) => {
+          const button = event.target.closest("[data-config-action]");
+          if (!button || button.disabled) return;
           const action = button.dataset.configAction;
-          if (action === "email-add") {
-            showConfigMutationDialog(
-              "Add recipient",
-              `<label class="field"><span>Email address</span><input type="email" name="email" required autocapitalize="off"></label>`,
-              "Add",
-              (values) => ({part: "email", body: {op: "add", email: values.email}}),
-              "Recipient added",
-            );
-          } else if (action === "email-remove") {
-            await runConfigMutation(
-              button,
-              {part: "email", body: {op: "remove", email: button.dataset.email}},
-              "Recipient removed",
-            );
-          } else if (action === "email-sender") {
-            showConfigMutationDialog(
-              "Configure email sender",
-              `<label class="field"><span>Provider</span><select name="provider">${(email.providers || []).map((provider) => `<option value="${esc(provider)}"${provider === email.provider ? " selected" : ""}>${esc(provider === "gmail" ? "Gmail" : "Resend")}</option>`).join("")}</select></label>
-               <small class="hint-text">Leave a secret field blank to keep its saved value.</small>
-               <label class="field"><span>Gmail address</span><input type="email" name="smtp_email" value="${esc(email.smtp_email || "")}"></label>
-               <label class="field"><span>Gmail app password</span><input type="password" name="smtp_password" autocomplete="off" placeholder="${email.smtp_password_set ? "Saved — leave blank to keep" : "Not set"}"></label>
-               <label class="field"><span>Resend API key</span><input type="password" name="resend_api_key" autocomplete="off" placeholder="${email.resend_api_key_set ? "Saved — leave blank to keep" : "Not set"}"></label>
-               <label class="field"><span>Resend from email</span><input type="email" name="resend_from_email" value="${esc(email.resend_from_email || "")}"></label>
-               <label class="field"><span>Display name</span><input type="text" name="resend_display_name" value="${esc(email.resend_display_name || "")}"></label>`,
-              "Save",
-              (values) => ({part: "email", body: {op: "provider", ...values}}),
-              "Email sender saved",
-            );
-          } else if (action === "email-test") {
-            await runAction("test_email");
+          if (action.startsWith("email-")) await handleEmailAction(action, button, email);
+          else if (action.startsWith("chat-")) await handleChatAction(action, button);
+          else if (action.startsWith("device-")) await handleDeviceAction(action);
+          else if (action === "desktop-toggle") {
+            const turningOff = button.dataset.enabled === "1";
+            await runConfigMutation(button, {part: "desktop", body: {enabled: !turningOff}}, turningOff ? "Mac notifications are off." : "Mac notifications are on.");
           }
         };
         view.addEventListener("click", onClick);
         cleanup.push(() => view.removeEventListener("click", onClick));
-
       },
     };
   }
@@ -7011,7 +7127,7 @@ pages.config = async (args = []) => {
             showConfigMutationDialog(
               "Allow an email",
               `<label class="field"><span>Email address</span><input type="email" name="email" required autocapitalize="off"></label>
-               <small class="hint-text">They can then sign in with Google and use everything on this computer.</small>`,
+               <small class="hint-text">They can then sign in with Google, Apple, GitHub or email and use everything on this computer.</small>`,
               "Allow",
               (values) => ({part: "allowed-email", body: {op: "add", email: values.email}}),
               "Email allowed",
@@ -7019,17 +7135,7 @@ pages.config = async (args = []) => {
           } else if (action === "access-remove") {
             await runConfigMutation(button, {part: "allowed-email", body: {op: "remove", email: button.dataset.email}}, "Email removed and signed out");
           } else if (action === "access-revoke") {
-            if (button.hasAttribute("data-current")) { await signOut(); return; }
-            button.disabled = true;
-            try {
-              await api("sign-ins/revoke", {method: "POST", body: {id: button.dataset.id}});
-              toast("Sign-in ended");
-              if (ConfigurationPages.routeMatches(current, section)) await route();
-            } catch (error) {
-              toast(error.message, true);
-            } finally {
-              if (button.isConnected) button.disabled = false;
-            }
+            await signOut();
           }
         };
         view.addEventListener("click", onClick);
@@ -7302,11 +7408,12 @@ pages.config = async (args = []) => {
 
 // ---------------------------------------------------------------- connections (Jira, Trello, Sentry, Figma)
 
-const PROVIDER_LABEL = { jira: "Jira", trello: "Trello", sentry: "Sentry", figma: "Figma" };
+const PROVIDER_LABEL = { jira: "Jira", trello: "Trello", sentry: "Sentry", figma: "Figma", unity: "Unity Build Automation" };
 const PROVIDER_HINT = {
   jira: "Search tickets, or paste a key like ABC-123 or a link",
   trello: "Search cards, or paste a card link",
   sentry: "Search issues, or paste an issue link",
+  unity: "Search failed builds, or type a build like my-target/12",
   figma: "Paste a link to a file or frame (right-click a frame → Copy link)",
 };
 
@@ -7315,6 +7422,7 @@ const PROVIDER_ICONS = {
   jira: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#0052CC" d="M11.5 2.5a9.5 9.5 0 0 0-9.5 9.5h9.5V2.5z"/><path fill="#2684FF" d="M12.5 12a9.5 9.5 0 0 0 9.5-9.5H12.5V12z"/><path fill="#0052CC" d="M11.5 12H2a9.5 9.5 0 0 0 9.5 9.5V12z"/></svg>`,
   trello: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#0079BF"/><rect x="4.5" y="4.5" width="6" height="11" rx="1.5" fill="#ffffff"/><rect x="13.5" y="4.5" width="6" height="7.5" rx="1.5" fill="#ffffff"/></svg>`,
   sentry: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#E1567C" d="M13.2 2.2a1.5 1.5 0 0 0-2.4 0L1.8 19.3a1.5 1.5 0 0 0 1.2 2.3h18a1.5 1.5 0 0 0 1.2-2.3L13.2 2.2zm-1.2 6.3 4.2 8.7H7.8L12 8.5z"/></svg>`,
+  unity: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#222C37"/><path d="M12 4.5l6.5 3.75v7.5L12 19.5l-6.5-3.75v-7.5L12 4.5zm0 3.2l-3.7 2.1 3.7 2.1 3.7-2.1L12 7.7zm-3.9 3.9v3.2l3.2 1.85v-3.2L8.1 11.6zm7.8 0l-3.2 1.85v3.2l3.2-1.85v-3.2z" fill="#ffffff"/></svg>`,
   mixpanel: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#7856FF"/><path d="M6 16.5V7.5L10 13.5L14 7.5V16.5H12V11L10 14L8 11V16.5H6Z" fill="#ffffff"/></svg>`,
   amplitude: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#1E61F0"/><path d="M7 17L12 7L17 17H14.5L12 11.5L9.5 17H7Z" fill="#ffffff"/></svg>`,
   posthog: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#F54E00"/><circle cx="9" cy="12" r="3" fill="#ffffff"/><circle cx="15" cy="12" r="3" fill="#ffffff"/></svg>`,
@@ -7535,6 +7643,7 @@ pages.connections = async (_, query) => {
     { id: "design", name: "Design", providers: ["figma"] },
     { id: "planning", name: "Planning / tracking", providers: ["jira", "trello"] },
     { id: "diagnostics", name: "Errors / diagnostics", providers: ["sentry"] },
+    { id: "builds", name: "Builds", providers: ["unity"] },
   ];
   const knownPlugins = new Set(pluginGroups.flatMap((group) => group.providers));
   pluginGroups.push({ id: "other", name: "Other plugins", providers: list.filter((p) => !knownPlugins.has(p.id)).map((p) => p.id) });
@@ -7579,11 +7688,10 @@ pages.connections = async (_, query) => {
       <section class="connections-section" id="connections-alerts" aria-labelledby="connections-alerts-title">
         <h2 class="connections-section-title" id="connections-alerts-title">Alerts / notifications</h2>
         <div class="conn-grid">
-          ${hook ? ConfigurationPages.chatCard(hook) : `<div class="card"><div class="card-b muted">${owner ? "Slack alert settings are unavailable. Reload to try again." : "Slack alerts are managed by the project owner."}</div></div>`}
-          <section class="card conn-card" data-owner-only><div class="card-b stack">
-            <strong class="conn-name">Email alerts</strong>
-            <p class="muted">Choose who receives job updates and configure the account that sends them.</p>
-            <div><a class="btn small" href="#/config/email">Manage email alerts</a></div>
+          <section class="card conn-card"><div class="card-b stack">
+            <strong class="conn-name">Slack, email, this device and your Mac</strong>
+            <p class="muted">${hook?.set ? `Slack is connected${hook.paused ? " but paused" : ""}. ` : ""}Where updates reach you is set in one place.</p>
+            <div><a class="btn small primary" href="#/config/alerts">Open Alerts settings</a></div>
           </div></section>
         </div>
       </section>
@@ -7610,31 +7718,7 @@ pages.connections = async (_, query) => {
     </div>`,
     after: () => {
       ConfigurationPages.applyRole(state.you?.role || "owner", view);
-      const onChat = async (event) => {
-        const button = event.target.closest("[data-config-action]");
-        if (!button || button.disabled) return;
-        const action = button.dataset.configAction;
-        if (action === "chat-set") {
-          showConfigMutationDialog(
-            "Slack webhook",
-            `<label class="field"><span>Webhook URL</span><input type="url" name="url" required autocomplete="off" placeholder="https://hooks.slack.com/services/…"></label>`,
-            "Save",
-            (values) => ({part: "webhook", body: {op: "set", url: values.url}}),
-            "Webhook saved. Sending a test message…",
-            async () => {
-              try { await api("config/webhook", {method: "POST", body: {op: "test"}}); toast("Webhook saved and tested: check your channel for the message."); }
-              catch (error) { toast(`Saved, but the test message failed: ${error.message}`, true); }
-            },
-          );
-        } else if (action === "chat-clear") {
-          await runConfigMutation(button, {part: "webhook", body: {op: "clear"}}, "Webhook removed");
-        } else if (action === "chat-test") {
-          await runConfigMutation(button, {part: "webhook", body: {op: "test"}}, "Test message sent");
-        }
-      };
-      view.addEventListener("click", onChat);
-      cleanup.push(() => view.removeEventListener("click", onChat));
-      if (query?.get("card") === "chat") $("#chat-alerts")?.scrollIntoView({ block: "start" });
+      if (query?.get("card") === "chat") location.replace("#/config/alerts"); // old links to the Slack card
       const section = query?.get("section");
       if (["plugins", "alerts", "git", "analytics", "mobile", "mcp"].includes(section)) {
         view.querySelector(`#connections-${section}`)?.scrollIntoView({ block: "start" });
@@ -7922,7 +8006,7 @@ document.addEventListener("click", (e) => {
 // One way to attach anything: say what it is, then where it comes from (a connected app, a link, a file, or pasted text).
 // It only attaches; nothing runs.
 async function attachToJob(jobId, role = "") {
-  const APP_FOR = { ticket: ["jira", "trello"], design: ["figma"], problem: ["sentry"] };
+  const APP_FOR = { ticket: ["jira", "trello"], design: ["figma"], problem: ["sentry", "unity"] };
   const ACCEPT = { ticket: ".pdf,.md,.txt,image/*", design: "image/*,.pdf,.fig,.html,.htm", problem: "image/*,.log,.txt,.json,.md,.crash,.ips" };
   const picker = await linkPickerHtml({ prefer: APP_FOR[role] || [], label: "From a connected app", emptyHint: "" });
   role = role || "design";
@@ -9901,7 +9985,7 @@ function routeParent(r) {
   if (r.page === "job" || r.page === "new" || r.page === "file") return "#/";
   if (r.page === "run") return "#/activity";
   if (r.page === "docs" && r.args[0] === "product") return "#/product";
-  if (r.page === "docs" && r.args.length) return "#/docs";
+  if (r.page === "docs" && r.args.length) return "#/";
   if (r.page === "config" && r.args.length) return "#/config";
   if (r.page === "new-project") return "#/projects";
   if (r.page === "test-cases") return "#/tests";
@@ -10078,7 +10162,7 @@ $("#skip-link")?.addEventListener("click", () => { $("#view").focus({ preventScr
 const navigationDrawer = NavigationDrawer.mount({document, window});
 
 // ---------------------------------------------------------------- command palette
-const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Epics", "#/product?section=epics", "Break the product down into epics, approve them, and link them to Jira"], ["Docs", "#/docs", "Every feature, job and project file in one place"],
+const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Epics", "#/product?section=epics", "Break the product down into epics, approve them, and link them to Jira"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
   ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
@@ -10093,7 +10177,6 @@ function paletteBase() {
   act_("Run all tests", "Manual test run", () => runAction("test", {}));
   act_("Send feedback", "Tell us what could be better or share ideas", () => Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" }));
   act_("Suggest missing feature", "Request a feature or capability you'd like in Orchestrator", () => Feedback.open({ initialStep: "feedback", category: "feature_request", userName: state.you?.email || "" }));
-  act_("Auto-improve Orchestrator", "Create an AI job to improve Orchestrator itself and track submissions", () => { location.hash = "#/auto-improve"; });
   act_("Improve Orchestrator (Win a Prize!)", "Submit an Orchestrator improvement for permanent inclusion and prize", () => Feedback.open({ initialStep: "improve_orchestrator", category: "improve_orchestrator", userName: state.you?.email || "" }));
   act_("Create job to improve Orchestrator", "Start a new local AI job focused on enhancing Orchestrator itself", () => { location.hash = "#/auto-improve"; });
   act_("Sign out", "Sign out of this browser", () => $("#signout-btn")?.click());
@@ -10240,9 +10323,45 @@ function renderNotifyBtn() {
     : Account.active() ? "Alerts on this device when a run finishes, fails or needs you, even with Orchestrator closed"
     : "Browser alerts when a run finishes, fails or needs you";
 }
+// iPhone only allows web push for apps on the Home Screen, so say how, rather than just refusing.
+function showHomeScreenGuide() {
+  const slack = state.alerts?.webhook ? `<p class="muted">Slack alerts are already connected, so you'll still hear about finished runs there in the meantime.</p>` : "";
+  formDialog("Add Orchestrator to your Home Screen", `<p>iPhone only allows alerts for apps on the Home Screen.</p>
+    <ol><li>In Safari, tap <strong>Share</strong> (the square with an arrow).</li><li>Choose <strong>Add to Home Screen</strong>.</li>
+    <li>Open <strong>Orchestrator</strong> from your Home Screen, sign in, and tap <strong>Get alerts</strong> again.</li></ol>${slack}`, "Got it", { compact: true });
+  $("#dialog-cancel").hidden = true;
+}
+
+// Slack alerts are one webhook for the project, so only the owner can pause them, and the button appears only once Slack is connected.
+function renderSlackBtn() {
+  const button = $("#slack-alerts-btn");
+  if (!button) return;
+  const connected = Boolean(state.alerts?.webhook) && state.you?.role !== "member";
+  button.hidden = !connected;
+  if (!connected) return;
+  const on = !state.alerts.webhook_paused;
+  button.textContent = on ? "Slack alerts on" : "Slack alerts off";
+  button.title = on ? "Click to pause Slack alerts" : "Click to send alerts to Slack again";
+}
+$("#slack-alerts-btn")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const pausing = !state.alerts?.webhook_paused;
+  button.disabled = true;
+  try {
+    await api("config/webhook", { method: "POST", body: { op: pausing ? "pause" : "resume" } });
+    state.alerts = { ...state.alerts, webhook_paused: pausing };
+    toast(pausing ? "Slack alerts paused." : "Slack alerts are on.");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    button.disabled = false;
+    renderSlackBtn();
+  }
+});
+
 notifyBtn?.addEventListener("click", async () => {
   if (needsHomeScreen()) {
-    toast("First add Orchestrator to your Home Screen (Share, then Add to Home Screen) and open it from there.", "info");
+    showHomeScreenGuide();
     return;
   }
   if (Notifications.enabled()) { Notifications.disable(); disablePush(); renderNotifyBtn(); return; }
@@ -10259,6 +10378,7 @@ notifyBtn?.addEventListener("click", async () => {
   renderNotifyBtn();
 });
 renderNotifyBtn();
+renderSlackBtn();
 const signOutBtn = $("#signout-btn");
 if (signOutBtn) {
   signOutBtn.addEventListener("click", signOut);
@@ -10267,12 +10387,6 @@ const feedbackBtn = $("#feedback-btn");
 if (feedbackBtn) {
   feedbackBtn.addEventListener("click", () => {
     Feedback.open({ initialStep: "feedback", userName: state.you?.email || "" });
-  });
-}
-const autoImproveBtn = $("#auto-improve-btn");
-if (autoImproveBtn) {
-  autoImproveBtn.addEventListener("click", () => {
-    location.hash = "#/auto-improve";
   });
 }
 // A tapped alert opens the computer it came from (?machine=…), at the page it is about (the hash).

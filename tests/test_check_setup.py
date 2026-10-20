@@ -98,6 +98,8 @@ class TestCheckSetup(unittest.TestCase):
 command = "npx"
 [mcp_servers.playwright]
 command = "npx"
+[mcp_servers.unity-mcp]
+command = "uvx"
 [plugins."github@openai-curated"]
 enabled = true
 [plugins."sentry@openai-curated"]
@@ -113,6 +115,7 @@ enabled = true
         self.assertIn("✅ XcodeBuildMCP / iOS plugin", output)
         self.assertIn("✅ Sentry MCP/plugin", output)
         self.assertIn("✅ Playwright MCP", output)
+        self.assertIn("✅ Unity MCP", output)
 
     @patch("shutil.which")
     @patch("sys.stdout", new_callable=io.StringIO)

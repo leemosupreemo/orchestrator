@@ -502,6 +502,7 @@ def _check():
         ("XcodeBuildMCP / iOS plugin", ["xcodebuildmcp", "build-ios-apps"], "Build, run, inspect, and screenshot iOS Simulator apps directly."),
         ("Sentry MCP/plugin", ["sentry"], "Inspect production issues, events, stack traces, and release health."),
         ("Playwright MCP", ["playwright"], "Inspect and automate web UIs, dashboards, and browser-based tools."),
+        ("Unity MCP", ["unity-mcp", "unity_mcp", "unitymcp", "mcp-unity", "mcpforunity"], "Read the console, run tests, and inspect scenes in a running Unity Editor."),
     ]
     for label, names, value_desc in optional_integrations:
         detected = detect_codex_integration(names)

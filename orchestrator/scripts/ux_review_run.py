@@ -24,6 +24,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, now_iso, read_json, write_json, write_text  # noqa: E402
 from model_router import ModelRole  # noqa: E402
 
+from orchestrator import ux_native as native  # noqa: E402
 from orchestrator import ux_review as ux  # noqa: E402
 from orchestrator.project_config import PROJECT_CONFIG  # noqa: E402
 
@@ -53,19 +54,32 @@ def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = ""
             limits.append("Screens show the app currently served at the configured URL. Baseline routes show first load; "
                           "declared screen states include their capture interactions. Other states may be missing.")
     if cfg["simulator"]:
-        result = subprocess.run([sys.executable, str(SCRIPTS_DIR / "simulator_visual_check.py"), "--job", job_id or "ux-pass"],
+        links = [arg for link in cfg["simulator_screens"] for arg in ("--screen", link)]
+        result = subprocess.run([sys.executable, str(SCRIPTS_DIR / "simulator_visual_check.py"), "--job", job_id or "ux-pass", *links],
                                 cwd=ROOT, capture_output=True, text=True, check=False)
         latest = OUTPUT_DIR / "manual" / "latest"
         pngs = sorted(latest.glob("screenshot_*.png")) if result.returncode == 0 and latest.exists() else []
         screens_dir.mkdir(parents=True, exist_ok=True)
+        labels = read_json(latest / "screens.json") if (latest / "screens.json").is_file() else {}
         for n, png in enumerate(pngs, start=1):
             shutil.copy2(png, screens_dir / f"simulator-{n}.png")
-            shots.append({"file": f"simulator-{n}.png", "route": "iOS simulator, after launch", "width": 0, "dark": False})
+            shots.append({"file": f"simulator-{n}.png", "route": labels.get(png.name, "iOS simulator, after launch"), "width": 0,
+                          "dark": png.stem.endswith("_dark")})
         if not pngs:
             limits.append("The iOS simulator check didn't produce screenshots; see its log under output/manual/.")
-    if not cfg["url"] and not cfg["simulator"]:
-        limits.append("No screens are configured (ui_review in .orchestrator/project.json), so this review works "
-                      "from the code alone and can't judge layout, spacing or contrast as rendered.")
+    if cfg["android"]:
+        android_shots, problem = native.capture_android(ROOT, cfg["android"], screens_dir, dark_mode=cfg["dark_mode"] if dark is None else dark,
+                                                        log=lambda line: print(line, flush=True))
+        shots += android_shots
+        if problem:
+            limits.append(problem)
+    if cfg["macos"]:
+        mac_shots, problem = native.capture_macos(ROOT, cfg["macos"], screens_dir, log=lambda line: print(line, flush=True))
+        shots += mac_shots
+        if problem:
+            limits.append(problem)
+    if not ux.has_screens(cfg):
+        limits.append("No screens configured (ui_review in project.json), so layout, spacing and contrast weren't judged.")
     return shots, limits
 
 
@@ -95,7 +109,7 @@ def product_pass(no_screens: bool, model: str) -> int:
     cfg = project_settings()
     out_dir = OUTPUT_DIR / "ux-pass" / ux.stamp()
     screens_dir = out_dir / "screens"
-    stage = "Capture screens" if not no_screens and (cfg["url"] or cfg["simulator"]) else "Prepare interface code"
+    stage = "Capture screens" if not no_screens and ux.has_screens(cfg) else "Prepare interface code"
     print(f"[1/4] {stage}", flush=True)
     shots, limits = ([], ["Screens were skipped for this run."]) if no_screens else capture(cfg, screens_dir, dark=None)
     save_screens(out_dir, shots, limits, title="Whole-product review")

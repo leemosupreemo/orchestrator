@@ -155,5 +155,47 @@ class ApproveReviseTests(unittest.TestCase):
             self.assertEqual(inv["coverage"]["last_error"], "Coverage measurement failed: No tests")
 
 
+
+class AddFrameworkTests(unittest.TestCase):
+    MANIFEST = 'import PackageDescription\nlet package = Package(\n    name: "App",\n    targets: [\n        .target(name: "App"),\n        .testTarget(name: "AppTests"),\n    ]\n)\n'
+
+    def run_add(self, key, root, run=None):
+        import dev_console
+        config = type("Config", (), {"test_target": "AppTests"})()
+        run = run or (lambda *a, **k: type("Done", (), {"returncode": 0})())
+        with patch.object(dev_console, "ROOT", root), patch.object(dev_console, "PROJECT_CONFIG", config), \
+                patch("job_actions.subprocess.run", side_effect=run) as proc:
+            return job_actions.add_framework(key), proc
+
+    def test_adds_package_starter_test_and_resolves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Package.swift").write_text(self.MANIFEST)
+            code, proc = self.run_add("quick_nimble", root)
+            manifest = (root / "Package.swift").read_text()
+            self.assertEqual(code, 0)
+            self.assertIn("github.com/Quick/Quick.git", manifest)
+            self.assertIn("github.com/Quick/Nimble.git", manifest)
+            self.assertIn("import Quick", (root / "Tests" / "AppTests" / "SampleSpec.swift").read_text())
+            self.assertEqual(proc.call_args[0][0], ["swift", "package", "resolve"])
+
+    def test_without_a_package_manifest_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, proc = self.run_add("snapshot_testing", Path(tmp))
+            self.assertEqual(code, 1)
+            proc.assert_not_called()
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_xcbeautify_needs_homebrew(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("shutil.which", return_value=None):
+                code, proc = self.run_add("xcbeautify", Path(tmp))
+            self.assertEqual(code, 1)
+            proc.assert_not_called()
+            with patch("shutil.which", return_value="/opt/homebrew/bin/brew"):
+                code, proc = self.run_add("xcbeautify", Path(tmp))
+            self.assertEqual(proc.call_args[0][0], ["brew", "install", "xcbeautify"])
+
+
 if __name__ == "__main__":
     unittest.main()

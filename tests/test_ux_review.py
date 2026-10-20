@@ -311,3 +311,32 @@ class CaptureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NativeCaptureWiringTests(unittest.TestCase):
+    def capture(self, ui_review):
+        import ux_review_run as runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(runner, "ROOT", root),
+                patch.object(runner.native, "capture_android", return_value=([{"file": "android-launch-light.png", "route": "Android, after launch", "width": 0, "dark": False}], "")) as android,
+                patch.object(runner.native, "capture_macos", return_value=([], "My.app has no visible window to capture.")) as mac,
+            ):
+                shots, limits = runner.capture(ux.settings({"ui_review": ui_review}), root / "screens", dark=None)
+            return shots, limits, android, mac
+
+    def test_android_and_mac_captures_join_the_review_with_their_problems_as_limits(self):
+        shots, limits, android, mac = self.capture({"android": {"package": "com.example.app"}, "macos": {"app": "build/My.app"}})
+        self.assertEqual([s["file"] for s in shots], ["android-launch-light.png"])
+        self.assertEqual(limits, ["My.app has no visible window to capture."])
+        android.assert_called_once()
+        mac.assert_called_once()
+
+    def test_nothing_is_captured_or_claimed_when_no_platform_is_set_up(self):
+        shots, limits, android, mac = self.capture({})
+        self.assertEqual(shots, [])
+        self.assertIn("No screens configured", limits[0])
+        android.assert_not_called()
+        mac.assert_not_called()

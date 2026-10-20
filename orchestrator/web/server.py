@@ -66,7 +66,7 @@ from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import releases
 from orchestrator import features as feature_store
-from orchestrator import feature_map
+from orchestrator import feature_map, kpi_suggest
 from orchestrator import epics as epic_store
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -113,7 +113,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 # variable); an email added under Configuration is a member. Members run jobs, approve, build, test and merge; they can't
 # change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
 OWNER_SOURCES = ("git", "account", "environment")
-OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "allowed-email", "firebase", "fleet", "role-prompts"}
+OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
 OWNER_ONLY_ACTIONS = {"console", "wizard", "config_menu", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
@@ -1239,7 +1239,7 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
-TICKET_APPS, DESIGN_APPS, PROBLEM_APPS = {"jira", "trello"}, {"figma"}, {"sentry"}
+TICKET_APPS, DESIGN_APPS, PROBLEM_APPS = {"jira", "trello"}, {"figma"}, {"sentry", "unity"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
@@ -1423,7 +1423,10 @@ def ui_review_settings(root: Path) -> dict[str, Any]:
         cfg, error = ux_review.settings({"ui_review": raw}), ""
     except ux_review.ConfigError as exc:
         cfg, error = None, str(exc)
-    return {"saved": raw, "settings": cfg, "error": error, "browser": bool(ux_review.find_browser())}
+    # Same test the review itself uses to decide there is nothing to look at, so the page can say so before a run.
+    interface = ux_review.frontend_files(git(root, "ls-files").splitlines(), (cfg or {}).get("paths"))
+    has_interface = bool(interface or (cfg and ux_review.has_screens(cfg)))
+    return {"saved": raw, "settings": cfg, "error": error, "browser": bool(ux_review.find_browser()), "has_interface": has_interface}
 
 
 def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
@@ -1435,9 +1438,17 @@ def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         raise UIError("Widths are numbers in pixels, like 390 1440.")
     raw = {"url": _text(body, "url", limit=500), "start_command": _text(body, "start_command", limit=500),
            "routes": lines("routes") or ["/"], "widths": widths, "dark_mode": bool(body.get("dark_mode")),
-           "simulator": bool(body.get("simulator")), "review_changes": bool(body.get("review_changes")),
-           "conventions": _text(body, "conventions", limit=300)}
-    raw = {k: v for k, v in raw.items() if v not in ("", None)}
+           "simulator": bool(body.get("simulator")), "simulator_screens": lines("simulator_screens"),
+           "review_changes": bool(body.get("review_changes")), "conventions": _text(body, "conventions", limit=300)}
+    android = {"package": _text(body, "android_package", limit=200), "apk": _text(body, "android_apk", limit=300),
+               "avd": _text(body, "android_avd", limit=100), "build_command": _text(body, "android_build", limit=500),
+               "screens": lines("android_screens")}
+    macos = {"app": _text(body, "macos_app", limit=300), "build_command": _text(body, "macos_build", limit=500)}
+    if any(android.values()):
+        raw["android"] = {k: v for k, v in android.items() if v not in ("", [])}
+    if any(macos.values()):
+        raw["macos"] = {k: v for k, v in macos.items() if v}
+    raw = {k: v for k, v in raw.items() if v not in ("", None, [])}
     try:
         ux_review.settings({"ui_review": raw})
     except ux_review.ConfigError as exc:
@@ -2093,6 +2104,7 @@ GITHUB_LANG_COLORS: dict[str, str] = {
     "PHP": "#4F5D95",
     "Perl": "#0298C3",
     "Lua": "#000080",
+    "C#": "#178600",
 }
 
 _LANG_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
@@ -2123,6 +2135,7 @@ def scan_local_languages(root: Path) -> list[dict[str, Any]]:
         ".rb": "Ruby",
         ".kt": "Kotlin",
         ".java": "Java",
+        ".cs": "C#",
     }
     ignored_dirs = {".git", ".build", "node_modules", "Pods", "DerivedData", ".venv", "venv", "__pycache__", ".orchestrator", "dist", "build"}
     byte_counts: dict[str, int] = {}
@@ -2683,7 +2696,7 @@ def recent_logs(root: Path, limit: int = 8) -> list[dict[str, Any]]:
     return sorted(out, key=lambda x: x["mtime"], reverse=True)[:limit]
 
 
-PROVIDER_NAMES = {"jira": "Jira", "trello": "Trello", "sentry": "Sentry", "figma": "Figma"}
+PROVIDER_NAMES = {"jira": "Jira", "trello": "Trello", "sentry": "Sentry", "figma": "Figma", "unity": "Unity Build Automation"}
 
 
 def save_upload(root: Path, name: str, data: bytes, folder: Path | None = None) -> dict[str, Any]:
@@ -2866,6 +2879,13 @@ def build_delete_job(params: dict[str, Any], root: Path) -> list[str]:
     if params.get("keep_changes") or params.get("revert") is False:
         argv.append("--keep-changes")
     return argv
+
+
+def build_add_framework(params: dict[str, Any], root: Path) -> list[str]:
+    framework = _choice(params, "framework", ["swift_testing", "snapshot_testing", "quick_nimble", "xcbeautify"])
+    if not framework:
+        raise UIError("'framework' is required")
+    return orchestrator_argv("script", "job_actions.py", "add-framework", framework)
 
 
 def build_export_job(params: dict[str, Any], root: Path) -> list[str]:
@@ -3247,7 +3267,9 @@ def config_state(root: Path) -> dict[str, Any]:
             "resend_api_key_set": bool(settings.get("resend_api_key")),
         },
         "analytics": analytics_state(settings),
-        "webhook": {"set": bool(settings.get("notification_webhook")), "host": notifier.host_of(settings.get("notification_webhook", ""))},
+        "webhook": {"set": bool(settings.get("notification_webhook")), "host": notifier.host_of(settings.get("notification_webhook", "")),
+                    "paused": bool(settings.get("notification_webhook_paused"))},
+        "desktop_notifications": settings.get("desktop_notifications", True) is not False,
         "archived": archived_jobs(root),
         "docs": [{k: v for k, v in d.items() if k != "path"} for d in doc_entries(root)],
         "instructions": [{"cli": cli, "file": f, "exists": (root / f).is_file()} for cli, f in INSTRUCTION_FILES.items()],
@@ -3356,14 +3378,23 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
                 raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
             return {"ok": True}
     elif part == "webhook":
-        op = _choice(body, "op", ["set", "clear", "test"])
+        op = _choice(body, "op", ["set", "clear", "test", "pause", "resume"])
         if op == "set":
             url = _text(body, "url", required=True, limit=500)
             if not notifier.valid_webhook(url):
                 raise UIError("The webhook must be an https:// URL")
             settings["notification_webhook"] = url
+            settings.pop("notification_webhook_paused", None)
         elif op == "clear":
             settings.pop("notification_webhook", None)
+            settings.pop("notification_webhook_paused", None)
+        elif op in ("pause", "resume"):
+            if not settings.get("notification_webhook"):
+                raise UIError("Save a webhook first")
+            if op == "pause":
+                settings["notification_webhook_paused"] = True
+            else:
+                settings.pop("notification_webhook_paused", None)
         else:
             url = settings.get("notification_webhook", "")
             if not url:
@@ -3374,6 +3405,12 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
             except notifier.NotifyError as exc:
                 raise UIError(str(exc), HTTPStatus.BAD_GATEWAY)
             return {"ok": True}
+    elif part == "desktop":
+        # A notification on the Mac that runs the worker when a job finishes (scripts/notify.py reads this).
+        if body.get("enabled") is False:
+            settings["desktop_notifications"] = False
+        else:
+            settings.pop("desktop_notifications", None)
     elif part == "allowed-email":
         op = _choice(body, "op", ["add", "remove"])
         address = _text(body, "email", required=True, limit=254).lower()
@@ -3726,28 +3763,37 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     created_at = datetime.now().astimezone().isoformat()
 
     feedback_id = secrets.token_hex(12)
-    job_metadata: dict[str, str] = {}
-    if job_id:
+    # The improvement can span several jobs; `jobId` stays as the first for older clients.
+    raw_ids = [job_id, *(payload.get("jobIds") if isinstance(payload.get("jobIds"), list) else [])]
+    job_ids = list(dict.fromkeys(str(i).strip() for i in raw_ids if str(i or "").strip()))[:10]
+    job_id = job_ids[0] if job_ids else ""
+
+    def job_info(jid: str) -> dict[str, str]:
+        info: dict[str, str] = {}
         try:
-            job_path = resolve_job_path(root, job_id)
+            job_path = resolve_job_path(root, jid)
             if job_path.is_file():
                 raw_job = read_json_file(job_path)
                 if isinstance(raw_job, dict):
                     if raw_job.get("title"):
-                        job_metadata["title"] = str(raw_job["title"]).strip()
+                        info["title"] = str(raw_job["title"]).strip()
                     branch_name = raw_job.get("branch") or raw_job.get("git_branch")
                     if branch_name:
-                        job_metadata["branch"] = str(branch_name).strip()
+                        info["branch"] = str(branch_name).strip()
                     kind_name = raw_job.get("kind") or raw_job.get("type")
                     if kind_name:
-                        job_metadata["kind"] = str(kind_name).strip()
+                        info["kind"] = str(kind_name).strip()
                     state_val = raw_job.get("state")
                     if isinstance(state_val, dict):
-                        job_metadata["state"] = str(state_val.get("label") or state_val.get("state") or "").strip()
+                        info["state"] = str(state_val.get("label") or state_val.get("state") or "").strip()
                     elif isinstance(state_val, str):
-                        job_metadata["state"] = state_val.strip()
+                        info["state"] = state_val.strip()
         except Exception:
             pass
+        return info
+
+    infos = {jid: job_info(jid) for jid in job_ids}
+    job_metadata = infos.get(job_id, {})
 
     if not title and job_metadata.get("title"):
         title = job_metadata["title"]
@@ -3759,6 +3805,7 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "category": category,
         "title": title,
         "jobId": job_id,
+        "jobIds": job_ids,
         "explanation": explanation or feedback_text,
         "feedbackText": feedback_text,
         "platform": platform,
@@ -3803,21 +3850,22 @@ def dispatch_feedback(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     ]
     if title:
         body_lines.append(f"Title: {title}")
-    if job_id:
-        body_lines.append(f"Local Job ID / Reference: {job_id}")
-        if job_metadata.get("title"):
-            body_lines.append(f"Local Job Title: {job_metadata['title']}")
-        if job_metadata.get("branch"):
-            body_lines.append(f"Local Job Branch: {job_metadata['branch']}")
-        if job_metadata.get("kind"):
-            body_lines.append(f"Local Job Kind: {job_metadata['kind']}")
-        if job_metadata.get("state"):
-            body_lines.append(f"Local Job State: {job_metadata['state']}")
+    for jid in job_ids:
+        info = infos[jid]
+        body_lines.append(f"Local Job ID / Reference: {jid}")
+        if info.get("title"):
+            body_lines.append(f"Local Job Title: {info['title']}")
+        if info.get("branch"):
+            body_lines.append(f"Local Job Branch: {info['branch']}")
+        if info.get("kind"):
+            body_lines.append(f"Local Job Kind: {info['kind']}")
+        if info.get("state"):
+            body_lines.append(f"Local Job State: {info['state']}")
     if category == "improve_orchestrator":
         body_lines.append("Prize Eligible: YES (Permanent Inclusion Submission)")
-        if job_id:
+        for jid in job_ids:
             try:
-                job_file = resolve_job_path(root, job_id)
+                job_file = resolve_job_path(root, jid)
                 if job_file.is_file():
                     jdata = read_json_file(job_file)
                     if jdata:
@@ -4076,6 +4124,7 @@ ACTIONS: dict[str, Action] = {
     "ux_pass": Action("UX and design pass", lambda p, r: orchestrator_argv("script", "ux_review_run.py", "pass")),
     "ux_review_job": Action("UX and design check", lambda p, r: orchestrator_argv("script", "ux_review_run.py", "job", _job_path(p, r)),
                             fields=["job"]),
+    "add_framework": Action("Add test framework", build_add_framework, fields=["framework"]),
     "scaffold_canary": Action("Scaffold canary test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "scaffold-canary")),
 }
 
@@ -4484,8 +4533,9 @@ class UIServer(ThreadingHTTPServer):
                 account.send_events(machine, events, project_display_name(root))
             except account.AccountError as exc:
                 print(f"  Push notifications: {exc}", flush=True)
-        url = read_settings(root).get("notification_webhook")
-        if url:
+        settings = read_settings(root)
+        url = settings.get("notification_webhook")
+        if url and not settings.get("notification_webhook_paused"):  # paused from the sidebar: connected, but quiet
             for event in events:
                 try:
                     notifier.post_webhook(url, notifier.payload(event, project_display_name(root), PUBLIC_URL.get("url", "")))
@@ -5125,7 +5175,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"project": project_state(root), "runs": visible_runs,
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
                         "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
-                        "alerts": {"webhook": bool(read_settings(root).get("notification_webhook"))},
+                        "alerts": {"webhook": bool(read_settings(root).get("notification_webhook")),
+                                   "webhook_paused": bool(read_settings(root).get("notification_webhook_paused"))},
                         "actions": {k: {"title": a.title, "confirm": a.confirm, "fields": a.fields,
                                         "owner_only": k in OWNER_ONLY_ACTIONS}
                                     for k, a in ACTIONS.items()},
@@ -5197,6 +5248,29 @@ class UIHandler(BaseHTTPRequestHandler):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(plan, encoding="utf-8")
             self._json({"ok": True, "path": str(target.relative_to(root))})
+        elif method == "POST" and len(parts) == 4 and parts[0] == "features" and parts[2:] == ["kpis", "suggest"]:
+            # Auto-fill: a model picks the one metric for this feature, in the background. The page shows it for review; nothing is saved.
+            self._body()
+            rt = runtime_dir(root)
+            feature = next((f for f in feature_store.load(rt) if f["id"] == parts[1]), None)
+            if feature is None:
+                raise UIError("Feature not found", HTTPStatus.NOT_FOUND)
+            try:
+                titles = [str(j.get("title") or "") for j in list_jobs(root) if j.get("feature") == feature["id"]]
+            except Exception:
+                titles = []
+            request = kpi_suggest.prompt(feature, prd_doc.context_block(root, "planner"), [t for t in titles if t])
+
+            def work() -> dict[str, Any]:
+                try:
+                    return kpi_suggest.parse(self._model_call(root, request, timeout=150), feature)
+                except kpi_suggest.KpiSuggestError:
+                    try:
+                        return kpi_suggest.parse(self._model_call(root, request + kpi_suggest.REMINDER, timeout=150), feature)
+                    except kpi_suggest.KpiSuggestError as exc:
+                        raise UIError(f"{exc} Try again, or add the KPI yourself.", HTTPStatus.BAD_GATEWAY)
+
+            self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
         elif method == "POST" and len(parts) == 3 and parts[0] == "features" and parts[2] == "kpis":
             body = self._body()
             op = _choice(body, "op", ["add", "update", "delete", "measure", "restore"])
@@ -5864,7 +5938,7 @@ class UIHandler(BaseHTTPRequestHandler):
             else:  # who else can sign in is the owner's business
                 state["allowed_emails"] = [e for e in state["allowed_emails"] if e["email"] == self._principal.get("email")]
                 for owner_field in ("keys", "ollama_host", "email", "analytics", "webhook", "instructions",
-                                    "machines", "firebase", "role_prompts", "menus"):
+                                    "machines", "firebase", "role_prompts", "menus", "desktop_notifications"):
                     state.pop(owner_field, None)
             state["viewer"] = {"role": self._principal["role"], "email": self._principal.get("email")}
             self._json(state)

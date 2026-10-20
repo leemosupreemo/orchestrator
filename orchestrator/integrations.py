@@ -1,4 +1,4 @@
-"""Connections to Jira, Trello, Sentry and Figma.
+"""Connections to Jira, Trello, Sentry, Figma and Unity Build Automation.
 
 Each provider can: validate credentials (`test`), find things (`search`), and
 turn one item into plain-markdown context (`lookup`) that gets written into a
@@ -97,6 +97,12 @@ def http_json(url: str, headers: dict[str, str] | None = None, secrets: list[str
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise IntegrationError("The service sent something that isn't JSON. Check the address.") from None
+
+
+def http_text(url: str, headers: dict[str, str] | None = None, secrets: list[str] | None = None) -> str:
+    """A plain-text answer, such as a build log. Anything past the size limit is dropped."""
+    raw = _request(url, {"Accept": "text/plain", **(headers or {})}, secrets or [])
+    return raw[:MAX_IMAGE_BYTES].decode("utf-8", errors="replace")
 
 
 def http_bytes(url: str, headers: dict[str, str] | None = None) -> bytes:
@@ -628,7 +634,112 @@ class Figma(Provider):
             self._describe(child, depth + 1, out, budget)
 
 
-PROVIDERS: dict[str, type[Provider]] = {p.id: p for p in (Jira, Trello, Sentry, Figma)}
+class UnityBuild(Provider):
+    id, name = "unity", "Unity Build Automation"
+    blurb = "Pull a failed Unity Cloud build's error and log into a job, so the AI fixes what broke the build."
+    fields = [
+        ("org", "Organization ID", False, "1234567890123", "The number after /organizations/ in your Unity Cloud dashboard address."),
+        ("project", "Project ID (optional)", False, "", "Limits the suggestion list to one project. Use the project's ID, not its name."),
+        ("token", "API key", True, "", "The Build Automation API key from your Unity Cloud project settings."),
+    ]
+    token_url = "https://cloud.unity.com/"
+    HOST = "https://build-api.cloud.unity3d.com"
+    BUILD = re.compile(r"/buildtargets/([^/?#]+)/builds/(\d+)")
+    # (buildtarget id, build number), as "target/number" or just a Build Automation build link
+    REF = re.compile(r"^([A-Za-z0-9_.-]+)/(\d+)$")
+    ERROR_LINE = re.compile(r"error CS\d+|\bexception\b|\berror\b|\bfailed\b|\bfailure\b", re.IGNORECASE)
+
+    def _org(self) -> str:
+        org = urllib.parse.quote(self.c.get("org", ""), safe="")
+        if not org:
+            raise IntegrationError("Organization ID is required.")
+        return org
+
+    def _scope(self, target: str = "_all") -> str:
+        project = self.c.get("project", "")
+        if not project and target == "_all":
+            return f"/api/v1/orgs/{self._org()}"
+        if not project:
+            raise IntegrationError("Project ID is required to open a single build.")
+        return f"/api/v1/orgs/{self._org()}/projects/{urllib.parse.quote(project, safe='')}/buildtargets/{urllib.parse.quote(target, safe='')}"
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Basic {self.c.get('token', '')}"}
+
+    def _get(self, path: str) -> Any:
+        return http_json(self.HOST + path, self._headers(), self.secrets())
+
+    def describe(self) -> str:
+        return self.c.get("org", "") + (f" / {self.c['project']}" if self.c.get("project") else "")
+
+    def test(self) -> str:
+        self._get(f"/api/v1/orgs/{self._org()}/builds?per_page=1")
+        return f"Organization {self.c.get('org', '')}"
+
+    def _list_path(self, query: str) -> str:
+        params = {"per_page": 10}
+        words = query.strip().lower()
+        if words in ("", "failed", "failure", "failing"):
+            params["buildStatus"] = "failure"
+        elif words in ("all", "any"):
+            pass
+        elif words in ("canceled", "cancelled", "success", "succeeded", "started", "queued"):
+            params["buildStatus"] = {"cancelled": "canceled", "succeeded": "success"}.get(words, words)
+        else:
+            params["search"] = query.strip()
+        return f"{self._scope()}/builds?{urllib.parse.urlencode(params)}"
+
+    def search(self, query: str) -> list[Item]:
+        builds = self._get(self._list_path(query))
+        if not isinstance(builds, list):
+            builds = []
+        return [Item("unity", f"{b.get('buildtargetid', '')}/{b.get('build', '')}",
+                     f"{b.get('buildTargetName') or b.get('buildtargetid', '')} #{b.get('build', '')}",
+                     "", f"{b.get('buildStatus', '?')} · {b.get('platform', '')} · {b.get('scmBranch', '')}".strip(" ·"))
+                for b in builds if isinstance(b, dict)]
+
+    def _target_and_number(self, ref: str) -> tuple[str, str]:
+        match = self.BUILD.search(ref) or self.REF.match(ref.strip())
+        if not match:
+            raise IntegrationError("Use a build like my-target/12, or a Build Automation build link.")
+        return match.group(1), match.group(2)
+
+    @classmethod
+    def error_lines(cls, log: str, limit: int = 40) -> list[str]:
+        seen: list[str] = []
+        for line in log.splitlines():
+            line = line.strip()
+            if line and cls.ERROR_LINE.search(line) and line not in seen:
+                seen.append(line[:300])
+        return seen[-limit:]
+
+    def lookup(self, ref: str) -> Context:
+        target, number = self._target_and_number(ref)
+        base = f"{self._scope(target)}/builds/{number}"
+        build = self._get(base)
+        if not isinstance(build, dict):
+            raise IntegrationError("Unity sent an unexpected answer for that build.")
+        name = f"{build.get('buildTargetName') or target} #{number}"
+        lines = [f"## Unity build {name}: {build.get('buildStatus', '?')}",
+                 f"- Platform: {build.get('platform', '?')} · Unity {build.get('unityVersion', '?')}",
+                 f"- Branch: {build.get('scmBranch', '?')} · Revision: {build.get('lastBuiltRevision') or build.get('changeset') or '?'}",
+                 f"- Started: {build.get('created', '?')} · Finished: {build.get('finished', '?')}"]
+        if build.get("error"):
+            lines += ["", "### Error", str(build["error"])]
+        try:
+            log = http_text(self.HOST + base + "/log", self._headers(), self.secrets())
+        except IntegrationError:
+            log = ""
+        errors = self.error_lines(log)
+        if errors:
+            lines += ["", "### Errors in the build log", "```", *errors, "```"]
+        if log:
+            lines += ["", "### End of the build log", "```", *log.strip().splitlines()[-40:], "```"]
+        item = Item("unity", f"{target}/{number}", name, "", build.get("buildStatus", ""))
+        return Context(item, _clip("\n".join(lines)))
+
+
+PROVIDERS: dict[str, type[Provider]] = {p.id: p for p in (Jira, Trello, Sentry, Figma, UnityBuild)}
 
 
 def provider_for(provider_id: str, creds: dict[str, str]) -> Provider:

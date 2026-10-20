@@ -272,6 +272,29 @@ Architectural overview and guidelines for {project_name}.
 - Explicit error returns (`if err != nil`).
 """
 
+    if stack and stack.language == "csharp":
+        return f"""# Architecture Guide
+
+Architectural overview and guidelines for {project_name}.
+
+## Overview
+
+- **Platform:** {stack.display_name} (C#)
+- **Design Pattern:** Component-based scenes with plain C# domain logic kept out of MonoBehaviours
+
+## Core Layers
+
+1. **Domain / Logic:** Plain C# classes with no `UnityEngine` dependency, so EditMode tests can run them directly.
+2. **Components:** `MonoBehaviour`s and `ScriptableObject`s that connect the logic to scenes and assets.
+3. **Assembly Definitions:** One `.asmdef` per feature area, with separate Editor and Tests assemblies.
+
+## Runtime & Assets
+
+- Never rename or move a file in `Assets/` without its `.meta` file; the `.meta` carries the asset GUID that scenes and prefabs reference.
+- Keep per-frame work in `Update` allocation-free; cache component lookups.
+- Treat scenes and prefabs as merge-prone: keep changes to them small and deliberate.
+"""
+
     return f"""# Architecture Guide
 
 Architectural overview and guidelines for {project_name}.
@@ -367,6 +390,26 @@ Coding standards and conventions for {project_name}.
 - **Testing:**
   - Unit tests in `*_test.go` with standard `testing` package.
   - Test command: `{stack.test_command or 'go test ./...'}`.
+"""
+
+    if stack and stack.language == "csharp":
+        return f"""# Coding Standards
+
+Coding standards and conventions for {project_name}.
+
+## Unity / C# Standards
+
+- **Formatting:** Follow the .NET conventions already used in `Assets/`; one top-level type per file, file named after the type.
+- **Naming Conventions:**
+  - Types, methods, properties, public fields: `UpperCamelCase`
+  - Private fields: `_lowerCamelCase`; locals and parameters: `lowerCamelCase`
+  - Use `[SerializeField] private` rather than public fields to expose values in the Inspector.
+- **Assets:** Commit `.meta` files alongside their assets; never edit `Library/`, `Temp/` or `Logs/`.
+- **Error Handling:** Fail loudly with `Debug.LogError` or exceptions; avoid empty `catch` blocks.
+- **Testing:**
+  - Unity Test Framework (NUnit): `[Test]` and `[UnityTest]`; EditMode tests under `Tests/Editor`, PlayMode tests under `Tests/Runtime`.
+  - Test command: `{stack.test_command or 'Unity -batchmode -runTests -testPlatform EditMode'}`.
+  - Set `UNITY_PATH` to the Unity editor binary if it is not in the Unity Hub's default location.
 """
 
     return f"""# Coding Standards
@@ -2028,6 +2071,8 @@ def init_project(args: argparse.Namespace) -> int:
     if args.with_helper_script:
         write_helper_script(root, args.force)
 
+    if stack.framework == "unity" and not (root / "Packages" / "com.leemosupreemo.orchestrator").exists():
+        print("Unity project: run `orchestrator unity-plugin install` to add the Editor plugin.")
     print("Run: orchestrator check")
     remember_project(root, config["project_name"], active=True)
     return 0
@@ -2104,6 +2149,20 @@ def remove_project_command(reference: str) -> int:
     else:
         print(f"Project '{reference}' not found in remembered projects.")
         return 1
+
+
+def unity_plugin_command(args: argparse.Namespace) -> int:
+    from orchestrator import unity_plugin
+    try:
+        result = unity_plugin.install(Path(args.path), force=args.force)
+    except unity_plugin.PluginError as exc:
+        print(f"❌ {exc}")
+        return 1
+    verb = {"installed": "Installed", "updated": "Updated", "current": "Already up to date:"}[result["status"]]
+    print(f"✅ {verb} the Orchestrator Unity plugin {result['version']} at {result['path']}")
+    if result["status"] != "current":
+        print("   Open the project in Unity, then Window > Orchestrator. Commit Packages/ with the project.")
+    return 0
 
 
 def prune_projects_command() -> int:
@@ -2481,6 +2540,12 @@ def _main(argv: list[str] | None = None) -> int:
     connection_parser.add_argument("-f", "--follow", action="store_true", help="Keep printing new lines as they arrive")
     connection_parser.add_argument("-n", "--lines", type=int, default=40, help="Recent lines to show from each log (default 40)")
 
+    unity_parser = subparsers.add_parser("unity-plugin", help="The Orchestrator Editor plugin for Unity projects")
+    unity_actions = unity_parser.add_subparsers(dest="unity_action", required=True)
+    unity_install = unity_actions.add_parser("install", help="Add the plugin to a Unity project's Packages folder")
+    unity_install.add_argument("path", nargs="?", default=".", help="The Unity project (default: the current folder)")
+    unity_install.add_argument("--force", action="store_true", help="Replace a copy that is already there")
+
     passthrough = subparsers.add_parser("script")
     passthrough.add_argument("--project", help="Recent project name or project root path")
     passthrough.add_argument("script_name")
@@ -2580,6 +2645,8 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "connection-log":
         from orchestrator import connection_log
         return connection_log.show(lines=args.lines, follow=args.follow)
+    if args.command == "unity-plugin":
+        return unity_plugin_command(args)
     if args.command == "script":
         if args.project and apply_project_env(args.project):
             return 1

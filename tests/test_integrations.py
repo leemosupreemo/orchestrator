@@ -89,6 +89,39 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("tap rejoin", ctx.markdown)
         self.assertIn("os=iOS 17", ctx.markdown)
 
+    def test_unity_lists_failed_builds_and_looks_one_up_with_its_log(self):
+        builds = [{"build": 12, "buildtargetid": "ios-dev", "buildTargetName": "iOS dev", "buildStatus": "failure",
+                   "platform": "ios", "scmBranch": "main"}]
+        http = fake_http({"/projects/p1/buildtargets/_all/builds?": builds})
+        creds = {"org": "o1", "project": "p1", "token": "key"}
+        with patch.object(ig, "http_json", http):
+            items = ig.UnityBuild(creds).search("")
+        self.assertEqual((items[0].ref, items[0].title), ("ios-dev/12", "iOS dev #12"))
+        self.assertIn("buildStatus=failure", http.calls[0][0])
+        self.assertEqual(http.calls[0][1]["Authorization"], "Basic key")
+
+        build = {"buildStatus": "failure", "buildTargetName": "iOS dev", "platform": "ios", "unityVersion": "2022.3.10f1",
+                 "scmBranch": "main", "lastBuiltRevision": "abc123", "error": "Build failed"}
+        log = "Importing...\nAssets/Score.cs(4,9): error CS0103: The name 'x' does not exist\nDone.\n"
+        http = fake_http({"/buildtargets/ios-dev/builds/12": build})
+        with patch.object(ig, "http_json", http), patch.object(ig, "http_text", lambda *a, **k: log):
+            ctx = ig.UnityBuild(creds).lookup("ios-dev/12")
+        self.assertIn("## Unity build iOS dev #12: failure", ctx.markdown)
+        self.assertIn("error CS0103", ctx.markdown)
+        self.assertIn("abc123", ctx.markdown)
+        self.assertEqual(ctx.item.ref, "ios-dev/12")
+
+    def test_unity_accepts_build_links_and_rejects_anything_else(self):
+        unity = ig.UnityBuild({"org": "o1", "project": "p1", "token": "key"})
+        self.assertEqual(unity._target_and_number(
+            "https://build-api.cloud.unity3d.com/api/v1/orgs/o1/projects/p1/buildtargets/mac/builds/7/log"), ("mac", "7"))
+        with self.assertRaises(ig.IntegrationError):
+            unity._target_and_number("../../etc")
+        with self.assertRaises(ig.IntegrationError):
+            ig.UnityBuild({"token": "key"}).test()
+        with self.assertRaises(ig.IntegrationError):
+            ig.UnityBuild({"org": "o1", "token": "key"}).lookup("mac/7")  # one build needs the project
+
     def test_figma_parses_urls_and_summarises_the_frame(self):
         self.assertEqual(ig.Figma.parse("https://www.figma.com/design/AbC123/My-App?node-id=12-34&t=x"), ("AbC123", "12:34"))
         self.assertEqual(ig.Figma.parse("https://www.figma.com/file/AbC123/My-App"), ("AbC123", None))

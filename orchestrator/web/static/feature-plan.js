@@ -63,16 +63,13 @@
   function renderQuestions(breakdown) {
     const questions = breakdown?.open_questions || [];
     if (!questions.length) return "";
-    return `<section class="card mb-16" id="epic-questions"><div class="card-h"><h2>Questions to answer</h2><span class="count">${questions.length}</span></div>
+    return `<section class="card card-attention mb-16" id="epic-questions"><div class="card-h"><h2>Questions to answer</h2><span class="pill attention">Requires attention</span><span class="count">${questions.length}</span></div>
       <form class="card-b stack" id="epic-questions-form">
         <p class="muted">Based on your product requirements, these are still unclear. Answer any you can: each answer is added to the requirements above, for the next breakdown and every job to use.</p>
         ${questions.map((q, i) => `<div class="epic-question" data-question="${escapeHtml(q)}">
-          <label class="field"><span>${escapeHtml(q)}</span><textarea name="a${i}" rows="2" maxlength="1000"></textarea></label>
-          <label class="field epic-question-where"><span>Goes in</span><select name="s${i}">${SECTION_CHOICES.map(([id, title]) =>
-            `<option value="${id}" ${id === guessSection(q) ? "selected" : ""}>${escapeHtml(title)}</option>`).join("")}</select></label></div>`).join("")}
+          <label class="field"><span>${escapeHtml(q)}</span><textarea name="a${i}" rows="2" maxlength="1000"></textarea></label></div>`).join("")}
         <div class="row"><span class="spacer"></span>
-          <button type="submit" class="btn" data-after="save">Save to the PRD</button>
-          <button type="submit" class="btn primary" data-after="again">Save and break down again</button></div>
+          <button type="submit" class="btn primary">Save to the PRD</button></div>
       </form></section>`;
   }
 
@@ -106,21 +103,18 @@
       </form></section>`;
   }
 
-  // Approved epics: where each one's job is up to, the Jira epic it is linked to, and the one next step.
-  function renderApproved(epics, {act, jiraConnected} = {}) {
+  // Approved epics, one line each: the epic (linking to its job), whether Jira has it, and whether it is built.
+  function renderApproved(epics, {jiraConnected} = {}) {
     const list = (epics || []).filter((e) => e.status === "approved");
     if (!list.length) return "";
     const row = (e) => {
       const job = e.job_info;
-      const label = job ? (job.backlog ? "No plan yet" : job.plan_ready ? "Plan ready" : job.label || "") : "No job";
-      const status = `<span class="pill ${escapeHtml(job ? (job.backlog ? "idle" : job.tone || "") : "idle")}">${escapeHtml(label)}</span>`;
-      const plan = !job || job.backlog ? `<button type="button" class="btn small primary" ${act ? act("plan_epic", {epic: e.id}) : ""}>Make a plan</button>` : "";
-      const open = job ? `<a class="btn small ${job.plan_ready ? "primary" : "ghost"}" href="#/jobs/${encodeURIComponent(job.id)}">${job.plan_ready ? "Review plan" : "Open job"}</a>` : "";
-      const send = jiraConnected && !e.jira ? `<button type="button" class="btn small ghost" data-epic-send="${escapeHtml(e.id)}">Send to Jira</button>` : "";
-      return `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${escapeHtml(e.name)} <span class="job-type-tag job-type-epic">Epic</span> ${jiraLink(e)}</div>
-        ${e.summary ? `<div class="meta">${escapeHtml(e.summary)}</div>` : ""}
-        ${e.requirements?.length ? `<div class="meta">${e.requirements.length} requirement${e.requirements.length === 1 ? "" : "s"}${e.stories?.length ? ` · ${e.stories.length} stor${e.stories.length === 1 ? "y" : "ies"}` : ""}</div>` : ""}</div>
-        <div class="side">${status}${plan}${open}${send}</div></div>`;
+      const name = job ? `<a href="#/jobs/${encodeURIComponent(job.id)}">${escapeHtml(e.name)}</a>` : escapeHtml(e.name);
+      const jira = e.jira?.key ? jiraLink(e)
+        : jiraConnected ? `<button type="button" class="btn small ghost" data-epic-send="${escapeHtml(e.id)}">Send to Jira</button>` : "";
+      const built = job?.group === "done";
+      return `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${name}</div></div>
+        <div class="side">${jira}<span class="pill ${built ? "done" : "idle"}">${built ? "Implemented" : "Not implemented"}</span></div></div>`;
     };
     return `<section class="card mb-16" id="epic-approved"><div class="card-h"><h2>Approved</h2><span class="count">${list.length}</span></div>
       <div class="list">${list.map(row).join("")}</div></section>`;

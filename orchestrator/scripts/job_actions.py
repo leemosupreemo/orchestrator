@@ -13,6 +13,7 @@ implementation; the helpers below are shared with the console, not copies.
     job_actions.py run-suite <name>                   # run one discovered test suite
     job_actions.py run-plan  <name>                   # run one .xctestplan
     job_actions.py coverage                           # measure code coverage
+    job_actions.py add-framework <key>                # install / add a test framework listed on the Tests page
 """
 from __future__ import annotations
 
@@ -227,12 +228,14 @@ def frameworks_inventory() -> dict[str, Any]:
             "unittest": {"installed": True, "name": "unittest (Standard Library)", "desc": "Built-in unit testing framework for Python"},
         }
 
+    # "auto" is what add-framework can do for it here; absent means only an AI job can (an Xcode-only project, say).
+    has_manifest = (ROOT / "Package.swift").is_file()
     return {
-        "swift_testing": {"installed": bool(has_swift_testing), "name": "Swift Testing (Native)", "desc": "Core logic, ViewModels & async unit tests"},
-        "snapshot_testing": {"installed": bool(has_snapshot_testing), "name": "SnapshotTesting", "desc": "Visual regressions (SwiftUI pixels, Dark Mode)"},
-        "quick_nimble": {"installed": bool(has_quick_nimble), "name": "Quick & Nimble (BDD)", "desc": "Multi-step async state machines & polling specs"},
+        "swift_testing": {"installed": bool(has_swift_testing), "name": "Swift Testing (Native)", "desc": "Core logic, ViewModels & async unit tests", "auto": "scaffold"},
+        "snapshot_testing": {"installed": bool(has_snapshot_testing), "name": "SnapshotTesting", "desc": "Visual regressions (SwiftUI pixels, Dark Mode)", **({"auto": "spm"} if has_manifest else {})},
+        "quick_nimble": {"installed": bool(has_quick_nimble), "name": "Quick & Nimble (BDD)", "desc": "Multi-step async state machines & polling specs", **({"auto": "spm"} if has_manifest else {})},
         "canary_suite": {"installed": bool(sample_canary_exists), "name": "Sample Canary Suite", "desc": f"1-click test suite generation in {tt}"},
-        "xcbeautify": {"installed": bool(has_xcbeautify), "name": "xcbeautify Formatter", "desc": "Strip noisy xcodebuild output into 1-line logs"},
+        "xcbeautify": {"installed": bool(has_xcbeautify), "name": "xcbeautify Formatter", "desc": "Strip noisy xcodebuild output into 1-line logs", **({"auto": "brew"} if shutil.which("brew") else {})},
     }
 
 
@@ -278,6 +281,52 @@ struct SampleSwiftTestingTests {{
     sample_file.write_text(sample_code, encoding="utf-8")
     print(f"✅ Created canary test suite: {sample_file}")
     return 0
+
+
+def add_framework(key: str) -> int:
+    """Install or add one framework from frameworks_inventory(), and write a starter test where there is one."""
+    import shutil
+    from dev_console import ROOT, PROJECT_CONFIG
+    from orchestrator import test_tooling as tooling
+
+    if key == "xcbeautify":
+        if not shutil.which("brew"):
+            print("Homebrew isn't installed, so xcbeautify can't be installed automatically. Install it from https://brew.sh and try again.")
+            return 1
+        print("Installing xcbeautify with Homebrew...")
+        return subprocess.run(["brew", "install", "xcbeautify"]).returncode
+    if key in ("swift_testing", "canary_suite"):
+        return scaffold_canary()
+    if key not in tooling.SPM_FRAMEWORKS:
+        print(f"Don't know how to add '{key}' automatically.")
+        return 1
+
+    manifest_path = ROOT / "Package.swift"
+    if not manifest_path.is_file():
+        print("This project has no Package.swift, so the package can't be added automatically. Use 'Create test job' and the AI will wire it into the Xcode project.")
+        return 1
+    manifest = manifest_path.read_text(encoding="utf-8")
+    target = tooling.find_test_target(manifest, PROJECT_CONFIG.test_target)
+    packages = [tooling.SPM_FRAMEWORKS[key], *tooling.EXTRA_PACKAGES.get(key, [])]
+    updated = target and tooling.add_spm_packages(manifest, packages, target)
+    if not updated:
+        print("Package.swift has no test target in a layout this can edit safely. Use 'Create test job' and the AI will add the package.")
+        return 1
+    if updated != manifest:
+        manifest_path.write_text(updated, encoding="utf-8")
+        print(f"✅ Added {', '.join(p.package_name for p in packages)} to Package.swift and linked it into {target}")
+    else:
+        print(f"Package.swift already has {', '.join(p.package_name for p in packages)} linked into {target}")
+    name, code = tooling.STARTER_FILES[key]
+    directory = tooling.starter_dir(ROOT, target)
+    if (directory / name).exists():
+        print(f"File already exists: {directory / name}")
+    else:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_text(code, encoding="utf-8")
+        print(f"✅ Created starter test: {directory / name}")
+    print("Resolving packages...")
+    return subprocess.run(["swift", "package", "resolve"], cwd=str(ROOT)).returncode
 
 
 def test_inventory() -> dict[str, Any]:
@@ -373,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run-plan", help="Run one test plan").add_argument("name")
     sub.add_parser("coverage", help="Measure code coverage")
     sub.add_parser("scaffold-canary", help="Generate sample Swift Testing canary suite")
+    sub.add_parser("add-framework", help="Install or add a test framework from the Tests page").add_argument("key")
     args = parser.parse_args(argv)
 
     if args.action == "tests":
@@ -393,6 +443,8 @@ def main(argv: list[str] | None = None) -> int:
         return coverage()
     if args.action == "scaffold-canary":
         return scaffold_canary()
+    if args.action == "add-framework":
+        return add_framework(args.key)
 
     path = Path(args.job_file).resolve()
     if not path.is_file():

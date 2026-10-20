@@ -1514,6 +1514,7 @@ def handle_fleet_management(session_allowed_machines: list[str]) -> list[str]:
                 # Enforce 10 machine limit via max_selections
                 footer = (
                     "[\033[1;92mD\033[0m] Discover remote machines\n"
+                    "[\033[1;92mW\033[0m] Worker check (are the machines ready?)\n"
                     "[\033[1;92mN\033[0m] Rename selected machine\n"
                     "[\033[1;91mR\033[0m] Remove selected machine\n"
                     "[\033[1;91mZ\033[0m] Zombie purge & cache cleanup\n"
@@ -1523,7 +1524,7 @@ def handle_fleet_management(session_allowed_machines: list[str]) -> list[str]:
                     "Active Machines for This Session",
                     machine_names,
                     session_allowed_machines,
-                    extra_keys=["d", "n", "r", "z", "b"],
+                    extra_keys=["d", "w", "n", "r", "z", "b"],
                     footer=footer,
                     details_map=details_map,
                     details_title="Selected Machine",
@@ -1607,6 +1608,10 @@ def handle_fleet_management(session_allowed_machines: list[str]) -> list[str]:
                     if removed:
                         print("\n\033[93mRe-pinging fleet...\033[0m")
                         refresh_fleet_status(machines_config)
+                    continue
+                elif exc.key == "w":
+                    run_script("worker_tools.py", ["check"])
+                    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
                     continue
                 elif exc.key == "z":
                     handle_fleet_hygiene(session_allowed_machines)
@@ -2052,10 +2057,11 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
         "build", "DerivedData", "Pods", "Carthage", "node_modules", "vendor",
         "xcuserdata", "fastlane", ".idea", ".vscode", "dist", "target", "__pycache__",
         "venv", "site-packages",  # installed libraries ship their own tests; they are not the project's
+        "Library", "Temp", "obj",  # Unity's package cache and build output
     }
 
     candidate_files: list[Path] = []
-    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx", ".kt", ".java")
+    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx", ".kt", ".java", ".cs")
     
     # Walk the directory tree to find test files across supported languages
     for current_root, dirnames, filenames in os.walk(root):
@@ -2207,7 +2213,27 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
                 "language": "kotlin" if file_path.suffix == ".kt" else "java",
             })
 
-        # 6. JavaScript / TypeScript
+        # 6. C# (Unity Test Framework / NUnit)
+        elif file_path.suffix == ".cs":
+            test_funcs = re.findall(
+                r'\[(?:Test|UnityTest|TestCase)\b[^\]]*\]\s*(?:\[[^\]]*\]\s*)*'
+                r'(?:(?:public|private|internal|protected|static|async|override)\s+)*[\w<>\[\].]+\s+([A-Za-z_]\w*)\s*\(',
+                raw_content)
+            if not test_funcs:
+                continue
+            class_match = re.search(r'\bclass\s+([A-Za-z_]\w*)', raw_content)
+            seen_paths.add(file_path)
+            suites.append({
+                "path": file_path,
+                "rel_path": rel_path,
+                "name": class_match.group(1) if class_match else file_path.stem,
+                "file_stem": file_path.stem,
+                "test_count": len(set(test_funcs)),
+                "test_funcs": list(dict.fromkeys(test_funcs)),
+                "language": "csharp",
+            })
+
+        # 7. JavaScript / TypeScript
         elif any(file_path.name.endswith(ext) for ext in (".test.js", ".test.ts", ".test.jsx", ".test.tsx", ".spec.js", ".spec.ts", ".spec.jsx", ".spec.tsx")) or (is_in_test_dir and file_path.suffix in (".js", ".ts", ".jsx", ".tsx")):
             test_cases = re.findall(r'(?:it|test)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
             desc_match = re.search(r'describe\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
@@ -2262,6 +2288,14 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
         rel_dir = rel_path.parent
         package = "." if str(rel_dir) == "." else f"./{rel_dir}"
         return f"go test {shlex.quote(package)}"
+    if language == "csharp":
+        # Unity runs one platform at a time: Runtime/PlayMode folders are PlayMode tests, the rest EditMode
+        parts = {part.lower() for part in rel_path.parts}
+        platform = "PlayMode" if parts & {"playmode", "runtime"} else "EditMode"
+        command = re.sub(r"-testPlatform\s+\w+", f"-testPlatform {platform}", base_command)
+        if "-runTests" not in command:
+            raise ValueError("Set test_command to a Unity -runTests command to run a single C# suite.")
+        return f"{command} -testFilter {shlex.quote(str(suite['name']))}"
     if language in {"javascript", "typescript"}:
         return f"{base_command} -- {quoted_path}".strip()
     raise ValueError(f"Unsupported non-Xcode test language: {language}")
@@ -7063,7 +7097,7 @@ def handle_configuration_menu(session_allowed_machines: list[str], session_allow
             print_wrapped_option("[\033[93mI\033[0m] Instructions for AI helpers")
 
             print("\n  \033[1;96m--- Computers & access ---\033[0m")
-            print_wrapped_option("[\033[93mF\033[0m] Machines & computers")
+            print_wrapped_option("[\033[93mF\033[0m] Machines")
             print_wrapped_option("[\033[93mU\033[0m] Updates")
 
             print("\n  \033[1;96m--- Alerts ---\033[0m")

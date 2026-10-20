@@ -289,6 +289,7 @@ def probe_local(machine_name: str, repo_path: str) -> dict[str, Any]:
         "XcodeBuildMCP / iOS plugin": detect_codex_integration(["xcodebuildmcp", "build-ios-apps"]),
         "Sentry MCP/plugin": detect_codex_integration(["sentry"]),
         "Playwright MCP": detect_codex_integration(["playwright"]),
+        "Unity MCP": detect_codex_integration(["unity-mcp", "unity_mcp", "unitymcp", "mcp-unity", "mcpforunity"]),
     }
 
     payload = {

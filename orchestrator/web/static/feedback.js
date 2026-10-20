@@ -25,6 +25,7 @@
     category = "general",
     title = "",
     jobId = "",
+    jobIds = [],
     explanation = "",
     platform = "Web",
     appVersion = "1.0.0",
@@ -43,6 +44,7 @@
       category: String(category || "general").trim(),
       title: String(title || "").trim(),
       jobId: String(jobId || "").trim(),
+      jobIds: (Array.isArray(jobIds) ? jobIds : []).map((id) => String(id).trim()).filter(Boolean).slice(0, 10),
       explanation: String(explanation || "").trim(),
       feedbackText: cleanText,
       platform: String(platform || "Web"),
@@ -170,12 +172,16 @@
   }
 
   function createModalController() {
-    let currentStep = "feedback"; // 'prompt' | 'feedback' | 'improve_orchestrator' | 'thankyou'
-    let currentCategory = "general"; // 'general' | 'feature_request' | 'improve_orchestrator'
+    let currentStep = "feedback"; // 'prompt' | 'feedback' | 'thankyou'
+    let currentCategory = "general"; // 'general' | 'feature_request'
     let text = "";
     let title = "";
     let contactEmail = "";
     let jobId = "";
+    let improve = false; // the person built an improvement to Orchestrator itself: attach it for the prize
+    let attached = new Set(); // job ids tagged as that improvement
+    let jobs = null; // null until loaded, then the list, or "error"
+    let sentAsImprovement = false;
     let submitting = false;
     let deliveryState = "sent"; // 'sent' | 'queued' | 'failed'
     let queuedOffline = false;
@@ -206,6 +212,31 @@
       return dlg;
     }
 
+    // Jobs to tag as the improvement: the ones already tagged as Orchestrator improvements first, then the most recent.
+    function improvementJobsHtml() {
+      if (jobs === null) return '<p class="muted">Loading your jobs…</p>';
+      if (jobs === "error") return '<p class="muted">Couldn\'t load your jobs. Describe the improvement above instead.</p>';
+      if (!jobs.length) return '<p class="muted">No jobs yet. Describe the improvement above.</p>';
+      const tagged = (j) => Boolean(j.is_orchestrator_improvement || j.tag === "improve_orchestrator");
+      const shown = [...jobs].sort((a, b) => Number(tagged(b)) - Number(tagged(a)) || (b.updated || 0) - (a.updated || 0)).slice(0, 30);
+      return `<div class="feedback-job-list" role="group" aria-label="Jobs that hold the improvement">${shown.map((j) => {
+        const submitted = Boolean(j.submitted_for_inclusion);
+        return `<label class="check feedback-job-option"><input type="checkbox" data-attach-job="${escapeHtml(j.id)}" ${attached.has(j.id) ? "checked" : ""} ${submitted ? "disabled" : ""}>
+          <span>${escapeHtml(j.title || j.id)}${tagged(j) ? ' <span aria-hidden="true">🏆</span>' : ""}${submitted ? ' <span class="muted">· already submitted</span>' : j.branch ? ` <span class="muted mono">${escapeHtml(j.branch)}</span>` : ""}</span></label>`;
+      }).join("")}</div>`;
+    }
+
+    async function loadJobs() {
+      if (jobs !== null) return;
+      try {
+        const res = await (typeof root.api === "function" ? root.api("jobs") : Promise.reject(new Error("no api")));
+        jobs = Array.isArray(res?.jobs) ? res.jobs : [];
+      } catch (_) {
+        jobs = "error";
+      }
+      if (improve && dialogElem?.open) render();
+    }
+
     function render() {
       const dlg = ensureDialog();
       if (!dlg) return;
@@ -234,7 +265,7 @@
       } else if (currentStep === "thankyou") {
         const isFailed = deliveryState === "failed";
         const isQueued = deliveryState === "queued";
-        const isImprovement = currentCategory === "improve_orchestrator";
+        const isImprovement = sentAsImprovement;
         const icon = isFailed ? "📡" : (isImprovement ? "🏆" : (isQueued ? "📥" : "💌"));
         const titleText = isFailed ? "Couldn't Send" : (isImprovement ? "Submission Received!" : "Thank You!");
         let message = isImprovement
@@ -259,104 +290,49 @@
             </div>
           </div>
         `;
-      } else if (currentStep === "improve_orchestrator" || currentCategory === "improve_orchestrator") {
-        const hasEmail = contactEmail.trim().length > 0 && contactEmail.includes("@");
-        const canSubmitImprovement = hasText && hasEmail && !submitting;
-        contentHtml = `
-          <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
-          <div class="feedback-type-tabs" role="tablist" aria-label="Feedback mode">
-            <button type="button" class="feedback-type-tab" id="feedback-tab-feedback" role="tab" aria-selected="false" tabindex="-1">Feedback</button>
-            <button type="button" class="feedback-type-tab active" id="feedback-tab-improve" role="tab" aria-selected="true" tabindex="0">Improve</button>
-          </div>
-          <div class="feedback-prize-banner">
-            <div class="prize-badge">🏆 Prize Challenge</div>
-            <p>Build an improvement for Orchestrator. Selected contributions win a prize and core inclusion.</p>
-          </div>
-          <div class="feedback-job-action-box">
-            <span>Build with a local job first?</span>
-            <button type="button" class="btn small primary" id="feedback-create-local-job-btn">Create job</button>
-          </div>
-          <div class="feedback-fields-stack">
-            <label class="feedback-field">
-              <span>Your Name</span>
-              <input type="text" id="feedback-modal-name" class="feedback-input" value="${escapeHtml(currentUserName)}" placeholder="Your name or handle">
-            </label>
-            <label class="feedback-field">
-              <span>Contact Email <strong class="accent-required">(required for prize delivery)</strong></span>
-              <input type="email" id="feedback-modal-email" class="feedback-input" value="${escapeHtml(contactEmail)}" placeholder="you@example.com">
-            </label>
-            <label class="feedback-field">
-              <span>Improvement Title</span>
-              <input type="text" id="feedback-modal-title" class="feedback-input" value="${escapeHtml(title)}" placeholder="e.g. Add dark mode toggle or parallel run streaming">
-            </label>
-            <label class="feedback-field">
-              <span>Explanation & Implementation Details</span>
-              <textarea
-                id="feedback-modal-text"
-                class="feedback-textarea"
-                placeholder="Explain what you improved in Orchestrator, why it's valuable, and how you tested it locally..."
-              >${escapeHtml(text)}</textarea>
-            </label>
-            ${!hasText ? '<p id="feedback-empty-hint" class="feedback-empty-hint">Write an explanation above before submitting.</p>' : ""}
-            <p id="feedback-email-hint" class="feedback-empty-hint" style="color: var(--warn);" ${hasEmail || !hasText ? "hidden" : ""}>A valid contact email is required so we can reach you if your improvement is selected for a prize.</p>
-            <label class="feedback-field">
-              <span>Local Job ID or Branch / PR reference <span class="muted">(optional)</span></span>
-              <input type="text" id="feedback-modal-job-id" class="feedback-input" value="${escapeHtml(jobId)}" placeholder="e.g. job-abc123 or branch name">
-            </label>
-          </div>
-          <div class="feedback-actions">
-            <button
-              type="button"
-              class="btn primary feedback-submit-btn"
-              id="feedback-modal-send"
-              ${!canSubmitImprovement ? "disabled" : ""}
-              ${canSubmitImprovement ? "" : (hasText ? 'title="Enter a valid contact email to be eligible for the prize." aria-describedby="feedback-email-hint"' : 'title="Write an explanation in the field above before submitting." aria-describedby="feedback-empty-hint"')}
-            >
-              ${submitting ? '<span class="feedback-btn-spinner" aria-hidden="true"></span>' : '<span aria-hidden="true">🏆</span>'}
-              <span>${submitting ? "Submitting…" : "Submit improvement"}</span>
-            </button>
-            <button type="button" class="btn ghost" id="feedback-modal-cancel">Cancel</button>
-          </div>
-        `;
       } else {
-        // Standard feedback and feature requests
+        // One form for feedback, feature requests and Orchestrator improvements (an option, not a separate mode).
         const isFeature = currentCategory === "feature_request";
+        const hasEmail = contactEmail.trim().length > 0 && contactEmail.includes("@");
+        const ready = hasText && (!improve || hasEmail) && !submitting;
         contentHtml = `
           <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
-          <div class="feedback-type-tabs" role="tablist" aria-label="Feedback mode">
-            <button type="button" class="feedback-type-tab active" id="feedback-tab-feedback" role="tab" aria-selected="true" tabindex="0">Feedback</button>
-            <button type="button" class="feedback-type-tab" id="feedback-tab-improve" role="tab" aria-selected="false" tabindex="-1">Improve</button>
-          </div>
           <h2 class="feedback-title" style="text-align: center;">${isFeature ? "What feature is missing?" : "How can we improve?"}</h2>
           <p class="feedback-subtitle" style="text-align: left;">
             ${isFeature ? "Tell us what feature you would want in Orchestrator. We prioritize our roadmap from your requests." : "Tell us what felt off or share any ideas. Your feedback gets sent directly to our team at"} <span class="feedback-email">${SUPPORT_EMAIL}</span>.
           </p>
           <div class="feedback-fields-stack">
             <label class="feedback-field">
-              <span>Contact Email <span class="muted">(optional, for follow-up)</span></span>
-              <input type="email" id="feedback-modal-email" class="feedback-input" value="${escapeHtml(contactEmail)}" placeholder="you@example.com (optional)">
+              <span>Contact Email ${improve ? '<strong class="accent-required">(required for prize delivery)</strong>' : '<span class="muted">(optional, for follow-up)</span>'}</span>
+              <input type="email" id="feedback-modal-email" class="feedback-input" value="${escapeHtml(contactEmail)}" placeholder="you@example.com${improve ? "" : " (optional)"}">
             </label>
             <label class="feedback-field">
               <span>${isFeature ? "Feature Title" : "Topic or Feature"} <span class="muted">(optional)</span></span>
               <input type="text" id="feedback-modal-title" class="feedback-input" value="${escapeHtml(title)}" placeholder="e.g. Missing feature, planning speed, UI suggestion...">
             </label>
             <label class="feedback-field">
-              <span>${isFeature ? "Describe the missing feature" : "Your Feedback or Suggestion"}</span>
+              <span>${improve ? "What you improved and how you tested it" : isFeature ? "Describe the missing feature" : "Your Feedback or Suggestion"}</span>
               <textarea
                 id="feedback-modal-text"
                 class="feedback-textarea"
-                placeholder="${isFeature ? "Describe what this feature would do and why you'd like it..." : "Tell us what could be better, report an issue, or share any suggestions..."}"
+                placeholder="${improve ? "Explain what you changed in Orchestrator, why it's valuable, and how you tested it..." : isFeature ? "Describe what this feature would do and why you'd like it..." : "Tell us what could be better, report an issue, or share any suggestions..."}"
               >${escapeHtml(text)}</textarea>
             </label>
             ${!hasText ? '<p id="feedback-empty-hint" class="feedback-empty-hint">Write something above to send.</p>' : ""}
+            <label class="check feedback-improve-toggle"><input type="checkbox" id="feedback-improve-toggle" ${improve ? "checked" : ""}><span>I improved Orchestrator itself, tag it to attach</span></label>
+            ${improve ? `<div class="feedback-improve-box" id="feedback-improve-box">
+              <p class="feedback-prize-line"><span aria-hidden="true">🏆</span> Selected improvements win a prize and are added to Orchestrator for everyone.</p>
+              ${improvementJobsHtml()}
+              <p id="feedback-email-hint" class="feedback-empty-hint" style="color: var(--warn);" ${hasText && !hasEmail ? "" : "hidden"}>Add a valid contact email so we can reach you about the prize.</p>
+            </div>` : ""}
           </div>
           <div class="feedback-actions">
             <button
               type="button"
               class="btn primary feedback-submit-btn"
               id="feedback-modal-send"
-              ${submitting || !hasText ? "disabled" : ""}
-              ${hasText ? "" : 'title="Write something in the field above before sending." aria-describedby="feedback-empty-hint"'}
+              ${ready ? "" : "disabled"}
+              ${ready ? "" : `title="${hasText ? "Enter a valid contact email to be eligible for the prize." : "Write something in the field above before sending."}"`}
             >
               ${submitting ? '<span class="feedback-btn-spinner" aria-hidden="true"></span>' : '<svg class="icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>'}
               <span>${submitting ? "Sending…" : "Send feedback"}</span>
@@ -380,35 +356,28 @@
       const doneBtn = dlg.querySelector("#feedback-modal-done");
       if (doneBtn) doneBtn.onclick = () => close();
 
-      const tabFeedback = dlg.querySelector("#feedback-tab-feedback");
-      if (tabFeedback) {
-        tabFeedback.onclick = () => {
-          currentCategory = "general";
-          currentStep = "feedback";
+      const improveToggle = dlg.querySelector("#feedback-improve-toggle");
+      if (improveToggle) {
+        improveToggle.onchange = () => {
+          improve = improveToggle.checked;
           render();
-          const ta = dlg.querySelector("#feedback-modal-text");
-          if (ta) ta.focus();
+          if (improve) loadJobs();
         };
       }
 
-      const tabImprove = dlg.querySelector("#feedback-tab-improve");
-      if (tabImprove) {
-        tabImprove.onclick = () => {
-          currentCategory = "improve_orchestrator";
-          currentStep = "improve_orchestrator";
-          render();
-          const ta = dlg.querySelector("#feedback-modal-text");
-          if (ta) ta.focus();
+      dlg.querySelectorAll("[data-attach-job]").forEach((box) => {
+        box.onchange = () => {
+          if (box.checked) attached.add(box.dataset.attachJob);
+          else attached.delete(box.dataset.attachJob);
         };
-      }
+      });
 
       function updateButtonState() {
         const sendBtn = dlg.querySelector("#feedback-modal-send");
         const emptyHint = dlg.querySelector("#feedback-empty-hint");
         const emailHint = dlg.querySelector("#feedback-email-hint");
         const has = text.trim().length > 0;
-        const isImprove = currentStep === "improve_orchestrator" || currentCategory === "improve_orchestrator";
-        const emailOk = !isImprove || (contactEmail.trim().length > 0 && contactEmail.includes("@"));
+        const emailOk = !improve || (contactEmail.trim().length > 0 && contactEmail.includes("@"));
         const ready = has && emailOk && !submitting;
         if (sendBtn) {
           sendBtn.disabled = !ready;
@@ -416,7 +385,7 @@
             sendBtn.removeAttribute("title");
             sendBtn.removeAttribute("aria-describedby");
           } else if (!has) {
-            sendBtn.setAttribute("title", isImprove ? "Write an explanation in the field above before submitting." : "Write something in the field above before sending.");
+            sendBtn.setAttribute("title", "Write something in the field above before sending.");
             sendBtn.setAttribute("aria-describedby", "feedback-empty-hint");
           } else if (!emailOk) {
             sendBtn.setAttribute("title", "Enter a valid contact email to be eligible for the prize.");
@@ -425,26 +394,6 @@
         }
         if (emptyHint) emptyHint.hidden = has;
         if (emailHint) emailHint.hidden = !has || emailOk;
-      }
-
-      const createJobBtn = dlg.querySelector("#feedback-create-local-job-btn");
-      if (createJobBtn) {
-        createJobBtn.onclick = () => {
-          close();
-          const summaryParam = encodeURIComponent("Improve Orchestrator: " + (title.trim() || "Core improvement"));
-          const specParam = encodeURIComponent(
-            "Goal: Improve Orchestrator itself.\n\n" +
-            "Describe the improvement you are making to Orchestrator:\n" +
-            "- What it does:\n" +
-            "- Why it's valuable:\n" +
-            "- Files to change:\n" +
-            "- How to test:\n\n" +
-            (text.trim() ? "Notes from submission draft:\n" + text.trim() + "\n" : "")
-          );
-          if (typeof location !== "undefined") {
-            location.hash = `#/new?type=feature&summary=${summaryParam}&spec=${specParam}`;
-          }
-        };
       }
 
       const nameInput = dlg.querySelector("#feedback-modal-name");
@@ -465,16 +414,11 @@
         titleInput.oninput = (e) => { title = e.target.value; };
       }
 
-      const jobIdInput = dlg.querySelector("#feedback-modal-job-id");
-      if (jobIdInput) {
-        jobIdInput.oninput = (e) => { jobId = e.target.value; };
-      }
-
       const retryBtn = dlg.querySelector("#feedback-modal-retry");
       if (retryBtn) {
         retryBtn.onclick = () => {
           deliveryState = "sent";
-          currentStep = currentCategory === "improve_orchestrator" ? "improve_orchestrator" : "feedback";
+          currentStep = "feedback";
           render();
           const ta = dlg.querySelector("#feedback-modal-text");
           if (ta) ta.focus();
@@ -512,10 +456,10 @@
       const sendBtn = dlg.querySelector("#feedback-modal-send");
       if (sendBtn) {
         sendBtn.onclick = async () => {
-          const isImprove = currentStep === "improve_orchestrator" || currentCategory === "improve_orchestrator";
-          const emailOk = !isImprove || (contactEmail.trim().length > 0 && contactEmail.includes("@"));
+          const emailOk = !improve || (contactEmail.trim().length > 0 && contactEmail.includes("@"));
           if (submitting || text.trim().length === 0 || !emailOk) return;
           submitting = true;
+          sentAsImprovement = improve;
           render();
 
           let outcome = "failed";
@@ -523,9 +467,10 @@
             const report = await submitFeedback({
               userName: currentUserName,
               contactEmail: contactEmail,
-              category: currentCategory,
+              category: improve ? "improve_orchestrator" : currentCategory,
               title: title,
-              jobId: jobId,
+              jobId: improve ? ([...attached][0] || "") : jobId,
+              jobIds: improve ? [...attached] : [],
               explanation: text,
               feedbackText: text,
               attemptNumber: currentAttempt
@@ -553,8 +498,9 @@
     }
 
     function open({ initialStep = "feedback", category = "general", userName = "", contactEmail: initEmail = "", title: initTitle = "", jobId: initJobId = "", attemptNumber = 1 } = {}) {
-      currentStep = initialStep === "improve_orchestrator" ? "improve_orchestrator" : initialStep;
-      currentCategory = category === "improve_orchestrator" || initialStep === "improve_orchestrator" ? "improve_orchestrator" : (category || "general");
+      improve = category === "improve_orchestrator" || initialStep === "improve_orchestrator";
+      currentStep = initialStep === "prompt" ? "prompt" : "feedback";
+      currentCategory = category === "feature_request" ? "feature_request" : "general";
       text = "";
       title = initTitle || "";
       contactEmail = initEmail || (userName.includes("@") ? userName : "") || (root.state?.you?.email || "");
@@ -567,6 +513,8 @@
         }
       }
       jobId = detectedJobId;
+      attached = new Set(improve && detectedJobId ? [detectedJobId] : []);
+      jobs = null;
       submitting = false;
       deliveryState = "sent";
       queuedOffline = false;
@@ -589,6 +537,7 @@
         }
       }
 
+      if (improve) loadJobs();
       const ta = dlg.querySelector("#feedback-modal-text");
       if (ta) {
         ta.focus();

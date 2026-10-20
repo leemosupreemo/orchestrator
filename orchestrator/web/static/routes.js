@@ -15,7 +15,7 @@
     "config/chat": "connections?card=chat",
     "config/api-keys": "config/ai",
     "config/models": "config/ai",
-    "config/documentation": "docs",
+    "config/documentation": "help",
     "config/archived-jobs": "?filter=archived",
     "epics": "product?section=epics",
   };

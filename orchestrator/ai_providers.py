@@ -59,6 +59,7 @@ PLUGINS: list[dict[str, str]] = [
     {"name": "XcodeBuildMCP or build-ios-apps plugin", "why": "Build, run and screenshot iOS Simulator apps."},
     {"name": "Sentry MCP or Sentry plugin", "why": "Read crashes and errors while debugging."},
     {"name": "Playwright MCP", "why": "Drive and inspect web apps in a browser."},
+    {"name": "Unity MCP", "why": "Read the console, run tests and inspect scenes in a Unity Editor."},
 ]
 
 _INSTALL_LOCK = threading.Lock()

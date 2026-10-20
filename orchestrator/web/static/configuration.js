@@ -12,7 +12,7 @@
       label: "Set up",
       entries: [
         {id: "checkup", label: "Onboarding checklist", description: "Project requirements, tools, environment checks, and selected workflows.", route: "#/checkup", enabled: true, status: null},
-        {id: "connections", label: "Connections", description: "Jira, Trello, Sentry and Figma for jobs, and Slack alerts.", route: "#/connections", enabled: true, status: null},
+        {id: "connections", label: "Connections", description: "Jira, Trello, Sentry, Figma and Unity builds for jobs, and Slack alerts.", route: "#/connections", enabled: true, status: null},
         {id: "projects", label: "Projects", description: "Add, remove, or switch the active project.", route: "#/projects", enabled: true, status: null},
       ],
     },
@@ -37,9 +37,9 @@
       id: "computers",
       label: "Computers & access",
       entries: [
-        {id: "fleet", label: "Machines & computers", description: "Manage the build fleet or switch between your computers.", route: "#/config/fleet", enabled: true, status: null},
+        {id: "fleet", label: "Machines", description: "Manage the build fleet or switch between your computers.", route: "#/config/fleet", enabled: true, status: null},
         {id: "computers", label: "Your computers", description: "Switch to another of your computers, or add one.", route: "#/computers", enabled: true, listed: false, hostedOnly: true},
-        {id: "access", label: "Who can sign in", description: "Choose whose Google sign-ins reach this computer, and end sign-ins.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
+        {id: "access", label: "Who can sign in", description: "Choose which emails can sign in to this computer, with Google, Apple, GitHub or email.", route: "#/config/access", enabled: true, ownerOnly: true, status: null},
         {id: "updates", label: "Updates", description: "Update Orchestrator on this and your other machines.", route: "#/config/updates", enabled: true, ownerOnly: true, status: null},
       ],
     },
@@ -47,7 +47,8 @@
       id: "alerts",
       label: "Alerts",
       entries: [
-        {id: "email", label: "Email alerts", description: "Who gets emails, and the account that sends them.", route: "#/config/email", enabled: true, ownerOnly: true, status: null},
+        {id: "alerts", label: "Alerts", description: "This device, Slack, email and your Mac: where updates reach you.", route: "#/config/alerts", enabled: true, ownerOnly: true, status: null},
+        {id: "email", label: "Email alerts", description: "Who gets emails, and the account that sends them.", route: "#/config/email", enabled: true, listed: false, ownerOnly: true, status: null},
       ],
     },
   ];
@@ -427,7 +428,8 @@
     };
   }
 
-  function renderEmail(state) {
+  // The sender and recipients cards, shared by the email page and the Alerts page.
+  function emailCards(state) {
     const email = state.email || {};
     const recipients = Array.isArray(email.recipients) ? email.recipients : [];
     const isResend = email.provider === "resend";
@@ -441,12 +443,8 @@
       <span class="mono">${escapeHtml(recipient)}</span>
       <button type="button" class="btn small danger" data-config-action="email-remove" data-email="${escapeHtml(recipient)}">Remove</button>
     </div>`).join("");
-    return {
-      title: "Email alerts",
-      sub: "Choose who receives updates and how Orchestrator sends them.",
-      html: `<div class="configuration-page">
-        <section class="card configuration-card">
-          <div class="card-h"><h2>Sender</h2><button type="button" class="btn small" data-config-action="email-sender">Configure sender</button></div>
+    return `<section class="card configuration-card">
+          <div class="card-h"><h2>Email sender</h2><button type="button" class="btn small" data-config-action="email-sender">Configure sender</button></div>
           <div class="card-b stack">
             <strong>${escapeHtml(readiness)}</strong>
             <span class="configuration-status">${isResend
@@ -455,12 +453,53 @@
           </div>
         </section>
         <section class="card configuration-card">
-          <div class="card-h"><h2>Recipients</h2><div class="row">
+          <div class="card-h"><h2>Email recipients</h2><div class="row">
             <button type="button" class="btn small" data-config-action="email-add">Add recipient</button>
             ${recipients.length ? `<button type="button" class="btn small primary" data-config-action="email-test">Send test email</button>` : ""}
           </div></div>
           <div class="configuration-setting-list">${recipientRows || `<div class="empty">No recipients yet</div>`}</div>
-        </section>
+        </section>`;
+  }
+
+  function renderEmail(state) {
+    return {
+      title: "Email alerts",
+      sub: "Choose who receives updates and how Orchestrator sends them.",
+      html: `<div class="configuration-page">${emailCards(state)}</div>`,
+    };
+  }
+
+  // This browser or phone: filled in by the page, since it depends on this device's permission and sign-in.
+  function deviceCard() {
+    return `<section class="card configuration-card" id="device-alerts">
+          <div class="card-h"><h2>This browser or phone</h2><div class="row" id="device-alerts-actions"></div></div>
+          <div class="card-b stack" id="device-alerts-body"><span class="muted">Checking…</span></div>
+        </section>`;
+  }
+
+  // A notification on the Mac that runs the worker, when a job finishes.
+  function desktopCard(state) {
+    const on = state.desktop_notifications !== false;
+    return `<section class="card configuration-card" id="desktop-alerts" data-owner-only>
+          <div class="card-h"><h2>This Mac</h2>
+            <button type="button" class="btn small" data-config-action="desktop-toggle" data-enabled="${on ? "1" : "0"}">${on ? "Turn off" : "Turn on"}</button></div>
+          <div class="card-b stack">
+            <strong>${on ? "On" : "Off"}</strong>
+            <span class="muted">Shows a notification on the Mac that runs the work when a job finishes.</span>
+          </div>
+        </section>`;
+  }
+
+  // Every way Orchestrator reaches you, in one place.
+  function renderAlerts(state) {
+    return {
+      title: "Alerts",
+      sub: "Where Orchestrator reaches you when a job finishes, fails or needs you.",
+      html: `<div class="configuration-page">
+        ${deviceCard()}
+        ${chatCard(state.webhook || {})}
+        ${emailCards(state)}
+        ${desktopCard(state)}
       </div>`,
     };
   }
@@ -470,13 +509,14 @@
     return `<section class="card configuration-card" id="chat-alerts" data-owner-only>
           <div class="card-h"><h2>Slack &amp; chat alerts</h2><div class="row">
             <button type="button" class="btn small" data-config-action="chat-set">${hook.set ? "Change" : "Add webhook"}</button>
-            ${hook.set ? `<button type="button" class="btn small primary" data-config-action="chat-test">Send test message</button>
+            ${hook.set ? `<button type="button" class="btn small" data-config-action="${hook.paused ? "chat-resume" : "chat-pause"}">${hook.paused ? "Resume" : "Pause"}</button>
+            <button type="button" class="btn small primary" data-config-action="chat-test">Send test message</button>
             <button type="button" class="btn small danger" data-config-action="chat-clear">Remove</button>` : ""}
           </div></div>
           <div class="card-b stack">
-            <strong>${hook.set ? "Connected" : "Not set up"}</strong>
+            <strong>${hook.set ? (hook.paused ? "Connected, paused" : "Connected") : "Not set up"}</strong>
             <span class="configuration-status">${hook.set ? `Sending to ${escapeHtml(hook.host)}. The full address is stored but not shown.` : "Paste a Slack webhook URL."}</span>
-            <span class="muted">Sends a message when a job needs you, or when a run finishes or fails.</span>
+            <span class="muted">${hook.paused ? "Paused: nothing is sent until you resume." : "Sends a message when a job needs you, or when a run finishes or fails."}</span>
           </div>
         </section>`;
   }
@@ -502,7 +542,7 @@
     const signInRows = signIns.map((s) => `<div class="configuration-setting-row">
       <span><span class="mono">${escapeHtml(s.email)}</span>${s.current ? ` <span class="pill">This browser</span>` : ""}
         <span class="muted">Signed in ${escapeHtml(shortDate(s.created))} · last used ${escapeHtml(shortDate(s.last_seen))}</span></span>
-      <button type="button" class="btn small danger" data-config-action="access-revoke" data-id="${escapeHtml(s.id)}"${s.current ? " data-current" : ""}>${s.current ? "Sign out" : "End"}</button>
+      ${s.current ? `<button type="button" class="btn small danger" data-config-action="access-revoke" data-current>Sign out</button>` : ""}
     </div>`).join("");
     const events = Array.isArray(state.audit) ? state.audit : [];
     const eventText = (entry) => {
@@ -523,7 +563,7 @@
     </div>`).join("");
     return {
       title: "Who can sign in",
-      sub: "People with these emails can sign in with Google and use this computer from anywhere. Each sign-in lasts 30 days.",
+      sub: "People with these emails can sign in with Google, Apple, GitHub or email and use this computer from anywhere. Each sign-in lasts 30 days.",
       html: `<div class="configuration-page">
         <section class="card configuration-card">
           <div class="card-h"><h2>Allowed emails</h2><button type="button" class="btn small" data-config-action="access-add">Add email</button></div>
@@ -683,6 +723,7 @@
 
   function render(section, state = {}) {
     if (section === "ai") return renderAi(state);
+    if (section === "alerts") return renderAlerts(state);
     if (section === "email") return renderEmail(state);
     if (section === "access") return renderAccess(state);
     if (section === "models") return renderModels(state);

@@ -94,6 +94,7 @@ def main() -> None:
     parser.add_argument("--status-bar", choices=["override", "none"], default="override", help="Set clean 9:41 status bar override during check (default: override).")
     parser.add_argument("--video", dest="video", action="store_true", default=True, help="Record an MP4 video of the app launch and settle (default: enabled).")
     parser.add_argument("--no-video", dest="video", action="store_false", help="Disable launch video recording.")
+    parser.add_argument("--screen", action="append", default=[], help="Link that opens another screen in the app (myapp://settings); captured after launch. Repeatable.")
     parser.add_argument("--video-codec", choices=["h264", "hevc"], default="h264", help="Video codec for browser HTML5 compatibility (default: h264).")
     args = parser.parse_args()
     bundle_id = args.bundle_id
@@ -220,6 +221,7 @@ def main() -> None:
 
         mask_policy = getattr(args, "mask", "alpha")
         screenshot_paths: list[Path] = []
+        screen_labels: dict[str, str] = {}  # file -> the link that opened it, for the UX review
         shot_count = max(1, getattr(args, "screenshots", 1))
 
         for mode in modes:
@@ -247,6 +249,16 @@ def main() -> None:
                 if idx < shot_count - 1:
                     time.sleep(max(0, getattr(args, "interval", 1.0)))
 
+            for link in args.screen:
+                if not run_simctl(["openurl", udid, link], run_log):
+                    print(f"⚠️ Couldn't open {link} in the simulator.")
+                    continue
+                time.sleep(max(1.5, getattr(args, "interval", 1.0)))
+                link_path = out_dir / f"screenshot_{re.sub(r'[^a-z0-9]+', '-', link.lower()).strip('-')[:40]}{'_' + mode if mode else ''}.png"
+                if run_simctl(["io", udid, "screenshot", str(link_path)], run_log):
+                    screenshot_paths.append(link_path)
+                    screen_labels[link_path.name] = link
+
     finally:
         # Finalize video recording
         video_recorded = False
@@ -266,6 +278,8 @@ def main() -> None:
         if status_bar_mode == "override":
             run_simctl(["status_bar", udid, "clear"], run_log)
 
+    if screen_labels:
+        write_text(out_dir / "screens.json", json.dumps(screen_labels))
     report_lines = [
         "# 📱 Simulator Visual Check Report",
         "",

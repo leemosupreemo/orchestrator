@@ -10,6 +10,7 @@ These integrations are optional. Swift Orchestrator runs through local scripts a
 | XcodeBuildMCP or build-ios-apps plugin | Build, run, inspect, and screenshot iOS Simulator apps from Codex workflows. | Optional; orchestrator runtime uses `xcodebuild` and `xcrun simctl`. |
 | Sentry MCP or Sentry plugin | Inspect production issues, events, stack traces, and release health during debug jobs. | Optional; useful only if the project uses Sentry. |
 | Playwright MCP | Inspect and automate web UIs, dashboards, docs portals, and browser-based admin tools. | Optional; useful only for web/browser workflows. |
+| Unity MCP | Unity MCP: read the Editor console, run tests and inspect scenes in an open Unity Editor (for example MCP for Unity, or Unity's own MCP bridge). | Optional; useful only for Unity projects. The orchestrator runs Unity in batchmode itself. |
 
 ## Detection
 

@@ -5,8 +5,8 @@ Two scopes share one checklist (`prompts/ux_reviewer.md`):
 - a **product pass** looks at every configured screen, at phone and desktop widths, light and dark;
 - a **change review** runs after a job whose diff touches the interface, and looks only at what it changed.
 
-Screens are captured with a headless Chrome for web projects (`ui_review` in `.orchestrator/project.json`) or the
-iOS simulator check; with neither, the review works from the code alone and says so. The model's answer is
+Screens are captured with a headless Chrome for web projects (`ui_review` in `.orchestrator/project.json`), the
+iOS simulator check, an Android emulator or a Mac app (ux_native.py); with none, the review works from the code alone and says so. The model's answer is
 normalised here so the web UI can rely on its shape. Findings are prompts to look, not gates: a job is never blocked.
 """
 from __future__ import annotations
@@ -70,6 +70,9 @@ def frontend_files(paths: list[str], extra_globs: list[str] | None = None) -> li
     return out
 
 
+URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://\S*$")
+
+
 class ConfigError(ValueError):
     pass
 
@@ -93,8 +96,53 @@ def settings(project: dict[str, Any]) -> dict[str, Any]:
         raise ConfigError("ui_review.paths must be a list of file patterns.")
     return {"url": url, "start_command": str(raw.get("start_command") or "").strip(), "routes": [r.strip() for r in routes][:40],
             "widths": widths[:4], "dark_mode": raw.get("dark_mode", True) is not False, "simulator": bool(raw.get("simulator")),
+            "simulator_screens": _deep_links(raw.get("simulator_screens"), "ui_review.simulator_screens"),
+            "android": _android(raw.get("android")), "macos": _macos(raw.get("macos")),
             "paths": paths, "conventions": str(raw.get("conventions") or "").strip(),
             "review_changes": raw.get("review_changes", True) is not False}
+
+
+def has_screens(cfg: dict[str, Any]) -> bool:
+    """Is anything set up to screenshot: a web address, the iOS simulator, an Android app or a Mac app?"""
+    return bool(cfg["url"] or cfg["simulator"] or cfg["android"] or cfg["macos"])
+
+
+def _deep_links(value: Any, name: str) -> list[str]:
+    value = value or []
+    if not isinstance(value, list) or not all(isinstance(v, str) and URL_SCHEME.match(v.strip()) for v in value):
+        raise ConfigError(f"{name} must be a list of links that open screens in the app, like myapp://settings.")
+    return [v.strip() for v in value][:20]
+
+
+def _text(raw: dict[str, Any], key: str, name: str) -> str:
+    value = raw.get(key) or ""
+    if not isinstance(value, str):
+        raise ConfigError(f"{name}.{key} must be text.")
+    return value.strip()
+
+
+def _android(raw: Any) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("ui_review.android must be an object.")
+    package = _text(raw, "package", "ui_review.android")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", package):
+        raise ConfigError("ui_review.android.package is the app's id, like com.example.app.")
+    return {"package": package, "apk": _text(raw, "apk", "ui_review.android"), "avd": _text(raw, "avd", "ui_review.android"),
+            "build_command": _text(raw, "build_command", "ui_review.android"),
+            "screens": _deep_links(raw.get("screens"), "ui_review.android.screens")}
+
+
+def _macos(raw: Any) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("ui_review.macos must be an object.")
+    app = _text(raw, "app", "ui_review.macos")
+    if not app.endswith(".app"):
+        raise ConfigError("ui_review.macos.app is the path to the built app, ending in .app.")
+    return {"app": app, "build_command": _text(raw, "build_command", "ui_review.macos")}
 
 
 def conventions_text(root: Path, configured: str = "") -> tuple[str, str]:

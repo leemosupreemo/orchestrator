@@ -1035,7 +1035,7 @@ process.stdout.write(JSON.stringify({ids: entries.map((e) => e.id), menu}));"""
         for result in (local, hosted):
             self.assertIn("fleet", result["ids"])
             self.assertNotIn("computers", result["ids"])
-            self.assertIn("Machines &amp; computers", result["menu"])
+            self.assertIn("Machines", result["menu"])
             self.assertNotIn("Your computers</span>", result["menu"])
 
     def test_the_hosted_app_can_be_installed_and_receive_push(self):
@@ -1536,10 +1536,12 @@ process.stdout.write(JSON.stringify({html: P.renderQuestions({open_questions: qu
         self.assertIn('id="epic-questions"', html)
         self.assertIn('data-question="How does the player lose &lt;b&gt;?"', html)
         self.assertIn('name="a0"', html)
-        self.assertIn('name="s1"', html)
-        self.assertIn("Save and break down again", html)
+        self.assertNotIn('name="s1"', html)  # where an answer goes is inferred, not asked
+        self.assertNotIn("Goes in", html)
+        self.assertIn("Requires attention", html)
+        self.assertIn("card-attention", html)
         self.assertIn("Save to the PRD", html)
-        self.assertIn('data-after="again"', html)
+        self.assertNotIn("Save and break down again", html)  # saving asks afterwards, in a dialog
         self.assertNotIn("<b>?", html)
         self.assertEqual(out["guesses"], ["features", "features", "features", "look", "pitch", "not", "who"])
         self.assertEqual((out["none"], out["nobreakdown"]), ("", ""))
@@ -1564,33 +1566,34 @@ process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]),
         self.assertIn("As &lt;a&gt;", out["stories"])
         self.assertEqual(out["none"], "")
 
-    def test_approved_epics_show_their_job_state_and_a_jira_icon_when_linked(self):
+    def test_approved_epics_are_one_line_each_with_jira_and_implemented(self):
         out = self.run_feature_plan("""
 const P = globalThis.FeaturePlan;
-const act = (action, params) => `data-action="${action}" data-params='${JSON.stringify(params)}'`;
 const epic = (o) => ({status: "approved", summary: "", requirements: [], stories: [], jira: null, ...o});
 const epics = [
-  epic({id: "ep-1", name: "Waiting", job_info: {id: "j-1", label: "Epic · no plan yet", tone: "idle", backlog: true}}),
-  epic({id: "ep-2", name: "Underway <b>", requirements: ["a", "b"], jira: {key: "APP-5", url: "https://t.atlassian.net/browse/APP-5"}, job_info: {id: "j-2", label: "Approve plan", tone: "attention", backlog: false, plan_ready: true}}),
+  epic({id: "ep-1", name: "Waiting", job_info: {id: "j-1", label: "Epic · no plan yet", group: "needs_you", backlog: true}}),
+  epic({id: "ep-2", name: "Built <b>", jira: {key: "APP-5", url: "https://t.atlassian.net/browse/APP-5"}, job_info: {id: "j-2", label: "Merged", group: "done"}}),
   epic({id: "ep-3", name: "Odd link", jira: {key: "APP-6", url: "javascript:alert(1)"}, job_info: null}),
   epic({id: "ep-4", name: "Gone", status: "declined"})];
-process.stdout.write(JSON.stringify({html: P.renderApproved(epics, {act, jiraConnected: true}), plain: P.renderApproved(epics, {act}),
-  declined: P.renderDeclined(epics), none: P.renderApproved([], {act})}));""")
+process.stdout.write(JSON.stringify({html: P.renderApproved(epics, {jiraConnected: true}), plain: P.renderApproved(epics),
+  declined: P.renderDeclined(epics), none: P.renderApproved([], {})}));""")
         html = out["html"]
-        self.assertIn('data-action="plan_epic" data-params=\'{"epic":"ep-1"}\'', html)  # Make a plan
-        self.assertIn("No plan yet", html)
-        self.assertIn('href="#/jobs/j-2">Review plan</a>', html)
-        self.assertIn("Plan ready", html)
-        self.assertNotIn("Not planned", html)
-        self.assertNotIn(">Make a plan<", html[html.index('data-epic="ep-2"'):html.index('data-epic="ep-3"')])  # already planned
+        rows = {n: part for part in html.split('<div class="item epic-row"')[1:] for n in range(1, 4) if f'data-epic="ep-{n}"' in part}
+        row = rows.get
+        self.assertIn('<a href="#/jobs/j-1">Waiting</a>', html)  # the name links to its job
+        self.assertIn("Not implemented", row(1))
+        self.assertIn("Implemented", row(2))
+        self.assertNotIn("Not implemented", row(2))
         self.assertIn('href="https://t.atlassian.net/browse/APP-5"', html)
         self.assertIn('<use href="#i-jira"/>', html)
         self.assertNotIn("javascript:", html)  # a link that isn't https is shown as text, never as a link
         self.assertIn("APP-6", html)
-        self.assertIn("Underway &lt;b&gt;", html)
-        self.assertIn('data-epic-send="ep-1"', html)  # Send to Jira when connected
+        self.assertIn("Built &lt;b&gt;", html)
+        self.assertIn('data-epic-send="ep-1"', html)  # Send to Jira when connected and not linked
         self.assertNotIn("data-epic-send", out["plain"])
         self.assertNotIn('data-epic-send="ep-2"', html)  # already in Jira
+        for gone in ("Make a plan", "Review plan", "Plan ready", "requirement"):
+            self.assertNotIn(gone, html)
         self.assertIn("Bring back", out["declined"])
         self.assertNotIn("Waiting", out["declined"])
         self.assertEqual(out["none"], "")
@@ -1603,6 +1606,24 @@ process.stdout.write(JSON.stringify({list: P.renderJiraImport([{key: "APP-1", su
         self.assertIn('name="keys" value="APP-1" checked', out["list"])
         self.assertIn("Lobby &lt;i&gt;", out["list"])
         self.assertIn("already here", out["empty"])
+
+    def test_alerts_page_gathers_every_channel_in_one_place(self):
+        page = self.run_configuration_script("""
+const page = globalThis.ConfigurationPages.render('alerts', {
+  webhook: {set: true, host: 'hooks.slack.com', paused: true},
+  email: {provider: 'gmail', recipients: ['a@x.co'], smtp_email: 'me@x.co', smtp_password_set: true},
+  desktop_notifications: false,
+});
+process.stdout.write(JSON.stringify(page));
+""")
+        html = page["html"]
+        order = [html.index(marker) for marker in ('id="device-alerts"', 'id="chat-alerts"', "Email sender", "Email recipients", 'id="desktop-alerts"')]
+        self.assertEqual(order, sorted(order))
+        self.assertIn('data-config-action="chat-resume"', html)  # paused, so the switch offers to resume
+        self.assertIn("Connected, paused", html)
+        self.assertIn('data-config-action="email-test"', html)
+        self.assertIn('data-config-action="desktop-toggle" data-enabled="0">Turn on', html)
+        self.assertIn("<strong>Off</strong>", html)
 
     def test_registry_exposes_phase_one_native_routes(self):
         entries = self.run_configuration_script("""
@@ -1700,8 +1721,9 @@ process.stdout.write(JSON.stringify(page.html));
         self.assertIn("from git config", html)
         self.assertEqual(html.count('data-config-action="access-remove"'), 1)  # only emails added here can be removed here
         self.assertIn('data-email="friend@x.com"', html)
-        self.assertEqual(html.count('data-config-action="access-revoke"'), 2)
+        self.assertEqual(html.count('data-config-action="access-revoke"'), 1)  # only this browser can sign out; other sign-ins have no button
         self.assertEqual(html.count("data-current"), 1)
+        self.assertNotIn(">End<", html)
         self.assertIn("This browser", html)
         empty = self.run_configuration_script("process.stdout.write(JSON.stringify(globalThis.ConfigurationPages.render('access', {}).html));")
         self.assertIn("sign-in is closed", empty)
@@ -1821,10 +1843,11 @@ process.stdout.write(JSON.stringify(page));
         for group in ("This project", ">AI<", "Computers &amp; access", "Alerts"):
             self.assertIn(group, result["html"])
         self.assertNotIn("Troubleshooting", result["html"])  # its checks are on Readiness now
-        for route in ("#/config/ai", "#/config/email", "#/config/ai-instructions",
+        for route in ("#/config/ai", "#/config/alerts", "#/config/ai-instructions",
                       "#/config/fleet", "#/config/firebase"):
             self.assertIn(route, result["html"])
         self.assertNotIn("#/config/models", result["html"])  # models share the AI page
+        self.assertNotIn("#/config/email", result["html"])  # email is one card on the Alerts page
         for route in ("#/checkup", "#/connections", "#/projects"):  # pages of their own, reached from Settings
             self.assertIn(route, result["html"])
         for route in ("#/config/documentation", "#/config/setup-wizard", "#/config/audit", "#/ux-review"):
@@ -1954,12 +1977,12 @@ process.stdout.write(JSON.stringify({gmail, resend, empty}));
         self.assertIn("No recipients yet", empty)
         self.assertNotIn('data-config-action="email-test"', empty)
 
-    def test_orchestrator_guides_are_on_the_docs_page_and_settings_have_no_terminal_handoff(self):
+    def test_there_is_no_docs_index_and_settings_have_no_terminal_handoff(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         docs = app[app.index("pages.docs = async"):app.index("pages.product = async")]
-        self.assertIn('g.section === "Orchestrator docs"', docs)
-        self.assertIn("Orchestrator guides", docs)
-        self.assertIn("config/doc?id=", docs)  # read by opaque id: no path is ever sent or shown
+        self.assertIn('location.replace("#/help")', docs)  # the old index lands on Help
+        self.assertNotIn('api("docs")', docs)
+        self.assertIn('kind === "job" || kind === "feature" || kind === "file"', docs)  # job, feature and file pages are still reached from where they're used
         result = self.run_configuration_script("""
 const R = globalThis.ConfigurationPages.render;
 const pages = [R(undefined, {}), R('ai', {ai: {providers: [], plugins: []}, keys: []}), R('email', {email: {recipients: []}})];
@@ -2582,7 +2605,7 @@ class ActionTests(unittest.TestCase):
         sp.run(["git", "config", "branch.main.remote", "origin"], cwd=self.root, check=True)
         sp.run(["git", "config", "branch.main.merge", "refs/heads/main"], cwd=self.root, check=True)
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
-                  "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test"}
+                  "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test", "framework": "xcbeautify"}
         (self.root / ".orchestrator" / "epics.json").write_text(json.dumps({"epics": [
             {"id": "ep-test", "name": "Word score", "summary": "", "status": "approved", "feature": "word-score", "requirements": [], "stories": [], "depends_on": []}]}))
         (self.root / ".orchestrator" / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "planned", "paths": [], "depends_on": []}]}))
@@ -3378,11 +3401,11 @@ class WebhookNotificationTests(ServerTestCase):
         res, _ = self.post_hook({"op": "set", "url": self.URL})
         self.assertEqual(res.status, 200)
         _, config = self.request("GET", "/api/config")
-        self.assertEqual(config["webhook"], {"set": True, "host": "hooks.slack.com"})
+        self.assertEqual(config["webhook"], {"set": True, "host": "hooks.slack.com", "paused": False})
         self.assertNotIn("hook-token-4821", json.dumps(config))
         self.post_hook({"op": "clear"})
         _, config = self.request("GET", "/api/config")
-        self.assertEqual(config["webhook"], {"set": False, "host": ""})
+        self.assertEqual(config["webhook"], {"set": False, "host": "", "paused": False})
 
     def test_rejects_non_https_and_test_without_a_webhook(self):
         res, _ = self.post_hook({"op": "set", "url": "http://hooks.example/x"})
@@ -3438,12 +3461,54 @@ class WebhookNotificationTests(ServerTestCase):
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
 
+    def test_mac_desktop_notifications_default_on_and_can_be_turned_off(self):
+        _, config = self.request("GET", "/api/config")
+        self.assertTrue(config["desktop_notifications"])
+        res, _ = self.request("POST", "/api/config/desktop", body={"enabled": False}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertIs(ui.read_settings(self.root)["desktop_notifications"], False)
+        _, config = self.request("GET", "/api/config")
+        self.assertFalse(config["desktop_notifications"])
+        self.request("POST", "/api/config/desktop", body={"enabled": True}, headers=UI_HEADERS)
+        self.assertNotIn("desktop_notifications", ui.read_settings(self.root))  # on is the default, so nothing is stored
+
+    def test_pausing_keeps_the_webhook_but_stops_sending_until_resumed(self):
+        self.post_hook({"op": "set", "url": self.URL})
+        tracker = ui.notifier.Tracker()
+        self.server.notify_once(tracker)
+        self.assertEqual(self.post_hook({"op": "pause"})[0].status, 200)
+        _, state = self.request("GET", "/api/state")
+        self.assertEqual(state["alerts"], {"webhook": True, "webhook_paused": True})
+        (self.root / ".orchestrator" / "jobs" / "20260923-bug-2.json").write_text(json.dumps({"title": "Quiet", "type": "bug", "status": "failed"}))
+        with patch.object(ui.notifier, "post_webhook") as post:
+            events = self.server.notify_once(tracker)
+        self.assertEqual(len(events), 1)  # still tracked, so resuming doesn't replay it
+        post.assert_not_called()
+        self.post_hook({"op": "resume"})
+        (self.root / ".orchestrator" / "jobs" / "20260923-bug-3.json").write_text(json.dumps({"title": "Loud", "type": "bug", "status": "failed"}))
+        with patch.object(ui.notifier, "post_webhook") as post:
+            self.server.notify_once(tracker)
+        self.assertEqual(post.call_count, 1)
+        self.assertIn("Loud", post.call_args[0][1]["text"])
+
+    def test_pause_needs_a_webhook_and_saving_or_clearing_one_resets_it(self):
+        res, data = self.post_hook({"op": "pause"})
+        self.assertEqual(res.status, 400)
+        self.assertIn("Save a webhook first", data["error"])
+        self.post_hook({"op": "set", "url": self.URL})
+        self.post_hook({"op": "pause"})
+        self.post_hook({"op": "set", "url": self.URL})  # a new webhook starts sending
+        self.assertFalse(ui.read_settings(self.root).get("notification_webhook_paused"))
+        self.post_hook({"op": "pause"})
+        self.post_hook({"op": "clear"})
+        self.assertNotIn("notification_webhook_paused", ui.read_settings(self.root))
+
     def test_state_says_whether_the_webhook_is_on_without_revealing_it(self):
         _, state = self.request("GET", "/api/state")
-        self.assertEqual(state["alerts"], {"webhook": False})
+        self.assertEqual(state["alerts"], {"webhook": False, "webhook_paused": False})
         ui.write_settings(self.root, {"notification_webhook": self.URL})
         _, state = self.request("GET", "/api/state")
-        self.assertEqual(state["alerts"], {"webhook": True})
+        self.assertEqual(state["alerts"], {"webhook": True, "webhook_paused": False})
         self.assertNotIn("hook-token-4821", json.dumps(state))
 
     def test_state_carries_the_inbox_items_the_browser_notifies_from(self):
@@ -3670,6 +3735,57 @@ class MeasureEndpointTests(ServerTestCase):
 
     def kpi(self, **extra):
         return self.post("/api/features/lobby/kpis", {"op": "add", "name": "Seat claims", "event": "seat_claimed", "target": 60, **extra})
+
+    def wait_task(self, task):
+        for _ in range(100):
+            _, data = self.request("GET", f"/api/product/task/{task}")
+            if data["status"] != "running":
+                return data
+            time.sleep(0.05)
+        self.fail("the task never finished")
+
+    def suggest(self, answers, feature="lobby"):
+        replies = iter(answers)
+        prompts = []
+
+        def fake(handler, root, prompt, model="", timeout=150):
+            prompts.append(prompt)
+            return next(replies)
+
+        with patch.object(ui.UIHandler, "_model_call", fake):
+            res, started = self.post(f"/api/features/{feature}/kpis/suggest", {})
+            if res.status != 202:
+                return res, started, prompts
+            return res, self.wait_task(started["task"]), prompts
+
+    def test_auto_fill_suggests_one_kpi_for_review_and_saves_nothing(self):
+        good = '{"name": "Seat claim rate", "event": "lobby_seat_claimed", "direction": "up", "target": 60, "unit": "%", "why": "Seats show people playing."}'
+        res, task, prompts = self.suggest([good])
+        self.assertEqual((res.status, task["status"]), (202, "done"), task)
+        self.assertEqual(task["result"]["event"], "lobby_seat_claimed")
+        self.assertEqual(task["result"]["why"], "Seats show people playing.")
+        self.assertIn("Feature: Lobby", prompts[0])
+        _, data = self.request("GET", "/api/analytics")
+        self.assertEqual(data["features"][0]["kpis"], [])  # shown for review; only adding it saves it
+
+    def test_auto_fill_retries_once_then_reports_a_readable_error(self):
+        good = '{"name": "Seat claim rate", "event": "lobby_seat_claimed", "direction": "up"}'
+        _, task, prompts = self.suggest(["sorry, no", good])
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("could not be used", prompts[1])
+        _, task, _ = self.suggest(["nope", "still nope"])
+        self.assertEqual(task["status"], "error")
+        self.assertIn("add the KPI yourself", task["error"])
+
+    def test_auto_fill_does_not_repeat_an_existing_kpi_and_checks_the_feature(self):
+        self.kpi()
+        _, task, prompts = self.suggest(['{"name": "Again", "event": "seat_claimed", "direction": "up"}'] * 2)
+        self.assertEqual(task["status"], "error")
+        self.assertIn("- Seat claims (event seat_claimed)", prompts[0])
+        self.assertEqual(self.suggest([], feature="ghost")[0].status, 404)
+        res, _ = self.request("POST", "/api/features/lobby/kpis/suggest", {})
+        self.assertEqual(res.status, 403)  # another site can't start a model run
 
     def test_provider_setup_never_echoes_the_key_and_blank_keeps_it(self):
         res, _ = self.post("/api/config/analytics", {"op": "set", "provider": "mixpanel", "key": "SECRET-TOKEN", "region": "eu"})
@@ -4130,11 +4246,12 @@ class AccessibilityStaticTests(unittest.TestCase):
         sidebar = SidebarParser()
         sidebar.feed(self.html)
         for href in ("#/", "#/activity", "#/product", "#/tests", "#/delivery", "#/git", "#/devlogs", "#/ux-review",
-                     "#/measure", "#/docs", "#/help"):
+                     "#/measure", "#/help"):
             self.assertIn(href, sidebar.links)
+        self.assertNotIn("#/docs", sidebar.links)  # no Docs item: the guides are on Help
         for href in ("#/connections", "#/projects", "#/checkup"):  # set once: under Settings (Configuration), not the sidebar
             self.assertNotIn(href, sidebar.links)
-        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "signout-btn", "auto-improve-btn"):
+        for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "signout-btn"):
             self.assertIn(control, sidebar.controls)
 
     def test_copy_stays_plain_and_consistent(self):
@@ -4230,7 +4347,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         help_page = self.js[start:self.js.index("pages.devlogs = async")]
         for route in ("#/tests", "#/delivery", "#/measure", "#/checkup", "#/projects", "#/activity", "#/config"):
             self.assertIn(f'"{route}"', help_page, route)
-        self.assertIn('href="#/docs"', help_page)
+        self.assertIn("Orchestrator guides", help_page)  # the guides moved here from Docs
+        self.assertIn('g.section === "Orchestrator docs"', help_page)
+        self.assertIn("config/doc?id=", help_page)  # read by opaque id: no path is ever sent or shown
+        self.assertNotIn('href="#/docs"', help_page)
         self.assertIn("10 seconds", help_page)
         for page in ("features", "tests", "delivery", "measure", "checkup"):
             self.assertIn(f"pages.{page} = async", self.js)
@@ -4255,7 +4375,7 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_configuration_uses_plain_names_and_keeps_the_old_term_in_the_description(self):
         config = (self.STATIC / "configuration.js").read_text()
-        for label, old in (("Machines & computers", "fleet"), ("Tester build setup", "firebase app distribution")):
+        for label, old in (("Machines", "fleet"), ("Tester build setup", "firebase app distribution")):
             line = next(l for l in config.splitlines() if f'label: "{label}"' in l)
             self.assertIn(old, line.lower(), label)
         app = (self.STATIC / "app.js").read_text()
@@ -4276,13 +4396,40 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertIn(part, fn)
         self.assertIn('st.state === "behind" ? `<a class="btn small primary"', self.js)  # only when behind: one obvious next step per KPI
 
+    def test_measure_leads_with_the_kpis_and_each_feature_can_auto_fill_one(self):
+        measure = self.js[self.js.index("pages.measure = async"):self.js.index("// ---------------------------------------------------------------- UX and design review")]
+        self.assertLess(measure.index("${features.map(card).join"), measure.index("<h2>Analytics Connections</h2>"))
+        self.assertIn('data-kpi="autofill"', measure)
+        self.assertIn("/suggest", measure)
+        self.assertIn("Choosing a metric…", measure)  # progress while the model works
+
+    def test_git_actions_show_progress_on_their_button(self):
+        body = self.js[self.js.index("const mutate = async (button, path, body, message, busy"):][:900]
+        self.assertIn("inline-spinner", body)  # a spinner and a label while the work runs, not just a greyed-out button
+        self.assertIn('setAttribute("aria-busy", "true")', body)
+        self.assertIn("button.innerHTML = idle", body)  # put back when it fails
+        self.assertIn('"Missing job labels created", "Creating labels…")', self.js)
+
+    def test_config_dialogs_reset_the_shared_ok_button(self):
+        body = self.js[self.js.index("function showConfigMutationDialog("):][:1400]
+        self.assertIn("ok.textContent = okLabel", body)  # not the last dialog's label, such as a stopped run's "Stop run"
+        self.assertIn('ok.className = "btn primary"', body)  # nor its red danger style
+
+    def test_sidebar_slack_switch_is_hidden_until_slack_is_connected(self):
+        self.assertIn('id="slack-alerts-btn" hidden', self.html)
+        self.assertIn("state.alerts?.webhook) && state.you?.role !== \"member\"", self.js)  # connected, and only the owner can change it
+        self.assertIn("Slack alerts on", self.js)
+        self.assertIn("showHomeScreenGuide()", self.js)  # tapping alerts on an iPhone not on the Home Screen explains how
+        self.assertNotIn("First add Orchestrator to your Home Screen", self.js)
+
     def test_toasts_explain_errors_and_alert_setup_is_reachable(self):
         self.assertIn("Errors.explain(message)", self.js)
         self.assertIn('<script src="errors.js">', self.html)
         self.assertIn("Notify me when done", self.html + self.js)  # browser alerts
         config = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "configuration.js").read_text()
         self.assertIn("Slack &amp; chat alerts", config)  # the webhook card
-        self.assertIn("ConfigurationPages.chatCard(hook)", self.js)  # shown on Connections, for owners
+        self.assertIn('href="#/config/alerts"', self.js)  # Connections points to the one Alerts page
+        self.assertNotIn("ConfigurationPages.chatCard(hook)", self.js)  # the Slack card lives there now, not on Connections
 
     def test_there_is_no_separate_inbox_page_and_a_job_waiting_on_you_is_just_a_job_in_the_list(self):
         self.assertNotIn('data-route="inbox"', self.html)
@@ -4730,7 +4877,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('api("epics/answers"', page)
         self.assertIn("await onPrdChanged()", page)  # an answer changed the requirements above, so they redraw
         self.assertLess(page.index("breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions"), page.index("FeaturePlan.renderSuggested(ov.epics"))  # the questions sit beneath the breakdown card
-        self.assertIn('event.submitter?.dataset.after === "again"', page)  # "Save and break down again" carries straight on
+        self.assertIn('formDialog("Break down again?"', page)  # saving answers then asks whether to break down again
         self.assertLess(page.index("Nothing is sent until you press the button"), page.index('id="epic-jira-panel"'))
 
     def test_the_new_project_wizard_ends_with_an_optional_break_it_down_step(self):
@@ -4845,9 +4992,9 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_auto_improve_orchestrator_page_renders_creation_form_and_tracked_jobs(self):
         self.assertIn('pages["auto-improve"]', self.js)
-        self.assertIn('id="auto-improve-btn"', self.html)
-        self.assertIn('href="#/auto-improve"', self.html)
-        self.assertIn('data-route="auto-improve"', self.html)
+        self.assertNotIn('id="auto-improve-btn"', self.html)  # improving Orchestrator is an option inside Feedback
+        self.assertNotIn('href="#/auto-improve"', self.html)  # no sidebar link; Help and the palette still reach the page
+        self.assertNotIn('data-route="auto-improve"', self.html)
         self.assertIn('id="auto-improve-job-form"', self.js)
         self.assertIn('Tracked improvements', self.js)
         self.assertIn('data-submit-job', self.js)
@@ -5091,6 +5238,15 @@ class UxReviewEndpointTests(ServerTestCase):
     def post(self, path, body):
         return self.request("POST", path, body=body, headers=UI_HEADERS)
 
+    def test_ux_page_says_whether_there_is_any_interface_to_review(self):
+        with patch.object(ui, "git", return_value="README.md\napp/main.py"):
+            self.assertFalse(self.request("GET", "/api/ux-pass")[1]["has_interface"])
+        with patch.object(ui, "git", return_value="README.md\nweb/index.html"):
+            self.assertTrue(self.request("GET", "/api/ux-pass")[1]["has_interface"])
+        with patch.object(ui, "git", return_value="README.md"):
+            (self.root / ".orchestrator" / "project.json").write_text(json.dumps({"ui_review": {"url": "http://localhost:3000"}}))
+            self.assertTrue(self.request("GET", "/api/ux-pass")[1]["has_interface"])  # a configured screen counts
+
     def test_passes_are_listed_newest_first_with_their_screens(self):
         out = self.root / ".orchestrator" / "output" / "ux-pass"
         for stamp, findings in (("20261001-090000", []), ("20261002-090000", [{"area": "ux", "severity": 3, "problem": "Two primaries"}])):
@@ -5121,6 +5277,24 @@ class UxReviewEndpointTests(ServerTestCase):
         self.assertEqual((project["project_name"], project["ui_review"]["widths"]), ("Demo", [390, 1440]))  # nothing else changed
         for body in ({"url": "localhost"}, {"widths": "wide"}, {"widths": "100"}):
             self.assertEqual(self.post("/api/ui-review", body)[0].status, 400, body)
+
+    def test_android_mac_and_ios_screens_are_saved_and_validated(self):
+        res, data = self.post("/api/ui-review", {
+            "simulator": True, "simulator_screens": "myapp://settings\n\n", "android_package": "com.example.app", "android_screens": "myapp://profile",
+            "android_avd": "Pixel_8", "macos_app": "build/My.app", "macos_build": "xcodebuild build", "dark_mode": True})
+        self.assertEqual(res.status, 200)
+        saved = json.loads((self.root / ".orchestrator" / "project.json").read_text())["ui_review"]
+        self.assertEqual(saved["simulator_screens"], ["myapp://settings"])
+        self.assertEqual(saved["android"], {"package": "com.example.app", "avd": "Pixel_8", "screens": ["myapp://profile"]})  # blanks aren't saved
+        self.assertEqual(saved["macos"], {"app": "build/My.app", "build_command": "xcodebuild build"})
+        self.assertEqual(data["settings"]["android"]["package"], "com.example.app")
+        with patch.object(ui, "git", return_value="README.md"):
+            self.assertTrue(self.request("GET", "/api/ux-pass")[1]["has_interface"])  # a native app set up counts as something to review
+        for body in ({"android_package": "nope"}, {"android_package": "com.example.app", "android_screens": "not a link"},
+                     {"macos_app": "build/My"}, {"simulator_screens": "settings"}):
+            self.assertEqual(self.post("/api/ui-review", body)[0].status, 400, body)
+        res, data = self.post("/api/ui-review", {"url": "http://localhost:3000"})
+        self.assertNotIn("android", json.loads((self.root / ".orchestrator" / "project.json").read_text())["ui_review"])  # clearing the fields removes them
 
     def test_a_jobs_check_comes_with_its_detail(self):
         jobs = self.root / ".orchestrator" / "jobs"
@@ -6946,7 +7120,7 @@ class MenuParityTests(unittest.TestCase):
         aliases = (self.STATIC / "routes.js").read_text()
         for old, new in (("setup-checklist", "checkup"), ("readiness", "checkup"), ("config/audit", "checkup"), ("config/self-tests", "checkup"),
                          ("config/setup-wizard", "checkup"), ("config/chat", "connections?card=chat"), ("config/api-keys", "config/ai"),
-                         ("config/documentation", "docs"), ("config/archived-jobs", "?filter=archived"), ("test-cases", "tests/cases")):
+                         ("config/documentation", "help"), ("config/archived-jobs", "?filter=archived"), ("test-cases", "tests/cases")):
             self.assertIn(f'"{old}": "{new}"', aliases, old)
         html = (self.STATIC / "index.html").read_text()
         self.assertNotIn('id="nav-checkup"', html)

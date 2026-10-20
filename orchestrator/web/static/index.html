@@ -78,7 +78,6 @@
         <span class="label">Review</span>
         <a href="#/ux-review" data-route="ux-review"><span>UX review</span></a>
         <a href="#/measure" data-route="measure"><span>Measure</span></a>
-        <a href="#/docs" data-route="docs"><span>Docs</span></a>
         <span class="label">Settings</span>
         <div class="nav-item-row configuration-nav-item">
           <button type="button" class="configuration-menu-trigger" id="configuration-menu-trigger" data-route="config"
@@ -90,11 +89,11 @@
       </nav>
       <!-- Occasional actions: quiet rows at the foot, not buttons competing with the navigation. -->
       <div class="sidebar-footer">
-        <a class="btn ghost auto-improve-btn" href="#/auto-improve" data-route="auto-improve" id="auto-improve-btn" aria-label="Auto-improve Orchestrator"><svg class="icon" aria-hidden="true"><use href="#i-sparkle"/></svg><span>Auto-improve Orchestrator</span></a>
         <a class="btn ghost help-btn" href="#/help" data-route="help">Help</a>
         <button type="button" class="btn ghost feedback-btn" id="feedback-btn" aria-label="Feedback"><svg class="icon" aria-hidden="true"><use href="#i-feedback"/></svg><span>Feedback</span></button>
         <button class="btn ghost console-btn" data-action="console" data-owner-only><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>Open full console</button>
         <button class="btn ghost" id="notify-btn" hidden></button>
+        <button class="btn ghost" id="slack-alerts-btn" hidden></button>
         <button class="btn ghost signout-btn" id="signout-btn"><svg class="icon" aria-hidden="true"><use href="#i-signout"/></svg>Sign out</button>
       </div>
     </aside>

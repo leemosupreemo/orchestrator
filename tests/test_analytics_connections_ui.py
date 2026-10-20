@@ -70,7 +70,7 @@ pages.connections(undefined, new URLSearchParams()).then(page => console.log(JSO
             positions.append(html.index(f'id="{section}"'))
         self.assertEqual(positions, sorted(positions))
         self.assertIn('href="#/git"', html)
-        self.assertIn('href="#/config/email"', html)
+        self.assertIn('href="#/config/alerts"', html)
         self.assertIn('data-rec-tool="shellfish"', html)
         self.assertIn('data-rec-mcp="context7"', html)
         self.assertNotIn('id="connections-plugins-title"', html)

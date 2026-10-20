@@ -38,11 +38,11 @@ class FeedbackFrontendFileTests(unittest.TestCase):
         self.assertIn("Tell us what felt off or share any ideas.", js)
         self.assertIn("Write something above to send.", js)
         self.assertIn("Send feedback", js)
-        # Improvement & Prize flow
-        self.assertIn("Improve", js)
-        self.assertIn("Prize Challenge", js)
-        self.assertIn("Submit improvement", js)
-        self.assertIn("Create job", js)
+        # Improving Orchestrator is an option inside the one form, with a brief line about the prize
+        self.assertIn("I improved Orchestrator itself, tag it to attach", js)
+        self.assertIn("Selected improvements win a prize", js)
+        self.assertNotIn("feedback-tab-improve", js)  # no separate Improve tab
+        self.assertNotIn("Prize Challenge", js)
         self.assertIn("What feature is missing?", js)
         # Emoji satisfaction prompt choices
         self.assertIn("Enjoying Orchestrator?", js)
@@ -59,8 +59,7 @@ class FeedbackFrontendFileTests(unittest.TestCase):
     def test_index_html_integration(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
         self.assertIn('id="feedback-btn"', html)
-        self.assertIn('id="auto-improve-btn"', html)
-        self.assertIn('Auto-improve Orchestrator', html)
+        self.assertNotIn('id="auto-improve-btn"', html)  # improving Orchestrator lives inside Feedback now
         self.assertIn('id="feedback-dialog"', html)
         self.assertIn('id="i-feedback"', html)
         self.assertIn('id="i-sparkle"', html)
@@ -75,20 +74,17 @@ class FeedbackFrontendFileTests(unittest.TestCase):
         self.assertIn(".feedback-textarea", css)
         self.assertIn(".feedback-submit-btn", css)
         self.assertIn(".feedback-btn-spinner", css)
-        self.assertIn(".feedback-type-tabs", css)
-        self.assertIn(".feedback-type-tab", css)
-        self.assertIn(".feedback-prize-banner", css)
-        self.assertIn(".prize-badge", css)
-        self.assertIn(".feedback-job-action-box", css)
+        self.assertIn(".feedback-improve-box", css)
+        self.assertIn(".feedback-job-list", css)
+        self.assertNotIn(".feedback-type-tab", css)
         self.assertIn(".feedback-fields-stack", css)
         self.assertIn(".prize-card", css)
-        self.assertIn(".auto-improve-btn", css)
 
     def test_app_js_integration(self):
         app = APP_JS.read_text(encoding="utf-8")
         self.assertIn("#feedback-btn", app)
-        self.assertIn("#auto-improve-btn", app)
-        self.assertIn("Auto-improve Orchestrator", app)
+        self.assertNotIn("#auto-improve-btn", app)
+        self.assertIn("Auto-improve Orchestrator", app)  # the page is still there, reached from Help and the palette
         self.assertIn("Feedback.open", app)
         self.assertIn("Send feedback", app)
         self.assertIn("#help-feature-btn", app)
@@ -194,6 +190,22 @@ console.log(JSON.stringify({
         self.assertEqual(out["parsedBody"]["title"], "Parallel Runner Caching")
         self.assertEqual(out["parsedBody"]["jobId"], "job-999")
         self.assertEqual(out["parsedBody"]["explanation"], "Added memory cache for faster replans")
+
+    def test_attached_jobs_travel_with_the_submission(self):
+        out = self.run_js("""
+(async () => {
+  let body = null;
+  const mockApi = async (path, opts) => { body = opts.body; return { ok: true, delivered: true }; };
+  await Feedback.submitFeedback({ userName: 'A', feedbackText: 'x', category: 'improve_orchestrator', contactEmail: 'a@b.co',
+    jobId: 'job-1', jobIds: ['job-1', ' job-2 ', '', 'job-3'], apiClient: mockApi });
+  const parsed = typeof body === 'string' ? JSON.parse(body) : body;
+  let plain = null;
+  await Feedback.submitFeedback({ userName: 'A', feedbackText: 'x', apiClient: async (p, o) => { plain = o.body; return { ok: true }; } });
+  console.log(JSON.stringify({ ids: parsed.jobIds, plain: (typeof plain === 'string' ? JSON.parse(plain) : plain).jobIds }));
+})();
+""")
+        self.assertEqual(out["ids"], ["job-1", "job-2", "job-3"])
+        self.assertEqual(out["plain"], [])
 
     def test_flush_queued_feedback(self):
         out = self.run_js("""
@@ -409,6 +421,37 @@ class FeedbackBackendTests(unittest.TestCase):
             job_data = json.loads((jobs_dir / f"{job_id}.json").read_text(encoding="utf-8"))
             self.assertTrue(job_data.get("submitted_for_inclusion"))
             self.assertTrue(bool(job_data.get("inclusion_submission_date")))
+
+    def test_an_improvement_can_attach_several_jobs_and_marks_each_submitted(self):
+        jobs_dir = ui.jobs_dir(self.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        for jid, title in (("job-a", "Faster replans"), ("job-b", "Cache fix")):
+            (jobs_dir / f"{jid}.json").write_text(json.dumps({"title": title, "branch": f"ai/{jid}"}))
+        fake_resp = MagicMock()
+        fake_resp.status = 200
+        fake_resp.__enter__.return_value = fake_resp
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_urlopen, \
+             patch.dict(os.environ, {"RESEND_API_KEY": "re_test_dummy_key"}):
+            res = ui.dispatch_feedback(self.root, {
+                "userName": "Dave", "category": "improve_orchestrator", "contactEmail": "dave@example.com",
+                "jobId": "job-a", "jobIds": ["job-a", "job-b", "job-a", "", "job-missing"], "explanation": "Two related changes"})
+            text = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))["text"]
+        self.assertTrue(res["ok"])
+        for expected in ("Local Job Title: Faster replans", "Local Job Title: Cache fix", "Local Job ID / Reference: job-missing"):
+            self.assertIn(expected, text)
+        self.assertEqual(text.count("Local Job ID / Reference: job-a"), 1)  # listed once
+        for jid in ("job-a", "job-b"):
+            self.assertTrue(json.loads((jobs_dir / f"{jid}.json").read_text())["submitted_for_inclusion"], jid)
+        record = json.loads((self.root / ".orchestrator" / "feedback" / "feedback.jsonl").read_text().strip().splitlines()[-1])
+        self.assertEqual(record["jobIds"], ["job-a", "job-b", "job-missing"])
+        self.assertEqual(record["jobId"], "job-a")
+
+    def test_general_feedback_does_not_mark_jobs_as_submitted_for_a_prize(self):
+        jobs_dir = ui.jobs_dir(self.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        (jobs_dir / "job-c.json").write_text(json.dumps({"title": "Something"}))
+        ui.dispatch_feedback(self.root, {"userName": "Eve", "category": "general", "jobId": "job-c", "explanation": "Slow page"})
+        self.assertNotIn("submitted_for_inclusion", json.loads((jobs_dir / "job-c.json").read_text()))
 
     def test_job_summary_tags_orchestrator_improvement(self):
         job_id = "job-improve-42"
