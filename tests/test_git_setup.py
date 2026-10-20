@@ -319,7 +319,8 @@ eval(source.slice(start, source.indexOf('\n};', start) + 3));
 pages.git().then(async result => {
   if (input.interaction) {
     result.after();
-    await handlers[input.interaction]({currentTarget: {isConnected: true, elements: {branch: {value: input.interactionBranch || 'main'}}}, submitter: {isConnected: true}, preventDefault() {}});
+    const button = () => ({isConnected: true, innerHTML: 'Label', setAttribute() {}, removeAttribute() {}}); // what the page reads from a real button
+    await handlers[input.interaction]({currentTarget: {...button(), elements: {branch: {value: input.interactionBranch || 'main'}}}, submitter: button(), preventDefault() {}});
     result.effects = {calls, failures, refreshed, routed};
   }
   console.log(JSON.stringify(result));

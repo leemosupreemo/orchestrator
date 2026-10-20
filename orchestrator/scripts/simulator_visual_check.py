@@ -249,7 +249,7 @@ def main() -> None:
                 if idx < shot_count - 1:
                     time.sleep(max(0, getattr(args, "interval", 1.0)))
 
-            for link in args.screen:
+            for link in getattr(args, "screen", []):
                 if not run_simctl(["openurl", udid, link], run_log):
                     print(f"⚠️ Couldn't open {link} in the simulator.")
                     continue
