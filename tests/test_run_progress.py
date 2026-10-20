@@ -344,7 +344,7 @@ assert.match(nextFailed, /Add tests/);
 const emptySuites = suiteGroupsHtml([]);
 assert.match(emptySuites, /No test suites found in this project/);
 assert.match(emptySuites, /Add tests/);
-assert.match(emptySuites, /href="#\/new\?type=coverage"/);
+assert.match(emptySuites, /data-action="add_tests"/); // one click on the Tests page: the job starts without the form
 
 let replacements = 0;
 const clock = {textContent: ''};

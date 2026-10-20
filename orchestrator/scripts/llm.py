@@ -185,7 +185,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, web=web, **protection)
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, **protection, **({"web": True} if web else {}))
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
