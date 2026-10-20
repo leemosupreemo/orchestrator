@@ -4454,7 +4454,7 @@ pages.measure = async (_, query) => {
     sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
     actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
     html: `
-      ${features.map(card).join("") || `<div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div>`}
+      ${features.map(card).join("") || `<section class="card"><div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div></section>`}
       <section class="card mb-16">
         <div class="card-h"><h2>Analytics Connections</h2></div>
         <div class="card-b stack">

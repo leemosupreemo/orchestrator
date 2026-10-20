@@ -1399,8 +1399,8 @@ process.stdout.write(JSON.stringify({html: page.html}));
         self.assertIn('id="ai-not-installed"', html)
         self.assertIn('class="card configuration-card ai-provider-group ai-provider-group-not-installed"', html)
         css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text(encoding="utf-8")
-        self.assertIn(".ai-provider-group-not-installed", css)
-        self.assertIn("margin-bottom: var(--space-6);", css)
+        self.assertNotIn("margin-bottom: var(--space-6);", css[css.index(".configuration-page {"):css.index(".configuration-page {") + 800])  # cards are spaced by the page's one gap, not extra margins
+        self.assertIn("gap: var(--space-4)", css[css.index(".configuration-page {"):css.index(".configuration-page {") + 120])
         self.assertIn(".btn:disabled[title]", css)
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('submitBtn.title = "No changes were made"', app_js)
@@ -4410,6 +4410,20 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("button.innerHTML = idle", body)  # put back when it fails
         self.assertIn('"Missing job labels created", "Creating labels…")', self.js)
 
+    def test_layout_rules_that_keep_every_page_on_one_system(self):
+        css = (self.STATIC / "style.css").read_text()
+        self.assertIn("--control-md: 40px;", css)  # the height buttons actually render at, so inputs can match it
+        self.assertIn("select {\n  min-height: var(--control-md);", css)  # every text input and select, not whatever its font made it
+        self.assertIn(".view { display: flex; flex-direction: column; gap: var(--space-4); }", css)  # 16px between cards, everywhere
+        self.assertIn(".view > .mb-16 { margin-bottom: 0; }", css)  # so a margin doesn't stack on that gap
+        for page in (".configuration-page {", ".git-page {"):
+            self.assertIn("gap: var(--space-4)", css[css.index(page):css.index(page) + 120], page)
+        self.assertIn(".banner.run-status p, .run-status-notice-body p { flex: 0 1 auto; }", css)  # the 200px basis was a height in a column
+        self.assertIn("min-height: calc(var(--control-sm) + 2 * var(--space-3)); }", css[css.index(".fold > summary.card-h"):][:300])  # collapsible headers as tall as plain ones
+        self.assertIn("flex-wrap: wrap", css[css.index(".card-h {"):css.index(".card-h {") + 120])  # title and actions wrap instead of squeezing
+        self.assertIn(".btn.small:not(.filters .btn) { min-height: var(--control-lg); }", css)  # touch targets on phones
+        self.assertIn(".topbar-text:has(.back-link:not([hidden])) .sub", css)  # the subtitle sits beside the title, not under the arrow
+
     def test_config_dialogs_reset_the_shared_ok_button(self):
         body = self.js[self.js.index("function showConfigMutationDialog("):][:1400]
         self.assertIn("ok.textContent = okLabel", body)  # not the last dialog's label, such as a stopped run's "Stop run"
@@ -4817,7 +4831,7 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertIn(f'<symbol id="{sym}"', index_html)
         css = (self.STATIC / "style.css").read_text()
         self.assertIn("text-align: center;", css[css.index(".btn, .btn.secondary {"):css.index(".btn, .btn.secondary {") + 600])
-        self.assertIn("justify-content: center;", css[css.index(".run-status-notice-actions {"):css.index(".run-status-notice-actions {") + 200])
+        self.assertIn("justify-content: flex-start;", css[css.index(".run-status-notice-actions {"):css.index(".run-status-notice-actions {") + 200])  # left, like every other banner
         self.assertIn("justify-content: center;", css[css.index(".run-status-guidance-actions {"):css.index(".run-status-guidance-actions {") + 200])
         # visual_check has dedicated failure guidance
         js = self.js

@@ -61,7 +61,7 @@
   /* Control heights: every button, input, select and tappable row uses one of these. */
   --control-xs: 28px;   /* inline targets: a link in a stat line, a sort header */
   --control-sm: 32px;   /* small buttons, menu rows */
-  --control-md: 38px;   /* default buttons and inputs */
+  --control-md: 40px;   /* default buttons and inputs */
   --control-lg: 44px;   /* touch targets on phones */
   --control-xl: 48px;   /* the rare big call to action; the phone tab bar */
   --dialog-width: 560px;
@@ -182,7 +182,9 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 /* main */
 .main { min-width: 0; padding: var(--space-6) var(--space-7) var(--space-8); }
 .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
+.topbar { --back-w: var(--control-sm); }
 .topbar-text { min-width: 0; }
+.topbar-text:has(.back-link:not([hidden])) .sub { padding-left: calc(var(--back-w) - var(--space-1) + var(--space-2)); } /* beside the title, not under the arrow */
 .topbar h1 { font-size: var(--text-2xl); font-weight: 650; }
 body.signin-gate .topbar { display: none !important; }
 body.signin-gate .mobile-header-start .nav-toggle { visibility: hidden; pointer-events: none; }
@@ -235,17 +237,18 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
   font-size: var(--text-2xs);
 }
 
-.view { display: flex; flex-direction: column; gap: var(--space-5); }
+.view { display: flex; flex-direction: column; gap: var(--space-4); }
+.view > .mb-16 { margin-bottom: 0; } /* the view's gap already spaces them */
 
 /* building blocks */
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 /* One card header everywhere: title left, count beside it, actions right, the same height with or without buttons. */
-.card-h { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: calc(var(--control-sm) + 2 * var(--space-3)); padding: var(--space-3) var(--container-pad-x); border-bottom: 1px solid var(--border); }
+.card-h { display: flex; flex-wrap: wrap; row-gap: var(--space-2); align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); min-height: calc(var(--control-sm) + 2 * var(--space-3)); padding: var(--space-3) var(--container-pad-x); border-bottom: 1px solid var(--border); }
 /* A card's header is a title bar: tinted, with a heading that reads as one (Primer's Box header). */
 .card-h { background: var(--panel-2); }
 .card > .card-h:first-child, .card > details:first-child > summary.card-h { border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
 .card > details:only-child:not([open]) > summary.card-h { border-radius: calc(var(--radius) - 1px); border-bottom: 0; }
-.card-h h2 { font-size: var(--text-xl); font-weight: 650; }
+.card-h h2 { font-size: var(--text-xl); font-weight: 650; min-width: 0; overflow-wrap: anywhere; }
 .card-h h2 .count { font-weight: 500; font-size: var(--text-md); margin-left: var(--space-1); }
 .card-actions { display: flex; align-items: center; gap: var(--space-2); flex: none; }
 /* Facts about the card's content (where a file lives, when it changed) sit in a caption under the header. */
@@ -265,6 +268,7 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
    still gets the card's padding, so text never touches the edge. */
 .card > :is(p, ul, ol, form):not([class]) { margin: 0; padding: var(--space-3) var(--container-pad-x); }
 .muted { color: var(--muted); }
+.meta code, .item code, .card-b code { white-space: normal; overflow-wrap: anywhere; }
 .empty { color: var(--muted); padding: var(--space-5) var(--space-4); }
 .empty a:not(.btn) { text-decoration: underline; text-underline-offset: 2px; }
 .empty a:not(.btn):hover { text-decoration-thickness: 2px; }
@@ -329,7 +333,7 @@ div.import-option:hover { border-color: var(--border); background: var(--panel);
 .brief-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
 .autopilot-option { padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
 /* Git: day-to-day work first, repository configuration disclosed below it. */
-.git-page { display: flex; flex-direction: column; gap: var(--space-5); }
+.git-page { display: flex; flex-direction: column; gap: var(--space-4); }
 .git-page p { margin: 0; }
 .git-remote-url { overflow-wrap: anywhere; }
 .git-branch-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--space-6); }
@@ -447,6 +451,7 @@ a.item:hover { background: var(--panel-2); }
 .banner.failed { border-color: var(--bad); background: var(--bad-soft); }
 .banner.attention { border-color: var(--warn); background: var(--warn-soft); }
 .banner p { flex: 1 1 200px; margin: 0; font-size: var(--text-md); line-height: 1.45; }
+.banner.run-status p, .run-status-notice-body p { flex: 0 1 auto; } /* these stack in a column, where that basis would be a height */
 .run-status { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
 .run-status.working { border-color: var(--accent); background: var(--accent-soft); }
 .run-status-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); min-width: 0; }
@@ -596,7 +601,7 @@ a.item:hover { background: var(--panel-2); }
 .run-status-notice-actions {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: var(--space-2);
   flex-shrink: 0;
@@ -716,6 +721,9 @@ input[type=text], input[type=search], input[type=url], input[type=number], input
   font-weight: 560;
   font-size: var(--text-md);
   pointer-events: none;
+}
+input[type=text], input[type=search], input[type=url], input[type=number], input[type=email], input[type=password], input[type=date], select {
+  min-height: var(--control-md);
 }
 select option {
   background-color: var(--panel);
@@ -2328,7 +2336,7 @@ dialog h2 {
   }
 }
 
-.configuration-page { display: flex; flex-direction: column; gap: var(--space-3); }
+.configuration-page { display: flex; flex-direction: column; gap: var(--space-4); }
 .configuration-card { overflow: hidden; }
 .configuration-setting-list { display: flex; flex-direction: column; }
 .configuration-setting-row {
@@ -2354,10 +2362,6 @@ dialog h2 {
   .ai-tool-cost { grid-column: 1 / -1; text-align: left; justify-self: start; }
 }
 .ai-tool-details { padding: 0 var(--container-pad-x) var(--space-4); font-size: var(--text-md); }
-#ai-not-installed,
-.ai-provider-group-not-installed {
-  margin-bottom: var(--space-6);
-}
 .ai-tool-details > p { margin: 0; }
 .ai-ready-note { color: var(--ok); }
 .ai-empty-group { padding: var(--space-4) var(--container-pad-x); font-size: var(--text-md); }
@@ -2808,7 +2812,7 @@ body[data-page="new-project"] #page-sub { margin-top: var(--space-2); }
 .fold > summary { cursor: pointer; list-style: none; min-height: var(--control-lg); }
 .fold > summary::-webkit-details-marker { display: none; }
 /* Disclosure: a chevron before the title (it turns when open) and the count beside the title, as in Primer. */
-.fold > summary.card-h { justify-content: flex-start; gap: var(--space-2); }
+.fold > summary.card-h { justify-content: flex-start; flex-wrap: nowrap; gap: var(--space-2); min-height: calc(var(--control-sm) + 2 * var(--space-3)); }
 .fold > summary::before {
   content: ""; flex: none; width: 7px; height: 7px; margin: 0 var(--space-1) 0 var(--space-0);
   border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg);
@@ -2961,7 +2965,7 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .prd-model-select {
   width: auto;
   max-width: 260px;
-  min-height: var(--control-sm);
+  min-height: var(--control-md);
   padding: var(--space-1) var(--space-2);
   font-size: var(--text-sm);
   border-radius: var(--r-md);
@@ -3563,6 +3567,7 @@ body[data-page="run"] .topbar-actions {
   display: none !important;
 }
 @media (max-width: 760px) {
+  .topbar { --back-w: var(--control-md); }
   .back-link {
     width: var(--control-md);
     height: var(--control-md);
@@ -4434,3 +4439,13 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 #ux-current-progress { margin-bottom: var(--space-4); }
 #ux-current-progress .ux-review-progress { flex: 1 1 200px; }
 #ux-setup .card-h .muted { overflow-wrap: anywhere; text-align: right; }
+
+/* Phones: small buttons are touch targets too (filter chips stay compact). */
+@media (max-width: 760px) {
+  .btn.small:not(.filters .btn) { min-height: var(--control-lg); }
+}
+
+/* The checklist explains what's wrong in full sentences: let them wrap instead of cutting them off. */
+body[data-page="checkup"] .item :is(.title, .meta) { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+/* "Show N more" on a long list reads as a link, not a row of data. */
+.sign-in-rest > summary { justify-content: flex-start; color: var(--accent); }

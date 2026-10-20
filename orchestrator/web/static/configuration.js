@@ -539,11 +539,14 @@
       <span><span class="mono">${escapeHtml(email)}</span> <span class="muted">${escapeHtml(EMAIL_SOURCES[source] || source)}</span></span>
       ${source === "settings" ? `<button type="button" class="btn small danger" data-config-action="access-remove" data-email="${escapeHtml(email)}">Remove</button>` : ""}
     </div>`).join("");
-    const signInRows = signIns.map((s) => `<div class="configuration-setting-row">
+    const signInRow = (s) => `<div class="configuration-setting-row">
       <span><span class="mono">${escapeHtml(s.email)}</span>${s.current ? ` <span class="pill">This browser</span>` : ""}
         <span class="muted">Signed in ${escapeHtml(shortDate(s.created))} · last used ${escapeHtml(shortDate(s.last_seen))}</span></span>
       ${s.current ? `<button type="button" class="btn small danger" data-config-action="access-revoke" data-current>Sign out</button>` : ""}
-    </div>`).join("");
+    </div>`;
+    const SIGN_INS_SHOWN = 8; // a long history stays out of the way: the rest are one click down
+    const signInRows = signIns.slice(0, SIGN_INS_SHOWN).map(signInRow).join("")
+      + (signIns.length > SIGN_INS_SHOWN ? `<details class="fold sign-in-rest"><summary class="configuration-setting-row">Show ${signIns.length - SIGN_INS_SHOWN} more</summary>${signIns.slice(SIGN_INS_SHOWN).map(signInRow).join("")}</details>` : "");
     const events = Array.isArray(state.audit) ? state.audit : [];
     const eventText = (entry) => {
       const who = escapeHtml(entry.who || "Someone");
