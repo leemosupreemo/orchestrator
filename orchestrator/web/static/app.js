@@ -2432,7 +2432,6 @@ document.addEventListener("click", (e) => {
 });
 
 function jobTableRow(j, { hidden = false } = {}) {
-  const activeRun = state.runs.find((r) => r.running && (r.job === j.id || r.result_job === j.id));
   const parts = [
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
@@ -2469,11 +2468,6 @@ function jobTableRow(j, { hidden = false } = {}) {
       <div class="col-date" title="${esc(new Date(j.updated * 1000).toLocaleString())}">
         <span class="date-relative">${esc(ago(j.updated))}</span>
       </div>
-      ${activeRun ? runStatus(activeRun) : ""}
-      <div class="row-hover-hint">
-        <span>Click for details</span>
-        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-chevron"/></svg>
-      </div>
     </a>`;
 }
 
@@ -2489,14 +2483,24 @@ function liveRunCard(r) {
   const overlayHtml = isStopping
     ? `<div class="live-run-overlay" role="status" aria-label="Stopping…"><div class="spinner" aria-hidden="true"></div><span class="live-run-overlay-text">Stopping…</span></div>`
     : "";
+  const p = r.progress || {};
+  const numbered = Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total;
+  const facts = [
+    numbered ? `Step ${p.step} of ${p.total}` : "",
+    `${elapsed(r.started)} elapsed`,
+    r.waiting ? "Waiting for you" : r.idle > 30 ? `Quiet for ${elapsed(Date.now() / 1000 - r.idle)}` : "",
+  ].filter(Boolean);
+  const doing = p.task || p.label || "";
   return `<div class="live-run ${r.waiting ? "waiting" : ""} ${isStopping ? "stopping" : ""}" data-run-id="${esc(r.id)}" ${isStopping ? 'aria-busy="true"' : ""}>
     ${overlayHtml}
     <a class="main-col" href="#/runs/${encodeURIComponent(r.id)}">
-      <div class="title">${esc(r.title)}</div>
-      <div class="meta">${esc(`Running ${elapsed(r.started)}`)}${r.waiting ? " · waiting for you" : r.idle > 30 ? ` · quiet for ${elapsed(Date.now() / 1000 - r.idle)}` : ""}</div>
-      ${r.last_line ? `<div class="last-line mono">${esc(r.last_line)}</div>` : ""}
+      <div class="live-run-head"><span class="title">${esc(r.title)}</span>${runPill(r)}</div>
+      <div class="meta">${facts.map(esc).join(" · ")}</div>
+      ${numbered ? `<progress class="live-run-progress" value="${p.step - 1}" max="${p.total}" aria-label="Completed steps: ${p.step - 1} of ${p.total}"></progress>` : ""}
+      ${doing ? `<div class="live-run-doing">${esc(doing)}</div>` : r.last_line ? `<div class="last-line mono">${esc(r.last_line)}</div>` : ""}
     </a>
-    <div class="row">${runPill(r)}<a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Open log</a>
+    <div class="row">
+      <a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Open log</a>
       ${target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Job</a>` : ""}
       <button class="btn small danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? "Stopping…" : "Stop"}</button></div></div>`;
 }
@@ -2909,6 +2913,8 @@ pages.home = async (_, query) => {
     try { p.branches = (await api("git")).branches || []; } catch { p.branches = []; }
   }
   // 1) Default ordered by most recent
+  const runningRuns = state.runs.filter((r) => r.running);
+  const isRunningNow = (j) => runningRuns.some((r) => r.job === j.id || r.result_job === j.id); // shown in Running now, not again in the list
   const sortedJobs = sortJobs(jobs);
 
   // Two sections: the work still going, and what's finished or put away. Old links with filter=done or filter=archived land on the second.
@@ -2923,7 +2929,7 @@ pages.home = async (_, query) => {
   const filter = HOME_FILTERS[requested] ? requested : "all";
   const jumpToFinished = requested === "done" || requested === "archived";
   const activeJobs = sortedJobs.filter((j) => !isFinished(j));
-  const filteredJobs = sortedJobs.filter(HOME_FILTERS[filter][1]);
+  const filteredJobs = sortedJobs.filter((j) => !isRunningNow(j) && HOME_FILTERS[filter][1](j));
   const finishedJobs = sortedJobs.filter(isFinished);
   // What YOLO all continues is exactly the In progress list: work that is mid-build, never a job waiting for your decision.
   const inProgress = sortedJobs.filter(HOME_FILTERS.working[1]);
@@ -2931,7 +2937,6 @@ pages.home = async (_, query) => {
   const staleJobs = filteredJobs.filter(isStaleJob);
   const currentJobs = filteredJobs.filter((j) => !isStaleJob(j));
 
-  const runningRuns = state.runs.filter((r) => r.running);
   const runningBanner = runningRuns.length
     ? `<section class="card mb-16"><div class="card-h"><h2>Running now</h2><span class="count">${runningRuns.length}</span></div>
         <div class="list">${runningRuns.map(liveRunCard).join("")}</div></section>`
@@ -2952,7 +2957,7 @@ pages.home = async (_, query) => {
           <div class="row">
             <div class="filters">
               ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
-                const count = sortedJobs.filter(fn).length;
+                const count = sortedJobs.filter((j) => !isRunningNow(j) && fn(j)).length;
                 if (key === "backlog" && !count && filter !== "backlog") return ""; // waiting epics only get a filter once there are some
                 return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
               }).join("")}
@@ -2980,7 +2985,7 @@ pages.home = async (_, query) => {
               </div>
               <div class="job-table-body" id="stale-list">${staleJobs.map((j) => jobTableRow(j, { hidden: true })).join("")}</div>` : ""}
           </div>
-        ` : `<div class="empty">${!activeJobs.length ? (jobs.length ? "Nothing in progress. Finished jobs are below." : 'No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.') : "No jobs match this filter."}</div>`}
+        ` : `<div class="empty">${runningRuns.length && activeJobs.every(isRunningNow) ? "Everything in progress is running above." : !activeJobs.length ? (jobs.length ? "Nothing in progress. Finished jobs are below." : 'No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.') : "No jobs match this filter."}</div>`}
         ${elsewhereLine(waiting.elsewhere)}
       </section>
 
@@ -3289,6 +3294,14 @@ pages.job = async ([id]) => {
   const phasesInfo = [planStep, buildStep, verifyStep, reviewStep];
 
 
+  // Test files a Tests job wrote are on disk even when checking them stopped, so say so and name them.
+  const testFiles = Object.keys(job.output_digests || {});
+  const testsChecked = job.test_validation?.passed === true;
+  const unvalidatedTestsHtml = job.output_scope === "tests-only" && testFiles.length && !testsChecked
+    ? `<section class="card mb-16"><div class="card-h"><h2>${plural(testFiles.length, "test file")} added, not yet validated</h2></div><div class="card-b stack">
+        <p class="muted">${job.test_validation?.kind === "environment" ? "They are saved in your project, but the tests never ran because the build environment failed." : job.test_validation?.kind === "pending" ? "They are saved in your project. Checking them was interrupted, and resuming checks them without rewriting anything." : "They are saved in your project, but the test run did not pass."} Production code was not changed.</p>
+        <ul class="assumptions">${testFiles.map((f) => `<li class="mono">${esc(f)}</li>`).join("")}</ul></div></section>` : "";
+
   // Contextual consequence preview for hero
   let nextExecutionPreview = "";
   if (activeRun) {
@@ -3297,6 +3310,8 @@ pages.job = async ([id]) => {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
   } else if (s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
+  } else if (s.state.next?.action === "resume" && ["environment", "pending"].includes(job.test_validation?.kind)) {
+    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the saved tests are checked again. Nothing is rewritten.`;
   } else if (s.state.next?.action === "resume") {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> it picks up at <strong>${esc(nextTask || "the next task")}</strong> (${plural(tasksTotal - tasksDone, "task")} left)`;
   } else if (s.state.next?.action === "merge") {
@@ -3415,6 +3430,8 @@ pages.job = async ([id]) => {
         </div>
         <div class="job-hero-action">${heroAction}</div>
       </section>`}
+
+      ${unvalidatedTestsHtml}
 
       ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
         <p class="question">${clamped(s.question, 320)}</p>${s.state.next?.action === "answer" ? "" : `<div><button class="btn" ${act("answer", { job: s.id })}>Answer</button></div>`}</div></section>` : ""}
@@ -6702,11 +6719,19 @@ pages.tests = async (_, query) => {
         const choice = await choicePromise;
         $("#dialog-ok").hidden = false;
         if (!choice) return;
-        const values = await formDialog("Improve coverage with AI", `<p>AI inspects your code and tests, ranks gaps, and creates a coverage job aiming for 100% test coverage.</p>
-          <fieldset class="field"><legend>After the analysis</legend>
-            <label class="check"><input type="radio" name="execution" value="automatic" checked><span>Add tests automatically<small>Plan, implement and measure the result.</small></span></label>
-            <label class="check"><input type="radio" name="execution" value="review"><span>Review advice first<small>Stop at the plan. Start implementation from the job when ready.</small></span></label></fieldset>
-          <label class="check"><input type="checkbox" name="free"><span>Use free AI only</span></label>`, "Create coverage job");
+        const valuesPromise = formDialog("Improve coverage with AI", `<p>AI inspects your code and tests, ranks gaps, and creates a coverage job aiming for 100% test coverage.</p>
+          <input type="hidden" name="execution" value="automatic">
+          <div class="import-options coverage-paths">
+            <button type="button" class="import-option" data-execution="automatic"><strong>Add tests automatically</strong><span>Plan, implement and measure the result.</span></button>
+            <button type="button" class="import-option" data-execution="review"><strong>Review advice first</strong><span>Stop at the plan. Start implementation from the job when ready.</span></button></div>
+          <label class="check coverage-sub-option"><input type="checkbox" name="free"><span>Use free AI only</span></label>`, "Create coverage job");
+        $("#dialog-ok").hidden = true;
+        document.querySelectorAll("#dialog-body [data-execution]").forEach((btn) => btn.addEventListener("click", () => {
+          $("#dialog-body input[name=execution]").value = btn.dataset.execution;
+          $("#dialog").close("ok");
+        }));
+        const values = await valuesPromise;
+        $("#dialog-ok").hidden = false;
         if (!values) return;
         try { await runAction("new_job", coverageJobParams(data, caseView, values)); } catch (e) { toast(e.message, true); }
       });
@@ -8742,7 +8767,7 @@ function runHeader(r) {
   const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   return {
     title: r.title,
-    sub: r.command ? `<span class="status-line"><span class="mono">${esc(r.command)}</span></span>` : "",
+    sub: "",
     actions: r.running
       ? `<button class="btn danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…' : "Stop"}</button>`
       : "",
@@ -9416,6 +9441,17 @@ function runStatus(r, vc = null) {
       <strong>${esc(found.headline)}</strong>${found.details?.length ? `<ul>${found.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}</div>` : "";
   const resultText = showFound ? "" : done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
   const resultItem = resultText ? `<div><dt>Result</dt><dd class="${caveat ? "" : done ? "text-ok" : "text-bad"}">${esc(resultText)}</dd></div>` : "";
+  const machines = Array.isArray(p.machines) ? p.machines : [];
+  const machineText = machines.length ? machines.join(", ")
+    : nonAiActions.has(r.action) ? "This Mac (local run)"
+    : r.running ? "Assigning a machine…" : "None recorded";
+  const machineItem = `<div><dt>Machines</dt><dd data-run-machines>${esc(machineText)}${machines.length && r.running ? " (active)" : ""}</dd></div>`;
+  const summaryItem = r.summary ? `<div><dt>Summary</dt><dd>${esc(r.summary)}</dd></div>` : "";
+  const suites = Array.isArray(p.suites) ? p.suites : []; // the new test suites a coverage plan set out to add
+  const suiteNow = Number.isInteger(p.suite) && p.suite > 0 && p.suite <= suites.length ? p.suite : 0;
+  const suiteText = !suites.length ? ""
+    : `${suites.length} planned${suiteNow && !done ? ` · working on ${suiteNow} of ${suites.length}: ${suites[suiteNow - 1].split("/").pop()}` : ""}`;
+  const suiteItem = suiteText ? `<div><dt>New test suites</dt><dd data-run-suites>${esc(suiteText)}</dd></div>` : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";
 
@@ -9426,6 +9462,9 @@ function runStatus(r, vc = null) {
     <dl class="run-status-details">
       ${jobItem}
       ${actionItem}
+      ${summaryItem}
+      ${suiteItem}
+      ${machineItem}
       <div><dt>Models & agents</dt><dd>${modelsText}</dd></div>
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
       ${stateItem}
@@ -9661,7 +9700,7 @@ function updateRunStatus(r) {
       }
       return;
     }
-    const signature = JSON.stringify([r.running, r.exit_code, r.progress, r.title, r.error_summary, r.last_line, r.result]);
+    const signature = JSON.stringify([r.running, r.exit_code, r.progress, r.summary, r.title, r.error_summary, r.last_line, r.result]);
     if (container.runStatusSignature !== signature) {
       container.innerHTML = runStatus(r);
       container.runStatusSignature = signature;
@@ -9794,7 +9833,7 @@ async function finishRunStatus(run) {
   setHeader(runHeader(run));
   const isVisualCheck = run.action === "visual_check" || /visual check/i.test(run.title);
   container.innerHTML = (isVisualCheck && !run.exit_code && (vc?.screenshots?.length || vc?.video)) ? nextStep(run, vc) : runStatus(run, vc);
-  container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.title, run.error_summary, run.last_line, run.result]);
+  container.runStatusSignature = JSON.stringify([run.running, run.exit_code, run.progress, run.summary, run.title, run.error_summary, run.last_line, run.result]);
   hydrateAuthImages(container);
   wireImagePreviews(container);
   wireRunGuidance(container);

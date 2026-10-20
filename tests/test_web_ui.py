@@ -4488,12 +4488,17 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('needs_you: ["Needs you"', home)  # a filter, not a separate section
         self.assertIn('all: ["All"', home)
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
-        self.assertIn('<a class="job-table-row"', row)  # the whole row is one link, with the hover hint
-        self.assertIn("row-hover-hint", row)
+        self.assertIn('<a class="job-table-row"', row)  # the whole row is one link
+        self.assertNotIn("row-hover-hint", row)
+        self.assertNotIn("runStatus(", row)  # a running job's progress lives in Running now, not in the list
         self.assertNotIn("<button", row)  # no button on the row: the next step is on the job page
         self.assertIn('{ key: "status", dir: "asc" }', self.js)  # needs-you jobs sort first by default
         self.assertNotIn("pages.jobs", self.js)  # one jobs list, on Home
         self.assertNotIn("moreActionsMenu", self.js)  # nothing hidden in a Home menu that a page already has
+
+    def test_job_page_names_test_files_that_were_added_but_not_validated(self):
+        self.assertIn("test file\")} added, not yet validated", self.js)
+        self.assertIn('job.test_validation?.kind === "environment"', self.js)  # try again says nothing is rewritten
 
     def test_home_job_table_shows_type_column_and_mobile_layout_keeps_date_sole_column(self):
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]

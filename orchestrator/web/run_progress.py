@@ -1,6 +1,7 @@
 """Summarize the worker's phase and LLM lifecycle messages for the live UI."""
 from __future__ import annotations
 
+import json
 import re
 
 
@@ -19,6 +20,7 @@ class RunProgress:
         "MEASURING CODE COVERAGE": "Measuring code coverage",
     }
     TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION", "COVERAGE", "MEASURING CODE COVERAGE"}
+    SUITE_PHASES = {"Investigating issue", "Implementing changes", "Agent thinking", "Running tests", "Verifying changes"}
     ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])")
 
     def __init__(self) -> None:
@@ -31,6 +33,9 @@ class RunProgress:
         self.active: list[str] = []
         self.is_coverage = False
         self.notice = ""
+        self.machines: list[str] = []
+        self.suites: list[str] = []
+        self.suite = 0  # 1-based suite the builder is on; 0 until one is mentioned
 
     def feed(self, chunk: bytes) -> None:
         # PTY reads can split a UTF-8 character or ANSI sequence. Decode complete lines only.
@@ -74,6 +79,25 @@ class RunProgress:
             if notice:  # a finished run can say it only partly did its job
                 self.notice = notice[1].strip()[:400]
 
+            planned = re.fullmatch(r"\[suites\]\s*(\[.*\])", line)
+            if planned:  # a coverage plan names the suites it will add
+                try:
+                    self.suites = [str(x) for x in json.loads(planned[1]) if str(x).strip()]
+                except ValueError:
+                    pass
+                self.suite = 0
+            elif self.suites and self.label in self.SUITE_PHASES:
+                lowered = line.lower()
+                for index in range(len(self.suites) - 1, -1, -1):  # newest mention wins, so later suites override earlier ones
+                    name = self.suites[index].replace("\\", "/").rsplit("/", 1)[-1].lower()
+                    if len(name) >= 3 and name in lowered:
+                        self.suite = index + 1
+                        break
+
+            scheduled = re.search(r"\bScheduled \S+ group \S+ to (\S+) using", line)
+            if scheduled and scheduled[1] not in self.machines:  # the worker machine(s) the job was handed to
+                self.machines.append(scheduled[1])
+
             start = re.search(r"Running LLM \(([^,)]+)", line)
             if start:
                 model = start[1].strip()
@@ -98,4 +122,4 @@ class RunProgress:
     def snapshot(self, running: bool = True) -> dict:
         active = self.active if running else []
         return {"label": self.label, "task": self.task, "step": self.step, "total": self.total,
-                "notice": self.notice, "models": list(self.models), "active_models": list(dict.fromkeys(active)), "agents": len(active)}
+                "notice": self.notice, "machines": list(self.machines), "suites": list(self.suites), "suite": self.suite, "models": list(self.models), "active_models": list(dict.fromkeys(active)), "agents": len(active)}

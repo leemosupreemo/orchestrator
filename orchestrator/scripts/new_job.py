@@ -1193,6 +1193,8 @@ def main(args_override: list[str] | None = None) -> None:
             sub_name = ', '.join(subsystems) if subsystems else 'core application modules'
             user_benefit = f"Eliminates regressions, ensures reliable error recovery, and prevents unexpected crashes across {sub_name}."
 
+        if suites:
+            print("[suites] " + json.dumps([str(x) for x in suites]))  # the live run status counts these
         print("\n" + "\033[1;92m=" * 58 + "\033[0m")
         print(f"   \033[1;92m🧪 TEST COVERAGE EXPANSION REPORT\033[0m")
         print("\033[1;92m=" * 58 + "\033[0m")

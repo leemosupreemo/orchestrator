@@ -146,6 +146,16 @@ class JobsNeverSendYouToTheConsoleTests(unittest.TestCase):
         self.assertIn("No module named 'x'", st["reason"])
 
 
+    def test_tests_that_were_written_but_couldnt_run_offer_try_again_not_a_fix(self):
+        st = ui.job_state({"type": "test-audit", "status": "human-needed", "last_error": "The tests couldn't run.",
+                           "test_validation": {"kind": "environment", "passed": False},
+                           "output_digests": {"tests/a.py": "x", "tests/b.py": "y"}})
+        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Tests couldn't run", "resume", "Try again"))
+        self.assertIn("2 test files added but not checked", st["reason"])
+        failing = ui.job_state({"type": "test-audit", "status": "human-needed", "last_error": "Test validation failed.",
+                                "test_validation": {"kind": "tests", "passed": False}})
+        self.assertEqual(failing["next"]["action"], "debug")
+
 class OrchestratorsOwnFolderTests(unittest.TestCase):
     def test_jobs_cant_switch_branches_in_the_folder_orchestrator_runs_from(self):
         from orchestrator import run_check

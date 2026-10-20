@@ -95,6 +95,49 @@ class NonproductionJobTests(unittest.TestCase):
             self.assertEqual(job['output_scope'], 'tests-only')
             self.assertNotIn('pr_number', job)
 
+    def test_validation_commands_skip_nested_sandboxes_and_environment_failures_are_told_apart(self):
+        self.assertEqual(runner.sandbox_safe('xcodebuild test -scheme A'),
+                         'xcodebuild -IDEPackageSupportDisableManifestSandbox=1 -IDEPackageSupportDisablePluginExecutionSandbox=1 test -scheme A')
+        self.assertEqual(runner.sandbox_safe('swift test && swift build'), 'swift test --disable-sandbox && swift build --disable-sandbox')
+        self.assertEqual(runner.sandbox_safe(runner.sandbox_safe('swift test')), 'swift test --disable-sandbox')
+        self.assertIn('Could not resolve package dependencies', runner.environment_failure('x\nxcodebuild: error: Could not resolve package dependencies:\ny'))
+        self.assertEqual(runner.environment_failure('FAILED test_x\nAssertionError: 1 != 2'), '')
+
+    @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
+    def test_environment_failure_keeps_tests_and_try_again_checks_them_without_a_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            import shlex
+            marker = root / 'ready'
+            command = shlex.join([sys.executable, '-c',
+                f'import sys, pathlib; ready = pathlib.Path({str(marker)!r}).exists(); print("" if ready else "xcodebuild: error: Could not resolve package dependencies:"); sys.exit(0 if ready else 1)'])
+            job = self.run_job(root, 'test-audit', [{'path': 'tests/test_app.py', 'content': 'test'}], command)
+            self.assertEqual(job['status'], 'human-needed')
+            self.assertEqual(job['test_validation']['kind'], 'environment')
+            self.assertIn("couldn't run", job['last_error'])
+            self.assertTrue((root / 'tests/test_app.py').exists())  # the new tests stay
+            marker.write_text('')
+            with patch.object(runner, 'run_llm', side_effect=AssertionError('no model on a retry')):
+                job = self.run_job(root, 'test-audit', [], command)
+            self.assertEqual(job['status'], 'review-needed')
+            self.assertTrue(job['test_validation']['passed'])
+
+    @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
+    def test_a_run_stopped_while_checking_the_tests_resumes_at_checking_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            import shlex
+            command = shlex.join([sys.executable, '-c', 'raise SystemExit(0)'])
+            with patch.object(runner, 'run_validation', side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_job(root, 'test-audit', [{'path': 'tests/test_app.py', 'content': 'test'}], command)
+            saved = json.loads((root / 'job.json').read_text())
+            self.assertEqual(saved['test_validation']['kind'], 'pending')  # persisted before the check began
+            with patch.object(runner, 'run_llm', side_effect=AssertionError('no model on a resume')):
+                job = self.run_job(root, 'test-audit', [], command)
+            self.assertEqual(job['status'], 'review-needed')
+            self.assertTrue(job['test_validation']['passed'])
+
     def test_model_cannot_reclassify_design_or_coverage_as_production(self):
         for requested, expected in [('design', 'feature-design'), ('coverage', 'test-audit')]:
             with self.subTest(kind=requested):

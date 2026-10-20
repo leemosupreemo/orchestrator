@@ -24,6 +24,20 @@ class RunProgressTests(unittest.TestCase):
         progress.feed(output.getvalue().encode())
         self.assertEqual((progress.snapshot()['step'], progress.snapshot()['total']), (2, 10))
 
+    def test_coverage_plan_reports_suites_and_the_one_being_written(self):
+        progress = RunProgress()
+        progress.feed(b'[suites] ["tests/test_auth.py", "tests/test_cart.py", "tests/test_sync.py"]\n')
+        progress.feed(b'=== PLANNING ===\nplanning mentions test_sync.py\n')
+        snapshot = progress.snapshot()
+        self.assertEqual((snapshot["suites"], snapshot["suite"]), (["tests/test_auth.py", "tests/test_cart.py", "tests/test_sync.py"], 0))
+        progress.feed(b'=== IMPLEMENTATION ===\nWriting tests/test_auth.py\nWriting tests/test_cart.py\n')
+        self.assertEqual(progress.snapshot()["suite"], 2)
+
+    def test_scheduled_machines_are_reported(self):
+        progress = RunProgress()
+        progress.feed(b'Scheduled job-1 group g1 to mac-mini using model-a\nScheduled job-1 group g2 to local using model-a\n')
+        self.assertEqual(progress.snapshot()["machines"], ["mac-mini", "local"])
+
     def test_status_bar_cursor_restore_does_not_hide_model_completion(self):
         progress = RunProgress()
         progress.feed(b'      - Running LLM (model-a, timeout=300s)...\n')
@@ -154,12 +168,12 @@ class RunProgressTests(unittest.TestCase):
 
 
 class RunStatusRenderingTests(unittest.TestCase):
-    def test_home_job_row_shows_only_its_running_session_and_clears_on_finish(self):
+    def test_home_job_row_has_no_status_container_and_running_now_shows_step_and_elapsed(self):
         source = Path(__file__).resolve().parents[1] / "orchestrator/web/static/app.js"
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['jobTableRow', 'runDuration', 'runFailureGuidance', 'runStatus', 'nextStep']) {
+for (const name of ['jobTableRow', 'liveRunCard', 'elapsed', 'runPill']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -167,31 +181,24 @@ for (const name of ['jobTableRow', 'runDuration', 'runFailureGuidance', 'runStat
 }
 require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'));
 globalThis.esc = Html.escape;
-globalThis.act = (action) => `data-action="${action}"`;
+globalThis.pill = (tone, label) => `<span class="pill ${tone}">${label}</span>`;
 globalThis.stoppingRuns = new Set();
 globalThis.ago = () => 'just now';
 globalThis.jobPill = () => '<span class="pill working">Running</span>';
 globalThis.jobKind = (j) => j.kind;
 globalThis.jiraChip = () => '';
 Date.now = () => 1000000;
-const run = {id: 'r1', job: 'job-1', running: true, started: 875, title: 'Build',
-  progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10,
-    active_models: ['provider/model-a'], models: ['provider/model-a'], agents: 1}};
-globalThis.state = {runs: [{...run, id: 'other', job: 'job-2', progress: {label: 'Unrelated work'}}, run]};
+const run = {id: 'r1', job: 'job-1', running: true, started: 875, title: 'Build', idle: 0,
+  progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10}};
+globalThis.state = {runs: [run]};
 const job = {id: 'job-1', title: 'Sign-in', updated: 999, kind: 'Feature', active_run: true};
-let html = jobTableRow(job);
-for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '1 active', '2m 5s', 'Add &lt;login&gt;']) assert(html.includes(part), part);
-assert.doesNotMatch(html, /Unrelated work/);
-assert.match(html, /href="#\/jobs\/job-1"/);
-assert.doesNotMatch(html, /<button/);
-state.runs = [{...run, job: null, result_job: 'job-1', waiting: true}];
-assert.match(jobTableRow(job), /Waiting for you/);
-state.runs = [{...run, stopping: true}];
-assert.match(jobTableRow(job), /Stopping/);
-state.runs = [{...run, running: false, exit_code: 0}];
-assert.doesNotMatch(jobTableRow(job), /run-status|Step 2 of 10/);
-state.runs = [];
-assert.doesNotMatch(jobTableRow({...job, active_run: false}), /run-status/);
+const row = jobTableRow(job);
+assert.doesNotMatch(row, /run-status|Step 2 of 10|Click for details/);
+assert.match(row, /href="#\/jobs\/job-1"/);
+const card = liveRunCard(run);
+for (const part of ['Step 2 of 10', '2m elapsed', 'Add &lt;login&gt;', 'live-run-progress']) assert(card.includes(part), part);
+assert(!liveRunCard({...run, progress: {}}).includes('Step '));
+assert.match(liveRunCard({...run, waiting: true}), /Waiting for you/);
 """
         result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -253,8 +260,11 @@ const run = {id: 'r1', running: true, started: 875, action: 'execute', title: 'B
     active_models: ['provider/model-a'], models: ['provider/model-a'], agents: 1}};
 const header = runHeader({...run, command: 'orchestrator script ux_review_run.py pass'});
 assert.doesNotMatch(header.sub, /pill|Running/);
-assert.match(header.sub, /ux_review_run\.py pass/);
-let html = runStatus(run);
+assert.equal(header.sub, '');  // the raw command is not shown; the status container carries what matters
+let html = runStatus({...run, summary: 'Improve test coverage toward 80%', progress: {...run.progress, machines: ['mac-mini'], suites: ['tests/a.py', 'tests/b.py'], suite: 2}});
+for (const part of ['Improve test coverage toward 80%', 'mac-mini (active)', '2 planned · working on 2 of 2: b.py']) assert(html.includes(part), part);
+assert.match(runStatus(run), /Assigning a machine/);
+html = runStatus(run);
 for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '1 active', '2m 5s', 'Add &lt;login&gt;', 'run-status-pct', '10%']) assert(html.includes(part), part);
 assert.match(runStatus({...run, waiting: true}), /Waiting for you/);
 assert.match(runStatus({...run, stopping: true}), /Stopping/);

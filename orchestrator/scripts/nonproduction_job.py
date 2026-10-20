@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,83 @@ from orchestrator import job_scope
 from orchestrator.project_config import PROJECT_CONFIG
 from reference_artifacts import attach_reference_artifact, reference_context
 
+# Output that means the build environment failed before any test could run, not that a test failed.
+ENVIRONMENT_FAILURES = re.compile(
+    r"Could not resolve package dependencies|sandbox_apply: Operation not permitted|Unable to find a destination matching"
+    r"|Failed to resolve (?:package|dependencies)|command not found", re.I)
+
+
+# test_validation kinds that mean the tests are written and only checking them is left.
+RESUMABLE_VALIDATION = {"environment", "pending"}
+
+
+def sandbox_safe(command: str) -> str:
+    """The read-only sandbox around validation can't be nested, so tools that sandbox their own manifests are told not to."""
+    command = re.sub(r"\bxcodebuild\b(?! -IDEPackageSupportDisableManifestSandbox)",
+                     "xcodebuild -IDEPackageSupportDisableManifestSandbox=1 -IDEPackageSupportDisablePluginExecutionSandbox=1", command)
+    return re.sub(r"\bswift (build|test)\b(?! --disable-sandbox)", r"swift \1 --disable-sandbox", command)
+
+
+def environment_failure(output: str) -> str:
+    """The line that shows the environment failed, or an empty string when the output reads like failing tests."""
+    line = next((line for line in output.splitlines() if ENVIRONMENT_FAILURES.search(line)), "")
+    return line.strip()[:300]
+
+
+def owned_files_intact(job: dict) -> bool:
+    owned = job.get("output_digests") or {}
+    return bool(owned) and all((ROOT / path).is_file() and hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest
+                               for path, digest in owned.items())
+
+
+def run_validation(job: dict, out: Path) -> None:
+    """Run the project's tests against a disposable copy; raise if they can't run or don't pass."""
+    command = PROJECT_CONFIG.test_command or PROJECT_CONFIG.stack.test_command
+    if not command:
+        from common import extract_commands
+        command = extract_commands()[1]
+    job["test_validation"] = {"command": command, "passed": False, "kind": "tests"}
+    with tempfile.TemporaryDirectory(prefix="orchestrator-coverage-") as scratch:
+        # Build caches and test fixtures may change in this disposable copy.
+        # Only validated test proposals are ever copied to the real project.
+        work = Path(scratch).resolve() / "project"
+        def ignore(directory, names):
+            return set(names) & {".git", ".orchestrator", ".build", "target", "node_modules", ".venv", "venv", "__pycache__"} if Path(directory) == ROOT else set()
+        shutil.copytree(ROOT, work, symlinks=True, ignore=ignore)
+        for dependency in ("node_modules", ".venv", "venv"):
+            if (ROOT / dependency).is_dir():
+                (work / dependency).symlink_to(ROOT / dependency, target_is_directory=True)
+        config = ROOT / ".orchestrator/project.json"
+        if config.is_file():
+            (work / ".orchestrator").mkdir(exist_ok=True)
+            shutil.copy2(config, work / ".orchestrator/project.json")
+        isolated_command = job_scope.protect_command(sandbox_safe(command.replace(str(ROOT), str(work))), [ROOT])
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "COVERAGE_FILE": str(Path(scratch) / ".coverage"), "TMPDIR": scratch,
+               "ORCHESTRATOR_PROJECT_ROOT": str(work), "ORCHESTRATOR_RUNTIME_DIR": str(work / ".orchestrator"),
+               "AI_RUNTIME_DIR": str(work / ".orchestrator")}
+        env.pop("ORCHESTRATOR_CONFIG", None)
+        if env.get("PYTHONPATH"):
+            env["PYTHONPATH"] = os.pathsep.join(str(work / Path(part).relative_to(ROOT)) if part and Path(part).is_relative_to(ROOT) else part
+                                                  for part in env["PYTHONPATH"].split(os.pathsep))
+        validation = subprocess.run(isolated_command, shell=True, cwd=work, env=env,
+                                    capture_output=True, text=True, timeout=1200)
+        reports = [Path(scratch) / ".coverage", work / "coverage.xml", work / "lcov.info", work / "coverage/lcov.info"]
+        for report in reports:
+            if report.is_file():
+                (out / "coverage").mkdir(exist_ok=True)
+                shutil.copy2(report, out / "coverage" / report.name)
+    output = validation.stdout + validation.stderr
+    write_text(out / "test.log", output)
+    job["test_validation"]["passed"] = validation.returncode == 0
+    if validation.returncode:
+        broken = environment_failure(output)
+        if broken:  # nothing ran, so there is nothing for a fix attempt to look into
+            job["test_validation"].update(kind="environment", detail=broken)
+            raise ValueError(f"The tests couldn't run: the build environment failed before any test started ({broken}). "
+                             "The new test files are saved. Try again to check them without rewriting them.")
+        raise ValueError("Test validation failed. Review test.log; production fixes require a separate Bug fix job.")
+    job["test_validation"]["kind"] = "passed"
+
 
 def execute_nonproduction_job(job_path: Path) -> None:
     job = read_json(job_path)
@@ -25,6 +103,12 @@ def execute_nonproduction_job(job_path: Path) -> None:
     out = OUTPUT_DIR / job["job_id"]
     out.mkdir(parents=True, exist_ok=True)
     try:
+        if not design and (job.get("test_validation") or {}).get("kind") in RESUMABLE_VALIDATION and owned_files_intact(job):
+            # The tests were written, then checking them couldn't finish (the environment failed, or the run was stopped):
+            # check them again without calling a model.
+            run_validation(job, out)
+            job.update(status="review-needed", last_error=None, human_clarification_question=None)
+            return
         before = get_repo_state()
         dirty = set(before["modified"]) | set(before["untracked"])
         untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT, capture_output=True, text=True)
@@ -71,44 +155,9 @@ def execute_nonproduction_job(job_path: Path) -> None:
                 job.setdefault("reference_artifacts", []).append(ref)
             job["design_artifacts"] = written
         else:
-            command = PROJECT_CONFIG.test_command or PROJECT_CONFIG.stack.test_command
-            if not command:
-                from common import extract_commands
-                command = extract_commands()[1]
-            job["test_validation"] = {"command": command, "passed": False}
-            with tempfile.TemporaryDirectory(prefix="orchestrator-coverage-") as scratch:
-                # Build caches and test fixtures may change in this disposable copy.
-                # Only validated test proposals above are ever copied to the real project.
-                work = Path(scratch).resolve() / "project"
-                def ignore(directory, names):
-                    return set(names) & {".git", ".orchestrator", ".build", "target", "node_modules", ".venv", "venv", "__pycache__"} if Path(directory) == ROOT else set()
-                shutil.copytree(ROOT, work, symlinks=True, ignore=ignore)
-                for dependency in ("node_modules", ".venv", "venv"):
-                    if (ROOT / dependency).is_dir():
-                        (work / dependency).symlink_to(ROOT / dependency, target_is_directory=True)
-                config = ROOT / ".orchestrator/project.json"
-                if config.is_file():
-                    (work / ".orchestrator").mkdir(exist_ok=True)
-                    shutil.copy2(config, work / ".orchestrator/project.json")
-                isolated_command = job_scope.protect_command(command.replace(str(ROOT), str(work)), [ROOT])
-                env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "COVERAGE_FILE": str(Path(scratch) / ".coverage"), "TMPDIR": scratch,
-                       "ORCHESTRATOR_PROJECT_ROOT": str(work), "ORCHESTRATOR_RUNTIME_DIR": str(work / ".orchestrator"),
-                       "AI_RUNTIME_DIR": str(work / ".orchestrator")}
-                env.pop("ORCHESTRATOR_CONFIG", None)
-                if env.get("PYTHONPATH"):
-                    env["PYTHONPATH"] = os.pathsep.join(str(work / Path(part).relative_to(ROOT)) if part and Path(part).is_relative_to(ROOT) else part
-                                                          for part in env["PYTHONPATH"].split(os.pathsep))
-                validation = subprocess.run(isolated_command, shell=True, cwd=work, env=env,
-                                            capture_output=True, text=True, timeout=1200)
-                reports = [Path(scratch) / ".coverage", work / "coverage.xml", work / "lcov.info", work / "coverage/lcov.info"]
-                for report in reports:
-                    if report.is_file():
-                        (out / "coverage").mkdir(exist_ok=True)
-                        shutil.copy2(report, out / "coverage" / report.name)
-            write_text(out / "test.log", validation.stdout + validation.stderr)
-            job["test_validation"]["passed"] = validation.returncode == 0
-            if validation.returncode:
-                raise ValueError("Test validation failed. Review test.log; production fixes require a separate Bug fix job.")
+            job["test_validation"] = {"kind": "pending", "passed": False}
+            write_json(job_path, job)  # the files are on disk now; a stop from here on resumes at checking them
+            run_validation(job, out)
         job.update(status="review-needed", last_error=None, human_clarification_question=None)
     except Exception as exc:
         job.update(status="human-needed", last_error=str(exc))

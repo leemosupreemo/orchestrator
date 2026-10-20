@@ -397,8 +397,12 @@ class PtySession:
                             pass
             if assigned:
                 progress["assigned_models"] = assigned
+        summary_text = ""
+        if "--summary" in (self.argv or []):  # a new job's own words, shown in the run status instead of the raw command
+            at = self.argv.index("--summary") + 1
+            summary_text = str(self.argv[at])[:300] if at < len(self.argv) else ""
         return {
-            "id": self.id, "action": self.action, "title": self.title,
+            "id": self.id, "action": self.action, "title": self.title, "summary": summary_text,
             "command": " ".join(_display_argv(self.argv)), "started": self.started,
             "ended": self.ended, "running": self.running, "exit_code": self.exit_code,
             "stopped": self.stopped,
@@ -703,6 +707,10 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         if job.get("human_clarification_question"):
             return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
         error = str(job.get("last_error") or "").strip()
+        if (job.get("test_validation") or {}).get("kind") == "environment":  # the tests were written, then the build environment failed
+            added = len(job.get("output_digests") or {})
+            return state("needs_you", "attention", "Tests couldn't run",
+                         f"{added} test file{'' if added == 1 else 's'} added but not checked. {error}", "resume", "Try again")
         reason = f"It stopped with an error: {error}" if error else "It stopped before finishing."
         if remaining:
             return state("needs_you", "failed" if error else "attention", "Stopped", reason, "resume", "Try again")
