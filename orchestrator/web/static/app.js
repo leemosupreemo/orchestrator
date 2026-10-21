@@ -3298,10 +3298,24 @@ pages.job = async ([id]) => {
   // Test files a Tests job wrote are on disk even when checking them stopped, so say so and name them.
   const testFiles = Object.keys(job.output_digests || {});
   const testsChecked = job.test_validation?.passed === true;
+  const failingTests = (job.test_validation?.failures || []).filter((f) => f && f.test);
+  const bugLink = (summary, spec) => `#/new?type=bug&summary=${encodeURIComponent(summary.slice(0, 200))}&spec=${encodeURIComponent(spec.slice(0, 1800))}`; // opens the bug form filled in
   const unvalidatedTestsHtml = job.output_scope === "tests-only" && testFiles.length && !testsChecked
     ? `<section class="card mb-16"><div class="card-h"><h2>${plural(testFiles.length, "test file")} added, not yet validated</h2></div><div class="card-b stack">
-        <p class="muted">${job.test_validation?.kind === "environment" ? "They are saved in your project, but the tests never ran because the build environment failed." : job.test_validation?.kind === "pending" ? "They are saved in your project. Checking them was interrupted, and resuming checks them without rewriting anything." : "They are saved in your project, but the test run did not pass."} Production code was not changed.</p>
-        <ul class="assumptions">${testFiles.map((f) => `<li class="mono">${esc(f)}</li>`).join("")}</ul></div></section>` : "";
+        <p class="muted">${job.test_validation?.kind === "environment" ? "They are saved in your project, but the tests never ran because the build environment failed." : job.test_validation?.kind === "pending" ? "They are saved in your project. Checking them was interrupted, and resuming checks them without rewriting anything." : job.test_validation?.kind === "unregistered" ? `The run passed, but ${plural(job.test_validation.not_run?.length || 0, "file")} never ran because the Xcode project doesn't list them in its test target. Add them there, then try again.` : "They are saved in your project, but the test run did not pass."} Production code was not changed.</p>
+        <ul class="assumptions">${testFiles.map((f) => `<li class="mono">${esc(f)}</li>`).join("")}</ul>
+        ${failingTests.length ? `<div class="stack"><strong>${plural(failingTests.length, "test")} failed</strong>
+          <ul class="assumptions">${failingTests.map((f) => `<li><span class="mono">${esc(f.test)}</span>: ${esc(f.message)}</li>`).join("")}</ul>
+          <p class="muted">If a test expects the wrong thing, <em>Fix the tests</em> rewrites it. If the code is what's wrong, the test is right: report it as a bug instead.</p>
+          <div class="row"><a class="btn small" href="${esc(bugLink(`${plural(failingTests.length, "test")} added by “${job.title}” fail`, "These tests were written to check the code and fail. If the code is wrong rather than the tests:\n\n" + failingTests.map((f) => `- ${f.test}: ${f.message}`).join("\n")))}">Report as bug</a></div></div>` : ""}</div></section>` : "";
+  const defects = (job.production_defects || []).filter((d) => d && d.summary);
+  const defectsHtml = defects.length ? `<section class="card mb-16"><div class="card-h"><h2>${plural(defects.length, "defect")} found in the code</h2></div><div class="card-b stack">
+      <p class="muted">The tests found behaviour that looks wrong in your code. The failing tests were left out so the rest could pass. Each can become a bug job, with the test attached to add once it's fixed.</p>
+      ${defects.map((d) => `<div class="stack"><strong>${esc(d.summary)}</strong>
+        ${d.expected || d.actual ? `<span class="muted">${d.expected ? `Should: ${esc(d.expected)}` : ""}${d.expected && d.actual ? " · " : ""}${d.actual ? `Does: ${esc(d.actual)}` : ""}</span>` : ""}
+        ${d.file ? `<span class="muted mono">${esc(d.file)}</span>` : ""}
+        <div class="row"><a class="btn small" href="${esc(bugLink(d.summary, [d.expected && `Expected: ${d.expected}`, d.actual && `Actual: ${d.actual}`, d.file && `File: ${d.file}`, d.code && `Test to add once fixed (${d.test || "from the Tests job"}):\n${d.code}`].filter(Boolean).join("\n")))}">Report as bug</a></div></div>`).join("")}
+    </div></section>` : "";
 
   // Contextual consequence preview for hero
   let nextExecutionPreview = "";
@@ -3311,7 +3325,7 @@ pages.job = async ([id]) => {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
   } else if (s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
-  } else if (s.state.next?.action === "resume" && ["environment", "pending"].includes(job.test_validation?.kind)) {
+  } else if (s.state.next?.action === "resume" && ["environment", "pending", "unregistered"].includes(job.test_validation?.kind)) {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the saved tests are checked again. Nothing is rewritten.`;
   } else if (s.state.next?.action === "resume") {
     nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> it picks up at <strong>${esc(nextTask || "the next task")}</strong> (${plural(tasksTotal - tasksDone, "task")} left)`;
@@ -3433,6 +3447,7 @@ pages.job = async ([id]) => {
       </section>`}
 
       ${unvalidatedTestsHtml}
+      ${defectsHtml}
 
       ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
         <p class="question">${clamped(s.question, 320)}</p>${s.state.next?.action === "answer" ? "" : `<div><button class="btn" ${act("answer", { job: s.id })}>Answer</button></div>`}</div></section>` : ""}

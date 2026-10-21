@@ -28,6 +28,7 @@ class NonproductionJobTests(unittest.TestCase):
         config = SimpleNamespace(test_command=command, stack=SimpleNamespace(test_command=None))
 
         def answer(*args, **kwargs):
+            self.prompts = [*getattr(self, 'prompts', []), args[1]]
             self.assertEqual(kwargs['protected_paths'], [root])
             return json.dumps(result if result is not None else {'summary': 'Scoped result', 'files': files}), 'fake', 'session'
 
@@ -97,7 +98,10 @@ class NonproductionJobTests(unittest.TestCase):
 
     def test_validation_commands_skip_nested_sandboxes_and_environment_failures_are_told_apart(self):
         self.assertEqual(runner.sandbox_safe('xcodebuild test -scheme A'),
-                         'xcodebuild -IDEPackageSupportDisableManifestSandbox=1 -IDEPackageSupportDisablePluginExecutionSandbox=1 test -scheme A')
+                         "xcodebuild -IDEPackageSupportDisableManifestSandbox=1 -IDEPackageSupportDisablePluginExecutionSandbox=1 "
+                         "-skipMacroValidation -skipPackagePluginValidation OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox' test -scheme A")
+        self.assertEqual(runner.sandbox_safe('python3 -c "print(1)  # xcodebuild: error"'), 'python3 -c "print(1)  # xcodebuild: error"')  # only a command is rewritten, not text that mentions it
+        self.assertIn("&& xcodebuild -IDEPackageSupportDisableManifestSandbox=1", runner.sandbox_safe('cd app && xcodebuild test'))
         self.assertEqual(runner.sandbox_safe('swift test && swift build'), 'swift test --disable-sandbox && swift build --disable-sandbox')
         self.assertEqual(runner.sandbox_safe(runner.sandbox_safe('swift test')), 'swift test --disable-sandbox')
         self.assertIn('Could not resolve package dependencies', runner.environment_failure('x\nxcodebuild: error: Could not resolve package dependencies:\ny'))
@@ -117,6 +121,7 @@ class NonproductionJobTests(unittest.TestCase):
             self.assertIn("couldn't run", job['last_error'])
             self.assertTrue((root / 'tests/test_app.py').exists())  # the new tests stay
             marker.write_text('')
+            (root / 'tests/test_app.py').write_text('test  # the person fixed something in it')  # an edit to a saved file doesn't force a rewrite
             with patch.object(runner, 'run_llm', side_effect=AssertionError('no model on a retry')):
                 job = self.run_job(root, 'test-audit', [], command)
             self.assertEqual(job['status'], 'review-needed')
@@ -141,6 +146,96 @@ class NonproductionJobTests(unittest.TestCase):
             self.assertEqual(job['status'], 'review-needed')
             self.assertTrue(job['test_validation']['passed'])
             self.assertEqual(job['test_validation']['destination'], 'platform=iOS Simulator,name=New')
+
+    @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
+    def test_a_pass_that_never_ran_the_new_swift_tests_is_not_called_a_pass(self):
+        swift = 'import XCTest\nfinal class ParserTests: XCTestCase {\n func testA() {}\n}\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            import shlex
+            ran = shlex.join([sys.executable, '-c', 'print("Test Suite \'Other\' passed")'])
+            job = self.run_job(root, 'test-audit', [{'path': 'Tests/ParserTests.swift', 'content': swift}], ran)
+            self.assertEqual(job['status'], 'human-needed')
+            self.assertEqual((job['test_validation']['kind'], job['test_validation']['not_run']), ('unregistered', ['Tests/ParserTests.swift']))
+            self.assertFalse(job['test_validation']['passed'])
+            self.assertIn('never ran: ParserTests.swift', job['last_error'])
+            self.assertTrue((root / 'Tests/ParserTests.swift').exists())  # saved, so Try again needs no model
+            ok = shlex.join([sys.executable, '-c', 'print("Test Suite \'ParserTests\' passed")'])
+            with patch.object(runner, 'run_llm', side_effect=AssertionError('no model on a retry')):
+                job = self.run_job(root, 'test-audit', [], ok)
+            self.assertEqual((job['status'], job['test_validation']['kind']), ('review-needed', 'passed'))
+
+    @unittest.skipUnless(shutil.which('ruby') and shutil.which('git')
+                         and runner.subprocess.run(['ruby', '-e', "require 'xcodeproj'"], capture_output=True).returncode == 0, 'needs ruby with xcodeproj, and git')
+    def test_new_tests_join_the_real_projects_test_target_only_over_an_untouched_project_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            script = ("require 'xcodeproj'; p = Xcodeproj::Project.new(ARGV[0] + '/App.xcodeproj'); t = p.new_target(:unit_test_bundle, 'AppTests', :ios); "
+                      "g = p.main_group.new_group('AppTests', 'AppTests'); t.source_build_phase.add_file_reference(g.new_file('Old.swift')); p.save")
+            runner.subprocess.run(['ruby', '-e', script, str(root)], check=True)
+            (root / 'AppTests').mkdir()
+            for name in ('Old', 'New', 'Newer'):
+                (root / f'AppTests/{name}.swift').write_text('x')
+            for args in (['init', '-q'], ['add', '-A'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init']):
+                runner.subprocess.run(['git', *args], cwd=root, check=True)
+            project = 'App.xcodeproj/project.pbxproj'
+            with patch.multiple(runner, ROOT=root, OUTPUT_DIR=root / '.orchestrator' / 'output'):
+                (root / '.orchestrator').mkdir()
+                job = {'test_validation': {}}
+                runner.keep_registration(job, ['AppTests/New.swift'])  # the project file is clean: added
+                self.assertEqual(job['test_validation']['registered'], ['AppTests/New.swift'])
+                self.assertEqual(job['ai_modified_files'], [project])
+                job2 = {'test_validation': {}}
+                runner.keep_registration(job2, ['AppTests/Newer.swift'])  # dirty only with our own earlier edit: added too
+                self.assertEqual(job2['test_validation']['registered'], ['AppTests/Newer.swift'])
+                (root / project).write_text((root / project).read_text() + '\n// my own edit\n')
+                job3 = {'test_validation': {}}
+                runner.keep_registration(job3, ['AppTests/Old.swift', 'AppTests/Other.swift'])  # the person's edit: left alone
+                self.assertNotIn('registered', job3['test_validation'])
+                self.assertIn('uncommitted changes', job3['test_validation']['note'])
+
+    def test_failing_tests_are_read_from_the_run_output(self):
+        xctest = ("/p/Tests/ParserTests.swift:10: error: -[Suite.ParserTests testCRLF] : XCTAssertEqual failed: (\"1\") is not equal to (\"2\")\n"
+                  "/p/Tests/ParserTests.swift:11: error: -[Suite.ParserTests testCRLF] : XCTAssertEqual failed: ([a]) is not equal to ([a, a])\n"
+                  "/p/Tests/OtherTests.swift:5: error: -[OtherTests testB] : XCTAssertTrue failed\n")
+        found = runner.failing_tests(xctest)
+        self.assertEqual([f['test'] for f in found], ['ParserTests.testCRLF', 'OtherTests.testB'])
+        self.assertIn('is not equal to ("2"); XCTAssertEqual failed', found[0]['message'])  # both complaints about one test, once
+        self.assertEqual(runner.failing_tests('FAILED tests/test_a.py::test_x - assert 1 == 2\nFAILED tests/test_a.py::test_y\n'),
+                         [{'test': 'tests/test_a.py::test_x', 'message': 'assert 1 == 2'}, {'test': 'tests/test_a.py::test_y', 'message': ''}])
+        self.assertEqual(runner.failing_tests('all fine'), [])
+
+    def test_defects_are_trimmed_kept_across_attempts_and_replaced_by_the_same_test(self):
+        first = runner.clean_defects([{'test': 'testCRLF', 'summary': 'CRLF is not a line break', 'expected': '2 bullets', 'actual': '1', 'code': 'func testCRLF() {}'},
+                                      {'summary': ''}, 'junk'])
+        self.assertEqual([d['summary'] for d in first], ['CRLF is not a line break'])
+        again = runner.clean_defects([{'test': 'testCRLF', 'summary': 'Windows line endings are ignored'}, {'test': 'testB', 'summary': 'B'}], first)
+        self.assertEqual([d['summary'] for d in again], ['Windows line endings are ignored', 'B'])
+
+    @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
+    def test_a_rewrite_is_told_which_tests_failed_and_why_and_records_the_defects_it_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            import shlex
+            failing = shlex.join([sys.executable, '-c', 'import sys; print("FAILED tests/test_app.py::test_crlf - assert 1 == 2"); sys.exit(1)'])
+            self.run_job(root, 'test-audit', [{'path': 'tests/test_app.py', 'content': 'test'}], failing)
+            job_file = root / 'job.json'
+            job = json.loads(job_file.read_text())
+            self.assertEqual(job['test_validation']['failures'], [{'test': 'tests/test_app.py::test_crlf', 'message': 'assert 1 == 2'}])
+            job['debug_feedback'] = 'the CRLF case is the code, I think'
+            job_file.write_text(json.dumps(job))
+            self.prompts = []
+            passing = shlex.join([sys.executable, '-c', 'print("ok")'])
+            result = {'summary': 'Reworked', 'files': [{'path': 'tests/test_app.py', 'content': 'test2'}],
+                      'defects': [{'test': 'test_crlf', 'summary': 'CRLF is not treated as a line break', 'expected': 'two items', 'actual': 'one', 'code': 'def test_crlf(): ...'}]}
+            job = self.run_job(root, 'test-audit', [], passing, result=result)
+            prompt = self.prompts[-1]
+            self.assertIn('tests/test_app.py::test_crlf: assert 1 == 2', prompt)
+            self.assertIn('Decide for each failure whether the TEST or the CODE is wrong', prompt)
+            self.assertIn('the CRLF case is the code, I think', prompt)
+            self.assertEqual(job['status'], 'review-needed')
+            self.assertEqual(job['production_defects'][0]['summary'], 'CRLF is not treated as a line break')
+            self.assertNotIn('debug_feedback', job)  # said once
 
     @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
     def test_a_run_stopped_while_checking_the_tests_resumes_at_checking_them(self):

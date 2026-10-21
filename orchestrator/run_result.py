@@ -46,7 +46,7 @@ def _tone(line: str) -> str:
 
 
 def _result(headline: str, details: list[str] | None = None, tone: str = "ok") -> dict[str, Any]:
-    return {"headline": headline[:MAX_LINE], "details": [d[:MAX_LINE] for d in (details or [])][:8], "tone": tone}
+    return {"headline": headline[:MAX_LINE], "details": [d[:MAX_LINE] for d in (details or [])][:10], "tone": tone}
 
 
 def _plural(n: int, word: str) -> str:
@@ -250,24 +250,37 @@ def job_outcome(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
     known = [f for f in files if counts[f] is not None]
     kind = check.get("kind")
     state, tone = (("checked and passing", "ok") if check.get("passed") or kind == "passed"
+                   else (f"{_plural(len(check.get('not_run') or []), 'file')} never ran", "warn") if kind == "unregistered"
                    else ("not checked yet: the build environment failed", "warn") if kind in ("environment", "pending")
                    else ("the tests didn't pass", "bad"))
     headline = f"{_plural(len(files), 'test file')} added" + (f" with {_plural(total, 'test')}" if known else "") + f", {state}"
     folder = os.path.commonpath([os.path.dirname(f) or "." for f in files]) if len(files) > 1 else os.path.dirname(files[0])
     details = [f"Location: {folder or 'project root'}/"]
-    shown = sorted(files)[:4]
+    shown = sorted(files)[:3]
     details += [f"{os.path.basename(f)}" + (f": {_plural(counts[f], 'test')}" if counts[f] is not None else "") for f in shown]
     if len(files) > len(shown):
         details.append(f"and {len(files) - len(shown)} more files")
-    if kind in ("environment", "pending") and check.get("detail"):
+    if check.get("registered"):
+        details.append(f"Added {_plural(len(check['registered']), 'file')} to the Xcode test target so they run.")
+    if check.get("note"):
+        details.append(str(check["note"])[:MAX_LINE])
+    if kind in ("environment", "pending", "unregistered") and check.get("detail"):
         details.append(f"Couldn't check them: {check['detail']}"[:MAX_LINE])
     elif tone == "bad":
-        details.append("See test.log in the job's output for what failed.")
+        for failure in (check.get("failures") or [])[:2]:
+            details.append(f"Failed: {failure['test'].split('.')[-1]}: {failure['message']}"[:MAX_LINE])
+        details.append("See test.log in the job's output for the rest. Fix the tests if they expect the wrong thing; if the code is wrong, report it as a bug.")
     if tone != "ok":
-        details.append("Open the job: Try again checks the saved tests without rewriting them." if kind in ("environment", "pending")
-                       else "Open the job to run a fix.")
+        details.append("Open the job: Try again checks the saved tests without rewriting them." if kind in ("environment", "pending", "unregistered")
+                       else "Open the job to fix the tests, or report the code as a bug.")
+    partial = tone != "ok"  # the tests themselves are unfinished; a defect found in the code doesn't make the job so
+    defects = [d for d in job.get("production_defects") or [] if isinstance(d, dict) and d.get("summary")]
+    if defects:  # tests found real bugs in the code: that is a finding, whether or not the job is otherwise finished
+        details.append(f"Found {_plural(len(defects), 'production defect')}: " + "; ".join(d["summary"] for d in defects[:2]) + (" …" if len(defects) > 2 else ""))
+        tone = "warn" if tone == "ok" else tone
+        headline += f", {_plural(len(defects), 'defect')} found in the code"
     result = _result(headline, details, tone)
-    if tone != "ok":
+    if partial:
         result["partial"] = True  # the files are saved, but the job stopped short of checking them
     return result
 

@@ -125,6 +125,17 @@ def describe_log_source(source: str) -> str:
 
 def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str | None = None, max_iterations: int | None = None) -> None:
     job = read_json(job_path)
+
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        # Design and Tests jobs have no debug loop: the builder rewrites its own files, and is told which of its tests failed and why
+        # (and anything the person said), so a separate diagnosis step would only repeat what it reads for itself.
+        if feedback:
+            job["debug_feedback"] = feedback
+        write_json(job_path, job)
+        print_phase("implementation", subtext="rewriting the failing tests" if job.get("output_scope") == "tests-only" else "revising")
+        run_implement(job, job_path)
+        return
     
     # 1. State Machine Initialization
     if job.get("status") != "debugging":

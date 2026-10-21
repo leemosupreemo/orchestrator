@@ -174,6 +174,36 @@ class TestsJobOutcomeTests(unittest.TestCase):
         self.assertEqual(out["tone"], "bad")
         self.assertTrue(any("test.log" in d for d in out["details"]))
 
+    def test_files_that_never_ran_and_files_added_to_the_test_target_are_both_reported(self):
+        self.job["test_validation"] = {"passed": False, "kind": "unregistered", "not_run": ["AppTests/ParserTests.swift"],
+                                       "detail": "They aren't part of the project's test target."}
+        out = rr.job_outcome(self.job, self.root)
+        self.assertEqual((out["tone"], out["partial"]), ("warn", True))
+        self.assertIn("1 file never ran", out["headline"])
+        self.assertTrue(any("test target" in d for d in out["details"]))
+        self.job["test_validation"] = {"passed": True, "kind": "passed", "registered": ["AppTests/ParserTests.swift"],
+                                       "note": "App.xcodeproj has uncommitted changes, so more files weren't added."}
+        done = rr.job_outcome(self.job, self.root)
+        self.assertEqual(done["tone"], "ok")
+        self.assertIn("Added 1 file to the Xcode test target so they run.", done["details"])
+        self.assertTrue(any("uncommitted changes" in d for d in done["details"]))
+
+    def test_failed_tests_and_defects_found_in_the_code_are_named(self):
+        self.job["test_validation"] = {"passed": False, "kind": "tests",
+                                       "failures": [{"test": "ParserTests.testCRLF", "message": "1 is not equal to 2"}, {"test": "ParserTests.testB", "message": "b"}, {"test": "X.testC", "message": "c"}]}
+        out = rr.job_outcome(self.job, self.root)
+        self.assertEqual(out["tone"], "bad")
+        self.assertIn("Failed: testCRLF: 1 is not equal to 2", out["details"])
+        self.assertNotIn("Failed: testC: c", out["details"])  # the first two only
+        self.assertTrue(any("report it as a bug" in d for d in out["details"]))
+        self.job["test_validation"] = {"passed": True, "kind": "passed"}
+        self.job["production_defects"] = [{"summary": "CRLF is not a line break", "test": "testCRLF"}]
+        found = rr.job_outcome(self.job, self.root)
+        self.assertEqual(found["tone"], "warn")
+        self.assertTrue(found["headline"].endswith("1 defect found in the code"))
+        self.assertIn("Found 1 production defect: CRLF is not a line break", found["details"])
+        self.assertNotIn("partial", found)  # the tests passed; the finding is about the code
+
     def test_a_job_that_added_no_files_says_so_and_other_jobs_are_left_alone(self):
         out = rr.job_outcome({"output_scope": "tests-only", "last_error": "Needs a production change"}, self.root)
         self.assertEqual((out["headline"], out["tone"]), ("No test files were added", "warn"))

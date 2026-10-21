@@ -129,6 +129,19 @@ class LLMRunSingleTests(unittest.TestCase):
 
     @patch("subprocess.Popen")
     @patch.object(llm, "append_log")
+    def test_codex_under_the_read_only_sandbox_is_not_asked_to_sandbox_itself(self, mock_append, mock_popen):
+        for protected, flagged in ((True, True), (False, False)):
+            mock_popen.return_value = self._create_mock_popen(['{"ok": true}\n'])
+            seen = []
+            with patch("orchestrator.job_scope.protect_command", side_effect=lambda cmd, p: seen.append(cmd) or cmd):
+                llm._run_llm_single("gpt-5.4", "p", cwd=ROOT_DIR, protected_paths=[Path("/proj")] if protected else None)
+            if protected:
+                self.assertIn("codex exec --dangerously-bypass-approvals-and-sandbox --model gpt-5.4", seen[0])  # a sandbox cannot nest in another
+            else:
+                self.assertEqual(seen, [])  # unprotected runs keep Codex's own sandbox
+
+    @patch("subprocess.Popen")
+    @patch.object(llm, "append_log")
     def test_run_llm_single_failure_raises_runtime_error(self, mock_append, mock_popen):
         mock_popen.return_value = self._create_mock_popen([], ["API key rejected\n"], returncode=1)
 

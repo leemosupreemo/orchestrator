@@ -14,7 +14,7 @@ from common import (ROOT, OUTPUT_DIR, PROMPTS_DIR, command_with_destination, ext
                     get_repo_state, now_iso, read_json, write_json, write_text)
 from llm import extract_json_block, run_llm
 from model_router import ModelRole
-from orchestrator import job_scope
+from orchestrator import job_scope, xcode_tests
 from orchestrator.project_config import PROJECT_CONFIG
 from reference_artifacts import attach_reference_artifact, reference_context
 
@@ -25,13 +25,16 @@ ENVIRONMENT_FAILURES = re.compile(
 
 
 # test_validation kinds that mean the tests are written and only checking them is left.
-RESUMABLE_VALIDATION = {"environment", "pending"}
+RESUMABLE_VALIDATION = {"environment", "pending", "unregistered"}
 
 
 def sandbox_safe(command: str) -> str:
     """The read-only sandbox around validation can't be nested, so tools that sandbox their own manifests are told not to."""
-    command = re.sub(r"\bxcodebuild\b(?! -IDEPackageSupportDisableManifestSandbox)",
-                     "xcodebuild -IDEPackageSupportDisableManifestSandbox=1 -IDEPackageSupportDisablePluginExecutionSandbox=1", command)
+    # Manifests and package plugins sandbox themselves, and so does the Swift compiler when it runs a macro (SwiftUI's @State is one):
+    # each is a nested sandbox, which macOS refuses. The outer sandbox is the one that keeps the project read-only.
+    command = re.sub(r"(^|[;&|]\s*)xcodebuild\b(?! -IDEPackageSupportDisableManifestSandbox)",
+                     r"\1xcodebuild -IDEPackageSupportDisableManifestSandbox=1 -IDEPackageSupportDisablePluginExecutionSandbox=1 "
+                     "-skipMacroValidation -skipPackagePluginValidation OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox'", command)
     return re.sub(r"\bswift (build|test)\b(?! --disable-sandbox)", r"swift \1 --disable-sandbox", command)
 
 
@@ -42,9 +45,93 @@ def environment_failure(output: str) -> str:
 
 
 def owned_files_intact(job: dict) -> bool:
+    """The job's saved test files are all still there. Edits the person made to them are fine: checking the files as they are now
+    is what a retry is for, and a rewrite still leaves edited files alone."""
     owned = job.get("output_digests") or {}
-    return bool(owned) and all((ROOT / path).is_file() and hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest
-                               for path, digest in owned.items())
+    return bool(owned) and all((ROOT / path).is_file() for path in owned)
+
+
+XCTEST_FAILURE = re.compile(r"error: -\[(?:[\w.]+\.)?(\w+) (\w+)\] : (.+)")
+PYTEST_FAILURE = re.compile(r"^FAILED (\S+)(?: - (.+))?$")
+
+
+def failing_tests(output: str, limit: int = 12) -> list[dict]:
+    """The tests that failed in a run's output, each with what it complained about (XCTest and pytest summaries)."""
+    found: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        xc = XCTEST_FAILURE.search(line)
+        if xc:
+            found.setdefault(f"{xc[1]}.{xc[2]}", []).append(xc[3].strip()[:200])
+            continue
+        py = PYTEST_FAILURE.match(line.strip())
+        if py:
+            found.setdefault(py[1], []).append((py[2] or "").strip()[:200])
+    return [{"test": test, "message": "; ".join(dict.fromkeys(messages))[:300]} for test, messages in list(found.items())[:limit]]
+
+
+def retry_context(job: dict, out: Path) -> str:
+    """What a rewrite is told about the last attempt: which tests failed and why, and anything the person said."""
+    check = job.get("test_validation") or {}
+    parts = []
+    if check.get("kind") == "tests" and not check.get("passed"):
+        failures = check.get("failures")
+        if not failures:
+            try:
+                failures = failing_tests((out / "test.log").read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                failures = []
+        listing = "\n".join(f"- {f['test']}: {f['message']}" for f in failures) or "(the log named no individual test)"
+        parts.append("\n## The last attempt's tests failed\nThese are the tests you (or an earlier attempt) wrote that did not pass:\n" + listing +
+                     "\n\nDecide for each failure whether the TEST or the CODE is wrong. Read the production code to be sure.\n"
+                     "- The test expects the wrong thing (misread the code, wrong fixture, timing): rewrite it to check what the code really should do.\n"
+                     "- The code is wrong (the test states what the code should do and it does not): do NOT weaken the test and do NOT keep it in "
+                     "your files. Leave it out and list it under \"defects\" with the test's source, so it can be added once the code is fixed.\n"
+                     "Return the complete contents of every test file you change; a file you return replaces the old one, so remove a test by returning "
+                     "the file without it.")
+    said = str(job.get("debug_feedback") or "").strip()
+    if said:
+        parts.append(f"\n## What the person said\n{said[:2000]}")
+    return "\n".join(parts)
+
+
+def clean_defects(raw: object, previous: list | None = None) -> list[dict]:
+    """Production defects the builder reported, trimmed to plain text; earlier ones stay unless the same test is reported again."""
+    merged = {str(d.get("test") or d.get("summary")): d for d in previous or [] if isinstance(d, dict)}
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not str(item.get("summary") or "").strip():
+            continue
+        defect = {key: " ".join(str(item.get(key) or "").split())[:400] for key in ("test", "summary", "expected", "actual", "file")}
+        defect["code"] = str(item.get("code") or "")[:3000]
+        merged[defect["test"] or defect["summary"]] = {k: v for k, v in defect.items() if v}
+    return list(merged.values())[:12]
+
+
+def keep_registration(job: dict, files: list[str]) -> None:
+    """Add the new test files to the real project's test target too, so they run in Xcode. The project file is only touched when it
+    has no uncommitted edits of the person's own."""
+    project = xcode_tests.project_file(ROOT)
+    check = job["test_validation"]
+    if project is None:
+        return
+    rel = project.relative_to(ROOT).as_posix()
+    status = subprocess.run(["git", "status", "--porcelain", "--", rel], cwd=ROOT, capture_output=True, text=True)
+    mine = OUTPUT_DIR.parent / "xcode_registered.json"  # the project file as the last registration left it
+    def fingerprint() -> str:
+        return hashlib.sha256(project.read_bytes()).hexdigest()
+    try:
+        ours = json.loads(mine.read_text(encoding="utf-8")).get("sha") == fingerprint()
+    except (OSError, ValueError):
+        ours = False
+    if status.returncode or (status.stdout.strip() and not ours):  # uncommitted edits that aren't this job's own earlier ones
+        check["note"] = f"{rel} has uncommitted changes, so the new test files weren't added to the Xcode test target. Add them in Xcode."
+        return
+    added, note = xcode_tests.register(ROOT, files)
+    if note:
+        check["note"] = note
+    elif added:
+        check["registered"] = added
+        job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | {rel})
+        write_text(mine, json.dumps({"sha": fingerprint()}))
 
 
 def run_validation(job: dict, out: Path) -> None:
@@ -68,6 +155,9 @@ def run_validation(job: dict, out: Path) -> None:
         if config.is_file():
             (work / ".orchestrator").mkdir(exist_ok=True)
             shutil.copy2(config, work / ".orchestrator/project.json")
+        # Xcode only builds the files its project lists: add the new test files to the copy's test target so they really run.
+        test_files = [str(f) for f in (job.get("output_digests") or {})]
+        registered, register_note = xcode_tests.register(work, test_files)
         isolated_command = job_scope.protect_command(sandbox_safe(command.replace(str(ROOT), str(work))), [ROOT])
         env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "COVERAGE_FILE": str(Path(scratch) / ".coverage"), "TMPDIR": scratch,
                "ORCHESTRATOR_PROJECT_ROOT": str(work), "ORCHESTRATOR_RUNTIME_DIR": str(work / ".orchestrator"),
@@ -102,12 +192,23 @@ def run_validation(job: dict, out: Path) -> None:
     output = validation.stdout + validation.stderr
     write_text(out / "test.log", output)
     job["test_validation"]["passed"] = validation.returncode == 0
+    if validation.returncode == 0:
+        left_out = xcode_tests.not_run(ROOT, test_files, output)
+        if left_out:  # a pass that never ran the new tests proves nothing
+            job["test_validation"].update(passed=False, kind="unregistered", not_run=left_out,
+                                          detail=register_note or "They aren't part of the project's test target.")
+            raise ValueError(f"The tests passed, but {len(left_out)} of the new test file{'' if len(left_out) == 1 else 's'} never ran: "
+                             f"{', '.join(Path(f).name for f in left_out)}. {job['test_validation']['detail']} "
+                             "The files are saved; add them to the test target, then Try again.")
+        if registered:  # they ran in the copy, so make them part of the real project too, unless that would overwrite the person's edits
+            keep_registration(job, test_files)
     if validation.returncode:
         broken = environment_failure(output)
         if broken:  # nothing ran, so there is nothing for a fix attempt to look into
             job["test_validation"].update(kind="environment", detail=broken)
             raise ValueError(f"The tests couldn't run: the build environment failed before any test started ({broken}). "
                              "The new test files are saved. Try again to check them without rewriting them.")
+        job["test_validation"]["failures"] = failing_tests(output)
         raise ValueError("Test validation failed. Review test.log; production fixes require a separate Bug fix job.")
     job["test_validation"]["kind"] = "passed"
 
@@ -139,6 +240,7 @@ def execute_nonproduction_job(job_path: Path) -> None:
         template = "builder_design.md" if design else "builder_coverage.md"
         prompt = (PROMPTS_DIR / template).read_text(encoding="utf-8")
         prompt += f"\nJob: {job['title']}\nPlan:\n{json.dumps(job.get('plan', {}), indent=2)}\n{reference_context(job)}"
+        prompt += retry_context(job, out)
         from orchestrator import prd
         prompt += prd.context_block(ROOT, "builder")
         output, model, session = run_llm(job["builder"], prompt, cwd=ROOT, timeout=1200,
@@ -157,6 +259,9 @@ def execute_nonproduction_job(job_path: Path) -> None:
         job["actual_builder_used"] = model
         job.setdefault("llm_sessions", []).append({"id": session, "model": model})
         job["builder_summary"] = str(result.get("summary") or "")
+        job.pop("debug_feedback", None)  # said once, to this attempt
+        if not design:
+            job["production_defects"] = clean_defects(result.get("defects"), job.get("production_defects"))
         tracked_result = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True)
         tracked = set(tracked_result.stdout.rstrip("\0").split("\0")) if tracked_result.returncode == 0 else set()
         job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | {path for path in written if path in tracked})

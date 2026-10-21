@@ -168,8 +168,12 @@ class JobsNeverSendYouToTheConsoleTests(unittest.TestCase):
         self.assertEqual(failing["next"]["action"], "debug")
         written = ui.job_state({"type": "test-audit", "status": "human-needed", "last_error": "Test validation failed.",
                                 "test_validation": {"kind": "tests", "passed": False}, "output_digests": {"tests/a.py": "x"}})
-        self.assertEqual((written["label"], written["next"]["action"]), ("Partially complete", "debug"))  # still paused, and fixing is the way on
+        self.assertEqual((written["label"], written["next"]["action"], written["next"]["label"]), ("Partially complete", "debug", "Fix the tests"))
         self.assertIn("Paused: 1 test file added, but the tests didn't pass", written["reason"])
+        named = ui.job_state({"type": "test-audit", "status": "human-needed", "output_digests": {"t/a.swift": "x"},
+                              "test_validation": {"kind": "tests", "passed": False, "failures": [{"test": "ParserTests.testCRLF", "message": "m"}, {"test": "ParserTests.testB", "message": "m"}, {"test": "X.testC", "message": "m"}]}})
+        self.assertIn("3 tests didn't pass (testCRLF, testB, …)", named["reason"])
+        self.assertIn("report it as a bug", named["reason"])
 
 class OrchestratorsOwnFolderTests(unittest.TestCase):
     def test_jobs_cant_switch_branches_in_the_folder_orchestrator_runs_from(self):

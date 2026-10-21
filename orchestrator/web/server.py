@@ -723,12 +723,16 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         check = job.get("test_validation") or {}
         added = len(job.get("output_digests") or {})
         files = f"{added} test file{'' if added == 1 else 's'}"
-        if added and check.get("kind") in ("environment", "pending"):  # the tests were written, then checking them was cut short
+        if added and check.get("kind") in ("environment", "pending", "unregistered"):  # the tests were written, then checking them was cut short
             return state("needs_you", "attention", "Partially complete",
-                         f"Paused: {files} added but not checked yet. {error}".strip(), "resume", "Try again")
+                         (f"Paused: {files} added, but some never ran. {error}" if check.get("kind") == "unregistered" else f"Paused: {files} added but not checked yet. {error}").strip(), "resume", "Try again")
         if added and check.get("kind") == "tests" and not check.get("passed"):  # written and checked, and some didn't pass
+            failed = check.get("failures") or []
+            what = f"{plural_count(len(failed), 'test')} didn't pass ({', '.join(f['test'].split('.')[-1] for f in failed[:2])}{', …' if len(failed) > 2 else ''})" \
+                if failed else "the tests didn't pass"
             return state("needs_you", "attention", "Partially complete",
-                         f"Paused: {files} added, but the tests didn't pass. {error}".strip(), "debug", "Run a fix")
+                         f"Paused: {files} added, but {what}. Fix the tests if they expect the wrong thing; if the code is wrong, report it as a bug.",
+                         "debug", "Fix the tests")
         finished = len(job.get("completed_tasks") or job.get("completed_task_indices") or [])
         changed = len(job.get("ai_modified_files") or []) + len(job.get("ai_untracked_files") or [])
         if finished or changed >= PARTIAL_FILES:  # real code was written before it stopped: that work is kept, so say so

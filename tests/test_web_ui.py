@@ -5063,6 +5063,12 @@ class AccessibilityStaticTests(unittest.TestCase):
         refresh = self.js[self.js.index("async function refreshState()"):][:3000]
         self.assertIn("showModelsUpdate(newState.models_notice)", refresh)
 
+    def test_failing_tests_and_defects_offer_a_prefilled_bug_report(self):
+        for part in ("const failingTests = ", "const bugLink = (summary, spec)", "#/new?type=bug&summary=", "Report as bug", "defectsHtml",
+                     "found in the code", "job.production_defects", "Fix the tests</em> rewrites it"):
+            self.assertIn(part, self.js, part)
+        self.assertIn("${defectsHtml}", self.js)
+
     def test_design_images_load_with_the_token_not_a_bare_img_src(self):
         self.assertIn("data-auth-src", self.js)
         self.assertIn("img-src 'self' data: blob:", (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "server.py").read_text())

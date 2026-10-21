@@ -402,6 +402,10 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
     cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id, images=images, web=web)
     if protected_paths:
         from orchestrator.job_scope import protect_command
+        if "codex exec" in cmd:
+            # Codex sandboxes its own shell commands, and macOS refuses a sandbox inside another, so it couldn't read the project at all.
+            # The read-only sandbox around it is the one that protects the project, which is what this flag is for.
+            cmd = cmd.replace("codex exec", "codex exec --dangerously-bypass-approvals-and-sandbox", 1)
         cmd = protect_command(cmd, protected_paths)
     env = get_llm_env()
 
