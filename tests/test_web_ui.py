@@ -5055,6 +5055,14 @@ class AccessibilityStaticTests(unittest.TestCase):
         home = self.js[self.js.index("function productStripHtml"):][:1500]
         self.assertNotIn("notice", home)
 
+    def test_a_change_to_the_model_list_is_announced_over_the_page_until_dismissed(self):
+        fn = self.js[self.js.index("function showModelsUpdate"):self.js.index("async function undoPrdUpdate")]
+        for part in ('id: `models:${note.id}`', "sticky: true", "See models", '"#/config/ai"', 'api("models/dismiss"', "onDismiss: seen", "AI models updated"):
+            self.assertIn(part, fn, part)
+        self.assertIn("if (!first) Notifications.show", fn)  # a browser alert only for a change that happens while you are here
+        refresh = self.js[self.js.index("async function refreshState()"):][:3000]
+        self.assertIn("showModelsUpdate(newState.models_notice)", refresh)
+
     def test_design_images_load_with_the_token_not_a_bare_img_src(self):
         self.assertIn("data-auth-src", self.js)
         self.assertIn("img-src 'self' data: blob:", (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "server.py").read_text())
@@ -6604,6 +6612,17 @@ class ProductEndpointTests(ServerTestCase):
         self.assertNotIn("Rematch", (self.root / "docs" / "product" / "prd.md").read_text())
         self.assertEqual(self.post("/api/product/dismiss", {})[1], {"ok": True})
         self.assertIsNone(self.request("GET", "/api/state")[1]["product_notice"])
+
+    def test_a_model_list_change_is_in_state_until_dismissed(self):
+        ids = {"value": ["a-model", "b-model"]}
+        with patch("orchestrator.scripts.model_registry.usable_model_ids", side_effect=lambda: list(ids["value"])):
+            self.assertIsNone(self.request("GET", "/api/state")[1]["models_notice"])  # the first look only records the list
+            ids["value"] = ["b-model", "c-model"]
+            note = self.request("GET", "/api/state")[1]["models_notice"]
+            self.assertEqual((note["added"], note["removed"]), (["c-model"], ["a-model"]))
+            self.assertEqual(self.request("GET", "/api/state")[1]["models_notice"]["id"], note["id"])
+            self.assertEqual(self.post("/api/models/dismiss", {})[1], {"ok": True})
+            self.assertIsNone(self.request("GET", "/api/state")[1]["models_notice"])
 
     def test_links_must_be_web_links(self):
         self.post("/api/product", {"section": "pitch", "body": self.PITCH})

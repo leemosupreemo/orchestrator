@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 
 class RunProgress:
@@ -21,6 +22,8 @@ class RunProgress:
     }
     TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION", "COVERAGE", "MEASURING CODE COVERAGE"}
     SUITE_PHASES = {"Investigating issue", "Implementing changes", "Agent thinking", "Running tests", "Verifying changes"}
+    # A label from before any real work was announced: once a model call starts, say what is being waited on instead.
+    IDLE_LABELS = {"", "Scheduling worker", "Starting execution", "Updating job status", "Preparing git branch"}
     ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])")
 
     def __init__(self) -> None:
@@ -36,6 +39,9 @@ class RunProgress:
         self.machines: list[str] = []
         self.suites: list[str] = []
         self.suite = 0  # 1-based suite the builder is on; 0 until one is mentioned
+        self.calls: list[dict] = []   # model calls in flight, oldest first: {"model", "since", "timeout"}
+        self.failed: list[dict] = []  # models tried and given up on, with a short reason: {"model", "reason"}
+        self.stall = 0                # minutes the running call has gone without output, as the worker reports it
 
     def feed(self, chunk: bytes) -> None:
         # PTY reads can split a UTF-8 character or ANSI sequence. Decode complete lines only.
@@ -98,19 +104,39 @@ class RunProgress:
             if scheduled and scheduled[1] not in self.machines:  # the worker machine(s) the job was handed to
                 self.machines.append(scheduled[1])
 
-            start = re.search(r"Running LLM \(([^,)]+)", line)
+            failure = re.match(r"⚠️\s+(\S+) (?:failed \((.*)|timed out)", line)
+            if failure:
+                self.failed = [f for f in self.failed if f["model"] != failure[1]] + [{"model": failure[1], "reason": self._reason(failure[2] or "", line)}]
+
+            stalled = re.search(r"\[Stall Notice\] No output received for (\d+)m", line)
+            if stalled:
+                self.stall = int(stalled[1])
+
+            start = re.search(r"Running LLM \(([^,)]+)(?:,\s*timeout=(\d+)s)?", line)
             if start:
                 model = start[1].strip()
                 self.active.append(model)
+                self.calls.append({"model": model, "since": time.time(), "timeout": int(start[2]) if start[2] else 0})
+                self.stall = 0
                 if model not in self.models:
                     self.models.append(model)
+                if self.label in self.IDLE_LABELS or self.label.startswith(("Waiting for ", "Reading the model")):
+                    self.label = f"Waiting for {model}"
             elif re.search(r"\[output\] Received \d+ chars in [\d.]+s", line):
                 if self.active:
                     self.active.pop(0)
+                    if self.calls:
+                        self.calls.pop(0)
+                self.stall = 0
+                if self.label.startswith("Waiting for "):
+                    self.label = "Reading the model's answer"
             elif "Attempting fallback..." in line:
                 for model in list(self.active):
                     if model in line or line.startswith(f"⚠️  {model} timed out.") or line.startswith(f"⚠️  {model} failed ("):
                         self.active.remove(model)
+                        call = next((c for c in self.calls if c["model"] == model), None)
+                        if call:
+                            self.calls.remove(call)
                         break
             else:
                 using_match = re.search(r"(?:using|Consulting)\s+([a-zA-Z0-9_\-\./]+)\.\.\.", line)
@@ -119,7 +145,25 @@ class RunProgress:
                     if model and model not in self.models and ("/" in model or "." in model or any(k in model for k in ("gpt", "claude", "gemini", "qwen", "deepseek", "nemotron", "codex", "llama"))):
                         self.models.append(model)
 
+    @staticmethod
+    def _reason(detail: str, line: str) -> str:
+        """Why a model was given up on, in a few words, from the worker's failure line."""
+        if "timed out" in line.split("(")[0]:
+            return "timed out"
+        message = re.search(r'"message":"([^"]+)"', detail)
+        if message:
+            return message[1].split(". ")[0].rstrip(".")[:140]
+        code = re.search(r"code (\d+)", detail)
+        if code:
+            return "couldn't start (is it installed?)" if code[1] == "127" else f"exited with code {code[1]}"
+        return " ".join(detail.rstrip(") ").split())[:140] or "failed"
+
     def snapshot(self, running: bool = True) -> dict:
         active = self.active if running else []
+        now = time.time()
+        calls = [{"model": c["model"], "age": int(now - c["since"]), "timeout": c["timeout"]} for c in self.calls] if running else []
+        return {"calls": calls, "failed": list(self.failed), "stall": self.stall if running else 0, **self._base(active)}
+
+    def _base(self, active: list[str]) -> dict:
         return {"label": self.label, "task": self.task, "step": self.step, "total": self.total,
                 "notice": self.notice, "machines": list(self.machines), "suites": list(self.suites), "suite": self.suite, "models": list(self.models), "active_models": list(dict.fromkeys(active)), "agents": len(active)}

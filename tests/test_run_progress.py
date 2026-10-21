@@ -38,6 +38,51 @@ class RunProgressTests(unittest.TestCase):
         progress.feed(b'Scheduled job-1 group g1 to mac-mini using model-a\nScheduled job-1 group g2 to local using model-a\n')
         self.assertEqual(progress.snapshot()["machines"], ["mac-mini", "local"])
 
+    def test_the_label_says_what_is_being_waited_on_once_a_model_call_starts(self):
+        progress = RunProgress()
+        progress.feed("=========================== 📡 SCHEDULING ===========================\n".encode())
+        self.assertEqual(progress.snapshot()["label"], "Scheduling worker")
+        progress.feed(b"Scheduled job-1 group MAIN to local using gpt-5.4\n      - Running LLM (gpt-5.4, timeout=1200s)...\n")
+        self.assertEqual(progress.snapshot()["label"], "Waiting for gpt-5.4")
+        progress.feed(b"        [output] Received 0 chars in 3.2s\n")
+        self.assertEqual(progress.snapshot()["label"], "Reading the model's answer")
+        progress.feed(b"      - Running LLM (claude-opus-4-7, timeout=1200s)...\n")
+        self.assertEqual(progress.snapshot()["label"], "Waiting for claude-opus-4-7")
+        progress.feed(b"=== IMPLEMENTATION ===\n      - Running LLM (claude-opus-4-7, timeout=1200s)...\n")
+        self.assertEqual(progress.snapshot()["label"], "Implementing changes")  # a real phase is never overwritten
+
+    def test_calls_in_flight_report_how_long_they_have_run_and_their_timeout(self):
+        progress = RunProgress()
+        progress.feed(b"      - Running LLM (claude-opus-4-7, timeout=1200s)...\n")
+        with patch("orchestrator.web.run_progress.time.time", return_value=progress.calls[0]["since"] + 245):
+            call = progress.snapshot()["calls"][0]
+        self.assertEqual((call["model"], call["age"], call["timeout"]), ("claude-opus-4-7", 245, 1200))
+        self.assertEqual(progress.snapshot(running=False)["calls"], [])
+        progress.feed(b"        [output] Received 23068 chars in 532.2s\n")
+        self.assertEqual(progress.snapshot()["calls"], [])
+
+    def test_models_that_failed_are_listed_with_a_short_reason(self):
+        progress = RunProgress()
+        progress.feed((
+            "      - Running LLM (gpt-5.4, timeout=1200s)...\n        [output] Received 0 chars in 3.2s\n"
+            "⚠️  gpt-5.4 failed (ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.\"}}). Attempting fallback...\n"
+            "      - Running LLM (o1, timeout=1200s)...\n        [output] Received 0 chars in 0.0s\n"
+            "⚠️  o1 failed (o1 failed (code 127):). Attempting fallback...\n"
+            "      - Running LLM (slow-model, timeout=60s)...\n"
+            "⚠️  slow-model timed out. Attempting fallback...\n").encode())
+        failed = {f["model"]: f["reason"] for f in progress.snapshot()["failed"]}
+        self.assertEqual(failed["gpt-5.4"], "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account")
+        self.assertEqual(failed["o1"], "couldn't start (is it installed?)")
+        self.assertEqual(failed["slow-model"], "timed out")
+        self.assertEqual(progress.snapshot()["calls"], [])
+
+    def test_stall_notices_are_counted_and_cleared_when_the_model_answers(self):
+        progress = RunProgress()
+        progress.feed("      - Running LLM (claude-opus-4-7, timeout=1200s)...\n💡 [Stall Notice] No output received for 4m (waiting on remote model/process).\n".encode())
+        self.assertEqual(progress.snapshot()["stall"], 4)
+        progress.feed(b"        [output] Received 100 chars in 300.0s\n")
+        self.assertEqual(progress.snapshot()["stall"], 0)
+
     def test_status_bar_cursor_restore_does_not_hide_model_completion(self):
         progress = RunProgress()
         progress.feed(b'      - Running LLM (model-a, timeout=300s)...\n')
@@ -265,7 +310,20 @@ let html = runStatus({...run, summary: 'Improve test coverage toward 80%', progr
 for (const part of ['Improve test coverage toward 80%', 'mac-mini (active)', '2 planned · working on 2 of 2: b.py']) assert(html.includes(part), part);
 assert.match(runStatus(run), /Assigning a machine/);
 html = runStatus(run);
-for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '1 active', '2m 5s', 'Add &lt;login&gt;', 'run-status-pct', '10%']) assert(html.includes(part), part);
+for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '(working)', '2m 5s', 'Add &lt;login&gt;', 'run-status-pct', '10%']) assert(html.includes(part), part);
+const slow = runStatus({...run, progress: {label: 'Waiting for claude-opus-4-7', agents: 1, models: ['gpt-5.4', 'claude-opus-4-7'], active_models: ['claude-opus-4-7'],
+  calls: [{model: 'claude-opus-4-7', age: 485, timeout: 1200}],
+  failed: [{model: 'gpt-5.4', reason: "Not supported <here>"}, {model: 'o1', reason: "couldn't start (is it installed?)"}]}});
+for (const part of ['Waiting for claude-opus-4-7', 'claude-opus-4-7 (working for 8m)', '2 models couldn&#39;t run', 'Not supported &lt;here&gt;', 'No answer from claude-opus-4-7 yet (8m)', 'after 20 minutes it gives up', 'The run is still going']) assert(slow.includes(part) || slow.includes(part.replace('&#39;', "'")), part);
+const fresh = runStatus({...run, progress: {label: 'Waiting for m', agents: 1, models: ['m'], active_models: ['m'], calls: [{model: 'm', age: 30, timeout: 600}], failed: []}});
+assert(fresh.includes('m (working for 30s)'));
+assert.doesNotMatch(fresh, /No answer from|Skipped models/);  // nothing to say until it has been quiet a while, or something was skipped
+assert.doesNotMatch(runStatus({...run, running: false, exit_code: 0, progress: {...run.progress, calls: [{model: 'm', age: 500, timeout: 600}]}}), /No answer from/);
+const flagged = runStatus({...run, running: false, exit_code: 0, progress: {label: 'Reading the model\'s answer', models: ['gpt-5.4', 'claude-opus-4-7'], failed: [{model: 'gpt-5.4', reason: 'Not supported'}]},
+  result: {headline: '4 test files added with 49 tests, not checked yet', details: ['Location: Tests/'], tone: 'warn', partial: true}});
+for (const part of ['Partially complete', 'Paused: the work is saved',  '4 test files added with 49 tests', 'Location: Tests/', 'claude-opus-4-7']) assert(flagged.includes(part), part);
+assert.doesNotMatch(flagged, /Reading the model|<dd>gpt-5.4/);  // not where it was, and not the model that couldn't run
+assert.match(runStatus({...run, running: false, exit_code: 0, progress: {label: 'Scheduling worker'}}), /Job execution complete|Run complete/);  // a finished run is never headlined with where it started
 assert.match(runStatus({...run, waiting: true}), /Waiting for you/);
 assert.match(runStatus({...run, stopping: true}), /Stopping/);
 const planning = runStatus({...run, progress: {label: 'Planning implementation', agents: 0, models: [], active_models: []}});
@@ -282,7 +340,7 @@ assert.match(completedCov, /View coverage/);
 assert.match(completedCov, /100%/);
 assert.match(completedCov, /Completed \(exit 0\)/);
 assert.match(completedCov, /None \(local run\)/);
-assert.match(html, /Models &amp; agents|Models & agents/);
+assert.match(html, /<dt>Models<\/dt>/);
 assert.match(runStatus({...run, action: 'coverage', progress: {step: 1, total: 5}}), /None \(local run\)/);
 assert.match(runStatus({...run, progress: {label: 'Building', models: ['provider/model-a'], active_models: []}}), /provider\/model-a \(idle\)/);
 assert.match(runStatus({...run, progress: {label: 'Building', assigned_models: ['provider/model-b'], models: [], active_models: []}}), /provider\/model-b \(assigned\)/);
@@ -293,7 +351,7 @@ assert.match(failedCov, /banner failed/);
 assert.match(failedCov, /run-status-notice/);
 assert.match(failedCov, /No source files or tests yet/);
 assert.doesNotMatch(failedCov, /Next steps to fix/);
-assert.doesNotMatch(failedCov, /Models &amp; agents|Models & agents/);
+assert.doesNotMatch(failedCov, /<dt>Models<\/dt>/);
 assert.doesNotMatch(failedCov, /Elapsed/);
 assert.doesNotMatch(failedCov, /Measuring code coverage failed/);
 assert.match(failedCov, /Add tests/);

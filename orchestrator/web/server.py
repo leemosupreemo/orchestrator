@@ -282,7 +282,13 @@ class PtySession:
                 job_title = str(read_json_file(jobs_dir(self.cwd) / f"{self.result_job}.json").get("title") or "")
             except Exception:
                 pass
-        self.result = None if self.stopped else run_result.summarize(self.action, tail.decode("utf-8", "replace"), code, job_title)
+        job_record = None
+        if self.job_id or self.result_job:  # the job this run worked on, as it is now it has stopped
+            try:
+                job_record = read_json_file(jobs_dir(self.cwd) / f"{self.job_id or self.result_job}.json")
+            except Exception:
+                pass
+        self.result = None if self.stopped else run_result.summarize(self.action, tail.decode("utf-8", "replace"), code, job_title, job_record, self.cwd)
         with self._cond:
             self.exit_code = code
             self.ended = time.time()
@@ -678,6 +684,13 @@ def worker_alive(job: dict[str, Any]) -> bool | None:
     return True
 
 
+PARTIAL_FILES = 3  # a job that stopped with at least this many files changed (or any finished task) has done real work
+
+
+def plural_count(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
 def job_state(job: dict[str, Any]) -> dict[str, Any]:
     """What the job is waiting on, in plain words, and the one action that moves
     it forward. `group` is needs_you | working | done; `tone` drives colour:
@@ -707,10 +720,22 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         if job.get("human_clarification_question"):
             return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
         error = str(job.get("last_error") or "").strip()
-        if (job.get("test_validation") or {}).get("kind") == "environment":  # the tests were written, then the build environment failed
-            added = len(job.get("output_digests") or {})
-            return state("needs_you", "attention", "Tests couldn't run",
-                         f"{added} test file{'' if added == 1 else 's'} added but not checked. {error}", "resume", "Try again")
+        check = job.get("test_validation") or {}
+        added = len(job.get("output_digests") or {})
+        files = f"{added} test file{'' if added == 1 else 's'}"
+        if added and check.get("kind") in ("environment", "pending"):  # the tests were written, then checking them was cut short
+            return state("needs_you", "attention", "Partially complete",
+                         f"Paused: {files} added but not checked yet. {error}".strip(), "resume", "Try again")
+        if added and check.get("kind") == "tests" and not check.get("passed"):  # written and checked, and some didn't pass
+            return state("needs_you", "attention", "Partially complete",
+                         f"Paused: {files} added, but the tests didn't pass. {error}".strip(), "debug", "Run a fix")
+        finished = len(job.get("completed_tasks") or job.get("completed_task_indices") or [])
+        changed = len(job.get("ai_modified_files") or []) + len(job.get("ai_untracked_files") or [])
+        if finished or changed >= PARTIAL_FILES:  # real code was written before it stopped: that work is kept, so say so
+            progress = f"{finished} of {len(tasks)} tasks done" if finished and tasks else f"{plural_count(changed, 'file')} changed"
+            return state("needs_you", "attention", "Partially complete",
+                         f"Paused: {progress}. {('It stopped with an error: ' + error) if error else 'It stopped before finishing.'}".strip(),
+                         *(("resume", "Try again") if remaining else ("debug", "Run a fix")))
         reason = f"It stopped with an error: {error}" if error else "It stopped before finishing."
         if remaining:
             return state("needs_you", "failed" if error else "attention", "Stopped", reason, "resume", "Try again")
@@ -2311,6 +2336,20 @@ def is_mobile_app(root: Path, config: dict[str, Any]) -> bool:
         return False
 
 
+def models_notice() -> dict[str, Any] | None:
+    """What changed in the list of AI models since it was last dismissed (see model_registry.models_notice)."""
+    from orchestrator.scripts import model_registry
+    try:
+        return model_registry.models_notice()
+    except Exception:  # a note about the model list must never stop the page loading
+        return None
+
+
+def dismiss_models_notice() -> None:
+    from orchestrator.scripts import model_registry
+    model_registry.dismiss_models_notice()
+
+
 def project_state(root: Path) -> dict[str, Any]:
     config = _safe_read_json_file(runtime_dir(root) / "project.json")
     status = git(root, "status", "--porcelain", timeout=2.0)
@@ -3272,6 +3311,7 @@ def refresh_models(root: Path) -> dict[str, Any]:
     settings = read_settings(root)
     keys = {env: str(settings[setting]) for setting, _label, env in ai_providers.API_KEYS if settings.get(setting)}
     discovery = model_registry.discover_from_sources_with_details(keys)
+    model_registry.refresh_provider_models()  # what each installed CLI (Antigravity, OpenCode, Ollama) offers right now
     ok, message = model_registry.sync_models(live_discovery=True, keys=keys)
     return {"ok": ok, "details": discovery.details, "message": message.splitlines()[0] if message else "",
             "models": provider_models(), "synced": model_registry.models_last_synced()}
@@ -5361,6 +5401,7 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"project": project_state(root), "runs": visible_runs,
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
                         "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
+                        "models_notice": models_notice(),
                         "packages_suggested": package_store.suggested_count(runtime_dir(root)),  # waiting for you to accept or reject
                         "alerts": {"webhook": bool(read_settings(root).get("notification_webhook")),
                                    "webhook_paused": bool(read_settings(root).get("notification_webhook_paused"))},
@@ -6191,6 +6232,10 @@ class UIHandler(BaseHTTPRequestHandler):
             provider_id = _choice(body, "provider", [p["id"] for p in ai_providers.PROVIDERS])
             self._json({"task": self.server.tasks.start(lambda: ai_providers.install_provider(provider_id))}, HTTPStatus.ACCEPTED)
             self._audit("ai_provider_install_started", provider=provider_id)
+        elif method == "POST" and parts == ["models", "dismiss"]:
+            self._body()
+            dismiss_models_notice()
+            self._json({"ok": True})
         elif method == "POST" and parts == ["ai-providers", "refresh-models"]:
             self._require_owner("refresh the AI model list")
             self._body()
@@ -7185,6 +7230,9 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     except OSError as exc:
         print(f"Could not listen on {args.host}:{args.port}: {exc.strerror}. Try --port.")
         return 1
+
+    from orchestrator.scripts import model_registry
+    model_registry.start_provider_refresher()  # keep each AI service's current model list fresh while this runs
 
     if public_url:
         from urllib.parse import urlparse

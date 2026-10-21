@@ -6,7 +6,9 @@ the lines that say how it went. Nothing here runs anything; it only reads text, 
 """
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -214,6 +216,62 @@ def plan_epic(lines: list[str], code: int | None, job_title: str = "") -> dict[s
     return _result("Plan ready to review", details)
 
 
+# ---- a Tests job: the test files it added, how many tests are in them, and whether they were checked
+
+TEST_MARKERS = {
+    ".swift": r"\bfunc\s+test\w*\s*\(", ".py": r"^\s*(?:async\s+)?def\s+test\w*\s*\(", ".go": r"^func\s+Test\w+\(", ".rs": r"#\[test\]",
+    ".kt": r"@Test\b", ".java": r"@Test\b", ".rb": r"^\s*(?:it|test)\s+['\"]",
+    **dict.fromkeys((".js", ".jsx", ".ts", ".tsx", ".mjs"), r"\b(?:it|test)\s*\("),
+}
+
+
+def count_tests(path: Path) -> int | None:
+    """How many tests a test file holds, by the usual marker for its language, or None when that isn't known."""
+    marker = TEST_MARKERS.get(path.suffix.lower())
+    if not marker:
+        return None
+    try:
+        return len(re.findall(marker, path.read_text(encoding="utf-8", errors="replace"), re.M))
+    except OSError:
+        return None
+
+
+def job_outcome(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
+    """What a Tests job (coverage, audit) did, for the run that ran it: the files added and where, how many tests, and whether they were
+    checked. The process can exit cleanly while the job still needs the person, so this says what happened to the job."""
+    if job.get("output_scope") != "tests-only":
+        return None
+    files = [str(f) for f in (job.get("output_digests") or {})]
+    check = job.get("test_validation") or {}
+    if not files:
+        return _result("No test files were added", [str(job.get("last_error") or "The job stopped before it wrote any.")[:MAX_LINE]], "warn")
+    counts = {f: count_tests(root / f) for f in files}
+    total = sum(n for n in counts.values() if n)
+    known = [f for f in files if counts[f] is not None]
+    kind = check.get("kind")
+    state, tone = (("checked and passing", "ok") if check.get("passed") or kind == "passed"
+                   else ("not checked yet: the build environment failed", "warn") if kind in ("environment", "pending")
+                   else ("the tests didn't pass", "bad"))
+    headline = f"{_plural(len(files), 'test file')} added" + (f" with {_plural(total, 'test')}" if known else "") + f", {state}"
+    folder = os.path.commonpath([os.path.dirname(f) or "." for f in files]) if len(files) > 1 else os.path.dirname(files[0])
+    details = [f"Location: {folder or 'project root'}/"]
+    shown = sorted(files)[:4]
+    details += [f"{os.path.basename(f)}" + (f": {_plural(counts[f], 'test')}" if counts[f] is not None else "") for f in shown]
+    if len(files) > len(shown):
+        details.append(f"and {len(files) - len(shown)} more files")
+    if kind in ("environment", "pending") and check.get("detail"):
+        details.append(f"Couldn't check them: {check['detail']}"[:MAX_LINE])
+    elif tone == "bad":
+        details.append("See test.log in the job's output for what failed.")
+    if tone != "ok":
+        details.append("Open the job: Try again checks the saved tests without rewriting them." if kind in ("environment", "pending")
+                       else "Open the job to run a fix.")
+    result = _result(headline, details, tone)
+    if tone != "ok":
+        result["partial"] = True  # the files are saved, but the job stopped short of checking them
+    return result
+
+
 READERS: dict[str, Callable[[list[str], int | None], dict[str, Any] | None]] = {
     "sync_fleet": sync_fleet, "fleet_llm_check": fleet_llm_check, "worker_check": worker_check,
     "test": tests, "test_suite": tests, "test_plan": tests, "coverage": coverage, "visual_check": visual_check, "ux_pass": ux_pass,
@@ -236,11 +294,16 @@ def general(lines: list[str], code: int | None) -> dict[str, Any] | None:
     return _result(plain(lines[-1]), [plain(l) for l in lines[-4:-1]])
 
 
-def summarize(action: str, text: str, exit_code: int | None, job_title: str = "") -> dict[str, Any] | None:
-    """{headline, details, tone} for a finished run, or None when its output says nothing. `job_title` names the job a run made."""
+def summarize(action: str, text: str, exit_code: int | None, job_title: str = "", job: dict[str, Any] | None = None,
+              root: Path | None = None) -> dict[str, Any] | None:
+    """{headline, details, tone} for a finished run, or None when its output says nothing. `job_title` names the job a run made;
+    `job` (the job record the run worked on) and `root` (the project) let a Tests job say what it added."""
     lines = clean_lines(text)
     reader = READERS.get(action)
     try:
+        outcome = job_outcome(job, root) if job and root else None
+        if outcome and not exit_code:
+            return outcome
         found = plan_epic(lines, exit_code, job_title) if action == "plan_epic" else reader(lines, exit_code) if reader else None
         if found and exit_code and found["tone"] == "ok":
             found["tone"] = "bad"  # a reader found a good-looking line, but the run still failed

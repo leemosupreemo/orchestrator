@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
-from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error
+from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, model_usable, model_substitute
 from model_router import get_prioritized_models, ModelRole
 
 class LLMTimeoutError(RuntimeError):
@@ -163,6 +163,14 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     if primary_id not in {m.id for m in get_all_models()}:
         raise ValueError(f"Unsupported model: {model}")
 
+    # A model its provider can't run now would only fail first. Use the one the provider offers that stands in for it.
+    substituted = False
+    if resolved_model and not model_usable(resolved_model):
+        stand_in = model_substitute(resolved_model)
+        if stand_in:
+            print(f"ℹ️  {primary_id} isn't available to the {resolved_model.family} login on this computer. Using {stand_in.id} instead.")
+            primary_id, resolved_model, substituted = stand_in.id, stand_in, True
+
     # Define fallback sequence based on the role and allowed models
     preferred_family = resolved_model.family if resolved_model else None
     
@@ -176,7 +184,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     if primary_id in attempts:
         attempts.remove(primary_id)
         attempts.insert(0, primary_id)
-    elif not allowed_models:
+    elif not allowed_models or substituted:
         attempts.insert(0, primary_id)
 
     protection = {"protected_paths": protected_paths} if protected_paths else {}
@@ -268,7 +276,7 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
 
     if model_id == "codex":
         cmd_base = "codex exec"
-    elif model_id.startswith("gpt-5"):
+    elif model_id.startswith(("gpt-5", "gpt-6")) or (m_meta and m_meta.family == "openai" and "codex" in m_meta.required_clis):
         cmd_base = f"codex exec --model {cli_model_id}"
         if m_meta and m_meta.reasoning_effort:
             cmd_base += f" -c model_reasoning_effort={m_meta.reasoning_effort}"

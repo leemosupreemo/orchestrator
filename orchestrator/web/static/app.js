@@ -1073,6 +1073,7 @@ async function refreshState() {
     lastRuns = newState.runs;
     lastInbox = newState.inbox || [];
     showPrdUpdate(newState.product_notice);
+    showModelsUpdate(newState.models_notice);
     checkRunnerVersion(newState.runner);
     state = newState;
     renderSlackBtn();
@@ -5486,6 +5487,22 @@ function showPrdUpdate(note) {
   if (!first) Notifications.show({ title: "Product requirements updated", body: note.summary, key: `prd:${note.id}`, hash: `#/product?history=${encodeURIComponent(note.id)}` });
 }
 
+// The list of AI models changed (a refresh, or the Codex login offering something new): say so once, over the page, until it is dismissed.
+let lastModelsNotice; // undefined until the first poll, so a change made while you were away is shown but doesn't also fire an alert
+function showModelsUpdate(note) {
+  if (!note) { if (lastModelsNotice) clearMessage(`models:${lastModelsNotice}`); lastModelsNotice = null; return; }
+  if (note.id === lastModelsNotice) return;
+  const first = lastModelsNotice === undefined;
+  if (lastModelsNotice) clearMessage(`models:${lastModelsNotice}`);
+  lastModelsNotice = note.id;
+  const seen = () => api("models/dismiss", { method: "POST", body: {} }).catch(() => {});
+  notify("info", `AI models updated. ${note.summary}`, {
+    id: `models:${note.id}`, sticky: true, onDismiss: seen,
+    actions: [{ label: "See models", href: "#/config/ai", after: seen }],
+  });
+  if (!first) Notifications.show({ title: "AI models updated", body: note.summary, key: `models:${note.id}`, hash: "#/config/ai" });
+}
+
 async function undoPrdUpdate(noteId) {
   const { history } = await api("product");
   const i = history.findIndex((h) => h.id === noteId);
@@ -9434,8 +9451,10 @@ function runStatus(r, vc = null) {
   }
 
   const caveat = done ? p.notice || "" : ""; // a run that finished but only partly did its job
-  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : caveat ? "Completed with notes" : "Completed";
-  const tone = stopping || r.waiting || caveat ? "attention" : r.running ? "working" : failed ? "failed" : "done";
+  const partial = Boolean(done && r.result?.partial); // the work is saved but the job stopped short of finishing it
+  const flagged = Boolean(done && r.result?.tone && r.result.tone !== "ok"); // the process exited cleanly, but what it did needs a look
+  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : partial ? "Partially complete" : caveat || flagged ? "Completed with notes" : "Completed";
+  const tone = stopping || r.waiting || caveat || flagged ? "attention" : r.running ? "working" : failed ? "failed" : "done";
   const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
   const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
   const totalSteps = numbered ? (p.total || 5) : 1;
@@ -9451,7 +9470,8 @@ function runStatus(r, vc = null) {
     : r.action === "build" ? "Build"
     : r.action === "test" ? "Run all tests"
     : r.title || (r.action ? r.action.replace(/_/g, " ") : "Run");
-  const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : (p.label || completionLabel))
+  const transientLabel = /^(Scheduling worker|Waiting for |Reading the model|Starting execution|Updating job status|Preparing git branch)/.test(p.label || ""); // where it was, not what it did
+  const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : partial ? "Paused: the work is saved, but the job isn't finished" : flagged ? "Finished, needs your attention" : (p.label && !transientLabel ? p.label : completionLabel))
     : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
     : (p.label || r.title || "Starting run");
   const headline = `${stepPrefix}${headlineLabel}`;
@@ -9464,19 +9484,24 @@ function runStatus(r, vc = null) {
   ]);
 
   const activeModels = p.active_models || [];
-  const recordedModels = p.models || [];
+  const skippedIds = new Set((Array.isArray(p.failed) ? p.failed : []).map((f) => f.model)); // models that couldn't run are listed under Skipped models
+  const recordedModels = (p.models || []).filter((m) => !skippedIds.has(m));
   const assignedModels = p.assigned_models || [];
   const displayModels = activeModels.length ? activeModels
     : recordedModels.length ? recordedModels
     : assignedModels;
   const activeCount = Number.isInteger(p.agents) ? p.agents : activeModels.length;
 
+  const calls = r.running && Array.isArray(p.calls) ? p.calls : []; // model calls in flight, with how long each has been going
+  const ageText = (secs) => (secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`);
   let modelsText = "";
-  if (displayModels.length) {
+  if (calls.length) {
+    modelsText = calls.map((c) => `${esc(c.model)} (working for ${ageText(c.age)})`).join(", ");
+  } else if (displayModels.length) {
     const list = displayModels.map(esc).join(", ");
     if (r.running) {
       if (activeCount > 0) {
-        modelsText = `${list} (${activeCount} active)`;
+        modelsText = `${list} (working)`;
       } else if (recordedModels.length) {
         modelsText = `${list} (idle)`;
       } else {
@@ -9534,6 +9559,14 @@ function runStatus(r, vc = null) {
   const suiteText = !suites.length ? ""
     : `${suites.length} planned${suiteNow && !done ? ` · working on ${suiteNow} of ${suites.length}: ${suites[suiteNow - 1].split("/").pop()}` : ""}`;
   const suiteItem = suiteText ? `<div><dt>New test suites</dt><dd data-run-suites>${esc(suiteText)}</dd></div>` : "";
+  const skipped = Array.isArray(p.failed) ? p.failed : []; // models the run tried and moved on from
+  const skippedItem = skipped.length
+    ? `<div><dt>Skipped models</dt><dd data-run-skipped><details><summary>${plural(skipped.length, "model")} couldn't run</summary><ul class="run-status-skipped">${skipped.map((f) => `<li><strong>${esc(f.model)}</strong>: ${esc(f.reason)}</li>`).join("")}</ul></details></dd></div>`
+    : "";
+  const slow = calls.find((c) => c.age >= 120);
+  const slowHint = slow
+    ? `No answer from ${slow.model} yet (${ageText(slow.age)}). Reasoning models often take 5 to 10 minutes before they answer${slow.timeout ? `; after ${Math.round(slow.timeout / 60)} minutes it gives up and tries the next model` : ""}. The run is still going.`
+    : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";
 
@@ -9547,11 +9580,13 @@ function runStatus(r, vc = null) {
       ${summaryItem}
       ${suiteItem}
       ${machineItem}
-      <div><dt>Models & agents</dt><dd>${modelsText}</dd></div>
+      <div><dt>Models</dt><dd>${modelsText}</dd></div>
+      ${skippedItem}
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
       ${stateItem}
       ${resultItem}
     </dl>
+    ${slowHint ? `<p class="run-status-hint muted" data-run-slow-hint>${esc(slowHint)}</p>` : ""}
     ${caveat ? `<p class="run-status-caveat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> ${esc(caveat)}</p>` : ""}
     ${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}
     ${guidance ? `

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from orchestrator import run_result as rr
 
@@ -134,6 +136,53 @@ class GeneralTests(unittest.TestCase):
     def test_a_good_looking_reader_result_cannot_hide_a_failed_exit(self):
         out = rr.summarize("test", "Ran 3 tests in 0.1s\n\nOK\n", 2)
         self.assertEqual(out["tone"], "bad")
+
+
+class TestsJobOutcomeTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        folder = self.root / "AppTests"
+        folder.mkdir()
+        (folder / "ParserTests.swift").write_text("class A {\n func testOne() {}\n func testTwo() {}\n func helper() {}\n}\n")
+        (folder / "MatcherTests.swift").write_text("func testOnly() {}\n")
+        (folder / "notes.md").write_text("text")
+        self.job = {"output_scope": "tests-only", "output_digests": {"AppTests/ParserTests.swift": "x", "AppTests/MatcherTests.swift": "y"},
+                    "test_validation": {"passed": True, "kind": "passed"}}
+
+    def test_a_checked_job_says_how_many_files_and_tests_were_added_and_where(self):
+        out = rr.job_outcome(self.job, self.root)
+        self.assertEqual(out["headline"], "2 test files added with 3 tests, checked and passing")
+        self.assertEqual(out["tone"], "ok")
+        self.assertNotIn("partial", out)
+        self.assertEqual(out["details"][0], "Location: AppTests/")
+        self.assertIn("ParserTests.swift: 2 tests", out["details"])
+        self.assertIn("MatcherTests.swift: 1 test", out["details"])
+
+    def test_tests_that_could_not_be_checked_are_a_warning_with_the_way_forward(self):
+        self.job["test_validation"] = {"passed": False, "kind": "environment", "detail": "Unable to find a device matching the destination"}
+        out = rr.job_outcome(self.job, self.root)
+        self.assertEqual((out["tone"], out["headline"].split(", ", 1)[1]), ("warn", "not checked yet: the build environment failed"))
+        self.assertTrue(any("Unable to find a device" in d for d in out["details"]))
+        self.assertTrue(any("Try again" in d for d in out["details"]))
+        self.assertTrue(out["partial"])  # the run page marks it partially complete, not just completed
+
+    def test_tests_that_failed_are_bad_and_point_at_the_log(self):
+        self.job["test_validation"] = {"passed": False, "kind": "tests"}
+        out = rr.job_outcome(self.job, self.root)
+        self.assertEqual(out["tone"], "bad")
+        self.assertTrue(any("test.log" in d for d in out["details"]))
+
+    def test_a_job_that_added_no_files_says_so_and_other_jobs_are_left_alone(self):
+        out = rr.job_outcome({"output_scope": "tests-only", "last_error": "Needs a production change"}, self.root)
+        self.assertEqual((out["headline"], out["tone"]), ("No test files were added", "warn"))
+        self.assertIsNone(rr.job_outcome({"output_scope": None, "output_digests": {"a": "b"}}, self.root))
+
+    def test_a_clean_exit_reports_the_job_but_a_failed_exit_keeps_the_general_reader(self):
+        self.assertIn("2 test files added", rr.summarize("schedule", "done\n", 0, job=self.job, root=self.root)["headline"])
+        failed = rr.summarize("schedule", "❌ boom\n", 1, job=self.job, root=self.root)
+        self.assertEqual(failed["headline"], "boom")
 
 
 if __name__ == "__main__":

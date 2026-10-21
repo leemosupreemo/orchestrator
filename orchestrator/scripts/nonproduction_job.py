@@ -10,7 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from common import ROOT, OUTPUT_DIR, PROMPTS_DIR, get_repo_state, now_iso, read_json, write_json, write_text
+from common import (ROOT, OUTPUT_DIR, PROMPTS_DIR, command_with_destination, extract_destination_from_command, get_fallback_simulator_destinations,
+                    get_repo_state, now_iso, read_json, write_json, write_text)
 from llm import extract_json_block, run_llm
 from model_router import ModelRole
 from orchestrator import job_scope
@@ -19,7 +20,7 @@ from reference_artifacts import attach_reference_artifact, reference_context
 
 # Output that means the build environment failed before any test could run, not that a test failed.
 ENVIRONMENT_FAILURES = re.compile(
-    r"Could not resolve package dependencies|sandbox_apply: Operation not permitted|Unable to find a destination matching"
+    r"Could not resolve package dependencies|sandbox_apply: Operation not permitted|Unable to find a (?:destination|device) matching"
     r"|Failed to resolve (?:package|dependencies)|command not found", re.I)
 
 
@@ -75,8 +76,24 @@ def run_validation(job: dict, out: Path) -> None:
         if env.get("PYTHONPATH"):
             env["PYTHONPATH"] = os.pathsep.join(str(work / Path(part).relative_to(ROOT)) if part and Path(part).is_relative_to(ROOT) else part
                                                   for part in env["PYTHONPATH"].split(os.pathsep))
+        def attempt(test_command: str) -> subprocess.CompletedProcess:
+            return subprocess.run(job_scope.protect_command(sandbox_safe(test_command.replace(str(ROOT), str(work))), [ROOT]), shell=True,
+                                  cwd=work, env=env, capture_output=True, text=True, timeout=1200)
+
         validation = subprocess.run(isolated_command, shell=True, cwd=work, env=env,
                                     capture_output=True, text=True, timeout=1200)
+        # The configured simulator may not exist on this computer: try the ones that do before calling it an environment failure.
+        if validation.returncode and "xcodebuild" in command and re.search(r"Unable to find a device matching", validation.stdout + validation.stderr):
+            configured = extract_destination_from_command(command)
+            for candidate in get_fallback_simulator_destinations(configured):
+                if candidate == configured:
+                    continue
+                retry = attempt(command_with_destination(command, candidate))
+                if retry.returncode == 0 or not re.search(r"Unable to find a device matching", retry.stdout + retry.stderr):
+                    validation = retry
+                    job["test_validation"]["command"] = command_with_destination(command, candidate)
+                    job["test_validation"]["destination"] = candidate
+                    break
         reports = [Path(scratch) / ".coverage", work / "coverage.xml", work / "lcov.info", work / "coverage/lcov.info"]
         for report in reports:
             if report.is_file():

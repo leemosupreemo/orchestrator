@@ -122,6 +122,26 @@ class NonproductionJobTests(unittest.TestCase):
             self.assertEqual(job['status'], 'review-needed')
             self.assertTrue(job['test_validation']['passed'])
 
+    def test_a_missing_simulator_is_an_environment_failure_not_a_failed_test(self):
+        self.assertIn('Unable to find a device matching', runner.environment_failure(
+            'xcodebuild: error: Unable to find a device matching the provided destination specifier:\n{ platform:iOS Simulator, name:iPhone 15 Pro }'))
+
+    @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
+    def test_validation_tries_an_installed_simulator_when_the_configured_one_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            import shlex
+            script = ('import sys; a = " ".join(sys.argv); '
+                      'print("xcodebuild: error: Unable to find a device matching the provided destination specifier:" if "name=Old" in a else "ok"); '
+                      'sys.exit(1 if "name=Old" in a else 0)')
+            command = shlex.join([sys.executable, '-c', script, 'xcodebuild', '-destination', 'platform=iOS Simulator,name=Old'])
+            with patch.object(runner, 'get_fallback_simulator_destinations',
+                              return_value=['platform=iOS Simulator,name=Old', 'platform=iOS Simulator,name=New']):
+                job = self.run_job(root, 'test-audit', [{'path': 'tests/test_app.py', 'content': 'test'}], command)
+            self.assertEqual(job['status'], 'review-needed')
+            self.assertTrue(job['test_validation']['passed'])
+            self.assertEqual(job['test_validation']['destination'], 'platform=iOS Simulator,name=New')
+
     @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('sandbox-exec'), 'macOS sandbox integration')
     def test_a_run_stopped_while_checking_the_tests_resumes_at_checking_them(self):
         with tempfile.TemporaryDirectory() as tmp:

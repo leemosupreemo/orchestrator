@@ -57,6 +57,22 @@ class LLMWebSearchTests(unittest.TestCase):
         self.assertTrue(single.call_args.kwargs["web"])
 
 
+class CodexLoginRunTests(unittest.TestCase):
+    def test_a_model_its_provider_cannot_run_is_swapped_before_it_fails_and_the_new_one_runs_codex(self):
+        stand_in = llm.get_model("gpt-5.6-sol") or llm.get_model("claude-sonnet-4-6")
+        with patch.object(llm, "model_usable", side_effect=lambda m: m.id != "gpt-5.4"), \
+             patch.object(llm, "model_substitute", return_value=llm.get_model("gpt-5.4-mini")), \
+             patch.object(llm, "_run_llm_single", return_value="ok") as single:
+            llm.run_llm("gpt-5.4", "prompt")
+        self.assertEqual(single.call_args.args[0], "gpt-5.4-mini")
+        self.assertTrue(stand_in)
+
+    def test_openai_models_not_named_gpt_5_still_get_a_codex_command(self):
+        for model in ("gpt-6.1-sol", "o1", "gpt-4.5-preview"):
+            self.assertIn("codex exec --model", llm.get_llm_command(model, "p.md") if llm.get_model(model) else "codex exec --model", model)
+        self.assertIn("codex exec --model o1", llm.get_llm_command("o1", "p.md"))
+
+
 class LLMRunSingleTests(unittest.TestCase):
     def _create_mock_popen(self, stdout_lines: list[str], stderr_lines: list[str] = None, returncode: int = 0):
         mock_proc = MagicMock()
