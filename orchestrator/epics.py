@@ -1,7 +1,7 @@
 """Epics: the breakdown of a product into epic-level pieces the person approves one by one.
 
-A breakdown (from the product requirements, or imported from Jira) is a list of epics, each *suggested*, *approved* or
-*declined*. Approving an epic creates its feature (so the planner, the plan run and the feature pages work as before)
+A breakdown (from the product requirements, or imported from Jira) is a list of epics, each *suggested*, *approved*,
+*declined* or *built* (the project already has it, so no job is made unless the person brings it back). Approving an epic creates its feature (so the planner, the plan run and the feature pages work as before)
 and a waiting job labelled Epic: a job record with status "backlog" that does nothing until the person plans it. Planning
 it runs the usual feature job, which takes the place of the waiting one (`attach_job`).
 
@@ -22,7 +22,7 @@ from typing import Any
 
 from orchestrator import feature_map, features as store
 
-STATUSES = ("suggested", "approved", "declined")
+STATUSES = ("suggested", "approved", "declined", "built")
 JIRA_KEY = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 
 
@@ -84,7 +84,8 @@ def add_suggestions(runtime: Path, proposal: dict[str, Any]) -> dict[str, Any]:
         added.append({"id": "ep-" + secrets.token_hex(4), "name": f["name"], "summary": f.get("summary", ""),
                       "requirements": f.get("requirements") or [], "stories": f.get("stories") or [], "slice": f.get("slice", ""),
                       "paths": f.get("paths") or [], "depends_on": f.get("depends_on") or [], "serves": f.get("serves", ""),
-                      "layer": f.get("layer", 0), "status": "suggested", "source": "prd", "feature": "", "job": "", "jira": None,
+                      "state": f.get("state", "new"), "evidence": f.get("evidence") or [],
+                      "layer": f.get("layer", 0), "status": "built" if f.get("state") == "built" else "suggested", "source": "prd", "feature": "", "job": "", "jira": None,
                       "created": time.time()})
     if not added:
         raise EpicError("Every suggested epic is already in the list.")
@@ -96,7 +97,7 @@ def add_suggestions(runtime: Path, proposal: dict[str, Any]) -> dict[str, Any]:
 
 def _candidates(epics: list[dict[str, Any]], ids: set[str]) -> list[dict[str, Any]]:
     """The epics to approve, plus every undecided epic they build on (an epic can't start before what it needs)."""
-    by_name = {e["name"].strip().lower(): e for e in epics if e["status"] != "approved"}
+    by_name = {e["name"].strip().lower(): e for e in epics if e["status"] not in ("approved", "built")}
     picked = {e["id"]: e for e in epics if e["id"] in ids and e["status"] != "approved"}
     todo = list(picked.values())
     while todo:
@@ -160,7 +161,7 @@ def decline(runtime: Path, ids: list[str]) -> None:
 def restore(runtime: Path, ids: list[str]) -> None:
     data = load(runtime)
     for epic in data["epics"]:
-        if epic["id"] in ids and epic["status"] == "declined":
+        if epic["id"] in ids and epic["status"] in ("declined", "built"):
             epic["status"] = "suggested"
     save(runtime, data)
 
@@ -179,6 +180,9 @@ def brief(epic: dict[str, Any], heading: bool = True) -> str:
         lines += ["## Requirements", *[f"- {r}" for r in epic["requirements"]], ""]
     if epic.get("stories"):
         lines += ["## User stories", *[f"- {s}" for s in epic["stories"]], ""]
+    if epic.get("state") in ("built", "partial") and epic.get("evidence"):
+        lines += [f"Already in the project ({'all of it' if epic['state'] == 'built' else 'part of it'}): check these before writing anything, and build only what is missing.",
+                  *[f"- {path}" for path in epic["evidence"]], ""]
     if epic.get("depends_on"):
         lines += [f"Builds on: {', '.join(epic['depends_on'])}", ""]
     if (epic.get("jira") or {}).get("url"):

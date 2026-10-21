@@ -79,6 +79,9 @@
       ${e.paths?.length ? `<span class="muted mono">${e.paths.map(escapeHtml).join(" · ")}</span>` : ""}`;
   }
 
+  // The files that show how much of an epic is already in the project.
+  const evidenceLine = (e) => e.evidence?.length ? `<span class="muted mono" title="Files that show what is already built">Already in: ${e.evidence.map(escapeHtml).join(" · ")}</span>` : "";
+
   // Epics waiting for a decision, grouped by release slice (story map) or in build order, each with a checkbox.
   function renderSuggested(epics, breakdown) {
     const list = (epics || []).filter((e) => e.status === "suggested");
@@ -87,7 +90,7 @@
     const idOf = new Map((epics || []).filter((e) => e.status !== "approved").map((e) => [e.name.toLowerCase(), e.id]));
     const item = (e) => `<label class="feature-proposal-item" data-epic="${escapeHtml(e.id)}">
         <input type="checkbox" name="chosen" data-needs="${escapeHtml((e.depends_on || []).map((d) => idOf.get(String(d).toLowerCase())).filter(Boolean).join("\u001f"))}" value="${escapeHtml(e.id)}" checked>
-        <span class="stack"><strong>${escapeHtml(e.name)}${!storyMap || !e.slice ? "" : ` <span class="pill">${escapeHtml(e.slice)}</span>`}</strong>${epicDetails(e)}</span></label>`;
+        <span class="stack"><strong>${escapeHtml(e.name)}${!storyMap || !e.slice ? "" : ` <span class="pill">${escapeHtml(e.slice)}</span>`}${e.state === "partial" ? ` <span class="pill idle" title="Part of this is already in the project. The job builds only what is missing.">Partly built</span>` : ""}</strong>${epicDetails(e)}${e.state === "partial" ? evidenceLine(e) : ""}</span></label>`;
     const layers = [...new Set(list.map((e) => e.layer || 0))].sort((a, b) => a - b);
     const groups = storyMap
       ? ["MVP", "Next", "Later", ""].map((slice) => ({title: SLICE_TITLES[slice], items: list.filter((e) => (e.slice || "") === slice)})).filter((g) => g.items.length)
@@ -118,6 +121,16 @@
     };
     return `<section class="card mb-16" id="epic-approved"><div class="card-h"><h2>Approved</h2><span class="count">${list.length}</span></div>
       <div class="list">${list.map(row).join("")}</div></section>`;
+  }
+
+  // Epics the project already has: no job is made for them unless the person brings one back.
+  function renderBuilt(epics) {
+    const list = (epics || []).filter((e) => e.status === "built");
+    if (!list.length) return "";
+    return `<section class="card mb-16" id="epic-built"><details class="fold" open><summary class="card-h"><h2>Already built</h2><span class="count">${list.length}</span></summary>
+      <div class="list"><p class="muted card-b">These are already in the project, so no jobs are made for them. Bring one back if it needs more work.</p>${list.map((e) => `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${escapeHtml(e.name)}</div>
+        ${e.summary ? `<div class="meta">${escapeHtml(e.summary)}</div>` : ""}${evidenceLine(e)}</div>
+        <div class="side"><button type="button" class="btn small" data-epic-restore="${escapeHtml(e.id)}">Not finished</button></div></div>`).join("")}</div></details></section>`;
   }
 
   function renderDeclined(epics) {
@@ -181,6 +194,6 @@
         <div class="list">${rows}</div></div></section>`;
   }
 
-  root.FeaturePlan = {renderBreakdownInfo, renderQuestions, guessSection, renderSuggested, renderApproved, renderDeclined, renderJiraImport, techniqueSelect, jiraLink,
+  root.FeaturePlan = {renderBreakdownInfo, renderQuestions, guessSection, renderSuggested, renderApproved, renderBuilt, renderDeclined, renderJiraImport, techniqueSelect, jiraLink,
     renderStories, requirementsList, renderStartForm, chosenFeatures, renderRun};
 })(typeof globalThis !== "undefined" ? globalThis : window);

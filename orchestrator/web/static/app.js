@@ -5520,6 +5520,22 @@ async function waitForTask(started, opts) {
   }
 }
 
+// A draft or an import runs on the computer, not in the page. Remember which one is running for this project, so coming back
+// to the Product page (or reloading it) picks it up instead of showing nothing.
+const prdPending = {
+  key: () => `orchestrator_prd_pending:${state.project?.root || state.project?.name || ""}`,
+  get() {
+    try {
+      const v = JSON.parse(localStorage.getItem(this.key()) || "null");
+      return v?.task && Date.now() - v.at < PRD_PENDING_KEEP_MS ? v : null; // the computer keeps a finished one for half an hour
+    } catch { return null; }
+  },
+  set(v) { try { localStorage.setItem(this.key(), JSON.stringify({ ...v, at: Date.now() })); } catch { /* remembered for this visit only */ } },
+  clear() { try { localStorage.removeItem(this.key()); } catch { /* nothing stored */ } },
+};
+const PRD_PENDING_KEEP_MS = 30 * 60 * 1000;
+let prdRun = null; // the draft or import the page on screen is following; starting or resuming another replaces it
+
 function productStripHtml(p) {
   const lead = p.sections.find((x) => x.id === "pitch" && x.filled) || p.sections.find((x) => x.filled);
   const models = p.available_models || [];
@@ -6014,10 +6030,10 @@ pages.product = async (_, query) => {
           });
         });
       };
-      const busy = (text, onCancel) => {
-        const started = Date.now();
+      const busy = (text, onCancel, since = Date.now()) => {
+        const started = since;
         panel().innerHTML = `<div class="prd-busy" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
-          <div><strong>${esc(text)}</strong><div class="prd-busy-sub">This can take a few minutes. <span data-elapsed>0s</span></div></div>
+          <div><strong>${esc(text)}</strong><div class="prd-busy-sub">This can take a few minutes. <span data-elapsed>${Math.floor((Date.now() - started) / 1000)}s</span></div></div>
           ${onCancel ? `<button type="button" class="btn small" id="prd-busy-cancel" aria-label="Cancel drafting" title="Stop drafting">Cancel</button>` : ""}</div>`;
         const el = panel().querySelector("[data-elapsed]");
         const timer = setInterval(() => { if (!el.isConnected) return clearInterval(timer); el.textContent = `${Math.floor((Date.now() - started) / 1000)}s`; }, 1000);
@@ -6031,15 +6047,18 @@ pages.product = async (_, query) => {
         if (file && !/\.(md|markdown|txt|docx|pdf)$/i.test(file.name)) { toast("Use a markdown, text, Word or PDF file, or paste the text.", "warning"); return importPanel(); }
         let canceled = false, taskId = null;
         const abortCtrl = new AbortController();
+        const run = prdRun = {};
         const cancel = async () => {
           if (canceled) return;
           canceled = true;
           abortCtrl.abort();
+          prdPending.clear();
           if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
           toast("Import cancelled", "cancel");
           importPanel();
         };
-        busy(file ? `Reading ${file.name}…` : "Reading it…", cancel);
+        const busyText = file ? `Reading ${file.name}…` : "Reading it…";
+        busy(busyText, cancel);
         try {
           const started = file ? await uploadFile(file, "product/import", { signal: abortCtrl.signal }) : await api("product/import", { method: "POST", body: { text }, signal: abortCtrl.signal });
           taskId = started?.task;
@@ -6047,13 +6066,16 @@ pages.product = async (_, query) => {
             if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
             return;
           }
+          prdPending.set({ task: taskId, source: "import", busy: busyText, label: "Your PRD, in this format" });
           const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
-          if (canceled) return;
+          if (canceled || run !== prdRun || !panel()) return; // left the page: it is picked up again when they come back
+          prdPending.clear();
           await proposalView(taskResult, { source: "import", label: "Your PRD, in this format", onDone: () => {} });
         } catch (e) {
-          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
+          if (canceled || run !== prdRun || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
+          prdPending.clear();
           toast(e.message, true);
-          importPanel();
+          if (panel()) importPanel();
         }
       };
 
@@ -6109,10 +6131,12 @@ pages.product = async (_, query) => {
       const draftPanel = async () => {
         let canceled = false, taskId = null;
         const abortCtrl = new AbortController();
+        const run = prdRun = {};
         const cancel = async () => {
           if (canceled) return;
           canceled = true;
           abortCtrl.abort();
+          prdPending.clear();
           if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
           toast("Draft cancelled", "cancel");
           panel().innerHTML = "";
@@ -6129,13 +6153,47 @@ pages.product = async (_, query) => {
             if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
             return;
           }
+          const label = modelLabel ? `Drafted with ${modelLabel}` : "Drafted from your project";
+          prdPending.set({ task: taskId, source: "draft", busy: busyText, label });
           const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
-          if (canceled) return;
-          await proposalView(taskResult, { source: "draft", label: modelLabel ? `Drafted with ${modelLabel}` : "Drafted from your project", onDone: () => { panel().innerHTML = ""; } });
+          if (canceled || run !== prdRun || !panel()) return; // left the page: it is picked up again when they come back
+          prdPending.clear();
+          await proposalView(taskResult, { source: "draft", label, onDone: () => { panel().innerHTML = ""; } });
         } catch (e) {
-          if (canceled || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
+          if (canceled || run !== prdRun || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled" || e.message === "Draft canceled." || e.message === "Draft cancelled.") return;
+          prdPending.clear();
           toast(e.message, true);
+          if (panel()) panel().innerHTML = "";
+        }
+      };
+
+      // Back on the page while a draft or import was still running (or had finished): show it again and carry on from there.
+      const resumePending = async () => {
+        const pending = prdPending.get();
+        if (!pending) return;
+        let canceled = false;
+        const abortCtrl = new AbortController();
+        const run = prdRun = {};
+        const cancel = async () => {
+          if (canceled) return;
+          canceled = true;
+          abortCtrl.abort();
+          prdPending.clear();
+          try { await api(`product/task/${encodeURIComponent(pending.task)}`, { method: "DELETE" }); } catch {}
+          toast(pending.source === "draft" ? "Draft cancelled" : "Import cancelled", "cancel");
           panel().innerHTML = "";
+        };
+        busy(pending.busy, cancel, pending.at);
+        try {
+          const taskResult = await waitForTask({ task: pending.task }, { signal: abortCtrl.signal });
+          if (canceled || run !== prdRun || !panel()) return;
+          prdPending.clear();
+          await proposalView(taskResult, { source: pending.source, label: pending.label, onDone: pending.source === "draft" ? () => { panel().innerHTML = ""; } : () => {} });
+        } catch (e) {
+          if (canceled || run !== prdRun || e.name === "AbortError") return;
+          prdPending.clear();
+          toast(e.status === 404 ? "That draft didn't finish. Start it again." : e.message, e.status === 404 ? "warning" : true);
+          if (panel()) panel().innerHTML = "";
         }
       };
 
@@ -6147,8 +6205,8 @@ pages.product = async (_, query) => {
         if (panel()?.children.length) return;
         offering = true;
         const asked = formDialog("Break your product down?",
-          `<p>Your requirements have something in them now. Orchestrator can split them into <strong>epics</strong>: the big pieces of the product, using a story map or a top-down work breakdown, as detailed as what you've written.</p>
-           <p class="muted">You approve the ones you want. Each becomes a job marked Epic that waits until you plan it. You can do this any time from Epics, at the bottom of this page.</p>`, "Break it down", { compact: true });
+          `<p>Split your requirements into <strong>epics</strong>, the big pieces of the product. You pick the ones to keep, and each becomes an Epic job that waits until you plan it.</p>
+           <p class="muted">You can also do this later from Epics, at the bottom of this page.</p>`, "Break it down", { compact: true });
         $("#dialog-cancel").textContent = "Not now";
         asked.then((answer) => {
           p.breakdown_offered = true;
@@ -6162,6 +6220,7 @@ pages.product = async (_, query) => {
       epics?.mount(start);
       offerBreakdown();
       if (open.imp) importPanel();
+      else if (prdPending.get()) resumePending();
       else if (open.draft && p.can_draft) draftPanel();
     },
   };
@@ -6202,7 +6261,7 @@ function epicsSection(initial, { onPrdChanged }) {
       <details class="advanced"><summary>Advanced options</summary><div class="stack">
         ${FeaturePlan.techniqueSelect(technique)}
         ${ov.epics.length ? `<div class="row"><button type="button" class="btn" id="epic-break">Break down again</button></div>
-          <p class="muted">Breaking down again replaces the suggestions you haven't decided on. Approved and declined epics stay.</p>` : ""}</div></details>
+          <p class="muted">Breaking down again replaces the suggestions you haven't decided on. Approved, declined and already built epics stay.</p>` : ""}</div></details>
       ${FeaturePlan.renderBreakdownInfo(ov.breakdown)}
       <div id="epics-busy">${busy}</div></div></section>`;
   };
@@ -6226,7 +6285,7 @@ function epicsSection(initial, { onPrdChanged }) {
 
   const body = () => `${breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions(ov.breakdown) : ""}${FeaturePlan.renderSuggested(ov.epics, ov.breakdown)}
     ${FeaturePlan.renderApproved(ov.epics, { act, jiraConnected: ov.jira?.connected && owner && !!ov.jira.project })}
-    ${FeaturePlan.renderDeclined(ov.epics)}${jiraCard()}`;
+    ${FeaturePlan.renderBuilt(ov.epics)}${FeaturePlan.renderDeclined(ov.epics)}${jiraCard()}`;
 
   const redraw = () => { const box = $("#epics-body"); if (box) box.innerHTML = body(); };
   const take = (data, message) => { ov = data; if (message) toast(message); redraw(); };
@@ -7562,6 +7621,29 @@ pages.config = async (args = []) => {
           };
           view.addEventListener("click", onInstall);
           cleanup.push(() => view.removeEventListener("click", onInstall));
+
+          const modelsButton = $("#ai-refresh-models");
+          if (modelsButton) {
+            const refreshModels = async ({quiet = false} = {}) => {
+              modelsButton.disabled = true;
+              modelsButton.textContent = "Refreshing…";
+              try {
+                const result = await waitForTask(await api("ai-providers/refresh-models", {method: "POST", body: {}}));
+                if (!quiet) toast(result.ok ? "Model lists updated" : "No new models found", !result.ok);
+                if (!quiet || result.ok) {
+                  if (!quiet) { const found = (result.details || []).filter((d) => /failed|unavailable/i.test(d)); if (found.length) toast(found[0], true); }
+                  await route();
+                }
+              } catch (error) {
+                if (!quiet) toast(error.message, true);
+              } finally {
+                if (modelsButton.isConnected) { modelsButton.disabled = false; modelsButton.textContent = "Refresh models"; }
+              }
+            };
+            modelsButton.addEventListener("click", () => refreshModels());
+            const staleAfter = 24 * 3600; // a day; opening the page keeps the lists current without a click
+            if (!config.ai?.models_synced || Date.now() / 1000 - config.ai.models_synced > staleAfter) refreshModels({quiet: true});
+          }
 
           const refreshButton = $("#ai-refresh-machines");
           const machineBox = $("#ai-secondary-computers");
@@ -10393,6 +10475,34 @@ function apply(result) {
   wireExpandables(view);
 }
 
+// What a page looks like while it loads: its own shape, not a spinner, so tapping something feels like it did something.
+const SKELETON_KINDS = {
+  home: "home", job: "job", tests: "tests", run: "run", config: "config",
+  new: "form", "new-project": "form", "auto-improve": "form", setup: "form",
+};
+function loadingSkeleton(page = "") {
+  const bone = (width, extra = "") => `<span class="skeleton skeleton-line skeleton-w-${width} ${extra}"></span>`;
+  const row = (pill = true) => `<div class="skeleton-row"><div class="skeleton-row-main">${bone(70)}${bone(30)}</div>${pill ? `<span class="skeleton skeleton-pill"></span>` : ""}</div>`;
+  const rows = (n, pill) => Array.from({ length: n }, () => row(pill)).join("");
+  const head = `<div class="skeleton-card-head">${bone(30)}<span class="skeleton skeleton-pill"></span></div>`;
+  const listCard = (n = 5) => `<div class="skeleton-card skeleton-flush">${head}${rows(n)}</div>`;
+  const textCard = `<div class="skeleton-card">${bone(30)}${bone(90)}${bone(70)}</div>`;
+  const kind = SKELETON_KINDS[page] || (["activity", "projects", "packages", "devlogs", "delivery", "features", "checkup", "connections", "test-cases", "git", "measure", "ux-review", "docs", "help", "product"].includes(page) ? "list" : "generic");
+  const body = {
+    home: `<div class="skeleton-card skeleton-flush"><div class="skeleton-card-head">${bone(30)}<span class="skeleton-chips"><span class="skeleton skeleton-pill"></span><span class="skeleton skeleton-pill"></span><span class="skeleton skeleton-pill"></span></span></div>${rows(6)}</div>`,
+    job: `<div class="skeleton-stepper">${"<span class=\"skeleton skeleton-step\"></span>".repeat(4)}</div>
+      <div class="skeleton-card skeleton-hero">${bone(30)}${bone(70)}<span class="skeleton skeleton-button"></span></div>${textCard}${listCard(3)}`,
+    tests: `<div class="skeleton-tiles">${"<div class=\"skeleton-card\"><span class=\"skeleton skeleton-line skeleton-w-30\"></span><span class=\"skeleton skeleton-stat\"></span></div>".repeat(3)}</div>${listCard(5)}`,
+    run: `<div class="skeleton-card"><div class="skeleton-card-head">${bone(30)}<span class="skeleton skeleton-pill"></span></div>${bone(70)}${bone(90)}<span class="skeleton skeleton-bar"></span></div><span class="skeleton skeleton-terminal"></span>`,
+    config: `${listCard(4)}${listCard(3)}`,
+    form: `<div class="skeleton-card">${[1, 2, 3].map(() => `<div class="skeleton-field">${bone(30)}<span class="skeleton skeleton-input"></span></div>`).join("")}<span class="skeleton skeleton-button"></span></div>`,
+    list: `${listCard(6)}`,
+    generic: `${textCard}${textCard}${textCard}`,
+  }[kind];
+  return `<div class="skeleton-page" role="status" aria-label="Loading"><span class="sr-only">Loading…</span>${body}</div>`;
+}
+
+let routeToken = 0; // only the newest navigation may clear or fill the loading state
 async function route() {
   if (signingIn) return; // the loading screen stays until sign-in finishes
   const moved = RouteAliases.redirect(location.hash); // an old address: show the page where it lives now
@@ -10423,19 +10533,24 @@ async function route() {
     if (active) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");
   });
   renderSetupFab();
+  const token = ++routeToken;
+  document.body.classList.add("route-loading"); // an instant cue, then the page's shape once it has taken a moment
+  view.setAttribute("aria-busy", "true");
+  const slow = setTimeout(() => {
+    if (token !== routeToken) return;
+    $("#page-sub").hidden = true;
+    $("#topbar-actions").innerHTML = "";
+    $("#page-title").classList.add("skeleton-title");
+    view.innerHTML = loadingSkeleton(r.page);
+  }, 120);
   try {
     if (!state.project && !["setup", "new-project"].includes(r.page)) {
       await refreshState();
       if (!state.project) return;
     }
-    // A page that takes a moment (first load runs setup checks) shouldn't leave a blank screen.
-    const slow = setTimeout(() => { if (current.page === r.page && !view.innerHTML.trim()) view.innerHTML = `<div class="empty" role="status">Loading…</div>`; }, 400);
-    let result;
-    try {
-      result = r.page === "setup" ? await DesktopSetup.render({api, esc, root: r.query.get("root"),
-        onReady: async () => { await refreshState(); location.hash = "#/checkup"; await route(); }})
-        : await pages[r.page](r.args, r.query);
-    } finally { clearTimeout(slow); }
+    const result = r.page === "setup" ? await DesktopSetup.render({api, esc, root: r.query.get("root"),
+      onReady: async () => { await refreshState(); location.hash = "#/checkup"; await route(); }})
+      : await pages[r.page](r.args, r.query);
     if (current.page === r.page && current.args.join() === r.args.join()) {
       apply(result);
       if (r.page !== "run") $("#page-title")?.focus({ preventScroll: true }); // so screen readers announce the new page
@@ -10448,6 +10563,13 @@ async function route() {
     view.innerHTML = `<div class="notice bad"><p>${esc(Errors.explain(e.message))}</p>
       <div class="row mt-8"><a class="btn small" href="#/">Go to Home</a>${missing ? "" : `<button type="button" class="btn small" data-retry-route>Try again</button>`}</div></div>`;
     view.querySelector("[data-retry-route]")?.addEventListener("click", () => route());
+  } finally {
+    clearTimeout(slow);
+    if (token === routeToken) {
+      document.body.classList.remove("route-loading");
+      view.removeAttribute("aria-busy");
+      $("#page-title")?.classList.remove("skeleton-title");
+    }
   }
 }
 

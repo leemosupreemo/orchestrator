@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -583,6 +584,26 @@ def project_digest(root: Path, recent_commits: list[str] | None = None) -> str:
     if recent_commits:
         parts.append("### Recent commit subjects (newest first)\n" + "\n".join(f"- {c}" for c in recent_commits[:30]))
     return "\n\n".join(parts)[:DIGEST_CHARS]
+
+
+def code_tree(root: Path, max_chars: int = 7000, max_depth: int = 5) -> str:
+    """Where the code lives, folder by folder with the source files in each, so a model can tell what is already built."""
+    root = Path(root)
+    lines: list[str] = []
+    seen = 0
+    for folder, dirs, files in os.walk(root):
+        rel = Path(folder).relative_to(root)
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS and not d.startswith("."))
+        if len(rel.parts) >= max_depth:
+            dirs[:] = []
+        code = sorted(f for f in files if Path(f).suffix in _CODE_EXTS)
+        seen += len(files)
+        if code:
+            shown = ", ".join(code[:8]) + (f" (+{len(code) - 8} more)" if len(code) > 8 else "")
+            lines.append(f"{rel.as_posix()}/: {shown}" if rel.parts else f"./: {shown}")
+        if seen > 20000:
+            break
+    return "\n".join(lines)[:max_chars]
 
 
 def draft_prompt(digest: str, current: str = "") -> str:

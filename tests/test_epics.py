@@ -39,6 +39,32 @@ class EpicStoreTests(unittest.TestCase):
         with self.assertRaises(epics.EpicError):
             epics.add_suggestions(self.runtime, proposal("A"))  # nothing new
 
+    def test_an_epic_the_project_already_has_is_listed_as_built_without_a_job_and_can_be_brought_back(self):
+        built = proposal("Sign in", "Billing")
+        built["features"][0].update(state="built", evidence=["app/auth/login.swift"])
+        built["features"][1].update(state="partial", evidence=["app/billing/"])
+        epics.add_suggestions(self.runtime, built)
+        by_name = {e["name"]: e for e in epics.load(self.runtime)["epics"]}
+        self.assertEqual((by_name["Sign in"]["status"], by_name["Sign in"]["job"]), ("built", ""))
+        self.assertEqual(by_name["Billing"]["status"], "suggested")
+        self.assertEqual(list((self.runtime / "jobs").glob("*.json")) if (self.runtime / "jobs").exists() else [], [])
+        epics.add_suggestions(self.runtime, proposal("Sign in", "Billing", "Chat"))  # a second breakdown doesn't propose the built one again
+        self.assertEqual([e["name"] for e in epics.load(self.runtime)["epics"] if e["status"] == "suggested"], ["Billing", "Chat"])
+        epics.restore(self.runtime, [by_name["Sign in"]["id"]])
+        self.assertEqual(epics.get(self.runtime, by_name["Sign in"]["id"])["status"], "suggested")
+
+    def test_building_on_a_built_epic_does_not_make_a_job_for_it_and_a_partial_epic_tells_the_job_what_exists(self):
+        p = proposal("Base", "Top", deps={"Top": ["Base"]})
+        p["features"][0].update(state="built", evidence=["app/base/"])
+        p["features"][1].update(state="partial", evidence=["app/top/part.swift"])
+        epics.add_suggestions(self.runtime, p)
+        top = next(e for e in epics.load(self.runtime)["epics"] if e["name"] == "Top")
+        approved = epics.approve(self.runtime, [top["id"]])
+        self.assertEqual([e["name"] for e in approved], ["Top"])
+        brief = self.job(epics.get(self.runtime, top["id"])["job"])["description"]
+        self.assertIn("part of it", brief)
+        self.assertIn("- app/top/part.swift", brief)
+
     def test_approving_makes_a_feature_and_a_waiting_job_labelled_epic(self):
         epics.add_suggestions(self.runtime, proposal("Play a round"))
         epic = epics.load(self.runtime)["epics"][0]

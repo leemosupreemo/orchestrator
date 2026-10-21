@@ -34,6 +34,32 @@ class FeatureMapTests(unittest.TestCase):
         self.assertIn("app/auth/", prompt)
         self.assertIn('"features"', prompt)  # asks for the JSON shape
 
+    def test_the_prompt_asks_what_is_already_built_and_carries_the_source_tree_and_decided_epics(self):
+        prompt = feature_map.prompt(PRD, [], "app/", decided=[{"name": "Sign in", "status": "built"}], code="app/auth/: login.swift")
+        self.assertIn('"state": "built" | "partial" | "new"', prompt)
+        self.assertIn("never invent one", prompt)
+        self.assertIn("only what is still missing", prompt)
+        self.assertIn("- Sign in (built)", prompt)
+        self.assertIn("app/auth/: login.swift", prompt)
+
+    def test_state_and_evidence_come_back_checked_against_the_files_that_exist(self):
+        root = Path(self.tmp.name) / "project"
+        (root / "app" / "auth").mkdir(parents=True)
+        (root / "app" / "auth" / "login.swift").write_text("x")
+        built = dict(item("Sign in"), state="built", evidence=["app/auth/login.swift", "app/nope.swift", "../outside"])
+        guess = dict(item("Billing"), state="built", evidence=["app/billing/"])  # called built, nothing to show
+        half = dict(item("Profile"), state="partial", evidence=["app/profile/"])
+        fresh = dict(item("Chat"), state="new", evidence=["app/auth/login.swift"])
+        odd = dict(item("Search"), state="finished")
+        proposal = feature_map.check_evidence(feature_map.parse(reply([built, guess, half, fresh, odd]), []), root)
+        by_name = {f["name"]: f for f in proposal["features"]}
+        self.assertEqual((by_name["Sign in"]["state"], by_name["Sign in"]["evidence"]), ("built", ["app/auth/login.swift"]))
+        self.assertEqual((by_name["Billing"]["state"], by_name["Billing"]["evidence"]), ("partial", []))
+        self.assertEqual(by_name["Profile"]["state"], "new")
+        self.assertEqual((by_name["Chat"]["state"], by_name["Chat"]["evidence"]), ("new", []))
+        self.assertEqual(by_name["Search"]["state"], "new")
+        self.assertTrue(any("Billing" in w and "partly built" in w for w in proposal["warnings"]))
+
     def test_proposal_is_validated_and_ordered_into_layers(self):
         proposal = feature_map.parse(reply([item("Challenge a friend", ["Play a round"], ["app/social/"]),
                                             item("Play a round", [], ["app/game/"])]), [])

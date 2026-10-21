@@ -260,8 +260,14 @@
     ],
   };
 
-  function modelTreeHtml(providerId, providerReady = false) {
-    const models = PROVIDER_MODELS[providerId] || [];
+  function modelsSyncedText(synced) {
+    if (!synced) return "The model lists below are the built-in ones. Refresh to ask each AI service for its current models.";
+    const days = Math.floor((Date.now() / 1000 - synced) / 86400);
+    return `Model lists last refreshed ${days < 1 ? "today" : days === 1 ? "yesterday" : `${days} days ago`}.`;
+  }
+
+  function modelTreeHtml(providerId, providerReady = false, known = null) {
+    const models = known && known.length ? known : PROVIDER_MODELS[providerId] || []; // the server's list; the built-in one is only a fallback
     if (!models.length) return "";
     return `<details class="fold model-tree" ${providerReady ? "open" : ""}>
       <summary class="model-tree-summary">
@@ -387,7 +393,7 @@
           <p>${escapeHtml(p.what)}</p>
           ${!p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>` : !p.ready ? `<p class="muted">${escapeHtml(p.sign_in)}</p>` : `<p class="ai-ready-note">Ready to use on this computer.</p>`}
           <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
-          ${modelTreeHtml(p.id, false)}
+          ${modelTreeHtml(p.id, false, ai.models?.[p.id])}
         </div>
       </details>`;
     const providerGroup = (title, items) => {
@@ -405,6 +411,9 @@
       title: "Manage AI tools",
       sub: ai.any_ready ? "Choose which tools are available to your jobs." : "Install and connect an AI tool to plan, build, and review jobs.",
       html: `<div class="configuration-page">
+        ${available && owner ? `<section class="card configuration-card" id="ai-models-refresh"><div class="card-b row between align-center gap-3">
+          <p class="muted" id="ai-models-status">${modelsSyncedText(ai.models_synced)}</p>
+          <button type="button" class="btn small" id="ai-refresh-models">Refresh models</button></div></section>` : ""}
         ${available ? `${providerGroup("Installed", installed)}
         ${providerGroup("Not installed", notInstalled)}` : `<section class="card configuration-card"><div class="card-b"><p class="muted">Couldn't check the AI tools on this computer. Refresh the page to try again.</p></div></section>`}
         ${secondary.length ? `<section class="card configuration-card ai-secondary-card"><div class="card-h"><h2>Other computers</h2><button type="button" class="btn small ghost" id="ai-refresh-machines">Refresh status</button></div>

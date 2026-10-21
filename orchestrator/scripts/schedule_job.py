@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from common import CONFIG_DIR, ROOT, now_iso, read_json, run, write_json, print_phase
+from common import CONFIG_DIR, ROOT, is_disk_full_error, now_iso, read_json, run, write_json, print_phase
 from model_registry import get_model
 from orchestrator.run_check import MIN_DISK_GB, equivalent_model_names, model_names_overlap  # noqa: F401
 from probe_machine import load_machines, probe_machine
@@ -288,9 +288,13 @@ def choose_machine_and_model(job: dict[str, Any], group: dict[str, Any], machine
     # Restrict to allowed machines if specified in job
     allowed_names = job.get("allowed_machines")
     
+    out_of_space = {str(i.get("machine")): i for i in job.get("machine_issues") or [] if isinstance(i, dict)}
     for machine in machines:
         if allowed_names and machine["name"] not in allowed_names:
             ineligible.append((machine, "Not in allowed set for this job"))
+            continue
+        if machine["name"] in out_of_space:
+            ineligible.append((machine, "Ran out of disk space earlier on this job"))
             continue
             
         probe = probe_machine(machine)
@@ -531,6 +535,21 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
             print(f"      - Warning: Could not download updated job state from {machine['name']}.")
 
 
+def ran_out_of_disk(job: dict[str, Any]) -> bool:
+    """The job stopped because the machine it was on ran out of disk space."""
+    return job.get("status") == "human-needed" and is_disk_full_error(str(job.get("last_error") or ""))
+
+
+def skip_full_machine(job_path: Path, job: dict[str, Any], machine_name: str) -> dict[str, Any]:
+    """Remember that `machine_name` ran out of disk space for this job, so the next scheduling passes over it."""
+    issues = [i for i in job.get("machine_issues") or [] if isinstance(i, dict) and i.get("machine") != machine_name]
+    issues.append({"machine": machine_name, "reason": "ran out of disk space", "at": now_iso()})
+    job["machine_issues"] = issues
+    job["updated_at"] = now_iso()
+    write_json(job_path, job)
+    return job
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_file")
@@ -542,19 +561,38 @@ def main() -> None:
     job_path = Path(args.job_file)
     job = normalize_job(load_job(job_path))
     machines = load_machines()
-    
-    group, machine, _probe, _model, assignment = schedule_ready_group(job, machines)
-    
-    if not args.dry_run:
-        write_json(job_path, job)
 
-    action = "Would schedule" if args.dry_run else "Scheduled"
-    print(
-        f"{action} {job['job_id']} group {group['group_id']} "
-        f"to {assignment['machine']} using {assignment['model']}"
-    )
+    while True:
+        try:
+            group, machine, _probe, _model, assignment = schedule_ready_group(job, machines)
+        except RuntimeError as exc:
+            if job.get("machine_issues"):  # every machine is full or unavailable: say so on the job, not just in the log
+                job["last_error"] = f"{exc}\nMachines that ran out of disk space: {', '.join(i['machine'] for i in job['machine_issues'])}."
+                write_json(job_path, job)
+            raise
 
-    dispatch_job(job_path, machine, _probe, dry_run=args.dry_run, resume=args.resume)
+        if not args.dry_run:
+            write_json(job_path, job)
+
+        action = "Would schedule" if args.dry_run else "Scheduled"
+        print(
+            f"{action} {job['job_id']} group {group['group_id']} "
+            f"to {assignment['machine']} using {assignment['model']}"
+        )
+
+        try:
+            dispatch_job(job_path, machine, _probe, dry_run=args.dry_run, resume=args.resume)
+        except Exception:
+            # A remote run that ran out of space exits with an error; anything else is still an error.
+            if args.dry_run or not ran_out_of_disk(load_job(job_path)):
+                raise
+        if args.dry_run:
+            return
+        job = normalize_job(load_job(job_path))
+        if not ran_out_of_disk(job):
+            return
+        print(f"\n\033[1;93m⚠️  {machine['name']} ran out of disk space. Trying another machine...\033[0m")
+        job = skip_full_machine(job_path, job, machine["name"])
 
 
 if __name__ == "__main__":

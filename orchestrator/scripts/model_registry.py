@@ -489,7 +489,7 @@ def heuristic_classify(model_id: str, family: str) -> ModelMetadata:
     caps = [ModelCapability.CODING, ModelCapability.REASONING]
     
     # Tier mapping
-    if any(x in m_id for x in ["opus", "o1", "o3", "o4", "gpt-5", "extreme"]):
+    if any(x in m_id for x in ["opus", "fable", "o1", "o3", "o4", "gpt-5", "extreme"]):
         tier = ModelTier.LOW if "mini" in m_id else ModelTier.EXTREME
     elif any(x in m_id for x in ["sonnet", "pro", "gpt-4", "high"]):
         tier = ModelTier.LOW if "mini" in m_id else ModelTier.HIGH
@@ -621,15 +621,39 @@ def urlopen_with_ssl_fallback(req_or_url, timeout: int = 5):
             return urllib.request.urlopen(req_or_url, timeout=timeout, context=unverified_ctx)
         raise
 
-def discover_from_sources_with_details() -> DiscoveryResult:
-    """Pings various provider APIs and CLIs to find new models."""
+def discover_from_sources_with_details(keys: dict[str, str] | None = None) -> DiscoveryResult:
+    """Pings various provider APIs and CLIs to find new models.
+
+    `keys` are API keys saved in settings, by environment variable name; a key in the environment wins.
+    """
     import urllib.request
     import json
     discovered = []
     details = []
-    
+    keys = keys or {}
+
+    def api_key(env_name: str) -> str:
+        return os.environ.get(env_name) or str(keys.get(env_name) or "")
+
+    # 0. Anthropic
+    anthropic_key = api_key("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        before = len(discovered)
+        try:
+            req = urllib.request.Request("https://api.anthropic.com/v1/models?limit=1000",
+                                         headers={"x-api-key": anthropic_key, "anthropic-version": "2023-06-01"})
+            with urlopen_with_ssl_fallback(req, timeout=8) as resp:
+                for m in json.loads(resp.read()).get("data", []):
+                    if str(m.get("id", "")).startswith("claude"):
+                        discovered.append(heuristic_classify(m["id"], "claude"))
+            details.append(f"Anthropic API: found {len(discovered) - before} model(s).")
+        except Exception as e:
+            details.append(f"Anthropic API: failed ({e}).")
+    else:
+        details.append("Anthropic API: skipped (ANTHROPIC_API_KEY not set).")
+
     # 1. OpenAI
-    openai_key = os.environ.get("OPENAI_API_KEY")
+    openai_key = api_key("OPENAI_API_KEY")
     if openai_key:
         before = len(discovered)
         try:
@@ -649,11 +673,11 @@ def discover_from_sources_with_details() -> DiscoveryResult:
         details.append("OpenAI API: skipped (OPENAI_API_KEY not set).")
 
     # 2. Gemini
-    gemini_key = os.environ.get("GEMINI_API_KEY")
+    gemini_key = api_key("GEMINI_API_KEY")
     if gemini_key:
         before = len(discovered)
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={gemini_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key={gemini_key}"  # the default page is only 50
             with urlopen_with_ssl_fallback(url, timeout=5) as resp:
                 data = json.loads(resp.read())
                 for m in data.get("models", []):
@@ -696,6 +720,19 @@ def discover_from_sources_with_details() -> DiscoveryResult:
     except Exception as e:
         details.append(f"Ollama: unavailable ({e}).")
 
+    # 4b. Ollama Cloud
+    ollama_key = api_key("OLLAMA_API_KEY")
+    if ollama_key:
+        before = len(discovered)
+        try:
+            req = urllib.request.Request("https://ollama.com/api/tags", headers={"Authorization": f"Bearer {ollama_key}"})
+            with urlopen_with_ssl_fallback(req, timeout=8) as resp:
+                for m in json.loads(resp.read()).get("models", []):
+                    discovered.append(heuristic_classify(m["name"], "ollama"))
+            details.append(f"Ollama Cloud: found {len(discovered) - before} model(s).")
+        except Exception as e:
+            details.append(f"Ollama Cloud: failed ({e}).")
+
     # 5. OpenCode CLI
     if shutil.which("opencode"):
         before = len(discovered)
@@ -715,11 +752,16 @@ def discover_from_sources_with_details() -> DiscoveryResult:
 
     return DiscoveryResult(models=discovered, details=details)
 
+def models_last_synced() -> float | None:
+    """When the model list was last refreshed on this computer, as a Unix time, or None if it never was."""
+    path = Path.home() / ".orchestrator" / "custom_models.json"
+    return path.stat().st_mtime if path.is_file() else None
+
 def discover_from_sources() -> list[ModelMetadata]:
     """Pings various provider APIs to find new models."""
     return discover_from_sources_with_details().models
 
-def sync_models(live_discovery: bool = False) -> tuple[bool, str]:
+def sync_models(live_discovery: bool = False, keys: dict[str, str] | None = None) -> tuple[bool, str]:
     """
     Fetches latest model definitions and updates ~/.orchestrator/custom_models.json.
     - if live_discovery=True: Pings OpenAI/Gemini/Ollama APIs directly.
@@ -737,7 +779,7 @@ def sync_models(live_discovery: bool = False) -> tuple[bool, str]:
 
     if live_discovery:
         source_name = "live provider APIs"
-        discovery = discover_from_sources_with_details()
+        discovery = discover_from_sources_with_details(keys)
         new_models = discovery.models
         discovery_report = "\n".join(f"- {detail}" for detail in discovery.details)
         if not new_models:

@@ -1569,6 +1569,24 @@ process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]),
         self.assertIn("As &lt;a&gt;", out["stories"])
         self.assertEqual(out["none"], "")
 
+    def test_built_epics_are_listed_apart_with_their_files_and_partly_built_ones_say_so(self):
+        out = self.run_feature_plan("""
+const P = globalThis.FeaturePlan;
+const epic = (o) => ({summary: "", requirements: [], stories: [], depends_on: [], paths: [], evidence: [], ...o});
+const epics = [
+  epic({id: "ep-1", name: "Sign <in>", status: "built", state: "built", evidence: ["app/auth/login.swift"]}),
+  epic({id: "ep-2", name: "Billing", status: "suggested", state: "partial", evidence: ["app/billing/"]}),
+  epic({id: "ep-3", name: "Chat", status: "suggested", state: "new"})];
+process.stdout.write(JSON.stringify({built: P.renderBuilt(epics), suggested: P.renderSuggested(epics, {}), none: P.renderBuilt([epic({id: "x", name: "x", status: "suggested"})])}));""")
+        self.assertIn("Already built", out["built"])
+        self.assertIn("Sign &lt;in&gt;", out["built"])
+        self.assertIn("app/auth/login.swift", out["built"])
+        self.assertIn('data-epic-restore="ep-1"', out["built"])  # one that isn't finished can come back
+        self.assertNotIn("Sign", out["suggested"])  # built epics aren't ticked for approval
+        self.assertEqual(out["suggested"].count("Partly built"), 1)  # only the partial one
+        self.assertIn("Already in: app/billing/", out["suggested"])
+        self.assertEqual(out["none"], "")
+
     def test_approved_epics_are_one_line_each_with_jira_and_implemented(self):
         out = self.run_feature_plan("""
 const P = globalThis.FeaturePlan;
@@ -4500,6 +4518,18 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("test file\")} added, not yet validated", self.js)
         self.assertIn('job.test_validation?.kind === "environment"', self.js)  # try again says nothing is rewritten
 
+    def test_ai_page_lists_models_from_the_server_and_can_refresh_them(self):
+        from orchestrator.web import server
+        listed = server.provider_models()
+        self.assertTrue(listed["claude"] and listed["codex"])
+        self.assertTrue(all({"id", "tier", "caps"} <= set(m) for m in listed["claude"]))
+        ids = [m["id"] for m in server.available_models()]
+        self.assertEqual(ids[:len(server.AVAILABLE_MODELS)], [m["id"] for m in server.AVAILABLE_MODELS])  # the recommended few stay first
+        self.assertGreater(len(ids), len(server.AVAILABLE_MODELS))
+        self.assertIn('parts == ["ai-providers", "refresh-models"]', Path(server.__file__).read_text())
+        self.assertIn("ai.models?.[p.id]", (Path(server.__file__).parent / "static" / "configuration.js").read_text())  # not the built-in list
+        self.assertIn('api("ai-providers/refresh-models"', self.js)
+
     def test_home_job_table_shows_type_column_and_mobile_layout_keeps_date_sole_column(self):
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
         self.assertIn('class="col-type"', row)
@@ -4706,7 +4736,14 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("#/product/", self.js)  # one document, no sub-pages
 
     def test_a_blank_screen_gets_a_loading_message_after_a_moment(self):
-        self.assertIn("Loading…", self.js[self.js.index("async function route()"):][:2500])
+        route = self.js[self.js.index("async function route()"):][:4500]
+        self.assertIn('classList.add("route-loading")', route)  # and tapping gives an instant cue
+        self.assertIn("function loadingSkeleton(page", self.js)
+        self.assertIn("loadingSkeleton(r.page)", route)  # shaped like the page being opened
+        shapes = self.js[self.js.index("const SKELETON_KINDS"):self.js.index("let routeToken")]
+        for kind in ("home:", "job:", "tests:", "run:", "config:", "form:", "list:", "generic:"):
+            self.assertIn(kind, shapes)
+        self.assertIn("prefers-reduced-motion: reduce) { .skeleton", self.css)
 
     def test_the_first_feature_or_design_is_nudged_toward_defining_the_product(self):
         form = self.js[self.js.index("pages.new = async"):self.js.index("const FEATURE_STATUS")]
@@ -4893,7 +4930,7 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_slow_model_work_is_started_and_polled_not_held_open(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        self.assertEqual(page.count("waitForTask("), 2)  # draft and import; the epic breakdown polls the same way from its own section
+        self.assertEqual(page.count("waitForTask("), 3)  # draft, import and picking one up again on return; the epic breakdown polls the same way from its own section
         epics = self.js[self.js.index("function epicsSection("):self.js.index("pages.devlogs = async")]
         self.assertEqual(epics.count("waitForTask("), 1)
         fn = self.js[self.js.index("async function waitForTask"):self.js.index("function productStripHtml")]
@@ -4971,6 +5008,19 @@ class AccessibilityStaticTests(unittest.TestCase):
         proposal_fn = page[page.index("const proposalView"):page.index("const busy")]
         self.assertNotIn('<pre class="diff"', proposal_fn)
         self.assertNotIn('Read the whole proposed document', proposal_fn)
+
+    def test_a_running_draft_or_import_is_picked_up_again_when_you_come_back_to_the_page(self):
+        # The work runs on the computer; the page remembers which task it was, per project, and follows it again on return.
+        self.assertIn("const prdPending = {", self.js)
+        self.assertIn("orchestrator_prd_pending:", self.js)
+        page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
+        self.assertIn("prdPending.set({ task: taskId, source: \"draft\"", page)
+        self.assertIn("prdPending.set({ task: taskId, source: \"import\"", page)
+        self.assertIn("const resumePending = async () =>", page)
+        self.assertIn("else if (prdPending.get()) resumePending();", page)
+        # Finishing, failing or cancelling forgets it, and a page that was left never applies the result behind the person's back.
+        self.assertGreaterEqual(page.count("prdPending.clear()"), 6)
+        self.assertGreaterEqual(page.count("run !== prdRun"), 5)
 
     def test_import_takes_a_dropped_file_and_waits_for_submit(self):
         page = self.js[self.js.index("const importPanel"):self.js.index("An existing project: read what is there")]

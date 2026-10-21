@@ -4451,3 +4451,40 @@ input.package-find { width: 12rem; max-width: 100%; min-height: var(--control-sm
 .sc-actions { align-items: center; }
 .sc-ai { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); }
 @media (max-width: 760px) { .sc-cols { grid-template-columns: minmax(0, 1fr); } }
+
+/* Loading skeletons: the page's shape while it loads, and a thin bar the moment you navigate. */
+.skeleton { display: block; border-radius: var(--r-sm, 6px); background: linear-gradient(90deg, var(--panel-2) 25%, var(--border) 50%, var(--panel-2) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+.skeleton-page { display: flex; flex-direction: column; gap: var(--space-4); }
+.skeleton-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); }
+.skeleton-line { height: var(--space-4); }
+.skeleton-w-30 { width: 30%; } .skeleton-w-70 { width: 70%; } .skeleton-w-90 { width: 90%; }
+.skeleton-title { color: transparent; border-radius: var(--r-sm, 6px); background: linear-gradient(90deg, var(--panel-2) 25%, var(--border) 50%, var(--panel-2) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; width: min(14em, 60%); }
+body.route-loading::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: var(--z-toast, 1000); background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: route-bar 1s ease-in-out infinite; }
+@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes route-bar { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton, .skeleton-title, body.route-loading::before { animation: none; } }
+.skeleton-flush { padding: 0; gap: 0; overflow: hidden; }
+.skeleton-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+.skeleton-card-head .skeleton-w-30 { width: 30%; }
+.skeleton-chips { display: inline-flex; gap: var(--space-2); }
+.skeleton-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+.skeleton-row:last-child { border-bottom: 0; }
+.skeleton-row-main { display: flex; flex-direction: column; gap: var(--space-2); flex: 1; min-width: 0; }
+.skeleton-row-main .skeleton-w-70 { width: min(70%, 28rem); }
+.skeleton-row-main .skeleton-w-30 { width: min(30%, 12rem); height: var(--space-3); }
+.skeleton-pill { width: 72px; height: 24px; border-radius: var(--r-pill); flex: none; }
+.skeleton-button { width: 120px; height: var(--control-md, 36px); border-radius: var(--r-md); }
+.skeleton-input { width: 100%; height: var(--control-md, 36px); border-radius: var(--r-md); }
+.skeleton-field { display: flex; flex-direction: column; gap: var(--space-2); }
+.skeleton-field .skeleton-w-30 { width: 25%; height: var(--space-3); }
+.skeleton-stepper { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+.skeleton-step { height: 56px; border-radius: var(--r-md); }
+.skeleton-hero { padding: var(--space-5) var(--space-4); }
+.skeleton-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-3); }
+.skeleton-stat { width: 50%; height: var(--space-6, 32px); }
+.skeleton-bar { height: var(--space-1); width: 100%; border-radius: var(--r-pill); }
+.skeleton-terminal { height: 280px; border-radius: var(--r-md); }
+@media (max-width: 760px) {
+  .skeleton-stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .skeleton-chips { display: none; }
+}

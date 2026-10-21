@@ -243,6 +243,30 @@ class RunBuildAndTestsExecutionTests(unittest.TestCase):
             self.assertTrue(tests_ok)
             mock_purge.assert_called_once()
 
+    def test_a_build_that_still_has_no_space_after_cleaning_up_says_so_so_the_job_can_move_machines(self):
+        job = {"job_id": "disk-still-full", "assigned_machine": "mac1"}
+        full = subprocess.CompletedProcess(args=[], returncode=1, stdout="No space left on device", stderr="")
+        with patch.object(runner, "ROOT", self.root), \
+             patch.object(runner, "OUTPUT_DIR", self.output_dir), \
+             patch.object(runner, "extract_commands", return_value=("make build", None)), \
+             patch.object(runner, "run_shell", return_value=full), \
+             patch.object(runner, "purge_zombie_processes") as purge:
+            with self.assertRaisesRegex(runner.DiskFullError, "No space left on device: mac1 ran out of disk space while building"):
+                runner.run_build_and_tests(job, self.summary_file)
+        purge.assert_called_once()  # it cleaned up and tried again before giving up
+
+    def test_tests_that_still_have_no_space_after_cleaning_up_say_so_too(self):
+        job = {"job_id": "disk-full-tests"}
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="Build OK", stderr="")
+        full = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="ENOSPC: no space left on device")
+        with patch.object(runner, "ROOT", self.root), \
+             patch.object(runner, "OUTPUT_DIR", self.output_dir), \
+             patch.object(runner, "extract_commands", return_value=("make build", "make test")), \
+             patch.object(runner, "run_shell", side_effect=[ok, full, full]), \
+             patch.object(runner, "purge_zombie_processes"):
+            with self.assertRaisesRegex(runner.DiskFullError, "local ran out of disk space while running tests"):
+                runner.run_build_and_tests(job, self.summary_file)
+
     def test_xcodebuild_test_failure_extracts_xcresult_and_captures_logs(self):
         job = {"job_id": "test-failure-diag-job"}
         stdout_fail = (

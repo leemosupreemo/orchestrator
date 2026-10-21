@@ -354,6 +354,19 @@ class DraftTests(unittest.TestCase):
         for noise in ("OLD PRD TEXT", "TOKEN", "node_modules", "dep/x.js"):
             self.assertNotIn(noise, d, noise)
 
+    def test_the_code_tree_lists_source_files_by_folder_and_skips_the_noise(self):
+        root = Path(self.tmp.name)
+        (root / "app" / "auth").mkdir(parents=True)
+        (root / "app" / "auth" / "login.swift").write_text("x")
+        (root / "node_modules" / "dep").mkdir(parents=True)
+        (root / "node_modules" / "dep" / "index.js").write_text("x")
+        (root / "README.md").write_text("notes")
+        tree = prd.code_tree(root)
+        self.assertIn("app/auth/: login.swift", tree)
+        self.assertNotIn("node_modules", tree)
+        self.assertNotIn("README", tree)
+        self.assertLessEqual(len(prd.code_tree(root, max_chars=10)), 10)
+
     def test_the_digest_is_bounded(self):
         self.write("README.md", "x" * 50_000)
         self.write("pyproject.toml", "y" * 50_000)

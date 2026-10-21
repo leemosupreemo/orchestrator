@@ -197,6 +197,78 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(write.call_count, int(not dry))
             self.assertEqual(dispatch.call_args.kwargs['dry_run'], dry)
 
+    def test_a_machine_that_ran_out_of_disk_for_this_job_is_passed_over(self):
+        group = {'resource_profile': 'implementation'}
+        full, roomy = {**self.machine, 'name': 'full'}, {**self.machine, 'name': 'roomy'}
+        job = {'machine_issues': [{'machine': 'full', 'reason': 'ran out of disk space'}]}
+        with patch.object(scheduler, 'probe_machine', return_value=self.probe), \
+             patch('model_registry.get_model', return_value=None):
+            # even with the stickiness bonus for the machine it was on
+            machine, _probe, _model = scheduler.choose_machine_and_model(job, group, [full, roomy], previously_assigned='full')
+            self.assertEqual(machine['name'], 'roomy')
+            with self.assertRaisesRegex(RuntimeError, 'Ran out of disk space earlier on this job'):
+                scheduler.choose_machine_and_model(job, group, [full])
+
+    def test_a_job_that_runs_out_of_disk_is_sent_to_the_next_machine_and_never_back(self):
+        job = scheduler.normalize_job({'job_id': 'job-1'})
+        first, second = {**self.machine, 'name': 'first'}, {**self.machine, 'name': 'second'}
+        on_disk = {'value': dict(job)}
+        def load(path):
+            return json.loads(json.dumps(on_disk['value']))
+        def write(path, data):
+            on_disk['value'] = json.loads(json.dumps(data))
+        def schedule(j, machines):
+            names = {i['machine'] for i in j.get('machine_issues') or []}
+            chosen = next((m for m in (first, second) if m['name'] not in names), None)
+            if chosen is None:
+                raise RuntimeError('No eligible machines available for scheduling.')
+            return j['task_groups'][0], chosen, {}, 'fake', {'machine': chosen['name'], 'model': 'fake'}
+        sent = []
+        def dispatch(path, machine, probe, dry_run, resume):
+            sent.append((machine['name'], resume))
+            if machine['name'] == 'first':
+                on_disk['value'].update(status='human-needed', last_error='No space left on device: first ran out of disk space while building')
+            else:
+                on_disk['value'].update(status='review-needed')
+        with patch.object(sys, 'argv', ['schedule', 'job.json', '--resume']), \
+             patch.object(scheduler, 'load_job', side_effect=load), patch.object(scheduler, 'write_json', side_effect=write), \
+             patch.object(scheduler, 'load_machines', return_value=[first, second]), \
+             patch.object(scheduler, 'schedule_ready_group', side_effect=schedule), patch.object(scheduler, 'dispatch_job', side_effect=dispatch):
+            scheduler.main()
+        self.assertEqual(sent, [('first', True), ('second', True)])
+        self.assertEqual([i['machine'] for i in on_disk['value']['machine_issues']], ['first'])
+        self.assertIn('Trying another machine', self.output.getvalue())
+
+    def test_when_every_machine_is_full_the_job_says_so_and_the_error_is_raised(self):
+        job = scheduler.normalize_job({'job_id': 'job-1'})
+        on_disk = {'value': dict(job)}
+        def dispatch(path, machine, probe, dry_run, resume):
+            on_disk['value'].update(status='human-needed', last_error='No space left on device: local ran out of disk space')
+        def schedule(j, machines):
+            if j.get('machine_issues'):
+                raise RuntimeError('No eligible machines available for scheduling.')
+            return j['task_groups'][0], self.machine, {}, 'fake', {'machine': 'local', 'model': 'fake'}
+        with patch.object(sys, 'argv', ['schedule', 'job.json']), \
+             patch.object(scheduler, 'load_job', side_effect=lambda p: json.loads(json.dumps(on_disk['value']))), \
+             patch.object(scheduler, 'write_json', side_effect=lambda p, d: on_disk.update(value=json.loads(json.dumps(d)))), \
+             patch.object(scheduler, 'load_machines', return_value=[self.machine]), \
+             patch.object(scheduler, 'schedule_ready_group', side_effect=schedule), patch.object(scheduler, 'dispatch_job', side_effect=dispatch):
+            with self.assertRaisesRegex(RuntimeError, 'No eligible machines'):
+                scheduler.main()
+        self.assertIn('Machines that ran out of disk space: local', on_disk['value']['last_error'])
+
+    def test_a_failure_that_is_not_about_disk_space_is_not_retried_elsewhere(self):
+        job = scheduler.normalize_job({'job_id': 'job-1'})
+        on_disk = {'value': {**job, 'status': 'human-needed', 'last_error': 'Tests failed'}}
+        with patch.object(sys, 'argv', ['schedule', 'job.json']), \
+             patch.object(scheduler, 'load_job', side_effect=lambda p: dict(on_disk['value'])), patch.object(scheduler, 'write_json'), \
+             patch.object(scheduler, 'load_machines', return_value=[self.machine]), \
+             patch.object(scheduler, 'schedule_ready_group', return_value=(job['task_groups'][0], self.machine, {}, 'fake', {'machine': 'local', 'model': 'fake'})), \
+             patch.object(scheduler, 'dispatch_job', side_effect=RuntimeError('boom')) as dispatch:
+            with self.assertRaisesRegex(RuntimeError, 'boom'):
+                scheduler.main()
+        self.assertEqual(dispatch.call_count, 1)
+
     def test_module_entrypoint_schedules_a_dry_run(self):
         import common
         def read(path):

@@ -18,6 +18,8 @@ MAX_FEATURES = 15
 MAX_STORIES = 8
 MAX_REQUIREMENTS = 6
 TECHNIQUES = {"story_map": "Story map", "wbs": "Work breakdown", "list": "Short list"}
+STATES = ("built", "partial", "new")  # how much of an epic the project already has
+MAX_EVIDENCE = 6
 
 # How much to write, by how much the person has told us. A thin brief gets a few big epics and questions, not invented detail.
 DETAIL = {
@@ -50,7 +52,9 @@ def detail_level(prd_text: str, extra_chars: int = 0) -> str:
     return "sparse"
 
 
-def prompt(prd_text: str, existing: list[dict[str, Any]], layout: str, level: str = "moderate", source_text: str = "", technique: str = "") -> str:
+def prompt(prd_text: str, existing: list[dict[str, Any]], layout: str, level: str = "moderate", source_text: str = "", technique: str = "",
+           decided: list[dict[str, Any]] | None = None, code: str = "") -> str:
+    done = "\n".join(f"- {e['name']} ({e.get('status')})" for e in decided or []) or "(none)"
     have = "\n".join(f"- {f['name']}: {f.get('summary') or ''} (owns {', '.join(f.get('paths') or []) or 'no paths yet'})"
                      for f in existing) or "(none yet)"
     detail = DETAIL.get(level, DETAIL["moderate"])
@@ -69,13 +73,20 @@ Match the document's own words and level of detail. Do not invent facts, users o
 
 Each epic should be something that can be built and shipped on its own: small enough for one or a few jobs, large enough to matter to a user.
 Order matters: an epic should depend only on what it truly needs, so independent ones can be built in parallel. Two epics must not own the same code.
-Do not repeat a feature that already exists; you may depend on one.
+Do not repeat a feature that already exists; you may depend on one. Do not propose again any epic listed under "Epics already decided".
+
+The project may already have some of this built. Judge each epic from the source tree, the project layout and the recent commits:
+- "state": "built" if the code already does all of it, "partial" if some of it is there, "new" if none of it is.
+- "evidence": up to 6 real file or folder paths from the source tree that show what exists. Empty for "new". Copy paths exactly; never invent one.
+- Say "built" only when the tree or commits clearly show it. If you are not sure, say "partial" or "new".
+- For "partial", write the summary and requirements as only what is still missing, so finished work is not done again.
 
 Reply with ONLY this JSON, no commentary:
 {{"technique": "story_map" | "wbs" | "list", "rationale": "one plain sentence on why this technique fits",
   "open_questions": ["what you would need to know to break it down further"],
   "features": [{{"name": "...", "summary": "one sentence", "requirements": ["a testable statement"], "stories": ["As a ..., I can ..., so that ..."],
   "slice": "MVP" | "Next" | "Later" (story_map only), "paths": ["app/feature/"], "depends_on": ["name of another feature"],
+  "state": "built" | "partial" | "new", "evidence": ["path/that/shows/it"],
   "serves": "which core feature or use case from the requirements"}}]}}
 
 ## Product requirements
@@ -84,8 +95,14 @@ Reply with ONLY this JSON, no commentary:
 ## Features that already exist
 {have}
 
+## Epics already decided
+{done}
+
 ## Project layout
 {layout.strip()[:6000] or "(new project: nothing yet)"}
+
+## Source tree (folders with their source files)
+{code.strip()[:7000] or "(no source files yet)"}
 """
 
 
@@ -110,6 +127,35 @@ def _strings(value: Any, limit: int, each: int) -> list[str]:
         if text and text not in out:
             out.append(text)
     return out[:limit]
+
+
+def clean_state(raw: Any) -> str:
+    return next((s for s in STATES if str(raw or "").strip().lower() == s), "new")
+
+
+def check_evidence(proposal: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Keep only the evidence paths that exist in the project. An epic the model called built with nothing real to show for it
+    is treated as partly built, and a partly built one with none as new, with a note for the person."""
+    root = Path(root).resolve()
+    warnings = proposal.setdefault("warnings", [])
+    for feature in proposal.get("features") or []:
+        real = []
+        for item in feature.get("evidence") or []:
+            path = (root / item.strip().lstrip("/")).resolve()
+            if path == root or root not in path.parents or not path.exists():
+                continue
+            real.append(path.relative_to(root).as_posix())
+        feature["evidence"] = real
+        state = feature.get("state") or "new"
+        if state == "built" and not real:
+            feature["state"] = "partial"
+            warnings.append(f"\"{feature['name']}\" was called built, but none of the files named for it exist, so it is treated as partly built.")
+        elif state == "partial" and not real:
+            feature["state"] = "new"
+        elif state == "new":
+            feature["evidence"] = []
+    proposal["warnings"] = list(dict.fromkeys(warnings))
+    return proposal
 
 
 def parse(reply: str, existing: list[dict[str, Any]], level: str | None = None, technique: str = "") -> dict[str, Any]:
@@ -147,7 +193,8 @@ def validate(raw: list[Any], existing: list[dict[str, Any]], level: str | None =
         proposed.append({"name": name, "summary": _text(entry.get("summary"), 500),
                          "requirements": store.clean_requirements(entry.get("requirements"), detail["requirements"]),
                          "stories": store.clean_stories(entry.get("stories"), detail["stories"]),
-                         "slice": store.clean_slice(entry.get("slice")),
+                         "slice": store.clean_slice(entry.get("slice")), "state": clean_state(entry.get("state")),
+                         "evidence": _strings(entry.get("evidence"), MAX_EVIDENCE, 200),
                          "paths": _strings(entry.get("paths"), 12, 200), "serves": _text(entry.get("serves"), 300),
                          "depends_on": _strings(entry.get("depends_on"), 10, 80)})
         if len(proposed) == min(MAX_FEATURES, detail["epics"]):

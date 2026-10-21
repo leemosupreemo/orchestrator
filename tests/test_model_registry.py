@@ -221,6 +221,34 @@ Error: Please sign in to view available models.
     @patch("urllib.request.urlopen")
     @patch("model_registry.subprocess.run")
     @patch("model_registry.shutil.which")
+    def test_live_discovery_asks_anthropic_using_a_key_saved_in_settings(self, mock_which, mock_run, mock_urlopen):
+        mock_which.return_value = None
+        seen = []
+
+        def answer(request, *args, **kwargs):
+            url = getattr(request, "full_url", request)
+            seen.append((url, dict(getattr(request, "headers", {}))))
+            if "api.anthropic.com" not in url:
+                raise Exception("no network")
+            body = MagicMock()
+            body.read.return_value = json.dumps({"data": [{"id": "claude-fable-5-1"}, {"id": "claude-opus-5-5"}, {"id": "not-a-claude"}]}).encode()
+            body.__enter__.return_value = body
+            return body
+
+        mock_urlopen.side_effect = answer
+        with patch.dict(os.environ, {}, clear=True):
+            result = model_registry.discover_from_sources_with_details({"ANTHROPIC_API_KEY": "sk-saved"})
+        self.assertEqual(sorted(m.id for m in result.models), ["claude-fable-5-1", "claude-opus-5-5"])
+        self.assertEqual({m.family for m in result.models}, {"claude"})
+        self.assertIn("Anthropic API: found 2 model(s).", result.details)
+        anthropic = next(headers for url, headers in seen if "api.anthropic.com" in url)
+        self.assertEqual(anthropic.get("X-api-key"), "sk-saved")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIn("Anthropic API: skipped (ANTHROPIC_API_KEY not set).", model_registry.discover_from_sources_with_details().details)
+
+    @patch("urllib.request.urlopen")
+    @patch("model_registry.subprocess.run")
+    @patch("model_registry.shutil.which")
     def test_live_discovery_uses_agy_models_when_signed_in(self, mock_which, mock_run, mock_urlopen):
         mock_which.side_effect = lambda name: "/usr/bin/agy" if name == "agy" else None
         mock_run.return_value = MagicMock(

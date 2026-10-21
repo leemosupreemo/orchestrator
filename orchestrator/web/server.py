@@ -3238,14 +3238,55 @@ def tool_search_path() -> str:
     return os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
 
 
+PROVIDER_MODEL_CLIS = {"claude": ["claude"], "codex": ["codex"], "gemini": ["gemini"], "agy": ["gemini"], "ollama": ["ollama"], "opencode": ["opencode"]}
+
+
+def provider_models() -> dict[str, list[dict[str, Any]]]:
+    """Every known model per AI tool, strongest first, from the bundled list plus whatever a refresh has found."""
+    from orchestrator.scripts.model_registry import get_all_models
+    models = get_all_models()
+    out: dict[str, list[dict[str, Any]]] = {}
+    for provider, clis in PROVIDER_MODEL_CLIS.items():
+        found = sorted((m for m in models if set(m.required_clis) & set(clis)), key=lambda m: (int(m.tier), m.id))
+        out[provider] = [{"id": m.id, "name": m.id, "tier": m.tier.name.title(), "caps": [c.value.title() for c in m.capabilities]} for m in found]
+    return out
+
+
+def available_models() -> list[dict[str, str]]:
+    """The model choices for roles: the recommended few first, then every other model that is known."""
+    from orchestrator.scripts.model_registry import get_all_models
+    labels = {"claude": "Anthropic", "gemini": "Google", "openai": "OpenAI", "opencode": "OpenCode", "ollama": "Ollama", "qwen": "Ollama"}
+    out = list(AVAILABLE_MODELS)
+    seen = {m["id"] for m in out}
+    for m in sorted(get_all_models(), key=lambda m: (m.family, int(m.tier), m.id)):
+        if m.id not in seen and m.family in labels:
+            seen.add(m.id)
+            out.append({"id": m.id, "label": m.id, "provider": labels[m.family]})
+    return out
+
+
+def refresh_models(root: Path) -> dict[str, Any]:
+    """Ask each AI service for its current models (using saved API keys as well as the environment) and keep what's found."""
+    from orchestrator import ai_providers
+    from orchestrator.scripts import model_registry
+    settings = read_settings(root)
+    keys = {env: str(settings[setting]) for setting, _label, env in ai_providers.API_KEYS if settings.get(setting)}
+    discovery = model_registry.discover_from_sources_with_details(keys)
+    ok, message = model_registry.sync_models(live_discovery=True, keys=keys)
+    return {"ok": ok, "details": discovery.details, "message": message.splitlines()[0] if message else "",
+            "models": provider_models(), "synced": model_registry.models_last_synced()}
+
+
 def ai_providers_state(root: Path) -> dict[str, Any]:
     """The Add an AI page: every provider, free first, with what's installed and signed in here."""
     from orchestrator import ai_providers
     from orchestrator import setup_checklist as checklist
     search = tool_search_path()
     ready = set(checklist.ready_llm_providers({}))  # cached briefly: signing-in checks run the tools
-    return ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready,
-                                    checklist.saved_api_keys(read_settings(root)))
+    from orchestrator.scripts.model_registry import models_last_synced
+    state = ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready,
+                                     checklist.saved_api_keys(read_settings(root)))
+    return {**state, "models": provider_models(), "models_synced": models_last_synced()}
 
 
 def ai_machine_statuses(root: Path) -> dict[str, Any]:
@@ -3363,7 +3404,7 @@ def config_state(root: Path) -> dict[str, Any]:
                      for m in machines_raw if isinstance(m, dict)],
         "models": {
             "assignments": model_assignments,
-            "available": AVAILABLE_MODELS,
+            "available": available_models(),
             **model_assignments,
         },
         "firebase": {
@@ -4943,7 +4984,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 current_model = models_cfg.get("reviewer") or "claude-sonnet-4-6"
                 resp = doc.overview()
                 resp["model"] = current_model
-                resp["available_models"] = AVAILABLE_MODELS
+                resp["available_models"] = available_models()
                 self._json(resp)
             elif method == "GET" and len(parts) == 3 and parts[1] == "design":
                 name = parts[2]
@@ -5585,13 +5626,17 @@ class UIHandler(BaseHTTPRequestHandler):
                                        if p.suffix.lower() in {".md", ".markdown", ".txt"} and p.is_file())[:30000] \
                 if (root / prd_doc.SOURCES_DIR).is_dir() else ""
             level = feature_map.detail_level(prd_text, len(source_text))
-            request = feature_map.prompt(prd_text, existing, prd_doc.project_digest(root), level, source_text, technique)
+            # What is already there, so work that is done isn't proposed again: recent commits, the source tree, and epics already decided.
+            commits = git(root, "log", "--format=%s", "-n", "40").splitlines()
+            request = feature_map.prompt(prd_text, existing, prd_doc.project_digest(root, commits), level, source_text, technique,
+                                         decided=epic_store.load(runtime_dir(root))["epics"], code=prd_doc.code_tree(root))
 
             def work() -> dict[str, Any]:
                 try:
-                    return feature_map.parse(self._model_call(root, request, timeout=240), existing, level, technique)
+                    proposal = feature_map.parse(self._model_call(root, request, timeout=240), existing, level, technique)
                 except feature_map.FeatureMapError:
-                    return feature_map.parse(self._model_call(root, request + prd_doc.FORMAT_REMINDER, timeout=240), existing, level, technique)
+                    proposal = feature_map.parse(self._model_call(root, request + prd_doc.FORMAT_REMINDER, timeout=240), existing, level, technique)
+                return feature_map.check_evidence(proposal, root)
 
             def commit(proposal: dict[str, Any]) -> dict[str, Any]:  # only if the person didn't cancel while the model worked
                 try:
@@ -6146,6 +6191,11 @@ class UIHandler(BaseHTTPRequestHandler):
             provider_id = _choice(body, "provider", [p["id"] for p in ai_providers.PROVIDERS])
             self._json({"task": self.server.tasks.start(lambda: ai_providers.install_provider(provider_id))}, HTTPStatus.ACCEPTED)
             self._audit("ai_provider_install_started", provider=provider_id)
+        elif method == "POST" and parts == ["ai-providers", "refresh-models"]:
+            self._require_owner("refresh the AI model list")
+            self._body()
+            self._json({"task": self.server.tasks.start(lambda: refresh_models(root))}, HTTPStatus.ACCEPTED)
+            self._audit("ai_models_refresh_started")
         elif method == "POST" and parts == ["ai-providers", "check-machines"]:
             self._require_owner("check AI setup on secondary computers")
             self._body()
