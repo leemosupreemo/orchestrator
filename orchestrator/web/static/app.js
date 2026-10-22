@@ -3197,7 +3197,8 @@ pages.job = async ([id]) => {
   const uxWarning = ["merge", "complete"].includes(s.state.next?.action) ? data.ux_review?.counts?.major || 0 : 0;
   const scopeWarning = scope && ["merge", "complete"].includes(s.state.next?.action) ? actionableFindings.reduce((n, f) => n + Math.max(f.files.length, 1), 0) : 0;
   const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
-  const missingTests = testCases.cases.filter((c) => c.due && (c.status === "unassigned" || c.status === "planned")).length;
+  const missingTests = testCases.cases.filter((c) => c.due && !c.skipped && (c.status === "unassigned" || c.status === "planned")).length;
+  const unwrittenCases = testCases.cases.filter((c) => c.due && c.skipped).length;
   let featureName = "";
   if (s.feature) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
   const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
@@ -3281,7 +3282,7 @@ pages.job = async ([id]) => {
 
   const buildStep = {
     title: "2. Build",
-    subtitle: !tasksTotal && data.delivery?.added?.length && currentPhaseIndex > 1 ? "Tests written" : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
+    subtitle: !tasksTotal && (isJobComplete || currentPhaseIndex > 1) ? (job.output_scope === "tests-only" ? (Object.keys(job.output_digests || {}).length ? `${plural(Object.keys(job.output_digests).length, "test file")} written` : "No test files") : "No tasks needed") : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
     ...getStepState(1),
   };
 
@@ -3326,6 +3327,8 @@ pages.job = async ([id]) => {
   const deliveryHtml = delivery && delivery.added.length && testsChecked ? `<section class="card mb-16" id="delivery-section"><div class="card-h"><h2>What this job delivered</h2></div><div class="card-b stack">
       <div class="stack"><strong>Added ${plural(delivery.added.length, "test file")}${delivery.tests ? `, ${plural(delivery.tests, "test")}` : ""}${delivery.suites ? ` in ${plural(delivery.suites, "suite")}` : ""}. ${esc(delivery.check)}.</strong>
         <ul class="assumptions">${delivery.added.map((a) => `<li><span class="mono">${esc(a.file)}</span>${a.tests != null ? `: ${plural(a.tests, "test")}` : ""}${a.suites.length ? ` <span class="muted">(${esc(a.suites.join(", "))})</span>` : ""}</li>`).join("")}</ul></div>
+      ${delivery.coverage?.after != null ? `<div><strong>Coverage is now ${esc(delivery.coverage.after.toFixed(1))}%</strong>${delivery.coverage.before != null ? ` <span class="muted">(was ${esc(delivery.coverage.before.toFixed(1))}%)</span>` : ""}</div>`
+        : delivery.coverage?.error ? `<div class="muted">${esc(delivery.coverage.error)}</div>` : ""}
       ${defects.length ? `<div class="stack"><strong>Couldn't finish: ${plural(defects.length, "test")} left out, ${plural(defects.length, "defect")} found in your code</strong>
         <p class="muted">The code does something other than it should, so these tests would fail. They were left out so the rest could pass, and each can become a bug job with its test attached.</p>${defectRowsHtml}</div>` : ""}
       <div class="stack"><strong>Recommended next step</strong><p>${esc(delivery.recommendation)}</p></div>
@@ -3518,7 +3521,7 @@ pages.job = async ([id]) => {
 
       <section class="card mb-16"><div class="card-h"><h2>Test cases${testCases.cases.length ? ` <span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</h2>
         ${canEditPlan ? `<div class="card-actions"><button class="btn small" data-job-tc-op="add" title="Add a test case">Add</button></div>` : ""}</div>
-        ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad mt-8">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}</div>
+        ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad mt-8">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}${unwrittenCases ? `<div class="notice mt-8">${plural(unwrittenCases, "case")} could not be written as automated ${unwrittenCases === 1 ? "test" : "tests"}. Open ${unwrittenCases === 1 ? "it" : "each"} below for the reason.</div>` : ""}</div>
         <div class="list">${canEditPlan ? testCaseRowsHtml(testCases.cases, { editable: true, actionPrefix: "job-tc" }) : testCaseRowsHtml(testCases.cases)}</div>`
           : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}
 </section>
@@ -6562,7 +6565,7 @@ function testCaseRowsHtml(cases, { editable = false, actionPrefix = "tc" } = {})
     return sa - sb || a.id.localeCompare(b.id);
   });
   return sorted.map((c) => {
-    const [label, tone] = TC_STATUS[c.status] || [c.status || "Unknown", "muted"];
+    const [label, tone] = c.skipped ? ["Not written", "attention"] : TC_STATUS[c.status] || [c.status || "Unknown", "muted"];
     const where = (c.found_in && c.found_in.length) ? c.found_in : (c.assigned || []);
     const actions = editable ? `
       <div class="tc-actions">
@@ -6576,8 +6579,9 @@ function testCaseRowsHtml(cases, { editable = false, actionPrefix = "tc" } = {})
         ${c.steps?.length ? `<div><strong>Steps</strong><ol>${c.steps.map((t) => `<li>${esc(t)}</li>`).join("")}</ol></div>` : ""}
         <div><strong>Expected</strong> ${esc(c.expected || "")}</div>
         ${c.covers?.length ? `<div class="muted">Covers: ${c.covers.map(esc).join("; ")}</div>` : ""}
+        ${c.skipped ? `<div><strong>Why no test was written</strong> ${esc(c.skipped)}</div>` : ""}
         ${where.length ? `<div class="muted mono">${c.status === "covered" ? "Found in" : "Assigned"}: ${where.map(esc).join(", ")}</div>`
-          : c.status === "manual" ? "" : `<div class="muted">No test is assigned yet. The builder writes it, and it's checked after every build.</div>`}
+          : c.status === "manual" || c.skipped ? "" : `<div class="muted">No test is assigned yet. The builder writes it, and it's checked after every build.</div>`}
         ${actions}
       </div></details>`;
   }).join("");

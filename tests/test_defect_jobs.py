@@ -73,6 +73,22 @@ class DefectJobTests(unittest.TestCase):
         self.assertNotIn("jira", json.loads((self.jobs / "p1.json").read_text())["production_defects"][0])
 
 
+class CaseViewTests(unittest.TestCase):
+    def test_a_measurement_case_is_covered_once_coverage_was_measured_and_a_skipped_case_shows_why(self):
+        from orchestrator.scripts import test_cases as tc
+        cases = [{"id": "TC-81-01", "title": "Produce fresh baseline coverage measurement", "type": "integration", "expected": "x"},
+                 {"id": "TC-81-14", "title": "Loader resets", "type": "functionality", "expected": "y"}]
+        job = {"type": "test-audit", "plan": {"test_cases": cases}, "skipped_cases": [{"case": "TC-81-14", "reason": "Needs a production change"}]}
+        self.assertEqual(tc.satisfied_cases(job), {})
+        job["coverage"] = {"before": 60.0, "after": 70.25}
+        with tempfile.TemporaryDirectory() as tmp:
+            view = server.test_case_view(Path(tmp), tc.job_cases(job), None, tc.satisfied_cases(job), tc.skipped_cases(job))
+        rows = {r["id"]: r for r in view["cases"]}
+        self.assertEqual((rows["TC-81-01"]["status"], rows["TC-81-01"]["found_in"]), ("covered", ["Measured by the job: coverage is now 70.2%"]))
+        self.assertEqual(rows["TC-81-14"]["skipped"], "Needs a production change")
+        self.assertEqual(view["summary"]["covered"], 1)
+
+
 class JiraChildBugTests(unittest.TestCase):
     def jira(self, level, fail_first=False):
         jira = integrations.Jira({"site": "x.atlassian.net", "email": "a@b.c", "token": "t"})

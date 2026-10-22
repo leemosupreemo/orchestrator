@@ -37,6 +37,7 @@ class NonproductionJobTests(unittest.TestCase):
             stack.enter_context(patch.multiple(reference_artifacts, ROOT=root, OUTPUT_DIR=out))
             stack.enter_context(patch.object(runner, 'get_repo_state', return_value={'modified': list(dirty), 'untracked': []}))
             stack.enter_context(patch.object(runner, 'run_llm', side_effect=answer))
+            stack.enter_context(patch.object(runner, 'remeasure_coverage'))  # measuring is tested on its own below
             runner.execute_nonproduction_job(job_path)
         return json.loads(job_path.read_text())
 
@@ -413,6 +414,107 @@ assert os.environ['PYTHONPATH'].split(os.pathsep)[0] == str(work / 'orchestrator
     def test_scoped_scheduler_rejects_a_remote_only_machine_pool(self):
         with self.assertRaisesRegex(RuntimeError, 'local worker'):
             schedule_job.schedule_ready_group({'type': 'feature-design'}, [{'execution_mode': 'ssh'}])
+
+
+class PlannedCaseTests(unittest.TestCase):
+    CASES = [{'id': 'TC-81-01', 'title': 'Produce fresh baseline coverage measurement', 'type': 'integration', 'expected': 'a figure'},
+             {'id': 'TC-81-05', 'title': 'Parser handles empty lists', 'type': 'functionality', 'expected': 'no crash'},
+             {'id': 'TC-81-13', 'title': 'Upload rejects oversize payloads', 'type': 'integration', 'expected': 'an error'},
+             {'id': 'TC-81-14', 'title': 'Loader resets after failures', 'type': 'functionality', 'expected': 'idle'}]
+
+    def run_rounds(self, answers):
+        """Run a Tests job whose builder gives `answers` in turn; the checking of the files is stubbed out."""
+        self.prompts = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            job_path = root / 'job.json'
+            job_path.write_text(json.dumps({'job_id': 'job-1', 'type': 'test-audit', 'title': 'Audit', 'builder': 'fake',
+                                            'plan': {'test_cases': self.CASES}}))
+
+            def answer(*args, **kwargs):
+                self.prompts.append(args[1])
+                return json.dumps(answers[len(self.prompts) - 1]), 'fake', 'session'
+
+            def validate(job, out):
+                job['test_validation'] = {'kind': 'passed', 'passed': True}
+            config = SimpleNamespace(test_command=None, stack=SimpleNamespace(test_command=None))
+            with ExitStack() as stack:
+                stack.enter_context(patch.multiple(runner, ROOT=root, OUTPUT_DIR=root / '.orchestrator' / 'output', PROJECT_CONFIG=config))
+                stack.enter_context(patch.multiple(reference_artifacts, ROOT=root, OUTPUT_DIR=root / '.orchestrator' / 'output'))
+                stack.enter_context(patch.object(runner, 'get_repo_state', return_value={'modified': [], 'untracked': []}))
+                stack.enter_context(patch.object(runner, 'run_llm', side_effect=answer))
+                stack.enter_context(patch.object(runner, 'run_validation', side_effect=validate))
+                runner.execute_nonproduction_job(job_path)
+            return json.loads(job_path.read_text())
+
+    def test_cases_left_without_a_test_get_one_more_round_and_the_rest_are_explained(self):
+        job = self.run_rounds([
+            {'summary': 'first', 'files': [{'path': 'tests/test_a.py', 'content': '# TC-81-05\ndef test_a(): pass\n'}]},
+            {'summary': 'second', 'files': [{'path': 'tests/test_b.py', 'content': '# TC-81-13\ndef test_b(): pass\n'}],
+             'skipped': [{'case': 'TC-81-14', 'reason': 'It needs a production change to be testable'}]}])
+        self.assertEqual(len(self.prompts), 2)
+        self.assertEqual(job['status'], 'review-needed')
+        listed = self.prompts[0].split('## Planned test cases')[1]
+        self.assertTrue(all(case in listed for case in ('TC-81-05', 'TC-81-13', 'TC-81-14')))
+        self.assertNotIn('TC-81-01', listed)  # a measurement is not a test to write
+        self.assertIn('TC-81-13', self.prompts[1].split('## Planned test cases')[1])
+        self.assertNotIn('TC-81-05', self.prompts[1].split('## Planned test cases')[1])  # already covered
+        self.assertEqual(job['skipped_cases'], [{'case': 'TC-81-14', 'reason': 'It needs a production change to be testable'}])
+        self.assertEqual(sorted(job['output_digests']), ['tests/test_a.py', 'tests/test_b.py'])
+
+    def test_when_every_case_is_covered_or_explained_there_is_no_second_round(self):
+        job = self.run_rounds([{'summary': 'one', 'files': [{'path': 'tests/test_a.py', 'content': '# TC-81-05 TC-81-13\ndef test_a(): pass\n'}],
+                                'skipped': [{'case': 'TC-81-14', 'reason': 'Manual UI behaviour'}]}])
+        self.assertEqual(len(self.prompts), 1)
+        self.assertEqual(job['status'], 'review-needed')
+        self.assertFalse(job.get('cases_round'))
+
+    def test_a_second_round_that_cannot_help_skips_the_rest_with_its_reason_and_keeps_the_job_going(self):
+        job = self.run_rounds([
+            {'summary': 'first', 'files': [{'path': 'tests/test_a.py', 'content': '# TC-81-05\ndef test_a(): pass\n'}]},
+            {'clarification_needed': 'These need the view model split from the view'}])
+        self.assertEqual(job['status'], 'review-needed')
+        self.assertEqual({c['case'] for c in job['skipped_cases']}, {'TC-81-13', 'TC-81-14'})
+        self.assertIn('view model', job['skipped_cases'][0]['reason'])
+
+    def test_skipped_reasons_are_plain_trimmed_and_only_for_real_case_ids(self):
+        out = runner.clean_skipped([{'case': 'TC-1-01', 'reason': '  needs   a change '}, {'case': 'nope', 'reason': 'x'}, {'case': 'TC-1-02'}, 'junk'],
+                                   [{'case': 'TC-1-01', 'reason': 'old'}])
+        self.assertEqual(out, [{'case': 'TC-1-01', 'reason': 'needs a change'}])
+
+
+class RemeasureCoverageTests(unittest.TestCase):
+    def run_it(self, saved_before, saved_after, returncode=0, raises=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / 'out'
+            out.mkdir()
+            state = root / '.orchestrator' / 'state'
+            state.mkdir(parents=True)
+            (state / 'coverage.json').write_text(json.dumps({'overall_coverage_pct': saved_before}))
+
+            def measure(argv, **kwargs):
+                self.call = (argv, kwargs)
+                if raises:
+                    raise raises
+                (state / 'coverage.json').write_text(json.dumps({'overall_coverage_pct': saved_after}))
+                return SimpleNamespace(returncode=returncode, stdout='measured', stderr='')
+            job = {}
+            with patch.object(runner, 'ROOT', root), patch.object(runner.subprocess, 'run', side_effect=measure):
+                runner.remeasure_coverage(job, out)
+            return job['coverage']
+
+    def test_passing_tests_trigger_a_new_measurement_of_this_project_and_record_before_and_after(self):
+        record = self.run_it(61.5, 70.25)
+        self.assertEqual((record['before'], record['after']), (61.5, 70.25))
+        self.assertEqual(Path(self.call[1]['env']['ORCHESTRATOR_PROJECT_ROOT']), self.call[1]['cwd'])  # never the checkout the orchestrator runs from
+        self.assertEqual(self.call[0][-1], 'coverage')
+
+    def test_a_measurement_that_fails_is_noted_and_never_stops_the_job(self):
+        failed = self.run_it(61.5, 50, returncode=1)
+        self.assertEqual(failed['after'], None)
+        self.assertIn("couldn't be measured", failed['error'])
+        self.assertIn("wasn't measured", self.run_it(61.5, 50, raises=OSError('no python'))['error'])
 
 
 if __name__ == '__main__':

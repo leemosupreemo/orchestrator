@@ -226,6 +226,15 @@ class TestsJobOutcomeTests(unittest.TestCase):
         self.assertTrue(rr.delivery_report(self.job, self.root)["recommendation"].startswith("Nothing more to do"))
         self.assertIsNone(rr.delivery_report({"output_scope": None}, self.root))
 
+    def test_the_new_coverage_is_reported_with_what_it_was(self):
+        self.job["coverage"] = {"before": 61.5, "after": 70.25}
+        out = rr.job_outcome(self.job, self.root)
+        self.assertIn("Coverage is now 70.2% (was 61.5%)", out["details"])
+        self.assertEqual(rr.delivery_report(self.job, self.root)["coverage"], {"before": 61.5, "after": 70.25})
+        self.job["coverage"] = {"before": None, "after": None, "error": "Coverage couldn't be measured for this project."}
+        self.assertEqual(rr.delivery_report(self.job, self.root)["coverage"], {"error": "Coverage couldn't be measured for this project."})
+        self.assertFalse(any("Coverage is now" in d for d in rr.job_outcome(self.job, self.root)["details"]))
+
     def test_a_job_that_added_no_files_says_so_and_other_jobs_are_left_alone(self):
         out = rr.job_outcome({"output_scope": "tests-only", "last_error": "Needs a production change"}, self.root)
         self.assertEqual((out["headline"], out["tone"]), ("No test files were added", "warn"))

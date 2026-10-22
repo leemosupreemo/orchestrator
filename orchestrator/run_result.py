@@ -260,6 +260,10 @@ def job_outcome(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
     details += [f"{os.path.basename(f)}" + (f": {_plural(counts[f], 'test')}" if counts[f] is not None else "") for f in shown]
     if len(files) > len(shown):
         details.append(f"and {len(files) - len(shown)} more files")
+    cov = job.get("coverage") if isinstance(job.get("coverage"), dict) else {}
+    if isinstance(cov.get("after"), (int, float)):
+        was = cov.get("before")
+        details.append(f"Coverage is now {cov['after']:.1f}%" + (f" (was {was:.1f}%)" if isinstance(was, (int, float)) else ""))
     if check.get("registered"):
         details.append(f"Added {_plural(len(check['registered']), 'file')} to the Xcode test target so they run.")
     if check.get("note"):
@@ -329,7 +333,13 @@ def delivery_report(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
                 f"this job, and the {held} held back comes attached. Fix the code there, then add the test.")
     else:
         step = "Nothing more to do. The tests pass; mark the job complete."
-    return {"added": added, "suites": sum(len(a["suites"]) for a in added), "tests": sum(a["tests"] or 0 for a in added), "checked": checked,
+    cov = job.get("coverage") if isinstance(job.get("coverage"), dict) else None
+    coverage = None
+    if cov and isinstance(cov.get("after"), (int, float)):
+        coverage = {"before": cov.get("before") if isinstance(cov.get("before"), (int, float)) else None, "after": cov["after"]}
+    elif cov and cov.get("error"):
+        coverage = {"error": str(cov["error"])[:MAX_LINE]}
+    return {"coverage": coverage, "added": added, "suites": sum(len(a["suites"]) for a in added), "tests": sum(a["tests"] or 0 for a in added), "checked": checked,
             "check": "Checked and passing" if checked else "Not checked yet" if kind in ("environment", "pending", "unregistered") else "Some tests did not pass" if added else "",
             "blocked": blocked, "recommendation": step}
 

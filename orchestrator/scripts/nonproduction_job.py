@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from common import (ROOT, OUTPUT_DIR, PROMPTS_DIR, command_with_destination, ext
 from llm import extract_json_block, run_llm
 from model_router import ModelRole
 from orchestrator import job_scope, xcode_tests
+import test_cases
 from orchestrator.project_config import PROJECT_CONFIG
 from reference_artifacts import attach_reference_artifact, reference_context
 
@@ -211,6 +213,146 @@ def run_validation(job: dict, out: Path) -> None:
         job["test_validation"]["failures"] = failing_tests(output)
         raise ValueError("Test validation failed. Review test.log; production fixes require a separate Bug fix job.")
     job["test_validation"]["kind"] = "passed"
+    remeasure_coverage(job, out)
+
+
+def saved_coverage_pct() -> float | None:
+    try:
+        pct = read_json(ROOT / ".orchestrator" / "state" / "coverage.json").get("overall_coverage_pct")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return pct if isinstance(pct, (int, float)) else None
+
+
+def remeasure_coverage(job: dict, out: Path) -> None:
+    """The new tests pass, so measure coverage again: the project's coverage % then includes them without anyone asking. The job records
+    the figure before and after. Best effort: a project whose coverage can't be measured leaves the job as it was, with the reason."""
+    before = saved_coverage_pct()
+    record = {"before": before, "after": None, "at": now_iso()}
+    job["coverage"] = record
+    try:
+        env = {**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(ROOT), "ORCHESTRATOR_RUNTIME_DIR": str(ROOT / ".orchestrator"),
+               "AI_RUNTIME_DIR": str(ROOT / ".orchestrator")}  # measure this project, never the checkout the orchestrator runs from
+        done = subprocess.run([sys.executable, str(Path(__file__).with_name("job_actions.py")), "coverage"], cwd=ROOT, env=env,
+                              capture_output=True, text=True, timeout=1800)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        record["error"] = f"Coverage wasn't measured: {exc}"[:300]
+        return
+    write_text(out / "coverage.log", done.stdout + done.stderr)
+    if done.returncode:
+        record["error"] = "Coverage couldn't be measured for this project. See coverage.log in the job's output."
+        return
+    record["after"] = saved_coverage_pct()
+
+
+def planned_cases(job: dict) -> list[dict]:
+    """The planned automated test cases that are due and still have no test, left out the ones already explained as not writable."""
+    explained = {c["case"] for c in job.get("skipped_cases") or []}
+    return [c for c in test_cases.missing_tests(ROOT, job) if c["id"] not in explained and not test_cases.is_measurement(c)]
+
+
+def cases_block(job: dict, cases: list[dict] | None = None) -> str:
+    """What the builder is told about the plan's test cases: write each as an automated test tagged with its id, or say why it can't be."""
+    wanted = cases if cases is not None else planned_cases(job)
+    if not wanted:
+        return ""
+    lines = ["\n## Planned test cases", "Write one automated test for each case below and put the case id in a comment on that test "
+             "(for example `// TC-12-03` or `# TC-12-03`); that is how it is counted as covered. A case that cannot be an automated test "
+             "without changing production code, or that is not a test at all (a measurement, a manual check), is not written: list it under "
+             "\"skipped\" with its id and the reason, in plain words."]
+    for c in wanted:
+        assigned = f" (write: {', '.join(c['tests'])})" if c.get("tests") else ""
+        lines.append(f"- {c['id']} ({c.get('type')}): {c.get('title')} — expected: {c.get('expected')}{assigned}")
+    return "\n".join(lines) + "\n"
+
+
+def clean_skipped(raw: object, previous: list | None = None) -> list[dict]:
+    """Cases the builder explained it did not write: {case, reason}, trimmed to plain text; the latest reason for a case wins."""
+    merged = {str(c["case"]): c for c in previous or [] if isinstance(c, dict) and c.get("case")}
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, dict) and re.fullmatch(r"TC-\d+-\d{2,}", str(item.get("case") or "").strip()) and str(item.get("reason") or "").strip():
+            merged[item["case"].strip()] = {"case": item["case"].strip(), "reason": " ".join(str(item["reason"]).split())[:300]}
+    return list(merged.values())[:40]
+
+
+def write_missing_cases(job: dict, job_path: Path, out: Path) -> None:
+    """The tests pass, but planned cases may still have none: give the builder one more round for them, as feature jobs do. Cases it
+    says it can't write are recorded with the reason; the round runs once."""
+    if job.get("cases_round"):
+        return
+    left = planned_cases(job)
+    if not left:
+        return
+    job["cases_round"] = True
+    write_json(job_path, job)
+    write_tests(job, job_path, out, False, cases=left)
+
+
+def write_tests(job: dict, job_path: Path, out: Path, design: bool, cases: list[dict] | None = None) -> None:
+    """One builder round: ask the model for files, save them, and check them. `cases` are planned test cases an earlier round left
+    without a test; the round is told to cover them or say why it can't."""
+    before = get_repo_state()
+    dirty = set(before["modified"]) | set(before["untracked"])
+    untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT, capture_output=True, text=True)
+    if untracked.returncode == 0:
+        dirty.update(untracked.stdout.rstrip("\0").split("\0"))
+    owned = job.get("output_digests") or {}
+    for path, digest in owned.items():
+        target = ROOT / path
+        if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+            dirty.discard(path)
+    template = "builder_design.md" if design else "builder_coverage.md"
+    prompt = (PROMPTS_DIR / template).read_text(encoding="utf-8")
+    prompt += f"\nJob: {job['title']}\nPlan:\n{json.dumps(job.get('plan', {}), indent=2)}\n{reference_context(job)}"
+    prompt += retry_context(job, out)
+    if not design:
+        prompt += cases_block(job, cases)
+    from orchestrator import prd
+    prompt += prd.context_block(ROOT, "builder")
+    output, model, session = run_llm(job["builder"], prompt, cwd=ROOT, timeout=1200,
+                                   allowed_models=job.get("allowed_models"), role=ModelRole.BUILDER,
+                                   protected_paths=[ROOT])
+    result = json.loads(extract_json_block(output))
+    if result.get("clarification_needed"):
+        if cases:  # the tests are already there: these extra cases just can't be written without a production change
+            job["skipped_cases"] = clean_skipped([{"case": c["id"], "reason": str(result["clarification_needed"])} for c in cases], job.get("skipped_cases"))
+            return
+        job["human_clarification_question"] = result["clarification_needed"]
+        raise ValueError(result["clarification_needed"])
+    if not design:
+        job["skipped_cases"] = clean_skipped(result.get("skipped"), job.get("skipped_cases"))
+    proposals = result.get("files")
+    if cases and not proposals:  # nothing more to add: whatever it left out is in "skipped"
+        return
+    if isinstance(proposals, list) and not design:
+        conflicts = [p.get("path") for p in proposals if isinstance(p, dict) and p.get("path") in dirty]
+        if conflicts:
+            raise ValueError("Test outputs overlap existing local changes: " + ", ".join(conflicts))
+    written = job_scope.write_files(ROOT, job["type"], job["job_id"], proposals)
+    job["actual_builder_used"] = model
+    job.setdefault("llm_sessions", []).append({"id": session, "model": model})
+    job["builder_summary"] = str(result.get("summary") or "")
+    job.pop("debug_feedback", None)  # said once, to this attempt
+    if not design:
+        job["production_defects"] = clean_defects(result.get("defects"), job.get("production_defects"))
+    tracked_result = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True)
+    tracked = set(tracked_result.stdout.rstrip("\0").split("\0")) if tracked_result.returncode == 0 else set()
+    job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | {path for path in written if path in tracked})
+    job["ai_untracked_files"] = sorted(set(job.get("ai_untracked_files") or []) | {path for path in written if path not in tracked})
+    job["output_digests"] = {**owned, **{path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in written}}
+    job["output_scope"] = "design-mockups" if design else "tests-only"
+    write_text(out / "builder_summary.md", job["builder_summary"] + "\n\nFiles:\n" + "\n".join(f"- {path}" for path in written))
+    if design:
+        for path in written:
+            # write_files has validated every design output as an HTML or SVG mockup.
+            ref = attach_reference_artifact(job, path, note="Generated visual mockup")
+            ref["role"] = "design"
+            job.setdefault("reference_artifacts", []).append(ref)
+        job["design_artifacts"] = written
+    else:
+        job["test_validation"] = {"kind": "pending", "passed": False}
+        write_json(job_path, job)  # the files are on disk now; a stop from here on resumes at checking them
+        run_validation(job, out)
 
 
 def execute_nonproduction_job(job_path: Path) -> None:
@@ -227,59 +369,9 @@ def execute_nonproduction_job(job_path: Path) -> None:
             run_validation(job, out)
             job.update(status="review-needed", last_error=None, human_clarification_question=None)
             return
-        before = get_repo_state()
-        dirty = set(before["modified"]) | set(before["untracked"])
-        untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT, capture_output=True, text=True)
-        if untracked.returncode == 0:
-            dirty.update(untracked.stdout.rstrip("\0").split("\0"))
-        owned = job.get("output_digests") or {}
-        for path, digest in owned.items():
-            target = ROOT / path
-            if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
-                dirty.discard(path)
-        template = "builder_design.md" if design else "builder_coverage.md"
-        prompt = (PROMPTS_DIR / template).read_text(encoding="utf-8")
-        prompt += f"\nJob: {job['title']}\nPlan:\n{json.dumps(job.get('plan', {}), indent=2)}\n{reference_context(job)}"
-        prompt += retry_context(job, out)
-        from orchestrator import prd
-        prompt += prd.context_block(ROOT, "builder")
-        output, model, session = run_llm(job["builder"], prompt, cwd=ROOT, timeout=1200,
-                                       allowed_models=job.get("allowed_models"), role=ModelRole.BUILDER,
-                                       protected_paths=[ROOT])
-        result = json.loads(extract_json_block(output))
-        if result.get("clarification_needed"):
-            job["human_clarification_question"] = result["clarification_needed"]
-            raise ValueError(result["clarification_needed"])
-        proposals = result.get("files")
-        if isinstance(proposals, list) and not design:
-            conflicts = [p.get("path") for p in proposals if isinstance(p, dict) and p.get("path") in dirty]
-            if conflicts:
-                raise ValueError("Test outputs overlap existing local changes: " + ", ".join(conflicts))
-        written = job_scope.write_files(ROOT, job["type"], job["job_id"], proposals)
-        job["actual_builder_used"] = model
-        job.setdefault("llm_sessions", []).append({"id": session, "model": model})
-        job["builder_summary"] = str(result.get("summary") or "")
-        job.pop("debug_feedback", None)  # said once, to this attempt
+        write_tests(job, job_path, out, design)
         if not design:
-            job["production_defects"] = clean_defects(result.get("defects"), job.get("production_defects"))
-        tracked_result = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True)
-        tracked = set(tracked_result.stdout.rstrip("\0").split("\0")) if tracked_result.returncode == 0 else set()
-        job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | {path for path in written if path in tracked})
-        job["ai_untracked_files"] = sorted(set(job.get("ai_untracked_files") or []) | {path for path in written if path not in tracked})
-        job["output_digests"] = {**owned, **{path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in written}}
-        job["output_scope"] = "design-mockups" if design else "tests-only"
-        write_text(out / "builder_summary.md", job["builder_summary"] + "\n\nFiles:\n" + "\n".join(f"- {path}" for path in written))
-        if design:
-            for path in written:
-                # write_files has validated every design output as an HTML or SVG mockup.
-                ref = attach_reference_artifact(job, path, note="Generated visual mockup")
-                ref["role"] = "design"
-                job.setdefault("reference_artifacts", []).append(ref)
-            job["design_artifacts"] = written
-        else:
-            job["test_validation"] = {"kind": "pending", "passed": False}
-            write_json(job_path, job)  # the files are on disk now; a stop from here on resumes at checking them
-            run_validation(job, out)
+            write_missing_cases(job, job_path, out)
         job.update(status="review-needed", last_error=None, human_clarification_question=None)
     except Exception as exc:
         job.update(status="human-needed", last_error=str(exc))

@@ -5068,6 +5068,12 @@ class AccessibilityStaticTests(unittest.TestCase):
                      "found in the code", "job.production_defects", "Fix the tests</em> rewrites it"):
             self.assertIn(part, self.js, part)
         self.assertIn("${defectsHtml}", self.js)
+        for part in ("test file\")} written", "No tasks needed"):
+            self.assertIn(part, self.js)
+        for part in ("Why no test was written", "Not written", "could not be written as automated"):
+            self.assertIn(part, self.js)
+        for part in ("Coverage is now", "delivery.coverage"):
+            self.assertIn(part, self.js)
         for part in ("data-report-defect", "Create bug job", "Open bug job", "/defects/${btn.dataset.reportDefect}/report", "Found by"):
             self.assertIn(part, self.js)
         for part in ("What this job delivered", "Recommended next step", "Couldn't finish:", "data.delivery"):

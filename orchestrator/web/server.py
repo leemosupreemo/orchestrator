@@ -1181,9 +1181,14 @@ def test_index(root: Path) -> dict[str, Any]:
     return index
 
 
-def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | None = None) -> dict[str, Any]:
-    """Cases with their coverage status, plus counts by status and by kind of test."""
+def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | None = None, done: dict[str, str] | None = None,
+                   skipped: dict[str, str] | None = None) -> dict[str, Any]:
+    """Cases with their coverage status, plus counts by status and by kind of test. `done` names cases the job did itself (a measurement),
+    `skipped` those the builder explained it did not write."""
     cov = test_case_lib.coverage(root, cases, test_index(root))
+    for case_id, how in (done or {}).items():
+        if case_id in cov and cov[case_id]["status"] != "manual":
+            cov[case_id] = {"status": "covered", "tests": [how], "assigned": cov[case_id]["assigned"]}
     rows = []
     for c in cases:
         c_cov = cov[c["id"]]
@@ -1191,7 +1196,8 @@ def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | 
                      "priority": c.get("priority", "medium"), "preconditions": c.get("preconditions") or [], "steps": c.get("steps") or [],
                      "expected": c.get("expected", ""), "covers": c.get("covers") or [], "task": c.get("task"),
                      "status": c_cov["status"], "found_in": c_cov["tests"], "assigned": c_cov["assigned"],
-                     "due": due_ids is None or c["id"] in due_ids})
+                     "due": due_ids is None or c["id"] in due_ids,
+                     **({"skipped": skipped[c["id"]]} if skipped and c["id"] in skipped and c_cov["status"] in ("planned", "unassigned") else {})})
     by_type = {t: sum(1 for r in rows if r["type"] == t) for t in test_case_lib.CASE_TYPES}
     return {"cases": rows, "summary": {**test_case_lib.summarize(cases, cov), "by_type": by_type}}
 
@@ -1571,7 +1577,8 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "plan_size": plan_size.measure(job.get("plan")),
         "ux_review": job_ux_review(root, job_id, job),
         "context": job_context(root, job),
-        "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
+        "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)},
+                                     test_case_lib.satisfied_cases(job), test_case_lib.skipped_cases(job)),
         "delivery": run_result.delivery_report(job, root),
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,

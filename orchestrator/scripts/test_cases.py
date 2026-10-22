@@ -485,6 +485,27 @@ def due_cases(job: dict[str, Any]) -> list[dict[str, Any]]:
     return [c for c in cases if (c.get("task") in done) or (c.get("task") is None and all_done)]
 
 
+MEASUREMENT_RE = re.compile(r"\b(?:coverage|baseline)\b.*\bmeasure(?:ment|d)?\b|\bmeasure\b.*\bcoverage\b", re.I)
+
+
+def is_measurement(case: dict[str, Any]) -> bool:
+    """A case that asks for the coverage figure to be measured: the Tests job does that itself, there is no test to write."""
+    return bool(MEASUREMENT_RE.search(str(case.get("title") or "")))
+
+
+def satisfied_cases(job: dict[str, Any]) -> dict[str, str]:
+    """Case id -> how the job already did it, for measurement cases once coverage has been measured."""
+    after = (job.get("coverage") or {}).get("after") if isinstance(job.get("coverage"), dict) else None
+    if not isinstance(after, (int, float)):
+        return {}
+    return {c["id"]: f"Measured by the job: coverage is now {after:.1f}%" for c in job_cases(job) if is_measurement(c)}
+
+
+def skipped_cases(job: dict[str, Any]) -> dict[str, str]:
+    """Case id -> why the builder did not write a test for it."""
+    return {c["case"]: str(c.get("reason") or "") for c in job.get("skipped_cases") or [] if isinstance(c, dict) and c.get("case")}
+
+
 def missing_tests(root: Path, job: dict[str, Any]) -> list[dict[str, Any]]:
     """Due automated cases that aren't covered, each with its status attached."""
     due = [c for c in due_cases(job) if not is_manual(c)]
