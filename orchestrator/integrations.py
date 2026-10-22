@@ -320,6 +320,33 @@ class Jira(Provider):
             raise IntegrationError("Jira didn't say which epic it created.")
         return Item("jira", key, summary, f"{self._site()}/browse/{key}", "To Do")
 
+    def create_child_bug(self, parent_ref: str, summary: str, description: str = "") -> Item:
+        """A bug filed under the ticket `parent_ref`: a child of an epic, a sub-task of a story or task, and otherwise a Bug linked to it."""
+        parent = self._key(parent_ref)
+        info = self._get(f"/rest/api/3/issue/{urllib.parse.quote(parent)}?fields=issuetype,project")["fields"]
+        level = (info.get("issuetype") or {}).get("hierarchyLevel")
+        paragraphs = [p.strip() for p in (description or "").split("\n\n") if p.strip()] or [""]
+        fields = {"project": {"key": (info.get("project") or {}).get("key") or parent.split("-")[0]},
+                  "summary": " ".join(summary.split())[:250] or "Bug",
+                  "description": {"type": "doc", "version": 1, "content": [
+                      {"type": "paragraph", "content": [{"type": "text", "text": text}] if text else []} for text in paragraphs[:60]]}}
+        made = None
+        kind = {1: "Bug", 0: "Sub-task"}.get(level)  # under an epic a Bug is a child; under a story or task, a Sub-task is
+        if kind:
+            try:  # the project may not have that type, or its hierarchy may not allow it: then a linked Bug does
+                made = self._write("/rest/api/3/issue", {"fields": {**fields, "issuetype": {"name": kind}, "parent": {"key": parent}}})
+            except IntegrationError:
+                made = None
+        direct = made is not None
+        if not direct:
+            made = self._write("/rest/api/3/issue", {"fields": {**fields, "issuetype": {"name": "Bug"}}})
+        key = str(made.get("key") or "")
+        if not self.KEY.fullmatch(key):
+            raise IntegrationError("Jira didn't say which ticket it created.")
+        if not direct:
+            self._write("/rest/api/3/issueLink", {"type": {"name": "Relates"}, "inwardIssue": {"key": parent}, "outwardIssue": {"key": key}})
+        return Item("jira", key, summary, f"{self._site()}/browse/{key}", "To Do")
+
     def list_epics(self, limit: int = 50) -> list[dict[str, str]]:
         """The project's epics that aren't done, newest first, with their text."""
         jql = f'project = "{self.project_key()}" AND issuetype = Epic AND statusCategory != Done ORDER BY created DESC'

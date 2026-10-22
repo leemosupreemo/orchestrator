@@ -2675,7 +2675,12 @@ function renderSetupFab() {
   const s = setupState;
   const show = s && !s.complete && ["home", "checkup"].includes(current.page) && !(current.page === "home" && !s.seen);
   fab.hidden = !show;
-  if (s) fab.querySelector("span").textContent = `Setup ${s.required_done}/${s.required_total}`;
+  if (s) {  // a ring that fills with how much of setup is done
+    const pct = s.required_total ? Math.round((100 * s.required_done) / s.required_total) : 0;
+    fab.style.setProperty("--pct", String(pct));
+    fab.querySelector(".setup-fab-core").textContent = `${pct}%`;
+    fab.setAttribute("aria-label", `Setup checklist: ${s.required_done} of ${s.required_total} done`);
+  }
   const badge = $("#setup-badge");
   if (badge) {
     const remaining = s ? s.required_total - s.required_done : 0;
@@ -3276,7 +3281,7 @@ pages.job = async ([id]) => {
 
   const buildStep = {
     title: "2. Build",
-    subtitle: isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
+    subtitle: !tasksTotal && data.delivery?.added?.length && currentPhaseIndex > 1 ? "Tests written" : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
     ...getStepState(1),
   };
 
@@ -3309,12 +3314,25 @@ pages.job = async ([id]) => {
           <p class="muted">If a test expects the wrong thing, <em>Fix the tests</em> rewrites it. If the code is what's wrong, the test is right: report it as a bug instead.</p>
           <div class="row"><a class="btn small" href="${esc(bugLink(`${plural(failingTests.length, "test")} added by “${job.title}” fail`, "These tests were written to check the code and fail. If the code is wrong rather than the tests:\n\n" + failingTests.map((f) => `- ${f.test}: ${f.message}`).join("\n")))}">Report as bug</a></div></div>` : ""}</div></section>` : "";
   const defects = (job.production_defects || []).filter((d) => d && d.summary);
-  const defectsHtml = defects.length ? `<section class="card mb-16"><div class="card-h"><h2>${plural(defects.length, "defect")} found in the code</h2></div><div class="card-b stack">
-      <p class="muted">The tests found behaviour that looks wrong in your code. The failing tests were left out so the rest could pass. Each can become a bug job, with the test attached to add once it's fixed.</p>
-      ${defects.map((d) => `<div class="stack"><strong>${esc(d.summary)}</strong>
+  const defectIndex = (d) => (job.production_defects || []).indexOf(d);
+  const defectRowsHtml = defects.map((d) => `<div class="stack"><strong>${esc(d.summary)}</strong>
         ${d.expected || d.actual ? `<span class="muted">${d.expected ? `Should: ${esc(d.expected)}` : ""}${d.expected && d.actual ? " · " : ""}${d.actual ? `Does: ${esc(d.actual)}` : ""}</span>` : ""}
         ${d.file ? `<span class="muted mono">${esc(d.file)}</span>` : ""}
-        <div class="row"><a class="btn small" href="${esc(bugLink(d.summary, [d.expected && `Expected: ${d.expected}`, d.actual && `Actual: ${d.actual}`, d.file && `File: ${d.file}`, d.code && `Test to add once fixed (${d.test || "from the Tests job"}):\n${d.code}`].filter(Boolean).join("\n")))}">Report as bug</a></div></div>`).join("")}
+        <div class="row">${d.bug_job
+          ? `<a class="btn small" href="#/jobs/${encodeURIComponent(d.bug_job)}">Open bug job</a>${d.jira ? ` <a class="ticket-chip" href="${esc(d.jira.url)}" target="_blank" rel="noopener">${esc(d.jira.key)} ↗</a>` : ""}`
+          : `<button class="btn small primary" data-report-defect="${defectIndex(d)}" title="Creates a bug job under this one, with the held-back test attached.${(data.context?.ticket || []).some((t) => /jira/i.test(t.source || "")) ? " Also files it under the linked Jira ticket." : ""}">Create bug job</button>`}</div></div>`).join("");
+  // A Tests job says what it delivered, what it could not do, and what to do next, in that order.
+  const delivery = data.delivery;
+  const deliveryHtml = delivery && delivery.added.length && testsChecked ? `<section class="card mb-16" id="delivery-section"><div class="card-h"><h2>What this job delivered</h2></div><div class="card-b stack">
+      <div class="stack"><strong>Added ${plural(delivery.added.length, "test file")}${delivery.tests ? `, ${plural(delivery.tests, "test")}` : ""}${delivery.suites ? ` in ${plural(delivery.suites, "suite")}` : ""}. ${esc(delivery.check)}.</strong>
+        <ul class="assumptions">${delivery.added.map((a) => `<li><span class="mono">${esc(a.file)}</span>${a.tests != null ? `: ${plural(a.tests, "test")}` : ""}${a.suites.length ? ` <span class="muted">(${esc(a.suites.join(", "))})</span>` : ""}</li>`).join("")}</ul></div>
+      ${defects.length ? `<div class="stack"><strong>Couldn't finish: ${plural(defects.length, "test")} left out, ${plural(defects.length, "defect")} found in your code</strong>
+        <p class="muted">The code does something other than it should, so these tests would fail. They were left out so the rest could pass, and each can become a bug job with its test attached.</p>${defectRowsHtml}</div>` : ""}
+      <div class="stack"><strong>Recommended next step</strong><p>${esc(delivery.recommendation)}</p></div>
+    </div></section>` : "";
+  const defectsHtml = deliveryHtml ? deliveryHtml : defects.length ? `<section class="card mb-16"><div class="card-h"><h2>${plural(defects.length, "defect")} found in the code</h2></div><div class="card-b stack">
+      <p class="muted">The tests found behaviour that looks wrong in your code. The failing tests were left out so the rest could pass. Each can become a bug job, with the test attached to add once it's fixed.</p>
+      ${defectRowsHtml}
     </div></section>` : "";
 
   // Contextual consequence preview for hero
@@ -3396,7 +3414,7 @@ pages.job = async ([id]) => {
 
   return {
     title: s.title,
-    sub: `<span class="status-line"><span>${esc(jobKind(s))}</span>${s.issue_number ? `<span class="sep">·</span><span>#${esc(s.issue_number)}</span>` : ""}${s.feature ? `<span class="sep">·</span><span>${esc(featureName || s.feature)}</span>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}${(data.context?.ticket || []).map((t) => `<span class="sep">·</span>${t.url
+    sub: `<span class="status-line"><span>${esc(jobKind(s))}</span>${s.issue_number ? `<span class="sep">·</span><span>#${esc(s.issue_number)}</span>` : ""}${s.feature ? `<span class="sep">·</span><span>${esc(featureName || s.feature)}</span>` : ""}${data.parent ? `<span class="sep">·</span><span>Found by <a href="#/jobs/${encodeURIComponent(data.parent.id)}">${esc(data.parent.title)}</a></span>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}${(data.context?.ticket || []).map((t) => `<span class="sep">·</span>${t.url
       ? `<a class="ticket-chip" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(`${t.source}: ${t.title}`)}">${esc(t.ref || t.title)} ↗</a>`
       : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`}`).join("")}${isAutoImprove ? `<span class="sep">·</span><span class="prize-pill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Orchestrator Improvement</span>` : ""}${s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="sep">·</span><span class="accent">✓ Submitted for inclusion</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
@@ -3694,6 +3712,23 @@ pages.job = async ([id]) => {
           const ok = await formDialog(`Delete test case ${caseId}?`, `<p>Are you sure you want to remove <strong>${esc(caseId)}</strong> from this job's plan?</p>`, "Delete", { danger: true });
           if (ok) call({ op: "remove", id: caseId }, "Test case removed");
         }
+      }));
+      view.querySelectorAll("[data-report-defect]").forEach((btn) => btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          const made = await api(`jobs/${encodeURIComponent(id)}/defects/${btn.dataset.reportDefect}/report`, { method: "POST", body: {} });
+          toast(made.existing ? "That defect already has a bug job" : "Creating the bug job…");
+          if (made.job) location.hash = `#/jobs/${encodeURIComponent(made.job)}`;
+          else {  // the job exists a moment after the run starts: wait for the parent to list it, then show it
+            for (let tries = 0; tries < 40; tries += 1) {
+              await new Promise((r) => setTimeout(r, 1500));
+              const fresh = await api(`jobs/${encodeURIComponent(id)}`);
+              const bug = fresh.job.production_defects?.[Number(btn.dataset.reportDefect)]?.bug_job;
+              if (bug) { location.hash = `#/jobs/${encodeURIComponent(bug)}`; return; }
+            }
+            route();
+          }
+        } catch (e) { btn.disabled = false; toast(e.message, true); }
       }));
       view.querySelectorAll("[data-undo-task]").forEach((btn) => btn.addEventListener("click", async () => {
         const i = Number(btn.dataset.undoTask);

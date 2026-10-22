@@ -758,6 +758,11 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
             return state("needs_you", "attention", "Ready to merge",
                          f"The changes are on {job['branch']}. Merge & complete merges it into {job.get('base_branch') or 'the base branch'} "
                          f"on this computer; or merge it on your git host and mark it complete.{where}", "merge", "Merge & complete")
+        found = [d for d in job.get("production_defects") or [] if isinstance(d, dict) and d.get("summary")]
+        if job.get("output_scope") == "tests-only" and found:  # the tests are done; what's left is the code they found fault with
+            return state("needs_you", "attention", "Tests added, defects found",
+                         f"The tests are written and passing. {plural_count(len(found), 'test')} left out because the code is wrong: details and the recommended next step are below. "
+                         "No pull request was opened, so there is nothing to merge.", "complete", "Mark complete")
         return state("needs_you", "attention", "Ready for review", "Changes are ready. No pull request was opened, so there is nothing to merge here. Mark it complete when you're happy.", "complete", "Mark complete")
     if status == "debugging":
         if tests in FAILING_TEST_STATUSES:
@@ -1507,6 +1512,14 @@ def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     return ui_review_settings(root)
 
 
+def job_stub(root: Path, job_id: Any) -> dict[str, Any] | None:
+    """{id, title} of another job, for a link to it, or None when there is no such job."""
+    path = jobs_dir(root) / f"{job_id}.json" if isinstance(job_id, str) and re.fullmatch(r"[A-Za-z0-9._-]+", job_id) else None
+    if not path or not path.is_file():
+        return None
+    return {"id": job_id, "title": job_summary(path, read_json_file(path))["title"]}
+
+
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
@@ -1559,6 +1572,8 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "ux_review": job_ux_review(root, job_id, job),
         "context": job_context(root, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)}),
+        "delivery": run_result.delivery_report(job, root),
+        "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
         "tasks": tasks,
@@ -3879,6 +3894,54 @@ def context_for_new_job(root: Path, links: list[dict[str, str]]) -> tuple[str, l
     return integrations.spec_block(contexts) + ("\n" + "\n".join(extra) + "\n" if extra else ""), [c.item.as_dict() for c in contexts]
 
 
+def defect_bug_params(job: dict[str, Any], defect: dict[str, Any]) -> dict[str, Any]:
+    """The New job form's fields for a bug job about one defect a Tests job found, with the held-back test to add once it's fixed."""
+    where = f" (in {defect['file']})" if defect.get("file") else ""
+    repro = f"Found by the tests added in “{job.get('title') or job.get('job_id')}”{where}."
+    if defect.get("test"):
+        repro += f" The test {defect['test']} was left out because it fails."
+    code = f"Test to add once this is fixed ({defect.get('test') or 'from the Tests job'}):\n\n{defect['code']}" if defect.get("code") else ""
+    return {"type": "bug", "summary": defect["summary"], "repro": repro, "expected": defect.get("expected") or "", "spec": code,
+            "feature": job.get("feature") or ""}
+
+
+def link_defect_job(root: Path, parent_id: str, index: int, child_path: Path) -> None:
+    """Make the bug job a child of the job whose tests found it, and note on that job's defect which bug job came of it."""
+    parent_path = jobs_dir(root) / f"{parent_id}.json"
+    child, parent = read_json_file(child_path), read_json_file(parent_path)
+    if not child or not parent:
+        return
+    child["parent_job_id"] = parent_id
+    write_json_file(child_path, child)
+    defects = parent.get("production_defects") or []
+    if 0 <= index < len(defects) and isinstance(defects[index], dict):
+        defects[index]["bug_job"] = child_path.stem
+    parent["child_jobs"] = [c for c in parent.get("child_jobs") or [] if c.get("job_id") != child_path.stem] + [{"job_id": child_path.stem, "kind": "defect"}]
+    write_json_file(parent_path, parent)
+    jira_child_bug(root, parent_path, index, child_path)
+
+
+def jira_child_bug(root: Path, parent_path: Path, index: int, child_path: Path) -> None:
+    """When the parent job is tied to a Jira ticket, file the bug as a child of it and tie the bug job to the new ticket, so merging the
+    fix updates the bug and leaves the original ticket alone. Best effort: a failure is noted on the bug job and never stops it."""
+    parent, child = read_json_file(parent_path), read_json_file(child_path)
+    ticket = next((l for l in parent.get("external_links") or [] if isinstance(l, dict) and l.get("provider") == "jira" and l.get("ref")), None)
+    saved = saved_integrations(root).get("jira")
+    if not ticket or not saved or not child:
+        return
+    try:
+        made = integrations.Jira(saved).create_child_bug(ticket["ref"], child.get("title") or "Bug", f"Found by the tests added in “{parent.get('title') or parent.get('job_id')}” ({ticket['ref']}).\n\n{(child.get('raw_input') or '')[:3000]}")
+        child["external_links"] = [l for l in child.get("external_links") or [] if l.get("ref") != made.ref] + [made.as_dict()]
+        child["jira_parent"] = ticket["ref"]
+        defects = parent.get("production_defects") or []
+        if 0 <= index < len(defects) and isinstance(defects[index], dict):
+            defects[index]["jira"] = {"key": made.ref, "url": made.url}
+            write_json_file(parent_path, parent)
+    except (integrations.IntegrationError, KeyError, OSError) as exc:
+        child["jira_link_error"] = str(exc)[:300]
+    write_json_file(child_path, child)
+
+
 def attach_links_to_job(root: Path, job_id: str, links: list[dict[str, str]]) -> list[dict[str, str]]:
     """Add connected-app context to an existing job: written under its references, and recorded on it."""
     path = resolve_job_path(root, job_id)
@@ -6188,6 +6251,28 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         elif method == "GET" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "search":
             self._json({"items": search_integration(root, parts[1], (query.get("q") or [""])[0])})
+        elif method == "POST" and len(parts) == 5 and parts[0] == "jobs" and parts[2] == "defects" and parts[4] == "report":
+            self._body()
+            job = read_json_file(resolve_job_path(root, parts[1]))
+            defects = job.get("production_defects") or []
+            if not parts[3].isdigit() or int(parts[3]) >= len(defects) or not isinstance(defects[int(parts[3])], dict):
+                raise UIError("That defect isn't on this job", HTTPStatus.NOT_FOUND)
+            defect = defects[int(parts[3])]
+            if defect.get("bug_job"):  # one bug job per defect: a second click opens the first
+                self._json({"job": defect["bug_job"], "existing": True})
+                return
+            try:  # a second click while the first is still creating the job joins that run
+                pending = self.server.sessions.get(str(defect.get("reporting_run") or ""))
+            except Exception:
+                pending = None
+            if pending is not None and pending.running:
+                self._json({"run": pending.summary()})
+                return
+            session = self._launch_run("new_job", defect_bug_params(job, defect), root)
+            defect["reporting_run"] = session.id
+            write_json_file(resolve_job_path(root, parts[1]), job)
+            self._watch_for_created_job(session, root, defect_of=(parts[1], int(parts[3])))
+            self._json({"run": session.summary()}, HTTPStatus.CREATED)
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "links":
             if parts[1] in self.server.sessions.running_job_ids():
                 raise UIError("This job is running right now. Attach context once it stops.", HTTPStatus.CONFLICT)
@@ -6581,7 +6666,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _watch_for_created_job(self, session: PtySession, root: Path, linked: list[dict[str, str]] | None = None,
                                 attachments: dict[str, Any] | None = None,
-                                tag: str | None = None) -> None:
+                                tag: str | None = None, defect_of: tuple[str, int] | None = None) -> None:
         """Links the job a new-job/fix run creates, so its run can offer "Open job". (Its feature is recorded by new_job.py.)"""
         before = {p.name for p in jobs_dir(root).glob("*.json")} if jobs_dir(root).exists() else set()
 
@@ -6598,6 +6683,12 @@ class UIHandler(BaseHTTPRequestHandler):
                             self._record_attachments(newest, attachments)
                         if tag:
                             self._record_tag(newest, tag)
+                        if defect_of:
+                            for _ in range(10):  # the job file may still be mid-write
+                                if read_json_file(newest):
+                                    link_defect_job(root, defect_of[0], defect_of[1], newest)
+                                    break
+                                time.sleep(0.5)
                         return
                 if not session.running:
                     return

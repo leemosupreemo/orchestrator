@@ -32,6 +32,7 @@ from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
 from model_router import ModelRole, get_prioritized_models
 from model_registry import get_model, ModelTier
 from probe_machine import load_machines
+from orchestrator.run_check import models_machines_can_run
 from manual_run import capture_logs
 import test_cases as tc
 from orchestrator.project_config import PROJECT_CONFIG
@@ -538,7 +539,11 @@ def main(args_override: list[str] | None = None) -> None:
         footer = (
             "[\033[1;96mA\033[0m] Select All  [\033[1;92mF\033[0m] Free Only  [\033[1;93mN\033[0m] Deselect All  [\033[1;91mB\033[0m] Back"
         )
-        allowed_models = prompt_checkbox("select models", all_models, DEFAULT_FALLBACKS, footer=footer)
+        runnable = models_machines_can_run(DEFAULT_FALLBACKS, load_machines())  # a model no machine has switched on would only be refused later
+        if DEFAULT_FALLBACKS and not runnable:
+            print("\033[1;93m⚠️  None of the models you can use is switched on for a machine, so this job will not be able to start.\033[0m")
+            print("\033[90m(Turn a model on for a machine under Machines, then run the job again.)\033[0m")
+        allowed_models = prompt_checkbox("select models", all_models, runnable or DEFAULT_FALLBACKS, footer=footer)
     
     if not allowed_models:
         print("\n\033[1;91m⚠️  ERROR: No AI models selected.\033[0m")

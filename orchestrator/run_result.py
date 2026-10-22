@@ -285,6 +285,55 @@ def job_outcome(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
     return result
 
 
+SUITE_MARKERS = {
+    ".swift": r"^\s*(?:final\s+)?(?:class|struct)\s+(\w+)\s*:[^{\n]*XCTestCase|@Suite[^\n]*\n\s*(?:final\s+)?(?:class|struct)\s+(\w+)",
+    ".py": r"^class\s+(\w+)\s*\([^)\n]*Test[^)\n]*\)", ".kt": r"^\s*class\s+(\w+)", ".java": r"^\s*(?:public\s+)?class\s+(\w+)",
+}
+
+
+def suites_in(path: Path) -> list[str]:
+    """The test suites (classes or structs) a test file declares, for the languages whose suites are easy to spot."""
+    marker = SUITE_MARKERS.get(path.suffix.lower())
+    if not marker:
+        return []
+    try:
+        found = re.findall(marker, path.read_text(encoding="utf-8", errors="replace"), re.M)
+    except OSError:
+        return []
+    return [next((g for g in (m if isinstance(m, tuple) else (m,)) if g), "") for m in found if m]
+
+
+def delivery_report(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
+    """What a Tests job delivered, what it could not do, and what to do about it, for the job page: the test files with their suites
+    and test counts, the code defects whose tests were held back, and one recommended next step. None for any other job."""
+    if job.get("output_scope") != "tests-only":
+        return None
+    added = []
+    for f in sorted(str(f) for f in (job.get("output_digests") or {})):
+        suites = suites_in(root / f)
+        added.append({"file": f, "suites": suites, "tests": count_tests(root / f)})
+    check = job.get("test_validation") or {}
+    kind = check.get("kind")
+    checked = bool(check.get("passed") or kind == "passed")
+    blocked = [{k: d[k] for k in ("summary", "test", "expected", "actual", "file") if d.get(k)}
+               for d in job.get("production_defects") or [] if isinstance(d, dict) and d.get("summary")]
+    held = _plural(len(blocked), "test")
+    if not added:
+        step = "Nothing was written. Open the job to see why it stopped, then try again."
+    elif kind in ("environment", "pending", "unregistered"):
+        step = "Try again: the saved tests are checked without being rewritten." + (" Add the files to the Xcode test target first." if kind == "unregistered" else "")
+    elif not checked:
+        step = "Fix the tests if they expect the wrong thing. If the code is what's wrong, report it as a bug instead."
+    elif blocked:
+        step = (f"The added tests are good as they are, so mark this job complete. Create a bug job for each defect below: it is filed under "
+                f"this job, and the {held} held back comes attached. Fix the code there, then add the test.")
+    else:
+        step = "Nothing more to do. The tests pass; mark the job complete."
+    return {"added": added, "suites": sum(len(a["suites"]) for a in added), "tests": sum(a["tests"] or 0 for a in added), "checked": checked,
+            "check": "Checked and passing" if checked else "Not checked yet" if kind in ("environment", "pending", "unregistered") else "Some tests did not pass" if added else "",
+            "blocked": blocked, "recommendation": step}
+
+
 READERS: dict[str, Callable[[list[str], int | None], dict[str, Any] | None]] = {
     "sync_fleet": sync_fleet, "fleet_llm_check": fleet_llm_check, "worker_check": worker_check,
     "test": tests, "test_suite": tests, "test_plan": tests, "coverage": coverage, "visual_check": visual_check, "ux_pass": ux_pass,

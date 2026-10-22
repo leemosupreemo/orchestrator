@@ -5068,6 +5068,10 @@ class AccessibilityStaticTests(unittest.TestCase):
                      "found in the code", "job.production_defects", "Fix the tests</em> rewrites it"):
             self.assertIn(part, self.js, part)
         self.assertIn("${defectsHtml}", self.js)
+        for part in ("data-report-defect", "Create bug job", "Open bug job", "/defects/${btn.dataset.reportDefect}/report", "Found by"):
+            self.assertIn(part, self.js)
+        for part in ("What this job delivered", "Recommended next step", "Couldn't finish:", "data.delivery"):
+            self.assertIn(part, self.js)
 
     def test_design_images_load_with_the_token_not_a_bare_img_src(self):
         self.assertIn("data-auth-src", self.js)

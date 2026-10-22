@@ -23,6 +23,13 @@ def model_names_overlap(left: str, right: str) -> bool:
     """Two model names that mean the same model (an id and its alias)."""
     return bool(equivalent_model_names(left) & equivalent_model_names(right))
 
+def models_machines_can_run(models: list[str], machines: list[dict[str, Any]]) -> list[str]:
+    """The models in `models` that at least one enabled machine has switched on, in the same order. A job allowed only models no machine
+    runs is refused when it is scheduled, so a default choice of models is narrowed to these first."""
+    enabled = [m for m in machines if m.get("enabled", True)]
+    return [name for name in models if any(model_names_overlap(name, have) for m in enabled for have in m.get("models", []))]
+
+
 SELF_CHECKOUT_TEXT = ("This project is the folder Orchestrator itself runs from. A job here would switch its branch and "
                       "change Orchestrator's own code while it runs. Run jobs on Orchestrator from a separate copy "
                       "(`git worktree add ../orchestrator-jobs`), or set the job to make no git changes.")

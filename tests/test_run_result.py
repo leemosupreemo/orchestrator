@@ -204,6 +204,28 @@ class TestsJobOutcomeTests(unittest.TestCase):
         self.assertIn("Found 1 production defect: CRLF is not a line break", found["details"])
         self.assertNotIn("partial", found)  # the tests passed; the finding is about the code
 
+    def test_the_delivery_report_lists_suites_and_tests_then_what_was_held_back_then_the_next_step(self):
+        (self.root / "AppTests" / "ParserTests.swift").write_text("final class ParserTests: XCTestCase {\n func testOne() {}\n func testTwo() {}\n}\n")
+        (self.root / "AppTests" / "MatcherTests.swift").write_text("@Suite\nstruct MatcherTests {\n @Test func only() {}\n}\nfunc testOnly() {}\n")
+        self.job["production_defects"] = [{"summary": "CRLF is not a line break", "test": "testCRLF", "expected": "2 items", "actual": "1 item", "code": "ignored"}]
+        out = rr.delivery_report(self.job, self.root)
+        self.assertEqual([(a["file"], a["suites"]) for a in out["added"]],
+                         [("AppTests/MatcherTests.swift", ["MatcherTests"]), ("AppTests/ParserTests.swift", ["ParserTests"])])
+        self.assertEqual((out["suites"], out["tests"], out["check"]), (2, 3, "Checked and passing"))
+        self.assertEqual(out["blocked"], [{"summary": "CRLF is not a line break", "test": "testCRLF", "expected": "2 items", "actual": "1 item"}])
+        self.assertIn("mark this job complete", out["recommendation"])
+        self.assertIn("Create a bug job", out["recommendation"])
+        self.assertIn("1 test held back", out["recommendation"])
+
+    def test_the_delivery_report_recommends_the_right_step_for_each_state_and_skips_other_jobs(self):
+        self.job["test_validation"] = {"passed": False, "kind": "environment"}
+        self.assertTrue(rr.delivery_report(self.job, self.root)["recommendation"].startswith("Try again"))
+        self.job["test_validation"] = {"passed": False, "kind": "tests"}
+        self.assertIn("report it as a bug", rr.delivery_report(self.job, self.root)["recommendation"])
+        self.job["test_validation"] = {"passed": True, "kind": "passed"}
+        self.assertTrue(rr.delivery_report(self.job, self.root)["recommendation"].startswith("Nothing more to do"))
+        self.assertIsNone(rr.delivery_report({"output_scope": None}, self.root))
+
     def test_a_job_that_added_no_files_says_so_and_other_jobs_are_left_alone(self):
         out = rr.job_outcome({"output_scope": "tests-only", "last_error": "Needs a production change"}, self.root)
         self.assertEqual((out["headline"], out["tone"]), ("No test files were added", "warn"))

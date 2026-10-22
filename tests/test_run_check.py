@@ -24,6 +24,11 @@ class RunCheckTests(unittest.TestCase):
     def test_a_runnable_job_has_no_blockers(self):
         self.assertEqual(check({"allowed_models": ["m1"], "allowed_machines": ["local"]}, [machine()]), [])
 
+    def test_default_models_are_narrowed_to_ones_a_machine_runs(self):
+        machines = [{"name": "a", "models": ["m2"]}, {"name": "off", "enabled": False, "models": ["m3"]}]
+        self.assertEqual(run_check.models_machines_can_run(["m1", "m2", "m3"], machines), ["m2"])
+        self.assertEqual(run_check.models_machines_can_run(["m1"], machines), [])
+
     def test_no_machine_points_at_adding_one(self):
         b = check({}, [])
         self.assertEqual([x["id"] for x in b], ["no-machine"])
