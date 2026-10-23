@@ -30,3 +30,4 @@ exports/
 
 # Cloud Functions virtualenv (rebuilt from cloud/functions/requirements.txt)
 cloud/functions/venv/
+.poolside/

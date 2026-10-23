@@ -360,7 +360,16 @@ MODELS = [
         capabilities=[ModelCapability.CODING, ModelCapability.REASONING],
         cost_factor=0.0,
         required_clis=["opencode"]
-    )
+    ),
+    ModelMetadata(
+        id="pool",
+        family="pool",
+        tier=ModelTier.LOW,
+        capabilities=[ModelCapability.CODING, ModelCapability.SPEED],
+        cost_factor=0.0,
+        aliases=["poolside"],
+        required_clis=["pool"]
+    ),
 ]
 
 import json

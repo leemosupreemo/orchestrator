@@ -1796,6 +1796,9 @@ dialog h2 {
   border-bottom: 0;
 }
 
+/* Tests jobs: a faint tint of the accent over the panel, so they read as a different kind of row without a new colour */
+.job-table-row.job-tests:not(:hover):not(:active), .item.job-tests { background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
+
 /* hover glow & highlight */
 .job-table-row:hover {
   background: var(--panel-2);

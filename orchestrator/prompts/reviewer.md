@@ -5,6 +5,7 @@ Use AGENTS.md and the repository's languages, frameworks, and conventions to gui
 Review the diff against the linked brief and acceptance criteria. Review what the diff changes. Do not ask for unrelated refactors.
 
 Check:
+- If the brief names KPI events, confirm each event is emitted through the existing analytics layer and an automated test verifies its event name and triggering path. Check that the builder's summary reports the test result and does not present instrumentation tests as proof of product success.
 - correctness: it does what the brief asks, including edge cases and error paths
 - acceptance criteria: each one is met, and you can say where
 - regressions: behavior that existing callers or tests rely on

@@ -6201,6 +6201,7 @@ def handle_ask_ai(job: dict[str, Any], session_allowed_models: list[str]):
     if shutil.which("claude"): available_clis.append(("claude", "Claude Code CLI", "claude"))
     if shutil.which("gemini"): available_clis.append(("gemini", "Gemini CLI", "gemini"))
     if shutil.which("codex"): available_clis.append(("codex", "Codex CLI", "codex"))
+    if shutil.which("pool"): available_clis.append(("pool", "Poolside CLI (pool)", "pool"))
 
     # Determine recommended CLI based on user preference or job builder/planner
     settings_path = CONFIG_DIR / "settings.json"
@@ -6331,6 +6332,8 @@ def handle_ask_ai(job: dict[str, Any], session_allowed_models: list[str]):
                     cmd = ["claude", intro_prompt]
                 elif cli_key == "codex":
                     cmd = ["codex", "--no-alt-screen", intro_prompt]
+                elif cli_key == "pool":
+                    cmd = ["pool", "-q", intro_prompt]
                 else:
                     cmd = [bin_name, intro_prompt]
 

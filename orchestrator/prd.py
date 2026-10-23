@@ -1,12 +1,13 @@
 """The product requirements doc: one short, living document that tells every AI what the product is.
 
-`docs/product/prd.md` has five sections, in the person's own words wherever possible:
+`docs/product/prd.md` has six optional sections, in the person's own words wherever possible:
 
   Pitch            what it is, as if explained to a friend (and what it is built for)
   Who it's for     an ideal user, or the situations it is for; fine to not know yet
   Core features    the things it must do, as user stories if they like
   Look and feel    what it should feel like: a description, designs, sketches, Figma items
   Not this         what it should not be or include
+  Success measures project-level outcomes and targets
 
 Every section is optional: write what you know, leave the rest, and it fills in as jobs teach us more.
 
@@ -54,6 +55,8 @@ SECTIONS: list[dict[str, Any]] = [
      "hint": "What should it look and feel like? Describe it (\"feels like Google Docs\"), or add designs, sketches or Figma items."},
     {"id": "not", "title": "What to exclude", "optional": True,
      "hint": "Features to avoid, non-goals, or competitor patterns you don't want to copy."},
+    {"id": "success", "title": "Success measures", "optional": True,
+     "hint": "How will you know the product is working? Add outcomes or targets if you know them; event names and analytics setup are optional."},
 ]
 BY_ID = {s["id"]: s for s in SECTIONS}
 HEADING = {s["id"]: f"## {s['title']}" for s in SECTIONS}
@@ -75,7 +78,7 @@ def template(name: str = "") -> str:
 
 
 def split(text: str) -> dict[str, str]:
-    """Section id -> body (guidance lines removed), for the five known sections."""
+    """Section id -> body (guidance lines removed), for the known sections."""
     found: dict[str, list[str]] = {}
     current: str | None = None
     by_heading = {s["title"].lower(): s["id"] for s in SECTIONS}
@@ -127,7 +130,7 @@ def replace_section(text: str, section_id: str, body: str) -> str:
 
 
 def normalise(text: str) -> str:
-    """The text with any of the five sections that went missing put back, so the structure always holds."""
+    """The text with any missing sections put back, so the structure always holds."""
     present = split(text).keys()
     for s in SECTIONS:
         if s["id"] not in present:
@@ -152,7 +155,7 @@ def sources(text: str | None) -> list[dict[str, str]]:
 
 
 def set_sources(text: str, items: list[dict[str, str]]) -> str:
-    """The document with its "Source documents" list replaced (last in the document, outside the five sections)."""
+    """The document with its "Source documents" list replaced (last in the document, outside the PRD sections)."""
     kept = re.sub(rf"(^|\n){re.escape(SOURCES_HEADING)}\s*\n.*?(?=\n##\s|\Z)", "", text, flags=re.S | re.I).rstrip()
     if not items:
         return kept + "\n"
@@ -182,17 +185,17 @@ def platforms(text: str | None) -> tuple[list[str], bool]:
 
 # Who is reading and how much room they get. Builders and debuggers work on one task, so they get less and a rule about when to stop and ask.
 AUDIENCES: dict[str, dict[str, Any]] = {
-    "planner": {"limits": {"pitch": 1500, "who": 1500, "features": 3000, "look": 1500, "not": 1500},
-                "rule": "This document defines the product. Serve the people and features it describes, stay inside \"Not this\", and do not contradict it "
+    "planner": {"limits": {"pitch": 1500, "who": 1500, "features": 3000, "look": 1500, "not": 1500, "success": 1800},
+                "rule": "This document defines the product. Serve the people and features it describes, consider its Success measures, stay inside \"Not this\", and do not contradict it "
                         "without saying so in the plan's assumptions or risks."},
-    "builder": {"limits": {"pitch": 600, "who": 600, "features": 1200, "look": 1000, "not": 1000},
-                "rule": "This document defines the product. Build only what this task asks. Match the look and feel it describes and stay inside \"Not this\". "
+    "builder": {"limits": {"pitch": 600, "who": 600, "features": 1200, "look": 1000, "not": 1000, "success": 700},
+                "rule": "This document defines the product. Build only what this task asks. Consider its Success measures, match the look and feel it describes, and stay inside \"Not this\". "
                         "If the task cannot be done without contradicting it, use `clarification_needed` instead of guessing."},
-    "reviewer": {"limits": {"pitch": 800, "who": 800, "features": 1500, "look": 1000, "not": 1000},
-                 "rule": "Judge the change against this document too. Flag work that serves none of the features, builds something under \"Not this\", "
+    "reviewer": {"limits": {"pitch": 800, "who": 800, "features": 1500, "look": 1000, "not": 1000, "success": 900},
+                 "rule": "Judge the change against this document too. Flag work that serves none of the features, conflicts with its Success measures, builds something under \"Not this\", "
                          "or departs from the look and feel it describes, even if the code is correct."},
-    "verifier": {"limits": {"pitch": 800, "who": 800, "features": 1500, "look": 1000, "not": 1000},
-                 "rule": "Check the plan against this document too. Reject or flag a plan that builds something under \"Not this\", serves no listed feature, "
+    "verifier": {"limits": {"pitch": 800, "who": 800, "features": 1500, "look": 1000, "not": 1000, "success": 900},
+                 "rule": "Check the plan against this document too. Reject or flag a plan that conflicts with its Success measures, builds something under \"Not this\", serves no listed feature, "
                          "or departs from the look and feel."},
 }
 
@@ -465,12 +468,12 @@ FORMAT_REMINDER = (
     "\n\n### FORMAT CORRECTION ###\nYour previous reply could not be read. Reply again with ONLY the JSON object described above, as plain text: "
     "no commentary before or after it, no code fence, and every quote inside the markdown escaped.")
 
-SHAPE = ("Keep exactly these five sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
+SHAPE = ("Keep exactly these six sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
          ". Keep the person's own words wherever you can: add and adjust, don't rewrite. Do not invent facts; where something is unknown write \"TBD:\" "
          "and the question that would settle it. Short lists, no marketing language.")
 
 
-SHAPE_SUMMARY = ("Keep exactly these five sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
+SHAPE_SUMMARY = ("Keep exactly these six sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
                  ". Use the person's own words wherever you can. Do not invent facts; where something is unknown write \"TBD:\" and the question that would settle it. Short lines, no marketing language.")
 
 
@@ -488,6 +491,7 @@ Their document{' (only the first ' + str(MAX_IMPORT_CHARS) + ' characters are sh
 - Core features: one line per feature, the most important first, up to about twelve. Add a short phrase for a rule or number that changes how it is built.
 - Look and feel: only what the document says about style, tone or design; otherwise leave the guidance text.
 - What to exclude: only non-goals the document states; otherwise leave the guidance text.
+- Success measures: outcomes or targets stated in the document; do not invent metrics or event names.
 - Where the document has detail that matters (a rule, a number, a named screen), keep a short phrase and say where it is, for example "(see 'Checkout rules' in the attached document)".
 
 Reply with ONLY JSON: {{"summary": "bulleted: what you captured in each section, and what lives only in the attached document", "markdown": "the complete short document"}}"""
@@ -606,6 +610,26 @@ def code_tree(root: Path, max_chars: int = 7000, max_depth: int = 5) -> str:
     return "\n".join(lines)[:max_chars]
 
 
+def reverse_engineering_prompt(target: str = "", name: str = "", current: str = "") -> str:
+    existing = (f"\nThe person has already written some of it; keep what they wrote and only add or refine:\n{current}\n" if is_filled_doc(current) else "")
+    target_desc = f"Target artifact / notes:\n{target[:MAX_IMPORT_CHARS]}" if target else f"Target binary / package: {name}" if name else "Target system or binary inspected via REA MCP server."
+    return f"""Someone is reverse engineering an application using the REA (Reverse Engineer Anything) MCP server to reconstruct its product requirements document.
+
+REA MCP Evidence & Analysis:
+{target_desc}
+{existing}
+How to write it:
+- Extract and reconstruct what the product DOES, its user workflows, screen architecture, and core capabilities from the reverse engineering evidence and decompilation analysis.
+- Anything you are inferring from decompiled symbols, strings, or protocols, say so clearly ("Inferred from decompiled assets: ..."). Anything that cannot be verified from the binary, write "TBD:" and the question to settle it.
+- Core features: capabilities, user-facing flows, and core logic recovered from the reverse-engineered application.
+- Look and feel: UI components, navigation paradigms, screen layouts, or styling identified during reverse engineering; otherwise leave a TBD question.
+- Not this: leave it empty. Only the person can say what it should not be.
+- On the "Built for:" line of the Pitch, list the target platforms identified from the binary/application format.
+- {SHAPE}
+
+Reply with ONLY JSON: {{"summary": "bulleted: key reverse-engineered capabilities recovered via REA MCP, and open questions/unknowns", "markdown": "the complete document"}}"""
+
+
 def draft_prompt(digest: str, current: str = "") -> str:
     existing = (f"\nThe person has already written some of it; keep what they wrote and only add:\n{current}\n" if is_filled_doc(current) else "")
     return f"""Someone is adding an existing project and has no product requirements yet. Work out what this product is from what is in the project, and draft a short requirements document for it.
@@ -619,6 +643,7 @@ How to write it:
 - Core features: what the code and notes show it can do now, as short lines.
 - Look and feel: only if the project shows it (a design system, screenshots, UI copy); otherwise leave a TBD question.
 - Not this: leave it empty. Only the person can say what it should not be.
+- Success measures: include only outcomes or targets evidenced by project documents; otherwise leave a TBD question.
 - On the "Built for:" line of the Pitch, list the platforms the project clearly targets.
 - {SHAPE}
 
@@ -722,8 +747,9 @@ What the job showed:
 Rules:
 - Change the document ONLY where the job clearly adds to it or contradicts it: a feature that now exists or was dropped, a decision the person made, a user or constraint that came up. If nothing needs to change, say so.
 - The person's own words stay. Add or adjust a line; never rewrite their wording, and never remove anything under "Not this".
+- Preserve Success measures unless the completed job clearly changes a project-level outcome or target; never invent a measured result.
 - {SHAPE}
-- Do not record implementation detail (files, libraries). Only what the product is, who it is for, what it does, how it should feel, and what it is not.
+- Do not record implementation detail (files, libraries) or invent measured results. Only record what the product is, who it is for, what it does, how it should feel, what it is not, and project-level success measures that the job clearly changes.
 
 Reply with ONLY JSON: {{"changed": true or false, "summary": "one sentence on what you changed and why (empty if unchanged)", "markdown": "the complete updated document (empty if unchanged)"}}"""
 

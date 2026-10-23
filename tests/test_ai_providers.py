@@ -60,6 +60,36 @@ class AiProviderTests(unittest.TestCase):
                 ai_providers.install_provider("anything; touch /tmp/not-allowed")
         run.assert_not_called()
 
+    def test_auto_approve_classification(self):
+        # yolo providers auto-accept tool changes (gemini/agy/pool/opencode); the rest are plan-only / non-interactive
+        status = self.status(installed=("gemini", "agy", "pool", "opencode", "claude", "codex", "ollama"),
+                             ready=("gemini", "agy", "pool", "opencode", "claude", "codex", "ollama"))
+        by_id = {p["id"]: p for p in status["providers"]}
+        for pid in ("gemini", "agy", "pool", "opencode"):
+            self.assertTrue(by_id[pid]["auto_approve"], f"{pid} should auto-approve (yolo)")
+        for pid in ("claude", "codex", "ollama"):
+            self.assertFalse(by_id[pid]["auto_approve"], f"{pid} should not auto-approve")
+
+    def test_pool_readiness_uses_credentials_file(self):
+        from orchestrator.setup_checklist import _cli_ready
+        import shutil as _shutil
+        home = Path("/tmp/orchestrator_pool_test_home")
+        creds = home / ".config" / "poolside" / "credentials.json"
+        creds.parent.mkdir(parents=True, exist_ok=True)
+        if creds.exists():
+            creds.unlink()
+        env = {"HOME": str(home), "XDG_CONFIG_HOME": ""}
+        try:
+            with patch("orchestrator.setup_checklist.shutil.which", return_value="/usr/local/bin/pool"), \
+                 patch.dict("os.environ", env, clear=False):
+                # Signed out: `pool login` has not written credentials yet -> not ready
+                self.assertFalse(_cli_ready("pool"))
+                # Signed in: `pool login` writes the credentials file -> ready
+                creds.write_text("{}")
+                self.assertTrue(_cli_ready("pool"))
+        finally:
+            _shutil.rmtree(home, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

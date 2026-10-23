@@ -265,9 +265,10 @@ def instrumentation_context(feature: dict[str, Any], provider_name: str | None) 
     """Planner text: what this feature must track."""
     kpis = feature.get("kpis") or []
     if not kpis:
-        return ""
+        return ("\n\n## Measurement\nNo KPI is defined for this feature yet. Do not invent a numeric target or event. "
+                "Keep the job runnable; note in the plan that measurement is not defined and suggest adding a feature KPI if a measurable outcome is important.")
     where = f" through the project's {provider_name} integration" if provider_name else " through the project's existing analytics layer"
-    lines = ["", "", "## Measurement", f"This feature is judged by these KPIs. Emit each event{where} (reuse the existing wrapper; don't add a second SDK), and add a test case that checks each event is sent:"]
+    lines = ["", "", "## Measurement", f"This feature is judged by these KPIs. Emit each event{where} (reuse the existing wrapper; don't add a second SDK). Include an automated test for each event that verifies the exact event name is sent from the intended user action. Add those tests to the plan's acceptance criteria. In the job's completion summary, list each required event, its verifying test, and whether that test passed. A passing test verifies instrumentation in its tested code path; do not claim it proves users adopted the feature or met the KPI target:"]
     for k in kpis:
         goal = "" if k.get("target") is None else f" (target: {'at least' if k['direction'] == 'up' else 'at most'} {k['target']:g}{(' ' + k['unit']) if k.get('unit') else ''})"
         lines.append(f"- `{k['event']}` for \"{k['name']}\"{goal}")

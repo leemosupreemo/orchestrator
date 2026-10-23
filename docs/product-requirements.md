@@ -6,7 +6,7 @@ This page describes how it works for the person using it, then what happens unde
 
 ## The document
 
-Five sections, in the person's own words wherever possible. **Every section is optional**: write what you know and leave the rest.
+Six sections, in the person's own words wherever possible. **Every section is optional**: write what you know and leave the rest.
 
 | Section | What goes in it | Optional |
 |---|---|---|
@@ -15,6 +15,7 @@ Five sections, in the person's own words wherever possible. **Every section is o
 | **Core features** | The things it has to do, one per line. User-story form ("As a …, I can … so that …") is encouraged, not required. | Yes |
 | **Look and feel** | A description ("feels like Google Docs"), plus designs, sketches, links and items from a connected app such as Figma. | Yes |
 | **Not this** | Features to avoid, non-goals, or competitor patterns you don't want to copy. | Yes |
+| **Success measures** | Project-level outcomes and targets. Event names and an analytics provider are optional. | Yes |
 
 Each section starts with a line of italic guidance. Guidance and lines beginning `TBD:` don't count as content, so a section is "written" only when the person (or an accepted draft) has put something real in it.
 
@@ -54,8 +55,9 @@ The Product page (**Product** card on Home, then **Open**) offers these, most us
 
 - **Write it.** Click **Write** on a section and type. Every section is optional: write what you know and leave the rest. Anything written is enough for the document to start doing its job.
 - **Draft it from my project.** For a project that already has code (a README, notes, a manifest or source files), the app reads a bounded summary of it: the README, `AGENTS.md`/`CLAUDE.md`, a few files in `docs/`, manifests (`package.json`, `pyproject.toml`, `Package.swift`, …), the top-level layout, source files by type and the last 30 commit subjects. A model proposes a first PRD from that. It describes what the product does today, says what it inferred and what it couldn't tell, and writes `TBD:` questions for the rest. **It never writes "Not this"**: only the person can say what the product shouldn't be, and builders and reviewers treat that section as law.
-- **Import PRD.** Drag a file onto the drop zone (on a computer) or browse files. A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. A model reads it and writes a short summary for each of the five sections, so the document stays readable and every section is filled in; the proposal says what it summarised or left out. **The full file is kept** as a [source document](#source-documents) and handed to the AI helpers alongside the summaries, so the nuance isn't lost.
-- **New project wizard.** After the name and platforms (the only required answers), it asks one question per section: pitch, who it's for, core features, look and feel, and what to exclude. Each answer is written into its section as given and any of them can be skipped. "Not sure: recommend for me" for platforms becomes a note telling the first plan to recommend platforms, with reasons. The last step offers **Break it down** into epics, and it can be skipped.
+- **Import PRD.** Drag a file onto the drop zone (on a computer) or browse files. A markdown, text or Word (`.docx`) file, a PDF (needs the `pdftotext` tool, `brew install poppler`), or pasted text. A model reads it and writes a short summary for each of the six sections, leaving Success measures empty unless the source states outcomes or targets; the proposal says what it summarised or left out. **The full file is kept** as a [source document](#source-documents) and handed to the AI helpers alongside the summaries, so the nuance isn't lost.
+- **Reverse engineer with REA MCP.** For existing applications, compiled binaries, APKs, IPAs, Electron bundles, or network captures, use the REA (Reverse Engineer Anything) MCP server (`rea-agents`) to decompile, inspect, and reconstruct product requirements and workflows.
+- **New project wizard.** After the name and platforms (the only required answers), it asks one question per section: pitch, who it's for, core features, look and feel, what to exclude, and optional project success measures. Each answer is written into its section as given and any of them can be skipped. "Not sure: recommend for me" for platforms becomes a note telling the first plan to recommend platforms, with reasons. The last step offers **Break it down** into epics, and it can be skipped.
 
 Drafts and imports are always shown as a diff with **Accept and save** / **Discard**. Nothing is written until the person accepts.
 
@@ -63,7 +65,7 @@ Drafts and imports are always shown as a diff with **Accept and save** / **Disca
 
 ### Source documents
 
-When a PRD is imported, the original file is saved under `docs/product/source/` and listed in the PRD under a `## Source documents` heading. The summaries in the five sections say what matters; the source holds the detail behind them. Every reader in the table below is told the source documents exist and where, so a planner or builder that needs the detail can read the file. The Product page lists them with a download link. Only the first 40,000 characters of an import are sent to the model to summarise; the saved file is always whole. Saving a section by hand, a draft or an update keeps the source list.
+When a PRD is imported, the original file is saved under `docs/product/source/` and listed in the PRD under a `## Source documents` heading. The six section summaries say what matters; the source holds the detail behind them. Every reader in the table below is told the source documents exist and where, so a planner or builder that needs the detail can read the file. The Product page lists them with a download link. Only the first 40,000 characters of an import are sent to the model to summarise; the saved file is always whole. Saving a section by hand, a draft or an update keeps the source list.
 
 ### 2. Editing by hand
 
@@ -110,12 +112,12 @@ The filled-in sections are put in front of each role in a form that suits it, he
 
 | Reader | How much it gets | Its rule |
 |---|---|---|
-| Planner | Most of each section (pitch and "who" ~1,500 characters each, features ~3,000) | Serve the people and features described, stay inside "Not this", and say in the plan's assumptions or risks if it would contradict the document. |
-| Builder, debugger | Less (~600 to 1,200 per section) | Build only what the task asks, match the look and feel, stay inside "Not this", and use `clarification_needed` instead of guessing if the task can't be done without contradicting it. |
-| Reviewer | Medium | Flag work that serves none of the features, builds something under "Not this", or departs from the look and feel, even if the code is correct. |
-| Plan verifier | Medium | Reject or flag a plan that builds something under "Not this", serves no listed feature, or departs from the look and feel. |
+| Planner | Most of each section (pitch and "who" ~1,500 characters each, features ~3,000) | Serve the people and features described, consider project success measures, stay inside "Not this", and say in the plan's assumptions or risks if it would contradict the document. |
+| Builder, debugger | Less (~600 to 1,200 per section) | Build only what the task asks, consider the project success measures, match the look and feel, stay inside "Not this", and use `clarification_needed` instead of guessing if the task can't be done without contradicting it. |
+| Reviewer | Medium | Flag work that serves none of the features, conflicts with project success measures, builds something under "Not this", or departs from the look and feel, even if the code is correct. |
+| Plan verifier | Medium | Reject or flag a plan that conflicts with project success measures, builds something under "Not this", serves no listed feature, or departs from the look and feel. |
 
-Sections are trimmed one at a time, so a long feature list never squeezes out "Not this". Empty sections add nothing; a project with no written PRD adds no context at all.
+Sections are trimmed one at a time, so a long feature list never squeezes out "Not this". Empty sections add nothing; a project with no written PRD adds no context at all. Project-level Success measures reach jobs whether or not they are linked to a feature.
 
 ### 7. Check-up
 
@@ -179,7 +181,7 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 
 | Request | Does |
 |---|---|
-| `GET /product` | The document, its five sections, history, settings, unseen notice and whether a draft is possible. Never creates a file. |
+| `GET /product` | The document, its six sections, history, settings, unseen notice and whether a draft is possible. Never creates a file. |
 | `POST /product` `{section, body}` or `{text, source, summary}` | Save one section, or the whole document. `source` is `you`, `import` or `draft`. |
 | `POST /product/settings` `{auto_update}` | The automatic-update switch. |
 | `POST /product/dismiss` | Mark the update notice seen. |

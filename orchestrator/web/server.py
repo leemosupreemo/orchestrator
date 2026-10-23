@@ -959,8 +959,11 @@ def analytics_overview(root: Path) -> dict[str, Any]:
     provider = analytics.PROVIDERS.get(state["provider"], {})
     region = state.get("region", "us")
     dashboard_url = provider.get("dashboards", {}).get(region, "")
+    prd_text = prd_doc.Prd(root, runtime_dir(root)).read() or ""
+    success_measures = prd_doc.split(prd_text).get("success", "")
     return {**state, "provider_name": provider.get("name"), "key_label": provider.get("key_label"),
             "dashboard_url": dashboard_url,
+            "success_measures": success_measures,
             "features": feature_store.rollup(feature_store.load(runtime_dir(root)), []),
             "mixpanel_mcp": analytics.probe_mixpanel_mcp(),
             "provider_mcp": {p: analytics.probe_provider_mcp(p) for p in analytics.PROVIDERS}}
@@ -3209,6 +3212,7 @@ AVAILABLE_MODELS = [
     {"id": "o3-mini", "label": "o3-mini", "provider": "OpenAI"},
     {"id": "opencode/big-pickle", "label": "Big Pickle (Free)", "provider": "OpenCode"},
     {"id": "deepseek", "label": "DeepSeek Coder", "provider": "Ollama"},
+    {"id": "pool", "label": "Pool", "provider": "Poolside"},
 ]
 
 
@@ -3220,6 +3224,7 @@ def pick_best_default_models(active_providers: set[str] | list[str] | None = Non
     has_openai = "codex" in active
     has_opencode = "opencode" in active
     has_ollama = "ollama" in active
+    has_pool = "pool" in active
 
     if not active:
         return {
@@ -3238,6 +3243,8 @@ def pick_best_default_models(active_providers: set[str] | list[str] | None = Non
         architect = "o3-mini"
     elif has_opencode:
         architect = "opencode/big-pickle"
+    elif has_pool:
+        architect = "pool"
     elif has_ollama:
         architect = "deepseek"
     else:
@@ -3252,6 +3259,8 @@ def pick_best_default_models(active_providers: set[str] | list[str] | None = Non
         planner = "gpt-4o"
     elif has_opencode:
         planner = "opencode/big-pickle"
+    elif has_pool:
+        planner = "pool"
     elif has_ollama:
         planner = "deepseek"
     else:
@@ -3266,6 +3275,8 @@ def pick_best_default_models(active_providers: set[str] | list[str] | None = Non
         builder = "gemini-3.1-pro-preview"
     elif has_opencode:
         builder = "opencode/big-pickle"
+    elif has_pool:
+        builder = "pool"
     elif has_ollama:
         builder = "deepseek"
     else:
@@ -3280,6 +3291,8 @@ def pick_best_default_models(active_providers: set[str] | list[str] | None = Non
         reviewer = "gpt-4o"
     elif has_opencode:
         reviewer = "opencode/big-pickle"
+    elif has_pool:
+        reviewer = "pool"
     elif has_ollama:
         reviewer = "deepseek"
     else:
@@ -3303,7 +3316,7 @@ def tool_search_path() -> str:
     return os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
 
 
-PROVIDER_MODEL_CLIS = {"claude": ["claude"], "codex": ["codex"], "gemini": ["gemini"], "agy": ["gemini"], "ollama": ["ollama"], "opencode": ["opencode"]}
+PROVIDER_MODEL_CLIS = {"claude": ["claude"], "codex": ["codex"], "gemini": ["gemini"], "agy": ["gemini"], "ollama": ["ollama"], "opencode": ["opencode"], "pool": ["pool"]}
 
 
 def provider_models() -> dict[str, list[dict[str, Any]]]:
@@ -3320,7 +3333,7 @@ def provider_models() -> dict[str, list[dict[str, Any]]]:
 def available_models() -> list[dict[str, str]]:
     """The model choices for roles: the recommended few first, then every other model that is known."""
     from orchestrator.scripts.model_registry import get_all_models
-    labels = {"claude": "Anthropic", "gemini": "Google", "openai": "OpenAI", "opencode": "OpenCode", "ollama": "Ollama", "qwen": "Ollama"}
+    labels = {"claude": "Anthropic", "gemini": "Google", "openai": "OpenAI", "opencode": "OpenCode", "ollama": "Ollama", "qwen": "Ollama", "pool": "Poolside"}
     out = list(AVAILABLE_MODELS)
     seen = {m["id"] for m in out}
     for m in sorted(get_all_models(), key=lambda m: (m.family, int(m.tier), m.id)):
@@ -5126,7 +5139,7 @@ class UIHandler(BaseHTTPRequestHandler):
                             "diff": prd_doc.unified_diff(older[-1]["content"] if older else "", v["content"], "before", "this version")})
             elif method == "POST" and parts == ["product"]:
                 body = self._body()
-                source = _choice(body, "source", ["you", "import", "draft"]) if body.get("source") else "you"
+                source = _choice(body, "source", ["you", "import", "draft", "reverse"]) if body.get("source") else "you"
                 summary = _text(body, "summary", limit=1000)  # a draft's summary runs to a few bullets; history keeps the first 300 characters
                 if "section" in body:
                     doc.set_section(str(body["section"]), str(body.get("body") or ""), source, summary)
@@ -5226,6 +5239,35 @@ class UIHandler(BaseHTTPRequestHandler):
                     return proposal
 
                 self._start_proposal(root, current, prd_doc.import_prompt(source, name), summarise, 240)
+            elif method == "POST" and parts == ["product", "reverse"]:
+                target = ""
+                name = "reverse_engineering_notes.txt"
+                raw = b""
+                chosen_model = ""
+                if (self.headers.get("Content-Type") or "").startswith("application/json"):
+                    body = self._body()
+                    target = _text(body, "target", limit=10_000) if body.get("target") else ""
+                    chosen_model = _text(body, "model", limit=100) if body.get("model") else ""
+                else:
+                    name = (query.get("name") or ["target_binary"])[0]
+                    target = (query.get("target") or [""])[0]
+                    raw = self._read_upload()
+                current = doc.read() or prd_doc.template()
+                settings = read_settings(root)
+                models_cfg = settings.get("default_models", {})
+                chosen_model = chosen_model or models_cfg.get("reviewer") or ""
+
+                def summarise_reverse(reply: str) -> dict[str, Any]:
+                    proposal = prd_doc.parse_draft(reply, current)
+                    if raw or target:
+                        summary_content = target or f"Reverse engineered binary: {name}"
+                        added = doc.attach_source(name or "reverse_engineering_target", raw, summary_content)
+                        proposal["markdown"] = prd_doc.set_sources(proposal["markdown"], doc.sources() + added)
+                        proposal["attached"] = [i["label"] for i in added]
+                    return proposal
+
+                prompt = prd_doc.reverse_engineering_prompt(target=target, name=name, current=current)
+                self._start_proposal(root, current, prompt, summarise_reverse, 300, model=chosen_model)
             else:
                 raise UIError("Not found", HTTPStatus.NOT_FOUND)
         except prd_doc.PrdError as exc:

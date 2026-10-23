@@ -73,6 +73,11 @@ def _cli_ready(cli: str) -> bool:
     if cli == "ollama":
         res = _run(["ollama", "list"], timeout=3)
         return bool(res and res.returncode == 0)
+    if cli == "pool":
+        # `pool login` has no status subcommand; readiness is signaled by the credentials file
+        # that `pool login` writes (the path `pool config` reports, honouring XDG_CONFIG_HOME).
+        config_dir = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "poolside"
+        return (config_dir / "credentials.json").exists()
     return True
 
 

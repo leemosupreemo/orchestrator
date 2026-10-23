@@ -330,9 +330,18 @@ opencode/north-mini-code-free
         cmd_deepseek = get_llm_command("deepseek", "prompt.txt")
         self.assertIn("ollama run deepseek-coder --nowordwrap", cmd_deepseek)
         
-        # 4. Test opencode/qwen-3.7-max routing (should route to opencode)
+        # 4. Test opencode/qwen-3.7-max routing (should route to opencode, in auto-approve/--auto mode so it won't stall)
         cmd_opencode_qwen = get_llm_command("opencode/qwen-3.7-max", "prompt.txt")
         self.assertIn("opencode run --model opencode/qwen-3.7-max", cmd_opencode_qwen)
+        self.assertIn("--auto", cmd_opencode_qwen)
+        cmd_opencode_default = get_llm_command("opencode", "prompt.txt")
+        self.assertIn("opencode run --model opencode/big-pickle --auto", cmd_opencode_default)
+
+        # 5. Test pool routing (should run non-interactive via the Poolside CLI, reading the prompt from stdin)
+        cmd_pool = get_llm_command("pool", "prompt.txt")
+        self.assertIn('cat "prompt.txt" | pool exec', cmd_pool)
+        self.assertIn("--unsafe-auto-allow", cmd_pool)
+        self.assertIn("-p -", cmd_pool)
 
     def test_copilot_has_reasoning_and_is_free(self) -> None:
         copilot = model_registry.get_model("copilot")

@@ -303,11 +303,13 @@
     const hasOpenAI = active.has("codex");
     const hasOpenCode = active.has("opencode");
     const hasOllama = active.has("ollama");
+    const hasPool = active.has("pool");
 
     const architect = hasClaude ? "claude-sonnet-4-6"
       : hasGemini ? "gemini-3.1-pro-preview"
       : hasOpenAI ? "o3-mini"
       : hasOpenCode ? "opencode/big-pickle"
+      : hasPool ? "pool"
       : hasOllama ? "deepseek"
       : "claude-sonnet-4-6";
 
@@ -315,6 +317,7 @@
       : hasGemini ? "gemini-3.1-pro-preview"
       : hasOpenAI ? "gpt-4o"
       : hasOpenCode ? "opencode/big-pickle"
+      : hasPool ? "pool"
       : hasOllama ? "deepseek"
       : "claude-sonnet-4-6";
 
@@ -322,6 +325,7 @@
       : hasOpenAI ? "gpt-4o"
       : hasGemini ? "gemini-3.1-pro-preview"
       : hasOpenCode ? "opencode/big-pickle"
+      : hasPool ? "pool"
       : hasOllama ? "deepseek"
       : "claude-sonnet-4-6";
 
@@ -329,6 +333,7 @@
       : hasClaude ? "claude-sonnet-4-6"
       : hasOpenAI ? "gpt-4o"
       : hasOpenCode ? "opencode/big-pickle"
+      : hasPool ? "pool"
       : hasOllama ? "deepseek"
       : "claude-sonnet-4-6";
 
@@ -348,7 +353,8 @@
       {id: "gpt-4o", name: "GPT-4o", provider: "OpenAI"},
       {id: "o3-mini", name: "o3-mini", provider: "OpenAI"},
       {id: "opencode/big-pickle", name: "Big Pickle (Free)", provider: "OpenCode"},
-      {id: "deepseek", name: "DeepSeek Coder", provider: "Ollama"}
+      {id: "deepseek", name: "DeepSeek Coder", provider: "Ollama"},
+      {id: "pool", name: "Pool", provider: "Poolside"}
     ];
     const roles = [
       {id: "architect", label: "Architect", desc: "Checks the plan and sets the standards it must meet"},
@@ -388,7 +394,7 @@
     const status = (p) => p.installed ? p.ready ? `<span class="pill done">Ready</span>` : `<span class="pill attention">Needs sign-in</span>`
       : p.key_saved ? `<span class="pill attention">Not installed · API key saved</span>` : `<span class="pill">Not installed</span>`;
     const toolRow = (p) => `<details class="ai-tool" data-provider="${escapeHtml(p.id)}">
-        <summary><span class="ai-tool-name">${escapeHtml(p.name)}</span>${status(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span></summary>
+        <summary><span class="ai-tool-name">${escapeHtml(p.name)}</span>${status(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span>${p.auto_approve ? `<span class="pill done" title="Auto-accepts tool changes without asking (YOLO)">YOLO</span>` : `<span class="pill muted" title="Does not auto-accept tool changes">Plan-first</span>`}</summary>
         <div class="ai-tool-details stack">
           <p>${escapeHtml(p.what)}</p>
           ${!p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>` : !p.ready ? `<p class="muted">${escapeHtml(p.sign_in)}</p>` : `<p class="ai-ready-note">Ready to use on this computer.</p>`}

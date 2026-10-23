@@ -48,10 +48,24 @@ PROVIDERS: list[dict[str, str]] = [
      "install": "npm install -g @google/gemini-cli", "install_alt": "",
      "sign_in": "Add a Gemini API key under API Keys.", "link": "https://github.com/google-gemini/gemini-cli",
      "key": "gemini_api_key", "env": "GEMINI_API_KEY", "key_label": "Antigravity / Gemini"},
+    {"id": "pool", "name": "Poolside", "cli": "pool", "cost": "free",
+     "what": "Poolside's coding agent and ACP runtime. Free developer access to Poolside-hosted models, with the option to bring your own endpoint (an OpenRouter key, an OpenAI-compatible gateway, or a local model server).",
+     "install": "curl -fsSL https://downloads.poolside.ai/pool/install.sh | sh",
+     "sign_in": "Run `pool login` once in a terminal and follow the prompts (Poolside Platform, a deployment, OpenRouter, or an OpenAI-compatible endpoint).",
+     "link": "https://poolside.ai"},
 ]
 
 CLIS = [p["cli"] for p in PROVIDERS]
 API_KEYS = [(p["key"], p["key_label"], p["env"]) for p in PROVIDERS if p.get("key")]  # (setting, label, environment variable)
+
+# Providers the orchestrator runs with an explicit flag that auto-accepts all tool / permission requests
+# ("yolo"), so they never stall mid-job waiting for a human to approve a tool call:
+#   gemini -> --yolo, agy -> --dangerously-skip-permissions, pool -> --unsafe-auto-allow, opencode -> --auto
+# (see orchestrator/scripts/llm.py get_llm_command for the flags). Providers not listed here either give the
+# model no tools to call (claude -p, codex exec, ollama — it outputs a plan the orchestrator applies) or are
+# interactive and not used in headless runs (copilot). This is surfaced on the AI tools page so a user can pick
+# a yolo provider for fully-unattended jobs.
+AUTO_APPROVE_CLIS = {"gemini", "agy", "pool", "opencode"}
 
 # Optional helpers for the AI tools themselves (docs/recommended-mcp-plugins.md has the detail; a test keeps them in step).
 PLUGINS: list[dict[str, str]] = [
@@ -73,7 +87,8 @@ def with_status(installed: Callable[[str], bool], ready: Callable[[str], bool], 
         has_cli = installed(provider["cli"])
         key_saved = provider.get("key") in saved_keys
         out.append({**provider, "cost_label": COST_LABELS[provider["cost"]], "installed": has_cli,
-                    "ready": (has_cli and ready(provider["cli"])) or key_saved, "key_saved": key_saved})
+                    "ready": (has_cli and ready(provider["cli"])) or key_saved, "key_saved": key_saved,
+                    "auto_approve": provider["cli"] in AUTO_APPROVE_CLIS})
     return {"providers": out, "any_ready": any(p["ready"] for p in out), "plugins": PLUGINS, "checked": CHECKED}
 
 

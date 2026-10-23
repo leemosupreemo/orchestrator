@@ -375,6 +375,15 @@
       "capabilities": ["coding", "reasoning"],
       "cost_factor": 0.0,
       "required_clis": ["opencode"]
+    },
+    {
+      "id": "pool",
+      "family": "pool",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["poolside"],
+      "required_clis": ["pool"]
     }
   ]
 }

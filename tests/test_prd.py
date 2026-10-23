@@ -24,7 +24,7 @@ FILLED = prd.replace_section(prd.replace_section(prd.template(), "pitch", PITCH)
 class ParsingTests(unittest.TestCase):
     def test_a_new_document_has_five_sections_with_guidance_and_nothing_filled(self):
         view = prd.sections_view(prd.template())
-        self.assertEqual([s["id"] for s in view], ["pitch", "who", "features", "look", "not"])
+        self.assertEqual([s["id"] for s in view], ["pitch", "who", "features", "look", "not", "success"])
         self.assertFalse(any(s["filled"] for s in view))
         self.assertTrue(all(s["hint"] for s in view))
         self.assertTrue(all(s["optional"] for s in view))  # every section is optional
@@ -54,7 +54,7 @@ class ParsingTests(unittest.TestCase):
 
     def test_a_missing_section_is_put_back_at_the_end(self):
         out = prd.normalise("# X\n\n## Pitch\n\nA thing.\n")
-        self.assertEqual([s["id"] for s in prd.sections_view(out)], ["pitch", "who", "features", "look", "not"])
+        self.assertEqual([s["id"] for s in prd.sections_view(out)], ["pitch", "who", "features", "look", "not", "success"])
         self.assertEqual(prd.split(out)["pitch"], "A thing.")
 
     def test_platforms_come_from_the_pitch(self):
@@ -225,7 +225,7 @@ class SettingsTests(unittest.TestCase):
         self.prd.write(FILLED, "you", "Draft")
         o = self.prd.overview()
         self.assertEqual((o["exists"], o["auto_update"], o["notice"], o["path"]), (True, True, None, prd.PATH))
-        self.assertEqual(len(o["sections"]), 5)
+        self.assertEqual(len(o["sections"]), 6)
         self.assertEqual(o["history"][0]["summary"], "Draft")
         empty = prd.Prd(self.root / "other", self.root / "other" / ".orchestrator").overview()
         self.assertFalse(empty["exists"])
@@ -378,6 +378,11 @@ class DraftTests(unittest.TestCase):
             self.assertIn(needle, text, needle)
         self.assertIn("nothing readable", prd.draft_prompt("", ""))
         self.assertNotIn("already written some", text)  # an empty template is not "something the person wrote"
+
+    def test_reverse_engineering_prompt_references_rea_mcp_and_evidence(self):
+        text = prd.reverse_engineering_prompt(target="com.example.app APK symbols", name="app.apk", current="")
+        for needle in ("REA (Reverse Engineer Anything) MCP server", "com.example.app APK symbols", "Core features", "Look and feel", "Not this"):
+            self.assertIn(needle, text)
         self.assertIn("already written some", prd.draft_prompt("d", FILLED))
         self.assertIn("Two friends who have a minute", prd.draft_prompt("d", FILLED))  # so it keeps and adds
 

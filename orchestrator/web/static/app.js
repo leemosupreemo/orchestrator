@@ -2388,6 +2388,10 @@ function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
 
 // An epic's job is called an Epic even once it has been planned as a feature.
 const jobKind = (j) => (j.epic ? "Epic" : j.kind || j.type || "Job");
+// Tests jobs sit on a faintly tinted background in lists.
+function testsClass(j) {
+  return jobKind(j) === "Tests" ? " job-tests" : "";
+}
 const jiraChip = (j) => (j.jira?.key ? `<span class="jira-chip" title="Linked to Jira epic ${esc(j.jira.key)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-jira"/></svg>${esc(j.jira.key)}</span>` : "");
 
 function jobItem(j, { withAction = false } = {}) {
@@ -2395,7 +2399,7 @@ function jobItem(j, { withAction = false } = {}) {
   const meta = withAction && j.state.reason ? j.state.reason : bits.join(" · ");
   const next = withAction && j.state.next && !j.active_run
     ? `<button class="btn small ${["failed", "attention"].includes(j.state.tone) ? "primary" : ""}" ${act(j.state.next.action, { job: j.id })}>${esc(j.state.next.label)}</button>` : "";
-  return `<div class="item">
+  return `<div class="item${testsClass(j)}">
     <a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(j.title)}</div><div class="meta">${esc(meta)}</div></a>
     <div class="side">${jobPill(j)}${next}</div></div>`;
 }
@@ -2451,7 +2455,7 @@ function jobTableRow(j, { hidden = false } = {}) {
     : `<span class="job-type-tag${j.epic ? " job-type-epic" : ""}">${typeLabel}</span>`;
 
   return `
-    <a class="job-table-row"${hidden ? " hidden" : ""} href="#/jobs/${encodeURIComponent(j.id)}">
+    <a class="job-table-row${testsClass(j)}"${hidden ? " hidden" : ""} href="#/jobs/${encodeURIComponent(j.id)}">
       <div class="col-job">
         <div class="job-title">${esc(j.title)} ${jiraChip(j)}</div>
         <div class="job-mobile-info">
@@ -3917,7 +3921,7 @@ pages.new = async (_, query) => {
       ${st.recent === null ? `<small class="muted">Looking for recent logs…</small>` : rows || `<small class="muted">No recent logs found. Upload one below, or pull device logs first.</small>`}
       ${uploadBox("Upload logs or screenshots", "A crash log, a console dump, a screenshot of the problem. We read the end of each log.", "image/*,.log,.txt,.json,.md,.crash,.ips")}</fieldset>`;
   };
-  const featureSelect = () => features.length ? field(`Part of a feature${opt("optional")}`, `<select name="feature"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select>`) : "";
+  const featureSelect = () => features.length ? `${field(`Part of a feature${opt("optional")}`, `<select name="feature" id="nj-feature-select"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}${f.kpis?.length ? ` · ${plural(f.kpis.length, "KPI")}` : ""}</option>`).join("")}</select>`)}<div id="nj-feature-measurement" class="muted text-sm" aria-live="polite"></div>` : "";
 
   const fieldsHtml = async () => {
     const v = st.v;
@@ -4008,6 +4012,16 @@ pages.new = async (_, query) => {
       <div class="row"><a class="btn small primary" href="#/product">Define the product first</a><button type="button" class="btn small ghost" id="nj-skip-discovery">Skip for now</button></div></div>` : "";
     $("#nj-skip-discovery")?.addEventListener("click", () => { try { localStorage.setItem(skipKey, "1"); } catch { /* remembered for this visit only */ } undefinedProduct = false; $("#nj-discovery").innerHTML = ""; });
     $("#nj-fields").innerHTML = out.html;
+    const updateFeatureMeasurement = () => {
+      const feature = features.find((f) => f.id === $("#nj-feature-select")?.value);
+      const note = $("#nj-feature-measurement");
+      if (!note) return;
+      note.innerHTML = feature && !(feature.kpis || []).length
+        ? `No success measure is defined for ${esc(feature.name)} yet. <a href="#/measure?feature=${encodeURIComponent(feature.id)}" target="_blank" rel="noopener">Add a KPI or ask AI to suggest one ↗</a>. You can continue without one.`
+        : feature ? `${(feature.kpis || []).length} KPI${(feature.kpis || []).length === 1 ? "" : "s"} will be included in this job's instructions.` : "";
+    };
+    $("#nj-feature-select")?.addEventListener("change", updateFeatureMeasurement);
+    updateFeatureMeasurement();
     picker?.wire();
     chips();
     $("#nj-fields input, #nj-fields textarea")?.focus({ preventScroll: true });
@@ -4524,9 +4538,9 @@ function improveKpiSummary(k, st) {
 }
 
 const ANALYTICS_BLURBS = {
-  mixpanel: "Event tracking and product analytics. Events and KPI metrics are streamed directly to your Mixpanel project.",
-  amplitude: "Behavioral analytics and digital optimization. Stream feature KPI events into your Amplitude workspace.",
-  posthog: "Product analytics and feature metrics. Connects to PostHog Cloud or self-hosted instances."
+  mixpanel: "Connect Orchestrator to your Mixpanel project and open its dashboard. Feature events are implemented with your project's analytics SDK; KPI results are entered here by hand.",
+  amplitude: "Connect Orchestrator to your Amplitude project and open its dashboard. Feature events are implemented with your project's analytics SDK; KPI results are entered here by hand.",
+  posthog: "Connect Orchestrator to PostHog Cloud or a self-hosted instance. Feature events are implemented with your project's analytics SDK; KPI results are entered here by hand."
 };
 function providerMcpTree(providerId, providerName, list) {
   const pkg = `${providerId}-mcp`;
@@ -4738,6 +4752,8 @@ pages.measure = async (_, query) => {
   const data = await api("analytics");
   const { features } = data;
   const connected = data.provider && data.key_set;
+  const allKpis = features.flatMap((f) => f.kpis || []);
+  const measuredKpis = allKpis.filter((k) => k.measurements?.length);
   const kpiRow = (f, k) => {
     const st = k.status, [label, tone] = KPI_STATE[st.state];
     const trend = st.trend === "better" ? "▲ better" : st.trend === "worse" ? "▼ worse" : st.trend === "flat" ? "▬ flat" : "";
@@ -4750,18 +4766,29 @@ pages.measure = async (_, query) => {
       ${k.measurements.length ? `<details class="kpi-log"><summary>Learning log (${k.measurements.length})</summary>${k.measurements.slice().reverse().map((m) => `<div class="kpi-entry"><span class="mono">${esc(m.value)}${k.unit ? ` ${esc(k.unit)}` : ""}</span> <span class="muted">${esc(ago(m.t))}</span>${m.decision ? ` <span class="pill ${m.decision === "drop" ? "failed" : m.decision === "iterate" ? "attention" : "done"}">${esc(DECISION_LABEL[m.decision])}</span>` : ""}${m.note ? ` <span>${esc(m.note)}</span>` : ""}</div>`).join("")}</details>` : ""}
     </div>`;
   };
-  const card = (f) => `<section class="card mb-16"><div class="card-h"><h2>${esc(f.name)}</h2><div class="row"><button class="btn small" data-kpi="autofill" data-f="${esc(f.id)}" title="A model suggests the one metric that best shows this feature is working">Auto-fill</button><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div></div>
-    <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working? Add one, or let Auto-fill suggest it.</div>`}</div></section>`;
+  const card = (f) => `<section class="card mb-16" id="analytics-feature-${esc(f.id)}"><div class="card-h"><h2>${esc(f.name)}</h2><div class="row"><button class="btn small" data-kpi="autofill" data-f="${esc(f.id)}" title="A model suggests the one metric that best shows this feature is working">Suggest a KPI</button><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div></div>
+    <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working? Add one, or ask AI to suggest one.</div>`}</div></section>`;
   return {
-    title: "Measure",
-    sub: "Build, measure, learn: say how each feature should be judged, then record what you find and what you'll do next.",
+    title: "Analytics",
+    sub: "See how features are measured, which analytics platform is connected, and what results you've recorded.",
     actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
     html: `
-      ${features.map(card).join("") || `<section class="card"><div class="empty">KPIs belong to features. Define features in <a href="#/product">product requirements</a> first.</div></section>`}
+      <section class="card mb-16 analytics-summary">
+        <div class="stats">
+          <div class="stat"><div class="k">Feature KPIs</div><div class="v">${allKpis.length}</div></div>
+          <div class="stat"><div class="k">With a recorded result</div><div class="v">${measuredKpis.length}</div></div>
+          <div class="stat"><div class="k">Analytics platform</div><div class="v">${data.provider ? esc(data.provider_name || data.provider) : "None connected"}</div></div>
+        </div>
+        <div class="row gap-10 wrap mt-8">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}</div>
+      </section>
+      <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><a class="btn small" href="#/product?section=success">Edit in Product ↗</a></div>
+        <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="muted">Optional project-wide outcomes and targets live in the Product requirements. Add them when you know what success should look like.</p>`}</div>
+      </section>
+      ${features.map(card).join("") || `<section class="card"><div class="empty">Feature KPIs are optional. Define product features on <a href="#/product">Product</a>, then add KPIs here when you know how to measure them.</div></section>`}
       <section class="card mb-16">
         <div class="card-h"><h2>Analytics Connections</h2></div>
         <div class="card-b stack">
-          <p class="muted">Connect an analytics provider so new jobs stream their KPI events directly to your tracking dashboard. Connect one to verify ingestion with a test event.</p>
+          <p class="muted">Connect Mixpanel, Amplitude or PostHog to identify the platform used for event tracking and open its dashboard. The connection test sends a setup event; Orchestrator does not import KPI results from the provider.</p>
           <div class="conn-grid">
             ${analyticsConnectionCards(data)}
           </div>
@@ -4770,6 +4797,8 @@ pages.measure = async (_, query) => {
     after: () => {
       const selectedProvider = (data.providers || []).find((p) => p.id === query?.get("provider"));
       if (selectedProvider) view.querySelector(`[data-analytics-p="${selectedProvider.id}"]`)?.scrollIntoView({ block: "start" });
+      const selectedFeature = query?.get("feature");
+      if (selectedFeature) document.getElementById(`analytics-feature-${selectedFeature}`)?.scrollIntoView({ block: "start" });
       const reload = () => route();
       const call = async (path, body, ok) => { try { await api(path, { method: "POST", body }); if (ok) toast(ok); reload(); } catch (e) { toast(e.message, true); } };
       view.querySelectorAll("[data-analytics-action]").forEach((btn) => {
@@ -5392,11 +5421,11 @@ pages.help = async () => {
         <li><strong>It gets built.</strong> A worker writes the code and the tests, on its own branch. Pause it any time; Resume picks up at the next task.</li>
         <li><strong>You review it.</strong> The job page shows progress, test cases, changes and a scope check. Ask the AI about it, revise the plan, or run a fix.</li>
         <li><strong>You ship it.</strong> Merge (or Mark complete), then send a build to testers from <a href="#/delivery">App delivery</a>.</li>
-        <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Measure</a> and log what you find.</li>
+        <li><strong>You learn from it.</strong> Give each feature KPIs on <a href="#/measure">Analytics</a> and log what you find.</li>
       </ol></div></section>
     <section class="card mb-16"><div class="card-h"><h2>Where things are</h2></div><div class="list">
       ${[["Home", "#/", "What's waiting on you (across projects), then all jobs."], ["Product", "#/product", "The one-page requirements every job reads, and the epics it breaks down into. Edit it, import a PRD, see its history, link epics to Jira."],
-         ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Packages", "#/packages", "The libraries and plugins the project uses; an AI review suggests more, and adding one starts a job."], ["App delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Measure", "#/measure", "KPIs, analytics connection, learning log."],
+         ["Tests", "#/tests", "Test cases by area, suites, coverage."], ["Packages", "#/packages", "The libraries and plugins the project uses; an AI review suggests more, and adding one starts a job."], ["App delivery", "#/delivery", "What's live, what testers have, what's ready, pipeline."], ["Analytics", "#/measure", "Project KPIs, analytics platform, and learning log."],
          ["Onboarding checklist", "#/checkup", "What the project needs, plus local tools, environment checks, and workflows."], ["Projects", "#/projects", "Switch, add or start a project."], ["Activity", "#/activity", "Commands and runs, with live output."],
          ["Configuration", "#/config", "Models, keys, machines, alerts, Firebase."]].map(([name, href, what]) => `<a class="item" href="${href}"><div class="main-col"><div class="title">${esc(name)}</div><div class="meta">${esc(what)}</div></div></a>`).join("")}
     </div></section>
@@ -5512,11 +5541,11 @@ pages.docs = async (args, query) => {
 };
 
 // ---------------------------------------------------------------- product requirements
-// One short living document (see orchestrator/prd.py): five sections, edited here, kept true by the AI as jobs finish,
+// One short living document (see orchestrator/prd.py): six optional sections, edited here, kept true by the AI as jobs finish,
 // with a history that can be restored and a switch for automatic updates.
 
 const PRD_SOURCE = { you: "You", auto: "Updated automatically after a job", import: "Imported", ai: "AI help (you accepted it)", draft: "Drafted from your project", revert: "Restored an earlier version",
-  migration: "Built from the earlier documents", earlier: "Before changes were tracked", answers: "Answered a breakdown question" };
+  migration: "Built from the earlier documents", earlier: "Before changes were tracked", answers: "Answered a breakdown question", reverse: "Reverse-engineered with REA MCP" };
 const DESIGN_IMAGE = /^designs\/([A-Za-z0-9._-]+\.(?:png|jpe?g|gif|webp))$/i;
 
 function prdSnippet(md, n = 180) {
@@ -5625,7 +5654,7 @@ function productStripHtml(p) {
     <div class="card-b stack">
       ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-10 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a>${modelPicker}</div>`}
+           <div class="row gap-10 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a><a class="btn small" href="#/product?reverse=1" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</a>${modelPicker}</div>`}
     </div></section>`;
 }
 
@@ -5642,6 +5671,7 @@ pages.product = async (_, query) => {
   const productEpics = () => epics?.data().epics || [];
   const start = query?.get("start") === "1" || query?.get("suggest") === "1"; // the wizard's and the old links to breaking it down
   const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1",
+    reverse: query?.get("reverse") === "1",
     section: query?.get("section") || (start ? "epics" : "") };
   const sectionCard = (s) => {
     const designs = s.id === "look" ? [...s.body.matchAll(/\]\((designs\/[^)\s]+)\)/g)].map((m) => m[1]).filter((d) => DESIGN_IMAGE.test(d)) : [];
@@ -5681,7 +5711,7 @@ pages.product = async (_, query) => {
   const render = () => `
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2></div>
         <div class="card-b stack">
-          <div class="row gap-10 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button></div>
+          <div class="row gap-10 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
           <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div>
         </div></section>
       <div id="prd-panel"></div>
@@ -5838,6 +5868,7 @@ pages.product = async (_, query) => {
 
       const wire = () => {
         $("#prd-import")?.addEventListener("click", () => importPanel());
+        $("#prd-reverse")?.addEventListener("click", () => reversePanel());
         view.querySelectorAll("[data-prd-source]").forEach((btn) => btn.addEventListener("click", async () => {
           const file = btn.dataset.prdSource, token = getToken(), backend = getBackendUrl();
           btn.disabled = true;
@@ -5997,7 +6028,7 @@ pages.product = async (_, query) => {
         let saveError = "";
         try {
           await save({ text: proposal.markdown, source, summary: proposal.summary });
-          toast(source === "draft" ? "Drafted from your project" : "PRD imported");
+          toast(source === "draft" ? "Drafted from your project" : source === "reverse" ? "Reverse-engineered with REA MCP" : "PRD imported");
         } catch (e) {
           saveError = e.message;
           toast(e.message, true);
@@ -6197,6 +6228,101 @@ pages.product = async (_, query) => {
         });
       };
 
+      const reverseEngineerPrd = async ({ file, target }) => {
+        if (file && file.size > NJ_UPLOAD_LIMIT) { toast("That file is over 25 MB.", "warning"); return reversePanel(); }
+        let canceled = false, taskId = null;
+        const abortCtrl = new AbortController();
+        const run = prdRun = {};
+        const cancel = async () => {
+          if (canceled) return;
+          canceled = true;
+          abortCtrl.abort();
+          prdPending.clear();
+          if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
+          toast("Reverse engineering cancelled", "cancel");
+          reversePanel();
+        };
+        const busyText = file ? `Reverse engineering ${file.name} with REA MCP…` : "Reverse engineering with REA MCP…";
+        busy(busyText, cancel);
+        try {
+          const started = file
+            ? await uploadFile(file, "product/reverse", { signal: abortCtrl.signal })
+            : await api("product/reverse", { method: "POST", body: { target, model: p.model || "" }, signal: abortCtrl.signal });
+          taskId = started?.task;
+          if (canceled) {
+            if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
+            return;
+          }
+          const label = "Reverse-engineered with REA MCP";
+          prdPending.set({ task: taskId, source: "reverse", busy: busyText, label });
+          const taskResult = await waitForTask(started, { signal: abortCtrl.signal });
+          if (canceled || run !== prdRun || !panel()) return;
+          prdPending.clear();
+          await proposalView(taskResult, { source: "reverse", label, onDone: () => { panel().innerHTML = ""; } });
+        } catch (e) {
+          if (canceled || run !== prdRun || e.name === "AbortError" || e.message === "Canceled" || e.message === "Cancelled") return;
+          prdPending.clear();
+          toast(e.message, true);
+          if (panel()) reversePanel();
+        }
+      };
+
+      const reversePanel = () => {
+        panel().innerHTML = `<section class="card mb-16" id="prd-reverse-card"><div class="card-h"><h2>Reverse engineering (REA MCP)</h2></div><div class="card-b stack">
+          <p class="muted">Reverse engineer an existing application, compiled binary, APK, IPA, Electron package, or capture using the <strong>REA (Reverse Engineer Anything)</strong> MCP server to reconstruct architecture and product requirements.</p>
+          <div class="prd-drop file-picker" id="prd-reverse-drop" tabindex="0" role="button" aria-label="Choose a binary or package to reverse engineer, or drop one here">
+            ${filePickerContent("Pick an application or binary to reverse engineer", "APK, IPA, Electron package, binary, WASM, or archive", false)}</div>
+          <input type="file" id="prd-reverse-input" accept=".apk,.ipa,.app,.wasm,.jar,.zip,.tar,.gz,.bin,.exe,.dylib,.so,.har,.json,.txt,.md" hidden>
+          <label class="field"><span>Target binary path, package name, or REA analysis notes</span>
+            <textarea id="prd-reverse-target" rows="3" placeholder="e.g. /path/to/binary, package name, or paste REA decompilation notes…" aria-label="Target or notes for REA reverse engineering"></textarea>
+          </label>
+          <div class="setup-hint">
+            <small class="muted">Uses the REA MCP server (<code>rea-agents</code>). To configure REA locally in your agent environment: <code>npx -y rea-agents setup</code></small>
+          </div>
+          <div class="row gap-10">
+            <button type="button" class="btn primary" id="prd-reverse-go" disabled>Reverse engineer</button>
+            <button type="button" class="btn ghost" id="prd-reverse-cancel">Cancel</button>
+          </div>
+        </div></section>`;
+        const input = $("#prd-reverse-input"), zone = $("#prd-reverse-drop"), goBtn = $("#prd-reverse-go"), textEl = $("#prd-reverse-target");
+        let picked = null;
+        const sync = () => {
+          goBtn.disabled = !picked && !textEl.value.trim();
+        };
+        const setFile = (f) => {
+          if (!f) return;
+          picked = f;
+          const strong = zone.querySelector("strong");
+          if (strong) strong.textContent = f.name;
+          const sub = zone.querySelector(".muted");
+          if (sub) sub.textContent = "Click to choose another file";
+          sync();
+        };
+        zone.addEventListener("click", () => input.click());
+        zone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+        input.addEventListener("change", () => { if (input.files[0]) setFile(input.files[0]); });
+        ["dragenter", "dragover"].forEach((t) => zone.addEventListener(t, (e) => { e.preventDefault(); zone.classList.add("over"); }));
+        ["dragleave", "dragend"].forEach((t) => zone.addEventListener(t, () => zone.classList.remove("over")));
+        zone.addEventListener("drop", (e) => {
+          e.preventDefault();
+          zone.classList.remove("over");
+          const f = e.dataTransfer?.files?.[0];
+          if (f) setFile(f);
+        });
+        textEl.addEventListener("input", sync);
+        textEl.addEventListener("keydown", (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !goBtn.disabled) {
+            e.preventDefault();
+            goBtn.click();
+          }
+        });
+        $("#prd-reverse-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
+        goBtn.addEventListener("click", () => {
+          const target = textEl.value.trim();
+          reverseEngineerPrd({ file: picked, target });
+        });
+      };
+
       // An existing project: read what is there (README, notes, manifests, layout, recent commits) and propose a first version.
       const draftPanel = async () => {
         let canceled = false, taskId = null;
@@ -6250,7 +6376,7 @@ pages.product = async (_, query) => {
           abortCtrl.abort();
           prdPending.clear();
           try { await api(`product/task/${encodeURIComponent(pending.task)}`, { method: "DELETE" }); } catch {}
-          toast(pending.source === "draft" ? "Draft cancelled" : "Import cancelled", "cancel");
+          toast(pending.source === "draft" ? "Draft cancelled" : pending.source === "reverse" ? "Reverse engineering cancelled" : "Import cancelled", "cancel");
           panel().innerHTML = "";
         };
         busy(pending.busy, cancel, pending.at);
@@ -6258,7 +6384,7 @@ pages.product = async (_, query) => {
           const taskResult = await waitForTask({ task: pending.task }, { signal: abortCtrl.signal });
           if (canceled || run !== prdRun || !panel()) return;
           prdPending.clear();
-          await proposalView(taskResult, { source: pending.source, label: pending.label, onDone: pending.source === "draft" ? () => { panel().innerHTML = ""; } : () => {} });
+          await proposalView(taskResult, { source: pending.source, label: pending.label, onDone: (pending.source === "draft" || pending.source === "reverse") ? () => { panel().innerHTML = ""; } : () => {} });
         } catch (e) {
           if (canceled || run !== prdRun || e.name === "AbortError") return;
           prdPending.clear();
@@ -6271,7 +6397,7 @@ pages.product = async (_, query) => {
       // and not on top of an import or a draft the person is looking at.
       let offering = false;
       function offerBreakdown() {
-        if (offering || !epics || start || !prdFilled() || p.breakdown_offered || productEpics().length || open.imp || open.draft || $("#dialog")?.open) return;
+        if (offering || !epics || start || !prdFilled() || p.breakdown_offered || productEpics().length || open.imp || open.draft || open.reverse || $("#dialog")?.open) return;
         if (panel()?.children.length) return;
         offering = true;
         const asked = formDialog("Break your product down?",
@@ -6290,6 +6416,7 @@ pages.product = async (_, query) => {
       epics?.mount(start);
       offerBreakdown();
       if (open.imp) importPanel();
+      else if (open.reverse) reversePanel();
       else if (prdPending.get()) resumePending();
       else if (open.draft && p.can_draft) draftPanel();
     },
@@ -8022,6 +8149,13 @@ const RECOMMENDED_MCPS = [
     blurb: "Manage remote SSH connections, secure command execution, and file transfer across your build fleet with host verification.",
     cmd: "npx -y mcp-ssh-manager",
   },
+  {
+    id: "rea",
+    name: "rea",
+    badge: "Reverse engineering",
+    blurb: "Reverse Engineer Anything (REA) MCP server for decompiling binaries, APKs, Electron apps, and reconstructing product specifications.",
+    cmd: "npx -y rea-agents setup",
+  },
 ];
 
 function renderRecommendedInstalls() {
@@ -8168,7 +8302,7 @@ pages.connections = async (_, query) => {
         <div class="conn-grid">${analyticsData ? analyticsConnectionCards(analyticsData, true) : `<section class="card conn-card">
         <div class="card-b stack">
           <strong class="conn-name">${providerIcon("analytics")}Product Analytics &amp; KPIs</strong>
-          <div class="notice">Analytics connection status is unavailable. Try again from Measure.</div>
+          <div class="notice">Analytics connection status is unavailable. Try again from Analytics.</div>
           <a href="#/measure" class="btn small">Manage analytics &amp; KPIs ↗</a>
         </div>
       </section>`}</div>
@@ -10708,7 +10842,7 @@ const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Packages", "#/packages", "Libraries and plugins this project uses, and ones worth adding"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
-  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Measure", "#/measure", "KPIs and analytics"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
+  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Analytics", "#/measure", "Project KPIs, analytics platform, and learning log"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
 const palette = { open: false, entries: [], shown: [], active: 0, opener: null };

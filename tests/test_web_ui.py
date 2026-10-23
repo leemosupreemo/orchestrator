@@ -1453,6 +1453,10 @@ process.stdout.write(JSON.stringify({html: page.html}));
         opencode_defaults = pick_best_default_models(["opencode"])
         self.assertEqual(opencode_defaults["builder"], "opencode/big-pickle")
 
+        pool_defaults = pick_best_default_models(["pool"])
+        self.assertEqual(pool_defaults["architect"], "pool")
+        self.assertEqual(pool_defaults["builder"], "pool")
+
         multi_defaults = pick_best_default_models(["claude", "gemini"])
         self.assertEqual(multi_defaults["architect"], "claude-sonnet-4-6")
         self.assertEqual(multi_defaults["reviewer"], "gemini-3-flash-preview")
@@ -4506,7 +4510,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('needs_you: ["Needs you"', home)  # a filter, not a separate section
         self.assertIn('all: ["All"', home)
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
-        self.assertIn('<a class="job-table-row"', row)  # the whole row is one link
+        self.assertIn('<a class="job-table-row${testsClass(j)}"', row)  # the whole row is one link
         self.assertNotIn("row-hover-hint", row)
         self.assertNotIn("runStatus(", row)  # a running job's progress lives in Running now, not in the list
         self.assertNotIn("<button", row)  # no button on the row: the next step is on the job page
@@ -4529,6 +4533,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('parts == ["ai-providers", "refresh-models"]', Path(server.__file__).read_text())
         self.assertIn("ai.models?.[p.id]", (Path(server.__file__).parent / "static" / "configuration.js").read_text())  # not the built-in list
         self.assertIn('api("ai-providers/refresh-models"', self.js)
+        self.assertIn("p.auto_approve", (Path(server.__file__).parent / "static" / "configuration.js").read_text())  # the YOLO / plan-first badge is surfaced on the AI tools page
 
     def test_home_job_table_shows_type_column_and_mobile_layout_keeps_date_sole_column(self):
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
@@ -4770,6 +4775,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Press Enter to add another feature", page)
         self.assertIn("prd-features-edit", page)
         self.assertIn("prd-link-input", page)
+        self.assertIn("prd-reverse", page)
+        self.assertIn("Reverse engineer", page)
+        self.assertIn("REA", page)
+        self.assertIn('"product/reverse"', page)
         # Look and feel takes uploads, a pasted link, and an item picked from a connected app (Figma).
         self.assertIn("linkPickerHtml({ prefer: [\"figma\"]", page)
 
@@ -5070,6 +5079,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("${defectsHtml}", self.js)
         for part in ("test file\")} written", "No tasks needed"):
             self.assertIn(part, self.js)
+        for part in ("testsClass(j)", "job-tests"):
+            self.assertIn(part, self.js)
+        self.assertIn(".job-table-row.job-tests", (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text())
         for part in ("Why no test was written", "Not written", "could not be written as automated"):
             self.assertIn(part, self.js)
         for part in ("Coverage is now", "delivery.coverage"):
@@ -6551,7 +6563,7 @@ class ProductEndpointTests(ServerTestCase):
     def test_a_new_project_shows_the_template_with_five_empty_sections_and_updates_on(self):
         _, data = self.request("GET", "/api/product")
         self.assertEqual((data["exists"], data["auto_update"], data["notice"], data["history"], data["path"]), (False, True, None, [], "docs/product/prd.md"))
-        self.assertEqual([s["id"] for s in data["sections"]], ["pitch", "who", "features", "look", "not"])
+        self.assertEqual([s["id"] for s in data["sections"]], ["pitch", "who", "features", "look", "not", "success"])
         self.assertFalse(any(s["filled"] for s in data["sections"]))
         self.assertIn("## Pitch", data["text"])
         self.assertFalse((self.root / "docs" / "product" / "prd.md").exists())  # looking does not create files
@@ -6820,6 +6832,21 @@ class ProductEndpointTests(ServerTestCase):
             self.assertEqual(res_post.status, 200)
             self.assertEqual(data_post.get("status"), "canceled")
 
+    def test_reverse_engineering_endpoint_runs_rea_prompt(self):
+        seen = []
+
+        def fake(self_, root, prompt, model="", timeout=150):
+            seen.append((prompt, timeout))
+            return json.dumps({"summary": "Reconstructed from binary.", "markdown": prd_mod.replace_section(
+                prd_mod.template(), "pitch", "Reverse-engineered application.")})
+
+        with patch.object(ui.UIHandler, "_model_call", fake):
+            task = self.finish(self.post("/api/product/reverse", {"target": "Sample target binary"}))
+        self.assertEqual(task["status"], "done")
+        self.assertIn("REA (Reverse Engineer Anything) MCP server", seen[0][0])
+        self.assertIn("Sample target binary", seen[0][0])
+        self.assertIn("+Reverse-engineered application.", task["result"]["diff"])
+
     def test_product_overview_returns_model_and_available_models(self):
         _, data = self.request("GET", "/api/product")
         self.assertEqual(data["model"], "claude-sonnet-4-6")
@@ -6944,7 +6971,7 @@ class DocsEndpointTests(ServerTestCase):
 
     def test_the_index_lists_product_features_jobs_including_finished_ones_and_files(self):
         _, d = self.request("GET", "/api/docs")
-        self.assertEqual((d["product"]["exists"], d["product"]["total"]), (False, 5))
+        self.assertEqual((d["product"]["exists"], d["product"]["total"]), (False, 6))
         self.assertEqual([(f["id"], f["jobs"], f["jobs_done"]) for f in d["features"]], [("rematch", 2, 1)])
         ids = [j["id"] for j in d["jobs"]]
         self.assertIn("20261001-feature-7", ids)
@@ -7918,7 +7945,7 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
         self.assertIn("Shelldrop", js)
         self.assertIn("https://shelldrop.app", js)
         self.assertIn("Recommended MCP servers", js)
-        for mcp in ("superpowers", "context7", "openspec", "github", "xcodebuild", "xcodediagnostics", "swiftlens", "mcp-ssh-manager"):
+        for mcp in ("superpowers", "context7", "openspec", "github", "xcodebuild", "xcodediagnostics", "swiftlens", "mcp-ssh-manager", "rea"):
             self.assertIn(mcp, js)
         self.assertIn("brew install node", js)
         self.assertIn(".rec-section-header", css)

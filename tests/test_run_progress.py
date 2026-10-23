@@ -218,7 +218,7 @@ class RunStatusRenderingTests(unittest.TestCase):
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['jobTableRow', 'liveRunCard', 'elapsed', 'runPill']) {
+for (const name of ['testsClass', 'jobTableRow', 'liveRunCard', 'elapsed', 'runPill']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -238,6 +238,8 @@ const run = {id: 'r1', job: 'job-1', running: true, started: 875, title: 'Build'
 globalThis.state = {runs: [run]};
 const job = {id: 'job-1', title: 'Sign-in', updated: 999, kind: 'Feature', active_run: true};
 const row = jobTableRow(job);
+assert.doesNotMatch(row, /job-tests/);
+assert.match(jobTableRow({...job, kind: 'Tests'}), /class="job-table-row job-tests"/);
 assert.doesNotMatch(row, /run-status|Step 2 of 10|Click for details/);
 assert.match(row, /href="#\/jobs\/job-1"/);
 const card = liveRunCard(run);

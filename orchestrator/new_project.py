@@ -40,6 +40,7 @@ QUESTIONS: list[dict[str, Any]] = [
     _prd_question("features", "features"),
     _prd_question("look", "look"),
     _prd_question("not", "not"),
+    _prd_question("success", "success"),
 ]
 PRD_SECTIONS: list[dict[str, Any]] = [
     {"id": s["id"], "title": s["title"], "keys": [q["key"] for q in QUESTIONS if q["section"] == s["id"]], "description": s["hint"]}
@@ -224,12 +225,14 @@ def render_prd(a: dict[str, str]) -> str:
         text = prd.replace_section(text, "look", a["look"].strip())
     if a.get("not", "").strip():
         text = prd.replace_section(text, "not", a["not"].strip())
+    if a.get("success", "").strip():
+        text = prd.replace_section(text, "success", a["success"].strip())
     return text
 
 
 def render_agents(name: str) -> str:
     return (f"# {name}: instructions for AI helpers\n\n"
-            f"Read `{prd.PATH}` first. It says what this product is, who it's for, what it must do, how it should look and feel, and what it must not be. "
+            f"Read `{prd.PATH}` first. It says what this product is, who it's for, what it must do, how it should look and feel, what it must not be, and how success is measured. "
             "It is a living document: it is kept up to date as jobs finish, and the person can edit it any time.\n\n"
             "Rules:\n- Prefer minimal, reviewable changes.\n- Build one working end-to-end slice at a time; keep the build and tests passing.\n"
             "- Don't build anything listed under \"Not this\".\n- If the document and the code disagree, ask before deciding which is right.\n\n")
@@ -352,4 +355,4 @@ def create_project(draft: dict[str, Any]) -> dict[str, Any]:
     return {"root": str(root), "name": answers["name"], "steps": steps, "github": github,
             "platform_needs": platform_needs(answers.get("platform", "")), "recommend_platform": RECOMMEND in platform_list(answers.get("platform", "")),
             "github_ok": (not github) or steps[-2]["ok"],
-            "prd_filled": any(str(answers.get(key) or "").strip() for key in ("pitch", "audience", "features", "look", "not"))}
+            "prd_filled": any(str(answers.get(key) or "").strip() for key in ("pitch", "audience", "features", "look", "not", "success"))}

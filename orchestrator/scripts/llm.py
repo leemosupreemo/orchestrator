@@ -333,12 +333,16 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         cmd_base = f"ollama run {model_id} --nowordwrap"
     elif model_id == "copilot":
         cmd_base = "gh copilot"
+    # OpenCode: pass --auto so a headless job doesn't stall waiting for a human to approve a tool
+    # call (the same auto-accept posture gemini/agy/pool already run with via --yolo/--unsafe-auto-allow).
     elif model_id.startswith("opencode/"):
-        cmd_base = f"opencode run --model {model_id}"
+        cmd_base = f"opencode run --model {model_id} --auto"
     elif model_id == "opencode":
-        cmd_base = "opencode run --model opencode/big-pickle"
+        cmd_base = "opencode run --model opencode/big-pickle --auto"
     elif m_meta and m_meta.family == "opencode":
-        cmd_base = f"opencode run --model opencode/{model_id.replace('opencode/', '')}"
+        cmd_base = f"opencode run --model opencode/{model_id.replace('opencode/', '')} --auto"
+    elif m_meta and m_meta.family == "pool":
+        cmd_base = "pool exec --unsafe-auto-allow -p -"
     else:
         cmd_base = f"{model_id}"
 
