@@ -29,8 +29,14 @@ class DevConsoleTests(unittest.TestCase):
         dev_console.ROOT = self.temp_root
         dev_console.CONFIG_DIR = self.temp_root / ".orchestrator" / "config"
         dev_console.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.patcher_stdin_tty = patch("sys.stdin.isatty", return_value=False)
+        self.patcher_stdout_tty = patch("sys.stdout.isatty", return_value=False)
+        self.patcher_stdin_tty.start()
+        self.patcher_stdout_tty.start()
 
     def tearDown(self) -> None:
+        self.patcher_stdin_tty.stop()
+        self.patcher_stdout_tty.stop()
         dev_console.ROOT = self.old_root
         import shutil
         if self.temp_root.exists():
@@ -1123,7 +1129,8 @@ class AppFeatureTests_{i}: XCTestCase {{
         status_bar_context.__enter__.return_value = status_bar_instance
         mock_status_bar.return_value = status_bar_context
 
-        pct = dev_console.run_calculate_coverage(["local"], ["gemini"])
+        with patch.object(dev_console, "project_uses_xcode", return_value=True):
+            pct = dev_console.run_calculate_coverage(["local"], ["gemini"])  # the xcodebuild path
 
         mock_progress_indicator.assert_called_once()
         self.assertIn("Thinking", mock_progress_indicator.call_args[1].get("label", ""))
@@ -1335,8 +1342,8 @@ class AppFeatureTests_{i}: XCTestCase {{
         self.assertEqual(opencode_calls[0][1], "--prompt")
         self.assertIn("Job #123: Fix risk tab", opencode_calls[0][2])
 
-    @patch("dev_console.shutil.which", side_effect=lambda x: f"/usr/local/bin/{x}" if x in ["agy", "claude", "gemini", "codex"] else None)
-    @patch("dev_console.prompt_input", side_effect=["1", "2", "3", "4", "b"])
+    @patch("dev_console.shutil.which", side_effect=lambda x: f"/usr/local/bin/{x}" if x in ["agy", "claude", "gemini", "codex", "pool"] else None)
+    @patch("dev_console.prompt_input", side_effect=["1", "2", "3", "4", "5", "b"])
     @patch("dev_console.subprocess.run")
     @patch("dev_console.clear_screen")
     def test_handle_ask_ai_all_cli_options(self, _mock_clear, mock_subproc, _mock_prompt_input, _mock_which):
@@ -1374,6 +1381,12 @@ class AppFeatureTests_{i}: XCTestCase {{
         self.assertTrue(len(codex_calls) > 0)
         self.assertEqual(codex_calls[0][1], "--no-alt-screen")
         self.assertIn("Job #789: Fix memory leak", codex_calls[0][2])
+
+        # Verify pool
+        pool_calls = [cmd for cmd in called_cmds if isinstance(cmd, list) and cmd[0] == "pool"]
+        self.assertTrue(len(pool_calls) > 0)
+        self.assertEqual(pool_calls[0][1], "-q")
+        self.assertIn("Job #789: Fix memory leak", pool_calls[0][2])
 
     @patch("dev_console.shutil.which", side_effect=lambda x: f"/usr/local/bin/{x}" if x in ["opencode", "claude"] else None)
     @patch("dev_console.prompt_input", side_effect=["", "b"])  # Empty input = hit Enter for default

@@ -272,6 +272,29 @@ Architectural overview and guidelines for {project_name}.
 - Explicit error returns (`if err != nil`).
 """
 
+    if stack and stack.language == "csharp":
+        return f"""# Architecture Guide
+
+Architectural overview and guidelines for {project_name}.
+
+## Overview
+
+- **Platform:** {stack.display_name} (C#)
+- **Design Pattern:** Component-based scenes with plain C# domain logic kept out of MonoBehaviours
+
+## Core Layers
+
+1. **Domain / Logic:** Plain C# classes with no `UnityEngine` dependency, so EditMode tests can run them directly.
+2. **Components:** `MonoBehaviour`s and `ScriptableObject`s that connect the logic to scenes and assets.
+3. **Assembly Definitions:** One `.asmdef` per feature area, with separate Editor and Tests assemblies.
+
+## Runtime & Assets
+
+- Never rename or move a file in `Assets/` without its `.meta` file; the `.meta` carries the asset GUID that scenes and prefabs reference.
+- Keep per-frame work in `Update` allocation-free; cache component lookups.
+- Treat scenes and prefabs as merge-prone: keep changes to them small and deliberate.
+"""
+
     return f"""# Architecture Guide
 
 Architectural overview and guidelines for {project_name}.
@@ -367,6 +390,26 @@ Coding standards and conventions for {project_name}.
 - **Testing:**
   - Unit tests in `*_test.go` with standard `testing` package.
   - Test command: `{stack.test_command or 'go test ./...'}`.
+"""
+
+    if stack and stack.language == "csharp":
+        return f"""# Coding Standards
+
+Coding standards and conventions for {project_name}.
+
+## Unity / C# Standards
+
+- **Formatting:** Follow the .NET conventions already used in `Assets/`; one top-level type per file, file named after the type.
+- **Naming Conventions:**
+  - Types, methods, properties, public fields: `UpperCamelCase`
+  - Private fields: `_lowerCamelCase`; locals and parameters: `lowerCamelCase`
+  - Use `[SerializeField] private` rather than public fields to expose values in the Inspector.
+- **Assets:** Commit `.meta` files alongside their assets; never edit `Library/`, `Temp/` or `Logs/`.
+- **Error Handling:** Fail loudly with `Debug.LogError` or exceptions; avoid empty `catch` blocks.
+- **Testing:**
+  - Unity Test Framework (NUnit): `[Test]` and `[UnityTest]`; EditMode tests under `Tests/Editor`, PlayMode tests under `Tests/Runtime`.
+  - Test command: `{stack.test_command or 'Unity -batchmode -runTests -testPlatform EditMode'}`.
+  - Set `UNITY_PATH` to the Unity editor binary if it is not in the Unity Hub's default location.
 """
 
     return f"""# Coding Standards
@@ -1031,6 +1074,43 @@ def verify_wizard_setup(install_workers: list[str]) -> int:
     return 1 if check_result != 0 or config_result != 0 or worker_failures else 0
 
 
+def run_new_project(args: argparse.Namespace) -> int:
+    from orchestrator import new_project_cli
+    from orchestrator.setup_checklist import github_cli_state
+
+    def ask(label: str, default: str | None = None, optional: bool = False) -> str:
+        return prompt_text(label, default, skip_available=False, optional=optional)
+
+    def choose(label: str, options: list[str]) -> str:
+        return prompt_radio(label, options, options[0], clear_screen=False)
+
+    def choose_many(label: str, options: list[str]) -> list[str]:
+        print(f"\n{label}")
+        for number, option in enumerate(options, 1):
+            print(f"  {number}. {option}")
+        raw = prompt_text("Numbers separated by commas, e.g. 1,5", None, skip_available=False)
+        picked = []
+        for part in raw.replace(" ", "").split(","):
+            if part.isdigit() and 1 <= int(part) <= len(options) and options[int(part) - 1] not in picked:
+                picked.append(options[int(part) - 1])
+        return picked
+
+    def confirm(label: str, default: bool) -> bool:
+        return prompt_yes_no(label, default, skip_available=False)
+
+    def github_login() -> None:
+        subprocess.run(["gh", "auth", "login"], check=False)
+
+    print("\n\033[1;96m" + "=" * 20 + " Start a new project " + "=" * 20 + "\033[0m")
+    code, root = new_project_cli.run(ask=ask, choose=choose, choose_many=choose_many, confirm=confirm, out=print,
+                                     github_state=lambda: github_cli_state(fresh=True), github_login=github_login)
+    if code == 0 and root and not args.no_wizard and prompt_yes_no("Run the setup wizard for it now?", True, skip_available=False):
+        return main(["wizard", "--root", str(root)])
+    if code == 0 and root:
+        print(f"Next: orchestrator wizard --project {root}")
+    return code
+
+
 def run_wizard(args: argparse.Namespace) -> int:
     root_arg = args.project or args.root
     root = safe_resolve(Path(root_arg).expanduser()) if root_arg else find_project_root()
@@ -1067,6 +1147,8 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
 
     from orchestrator import __version__
     print(f"\n\033[1;96m{'='*20} Orchestrator Wizard v{__version__} {'='*20}\033[0m")
+    if not args.non_interactive and root.is_dir() and not any(p.name != ".git" for p in root.iterdir()):
+        print("This folder is empty. Starting from an idea instead? Run \033[97morchestrator new\033[0m to describe it and create the project.\n")
 
     # Start Status Bar context for the entire wizard
     with StatusBar(sub_menu=True) as status_bar:
@@ -1318,12 +1400,13 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
         optional_tools: list[str] = []
         if not args.non_interactive:
             wizard_stage(3, "Optional tools")
-            options = [("github", "GitHub account and PR integration"),
+            print("GitHub is required: every job opens an issue and a pull request. It is set up next.")
+            options = [("github", "Switch or add GitHub accounts"),
                        ("workers", "Remote SSH workers"),
                        ("prompts", "Custom role prompts")]
             if stack.uses_xcode or firebase_enabled or existing_p_cfg.get("firebase_distribution") or existing_p_cfg.get("development_team") or existing_p_cfg.get("firebase_plist_path"):
                 options.append(("delivery", "Firebase delivery and Apple signing"))
-            optional_tools = wizard_choose_items("Choose tools to configure now (all optional)", options, [], status_bar, enter_hint="skip optional tools")
+            optional_tools = wizard_choose_items("Choose extra tools to configure now (all optional)", options, [], status_bar, enter_hint="skip optional tools")
             print("Unselected tools keep their existing settings. You can configure them later.")
         configure_keychain = False
         install_workers: list[str] = []
@@ -1331,7 +1414,7 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
         # ----------------------------------------------------
         # 3. GitHub Integration
         # ----------------------------------------------------
-        if not args.non_interactive and "github" in optional_tools:
+        if not args.non_interactive:
             try:
                 print(f"\n\033[1;96m{'='*20} GitHub Integration {'='*20}\033[0m")
                 print("Login and account switching update your GitHub CLI session immediately.")
@@ -1350,6 +1433,8 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
                 else:
                     acc_info = f"{gh_active_user} (Active · {len(gh_accounts)} account(s))" if len(gh_accounts) > 1 else f"{gh_active_user} (Active)"
                     print(f"Current status: \033[1;92m✅ Authenticated as {acc_info}\033[0m")
+                    if "github" not in optional_tools:
+                        raise SkipSectionException()  # signed in; account switching wasn't requested
                     print("\033[90m(Press [Enter] to keep active account, or choose an action below)\033[0m\n")
                     print("  [Enter] Keep active account")
                     print("  [A] Add another GitHub account")
@@ -1372,6 +1457,28 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
                                 subprocess.run(["gh", "auth", "login"], check=False)
             except SkipSectionException:
                 pass
+
+            # GitHub is required, so don't move on until the CLI is signed in.
+            from orchestrator.scripts.dev_console import get_github_auth_info
+            while True:
+                has_gh, gh_accounts, gh_active_user = get_github_auth_info()
+                if has_gh and gh_accounts:
+                    break
+                print("  \033[1;91mGitHub is required:\033[0m jobs can't be created without the GitHub CLI signed in.")
+                if not has_gh:
+                    print("     Install it with \033[97mbrew install gh\033[0m, then continue.")
+                try:
+                    if has_gh and prompt_yes_no("Log in to GitHub now (gh auth login)?", default=True, status_bar=status_bar):
+                        subprocess.run(["gh", "auth", "login"], check=False)
+                        continue
+                    if not prompt_yes_no("Check again?", default=True, status_bar=status_bar):
+                        print("Setup stopped: sign in to GitHub and run orchestrator wizard again.")
+                        return 1
+                except SkipSectionException:
+                    print("GitHub can't be skipped. Sign in, or quit the wizard.")
+            if not git_remote(root):
+                print("  \033[1;93m⚠️  This repository has no GitHub 'origin' remote yet.\033[0m")
+                print("     Create one with \033[97mgh repo create --source . --push\033[0m before creating jobs.")
 
         # ----------------------------------------------------
         # 4. Role Prompts
@@ -1830,6 +1937,23 @@ def _run_wizard_impl(args: argparse.Namespace, root: Path, models: list[str]) ->
             print("Full tool and worker checks were not requested; run orchestrator check when ready.")
         remember_project(root, project_display_name(root), active=True)
         status_bar.reset_scroll_region()
+        try:
+            from orchestrator import analytics
+            machines_data = read_json(machines_file).get("machines", []) if machines_file.exists() else []
+            analytics.track_wizard(
+                must_do_total=7,
+                must_do_completed=7,
+                optional_total=len(options) if "options" in locals() else 4,
+                optional_completed=len(optional_tools) if "optional_tools" in locals() else 0,
+                optional_items=optional_tools if "optional_tools" in locals() else [],
+                machines_count=len(machines_data),
+                llms_count=len(models),
+                llms_list=models,
+                mode="non-interactive" if args.non_interactive else "interactive",
+                runtime_root=runtime_dir,
+            )
+        except Exception:
+            pass
         print(f"\n\033[1;92m{'='*20} Wizard Complete {'='*20}\033[0m")
         print("Configuration saved. Review these files before creating jobs:")
         for path in dict.fromkeys([*review_paths, project_file, machines_file, settings_file]):
@@ -1947,6 +2071,8 @@ def init_project(args: argparse.Namespace) -> int:
     if args.with_helper_script:
         write_helper_script(root, args.force)
 
+    if stack.framework == "unity" and not (root / "Packages" / "com.leemosupreemo.orchestrator").exists():
+        print("Unity project: run `orchestrator unity-plugin install` to add the Editor plugin.")
     print("Run: orchestrator check")
     remember_project(root, config["project_name"], active=True)
     return 0
@@ -2025,17 +2151,40 @@ def remove_project_command(reference: str) -> int:
         return 1
 
 
+def unity_plugin_command(args: argparse.Namespace) -> int:
+    from orchestrator import unity_plugin
+    try:
+        result = unity_plugin.install(Path(args.path), force=args.force)
+    except unity_plugin.PluginError as exc:
+        print(f"❌ {exc}")
+        return 1
+    verb = {"installed": "Installed", "updated": "Updated", "current": "Already up to date:"}[result["status"]]
+    print(f"✅ {verb} the Orchestrator Unity plugin {result['version']} at {result['path']}")
+    if result["status"] != "current":
+        print("   Open the project in Unity, then Window > Orchestrator. Commit Packages/ with the project.")
+    return 0
+
+
 def prune_projects_command() -> int:
     load_recent_projects(prune_missing=True)
     print("Pruned missing projects. Current remembered projects:")
     return list_projects_command()
 
 
+def installed_with_pipx() -> bool:
+    """True when this copy of orchestrator lives in a pipx-managed virtualenv (…/pipx/venvs/<name>/…)."""
+    return "pipx" in Path(sys.prefix).parts and "venvs" in Path(sys.prefix).parts
+
+
 def update_command(args: argparse.Namespace) -> int:
+    from orchestrator.desktop_runtime import is_packaged_install
+    if is_packaged_install():
+        print("Open Orchestrator's menu and choose Check for Updates to update this application.")
+        return 0
     from orchestrator.project_config import PACKAGE_ROOT
-    from orchestrator import __version__
+    from orchestrator import __version__, account
     from orchestrator.scripts.common import print_header, print_section
-    
+
     pkg_dir = PACKAGE_ROOT.parent
     is_git = (pkg_dir / ".git").exists()
     
@@ -2051,9 +2200,20 @@ def update_command(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"\n❌ Error during local update: {e}")
             return 1
+    elif installed_with_pipx():
+        # `pipx upgrade` compares version numbers, and this package's rarely changes, so it can decide there is nothing to do.
+        print_section("\n--- Update (pipx) ---", account.INSTALL_SPEC)
+        pipx = shutil.which("pipx")
+        if not pipx:
+            print("\n\033[1;91mCan't find pipx on PATH.\033[0m Run: \033[97mpipx install --force " + account.INSTALL_SPEC + "\033[0m")
+            return 1
+        if subprocess.run([pipx, "install", "--force", account.INSTALL_SPEC], check=False).returncode != 0:
+            print("\n❌ The update didn't finish. Run the command above to see why.")
+            return 1
+        print("\n✅ Updated. Restart `orchestrator ui` to use it.")
     else:
         print("\n\033[1;93mNote: Local source code not found in a Git repository.\033[0m")
-        print("If you installed via pipx, run: \033[97mpipx upgrade orchestrator\033[0m")
+        print("If you installed via pipx, run: \033[97mpipx install --force " + account.INSTALL_SPEC + "\033[0m")
         print("If you installed via pip, run:  \033[97mpip install --upgrade orchestrator\033[0m")
 
     if getattr(args, "fleet", False):
@@ -2110,6 +2270,63 @@ def fix_command(args: argparse.Namespace) -> int:
         if getattr(args, "free", False):
             script_args.append("--free")
         return run_script("new_job.py", script_args)
+
+
+def connect_command(name: str | None, status_only: bool = False) -> int:
+    from orchestrator import account
+
+    machine = account.load_machine()
+    if status_only or machine:
+        if machine:
+            print(f"Connected to {machine.get('owner_email')} as \"{machine.get('name')}\".")
+            print(f"Sign in at {account.HOSTED_APP_URL} while `orchestrator ui` runs here. `orchestrator disconnect` removes it.")
+            return 0
+        print("Not connected. Run `orchestrator connect` to add this computer to your account.")
+        return 1
+    try:
+        machine = account.connect(name)
+    except account.AccountError as exc:
+        print(f"Couldn't connect: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped. Nothing was connected.")
+        return 1
+    print(f"Connected to {machine['owner_email']}. Start `orchestrator ui` here, then sign in at {account.HOSTED_APP_URL}.")
+    return 0
+
+
+def service_command(action: str, keep_awake: bool = False) -> int:
+    from orchestrator import account, service
+
+    try:
+        if action == "install":
+            for line in service.install(service.make_spec(keep_awake)):
+                print(line)
+            print("Installed. It starts at login and restarts if it stops.")
+            if account.load_machine() is None:
+                print("Next: run `orchestrator connect` to add this computer to your account.")
+            return 0
+        if action == "uninstall":
+            print("Stopped and removed." if service.uninstall() else "It wasn't installed.")
+            return 0
+        info = service.status()
+        print(info["detail"])
+        return 0 if info["running"] else 1
+    except service.ServiceError as exc:
+        print(exc)
+        return 1
+
+
+def disconnect_command() -> int:
+    from orchestrator import account
+
+    try:
+        removed = account.disconnect()
+    except account.AccountError as exc:
+        print(exc)
+        return 1
+    print("Removed this computer from its account." if removed else "This computer isn't connected to an account.")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2213,6 +2430,9 @@ def _main(argv: list[str] | None = None) -> int:
     init_parser.add_argument("--with-starter-docs", action="store_true")
     init_parser.add_argument("--with-helper-script", action="store_true")
 
+    new_parser = subparsers.add_parser("new", help="Start a brand-new project (describe it, then create it)")
+    new_parser.add_argument("--no-wizard", action="store_true", help="Don't offer to run the setup wizard afterwards")
+
     wizard_parser = subparsers.add_parser("wizard")
     wizard_parser.add_argument("--root")
     wizard_parser.add_argument("--project", help="Project root path. Alias for --root.")
@@ -2266,12 +2486,45 @@ def _main(argv: list[str] | None = None) -> int:
     distribute_parser = subparsers.add_parser("distribute", help="Quickly build and distribute current project to Firebase")
     distribute_parser.add_argument("--project", help="Recent project name or project root path")
     distribute_parser.add_argument("--notes", help="Release notes for this build")
+    distribute_parser.add_argument("--branch", help="Git branch to distribute")
+    distribute_parser.add_argument("--groups", help="Firebase tester groups (comma-separated)")
+    distribute_parser.add_argument("--testers", help="Firebase tester emails (comma-separated)")
 
     fix_parser = subparsers.add_parser("fix", help="Fast 1-line bug fix / feedback for active or new job")
     fix_parser.add_argument("feedback", help="Description of what is broken or what to fix")
     fix_parser.add_argument("--job", help="Specific job ID or job JSON file path")
     fix_parser.add_argument("--project", help="Recent project name or project root path")
     fix_parser.add_argument("--free", action="store_true", help="Restrict execution to free models only (cost_factor == 0.0)")
+
+    ui_parser = subparsers.add_parser("ui", help="Open the local web interface")
+    ui_parser.add_argument("--project", help="Recent project name or project root path")
+    ui_parser.add_argument("--host", default="127.0.0.1",
+                           help="Interface to bind (default 127.0.0.1; a Tailscale IP to reach it from a phone)")
+    ui_parser.add_argument("--port", type=int, default=8765)
+    ui_parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
+    ui_parser.add_argument("--token", help="Fixed access token for the web interface")
+    ui_parser.add_argument("--tunnel", action="store_true", help="Start a Cloudflare tunnel for remote access from phone")
+    ui_parser.add_argument("--tunnel-token", help="Cloudflare Named Tunnel token for a permanent stable domain")
+    ui_parser.add_argument("--public-url", help="Stable public or tunnel URL for remote access")
+    ui_parser.add_argument("--tailscale", action="store_true", help="Bind to Tailscale interface with stable MagicDNS URL")
+
+    connect_parser = subparsers.add_parser("connect", help="Add this computer to your account, to use it from the web app")
+    connect_parser.add_argument("--name", help="What to call this computer in the web app (default: its hostname)")
+    connect_parser.add_argument("--status", action="store_true", help="Show which account this computer is connected to")
+    subparsers.add_parser("disconnect", help="Remove this computer from your account")
+    enroll_parser = subparsers.add_parser("enroll", help="Set up a Mac nobody sits at over SSH, with a token from Add a Mac")
+    enroll_parser.add_argument("--token", help="The one-time token from Add a Mac in the web app")
+    enroll_parser.add_argument("--token-stdin", action="store_true", help="Read the token from standard input instead")
+    enroll_parser.add_argument("--project", required=True, help="A project folder on this Mac, or a git URL to clone into ~/Projects")
+    enroll_parser.add_argument("--model", action="append", dest="models", help="AI model for a new project's setup (repeatable; default codex)")
+    enroll_parser.add_argument("--name", help="What to call this Mac in the web app (default: its hostname)")
+
+    service_parser = subparsers.add_parser("service", help="Keep Orchestrator running in the background, starting at login")
+    service_actions = service_parser.add_subparsers(dest="service_action", required=True)
+    service_install = service_actions.add_parser("install", help="Start `orchestrator ui --tunnel` at login and keep it running")
+    service_install.add_argument("--keep-awake", action="store_true", help="Also stop this computer sleeping from idleness (macOS)")
+    service_actions.add_parser("uninstall", help="Stop it and remove it from login")
+    service_actions.add_parser("status", help="Show whether it is running")
 
     logs_parser = subparsers.add_parser(
         "logs",
@@ -2282,6 +2535,17 @@ def _main(argv: list[str] | None = None) -> int:
     logs_parser.add_argument("logs_args", nargs=argparse.REMAINDER,
                              help="setup | sessions | pull [--latest|--session ID] | tail")
 
+    connection_parser = subparsers.add_parser(
+        "connection-log", help="Why the web app lost its connection: server requests, browser failures and tunnel output")
+    connection_parser.add_argument("-f", "--follow", action="store_true", help="Keep printing new lines as they arrive")
+    connection_parser.add_argument("-n", "--lines", type=int, default=40, help="Recent lines to show from each log (default 40)")
+
+    unity_parser = subparsers.add_parser("unity-plugin", help="The Orchestrator Editor plugin for Unity projects")
+    unity_actions = unity_parser.add_subparsers(dest="unity_action", required=True)
+    unity_install = unity_actions.add_parser("install", help="Add the plugin to a Unity project's Packages folder")
+    unity_install.add_argument("path", nargs="?", default=".", help="The Unity project (default: the current folder)")
+    unity_install.add_argument("--force", action="store_true", help="Replace a copy that is already there")
+
     passthrough = subparsers.add_parser("script")
     passthrough.add_argument("--project", help="Recent project name or project root path")
     passthrough.add_argument("script_name")
@@ -2290,6 +2554,8 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "init":
         return init_project(args)
+    if args.command == "new":
+        return run_new_project(args)
     if args.command == "wizard":
         return run_wizard(args)
     if args.command == "console":
@@ -2301,6 +2567,12 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         if getattr(args, "notes", None):
             os.environ["DISTRIBUTION_RELEASE_NOTES"] = args.notes
+        if getattr(args, "branch", None):
+            os.environ["DISTRIBUTION_BRANCH"] = args.branch
+        if getattr(args, "groups", None):
+            os.environ["FIREBASE_GROUPS"] = args.groups
+        if getattr(args, "testers", None):
+            os.environ["FIREBASE_TESTERS"] = args.testers
         return run_script("smoke_test_delivery.py", [])
     if args.command == "fix":
         return fix_command(args)
@@ -2338,10 +2610,43 @@ def _main(argv: list[str] | None = None) -> int:
         if args.fleet and args.project and apply_project_env(args.project):
             return 1
         return update_command(args)
+    if args.command == "ui":
+        if args.project and apply_project_env(args.project):
+            return 1
+        from orchestrator.web.server import main as ui_main
+        ui_args = (
+            ["--host", args.host, "--port", str(args.port)]
+            + (["--no-open"] if args.no_open else [])
+            + (["--token", args.token] if getattr(args, "token", None) else [])
+            + (["--tunnel"] if getattr(args, "tunnel", False) else [])
+            + (["--tunnel-token", args.tunnel_token] if getattr(args, "tunnel_token", None) else [])
+            + (["--public-url", args.public_url] if getattr(args, "public_url", None) else [])
+            + (["--tailscale"] if getattr(args, "tailscale", False) else [])
+        )
+        return ui_main(ui_args)
+    if args.command == "connect":
+        return connect_command(args.name, args.status)
+    if args.command == "disconnect":
+        return disconnect_command()
+    if args.command == "enroll":
+        from orchestrator.enroll import enroll, read_token
+        try:
+            token = read_token(args.token, args.token_stdin)
+        except ValueError as exc:
+            print(exc)
+            return 1
+        return enroll(token, args.project, models=args.models, name=args.name)
+    if args.command == "service":
+        return service_command(args.service_action, getattr(args, "keep_awake", False))
     if args.command == "logs":
         if args.project and apply_project_env(args.project):
             return 1
         return run_script("cloud_logs.py", args.logs_args or ["--help"])
+    if args.command == "connection-log":
+        from orchestrator import connection_log
+        return connection_log.show(lines=args.lines, follow=args.follow)
+    if args.command == "unity-plugin":
+        return unity_plugin_command(args)
     if args.command == "script":
         if args.project and apply_project_env(args.project):
             return 1

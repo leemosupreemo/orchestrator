@@ -11,7 +11,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
-from common import ROOT, JOBS_DIR, write_json, timestamp, prompt_confirm, print_header, ensure_keychain_unlocked
+from common import ROOT, JOBS_DIR, write_json, timestamp, prompt_confirm, print_header, ensure_keychain_unlocked, web_run
 from orchestrator.project_config import PROJECT_CONFIG
 
 def run_smoke_delivery():
@@ -28,6 +28,11 @@ def run_smoke_delivery():
         print(f"\n\033[93mYou must configure signing and accounts in the config file before distributing:\033[0m", flush=True)
         print(f"      \033[1;97m{config_file}\033[0m", flush=True)
         
+        if web_run():
+            print("\nDistribution stopped before building. Signing setup cannot run interactively from the web app.", flush=True)
+            print("Run 'orchestrator wizard' in a terminal for this project, complete distribution and signing setup, then retry Distribution.", flush=True)
+            sys.exit(1)
+
         print("\n\033[1;93mManual configuration is required. Please choose one of the options below:\033[0m", flush=True)
         print("\n\033[1;96mOption A: Headless Auto-Signing (Recommended)\033[0m", flush=True)
         print("  1. Go to App Store Connect -> Users and Access -> Integrations -> Keys.", flush=True)
@@ -65,9 +70,19 @@ def run_smoke_delivery():
 
     # 1. Setup metadata
     test_id = f"quick-delivery-{timestamp()}"
-    # Just use current branch, don't change anything
-    branch_output = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
-    branch = branch_output
+    target_branch = os.environ.get("DISTRIBUTION_BRANCH")
+    current_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
+    if target_branch and target_branch != current_branch:
+        print(f"Switching branch to '{target_branch}'...", flush=True)
+        try:
+            subprocess.check_call(["git", "checkout", target_branch], cwd=str(ROOT))
+            branch = target_branch
+        except subprocess.CalledProcessError:
+            print(f"\n\033[1;91m!!! Error: Failed to switch to branch '{target_branch}'.\033[0m", flush=True)
+            print("Please commit or stash any uncommitted changes and try again.", flush=True)
+            sys.exit(1)
+    else:
+        branch = current_branch
     job_file = JOBS_DIR / f"{test_id}.json"
     
     print("\033[1;36m[STEP 2/3]\033[0m \033[1;97mPreparing Delivery Metadata\033[0m", flush=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 from typing import Any
-from model_registry import get_all_models, ModelMetadata, ModelTier, ModelCapability, get_model
+from model_registry import get_all_models, ModelMetadata, ModelTier, ModelCapability, get_model, model_usable
 
 class ModelRole:
     PLANNER = "planner"
@@ -79,6 +79,9 @@ def get_prioritized_models(role: str | None = None, allowed_models: list[str] | 
         models_to_score = filtered
     else:
         models_to_score = all_models
+
+    # Leave out models their provider can't run now, unless that would leave nothing to try.
+    models_to_score = [m for m in models_to_score if model_usable(m)] or models_to_score
 
     if not role:
         # Default fallback list logic (High tier first, then Medium, then Low)

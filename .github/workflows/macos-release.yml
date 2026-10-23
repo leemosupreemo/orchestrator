@@ -1,0 +1,98 @@
+# Builds the macOS app and its disk images on demand. It never publishes: images are kept as workflow artifacts, and
+# making them public (a GitHub release, the update feed, links on the hosted page) is a separate, deliberate step.
+# Signed mode runs in the protected `macos-release` environment, which holds the Developer ID and notary secrets.
+name: macOS app
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, tag or branch to build
+        required: true
+      version:
+        description: Release version, matching pyproject.toml (for example 0.2.0)
+        required: true
+      build_number:
+        description: Build number, higher than any earlier build
+        required: true
+      mode:
+        description: development (unsigned, for testing) or signed (Developer ID, notarized)
+        required: true
+        default: development
+        type: choice
+        options: [development, signed]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+    runs-on: macos-14
+    environment: ${{ inputs.mode == 'signed' && 'macos-release' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test
+        run: |
+          python3 -m compileall -q orchestrator tests
+          python3 -m unittest discover -s tests
+          swift test --package-path desktop/macos
+
+      - name: Assemble the app
+        run: python3 packaging/macos/build.py --arch ${{ matrix.arch }} --output build --version "${{ inputs.version }}" --build-number "${{ inputs.build_number }}" --development
+
+      - name: Smoke-test the bundled agent
+        if: matrix.arch == 'arm64'
+        run: python3 packaging/macos/smoke.py --bundle build/arm64/Orchestrator.app --state-dir "$RUNNER_TEMP/state" --control-dir "$RUNNER_TEMP/ctl"
+
+      - name: Make a development image
+        if: inputs.mode == 'development'
+        run: python3 packaging/macos/release.py --bundle build/${{ matrix.arch }}/Orchestrator.app --output dist --development
+
+      - name: Sign, notarize and make the release image
+        if: inputs.mode == 'signed'
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          FEED_URL: ${{ vars.MACOS_UPDATE_FEED_URL }}
+          PUBLIC_ED_KEY: ${{ vars.MACOS_UPDATE_PUBLIC_ED_KEY }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          xcrun notarytool store-credentials orchestrator-notary --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --keychain "$keychain"
+          python3 packaging/macos/release.py --bundle build/${{ matrix.arch }}/Orchestrator.app --output dist \
+            --signing-identity "$SIGNING_IDENTITY" --notary-profile orchestrator-notary --feed-url "$FEED_URL" --public-ed-key "$PUBLIC_ED_KEY"
+
+      - name: Remove the signing keychain
+        if: always() && inputs.mode == 'signed'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchestrator-macos-${{ matrix.arch }}-${{ inputs.mode }}
+          path: |
+            dist/*.dmg
+            dist/*.json
+          if-no-files-found: error

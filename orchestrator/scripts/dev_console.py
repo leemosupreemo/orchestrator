@@ -28,7 +28,7 @@ try:
 except:
     pass
 
-from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence
+from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence, is_ai_branch, merge_branch_locally
 from llm import SUPPORTED_MODELS, DEFAULT_FALLBACKS, run_llm, extract_json_block
 from model_router import ModelRole
 from model_registry import get_all_models, ModelTier
@@ -1514,6 +1514,7 @@ def handle_fleet_management(session_allowed_machines: list[str]) -> list[str]:
                 # Enforce 10 machine limit via max_selections
                 footer = (
                     "[\033[1;92mD\033[0m] Discover remote machines\n"
+                    "[\033[1;92mW\033[0m] Worker check (are the machines ready?)\n"
                     "[\033[1;92mN\033[0m] Rename selected machine\n"
                     "[\033[1;91mR\033[0m] Remove selected machine\n"
                     "[\033[1;91mZ\033[0m] Zombie purge & cache cleanup\n"
@@ -1523,7 +1524,7 @@ def handle_fleet_management(session_allowed_machines: list[str]) -> list[str]:
                     "Active Machines for This Session",
                     machine_names,
                     session_allowed_machines,
-                    extra_keys=["d", "n", "r", "z", "b"],
+                    extra_keys=["d", "w", "n", "r", "z", "b"],
                     footer=footer,
                     details_map=details_map,
                     details_title="Selected Machine",
@@ -1607,6 +1608,10 @@ def handle_fleet_management(session_allowed_machines: list[str]) -> list[str]:
                     if removed:
                         print("\n\033[93mRe-pinging fleet...\033[0m")
                         refresh_fleet_status(machines_config)
+                    continue
+                elif exc.key == "w":
+                    run_script("worker_tools.py", ["check"])
+                    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
                     continue
                 elif exc.key == "z":
                     handle_fleet_hygiene(session_allowed_machines)
@@ -1854,7 +1859,12 @@ def get_coverage_data() -> dict[str, Any] | None:
     cov_path = ROOT / ".orchestrator" / "state" / "coverage.json"
     if cov_path.exists():
         try:
-            return read_json(cov_path)
+            record = read_json(cov_path)
+            if record.get("estimated"):
+                for key in ("overall_coverage_pct", "targets", "total_lines", "covered_lines", "tool", "metric", "timestamp"):
+                    record.pop(key, None)
+                record["last_error"] = "Previous coverage was estimated, not measured. Measure again for a real result."
+            return record
         except Exception:
             return None
     return None
@@ -2045,11 +2055,13 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
     IGNORED_DIRS = {
         ".git", ".build", ".orchestrator", ".swiftpm", ".cache", ".venv", ".tox",
         "build", "DerivedData", "Pods", "Carthage", "node_modules", "vendor",
-        "xcuserdata", "fastlane", ".idea", ".vscode", "dist", "target", "__pycache__"
+        "xcuserdata", "fastlane", ".idea", ".vscode", "dist", "target", "__pycache__",
+        "venv", "site-packages",  # installed libraries ship their own tests; they are not the project's
+        "Library", "Temp", "obj",  # Unity's package cache and build output
     }
 
     candidate_files: list[Path] = []
-    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx")
+    supported_exts = (".swift", ".py", ".rs", ".go", ".js", ".ts", ".jsx", ".tsx", ".kt", ".java", ".cs")
     
     # Walk the directory tree to find test files across supported languages
     for current_root, dirnames, filenames in os.walk(root):
@@ -2177,7 +2189,51 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
                 "language": "go",
             })
 
-        # 5. JavaScript / TypeScript
+        # 5. Kotlin / Java (JUnit, Android): files under src/test or src/androidTest, or named *Test / *Tests
+        elif file_path.suffix in (".kt", ".java"):
+            in_jvm_tests = bool(re.search(r'(?:^|[/\\])src[/\\](?:test|androidTest)[/\\]', rel_path_str))
+            is_test_filename = bool(re.search(r'(?:Test|Tests|IT)\.(?:kt|java)$', file_path.name))
+            if not (in_jvm_tests or is_test_filename):
+                continue
+            test_funcs = ["".join(m) for m in re.findall(
+                r'@(?:Test|ParameterizedTest)\b(?:\([^)]*\))?\s*(?:@\w+(?:\([^)]*\))?\s*)*'
+                r'(?:(?:public|private|internal|protected|override|suspend|open|final)\s+)*(?:fun|void)\s+(?:`([^`]+)`|([A-Za-z_]\w*))\s*\(',
+                raw_content)]
+            if not test_funcs:
+                continue
+            class_match = re.search(r'\bclass\s+([A-Za-z_][A-Za-z0-9_]*)', raw_content)
+            seen_paths.add(file_path)
+            suites.append({
+                "path": file_path,
+                "rel_path": rel_path,
+                "name": class_match.group(1) if class_match else file_path.stem,
+                "file_stem": file_path.stem,
+                "test_count": len(test_funcs),
+                "test_funcs": test_funcs,
+                "language": "kotlin" if file_path.suffix == ".kt" else "java",
+            })
+
+        # 6. C# (Unity Test Framework / NUnit)
+        elif file_path.suffix == ".cs":
+            test_funcs = re.findall(
+                r'\[(?:Test|UnityTest|TestCase)\b[^\]]*\]\s*(?:\[[^\]]*\]\s*)*'
+                r'(?:(?:public|private|internal|protected|static|async|override)\s+)*[\w<>\[\].]+\s+([A-Za-z_]\w*)\s*\(',
+                raw_content)
+            if not test_funcs:
+                continue
+            class_match = re.search(r'\bclass\s+([A-Za-z_]\w*)', raw_content)
+            seen_paths.add(file_path)
+            suites.append({
+                "path": file_path,
+                "rel_path": rel_path,
+                "name": class_match.group(1) if class_match else file_path.stem,
+                "file_stem": file_path.stem,
+                "test_count": len(set(test_funcs)),
+                "test_funcs": list(dict.fromkeys(test_funcs)),
+                "language": "csharp",
+            })
+
+        # 7. JavaScript / TypeScript
         elif any(file_path.name.endswith(ext) for ext in (".test.js", ".test.ts", ".test.jsx", ".test.tsx", ".spec.js", ".spec.ts", ".spec.jsx", ".spec.tsx")) or (is_in_test_dir and file_path.suffix in (".js", ".ts", ".jsx", ".tsx")):
             test_cases = re.findall(r'(?:it|test)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
             desc_match = re.search(r'describe\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', raw_content)
@@ -2207,7 +2263,23 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
     base_command = project_config.test_command or ""
 
     if language == "python":
+        words = shlex.split(base_command)
+        if "unittest" in words:
+            # unittest doesn't take a file path (`discover tests tests/test_x.py` runs nothing); discover just that
+            # file in its folder, which works with or without an __init__.py there
+            python = words[0] if words else "python3"
+            folder = shlex.quote(str(rel_path.parent))
+            return f"{python} -m unittest discover -s {folder} -p {shlex.quote(rel_path.name)}"
         return f"{base_command} {quoted_path}".strip()
+    if language in {"kotlin", "java"}:
+        root = Path(getattr(project_config, "root", ".") or ".")
+        suite_class = shlex.quote(str(suite["name"]))
+        if (root / "pom.xml").exists():
+            return f"mvn -q test -Dtest={suite_class}"
+        gradle = "./gradlew" if (root / "gradlew").exists() else "gradle"
+        if "androidTest" in rel_path.parts:  # instrumented tests need a device or emulator, and run as one set
+            return f"{gradle} connectedAndroidTest"
+        return f"{gradle} test --tests {suite_class}"
     if language == "rust":
         if rel_path.parts and rel_path.parts[0] == "tests":
             return f"cargo test --test {shlex.quote(suite['file_stem'])}"
@@ -2216,6 +2288,14 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
         rel_dir = rel_path.parent
         package = "." if str(rel_dir) == "." else f"./{rel_dir}"
         return f"go test {shlex.quote(package)}"
+    if language == "csharp":
+        # Unity runs one platform at a time: Runtime/PlayMode folders are PlayMode tests, the rest EditMode
+        parts = {part.lower() for part in rel_path.parts}
+        platform = "PlayMode" if parts & {"playmode", "runtime"} else "EditMode"
+        command = re.sub(r"-testPlatform\s+\w+", f"-testPlatform {platform}", base_command)
+        if "-runTests" not in command:
+            raise ValueError("Set test_command to a Unity -runTests command to run a single C# suite.")
+        return f"{command} -testFilter {shlex.quote(str(suite['name']))}"
     if language in {"javascript", "typescript"}:
         return f"{base_command} -- {quoted_path}".strip()
     raise ValueError(f"Unsupported non-Xcode test language: {language}")
@@ -2490,9 +2570,51 @@ def rename_test_suite(suite: dict[str, Any], root: Path) -> bool:
         input("\n\033[1;96mTap Enter to continue...\033[0m")
         return False
 
-def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_models: list[str]) -> float | None:
+def record_coverage_failure(message: str) -> None:
+    """Keeps the last real measurement and notes why this attempt didn't produce one."""
+    record = {k: v for k, v in (get_coverage_data() or {}).items() if k != "estimated"}
+    if (get_coverage_data() or {}).get("estimated"):  # an old guess from the test count is not a measurement
+        for key in ("overall_coverage_pct", "targets", "total_lines", "covered_lines", "tool", "metric", "timestamp"):
+            record.pop(key, None)
+    save_coverage_data({**record, "last_error": message, "last_error_at": now_iso()})
+
+
+def run_project_coverage() -> float | None:
+    """Coverage for a project not built with Xcode, by its language's own tool (orchestrator/coverage.py)."""
+    from orchestrator import coverage as cov
+
+    print_header("Measuring code coverage")
+    try:
+        result = cov.measure(ROOT, PROJECT_CONFIG.test_command)
+    except (cov.CoverageUnavailable, OSError, ValueError, KeyError, IndexError) as exc:
+        message = f"Coverage measurement failed: {exc}"
+        print(f"\n\033[1;93m⚠️  {message}\033[0m")
+        record_coverage_failure(message)
+        return None
+    suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
+    save_coverage_data({
+        "timestamp": now_iso(), "overall_coverage_pct": result.pct, "tool": result.tool, "metric": result.metric,
+        "total_lines": result.total_lines, "covered_lines": result.covered_lines,
+        "targets": [], "total_tests": sum(s["test_count"] for s in suites), "total_suites": len(suites),
+    })
+    print(f"\n\033[1;92m✅ {result.pct:.1f}% of {result.metric} covered (measured with {result.tool}).\033[0m")
+    print("\n=== STEP 5/5: COVERAGE MEASUREMENT COMPLETE ===\n", flush=True)
+    return result.pct
+
+
+def project_uses_xcode() -> bool:
+    return bool(PROJECT_CONFIG.uses_xcode)
+
+
+def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_models: list[str], interactive: bool = True) -> float | None:
     clear_screen()
+    if not project_uses_xcode():
+        pct = run_project_coverage()
+        if interactive and sys.stdin.isatty():
+            input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        return pct
     print_header("Calculating Code Coverage")
+    print("\n=== STEP 1/5: CONFIGURING BUILD DESTINATION ===", flush=True)
     print("Running test suite with code coverage enabled (-enableCodeCoverage YES)...\n")
     
     scheme = PROJECT_CONFIG.scheme or PROJECT_CONFIG.project_name or ROOT.name
@@ -2548,6 +2670,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.set_scroll_region()
             status_bar.render(at_bottom=True, force=True, activity=indicator)
 
+        print("\n=== STEP 2/5: RUNNING TEST SUITE WITH COVERAGE ===", flush=True)
         proc = None
         try:
             proc = subprocess.Popen(
@@ -2615,7 +2738,18 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
         except Exception as e:
             print(f"\n⚠️ Xcode test execution failed: {e}")
 
+        if proc is None or proc.returncode != 0:
+            message = f"Coverage measurement failed: Xcode tests did not succeed (exit {getattr(proc, 'returncode', 'unavailable')})."
+            record_coverage_failure(message)
+            print(f"\n❌ {message}", flush=True)
+            if show_status_bar:
+                indicator.clear()
+                status_bar.clear_footer()
+                status_bar.reset_scroll_region()
+            return None
+
         # Extract coverage using xcrun xccov
+        print("\n=== STEP 3/5: EXPORTING COVERAGE REPORT ===", flush=True)
         overall_pct = None
         targets_cov = []
         if result_bundle.exists():
@@ -2628,14 +2762,14 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                     stderr=subprocess.DEVNULL
                 ).decode("utf-8")
                 cov_json = json.loads(xccov_out)
-                raw_line_cov = cov_json.get("lineCoverage", 0.0)
+                raw_line_cov = cov_json["lineCoverage"]
                 overall_pct = round(raw_line_cov * 100.0, 1)
 
                 app_targets = []
                 third_party_targets = []
                 for t in cov_json.get("targets", []):
                     t_name = t.get("name", "")
-                    t_cov = round(t.get("lineCoverage", 0.0) * 100.0, 1)
+                    t_cov = round(t["lineCoverage"] * 100.0, 1)
 
                     # Exclude test bundles themselves
                     if t_name.endswith((".xctest", "Tests", "UITests", "Tests.xctest")):
@@ -2648,7 +2782,12 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                         "Firebase", "Google", "GUL", "GTM", "FBL", "AppAuth", "gRPC", "abseil", "absl", "nanopb",
                         "leveldb", "Promises", "GTMSessionFetcher", "SnapshotTesting", "Quick", "Nimble", "Pods-", "openssl"
                     ])
-                    entry = {"name": t_name, "coverage_pct": t_cov}
+                    entry = {
+                        "name": t_name,
+                        "coverage_pct": t_cov,
+                        "total_lines": t.get("executableLines", 0),
+                        "covered_lines": t.get("coveredLines", 0),
+                    }
                     if is_app_target:
                         app_targets.insert(0, entry)
                     elif is_third_party:
@@ -2661,9 +2800,15 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                     primary_target = app_targets[0]
                     overall_pct = primary_target["coverage_pct"]
                     targets_cov = app_targets + third_party_targets
+                    total_lines = primary_target.get("total_lines") or cov_json.get("executableLines", 0)
+                    covered_lines = primary_target.get("covered_lines") or cov_json.get("coveredLines", 0)
                 else:
                     targets_cov = third_party_targets
+                    total_lines = cov_json.get("executableLines", 0)
+                    covered_lines = cov_json.get("coveredLines", 0)
             except Exception as e:
+                overall_pct = None
+                targets_cov = []
                 print(f"\n⚠️ Could not parse .xcresult coverage: {e}")
 
         # Check prior coverage record for delta comparison
@@ -2672,6 +2817,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
         prev_tests = prev_cov_record.get("total_tests") if prev_cov_record else None
 
         # Discover total test suites and tests count in workspace
+        print("\n=== STEP 4/5: ANALYZING COVERAGE METRICS ===", flush=True)
         if show_status_bar:
             indicator.label = "Thinking: Analyzing test suite health"
             status_bar.render(at_bottom=True, force=True, activity=indicator)
@@ -2684,22 +2830,25 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             status_bar.clear_footer()
             status_bar.reset_scroll_region()
 
-    # Fallback simulation/estimation if xcresult couldn't be parsed or was empty (e.g. test environment)
+    # No number unless Xcode measured one: a guess from the test count would read as a fact.
     if overall_pct is None:
-        if total_tests > 0:
-            overall_pct = min(95.0, round(float(total_tests * 8.5), 1))
-            targets_cov = [{"name": PROJECT_CONFIG.scheme or "App", "coverage_pct": overall_pct}]
+        record_coverage_failure("Xcode didn't report coverage. Check that the scheme's tests build and run, then measure again.")
 
     if overall_pct is not None:
+        print("\n=== STEP 5/5: SAVING COVERAGE BASELINE ===", flush=True)
         cov_delta = (overall_pct - prev_pct) if prev_pct is not None else None
         tests_delta = (total_tests - prev_tests) if prev_tests is not None else None
 
         cov_record = {
             "timestamp": now_iso(),
             "overall_coverage_pct": overall_pct,
+            "total_lines": total_lines,
+            "covered_lines": covered_lines,
             "targets": targets_cov,
             "total_tests": total_tests,
-            "total_suites": total_suites
+            "total_suites": total_suites,
+            "tool": "Xcode (xccov)",
+            "metric": "lines",
         }
         save_coverage_data(cov_record)
 
@@ -2715,10 +2864,11 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             color = "\033[1;92m" if tests_delta > 0 else "\033[1;91m"
             tests_delta_str = f" ({color}{sign}{tests_delta} test(s) added\033[0m)"
 
+        lines_detail_str = f" of {total_lines:,} lines ({covered_lines:,} covered)" if total_lines else ""
         print(f"\n\033[1;92m" + "=" * 58 + "\033[0m")
         print(f"   \033[1;92m🧪 CODE COVERAGE & TEST HEALTH REPORT\033[0m")
         print(f"\033[1;92m" + "=" * 58 + "\033[0m")
-        print(f"   \033[1;36m• Overall Coverage:\033[0m      \033[1;97m{overall_pct:.1f}%\033[0m{cov_delta_str}")
+        print(f"   \033[1;36m• Overall Coverage:\033[0m      \033[1;97m{overall_pct:.1f}%{lines_detail_str}\033[0m{cov_delta_str}")
         print(f"   \033[1;36m• Test Suite Breakdown:\033[0m  \033[97m{total_tests} test(s) across {total_suites} suite(s)\033[0m{tests_delta_str}")
         if suites:
             print(f"   \033[1;36m• Active Suites:\033[0m")
@@ -2732,6 +2882,7 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
                 print(f"     \033[90m- {t.get('name')}:\033[0m \033[1;95m{t.get('coverage_pct')}%\033[0m")
         print(f"   \033[1;36m• End-User Value:\033[0m        \033[97mVerifies critical user workflows, eliminates regression bugs, and ensures UI/data reliability.\033[0m")
         print(f"\033[1;92m" + "=" * 58 + "\033[0m")
+        print("\n=== STEP 5/5: COVERAGE MEASUREMENT COMPLETE ===\n", flush=True)
     else:
         diag = get_simulator_diagnostic()
         print("\n\033[1;91m❌ Failed to calculate code coverage.\033[0m")
@@ -2753,8 +2904,10 @@ def run_calculate_coverage(session_allowed_machines: list[str], session_allowed_
             print(f"  \033[93m• Target simulator destination:\033[0m {diag.get('best_destination')}")
             print("  • Ensure the scheme's test target builds without compilation errors.")
 
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    if interactive and sys.stdin.isatty():
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
     return overall_pct
+
 
 def handle_test_frameworks_menu(session_allowed_machines: list[str], session_allowed_models: list[str]) -> None:
     error_msg = ""
@@ -3873,12 +4026,13 @@ def perform_job_revert(job: dict[str, Any]) -> int:
                 count += 1
     return count
 
-def handle_discard_job(job: dict[str, Any]):
+def handle_discard_job(job: dict[str, Any], confirmed: bool = False):
+    """`confirmed` is for callers that already asked (the web UI): no prompts."""
     print_header(f"Discarding & Reverting Job: {job.get('job_id')}")
 
     warning = "\033[1;91m⚠️  WARNING: THIS WILL PERMANENTLY DELETE ALL LOCAL PROGRESS & CODE CHANGES.\033[0m\n"
     warning += "Are you sure you want to DISCARD this job and REVERT its changes?"
-    if not prompt_confirm(warning, default=False):
+    if not confirmed and not prompt_confirm(warning, default=False):
         return
 
     # 1. Surgical File Revert
@@ -3888,6 +4042,8 @@ def handle_discard_job(job: dict[str, Any]):
 
     # 2. Branch Management
     branch = job.get("branch")
+    ai_modified = job.get("ai_modified_files", [])
+    ai_untracked = job.get("ai_untracked_files", [])
 
     if branch:
         try:
@@ -3895,7 +4051,7 @@ def handle_discard_job(job: dict[str, Any]):
         except:
             curr = ""
             
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - AI-managed branch detected: {branch}")
             if curr == branch:
                 base_branch = job.get("base_branch", PROJECT_CONFIG.base_branch)
@@ -3912,13 +4068,17 @@ def handle_discard_job(job: dict[str, Any]):
     # Archive with discarded status
     archive_path = archive_job(job, status="discarded")
     print(f"\n✅ Job discarded and AI changes surgically reverted.")
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    if not confirmed:
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_merge_cleanup(job: dict[str, Any]):
     pr_number = job.get("pr_number")
     branch = job.get("branch")
 
     if not pr_number:
+        if branch and job.get("code_host") == "git":
+            handle_local_merge(job)
+            return
         print("!!! Error: No PR number found for this job.")
         return
 
@@ -3949,7 +4109,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
 
     # 3. Local branch cleanup (ONLY if merge succeeded and AI-managed)
     if branch:
-        if branch.startswith("ai/issue-"):
+        if is_ai_branch(branch):
             print(f"      - Deleting local branch: {branch}...")
             # Check current branch first
             try:
@@ -3963,10 +4123,41 @@ def handle_merge_cleanup(job: dict[str, Any]):
         else:
             print(f"      - Note: Branch '{branch}' is not AI-managed. Preserving local branch.")
 
-    # 4. Archive Job
+    # 4. Tell linked tickets/cards/issues (best effort), then archive the job with that log
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None,
+                         pr_number=pr_number)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+
+    # 5. Archive Job
     archive_path = archive_job(job)
 
     print(f"\n✅ Successfully merged and archived to {archive_path.name}")
+    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+
+def handle_local_merge(job: dict[str, Any]):
+    """Merge & complete without a pull request (plain git): merge the job's branch into its base on this computer."""
+    branch = job["branch"]
+    base = job.get("base_branch") or PROJECT_CONFIG.base_branch
+    print_header(f"Merging {branch} into {base}")
+    ok, message = merge_branch_locally(branch, base, f"Merge {branch}: {job.get('title', job.get('job_id'))}")
+    print(f"      - {message}")
+    if not ok:
+        print("\n\033[1;91m!!! Merge didn't happen. The job is still ready for review.\033[0m")
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        return
+    if is_ai_branch(branch):
+        print(f"      - Deleting local branch: {branch}...")
+        subprocess.run(["git", "branch", "-d", branch], cwd=str(ROOT), capture_output=True)
+    try:
+        from orchestrator.integrations_sync import notify_job_event
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None)
+    except Exception as exc:
+        print(f"      - Note: couldn't update linked apps: {exc}")
+    archive_path = archive_job(job)
+    print(f"\n✅ Merged and archived to {archive_path.name}")
     input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 def handle_archived_jobs_menu(session_allowed_machines, session_allowed_models):
@@ -4947,24 +5138,11 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                     continue
 
                 # 2. Accept Architect Suggestions
-                verification = job.get("verification")
-                if status == "human-needed" and verification and verification.get("status") in ["rejected", "concerns"]:
+                from job_actions import apply_design_approval, architect_feedback, replan_type
+                feedback = architect_feedback(job)
+                if feedback:
                     print_header("Integrating Architect Suggestions")
-                    feedback = f"Please re-plan and incorporate the Senior Architect's suggestions:\n"
-                    feedback += f"Comments: {verification.get('comments')}\n"
-                    if verification.get("suggested_additions"):
-                        feedback += "Suggested Additions:\n- " + "\n- ".join(verification["suggested_additions"])
-                    
-                    job_type_map = {
-                        "bug-fix": "bug",
-                        "bug-investigate": "bug",
-                        "feature-plan": "feature",
-                        "test-audit": "coverage",
-                        "feature-design": "design"
-                    }
-                    requested_type = job_type_map.get(job.get("type"), "feature")
-                    
-                    run_script("new_job.py", [requested_type, "--no-dispatch", "--update", str(job["_path"]), "--feedback", feedback], sub_menu=True)
+                    run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(job["_path"]), "--feedback", feedback], sub_menu=True)
                     job = refresh_job(job)
                     continue
 
@@ -4972,20 +5150,8 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                     print("\n🎨 \033[1;92mDESIGN APPROVED!\033[0m")
                     print("Transitioning to Implementation Planning phase...")
                     
-                    # Store design as context for the next planner
-                    design_spec = job.get("plan", {})
-                    job["design_spec"] = design_spec
-                    job["status"] = "planned"
-                    job["type"] = "feature-plan"
-                    
-                    # Update raw_input so the Feature Planner sees the design
-                    design_context = f"\n\n### APPROVED DESIGN SPEC (Stitch AI) ###\n"
-                    design_context += f"Summary: {design_spec.get('summary')}\n"
-                    design_context += f"Vibe: {design_spec.get('vibe')}\n"
-                    design_context += "Visual Components:\n- " + "\n- ".join(design_spec.get("visual_components", [])) + "\n"
-                    design_context += "Interaction Flows:\n- " + "\n- ".join(design_spec.get("interaction_flows", [])) + "\n"
-                    
-                    job["raw_input"] = job.get("raw_input", "") + design_context
+                    # Store the design as context for the feature planner.
+                    apply_design_approval(job)
                     save_job(job)
                     
                     # Now trigger the planning script to generate the task list
@@ -6035,6 +6201,7 @@ def handle_ask_ai(job: dict[str, Any], session_allowed_models: list[str]):
     if shutil.which("claude"): available_clis.append(("claude", "Claude Code CLI", "claude"))
     if shutil.which("gemini"): available_clis.append(("gemini", "Gemini CLI", "gemini"))
     if shutil.which("codex"): available_clis.append(("codex", "Codex CLI", "codex"))
+    if shutil.which("pool"): available_clis.append(("pool", "Poolside CLI (pool)", "pool"))
 
     # Determine recommended CLI based on user preference or job builder/planner
     settings_path = CONFIG_DIR / "settings.json"
@@ -6165,6 +6332,8 @@ def handle_ask_ai(job: dict[str, Any], session_allowed_models: list[str]):
                     cmd = ["claude", intro_prompt]
                 elif cli_key == "codex":
                     cmd = ["codex", "--no-alt-screen", intro_prompt]
+                elif cli_key == "pool":
+                    cmd = ["pool", "-q", intro_prompt]
                 else:
                     cmd = [bin_name, intro_prompt]
 
@@ -6917,28 +7086,33 @@ def handle_configuration_menu(session_allowed_machines: list[str], session_allow
                 except:
                     pass
 
-            print("  \033[1;96m--- Models & Instructions ---\033[0m")
-            print_wrapped_option("[\033[93mM\033[0m] LLM Models (Session Defaults)")
-            print_wrapped_option("[\033[93mK\033[0m] Manage LLM API Keys")
-            print_wrapped_option("[\033[93mI\033[0m] AI Instruction Settings (.md files)")
+            # Same groups and names as the web app's Configuration menu (configuration.js); the letters stay as they were.
+            print("  \033[1;96m--- This project ---\033[0m")
+            print_wrapped_option(f"[\033[93mG\033[0m] Base branch (\033[97m{global_base}\033[0m)")
+            print_wrapped_option("[\033[93mC\033[0m] Projects (switch project)")
+            print_wrapped_option("[\033[93mA\033[0m] Archived jobs")
+            print_wrapped_option("[\033[93mD\033[0m] Tester build setup")
+            print_wrapped_option("[\033[93mX\033[0m] Xcode Cloud")
 
-            print("\n  \033[1;96m--- Machine Fleet & Project Config ---\033[0m")
-            print_wrapped_option("[\033[93mF\033[0m] Manage Machine Fleet")
-            print_wrapped_option(f"[\033[93mG\033[0m] Select Base Branch (\033[97m{global_base}\033[0m)")
-            print_wrapped_option("[\033[93mC\033[0m] Change Target Project")
-            print_wrapped_option("[\033[93mA\033[0m] Manage Archived Jobs")
+            print("\n  \033[1;96m--- AI ---\033[0m")
+            print_wrapped_option("[\033[93mM\033[0m] Models")
+            print_wrapped_option("[\033[93mK\033[0m] API keys")
+            print_wrapped_option("[\033[93mI\033[0m] Instructions for AI helpers")
 
-            print("\n  \033[1;96m--- Delivery & Notifications ---\033[0m")
-            print_wrapped_option("[\033[93mD\033[0m] Firebase App Distro (Delivery)")
-            print_wrapped_option("[\033[93mX\033[0m] Xcode Cloud & CI Workflows (ci_scripts)")
-            print_wrapped_option("[\033[93mE\033[0m] Email Notification Settings")
+            print("\n  \033[1;96m--- Computers & access ---\033[0m")
+            print_wrapped_option("[\033[93mF\033[0m] Machines")
+            print_wrapped_option("[\033[93mU\033[0m] Updates")
 
-            print("\n  \033[1;96m--- Setup, Health & Documentation ---\033[0m")
-            print_wrapped_option("[\033[93mW\033[0m] Setup Wizard (Full Project & Tools Setup)")
-            print_wrapped_option("[\033[93mP\033[0m] Run Prerequisite Audit")
-            print_wrapped_option("[\033[93mS\033[0m] Documentation & Architecture Guides")
-            print_wrapped_option("[\033[93mT\033[0m] Orchestrator Self-Tests")
-            print_wrapped_option("[\033[93mU\033[0m] Update Orchestrator (Local & Fleet)")
+            print("\n  \033[1;96m--- Alerts ---\033[0m")
+            print_wrapped_option("[\033[93mE\033[0m] Email alerts")
+
+            print("\n  \033[1;96m--- Readiness ---\033[0m")
+            print_wrapped_option("[\033[93mW\033[0m] Setup wizard")
+            print_wrapped_option("[\033[93mP\033[0m] Tools and logins (prerequisite audit)")
+            print_wrapped_option("[\033[93mT\033[0m] Orchestrator health check")
+
+            print("\n  \033[1;96m--- Docs ---\033[0m")
+            print_wrapped_option("[\033[93mS\033[0m] Orchestrator guides")
             print()
             print_wrapped_option("[\033[1;91mB\033[0m] Back", indent_size=4, subsequent_indent_size=4)
             # Anchor prompt to bottom

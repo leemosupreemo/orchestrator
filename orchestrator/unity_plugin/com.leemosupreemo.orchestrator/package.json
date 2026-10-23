@@ -1,0 +1,9 @@
+{
+  "name": "com.leemosupreemo.orchestrator",
+  "displayName": "Orchestrator",
+  "version": "0.1.0",
+  "unity": "2021.3",
+  "description": "Send Unity console errors and failing tests to a running Orchestrator as bug jobs, and follow the jobs from the Editor.",
+  "keywords": ["orchestrator", "ai", "bug", "editor"],
+  "documentationUrl": "https://github.com/leemosupreemo/swift-orchestrator/blob/main/docs/unity.md"
+}

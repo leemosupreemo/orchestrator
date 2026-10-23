@@ -2,6 +2,18 @@
 
 Orchestrator coordinates AI coding workflows from a terminal console. It turns feature requests and bug reports into tracked jobs that move through planning, verification, test-driven implementation, and review. Swift has the deepest support; Rust, Python, JavaScript/TypeScript, and Go support is in beta.
 
+## Use the Web App 🌐
+
+The quickest way in, on a Mac or Linux computer:
+
+```bash
+curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh
+```
+
+It installs what's missing, adds the computer to your account (you confirm a code in the browser) and starts Orchestrator at login. Then open **https://swift-orch-web-20260923.web.app** from any device and sign in. Your code and files stay on your computer; the site only knows which computers are on your account. Home starts with a four-step checklist until you're set up: a project, Git, an AI model, and an enabled machine. Start a new project there to answer a few questions about what you're building; each answer goes into the product requirements, and **Break it down** turns them into epics to approve (each becomes a job that waits until you plan it, and can be sent to Jira).
+
+Prefer the terminal? Everything below works there too.
+
 ## Set Up a Project ⚙️
 
 From the project root, run:

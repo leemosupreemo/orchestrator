@@ -10,8 +10,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class DetectedStack:
-    language: str              # "swift", "python", "rust", "typescript", "javascript", "go", "generic"
-    framework: str | None      # "xcode", "spm", "pytest", "unittest", "cargo", "npm", "yarn", "pnpm", "bun", "go test"
+    language: str              # "swift", "python", "rust", "typescript", "javascript", "go", "csharp", "generic"
+    framework: str | None      # "xcode", "spm", "pytest", "unittest", "cargo", "npm", "yarn", "pnpm", "bun", "go test", "unity"
     display_name: str          # e.g. "Swift (Xcode)", "Rust (Cargo)", "Python (pytest)", "TypeScript (npm)", "Go"
     build_command: str | None  # e.g. "cargo build", "npm run build", "go build ./..."
     test_command: str | None   # e.g. "cargo test", "npm test", "go test ./..."
@@ -25,11 +25,48 @@ class DetectedStack:
     manifest_file: str | None = None
 
 
+UNITY_VERSION_FILE = Path("ProjectSettings") / "ProjectVersion.txt"
+UNITY_EDITOR_ROOT = "/Applications/Unity/Hub/Editor"
+
+
+def unity_editor_version(root: Path) -> str | None:
+    """The editor version a Unity project was last saved with, e.g. "2022.3.10f1"."""
+    try:
+        text = (root / UNITY_VERSION_FILE).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    match = re.search(r"^m_EditorVersion:\s*(\S+)", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def unity_command(root: Path, *arguments: str) -> str:
+    """A batchmode Unity command for this project. `UNITY_PATH` names the editor binary; without it, the Hub's
+    default location for the project's own editor version is used."""
+    version = unity_editor_version(root) or "<version>"
+    default = f"{UNITY_EDITOR_ROOT}/{version}/Unity.app/Contents/MacOS/Unity"
+    return " ".join([f'"${{UNITY_PATH:-{default}}}"', "-batchmode", "-nographics", "-projectPath", ".", *arguments, "-logFile", "-"])
+
+
 def detect_project_stack(root: Path) -> DetectedStack:
     """
     Inspects a repository root to determine its primary language, toolchain,
     default build/test commands, and whether it relies on Xcode.
     """
+    # 0. Unity project (checked first: a Unity repo can carry generated Xcode or SPM files)
+    if (root / UNITY_VERSION_FILE).is_file() and (root / "Assets").is_dir():
+        version = unity_editor_version(root)
+        return DetectedStack(
+            language="csharp",
+            framework="unity",
+            display_name=f"Unity {version}" if version else "Unity",
+            # batchmode has no compile-only switch; importing and quitting fails on script compile errors
+            build_command=unity_command(root, "-quit"),
+            test_command=unity_command(root, "-runTests", "-testPlatform", "EditMode",
+                                       "-testResults", "Temp/unity-editmode-results.xml"),
+            uses_xcode=False,
+            manifest_file=str(UNITY_VERSION_FILE),
+        )
+
     # 1. Xcode Project or Workspace
     xcode_proj = next(iter(sorted(root.glob("*.xcodeproj"))), None)
     xcode_ws = next(iter(sorted(root.glob("*.xcworkspace"))), None)
@@ -164,7 +201,69 @@ def detect_project_stack(root: Path) -> DetectedStack:
             manifest_file="go.mod",
         )
 
-    # 7. Generic / Unknown Stack
+    # 7. Documented commands in docs/build-test-commands.md
+    doc_cmds = root / "docs" / "build-test-commands.md"
+    if doc_cmds.exists():
+        try:
+            content = doc_cmds.read_text(encoding="utf-8", errors="ignore")
+            def _extract_cmd(heading: str) -> str | None:
+                pat = rf"^## (?:iOS app )?{heading}\s*$((?:(?!^## ).)*?)^```bash\s*\n(.*?)^```"
+                m = re.search(pat, content, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+                return m.group(2).strip() if m else None
+            b_cmd = _extract_cmd("build")
+            t_cmd = _extract_cmd("tests?")
+            if b_cmd or t_cmd:
+                return DetectedStack(
+                    language="generic",
+                    framework="docs",
+                    display_name="Documented",
+                    build_command=b_cmd,
+                    test_command=t_cmd,
+                    uses_xcode=False,
+                    manifest_file="docs/build-test-commands.md",
+                )
+        except Exception:
+            pass
+
+    # 8. Inferred from Product Requirements (new project created from idea)
+    for prd_path in (root / "docs" / "product" / "prd.md", root / "docs" / "prd.md"):
+        if prd_path.exists():
+            try:
+                prd_text = prd_path.read_text(encoding="utf-8", errors="ignore").lower()
+                if any(k in prd_text for k in ("ios app", "macos app", "swift", "apple")):
+                    return DetectedStack(
+                        language="swift",
+                        framework="spm",
+                        display_name="Swift (from PRD)",
+                        build_command="swift build",
+                        test_command="swift test",
+                        uses_xcode=False,
+                        manifest_file=str(prd_path.relative_to(root)),
+                    )
+                if any(k in prd_text for k in ("python", "fastapi", "django", "flask")):
+                    return DetectedStack(
+                        language="python",
+                        framework="unittest",
+                        display_name="Python (from PRD)",
+                        build_command="python3 -m compileall -q .",
+                        test_command="python3 -m unittest discover tests",
+                        uses_xcode=False,
+                        manifest_file=str(prd_path.relative_to(root)),
+                    )
+                if any(k in prd_text for k in ("web app", "node", "typescript", "javascript", "react", "vue", "svelte")):
+                    return DetectedStack(
+                        language="typescript",
+                        framework="npm",
+                        display_name="Web / Node.js (from PRD)",
+                        build_command="npm run build",
+                        test_command="npm test",
+                        uses_xcode=False,
+                        manifest_file=str(prd_path.relative_to(root)),
+                    )
+            except Exception:
+                pass
+
+    # 9. Generic / Unknown Stack
     return DetectedStack(
         language="generic",
         framework=None,

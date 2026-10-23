@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
-from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error
+from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, model_usable, model_substitute
 from model_router import get_prioritized_models, ModelRole
 
 class LLMTimeoutError(RuntimeError):
@@ -34,51 +34,103 @@ for m in all_m:
 DEFAULT_FALLBACKS = get_prioritized_models()
 
 def extract_json_block(text: str) -> str:
-    text = text.strip()
+    # Strip ANSI escape sequences (CSI, OSC, cursor controls) so they do not break JSON decoding
+    text = re.sub(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\^\[\[?[A-Za-z0-9_~]*', '', text).strip()
 
-    # 1. Try markdown fences
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    if fenced:
-        text = fenced.group(1).strip()
+    def _extract_balanced_span(s: str, opener: str, closer: str) -> tuple[str | None, int, int]:
+        start = s.find(opener)
+        if start == -1:
+            return None, -1, -1
+        stack = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(s)):
+            c = s[i]
+            if c == '"' and not escape:
+                in_string = not in_string
+            elif not in_string:
+                if c == opener:
+                    stack += 1
+                elif c == closer:
+                    stack -= 1
+                    if stack == 0:
+                        return s[start:i+1].strip(), start, i + 1
+            if c == '\\' and not escape:
+                escape = True
+            else:
+                escape = False
+        return None, -1, -1
+
+    def _strip_comments(value: str) -> str:
+        # A URL or source-code comment inside a JSON string is literal content.
+        return re.sub(r'"(?:\\.|[^"\\])*"|//[^\n]*',
+                      lambda match: "" if match.group().startswith("//") else match.group(), value).strip()
+
+    # 1. Try markdown fences (all blocks)
+    fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fenced_blocks:
+        # Prioritize any fenced block that parses as a JSON dict
+        for b in fenced_blocks:
+            b_clean = _strip_comments(b.strip())
+            try:
+                parsed = json.loads(b_clean)
+                if isinstance(parsed, dict):
+                    return b_clean
+            except Exception:
+                pass
+        # Next, try any fenced block that parses as valid JSON (e.g. list)
+        for b in fenced_blocks:
+            b_clean = _strip_comments(b.strip())
+            try:
+                json.loads(b_clean)
+                return b_clean
+            except Exception:
+                pass
+        text = fenced_blocks[0].strip()
     else:
-        # 2. Stack-based extraction for the first full object or array
-        # This handles cases where models append garbage or closing braces after the valid JSON
-        first_brace = text.find('{')
-        first_bracket = text.find('[')
-        
-        start_idx = -1
-        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
-            start_idx = first_brace
-            opener, closer = '{', '}'
-        elif first_bracket != -1:
-            start_idx = first_bracket
-            opener, closer = '[', ']'
-        
-        if start_idx != -1:
-            stack = 0
-            in_string = False
-            escape = False
-            for i in range(start_idx, len(text)):
-                c = text[i]
-                if c == '"' and not escape:
-                    in_string = not in_string
-                elif not in_string:
-                    if c == opener:
-                        stack += 1
-                    elif c == closer:
-                        stack -= 1
-                        if stack == 0:
-                            text = text[start_idx:i+1].strip()
-                            break
-                if c == '\\' and not escape:
-                    escape = True
-                else:
-                    escape = False
+        # 2. Stack-based extraction:
+        dict_cand, dict_start, dict_end = _extract_balanced_span(text, '{', '}')
+        list_cand, list_start, list_end = _extract_balanced_span(text, '[', ']')
+
+        dict_valid = False
+        dict_clean = ""
+        if dict_cand:
+            dict_clean = _strip_comments(dict_cand)
+            try:
+                if isinstance(json.loads(dict_clean), dict):
+                    dict_valid = True
+            except Exception:
+                pass
+
+        list_valid = False
+        list_clean = ""
+        if list_cand:
+            list_clean = _strip_comments(list_cand)
+            try:
+                json.loads(list_clean)
+                list_valid = True
+            except Exception:
+                pass
+
+        # If list_cand encloses dict_cand and is valid JSON, the top-level structure is the list!
+        if list_valid and dict_valid and list_start <= dict_start and list_end >= dict_end:
+            return list_clean
+
+        # If dict_valid is true (e.g. dict after list, or no valid list), prioritize the dict
+        if dict_valid:
+            return dict_clean
+
+        # If only list_valid is true
+        if list_valid:
+            return list_clean
+
+        if dict_cand:
+            text = dict_cand
+        elif list_cand:
+            text = list_cand
 
     # 3. Strip single-line comments (// ...) which some models (like deepseek) hallucinate into JSON
-    # This is non-standard JSON but common in LLM "pseudo-JSON"
-    text = re.sub(r"//.*$", "", text, flags=re.M)
-    
+    text = _strip_comments(text)
     return text.strip()
 
 
@@ -96,13 +148,28 @@ def is_quota_error(error_msg: str) -> bool:
     return any(x in error_msg.lower() for x in keywords)
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False) -> tuple[str, str, str]:
+JSON_REMINDER = (
+    "\n\n### FORMAT CORRECTION ###\n"
+    "Your previous reply was not a single JSON object. Reply again with ONLY the JSON object, as plain text in your message. "
+    "Do not write it to a file, do not use tools, and do not add commentary before or after it."
+)
+
+
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False) -> tuple[str, str, str]:
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model
 
     if primary_id not in {m.id for m in get_all_models()}:
         raise ValueError(f"Unsupported model: {model}")
+
+    # A model its provider can't run now would only fail first. Use the one the provider offers that stands in for it.
+    substituted = False
+    if resolved_model and not model_usable(resolved_model):
+        stand_in = model_substitute(resolved_model)
+        if stand_in:
+            print(f"ℹ️  {primary_id} isn't available to the {resolved_model.family} login on this computer. Using {stand_in.id} instead.")
+            primary_id, resolved_model, substituted = stand_in.id, stand_in, True
 
     # Define fallback sequence based on the role and allowed models
     preferred_family = resolved_model.family if resolved_model else None
@@ -117,25 +184,33 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     if primary_id in attempts:
         attempts.remove(primary_id)
         attempts.insert(0, primary_id)
-    elif not allowed_models:
+    elif not allowed_models or substituted:
         attempts.insert(0, primary_id)
 
+    protection = {"protected_paths": protected_paths} if protected_paths else {}
     last_error = None
     actual_session_id = session_id or str(uuid.uuid4())
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id)
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, **protection, **({"web": True} if web else {}))
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
-                json_part = extract_json_block(raw_output)
                 try:
-                    json.loads(json_part)
+                    json.loads(extract_json_block(raw_output), strict=False)
                 except json.JSONDecodeError as exc:
-                    print(f"⚠️  {current_model} produced invalid JSON. Attempting fallback...")
-                    last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc}")
-                    continue
+                    # Agentic models often do the work, then write the answer to a file or describe it in prose.
+                    # Ask the SAME model once to restate it as plain JSON before moving on to another model;
+                    # with only one model allowed (a free-only setup) there is no other to move on to.
+                    print(f"⚠️  {current_model} produced invalid JSON. Asking it to restate the answer as plain JSON...")
+                    try:
+                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images, **protection)
+                        json.loads(extract_json_block(raw_output), strict=False)
+                    except json.JSONDecodeError as exc2:
+                        print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
+                        last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc2}")
+                        continue
             
             # Return the full raw output so callers can see research/thoughts
             return raw_output, current_model, actual_session_id
@@ -160,7 +235,38 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
 import selectors
 
-def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None) -> str:
+def image_args(cmd_base: str, images: list[Path] | None) -> str:
+    """Flags that let a model CLI see screenshots: attached where the CLI can attach images, otherwise their folder is
+    opened to its file tools (the prompt lists the paths). CLIs without either (Ollama) get nothing and the prompt
+    asks the model to say it couldn't look."""
+    if not images:
+        return ""
+    files = [shlex.quote(str(p)) for p in images]
+    folders = sorted({shlex.quote(str(Path(p).parent)) for p in images})
+    program = cmd_base.split(" ", 1)[0]
+    if program == "codex":
+        return "".join(f" -i {f}" for f in files)
+    if program == "opencode":
+        return "".join(f" -f {f}" for f in files)
+    if program in ("claude", "agy"):
+        return "".join(f" --add-dir {d}" for d in folders)
+    if " --prompt - " in cmd_base:  # the Gemini CLI
+        return "".join(f" --include-directories {d}" for d in folders)
+    return ""
+
+
+def web_capable(model: str) -> bool:
+    """Can this model look things up on the web when asked (`web=True`)? Claude Code and the Gemini CLI can; the others answer from memory."""
+    m_meta = get_model(model)
+    model_id = m_meta.id if m_meta else model
+    if model_id.startswith("claude-") or model_id == "claude":
+        return True
+    if model_id.startswith("gemini-") or model_id == "gemini" or (m_meta and m_meta.family == "gemini"):
+        return preferred_cli("gemini") != "agy"
+    return False
+
+
+def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, web: bool = False) -> str:
     # Resolve actual model ID
     m_meta = get_model(model)
     model_id = m_meta.id if m_meta else model
@@ -170,7 +276,7 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
 
     if model_id == "codex":
         cmd_base = "codex exec"
-    elif model_id.startswith("gpt-5"):
+    elif model_id.startswith(("gpt-5", "gpt-6")) or (m_meta and m_meta.family == "openai" and "codex" in m_meta.required_clis):
         cmd_base = f"codex exec --model {cli_model_id}"
         if m_meta and m_meta.reasoning_effort:
             cmd_base += f" -c model_reasoning_effort={m_meta.reasoning_effort}"
@@ -183,6 +289,8 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         safe_tools = "read_file,grep_search,glob"
         if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
             safe_tools += ",replace,write_file"
+        if web:
+            safe_tools += ",google_web_search,web_fetch"
         if provider_cli == "agy":
             cmd_base = f"agy --model {shlex.quote(cli_model_id)} --dangerously-skip-permissions"
             if session_id:
@@ -202,6 +310,8 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
             safe_tools = "read_file,grep_search,glob"
             if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
                 safe_tools += ",replace,write_file"
+            if web:
+                safe_tools += ",google_web_search,web_fetch"
             cmd_base = f"{provider_cli} --skip-trust --prompt - --yolo --allowed-mcp-server-names {safe_servers} --allowed-tools {safe_tools} --raw-output --accept-raw-output-risk"
             if session_id:
                 cmd_base += f" --session-id {session_id}"
@@ -209,26 +319,34 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         cmd_base = f"claude -p --model {model_id}"
         if session_id:
             cmd_base += f" --session-id {session_id}"
+        if web:
+            cmd_base += ' --allowedTools "WebSearch,WebFetch"'
     elif model_id == "claude":
         cmd_base = "claude -p --model claude-sonnet-4-6"
         if session_id:
             cmd_base += f" --session-id {session_id}"
+        if web:
+            cmd_base += ' --allowedTools "WebSearch,WebFetch"'
     elif model_id == "deepseek":
-        cmd_base = "ollama run deepseek-coder"
+        cmd_base = "ollama run deepseek-coder --nowordwrap"
     elif m_meta and ("ollama" in m_meta.required_clis or m_meta.family == "ollama" or m_meta.family == "qwen"):
-        cmd_base = f"ollama run {model_id}"
+        cmd_base = f"ollama run {model_id} --nowordwrap"
     elif model_id == "copilot":
         cmd_base = "gh copilot"
+    # OpenCode: pass --auto so a headless job doesn't stall waiting for a human to approve a tool
+    # call (the same auto-accept posture gemini/agy/pool already run with via --yolo/--unsafe-auto-allow).
     elif model_id.startswith("opencode/"):
-        cmd_base = f"opencode run --model {model_id}"
+        cmd_base = f"opencode run --model {model_id} --auto"
     elif model_id == "opencode":
-        cmd_base = "opencode run --model opencode/big-pickle"
+        cmd_base = "opencode run --model opencode/big-pickle --auto"
     elif m_meta and m_meta.family == "opencode":
-        cmd_base = f"opencode run --model opencode/{model_id.replace('opencode/', '')}"
+        cmd_base = f"opencode run --model opencode/{model_id.replace('opencode/', '')} --auto"
+    elif m_meta and m_meta.family == "pool":
+        cmd_base = "pool exec --unsafe-auto-allow -p -"
     else:
         cmd_base = f"{model_id}"
 
-    return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}'
+    return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}{image_args(cmd_base, images)}'
 
 
 def get_llm_env() -> dict[str, str]:
@@ -275,7 +393,7 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
-def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None) -> str:
+def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
         prompt = f"[SOURCE: {source}]\n\n{prompt}"
@@ -285,7 +403,14 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
         prompt_file = f.name
 
     actual_session_id = session_id or str(uuid.uuid4())
-    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id)
+    cmd = get_llm_command(model, prompt_file, role=role, session_id=actual_session_id, images=images, web=web)
+    if protected_paths:
+        from orchestrator.job_scope import protect_command
+        if "codex exec" in cmd:
+            # Codex sandboxes its own shell commands, and macOS refuses a sandbox inside another, so it couldn't read the project at all.
+            # The read-only sandbox around it is the one that protects the project, which is what this flag is for.
+            cmd = cmd.replace("codex exec", "codex exec --dangerously-bypass-approvals-and-sandbox", 1)
+        cmd = protect_command(cmd, protected_paths)
     env = get_llm_env()
 
     prompt_chars = len(prompt)
