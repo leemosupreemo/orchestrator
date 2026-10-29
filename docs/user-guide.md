@@ -168,6 +168,20 @@ orchestrator init --root /path/to/MyApp --project-name MyApp
 orchestrator init --project /path/to/MyApp --project-name MyApp
 ```
 
+### Importing an Existing Project
+
+To bring an existing project under Orchestrator in one step — detect the stack, write config, generate starter docs, and optionally draft a PRD from the code — use `import`:
+
+```bash
+cd /path/to/YourProject
+orchestrator import              # full flow with PRD drafting
+orchestrator import --no-prd     # config + docs only, no PRD
+orchestrator import --check      # also run orchestrator check afterward
+orchestrator import --force      # overwrite existing config and docs
+```
+
+`import` supports the same stack detection as `init` (Swift, Xcode, SPM, Python, Rust, Node, Go, C#/Unity, etc.) and passes the detected build/test commands through. When a PRD is drafted, the model analysis runs as a background task that you can review and accept from the Product page or via the CLI diff.
+
 Optional starter files:
 
 ```bash

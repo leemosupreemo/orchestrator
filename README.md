@@ -43,7 +43,12 @@ orchestrator --help
 
 ### Quick Start
 
-1.  **Configure**: Run the wizard from the project root.
+1.  **Import** (for an existing project): Import an existing project, detect its stack, generate config and starter docs, and draft a PRD from the code.
+    ```bash
+    cd /path/to/MyProject
+    orchestrator import
+    ```
+2.  **Configure**: Alternatively, run the wizard for full interactive setup (AI models, tools, prompts, etc.).
     ```bash
     cd /path/to/MyProject
     orchestrator wizard

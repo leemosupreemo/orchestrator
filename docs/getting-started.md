@@ -19,12 +19,15 @@ Prefer the terminal? Everything below works there too.
 From the project root, run:
 
 ```bash
-orchestrator wizard
+orchestrator import             # detect stack, create config, generate docs, draft PRD
+orchestrator wizard            # full interactive setup
 orchestrator check
 orchestrator console
 ```
 
-The wizard detects the project stack, creates `.orchestrator/project.json` and missing starter docs, and configures at least one AI model. GitHub, remote machines, and Apple delivery are optional. `orchestrator check` validates prerequisites and AI provider access; `orchestrator console` opens the interactive console.
+`orchestrator import` is the quickest way to add an existing project: it detects the stack (Swift, Python, Rust, Node, Go, C#/Unity, etc.), writes `.orchestrator/project.json` with the right build/test commands, generates starter docs, and can draft a product requirements document from your existing code. The wizard detects the project stack, creates `.orchestrator/project.json` and missing starter docs, and configures at least one AI model. GitHub, remote machines, and Apple delivery are optional. `orchestrator check` validates prerequisites and AI provider access; `orchestrator console` opens the interactive console.
+
+Setup checks confirm that configuration and required tools are present; they do not run your project’s build or test commands. Run both once yourself before starting the first job, and correct the commands in `.orchestrator/project.json` if they do not exercise the project you intend to build.
 
 ## Run Your First Job 🧠
 
@@ -56,13 +59,14 @@ Generated jobs, logs, output, and state under `.orchestrator/` are excluded by i
 ## Common Commands 💻
 
 ```bash
-orchestrator wizard               # Configure a project
-orchestrator check                # Check prerequisites and providers
-orchestrator check-config         # Validate project configuration
-orchestrator console              # Open the console
-orchestrator projects             # List remembered projects
-orchestrator use <name-or-path>   # Select the active project
-orchestrator update               # Update Orchestrator
+orchestrator import [--project <path>]   # Import an existing project (detect stack, create config, draft PRD)
+orchestrator wizard                      # Interactively configure a project
+orchestrator check                       # Check prerequisites and providers
+orchestrator check-config                # Validate project configuration
+orchestrator console                     # Open the console
+orchestrator projects                    # List remembered projects
+orchestrator use <name-or-path>          # Select the active project
+orchestrator update                      # Update Orchestrator
 ```
 
 For complete setup options and troubleshooting, see the [User Guide](user-guide.md).

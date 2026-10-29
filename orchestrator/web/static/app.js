@@ -8853,11 +8853,22 @@ pages["new-project"] = async (_, query) => {
   const created = result?.root || draft.created_root;
   const steps = result?.steps || [{ name: "Created the folder and product requirements", ok: true, detail: draft.created_root }, { name: "Create the GitHub repository", ok: false, detail: "Waiting on GitHub." }];
   const githubPending = !!draft.created_root || (result && !result.github_ok);
+  const productBasics = [
+    ["pitch", "What the product does"],
+    ["audience", "Who it is for"],
+    ["features", "What users need to do"],
+  ];
+  const missingProductBasics = productBasics.filter(([key]) => !String(draft.answers?.[key] || "").trim());
   // The last, optional step: split what they described into epics. Offered once GitHub is done, and only if they described something.
   const offerBreakdown = !githubPending && result?.prd_filled !== false;
   return {
     title: result?.name ? `${result.name} is ready` : "Finish GitHub", sub: npStepper(offerBreakdown ? "breakdown" : "create"),
     html: `${resume}<section class="card"><div class="list">${steps.map((s) => `<div class="item"><span>${s.ok ? "✅" : "⚠️"}</span><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${esc(s.detail || "")}</div></div></div>`).join("")}</div></section>
+      <section class="card card-b stack mt-16"><strong>${missingProductBasics.length ? "Product brief needs a little more detail" : "Product brief has the essentials"}</strong>
+        ${missingProductBasics.length
+          ? `<span class="muted">Before planning the first feature, add: ${missingProductBasics.map(([, label]) => esc(label.toLowerCase())).join(", ")}. You can do that now or later on the Product page.</span>`
+          : `<span class="muted">You have described the product, its audience and the core user needs. Review the brief on the Product page before planning.</span>`}
+        ${created ? `<a class="btn small" href="#/product">Review product requirements</a>` : ""}</section>
       ${githubPending ? `<div class="card card-b stack"><strong>Your project is saved on this computer.</strong>
         <span class="muted">GitHub publishing isn't done yet. Finish it here, or use a local Git workflow from Git setup.</span>${ghPanel()}
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
@@ -8989,6 +9000,7 @@ pages.projects = async () => {
     actions: state.you?.role !== "member" ? `
       <div class="projects-actions">
         <a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg><span>Start a new project</span></a>
+        <a class="btn" href="#/import-project"><svg class="icon"><use href="#i-folder"/></svg><span>Import existing project</span></a>
         <button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg><span>Add existing project</span></button>
       </div>` : "",
     html: `
@@ -9041,7 +9053,146 @@ pages.projects = async () => {
   };
 };
 
-// ---------------------------------------------------------------- run page (terminal)
+// ---------------------------------------------------------------- import project page
+
+pages["import-project"] = async () => {
+  let info = null;
+  let step = "enter-path";
+  let path = "";
+
+  const detectStack = async (rootPath) => {
+    if (!rootPath) return null;
+    try {
+      return await api(`projects/import-info?path=${encodeURIComponent(rootPath)}`);
+    } catch (err) {
+      toast(err.message, true);
+      return null;
+    }
+  };
+
+  const renderEnterPath = () => {
+    return {
+      title: "Import an existing project",
+      sub: "Point at a folder on this computer. Orchestrator detects the project type, writes configuration and starter grounding docs, and can draft a product brief from the code.",
+      html: `
+        <div class="card card-b stack">
+          <label class="field"><span>Project Directory Path</span>
+            <input type="text" id="ip-path" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" autocomplete="off" spellcheck="false" value="${esc(path)}">
+            <small>Path to the folder containing your project (or Git repository).</small>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="ip-draft-prd" checked>
+            <span>Also draft a product requirements document from the code</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="ip-active">
+            <span>Switch to this project when import is done</span>
+          </label>
+          <div class="row mt-8"><button class="btn primary" id="ip-detect" ${path ? "" : "disabled"}>Detect stack</button></div>
+        </div>
+        ${path ? `<div class="card card-b stack" id="ip-result"><p class="muted">Detecting…</p></div>` : ""}`,
+      after: () => {
+        const pathInput = $("#ip-path");
+        const detectBtn = $("#ip-detect");
+        pathInput?.addEventListener("input", () => { path = pathInput.value.trim(); detectBtn.disabled = !path; });
+        pathInput?.addEventListener("keydown", (e) => { if (e.key === "Enter" && path && !detectBtn.disabled) { e.preventDefault(); detectBtn.click(); } });
+        detectBtn?.addEventListener("click", async () => {
+          path = pathInput.value.trim();
+          if (!path) return;
+          detectBtn.disabled = true;
+          detectBtn.textContent = "Detecting…";
+          info = await detectStack(path);
+          if (info) {
+            step = "confirm";
+            route();
+          } else {
+            detectBtn.disabled = false;
+            detectBtn.textContent = "Detect stack";
+          }
+        });
+      },
+    };
+  };
+
+  const renderConfirm = () => {
+    const name = info?.name || path.split("/").pop() || "";
+    const canDraft = info?.has_readme || info?.has_config;
+    const draftChecked = $("#ip-draft-prd")?.checked ?? true;
+
+    return {
+      title: "Import an existing project",
+      sub: `Importing: ${esc(info?.display_name || "Unknown stack")}`,
+      html: `
+        <div class="card card-b stack">
+          <div class="row gap-8"><span class="pill ${info?.uses_xcode ? "attention" : "done"}">${esc(info?.display_name || "?")}</span></div>
+          <fieldset class="np-section-card stack">
+            <legend class="np-section-legend">Project settings</legend>
+            <label class="field"><span>Project name</span><input type="text" id="ip-name" value="${esc(name)}"></label>
+            <label class="field"><span>Path</span><input type="text" id="ip-path-confirm" value="${esc(path)}" readonly></label>
+          </fieldset>
+          <fieldset class="np-section-card stack">
+            <legend class="np-section-legend">Detected commands</legend>
+            <label class="field"><span>Build command</span><input type="text" id="ip-build" value="${esc(info?.build_command || "")}"></label>
+            <label class="field"><span>Test command</span><input type="text" id="ip-test" value="${esc(info?.test_command || "")}"></label>
+          </fieldset>
+          <fieldset class="np-section-card stack">
+            <legend class="np-section-legend">Options</legend>
+            <label class="check"><input type="checkbox" id="ip-draft-prd-confirm" ${draftChecked && canDraft ? "checked" : ""} ${canDraft ? "" : "disabled"}>
+              <span>Draft a product requirements document from the codebase</span></label>
+            <label class="check"><input type="checkbox" id="ip-force" ${info?.has_config ? "checked" : ""}>
+              <span>Overwrite existing configuration and docs</span></label>
+            <label class="check"><input type="checkbox" id="ip-active-confirm">
+              <span>Switch to this project when import is done</span></label>
+          </fieldset>
+          ${info?.has_config ? `<div class="notice">This project already has a .orchestrator/config. It will be updated.</div>` : ""}
+          <div class="row mt-8">
+            <button class="btn" id="ip-back">Back</button>
+            <span class="spacer"></span>
+            <button class="btn primary" id="ip-import">Import project</button>
+          </div>
+        </div>`,
+      after: () => {
+        $("#ip-back")?.addEventListener("click", () => { step = "enter-path"; route(); });
+        $("#ip-import")?.addEventListener("click", async () => {
+          const btn = $("#ip-import");
+          btn.disabled = true;
+          btn.textContent = "Importing…";
+          try {
+            const body = {
+              root: path,
+              name: $("#ip-name").value.trim() || "",
+              build_command: $("#ip-build").value.trim() || "",
+              test_command: $("#ip-test").value.trim() || "",
+              force: $("#ip-force").checked,
+              draft_prd: $("#ip-draft-prd-confirm").checked,
+              active: $("#ip-active-confirm").checked,
+            };
+            const result = await api("projects/import", { method: "POST", body });
+            if (result.task_id) {
+              // PRD is being drafted in the background; show the product page with a working task
+              if (body.active) await refreshState();
+              location.hash = "#/product";
+              route();
+            } else {
+              if (body.active) await refreshState();
+              toast("Project imported");
+              location.hash = "#/projects";
+              route();
+            }
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = "Import project";
+            toast(err.message, true);
+          }
+        });
+      },
+    };
+  };
+
+  if (step === "enter-path") return renderEnterPath();
+  if (step === "confirm" && info) return renderConfirm();
+  return renderEnterPath();
+};
 
 const KEYS = [
   ["Enter", "\r"], ["Esc", "\x1b"], ["Tab", "\t"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["←", "\x1b[D"], ["→", "\x1b[C"],

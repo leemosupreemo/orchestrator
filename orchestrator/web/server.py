@@ -3213,6 +3213,7 @@ AVAILABLE_MODELS = [
     {"id": "opencode/big-pickle", "label": "Big Pickle (Free)", "provider": "OpenCode"},
     {"id": "deepseek", "label": "DeepSeek Coder", "provider": "Ollama"},
     {"id": "pool", "label": "Pool", "provider": "Poolside"},
+    {"id": "hermes", "label": "Hermes", "provider": "NousResearch"},
 ]
 
 
@@ -3316,7 +3317,7 @@ def tool_search_path() -> str:
     return os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
 
 
-PROVIDER_MODEL_CLIS = {"claude": ["claude"], "codex": ["codex"], "gemini": ["gemini"], "agy": ["gemini"], "ollama": ["ollama"], "opencode": ["opencode"], "pool": ["pool"]}
+PROVIDER_MODEL_CLIS = {"claude": ["claude"], "codex": ["codex"], "gemini": ["gemini"], "agy": ["gemini"], "ollama": ["ollama"], "opencode": ["opencode"], "pool": ["pool"], "hermes": ["hermes"]}
 
 
 def provider_models() -> dict[str, list[dict[str, Any]]]:
@@ -3333,7 +3334,7 @@ def provider_models() -> dict[str, list[dict[str, Any]]]:
 def available_models() -> list[dict[str, str]]:
     """The model choices for roles: the recommended few first, then every other model that is known."""
     from orchestrator.scripts.model_registry import get_all_models
-    labels = {"claude": "Anthropic", "gemini": "Google", "openai": "OpenAI", "opencode": "OpenCode", "ollama": "Ollama", "qwen": "Ollama", "pool": "Poolside"}
+    labels = {"claude": "Anthropic", "gemini": "Google", "openai": "OpenAI", "opencode": "OpenCode", "ollama": "Ollama", "qwen": "Ollama", "pool": "Poolside", "hermes": "NousResearch"}
     out = list(AVAILABLE_MODELS)
     seen = {m["id"] for m in out}
     for m in sorted(get_all_models(), key=lambda m: (m.family, int(m.tier), m.id)):
@@ -5566,6 +5567,89 @@ class UIHandler(BaseHTTPRequestHandler):
             if body.get("active"):
                 self.server.set_root(p)
             self._json({"ok": True, "project": {"name": name, "root": str(p), "active": bool(body.get("active", False))}})
+        elif method == "GET" and parts == ["projects", "import-info"]:
+            self._require_owner("inspect a project for import")
+            path = (query.get("path") or [""])[0]
+            if not path:
+                raise UIError("A 'path' query parameter is required")
+            p = safe_resolve(Path(path).expanduser())
+            if not p.is_dir():
+                raise UIError(f"Directory not found: {p}")
+            stack = detect_project_stack(p)
+            info = {
+                "root": str(p),
+                "display_name": stack.display_name,
+                "language": stack.language,
+                "framework": stack.framework or "",
+                "build_command": stack.build_command or "",
+                "test_command": stack.test_command or "",
+                "uses_xcode": stack.uses_xcode,
+                "scheme": stack.scheme or "",
+                "manifest_file": stack.manifest_file or "",
+                "has_config": (p / DEFAULT_RUNTIME_DIRNAME / "project.json").exists(),
+                "has_readme": (p / "README.md").exists() or (p / "README.rst").exists(),
+                "has_git": (p / ".git").is_dir(),
+                "name": project_display_name(p),
+            }
+            self._json(info)
+        elif method == "POST" and parts == ["projects", "import"]:
+            self._require_owner("import a project")
+            body = self._body()
+            target_str = str(body.get("root") or "").strip()
+            if not target_str:
+                raise UIError("Project root path is required")
+            p = safe_resolve(Path(target_str).expanduser())
+            if not p.is_dir():
+                raise UIError(f"Directory not found: {p}")
+            force = bool(body.get("force"))
+            project_name = str(body.get("name") or "").strip() or p.name
+            build_command = str(body.get("build_command") or "").strip() or None
+            test_command = str(body.get("test_command") or "").strip() or None
+            draft_prd = bool(body.get("draft_prd"))
+            # Reuse the same init_project used by the CLI `import` command
+            import argparse as _argparse
+            import contextlib as _contextlib
+            init_args = _argparse.Namespace(
+                root=None, project=str(p), project_name=project_name,
+                scheme=None, test_target=None, base_branch="main", force=force,
+                build_command=build_command, test_command=test_command,
+                with_starter_docs=True, with_helper_script=True,
+            )
+            from orchestrator.cli import init_project
+            with _contextlib.redirect_stdout(io.StringIO()):
+                init_project(init_args)
+            stack = detect_project_stack(p)
+            result = {"ok": True, "root": str(p), "name": project_name,
+                      "display_name": stack.display_name,
+                      "build_command": build_command or stack.build_command or "",
+                      "test_command": test_command or stack.test_command or "",
+                      "config_created": True,
+                      "docs_created": True}
+            if draft_prd and prd_doc.can_draft(p):
+                commits = git(p, "log", "--format=%s", "-n", "30").splitlines()
+                current = prd_doc.template()
+                digest = prd_doc.project_digest(p, commits)
+                settings = read_settings(p)
+                models_cfg = settings.get("default_models", {})
+                chosen_model = str(body.get("model") or "") or models_cfg.get("reviewer") or ""
+                prompt = prd_doc.draft_prompt(digest, current)
+
+                def work() -> dict[str, Any]:
+                    try:
+                        proposal = prd_doc.parse_draft(self._model_call(p, prompt, model=chosen_model, timeout=270))
+                    except prd_doc.PrdError:
+                        proposal = prd_doc.parse_draft(self._model_call(p, prompt + prd_doc.FORMAT_REMINDER, model=chosen_model, timeout=270))
+                    return {
+                        **proposal,
+                        "sections": prd_doc.sections_view(proposal["markdown"]),
+                        "diff": prd_doc.unified_diff(current, proposal["markdown"]),
+                    }
+
+                task_id = self.server.tasks.start(work)
+                result["task_id"] = task_id
+                result["drafting_prd"] = True
+            self._audit("project_imported", project=project_name, path=str(p), prd=draft_prd and prd_doc.can_draft(p))
+            self._json(result)
         elif method == "DELETE" and parts == ["projects"]:
             self._require_owner("remove a project")
             body = self._body()

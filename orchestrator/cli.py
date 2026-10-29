@@ -823,8 +823,9 @@ def audit_project_setup(root: Path) -> dict[str, Any]:
             build_info = project_data.get("build_command") or stack.build_command or "None"
             proj_items.append({"name": "Project Config", "status": "ok", "detail": f"project.json (Build: {build_info})"})
     else:
-        proj_items.append({"name": "Project Config", "status": "gap", "detail": "MISSING (.orchestrator/project.json)", "fix": "Configure project"})
-        gaps.append("Project configuration file (.orchestrator/project.json) is missing")
+        proj_items.append({"name": "Project Config", "status": "gap", "detail": "MISSING (.orchestrator/project.json)",
+                            "fix": "orchestrator import", "hint": "orchestrator init"})
+        gaps.append("Project configuration file (.orchestrator/project.json) is missing — run: orchestrator import")
 
     categories["Project & Xcode"] = proj_items
 
@@ -841,8 +842,12 @@ def audit_project_setup(root: Path) -> dict[str, Any]:
         if path.exists():
             doc_items.append({"name": label, "status": "ok", "detail": "Present"})
         else:
-            doc_items.append({"name": label, "status": "gap", "detail": f"MISSING ({rel_path})", "fix": f"Create {rel_path}"})
-            gaps.append(f"Grounding doc '{label}' is missing ({rel_path})")
+            doc_items.append({
+                "name": label, "status": "gap", "detail": f"MISSING ({rel_path})",
+                "fix": "orchestrator import",
+                "hint": f"orchestrator init --with-starter-docs --force",
+            })
+            gaps.append(f"Grounding doc '{label}' is missing ({rel_path}) — run: orchestrator init --with-starter-docs --force")
 
     # Helper script
     helper_script_path = root / "scripts" / "orchestrator"
@@ -1006,6 +1011,10 @@ def print_setup_audit_report(audit: dict[str, Any]) -> None:
             else:
                 icon = "\033[90m○ \033[0m"
             print(f"    {icon} {item['name']:24} : {item['detail']}")
+            if item.get("fix") and status == "gap":
+                print(f"        \033[1;93m└─ Fix: {item['fix']}\033[0m")
+            if item.get("hint") and status == "gap":
+                print(f"        \033[90m└─ {item['hint']}\033[0m")
         print()
 
     if audit["gap_count"] == 0:
@@ -2078,6 +2087,75 @@ def init_project(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_import(args: argparse.Namespace) -> int:
+    """Import an existing project: detect stack, create config, generate docs, and optionally draft a PRD."""
+    root_arg = getattr(args, "project", None)
+    root = safe_resolve(Path(root_arg).expanduser()) if root_arg else find_project_root()
+    runtime_dir = root / DEFAULT_RUNTIME_DIRNAME
+
+    # ---------------------------------------------------------------
+    # 1. Detect the stack
+    # ---------------------------------------------------------------
+    from orchestrator.stack_detection import detect_project_stack
+    stack = detect_project_stack(root)
+    print(f"\n\033[1;96m{'=' * 24} Import Project {'=' * 30}\033[0m")
+    print(f"  Project path : {root}")
+    print(f"  Project name : {args.project_name or root.name}")
+    print(f"  Detected stack: {stack.display_name}")
+    if stack.build_command:
+        print(f"  Build command: {stack.build_command}")
+    if stack.test_command:
+        print(f"  Test command : {stack.test_command}")
+
+    # ---------------------------------------------------------------
+    # 2. Create configuration (reuses init_project)
+    # ---------------------------------------------------------------
+    init_args = argparse.Namespace(
+        root=str(root),
+        project=None,
+        project_name=args.project_name or root.name,
+        scheme=None,
+        test_target=None,
+        base_branch=args.branch,
+        force=args.force,
+        build_command=args.build_command,
+        test_command=args.test_command,
+        with_starter_docs=True,
+        with_helper_script=True,
+    )
+    print("\n  Writing .orchestrator configuration and starter docs...")
+    init_project(init_args)
+
+    # ---------------------------------------------------------------
+    # 3. Optionally draft a PRD from the codebase
+    # ---------------------------------------------------------------
+    if not args.no_prd:
+        from orchestrator.prd import can_draft
+        if can_draft(root):
+            print("\n  Drafting product requirements from existing code...")
+            script_args = ["--root", str(root)]
+            if args.prn_model:
+                script_args += ["--model", args.prn_model]
+            if args.prn_yes:
+                script_args += ["--yes"]
+            run_script("draft_from_code.py", script_args)
+        else:
+            print("\n  Nothing readable in the project to draft a PRD from (no README, docs, manifest, or source files).")
+            print("  Create docs/product/prd.md by hand, or run the wizard: orchestrator wizard")
+
+    # ---------------------------------------------------------------
+    # 4. Optionally run checks
+    # ---------------------------------------------------------------
+    if args.check:
+        print("\n  Running setup checks...")
+        run_script("check_setup.py", [])
+
+    print(f"\n\033[1;92m✅ Import complete\033[0m")
+    print(f"  Config : {runtime_dir / 'project.json'}")
+    print(f"  Next   : orchestrator console  (to create and run jobs)")
+    return 0
+
+
 def validate_config_command() -> int:
     config = load_project_config()
     errors = validate_project_config(config)
@@ -2551,9 +2629,27 @@ def _main(argv: list[str] | None = None) -> int:
     passthrough.add_argument("script_name")
     passthrough.add_argument("script_args", nargs=argparse.REMAINDER)
 
+    # ---- import: bring an existing project under Orchestrator (stack detection + config + PRD draft)
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Import an existing project: detect the stack, create config, and optionally draft a PRD from the code",
+    )
+    import_parser.add_argument("--project", help="Project root path")
+    import_parser.add_argument("--project-name", help="Override the project name (defaults to folder name)")
+    import_parser.add_argument("--build-command", help="Override the detected build command")
+    import_parser.add_argument("--test-command", help="Override the detected test command")
+    import_parser.add_argument("--branch", default="main", help="Base branch for jobs (default: main)")
+    import_parser.add_argument("--force", action="store_true", help="Overwrite existing orchestrator config and starter docs")
+    import_parser.add_argument("--no-prd", action="store_true", help="Skip drafting a product requirements document from the code")
+    import_parser.add_argument("--prn-model", default="", help="Model to use for PRD drafting (defaults to best available reviewer)")
+    import_parser.add_argument("--prn-yes", action="store_true", help="Auto-accept the drafted PRD without prompting")
+    import_parser.add_argument("--check", action="store_true", help="Run orchestrator check after importing")
+
     args = parser.parse_args(argv)
     if args.command == "init":
         return init_project(args)
+    if args.command == "import":
+        return run_import(args)
     if args.command == "new":
         return run_new_project(args)
     if args.command == "wizard":
