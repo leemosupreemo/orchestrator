@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -34,6 +37,30 @@ class DeliveryWorkflowTests(unittest.TestCase):
 
         self.assertEqual(exit_context.exception.code, 1)
         mock_setup.assert_not_called()
+
+    def test_web_delivery_with_missing_signing_exits_without_launching_wizard(self) -> None:
+        config = MagicMock()
+        config.validate_distribution_config.return_value = [
+            "Apple Development Team ID (development_team) is not set.",
+            "Distribution method (delivery_method) is not set.",
+        ]
+        config.runtime_dir = Path(".orchestrator")
+        output = io.StringIO()
+        with (
+            patch.dict(os.environ, {"ORCHESTRATOR_NONINTERACTIVE": "1"}),
+            patch.object(smoke_test_delivery, "PROJECT_CONFIG", config),
+            patch.object(smoke_test_delivery.subprocess, "run") as wizard,
+            contextlib.redirect_stdout(output),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            smoke_test_delivery.run_smoke_delivery()
+
+        self.assertEqual(exit_context.exception.code, 1)
+        wizard.assert_not_called()
+        self.assertIn("development_team", output.getvalue())
+        self.assertIn("delivery_method", output.getvalue())
+        self.assertIn("orchestrator wizard", output.getvalue())
+        self.assertNotIn("Please choose one of the options", output.getvalue())
 
     def test_quick_delivery_uses_direct_delivery_metadata(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orchestrator-delivery-") as temp_dir:

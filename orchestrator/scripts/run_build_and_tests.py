@@ -31,34 +31,17 @@ class EnvironmentValidationError(RuntimeError):
     """Raised when local machine setup prevents meaningful build/test validation."""
 
 
-def detect_simulator_environment_issue(output: str) -> str | None:
-    if "There is no XCFramework found at" in output and ".swiftpm/artifacts" in output:
-        return (
-            "Stale or incomplete SwiftPM binary artifact cache: Xcode is resolving package "
-            "XCFrameworks from missing .swiftpm/artifacts paths. Clear the worker's DerivedData "
-            "and .swiftpm package cache, then re-resolve package dependencies on the worker machine."
-        )
+class DiskFullError(RuntimeError):
+    """Raised when a build or test still ran out of disk space after cleaning up and retrying. The scheduler reads the
+    message (it says "No space left on device") to move the job to another machine."""
 
-    if "CoreSimulator is out of date" in output:
-        return (
-            "Xcode/CoreSimulator mismatch: CoreSimulator is out of date for the selected Xcode. "
-            "Restart the machine or CoreSimulator services, then reopen Xcode. If the issue persists, "
-            "finish installing Xcode components."
-        )
 
-    if "iOS 26.5 is not installed" in output or "Please download and install the platform from Xcode > Settings > Components" in output:
-        return (
-            "Missing iOS simulator platform: install the required iOS platform from "
-            "Xcode > Settings > Components on the worker machine."
-        )
+def disk_full_message(job: dict, step: str) -> str:
+    machine = job.get("assigned_machine") or "local"
+    return f"No space left on device: {machine} ran out of disk space while {step}, even after cleaning up."
 
-    if "Unable to find a device matching the provided destination specifier" in output and "no available devices matched" in output:
-        return (
-            "Unavailable simulator destination: the requested simulator/device is not available on this worker. "
-            "Install the required runtime or select an available simulator destination."
-        )
 
-    return None
+from orchestrator.env_issues import detect_simulator_environment_issue  # noqa: E402,F401
 
 
 def nice_timestamp() -> str:
@@ -238,6 +221,9 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
                     purge_zombie_processes([job.get("assigned_machine", "local")], silent=False)
                     print("\033[1;92m✅ Cleanup complete. Retrying build...\033[0m\n")
                     continue
+                if is_disk_full_error(full_output):
+                    write_text(out_dir / "build.log", full_output)
+                    raise DiskFullError(disk_full_message(job, "building"))
                 print("      - Build FAILED. Analyzing errors...")
                 analysis = analyze_failure("build", full_output)
                 write_text(out_dir / f"build_analysis_{ts}.md", analysis)
@@ -280,6 +266,9 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
             purge_zombie_processes([job.get("assigned_machine", "local")], silent=False)
             print("\033[1;92m✅ Cleanup complete. Retrying tests...\033[0m\n")
             continue
+        if test_result.returncode != 0 and is_disk_full_error(full_test_output):
+            write_text(out_dir / "test.log", full_test_output)
+            raise DiskFullError(disk_full_message(job, "running tests"))
         
         write_text(out_dir / f"test_{ts}.log", full_test_output)
         write_text(out_dir / "test.log", full_test_output)

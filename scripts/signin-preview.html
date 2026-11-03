@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Orchestrator sign-in preview composition</title>
+<style>html,body{margin:0;background:#edf2ff}canvas{display:block}</style>
+<canvas width="720" height="540"></canvas>
+<script>
+// Screen images come from the real app's renderers in render-signin-preview.cjs.
+// Only the surrounding captions and transitions are composed here.
+const ctx = document.querySelector('canvas').getContext('2d');
+const font = '-apple-system, BlinkMacSystemFont, "Arial", sans-serif';
+const screens = {};
+window.loadScreens = async function(shots) {
+  for (const [key, images] of Object.entries(shots)) {
+    screens[key] = await Promise.all(images.map(src => new Promise((resolve, reject) => {
+      const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = src;
+    })));
+  }
+};
+function box(x,y,w,h,r,fill) {
+  ctx.beginPath(); ctx.roundRect(x,y,w,h,r); ctx.fillStyle=fill; ctx.fill();
+}
+function text(s,x,y,size=18,color='#152448',weight=500) {
+  ctx.font=`${weight} ${size}px ${font}`; ctx.fillStyle=color; ctx.fillText(s,x,y);
+}
+const scenes = [
+  {key:'idea', title:'Start with what’s in your head.', page:'Start a new project', step:0},
+  {key:'product', title:'Give your idea a clear direction.', page:'Product requirements', step:1},
+  {key:'plan', title:'A plan you can make your own.', page:'Family Recipes · Plan', step:1},
+  {key:'build', title:'Watch your idea take shape.', page:'Family Recipes · Build', step:2},
+  {key:'done', title:'Built. Tested. Ready for what’s next.', page:'Family Recipes · Completed', step:2},
+];
+window.drawFrame = function(t) {
+  const index = t < 3.6 ? 0 : t < 7 ? 1 : t < 10.6 ? 2 : t < 14.6 ? 3 : 4;
+  const start = [0,3.6,7,10.6,14.6][index], local = t-start, scene = scenes[index];
+  const bg=ctx.createLinearGradient(0,0,720,540); bg.addColorStop(0,'#edf2ff'); bg.addColorStop(1,'#e8f5ee');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,720,540);
+  text('ORCHESTRATOR',26,29,13,'#4c638e',750);
+  text(scene.title,26,69,29,'#152448',750);
+  // A brief slide-in at each cut, with a readable hold on each screen.
+  const p=Math.min(1,local/.3), offset=10*Math.pow(1-p,3);
+  ctx.save(); ctx.translate(0,offset);
+  box(22,93,676,391,14,'#d7e1f0');
+  box(24,95,672,387,12,'#ffffff');
+  box(24,95,672,38,[12,12,0,0],'#f4f6fa');
+  text(scene.page,42,119,15,'#344363',650);
+  text('Sample project',565,119,12,'#65748b');
+  ctx.save(); ctx.beginPath(); ctx.roundRect(24,133,672,349,[0,0,12,12]); ctx.clip();
+  const images=screens[scene.key];
+  if(images) {
+    const frame = scene.key==='idea' ? Math.min(18,Math.floor(Math.max(0,local-.4)*9))
+      : scene.key==='build' ? Math.min(2,Math.floor(local/1.25)) : 0;
+    const img=images[frame];
+    const scale=Math.min(652/img.width,329/img.height);
+    const w=img.width*scale, h=img.height*scale;
+    ctx.drawImage(img,24+(672-w)/2,143+(329-h)/2,w,h);
+  }
+  ctx.restore(); ctx.restore();
+  ['Describe your idea','Shape the plan','Build with AI'].forEach((label,i) => {
+    const x=27+i*235, active=i===scene.step;
+    box(x,501,21,21,11,active?'#4f6bed':'#d3ddec');
+    text(String(i+1),x+7,516,12,active?'#ffffff':'#536581',700);
+    text(label,x+29,517,15,active?'#253e7a':'#62728a',active?700:500);
+  });
+};
+drawFrame(0);
+</script>

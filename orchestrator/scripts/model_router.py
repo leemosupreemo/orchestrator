@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 from typing import Any
-from model_registry import get_all_models, ModelMetadata, ModelTier, ModelCapability, get_model
+from model_registry import get_all_models, ModelMetadata, ModelTier, ModelCapability, get_model, model_usable
 
 class ModelRole:
     PLANNER = "planner"
@@ -80,6 +80,9 @@ def get_prioritized_models(role: str | None = None, allowed_models: list[str] | 
     else:
         models_to_score = all_models
 
+    # Leave out models their provider can't run now, unless that would leave nothing to try.
+    models_to_score = [m for m in models_to_score if model_usable(m)] or models_to_score
+
     if not role:
         # Default fallback list logic (High tier first, then Medium, then Low)
         sorted_models = sorted(models_to_score, key=lambda m: (m.tier, m.id))
@@ -100,3 +103,34 @@ def get_prioritized_models(role: str | None = None, allowed_models: list[str] | 
     scored_models.sort(key=lambda x: x[1], reverse=True)
     
     return [m[0].id for m in scored_models]
+
+def builder_for_task(task: dict[str, Any], job: dict[str, Any]) -> str | None:
+    """Use a cheaper coding model for a planner-marked small task, within the job allowed-model set."""
+    configured_builder = job.get("builder")
+    complexity = str(task.get("complexity") or "").strip().lower()
+    if complexity not in {"small", "simple"}:
+        return configured_builder
+
+    allowed = job.get("allowed_models")
+    candidates = [
+        model for model_id in get_prioritized_models(ModelRole.BUILDER, allowed_models=allowed)
+        if (model := get_model(model_id)) and ModelCapability.CODING in model.capabilities
+    ]
+    if not candidates:
+        return configured_builder
+
+    def is_free_or_local(model: ModelMetadata) -> bool:
+        if model.family in {"ollama", "qwen"}:
+            return True
+        return model.family == "opencode" and (
+            model.id == "opencode/big-pickle" or model.id.endswith("-free")
+        )
+
+    def selection_key(model: ModelMetadata) -> tuple[int, float, int, str]:
+        free_or_local = is_free_or_local(model)
+        known_cost = model.cost_factor if model.cost_factor > 0 else float("inf")
+        tier = -int(model.tier) if free_or_local else int(model.tier)
+        return (0 if free_or_local else 1, known_cost, tier, model.id)
+
+    selected = min(candidates, key=selection_key)
+    return selected.id

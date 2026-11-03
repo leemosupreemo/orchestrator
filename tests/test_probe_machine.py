@@ -20,6 +20,13 @@ import probe_machine  # noqa: E402
 
 
 class ProbeMachineTests(unittest.TestCase):
+    @patch("probe_machine._provider_auth_ready", side_effect=lambda cli, home: cli == "claude")
+    def test_llm_tool_readiness_reports_installed_and_authenticated_providers(self, _auth):
+        status = probe_machine.llm_provider_status({"claude": True, "codex": True, "opencode": False}, Path("/tmp/worker-home"))
+        self.assertEqual(status["claude"], {"installed": True, "ready": True})
+        self.assertEqual(status["codex"], {"installed": True, "ready": False})
+        self.assertEqual(status["opencode"], {"installed": False, "ready": False})
+
     @patch("probe_machine.count_matching_processes", return_value=0)
     @patch("probe_machine.check_stale_processes", return_value=[])
     @patch("probe_machine.detect_codex_integration", return_value=False)

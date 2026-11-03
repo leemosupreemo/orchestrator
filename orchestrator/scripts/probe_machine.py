@@ -206,6 +206,40 @@ def detect_codex_integration(names: list[str]) -> bool:
     except Exception:
         return False
 
+
+def _provider_auth_ready(cli: str, home: Path) -> bool:
+    """Check local auth without sending prompts, model requests, or credentials anywhere."""
+    if cli in ("agy", "gemini"):
+        gemini = home / ".gemini"
+        return any((gemini / name).is_file() for name in ("oauth_creds.json", "google_accounts.json"))
+    commands = {
+        "claude": ["claude", "auth", "status"],
+        "codex": ["codex", "login", "status"],
+        "opencode": ["opencode", "models"],
+        "ollama": ["ollama", "list"],
+    }
+    command = commands.get(cli)
+    if not command:
+        return False
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+        return result.returncode == 0 and (cli not in ("opencode",) or bool(result.stdout.strip()))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def llm_provider_status(installed_bins: dict[str, bool], home: Path | None = None) -> dict[str, dict[str, bool]]:
+    home = home or Path.home()
+    status = {}
+    for provider_id, cli in (("opencode", "opencode"), ("ollama", "ollama"), ("agy", "agy"),
+                             ("claude", "claude"), ("codex", "codex"), ("gemini", "gemini")):
+        installed = bool(installed_bins.get(cli))
+        if provider_id == "gemini":
+            installed = installed or bool(installed_bins.get("agy") or installed_bins.get("antigravity"))
+        ready = installed and _provider_auth_ready(cli, home)
+        status[provider_id] = {"installed": installed, "ready": ready}
+    return status
+
 def probe_local(machine_name: str, repo_path: str) -> dict[str, Any]:
     try:
         load_1m, load_5m, _load_15m = os.getloadavg()
@@ -255,6 +289,7 @@ def probe_local(machine_name: str, repo_path: str) -> dict[str, Any]:
         "XcodeBuildMCP / iOS plugin": detect_codex_integration(["xcodebuildmcp", "build-ios-apps"]),
         "Sentry MCP/plugin": detect_codex_integration(["sentry"]),
         "Playwright MCP": detect_codex_integration(["playwright"]),
+        "Unity MCP": detect_codex_integration(["unity-mcp", "unity_mcp", "unitymcp", "mcp-unity", "mcpforunity"]),
     }
 
     payload = {
@@ -277,6 +312,7 @@ def probe_local(machine_name: str, repo_path: str) -> dict[str, Any]:
         "git_head_hash": git_head_hash,
         "git_dirty": git_dirty,
         "binaries": installed_bins,
+        "llm_providers": llm_provider_status(installed_bins),
         "mcp_plugins": mcp_plugins,
         "stale_processes": check_stale_processes(),
         "timestamp": now_iso(),

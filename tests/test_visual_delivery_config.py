@@ -256,7 +256,8 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             app_path="/tmp/test.app",
             wait=3.0,
             screenshots=1,
-            interval=1.0
+            interval=1.0,
+            job=""
         )
 
         mock_path_exists.return_value = True
@@ -268,6 +269,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
 
         with (
             patch("argparse.ArgumentParser.parse_args", return_value=test_args),
+            patch("simulator_visual_check.extract_commands", return_value=("xcodebuild build", "xcodebuild test")),
             patch("pathlib.Path.mkdir"),
             patch("pathlib.Path.unlink"),
             patch("pathlib.Path.is_symlink", return_value=False),

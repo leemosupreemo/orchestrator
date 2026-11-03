@@ -97,6 +97,72 @@ class StackDetectionTests(unittest.TestCase):
             self.assertEqual(stack.build_command, "go build ./...")
             self.assertEqual(stack.test_command, "go test ./...")
 
+    def test_detects_unity_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ProjectSettings").mkdir()
+            (root / "ProjectSettings" / "ProjectVersion.txt").write_text(
+                "m_EditorVersion: 2022.3.10f1\nm_EditorVersionWithRevision: 2022.3.10f1 (ff3792e53c62)\n")
+            (root / "Assets").mkdir()
+            (root / "Package.swift").write_text("// a generated package must not win\n")
+            stack = detect_project_stack(root)
+            self.assertEqual((stack.language, stack.framework), ("csharp", "unity"))
+            self.assertEqual(stack.display_name, "Unity 2022.3.10f1")
+            self.assertFalse(stack.uses_xcode)
+            editor = "/Applications/Unity/Hub/Editor/2022.3.10f1/Unity.app/Contents/MacOS/Unity"
+            self.assertIn(f'"${{UNITY_PATH:-{editor}}}" -batchmode -nographics -projectPath . -quit', stack.build_command)
+            self.assertIn("-runTests -testPlatform EditMode", stack.test_command)
+
+    def test_a_folder_with_only_project_settings_is_not_unity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ProjectSettings").mkdir()
+            (root / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.0.1f1\n")
+            self.assertEqual(detect_project_stack(root).language, "generic")
+
+    def test_unity_suites_are_found_and_run_on_the_right_platform(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ProjectSettings").mkdir()
+            (root / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 2022.3.10f1\n")
+            edit = root / "Assets" / "Tests" / "Editor"
+            play = root / "Assets" / "Tests" / "Runtime"
+            cached = root / "Library" / "PackageCache" / "com.unity.x" / "Tests"
+            for folder in (edit, play, cached):
+                folder.mkdir(parents=True)
+            (edit / "ScoreTests.cs").write_text(
+                "public class ScoreTests {\n  [Test]\n  public void AddsPoints() {}\n  [TestCase(1)]\n  public void Caps(int n) {}\n}\n")
+            (play / "SpawnTests.cs").write_text(
+                "public class SpawnTests {\n  [UnityTest]\n  public IEnumerator Spawns() { yield return null; }\n}\n")
+            (cached / "VendorTests.cs").write_text("public class VendorTests { [Test] public void Vendor() {} }\n")
+            (root / "Assets" / "Score.cs").write_text("public class Score { }\n")
+            suites = {s["name"]: s for s in dev_console.discover_test_suites(root)}
+            self.assertEqual(set(suites), {"ScoreTests", "SpawnTests"})
+            self.assertEqual((suites["ScoreTests"]["language"], suites["ScoreTests"]["test_count"]), ("csharp", 2))
+            self.assertEqual(suites["SpawnTests"]["test_funcs"], ["Spawns"])
+
+            stack = detect_project_stack(root)
+            config = make_config(root, xcode_project=None, scheme=None, test_target="", build_command=stack.build_command,
+                                 test_command=stack.test_command)
+            self.assertIn("-testPlatform EditMode", dev_console.test_command_for_suite(suites["ScoreTests"], config))
+            self.assertTrue(dev_console.test_command_for_suite(suites["ScoreTests"], config).endswith("-testFilter ScoreTests"))
+            self.assertIn("-testPlatform PlayMode", dev_console.test_command_for_suite(suites["SpawnTests"], config))
+            plain = make_config(root, xcode_project=None, scheme=None, test_target="", build_command="make", test_command="make test")
+            with self.assertRaises(ValueError):
+                dev_console.test_command_for_suite(suites["ScoreTests"], plain)
+
+    def test_unity_test_cases_resolve_to_nunit_methods(self):
+        from orchestrator.scripts import test_cases
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tests = root / "Assets" / "Tests"
+            tests.mkdir(parents=True)
+            (tests / "ScoreTests.cs").write_text(
+                "public class ScoreTests {\n  // TC-1-01\n  [Test]\n  public void AddsPoints() {}\n}\n")
+            index = test_cases.scan_tests(root)
+            self.assertIn("ScoreTests/AddsPoints", index["methods"])
+            self.assertIn("TC-1-01", index["markers"])
+
     def test_generic_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -277,6 +343,35 @@ class MultiLanguageTestDiscoveryTests(unittest.TestCase):
                         "file_stem": "test_api"}
         self.assertEqual(dev_console.test_command_for_suite(python_suite, python_config),
                          "pytest tests/test_api.py")
+
+        # unittest doesn't take a path: `discover tests tests/test_api.py` would run nothing
+        unittest_config = make_config(Path("/repo"), xcode_project=None, scheme=None, test_target="",
+                                      build_command="python3 -m compileall .", test_command="python3 -m unittest discover tests")
+        self.assertEqual(dev_console.test_command_for_suite(python_suite, unittest_config),
+                         "python3 -m unittest discover -s tests -p test_api.py")
+
+    def test_kotlin_and_java_suites_are_found_and_run_with_the_build_tool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unit = root / "app" / "src" / "test" / "kotlin" / "com" / "x"
+            unit.mkdir(parents=True)
+            (unit / "LobbyTest.kt").write_text("class LobbyTest {\n  @Test\n  fun keepsSeat() {}\n  @Test fun `rejoins after a drop`() {}\n}\n")
+            java = root / "lib" / "src" / "test" / "java"
+            java.mkdir(parents=True)
+            (java / "ParserTests.java").write_text("public class ParserTests {\n  @Test\n  public void parses() {}\n}\n")
+            (root / "app" / "src" / "main").mkdir(parents=True)
+            (root / "app" / "src" / "main" / "Lobby.kt").write_text("class Lobby { fun seat() {} }\n")
+            suites = {s["name"]: s for s in dev_console.discover_test_suites(root)}
+            self.assertEqual(set(suites), {"LobbyTest", "ParserTests"})
+            self.assertEqual((suites["LobbyTest"]["language"], suites["LobbyTest"]["test_count"]), ("kotlin", 2))
+            self.assertEqual(suites["ParserTests"]["language"], "java")
+
+            (root / "gradlew").write_text("")
+            config = make_config(root, xcode_project=None, scheme=None, test_target="", build_command="./gradlew build",
+                                 test_command="./gradlew test")
+            self.assertEqual(dev_console.test_command_for_suite(suites["LobbyTest"], config), "./gradlew test --tests LobbyTest")
+            (root / "pom.xml").write_text("")
+            self.assertEqual(dev_console.test_command_for_suite(suites["ParserTests"], config), "mvn -q test -Dtest=ParserTests")
 
 
 if __name__ == "__main__":

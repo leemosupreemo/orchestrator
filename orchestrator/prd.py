@@ -1,0 +1,805 @@
+"""The product requirements doc: one short, living document that tells every AI what the product is.
+
+`docs/product/prd.md` has six optional sections, in the person's own words wherever possible:
+
+  Pitch            what it is, as if explained to a friend (and what it is built for)
+  Who it's for     an ideal user, or the situations it is for; fine to not know yet
+  Core features    the things it must do, as user stories if they like
+  Look and feel    what it should feel like: a description, designs, sketches, Figma items
+  Not this         what it should not be or include
+  Success measures project-level outcomes and targets
+
+Every section is optional: write what you know, leave the rest, and it fills in as jobs teach us more.
+
+Everything that reads or judges work is handed this document (`context_block`). It is kept true: when a job finishes
+(`Prd.run_update`) a model checks whether what the job learned changes what the document says, and edits it only if
+so, keeping the person's words. Every change, theirs or the model's, is a version in a history that can be restored,
+and a switch turns automatic updates off. Nothing here talks to a model itself; callers pass the model in.
+"""
+from __future__ import annotations
+
+import difflib
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
+import zipfile
+from html import unescape
+from io import BytesIO
+from pathlib import Path
+from typing import Any, Callable
+
+PATH = "docs/product/prd.md"
+DESIGNS_DIR = "docs/product/designs"
+SOURCES_DIR = "docs/product/source"  # a detailed document the person imported: kept whole, beside the short summaries
+SOURCES_HEADING = "## Source documents"
+MAX_DOC_CHARS = 100_000
+MAX_VERSIONS = 60
+MAX_IMPORT_CHARS = 40_000
+
+
+class PrdError(ValueError):
+    pass
+
+
+SECTIONS: list[dict[str, Any]] = [
+    {"id": "pitch", "title": "Pitch", "optional": True,
+     "hint": "Say what you have in mind as briefly as you can, the way you'd explain it to a friend. Rough is fine."},
+    {"id": "who", "title": "Who it's for", "optional": True,
+     "hint": "Do you have an ideal user in mind, or some situations it's for?"},
+    {"id": "features", "title": "Core features", "optional": True,
+     "hint": "The things it has to do. One per line. If it helps, write each as a story: \"As a ..., I can ... so that ...\"."},
+    {"id": "look", "title": "Look and feel", "optional": True,
+     "hint": "What should it look and feel like? Describe it (\"feels like Google Docs\"), or add designs, sketches or Figma items."},
+    {"id": "not", "title": "What to exclude", "optional": True,
+     "hint": "Features to avoid, non-goals, or competitor patterns you don't want to copy."},
+    {"id": "success", "title": "Success measures", "optional": True,
+     "hint": "How will you know the product is working? Add outcomes or targets if you know them; event names and analytics setup are optional."},
+]
+BY_ID = {s["id"]: s for s in SECTIONS}
+HEADING = {s["id"]: f"## {s['title']}" for s in SECTIONS}
+
+
+def _guidance(section: dict[str, Any]) -> str:
+    return f"_{section['hint']}_"
+
+
+def template(name: str = "") -> str:
+    out = [f"# {name + ': ' if name else ''}product requirements", "",
+           "_A short, living description of this product. Every AI working on it reads this first, and it is kept up to date as jobs teach us more._", ""]
+    for s in SECTIONS:
+        out += [HEADING[s["id"]], "", _guidance(s), ""]
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- parsing
+
+
+def split(text: str) -> dict[str, str]:
+    """Section id -> body (guidance lines removed), for the known sections."""
+    found: dict[str, list[str]] = {}
+    current: str | None = None
+    by_heading = {s["title"].lower(): s["id"] for s in SECTIONS}
+    by_heading["not this"] = "not"
+    for line in (text or "").splitlines():
+        m = re.match(r"^##\s+(.*?)\s*$", line)
+        if m:
+            current = by_heading.get(m.group(1).lower().replace("\u2019", "'"))  # models often write a curly apostrophe
+            if current:
+                found.setdefault(current, [])
+            continue
+        if current is not None:
+            found[current].append(line)
+    out = {}
+    for sid, lines in found.items():
+        kept = [l for l in lines if not _GUIDANCE_LINE.fullmatch(l)]
+        out[sid] = "\n".join(kept).strip()
+    return out
+
+
+_GUIDANCE_LINE = re.compile(r"\s*_[^_].*_\s*")
+
+
+def is_filled(body: str | None) -> bool:
+    """Real content: not empty, not just guidance text, not just "TBD"."""
+    return any(l.strip() and not _GUIDANCE_LINE.fullmatch(l) and not re.match(r"\s*(?:[-*]\s*)?TBD\b", l) for l in (body or "").splitlines())
+
+
+def sections_view(text: str | None) -> list[dict[str, Any]]:
+    parts = split(text or "")
+    return [{"id": s["id"], "title": s["title"], "hint": s["hint"], "optional": s["optional"], "body": parts.get(s["id"], ""),
+             "filled": is_filled(parts.get(s["id"]))} for s in SECTIONS]
+
+
+def append_to_section(text: str, section_id: str, lines: list[str]) -> str:
+    """The document with `lines` (bullets) added to the end of one section, after whatever the person already wrote there."""
+    body = split(text).get(section_id, "").strip()
+    return replace_section(text, section_id, (body + "\n" if body else "") + "\n".join(lines))
+
+
+def replace_section(text: str, section_id: str, body: str) -> str:
+    """The document with one section's body replaced; everything else (including headings the person added) is kept."""
+    section = BY_ID[section_id]
+    body = body.strip() or _guidance(section)
+    pattern = re.compile(rf"(^##\s+{re.escape(section['title'])}\s*\n)(.*?)(?=^##\s|\Z)", re.M | re.S | re.I)
+    if pattern.search(text):
+        return pattern.sub(lambda m: f"{m.group(1)}\n{body}\n\n", text, count=1).rstrip() + "\n"
+    return text.rstrip() + f"\n\n{HEADING[section_id]}\n\n{body}\n"
+
+
+def normalise(text: str) -> str:
+    """The text with any missing sections put back, so the structure always holds."""
+    present = split(text).keys()
+    for s in SECTIONS:
+        if s["id"] not in present:
+            text = text.rstrip() + f"\n\n{HEADING[s['id']]}\n\n{_guidance(s)}\n"
+    return text.rstrip() + "\n"
+
+
+_SOURCE_LINE = re.compile(r"^\s*[-*]\s*\[([^\]]+)\]\(([^)]+)\)\s*$")
+
+
+def sources(text: str | None) -> list[dict[str, str]]:
+    """The documents attached to the PRD: [{label, target}], target relative to docs/product/."""
+    out, inside = [], False
+    for line in (text or "").splitlines():
+        if re.match(r"^##\s", line):
+            inside = line.strip().lower() == SOURCES_HEADING.lower()
+            continue
+        m = _SOURCE_LINE.match(line) if inside else None
+        if m:
+            out.append({"label": m.group(1), "target": m.group(2)})
+    return out
+
+
+def set_sources(text: str, items: list[dict[str, str]]) -> str:
+    """The document with its "Source documents" list replaced (last in the document, outside the PRD sections)."""
+    kept = re.sub(rf"(^|\n){re.escape(SOURCES_HEADING)}\s*\n.*?(?=\n##\s|\Z)", "", text, flags=re.S | re.I).rstrip()
+    if not items:
+        return kept + "\n"
+    lines = [f"- [{re.sub(r'[\[\]\n]', ' ', i['label']).strip()}]({i['target']})" for i in items]
+    return kept + f"\n\n{SOURCES_HEADING}\n\n" + "\n".join(lines) + "\n"
+
+
+def keep_sources(before: str | None, after: str) -> str:
+    """Edits that rewrite the whole document (a model's update, a restored version) don't know about attachments:
+    carry them over unless the new text says its own."""
+    attached = sources(before)
+    return set_sources(after, attached) if attached and not sources(after) else after
+
+
+def platforms(text: str | None) -> tuple[list[str], bool]:
+    """(platforms the pitch says it is built for, whether that is still to be decided)."""
+    m = re.search(r"^Built for:\s*(.+)$", text or "", re.M | re.I)
+    if not m:
+        return [], False
+    value = m.group(1).strip()
+    if re.search(r"not decided|recommend|undecided|not sure", value, re.I):
+        return [], True
+    return [p.strip() for p in re.split(r"[,;]", value) if p.strip()], False
+
+
+# --------------------------------------------------------------------------- what the AIs are told
+
+# Who is reading and how much room they get. Builders and debuggers work on one task, so they get less and a rule about when to stop and ask.
+AUDIENCES: dict[str, dict[str, Any]] = {
+    "planner": {"limits": {"pitch": 1500, "who": 1500, "features": 3000, "look": 1500, "not": 1500, "success": 1800},
+                "rule": "This document defines the product. Serve the people and features it describes, consider its Success measures, stay inside \"Not this\", and do not contradict it "
+                        "without saying so in the plan's assumptions or risks."},
+    "builder": {"limits": {"pitch": 600, "who": 600, "features": 1200, "look": 1000, "not": 1000, "success": 700},
+                "rule": "This document defines the product. Build only what this task asks. Consider its Success measures, match the look and feel it describes, and stay inside \"Not this\". "
+                        "If the task cannot be done without contradicting it, use `clarification_needed` instead of guessing."},
+    "reviewer": {"limits": {"pitch": 800, "who": 800, "features": 1500, "look": 1000, "not": 1000, "success": 900},
+                 "rule": "Judge the change against this document too. Flag work that serves none of the features, conflicts with its Success measures, builds something under \"Not this\", "
+                         "or departs from the look and feel it describes, even if the code is correct."},
+    "verifier": {"limits": {"pitch": 800, "who": 800, "features": 1500, "look": 1000, "not": 1000, "success": 900},
+                 "rule": "Check the plan against this document too. Reject or flag a plan that conflicts with its Success measures, builds something under \"Not this\", serves no listed feature, "
+                         "or departs from the look and feel."},
+}
+
+
+def context_block(root: Path, audience: str = "planner") -> str:
+    """The filled-in sections, trimmed, with the rule that fits who is reading them. Empty until something is written."""
+    cfg = AUDIENCES.get(audience) or AUDIENCES["planner"]
+    try:
+        text = (Path(root) / PATH).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    parts = split(text)
+    blocks = []
+    for s in SECTIONS:
+        body = parts.get(s["id"], "")
+        if not is_filled(body):
+            continue
+        limit = cfg["limits"][s["id"]]
+        if len(body) > limit:
+            body = body[:limit].rstrip() + "\n...(trimmed)"
+        blocks.append(f"### {s['title']}\n{body}")
+    if not blocks:
+        return ""
+    attached = ""
+    if sources(text):
+        listing = "\n".join(f"- docs/product/{i['target']} ({i['label']})" for i in sources(text))
+        attached = ("\n\n### Full source documents\nThe sections above summarise these. Read the part that matters when a detail isn't settled above; "
+                    f"if a source and a summary disagree, say so instead of guessing.\n{listing}")
+    return f"\n\n## Product context (source of truth, `{PATH}`)\n{cfg['rule']}\n\n" + "\n\n".join(blocks) + attached + "\n"
+
+
+# --------------------------------------------------------------------------- the document, its history and settings
+
+
+def _now() -> float:
+    return time.time()
+
+
+class Prd:
+    """One project's document plus its history, settings and the latest automatic-update notice."""
+
+    def __init__(self, root: Path, runtime: Path):
+        self.root = Path(root)
+        self.runtime = Path(runtime)
+
+    # ---- files
+    @property
+    def path(self) -> Path:
+        return self.root / PATH
+
+    def exists(self) -> bool:
+        return self.path.is_file()
+
+    def read(self) -> str | None:
+        try:
+            return self.path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    def _state_file(self) -> Path:
+        return self.runtime / "prd.json"
+
+    def _history_file(self) -> Path:
+        return self.runtime / "prd-history.json"
+
+    def _json(self, path: Path, default: Any) -> Any:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return default
+
+    def _save_json(self, path: Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    # ---- settings and notice
+    def state(self) -> dict[str, Any]:
+        s = self._json(self._state_file(), {})
+        return s if isinstance(s, dict) else {}
+
+    def auto_update(self) -> bool:
+        return self.state().get("auto_update", True) is not False  # on unless switched off
+
+    def set_auto_update(self, on: bool) -> None:
+        s = self.state()
+        s["auto_update"] = bool(on)
+        self._save_json(self._state_file(), s)
+
+    def breakdown_offered(self) -> bool:
+        """Whether the person has been offered a breakdown into epics (asked once, the first time the PRD is filled in)."""
+        return self.state().get("breakdown_offered") is True
+
+    def set_breakdown_offered(self, offered: bool = True) -> None:
+        s = self.state()
+        s["breakdown_offered"] = bool(offered)
+        self._save_json(self._state_file(), s)
+
+    def notice(self) -> dict[str, Any] | None:
+        n = self.state().get("notice")
+        return n if isinstance(n, dict) and not n.get("seen") else None
+
+    def dismiss_notice(self) -> None:
+        s = self.state()
+        if isinstance(s.get("notice"), dict):
+            s["notice"]["seen"] = True
+            self._save_json(self._state_file(), s)
+
+    def _set_notice(self, summary: str, job_id: str, title: str, version_id: str) -> None:
+        s = self.state()
+        s["notice"] = {"id": version_id, "at": _now(), "summary": summary, "job": job_id, "job_title": title, "seen": False}
+        self._save_json(self._state_file(), s)
+
+    # ---- history
+    def _versions(self) -> list[dict[str, Any]]:
+        data = self._json(self._history_file(), {})
+        v = data.get("versions") if isinstance(data, dict) else None
+        return [x for x in v if isinstance(x, dict) and "content" in x] if isinstance(v, list) else []
+
+    def history(self) -> list[dict[str, Any]]:
+        """Newest first, without the full text."""
+        return [{k: v for k, v in x.items() if k != "content"} for x in reversed(self._versions())]
+
+    def version(self, version_id: str) -> dict[str, Any]:
+        for x in self._versions():
+            if x.get("id") == version_id:
+                return x
+        raise PrdError("That version isn't in the history any more.")
+
+    def _record(self, content: str, source: str, summary: str, job: str = "") -> dict[str, Any]:
+        versions = self._versions()
+        entry = {"id": f"{int(_now() * 1000)}-{len(versions)}", "at": _now(), "source": source, "summary": summary[:300], "job": job, "content": content}
+        versions.append(entry)
+        self._save_json(self._history_file(), {"versions": versions[-MAX_VERSIONS:]})
+        return entry
+
+    def write(self, text: str, source: str = "you", summary: str = "", job: str = "", record: bool = True) -> dict[str, Any] | None:
+        """Saves the document. Returns the new version, or None when nothing changed."""
+        if len(text) > MAX_DOC_CHARS:
+            raise PrdError("That document is too long.")
+        text = normalise(text) if text.strip() else template()
+        before = self.read()
+        text = keep_sources(before, text)
+        if before is not None and before == text:
+            return None
+        if record and before is not None and not self._versions():
+            self._record(before, "earlier", "The document before changes were tracked")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(text, encoding="utf-8")
+        return self._record(text, source, summary, job) if record else None
+
+    def set_section(self, section_id: str, body: str, source: str = "you", summary: str = "") -> dict[str, Any] | None:
+        if section_id not in BY_ID:
+            raise PrdError("Unknown section.")
+        text = self.read() or template()
+        return self.write(replace_section(text, section_id, body), source, summary or f"Edited {BY_ID[section_id]['title']}")
+
+    def revert(self, version_id: str) -> dict[str, Any] | None:
+        v = self.version(version_id)
+        when = time.strftime("%b %d, %H:%M", time.localtime(v["at"]))
+        return self.write(v["content"], "revert", f"Restored the version from {when}")
+
+    def add_reference(self, label: str, target: str) -> None:
+        """Adds a design, sketch or link as a bullet under Look and feel."""
+        label = re.sub(r"[\[\]\n]", " ", label).strip()[:120] or "Reference"
+        text = self.read() or template()
+        body = split(text).get("look", "")
+        line = f"- [{label}]({target})"
+        if line in body:
+            return
+        self.write(replace_section(text, "look", (body + "\n" if body else "") + line), "you", f"Added {label} to Look and feel")
+
+    def sources(self) -> list[dict[str, str]]:
+        return sources(self.read())
+
+    def attach_source(self, name: str, data: bytes, text: str) -> list[dict[str, str]]:
+        """Keep an imported document whole in the project, and return the entries to list it under "Source documents".
+        Jobs read these when the short sections don't settle a detail. A Word or PDF file is kept as it came, plus its text."""
+        folder = self.root / SOURCES_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        clean = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(name or "").name).strip(".-") or "product-requirements.md"
+        stem, ext = Path(clean).stem[:80] or "document", Path(clean).suffix.lower()
+        taken = {p.name for p in folder.iterdir()}
+        n = 1
+        while f"{stem}{ext}" in taken or f"{stem}.txt" in taken:
+            n += 1
+            stem = f"{Path(clean).stem[:76]}-{n}"
+        label = Path(name or "").name or "Pasted document"
+        if ext in {".md", ".markdown", ".txt", ".text", ""}:
+            (folder / f"{stem}{ext or '.md'}").write_text(text, encoding="utf-8")
+            return [{"label": label, "target": f"source/{stem}{ext or '.md'}"}]
+        (folder / f"{stem}{ext}").write_bytes(data)
+        (folder / f"{stem}.txt").write_text(text, encoding="utf-8")
+        return [{"label": label, "target": f"source/{stem}{ext}"}, {"label": f"{label}, as text", "target": f"source/{stem}.txt"}]
+
+    def sections(self) -> list[dict[str, Any]]:
+        return sections_view(self.read())
+
+    def overview(self) -> dict[str, Any]:
+        text = self.read()
+        return {"exists": text is not None, "text": text if text is not None else template(), "sections": sections_view(text),
+                "sources": sources(text), "auto_update": self.auto_update(), "breakdown_offered": self.breakdown_offered(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
+                "history": self.history()}
+
+    # ---- an old project's documents become the PRD (the old files are left where they are)
+    def migrate_legacy(self) -> bool:
+        if self.exists():
+            return False
+        def read(rel: str) -> str:
+            try:
+                return (self.root / rel).read_text(encoding="utf-8")
+            except OSError:
+                return ""
+        brief = read("docs/product-brief.md")
+        uses = read("docs/product/use-cases.md")
+        if not brief.strip() and not uses.strip():
+            return False
+        pitch = _body_after_heading(brief, "What it is") or _strip_title(brief)
+        platforms_line = _body_after_heading(brief, "Platforms")
+        who = _body_after_heading(brief, "Who it's for")
+        users = _body_after_heading(uses, "Primary user")
+        cases = _body_after_heading(uses, "Core use cases")
+        feats = _body_after_heading(brief, "Version 1 must do")
+        nots = _body_after_heading(uses, "Non-goals for version 1") or _body_after_heading(brief, "Out of scope for version 1")
+        problem = _body_after_heading(brief, "The problem")
+        text = template()
+        if is_filled(pitch):
+            text = replace_section(text, "pitch", "\n\n".join(x for x in (pitch, ("Problem: " + problem) if is_filled(problem) else "", ("Built for: " + _one_line(platforms_line)) if is_filled(platforms_line) else "") if x))
+        who_text = "\n\n".join(x for x in (who, users, cases) if is_filled(x))
+        if who_text:
+            text = replace_section(text, "who", who_text)
+        if is_filled(feats):
+            text = replace_section(text, "features", feats)
+        if is_filled(nots):
+            text = replace_section(text, "not", nots)
+        self.write(text, "migration", "Built from the earlier product documents")
+        return True
+
+
+def _body_after_heading(text: str, heading: str) -> str:
+    m = re.search(rf"^##\s+{re.escape(heading)}\s*\n(.*?)(?=^##\s|\Z)", text or "", re.M | re.S | re.I)
+    body = m.group(1) if m else ""
+    return "\n".join(l for l in body.splitlines() if not re.fullmatch(r"\s*_[^_].*_\s*", l)).strip()
+
+
+def _strip_title(text: str) -> str:
+    return "\n".join(l for l in (text or "").splitlines() if not l.startswith("# ") and not re.fullmatch(r"\s*_[^_].*_\s*", l)).strip()
+
+
+def _one_line(text: str) -> str:
+    return ", ".join(re.sub(r"^\s*[-*]\s*", "", l).strip() for l in text.splitlines() if l.strip())
+
+
+# --------------------------------------------------------------------------- asking a model
+
+
+def json_reply(text: str) -> dict[str, Any]:
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise PrdError("The model didn't answer in the expected form. Try again.")
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        raise PrdError("The model didn't answer in the expected form. Try again.")
+    if not isinstance(data, dict):
+        raise PrdError("The model didn't answer in the expected form. Try again.")
+    return data
+
+
+FORMAT_REMINDER = (
+    "\n\n### FORMAT CORRECTION ###\nYour previous reply could not be read. Reply again with ONLY the JSON object described above, as plain text: "
+    "no commentary before or after it, no code fence, and every quote inside the markdown escaped.")
+
+SHAPE = ("Keep exactly these six sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
+         ". Keep the person's own words wherever you can: add and adjust, don't rewrite. Do not invent facts; where something is unknown write \"TBD:\" "
+         "and the question that would settle it. Short lists, no marketing language.")
+
+
+SHAPE_SUMMARY = ("Keep exactly these six sections, with these headings, in this order: " + "; ".join(f"\"## {s['title']}\"" for s in SECTIONS) +
+                 ". Use the person's own words wherever you can. Do not invent facts; where something is unknown write \"TBD:\" and the question that would settle it. Short lines, no marketing language.")
+
+
+def import_prompt(source: str, name: str = "") -> str:
+    clipped = len(source) > MAX_IMPORT_CHARS
+    return f"""Someone already has a detailed product requirements document{(' (' + name + ')') if name else ''}. Summarise it into this short format.
+The full document stays attached to the project and every AI working on it can read it, so do not copy it. Each section is a SHORT SUMMARY in plain words.
+
+Their document{' (only the first ' + str(MAX_IMPORT_CHARS) + ' characters are shown here)' if clipped else ''}:
+{source[:MAX_IMPORT_CHARS]}
+
+{SHAPE_SUMMARY}
+- Pitch: two to four lines: what it is, the problem it solves, and what it is built for (put the platforms on a "Built for:" line).
+- Who it's for: the main users or situations, a few short lines.
+- Core features: one line per feature, the most important first, up to about twelve. Add a short phrase for a rule or number that changes how it is built.
+- Look and feel: only what the document says about style, tone or design; otherwise leave the guidance text.
+- What to exclude: only non-goals the document states; otherwise leave the guidance text.
+- Success measures: outcomes or targets stated in the document; do not invent metrics or event names.
+- Where the document has detail that matters (a rule, a number, a named screen), keep a short phrase and say where it is, for example "(see 'Checkout rules' in the attached document)".
+
+Reply with ONLY JSON: {{"summary": "bulleted: what you captured in each section, and what lives only in the attached document", "markdown": "the complete short document"}}"""
+
+
+def parse_proposal(reply: str) -> dict[str, str]:
+    data = json_reply(reply)
+    markdown = data.get("markdown")
+    if not isinstance(markdown, str) or not markdown.strip():
+        raise PrdError("The model returned no document. Try again.")
+    if len(markdown) > MAX_DOC_CHARS:
+        raise PrdError("The proposed document is too long. Ask for a shorter one.")
+    return {"markdown": normalise(markdown), "summary": str(data.get("summary", "")).strip()[:500]}
+
+
+def unified_diff(old: str, new: str, old_label: str = "current", new_label: str = "proposed") -> list[str]:
+    return list(difflib.unified_diff((old or "").splitlines(), (new or "").splitlines(), old_label, new_label, lineterm="", n=2))
+
+
+# --------------------------------------------------------------------------- drafting one from an existing project
+
+DIGEST_CHARS = 14_000
+_SKIP_DIRS = {".git", ".orchestrator", "node_modules", ".build", "build", "dist", "target", "venv", ".venv", "__pycache__", "Pods", "DerivedData", ".idea", ".vscode"}
+_CODE_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".swift", ".kt", ".java", ".go", ".rs", ".rb", ".php", ".cs", ".c", ".cc", ".cpp", ".m", ".dart", ".sh", ".html", ".css", ".vue", ".svelte"}
+_DOC_NAMES = ("README.md", "README.rst", "README.txt", "README")
+_MANIFESTS = ("package.json", "pyproject.toml", "Package.swift", "Cargo.toml", "go.mod", "build.gradle", "build.gradle.kts", "pubspec.yaml", "Gemfile", "composer.json", "requirements.txt")
+
+
+def _read(path: Path, limit: int) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+def can_draft(root: Path) -> bool:
+    """True when there is something to read: a README or other notes, a manifest, or source files."""
+    root = Path(root)
+    try:
+        if any((root / n).is_file() for n in (*_DOC_NAMES, *_MANIFESTS, "AGENTS.md", "CLAUDE.md")):
+            return True
+        for child in root.iterdir():
+            if child.name in _SKIP_DIRS or child.name.startswith("."):
+                continue
+            if child.is_file() and child.suffix in _CODE_EXTS:
+                return True
+            if child.is_dir() and any(f.suffix in _CODE_EXTS for f in list(child.iterdir())[:200] if f.is_file()):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def project_digest(root: Path, recent_commits: list[str] | None = None) -> str:
+    """A bounded summary of an existing project for a model to infer what it is: notes, manifests, layout, languages, recent history."""
+    root = Path(root)
+    parts: list[str] = []
+    for name in _DOC_NAMES:
+        text = _read(root / name, 6000)
+        if text.strip():
+            parts.append(f"### {name}\n{text.strip()}")
+            break
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        text = _read(root / name, 2000)
+        if text.strip():
+            parts.append(f"### {name}\n{text.strip()}")
+    docs = root / "docs"
+    if docs.is_dir():
+        for f in sorted(docs.glob("*.md"))[:4]:
+            if f.name.lower().startswith("prd"):
+                continue
+            text = _read(f, 1500)
+            if text.strip():
+                parts.append(f"### docs/{f.name}\n{text.strip()}")
+    for name in _MANIFESTS:
+        text = _read(root / name, 1200)
+        if text.strip():
+            parts.append(f"### {name}\n{text.strip()}")
+    names, exts = [], {}
+    try:
+        for child in sorted(root.iterdir()):
+            if child.name in _SKIP_DIRS or child.name.startswith("."):
+                continue
+            names.append(child.name + ("/" if child.is_dir() else ""))
+        for f in list(root.rglob("*"))[:5000]:
+            if f.is_file() and f.suffix in _CODE_EXTS and not (set(f.relative_to(root).parts) & _SKIP_DIRS):
+                exts[f.suffix] = exts.get(f.suffix, 0) + 1
+    except OSError:
+        pass
+    if names:
+        parts.append("### Top-level files and folders\n" + ", ".join(names[:70]))
+    if exts:
+        parts.append("### Source files by type\n" + ", ".join(f"{e} x{n}" for e, n in sorted(exts.items(), key=lambda x: -x[1])[:8]))
+    if recent_commits:
+        parts.append("### Recent commit subjects (newest first)\n" + "\n".join(f"- {c}" for c in recent_commits[:30]))
+    return "\n\n".join(parts)[:DIGEST_CHARS]
+
+
+def code_tree(root: Path, max_chars: int = 7000, max_depth: int = 5) -> str:
+    """Where the code lives, folder by folder with the source files in each, so a model can tell what is already built."""
+    root = Path(root)
+    lines: list[str] = []
+    seen = 0
+    for folder, dirs, files in os.walk(root):
+        rel = Path(folder).relative_to(root)
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS and not d.startswith("."))
+        if len(rel.parts) >= max_depth:
+            dirs[:] = []
+        code = sorted(f for f in files if Path(f).suffix in _CODE_EXTS)
+        seen += len(files)
+        if code:
+            shown = ", ".join(code[:8]) + (f" (+{len(code) - 8} more)" if len(code) > 8 else "")
+            lines.append(f"{rel.as_posix()}/: {shown}" if rel.parts else f"./: {shown}")
+        if seen > 20000:
+            break
+    return "\n".join(lines)[:max_chars]
+
+
+def reverse_engineering_prompt(target: str = "", name: str = "", current: str = "") -> str:
+    existing = (f"\nThe person has already written some of it; keep what they wrote and only add or refine:\n{current}\n" if is_filled_doc(current) else "")
+    target_desc = f"Target artifact / notes:\n{target[:MAX_IMPORT_CHARS]}" if target else f"Target binary / package: {name}" if name else "Target system or binary inspected via REA MCP server."
+    return f"""Someone is reverse engineering an application using the REA (Reverse Engineer Anything) MCP server to reconstruct its product requirements document.
+
+REA MCP Evidence & Analysis:
+{target_desc}
+{existing}
+How to write it:
+- Extract and reconstruct what the product DOES, its user workflows, screen architecture, and core capabilities from the reverse engineering evidence and decompilation analysis.
+- Anything you are inferring from decompiled symbols, strings, or protocols, say so clearly ("Inferred from decompiled assets: ..."). Anything that cannot be verified from the binary, write "TBD:" and the question to settle it.
+- Core features: capabilities, user-facing flows, and core logic recovered from the reverse-engineered application.
+- Look and feel: UI components, navigation paradigms, screen layouts, or styling identified during reverse engineering; otherwise leave a TBD question.
+- Not this: leave it empty. Only the person can say what it should not be.
+- On the "Built for:" line of the Pitch, list the target platforms identified from the binary/application format.
+- {SHAPE}
+
+Reply with ONLY JSON: {{"summary": "bulleted: key reverse-engineered capabilities recovered via REA MCP, and open questions/unknowns", "markdown": "the complete document"}}"""
+
+
+def draft_prompt(digest: str, current: str = "") -> str:
+    existing = (f"\nThe person has already written some of it; keep what they wrote and only add:\n{current}\n" if is_filled_doc(current) else "")
+    return f"""Someone is adding an existing project and has no product requirements yet. Work out what this product is from what is in the project, and draft a short requirements document for it.
+
+What is in the project:
+{digest or '(nothing readable was found)'}
+{existing}
+How to write it:
+- Describe what the product DOES TODAY and who it appears to be for, from the evidence above. Do not invent a vision, users or goals the project doesn't show.
+- Anything you are inferring rather than reading, say so ("Appears to be ..."). Anything the project doesn't tell you, write "TBD:" and the plain question the person can answer. Pitch and Core features should be mostly facts from the project.
+- Core features: what the code and notes show it can do now, as short lines.
+- Look and feel: only if the project shows it (a design system, screenshots, UI copy); otherwise leave a TBD question.
+- Not this: leave it empty. Only the person can say what it should not be.
+- Success measures: include only outcomes or targets evidenced by project documents; otherwise leave a TBD question.
+- On the "Built for:" line of the Pitch, list the platforms the project clearly targets.
+- {SHAPE}
+
+Reply with ONLY JSON: {{"summary": "bulleted and succinct: what was inferred, and any gaps or low-confidence guesses that were hard to figure out", "markdown": "the complete document"}}"""
+
+
+def parse_draft(reply: str, current: str = "") -> dict[str, str]:
+    """A drafted proposal. "Not this" is always the person's own: a draft can't invent guardrails that builders and reviewers would treat as law."""
+    proposal = parse_proposal(reply)
+    mine = split(current or "").get("not", "")
+    proposal["markdown"] = replace_section(proposal["markdown"], "not", mine)
+    raw_summary = (proposal.get("summary") or "").strip()
+    if raw_summary:
+        lines = [line.strip() for line in raw_summary.splitlines() if line.strip()]
+        if not any(l.startswith(("-", "*", "•")) for l in lines):
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", raw_summary) if s.strip()]
+            lines = [f"- {s}" for s in sentences]
+        else:
+            lines = [l if l.startswith(("-", "*", "•")) else f"- {l}" for l in lines]
+        guardrail = "- Left \"Not this\" for you: only you can say what it shouldn't be."
+        if "only you can say" not in "\n".join(lines).lower():
+            lines.append(guardrail)
+        proposal["summary"] = "\n".join(lines)
+    else:
+        proposal["summary"] = "- Inferred from project files and layout.\n- Left \"Not this\" for you: only you can say what it shouldn't be."
+    return proposal
+
+
+def is_filled_doc(text: str) -> bool:
+    return any(is_filled(b) for b in split(text or "").values())
+
+
+# --------------------------------------------------------------------------- reading an existing PRD
+
+
+def extract_text(name: str, data: bytes) -> str:
+    """Text from a markdown, text, Word or PDF file the person already has."""
+    ext = Path(name or "").suffix.lower()
+    if ext in {".md", ".markdown", ".txt", ".text", ""}:
+        return data.decode("utf-8", errors="replace")
+    if ext == ".docx":
+        try:
+            with zipfile.ZipFile(BytesIO(data)) as z:
+                xml = z.read("word/document.xml").decode("utf-8", errors="replace")
+        except (zipfile.BadZipFile, KeyError):
+            raise PrdError("That doesn't look like a Word document.")
+        xml = re.sub(r"</w:p>", "\n", xml)
+        xml = re.sub(r"<w:tab/>", "\t", xml)
+        return unescape(re.sub(r"<[^>]+>", "", xml)).strip()
+    if ext == ".pdf":
+        exe = shutil.which("pdftotext")
+        if not exe:
+            raise PrdError("Reading PDFs needs the pdftotext tool (brew install poppler). Or paste the text, or save it as Word or markdown.")
+        res = subprocess.run([exe, "-layout", "-", "-"], input=data, capture_output=True, timeout=30)
+        if res.returncode != 0 or not res.stdout.strip():
+            raise PrdError("Couldn't read any text from that PDF (is it a scan?). Paste the text instead.")
+        return res.stdout.decode("utf-8", errors="replace")
+    raise PrdError("Use a markdown, text, Word (.docx) or PDF file, or paste the text.")
+
+
+# --------------------------------------------------------------------------- keeping it true as jobs finish
+
+UPDATE_JOB_TYPES = {"feature-plan", "feature-design"}
+
+
+def should_check(job: dict[str, Any]) -> bool:
+    """Jobs that can teach us something about the product: features and designs, or anything the person answered questions on."""
+    if job.get("prd_checked"):
+        return False
+    return job.get("type") in UPDATE_JOB_TYPES or bool(job.get("clarification_history"))
+
+
+def job_digest(job: dict[str, Any]) -> str:
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    lines = [f"Job: {job.get('title') or job.get('job_id') or ''} ({job.get('type') or 'job'})"]
+    if plan.get("summary"):
+        lines.append(f"What it did: {plan['summary']}")
+    if job.get("builder_summary"):
+        lines.append(f"Builder's summary: {job['builder_summary']}")
+    assumptions = [str(a) for a in plan.get("assumptions") or []][:8]
+    if assumptions:
+        lines.append("Assumptions it made:\n" + "\n".join(f"- {a}" for a in assumptions))
+    criteria = [str(c) for t in plan.get("tasks") or [] if isinstance(t, dict) for c in t.get("acceptance_criteria") or []][:10]
+    if criteria:
+        lines.append("What it was built to do:\n" + "\n".join(f"- {c}" for c in criteria))
+    answers = [f"- Q: {h.get('question', '')}\n  The person said: {h.get('answer', '')}" for h in job.get("clarification_history") or [] if isinstance(h, dict)][:6]
+    if answers:
+        lines.append("Questions the person answered (their decisions):\n" + "\n".join(answers))
+    return "\n".join(lines)[:6000]
+
+
+def update_prompt(current: str, digest: str) -> str:
+    return f"""PRODUCT DOCUMENT UPDATE. A job just finished on this product. Decide whether what it shows changes what the product requirements document says.
+
+Current document:
+{current}
+
+What the job showed:
+{digest}
+
+Rules:
+- Change the document ONLY where the job clearly adds to it or contradicts it: a feature that now exists or was dropped, a decision the person made, a user or constraint that came up. If nothing needs to change, say so.
+- The person's own words stay. Add or adjust a line; never rewrite their wording, and never remove anything under "Not this".
+- Preserve Success measures unless the completed job clearly changes a project-level outcome or target; never invent a measured result.
+- {SHAPE}
+- Do not record implementation detail (files, libraries) or invent measured results. Only record what the product is, who it is for, what it does, how it should feel, what it is not, and project-level success measures that the job clearly changes.
+
+Reply with ONLY JSON: {{"changed": true or false, "summary": "one sentence on what you changed and why (empty if unchanged)", "markdown": "the complete updated document (empty if unchanged)"}}"""
+
+
+def parse_update(reply: str) -> dict[str, Any]:
+    data = json_reply(reply)
+    changed = data.get("changed") is True
+    markdown = data.get("markdown") if isinstance(data.get("markdown"), str) else ""
+    return {"changed": bool(changed and markdown.strip()), "summary": str(data.get("summary", "")).strip()[:300], "markdown": markdown}
+
+
+def unsafe_update(old: str, new: str) -> str | None:
+    """Why an automatic edit must not be applied, or None. Edits may add and adjust, but not gut the document."""
+    old_parts, new_parts = split(old), split(new)
+    for s in SECTIONS:
+        if is_filled(old_parts.get(s["id"])) and not is_filled(new_parts.get(s["id"])):
+            return f"it emptied {s['title']}"
+    for line in (l.strip() for l in old_parts.get("not", "").splitlines()):
+        if line and line not in new_parts.get("not", ""):
+            return "it removed something under Not this"
+    if len(new) < 0.6 * len(old):
+        return "it cut the document down too far"
+    return None
+
+
+def run_update(prd: Prd, job: dict[str, Any], llm: Callable[[str], str]) -> dict[str, Any]:
+    """After a job finishes: ask whether it changes the document, and apply a safe edit. Never raises."""
+    if not prd.auto_update():
+        return {"status": "off"}
+    if not should_check(job):
+        return {"status": "skipped"}
+    prd.migrate_legacy()
+    current = prd.read()
+    if current is None or not any(is_filled(b) for b in split(current).values()):
+        return {"status": "empty"}  # nothing written yet, so nothing to keep true
+    try:
+        update = parse_update(llm(update_prompt(current, job_digest(job))))
+    except PrdError as exc:
+        return {"status": "error", "error": str(exc)}
+    except Exception as exc:  # the model or its tool failed; the job must not
+        return {"status": "error", "error": str(exc)[:200]}
+    if not update["changed"]:
+        return {"status": "nochange"}
+    new = normalise(update["markdown"])
+    why = unsafe_update(current, new)
+    if why:
+        return {"status": "rejected", "error": f"The suggested update was not applied: {why}.", "summary": update["summary"]}
+    if new == current:
+        return {"status": "nochange"}
+    version = prd.write(new, "auto", update["summary"] or "Updated from a finished job", job=str(job.get("job_id") or ""))
+    if version:
+        prd._set_notice(update["summary"] or "Updated from a finished job", str(job.get("job_id") or ""), str(job.get("title") or ""), version["id"])
+    return {"status": "updated", "summary": update["summary"]}
