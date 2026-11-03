@@ -41,6 +41,8 @@ Required JSON schema:
   ]
 }
 
+For each task, set complexity from the work itself, not the size of the parent job. Use "small" only for a localized, low-risk change such as adjusting spacing, positioning, colors, or copy in a few UI files, or a similarly contained change with clear acceptance criteria. Do not mark cross-cutting changes, data/schema changes, security/authentication, or changes with unclear requirements as small. Use "medium" for ordinary feature work and "large" for broad or technically risky work.
+
 ### GUIDELINES
 - **Groundedness**: Every file in `likely_files` must have been verified to exist or its parent directory confirmed for new files.
 - **TDD Integration**: Ensure tasks include clear instructions for writing tests before production code.

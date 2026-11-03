@@ -103,3 +103,34 @@ def get_prioritized_models(role: str | None = None, allowed_models: list[str] | 
     scored_models.sort(key=lambda x: x[1], reverse=True)
     
     return [m[0].id for m in scored_models]
+
+def builder_for_task(task: dict[str, Any], job: dict[str, Any]) -> str | None:
+    """Use a cheaper coding model for a planner-marked small task, within the job allowed-model set."""
+    configured_builder = job.get("builder")
+    complexity = str(task.get("complexity") or "").strip().lower()
+    if complexity not in {"small", "simple"}:
+        return configured_builder
+
+    allowed = job.get("allowed_models")
+    candidates = [
+        model for model_id in get_prioritized_models(ModelRole.BUILDER, allowed_models=allowed)
+        if (model := get_model(model_id)) and ModelCapability.CODING in model.capabilities
+    ]
+    if not candidates:
+        return configured_builder
+
+    def is_free_or_local(model: ModelMetadata) -> bool:
+        if model.family in {"ollama", "qwen"}:
+            return True
+        return model.family == "opencode" and (
+            model.id == "opencode/big-pickle" or model.id.endswith("-free")
+        )
+
+    def selection_key(model: ModelMetadata) -> tuple[int, float, int, str]:
+        free_or_local = is_free_or_local(model)
+        known_cost = model.cost_factor if model.cost_factor > 0 else float("inf")
+        tier = -int(model.tier) if free_or_local else int(model.tier)
+        return (0 if free_or_local else 1, known_cost, tier, model.id)
+
+    selected = min(candidates, key=selection_key)
+    return selected.id

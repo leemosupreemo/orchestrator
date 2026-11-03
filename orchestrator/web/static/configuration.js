@@ -258,6 +258,9 @@
       { id: "llama3.3", name: "Llama 3.3", tier: "Local", caps: ["General purpose local AI"] },
       { id: "qwen2.5-coder", name: "Qwen 2.5 Coder", tier: "Local", caps: ["Local code intelligence"] },
     ],
+    hermes: [
+      { id: "hermes", name: "Hermes Agent (configured model)", tier: "Agent", caps: ["Coding", "Reasoning"] },
+    ],
   };
 
   function modelsSyncedText(synced) {

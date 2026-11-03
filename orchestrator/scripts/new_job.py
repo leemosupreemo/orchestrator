@@ -1052,8 +1052,18 @@ def main(args_override: list[str] | None = None) -> None:
                                 # Force human intervention
                                 clarification = clarification or f"Architect {status_str}: {verification['comments']}"
                     except Exception as e:
-                        print(f"⚠️  Verification failed: {e}. Proceeding with unverified plan.")
+                        print(f"⚠️  Verification failed: {e}. The plan needs your review before work continues.")
                         verification = None
+                        clarification = clarification or (
+                            "Plan verification failed, so this plan needs human review before implementation. "
+                            "Review the plan and approve it or revise it before continuing."
+                        )
+                else:
+                    print("⚠️  No eligible verifier is available. The plan needs your review before work continues.")
+                    clarification = clarification or (
+                        "No eligible plan verifier is available, so this plan needs human review before implementation. "
+                        "Review the plan and approve it or revise it before continuing."
+                    )
 
             last_manual_logs = [] # Initialized but handled inside bug block above if needed
 

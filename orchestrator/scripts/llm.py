@@ -343,6 +343,8 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         cmd_base = f"opencode run --model opencode/{model_id.replace('opencode/', '')} --auto"
     elif m_meta and m_meta.family == "pool":
         cmd_base = "pool exec --unsafe-auto-allow -p -"
+    elif model_id == "hermes" or (m_meta and m_meta.family == "hermes"):
+        cmd_base = "hermes -z"
     else:
         cmd_base = f"{model_id}"
 

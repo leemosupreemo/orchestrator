@@ -370,6 +370,14 @@ MODELS = [
         aliases=["poolside"],
         required_clis=["pool"]
     ),
+    ModelMetadata(
+        id="hermes",
+        family="hermes",
+        tier=ModelTier.HIGH,
+        capabilities=[ModelCapability.CODING, ModelCapability.REASONING],
+        cost_factor=0.0,
+        required_clis=["hermes"]
+    ),
 ]
 
 import json

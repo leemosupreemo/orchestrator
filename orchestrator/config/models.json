@@ -377,6 +377,14 @@
       "required_clis": ["opencode"]
     },
     {
+      "id": "hermes",
+      "family": "hermes",
+      "tier": "HIGH",
+      "capabilities": ["coding", "reasoning"],
+      "cost_factor": 0.0,
+      "required_clis": ["hermes"]
+    },
+    {
       "id": "pool",
       "family": "pool",
       "tier": "LOW",

@@ -52,6 +52,7 @@ from run_builder import BuilderClarificationNeeded, run_builder
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import scope_check, task_growth
+from model_router import builder_for_task
 
 
 from typing import List, Optional, Tuple
@@ -470,6 +471,11 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_job = copy.deepcopy(job)
                 task_job['job_id'] = f"{job['job_id']}_task_{i+1}" # Unique ID per task
                 task_job['title'] = f"{job['title']} (Task {i+1}: {task['title']})"
+                task_builder = builder_for_task(task, job)
+                if task_builder:
+                    task_job['builder'] = task_builder
+                if task_builder and task_builder != job.get("builder"):
+                    print(f"      - Routing this small task to {task_builder} (lower-cost coding model).", flush=True)
                 
                 # CLEAN SLATE: Don't inherit parent errors or history that might distract the worker
                 task_job['last_error'] = None
