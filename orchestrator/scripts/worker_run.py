@@ -28,6 +28,7 @@ from common import (
     OUTPUT_DIR,
     ROOT,
     StatusBar,
+    find_latest_runtime_log,
     format_job_id,
     get_repo_state,
     gh_comment,
@@ -35,6 +36,7 @@ from common import (
     now_iso,
     print_phase,
     read_json,
+    record_clarification,
     run,
     run_shell,
     slugify,
@@ -114,30 +116,76 @@ def prepare_git_branch(job: dict, issue_number: int) -> Tuple[str, str]:
     return branch, base_branch
 
 
-def mark_human_needed(job_path: Path, job: dict, question: str) -> None:
+def mark_human_needed(job_path: Path, job: dict, question: str, task_index: Optional[int] = None) -> None:
     job["status"] = "human-needed"
     job["human_clarification_question"] = question
     job["last_error"] = f"Builder clarification needed: {question}"
+    if task_index is not None:
+        job["paused_at_task_index"] = task_index
     job["updated_at"] = now_iso()
     write_json(job_path, job)
+
+
+def format_distributed_status(status_str: Optional[str]) -> str:
+    if not status_str:
+        return ""
+    if status_str.startswith("SUCCESS"):
+        rest = status_str[len("SUCCESS"):]
+        return f"\033[1;92mSUCCESS\033[0m{rest}"
+    elif status_str.startswith("FAILED"):
+        rest = status_str[len("FAILED"):]
+        return f"\033[1;91mFAILED\033[0m{rest}"
+    elif status_str.startswith("Skipped") or status_str.startswith("Not Triggered"):
+        return f"\033[90m{status_str}\033[0m"
+    return status_str
 
 
 def print_status_report(job: dict, build_ok: bool, test_ok: bool, pr_number: Optional[int] = None, pr_url: Optional[str] = None, distributed_status: Optional[str] = None) -> None:
     is_success = build_ok and test_ok
     status = job.get("status", "unknown")
     
+    try:
+        cols, _ = os.get_terminal_size()
+    except Exception:
+        cols = 80
+    box_width = max(20, min(60, cols - 2))
+    
     if is_success:
-        print("\n\033[92m" + "="*60)
+        print("\n\033[92m" + "=" * box_width)
         print("  🎉 SUCCESS: Implementation Verified  🎉")
-        print("="*60)
+        print("=" * box_width)
         
-        summary = job.get("plan", {}).get("summary")
+        accomplishment = job.get("builder_summary")
+        if not accomplishment and job.get("debug_history"):
+            last_debug = job["debug_history"][-1]
+            accomplishment = last_debug.get("summary") or last_debug.get("action")
+        if not accomplishment:
+            brief_dir = OUTPUT_DIR / job.get("job_id", "")
+            summary_file = brief_dir / "builder_summary.md"
+            if summary_file.exists():
+                try:
+                    import json
+                    content = summary_file.read_text(encoding="utf-8")
+                    parsed = json.loads(extract_json_block(content))
+                    accomplishment = parsed.get("summary")
+                except Exception:
+                    pass
+
+        summary = accomplishment or job.get("plan", {}).get("summary")
+        summary_label = "Accomplishment:" if accomplishment else "Plan Summary:"
         if summary:
-            # Wrap summary if too long
             import textwrap
-            wrapped = "\n".join(textwrap.wrap(summary, width=56))
-            print(f"\n  \033[1;97mAccomplishment:\033[0m")
-            print(f"  \033[90m{wrapped}\033[0m")
+            wrap_width = max(20, min(80, cols - 4))
+            wrapped = textwrap.fill(
+                summary,
+                width=wrap_width,
+                initial_indent="  ",
+                subsequent_indent="  ",
+                break_long_words=False,
+                break_on_hyphens=False
+            )
+            print(f"\n  \033[1;97m{summary_label}\033[0m")
+            print(f"\033[90m{wrapped}\033[0m")
 
         print("""
      _      _      _
@@ -150,22 +198,31 @@ def print_status_report(job: dict, build_ok: bool, test_ok: bool, pr_number: Opt
         if pr_number:
             print(f"  PR:          #{pr_number}")
         if distributed_status:
-            print(f"  Distributed: {distributed_status}")
+            print(f"  Distributed: {format_distributed_status(distributed_status)}")
         print("\033[0m")
         
         print("\n\033[1;97mNEXT STEPS:\033[0m")
         if pr_url:
-            print(f"  1. Review the changes on GitHub: \033[4;96m{pr_url}\033[0m")
+            clickable_pr = f"\033]8;;{pr_url}\033\\{pr_url}\033]8;;\033\\"
+            print(f"  1. Review PR changes on GitHub:\n     \033[4;96m{clickable_pr}\033[0m")
         elif pr_number:
-            print(f"  1. Review the changes on GitHub: \033[4;96mgh pr view {pr_number} --web\033[0m")
+            print(f"  1. Review PR changes on GitHub:\n     \033[1;96mgh pr view {pr_number} --web\033[0m")
         else:
-            print("  1. Review the changes on GitHub.")
-        print(f"  2. Run the orchestrator console to manage this job: \033[1;96morchestrator console\033[0m")
-        print(f"  3. Merge and cleanup using dev_console when satisfied.")
+            print("  1. Review changes on GitHub.")
+        
+        print("  2. Test and verify manually on device (via Firebase App Distribution) or simulator.")
+        print("  3. Follow up based on your verification:")
+        print("     • \033[1;92mIf verified & working:\033[0m Merge PR on GitHub or run \033[1;96morchestrator console\033[0m -> \033[92m[M] Merge\033[0m.")
+        job_type = job.get("type", "")
+        if job_type in {"feature-plan", "feature", "feature-design"}:
+            print("     • \033[1;93mIf bug / missing functionality:\033[0m Enter feedback below or run \033[1;96morchestrator console\033[0m -> \033[1;93m[H] Bug/Missing Functionality\033[0m.")
+        else:
+            print("     • \033[1;93mIf issues persist / iterate:\033[0m Enter feedback below or run \033[1;96morchestrator console\033[0m -> \033[1;91m[H] Bug Still Happening?\033[0m.")
+        print("       \033[90m💡 Tip: Runtime logs are automatically detected and attached for the next AI pass.\033[0m")
     else:
-        print("\n\033[1;91m" + "!"*60)
+        print("\n\033[1;91m" + "!" * box_width)
         print("  ⚠️  FAILURE: Human Intervention Needed  ⚠️")
-        print("!"*60)
+        print("!" * box_width)
         print("""
      _______
     |  ___  |
@@ -179,29 +236,85 @@ def print_status_report(job: dict, build_ok: bool, test_ok: bool, pr_number: Opt
         print(f"  Status:      {status}")
         print(f"  Build:       {'✅ OK' if build_ok else '❌ FAILED'}")
         print(f"  Tests:       {'✅ OK' if test_ok else '❌ FAILED'}")
+        if distributed_status:
+            print(f"  Distributed: {format_distributed_status(distributed_status)}")
         print("\033[0m")
         
         print("\n\033[1;97mNEXT STEPS:\033[0m")
-        print(f"  1. Inspect the logs in: \033[1;96mai/output/{job['job_id']}/\033[0m")
-        print(f"  2. Use the dev_console to link manual logs or provide feedback.")
-        print(f"  3. Use the console manual run menu to reproduce issues.")
+        print(f"  1. Inspect build/test failure logs in: \033[1;96m.orchestrator/output/{job['job_id']}/\033[0m")
+        print(f"  2. Open \033[1;96morchestrator console\033[0m to link reproduction logs (\033[1;93m[L] Link Logs\033[0m) or provide hints (\033[1;93m[F] Tweak\033[0m).")
+        print(f"  3. Resume or auto-fix (\033[1;92m[D]\033[0m Auto-Fix / \033[1;93m[U]\033[0m Resume) once feedback or logs are linked.")
 
 
-def print_clarification_report(job: dict) -> None:
-    print("\n\033[1;93m" + "!"*60)
+def print_clarification_report(job: dict, question: Optional[str] = None) -> None:
+    try:
+        cols, _ = os.get_terminal_size()
+    except Exception:
+        cols = 80
+    box_width = max(20, min(60, cols - 2))
+    
+    print("\n\033[1;93m" + "!" * box_width)
     print("  ⏸️  PAUSED: Builder Needs Clarification  ")
-    print("!"*60 + "\033[0m")
-    print("!"*60)
+    print("!" * box_width + "\033[0m")
     print(f"Job ID:      {job['job_id']}")
     print(f"Status:      {job.get('status', 'human-needed')}")
     print("\nQuestion:")
-    print(job.get("human_clarification_question", "No clarification question recorded."))
+    q_text = question or job.get("human_clarification_question", "No clarification question recorded.")
+    import textwrap
+    wrap_width = max(20, min(80, cols - 4))
+    wrapped_q = textwrap.fill(
+        q_text,
+        width=wrap_width,
+        initial_indent="  ",
+        subsequent_indent="  ",
+        break_long_words=False,
+        break_on_hyphens=False
+    )
+    print(wrapped_q)
     print("\nNEXT STEPS:")
-    print("  1. Provide the requested file contents or location.")
-    print("  2. Resume the job from dev_console after adding the missing requirements.")
-    print("="*60)
+    print("  1. Open \033[1;96morchestrator console\033[0m to answer the question (\033[1;96m[A] Answer Question\033[0m).")
+    print("  2. The answer will be supplied to the AI builder and execution will resume automatically.")
+    print("=" * box_width + "\n")
+
+
+def trigger_followup_iteration(job_path: Path, job: dict, feedback: str) -> None:
+    recent_log = find_latest_runtime_log(job.get("job_id"))
+    log_paths = job.get("last_manual_log_paths", [])
+    if not isinstance(log_paths, list):
+        log_paths = []
+    if recent_log and recent_log not in log_paths:
+        log_paths.append(recent_log)
+        print(f"\n  ✅ Attached latest log file: \033[97m{recent_log}\033[0m")
+        
+    job["status"] = "debugging"
+    job["debug_phase"] = "propose"
+    job["last_manual_log_paths"] = log_paths
     
-    print("="*60 + "\n")
+    if "debug_history" not in job:
+        job["debug_history"] = []
+        
+    iter_num = job.get("iteration", 0) + 1
+    job_type = job.get("type", "")
+    if job_type in ["feature-plan", "feature", "feature-design"]:
+        hypothesis = "User reported bug or missing functionality in new feature."
+    else:
+        hypothesis = "User follow-up / observation on latest run."
+
+    job["debug_history"].append({
+        "iteration": iter_num,
+        "hypothesis": hypothesis,
+        "action": "Iterate fix based on user feedback.",
+        "implementation_plan": feedback,
+        "expected_signal": "Validation successful",
+        "result": "pending"
+    })
+    job["iteration"] = iter_num
+    job["updated_at"] = now_iso()
+    write_json(job_path, job)
+    
+    print("\n🚀 Starting automated debugging iteration based on your follow-up...")
+    from debug_job import run_debug_iteration
+    run_debug_iteration(job_path)
 
 
 def send_notifications(job: dict, title: str, message: str, summary: str | None = None) -> None:
@@ -316,29 +429,46 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 temp_job_path = job_path.parent / f"{job_path.stem}_task_{i+1}.json"
                 write_json(temp_job_path, task_job)
                 
-                try:
-                    # In YOLO mode sub-tasks, we disable the 'resume' forensics because it often 
-                    # hits false positives from previous tasks.
-                    build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(temp_job_path, resume=False))
-                except BuilderClarificationNeeded as clarification:
-                    mark_human_needed(job_path, job, clarification.question)
-                    print_clarification_report(job)
-                    update_issue_status(issue_number, "status:human-needed", ["status:executing"])
-                    send_notifications(
-                        job,
-                        "Job Paused: Clarification Needed",
-                        f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
-                    )
-                    return
-                except Exception as e:
-                    # SYSTEM/LLM ERROR: Do not trigger automated debugging
-                    print(f"\n❌ Automation error during Task {i+1}: {e}")
-                    job["last_error"] = str(e)
-                    job["status"] = "human-needed"
-                    job["worker_pid"] = None
-                    job["updated_at"] = now_iso()
-                    write_json(job_path, job)
-                    return
+                while True:
+                    try:
+                        # In YOLO mode sub-tasks, we disable the 'resume' forensics because it often 
+                        # hits false positives from previous tasks.
+                        build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(temp_job_path, resume=False))
+                        break
+                    except BuilderClarificationNeeded as clarification:
+                        mark_human_needed(job_path, job, clarification.question, task_index=i)
+                        update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+                        if sys.stdin.isatty() and not job.get("headless", False) and not is_yolo:
+                            print_clarification_report(job, question=clarification.question)
+                            print("\033[97m💡 Answer now to resume the builder immediately, or press Enter to pause.\033[0m")
+                            try:
+                                user_ans = input("\033[1;96mYour Answer (or Enter to pause):\033[0m ").strip()
+                            except (EOFError, KeyboardInterrupt):
+                                user_ans = ""
+                                print(f"\n\033[90m  💾 Progress saved: Job paused at Task {i+1} ({task.get('name', f'Task {i+1}')}).\033[0m")
+                                print(f"\033[90m  💡 Resume anytime by running: orchestrator console\033[0m\n")
+                            if user_ans:
+                                record_clarification(job, clarification.question, user_ans)
+                                record_clarification(task_job, clarification.question, user_ans)
+                                write_json(job_path, job)
+                                write_json(temp_job_path, task_job)
+                                print(f"\n      - Resuming Task {i+1} with your clarification...", flush=True)
+                                continue
+                        send_notifications(
+                            job,
+                            "Job Paused: Clarification Needed",
+                            f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
+                        )
+                        return
+                    except Exception as e:
+                        # SYSTEM/LLM ERROR: Do not trigger automated debugging
+                        print(f"\n❌ Automation error during Task {i+1}: {e}")
+                        job["last_error"] = str(e)
+                        job["status"] = "human-needed"
+                        job["worker_pid"] = None
+                        job["updated_at"] = now_iso()
+                        write_json(job_path, job)
+                        return
                 
                 # IMPORTANT: Only mark task done if code was actually changed (patch)
                 # and validation passed. If AI only 'investigated', it's not done yet.
@@ -401,7 +531,34 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             test_ok = all_ok
         else:
             # Original single-task execution
-            build_ok, test_ok, _summary_path, _task_output = unpack_builder_result(run_builder(job_path, resume=resume))
+            while True:
+                try:
+                    build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(job_path, resume=resume))
+                    break
+                except BuilderClarificationNeeded as clarification:
+                    mark_human_needed(job_path, job, clarification.question)
+                    update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+                    if sys.stdin.isatty() and not job.get("headless", False) and not is_yolo:
+                        print_clarification_report(job, question=clarification.question)
+                        print("\033[97m💡 Answer now to resume the builder immediately, or press Enter to pause.\033[0m")
+                        try:
+                            user_ans = input("\033[1;96mYour Answer (or Enter to pause):\033[0m ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            user_ans = ""
+                            print(f"\n\033[90m  💾 Progress saved: Job paused in 'human-needed' state.\033[0m")
+                            print(f"\033[90m  💡 Resume anytime by running: orchestrator console\033[0m\n")
+                        if user_ans:
+                            record_clarification(job, clarification.question, user_ans)
+                            write_json(job_path, job)
+                            print(f"\n      - Resuming builder with your clarification...", flush=True)
+                            resume = False
+                            continue
+                    send_notifications(
+                        job,
+                        "Job Paused: Clarification Needed",
+                        f"Builder needs clarification for Issue #{issue_number}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
+                    )
+                    return
 
         # Capture state after builder
         post_state = get_repo_state()
@@ -412,6 +569,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         # Re-read job to get updates from run_builder (like test_command_override)
         job = read_json(job_path)
+
+        if task_output and isinstance(task_output, dict):
+            if task_output.get("summary"):
+                job["builder_summary"] = task_output["summary"]
+            if task_output.get("hypothesis"):
+                job["builder_hypothesis"] = task_output["hypothesis"]
 
         job["ai_modified_files"] = ai_modified
         job["ai_untracked_files"] = ai_untracked
@@ -594,6 +757,31 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 return execute_job(job_path, resume=True)
             else:
                 print("\n\033[1;92m🏁 YOLO MODE: All tasks completed successfully!\033[0m")
+
+        # Interactive Follow-up / Bug / Missing Functionality prompt
+        if sys.stdin.isatty() and not job.get("headless", False) and not job.get("is_yolo", False):
+            job_type = job.get("type", "")
+            is_feature = job_type in ["feature-plan", "feature", "feature-design"]
+
+            print("\n" + "─" * 60)
+            if is_feature:
+                print("\033[1;97m💬 New Feature Verification (Optional):\033[0m")
+                print("\033[90mIf you tested this feature and noticed any bug, missing functionality, or UI adjustments\n(e.g., 'Button added but tap handler doesn\\'t submit' or 'Add empty state message'),\nenter it below to immediately trigger an automated iteration with your latest runtime logs attached.\nPress Enter to finish and exit.\033[0m\n")
+                prompt_label = "\033[1;96mBug / Missing Functionality (or Enter to finish):\033[0m "
+            else:
+                print("\033[1;97m💬 Follow-up / Bug Still Happening? (Optional):\033[0m")
+                print("\033[90mIf you tested this build and noticed remaining issues or have follow-up feedback\n(e.g., 'Risk tab is visible now but not populated'), enter it below to immediately\ntrigger an automated fix iteration with your latest runtime logs automatically attached.\nPress Enter to finish and exit.\033[0m\n")
+                prompt_label = "\033[1;96mFollow-up / Feedback (or Enter to finish):\033[0m "
+
+            try:
+                followup_ans = input(prompt_label).strip()
+            except (EOFError, KeyboardInterrupt):
+                followup_ans = ""
+                print("")
+
+            if followup_ans:
+                trigger_followup_iteration(job_path, job, followup_ans)
+                return
 
     except BuilderClarificationNeeded as e:
         print("\n" + "!"*60)

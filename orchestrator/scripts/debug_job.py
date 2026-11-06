@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from common import ROOT, OUTPUT_DIR, PROMPTS_DIR, now_iso, read_json, write_json, write_text, run_shell, print_phase, StatusBar
+from common import ROOT, OUTPUT_DIR, PROMPTS_DIR, now_iso, read_json, write_json, write_text, run_shell, print_phase, StatusBar, analyze_debug_loop_convergence, get_job_test_summary
 from llm import run_llm, extract_json_block
 from model_router import ModelRole
 from reference_artifacts import reference_context
@@ -90,13 +90,24 @@ def sanitize_runtime_log(text: str) -> str:
     return sanitized
 
 
-def append_runtime_log(runtime_logs: str, section_header: str, text: str) -> str:
-    entry = section_header + sanitize_runtime_log(text) + "\n"
-    combined = runtime_logs + entry
+def append_runtime_log(current: str, header: str, content: str) -> str:
+    cleaned = content.strip()
+    if not cleaned:
+        return current
+
+    entry = f"{header}\n{cleaned}\n"
+    if len(entry) > MAX_LOG_ENTRY_CHARS:
+        entry = (
+            entry[: MAX_LOG_ENTRY_CHARS // 2]
+            + f"\n...[debug_job truncated large log: {len(entry) - MAX_LOG_ENTRY_CHARS} chars omitted]...\n"
+            + entry[-MAX_LOG_ENTRY_CHARS // 2 :]
+        )
+
+    combined = current + entry
     if len(combined) > MAX_RUNTIME_LOG_CHARS:
         overflow = len(combined) - MAX_RUNTIME_LOG_CHARS
-        head_size = int(MAX_RUNTIME_LOG_CHARS * 0.1)
-        tail_size = int(MAX_RUNTIME_LOG_CHARS * 0.9)
+        head_size = MAX_RUNTIME_LOG_CHARS // 4
+        tail_size = MAX_RUNTIME_LOG_CHARS - head_size
         return (
             combined[:head_size]
             + f"\n...[debug_job truncated older runtime log context: {overflow} chars omitted]...\n"
@@ -126,32 +137,43 @@ def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str |
     # 2. Handle Iteration Overrides
     if max_iterations is not None:
         job["max_iterations"] = max_iterations
-        # If we were paused, reset phase to propose to start work immediately
         if job.get("debug_phase") == "paused":
             job["debug_phase"] = "propose"
         write_json(job_path, job)
+    elif job.get("debug_phase") == "paused":
+        job["debug_phase"] = "propose"
+        write_json(job_path, job)
 
-    # 3. Check for Loop Termination
-    if job["iteration"] >= job["max_iterations"]:
-        print(f"!!! Max iterations ({job['max_iterations']}) reached. Pausing for human review.")
+    # 3. Check for Intelligent Convergence / Loop Termination
+    test_summary = get_job_test_summary(job)
+    convergence = analyze_debug_loop_convergence(job, test_summary)
+    safety_ceiling = max_iterations if max_iterations is not None else 30
+
+    if convergence["is_stuck"] or (job["iteration"] >= safety_ceiling and convergence["health"] != "converging"):
+        if convergence["is_stuck"]:
+            reason = f"Loop/Stall detected: {convergence['description']}"
+        else:
+            reason = f"Automated repair paused after {job['iteration']} attempts without passing all tests."
+
+        print(f"\n\033[1;93m!!! {reason} Pausing for human review.\033[0m")
         job["status"] = "debugging"
         job["debug_phase"] = "paused"
+        job["debug_pause_reason"] = reason
         write_json(job_path, job)
         
         # Send failure notification
         try:
-            run_shell(f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "notify.py"))} "Job Paused: Max Iterations Reached" "Issue #{job["issue_number"]} reached max iterations ({job["max_iterations"]}) without passing tests.\nTitle: {job["title"]}" "{job["job_id"]}"', cwd=ROOT, check=False)
+            run_shell(f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "notify.py"))} "Job Paused: {reason}" "Issue #{job.get("issue_number", "")} reached pause condition.\nReason: {reason}\nTitle: {job.get("title", "")}" "{job.get("job_id", "")}"', cwd=ROOT, check=False)
         except:
             pass
         return
 
     job["iteration"] += 1
     iteration = job["iteration"]
-    max_iters = job.get("max_iterations", "??")
     
     # 3. Print Iteration Header
     print("\n" + "="*80)
-    print(f"\033[1;93m🔄 DEBUG ITERATION {iteration} / {max_iters}\033[0m")
+    print(f"\033[1;93m🔄 DEBUG ITERATION #{iteration}\033[0m")
     print("="*80 + "\n")
     
     print_phase("debug_loop", subtext=f"Iteration {iteration} (Phase: {job['debug_phase']})")
@@ -306,6 +328,17 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
         
         print(f"      - Proposal received: {plan.get('action')}")
         print(f"      - Hypothesis: {plan.get('hypothesis')}")
+
+        # Check if hypothesis repeats previous attempts
+        prev_hypotheses = [
+            h.get("hypothesis", "").strip().lower() 
+            for h in job.get("debug_history", [])[:-1] 
+            if h.get("hypothesis")
+        ]
+        curr_hyp = (plan.get("hypothesis") or "").strip().lower()
+        if curr_hyp and curr_hyp in prev_hypotheses:
+            print(f"\n\033[1;93m⚠️  [Loop Notice] Debugger produced duplicate hypothesis already attempted in a previous iteration.\033[0m")
+            print(f"\033[96m   👉 You may press Ctrl-C to abort and steer with [Q] Ask AI or supply guidance.\033[0m\n")
     except json.JSONDecodeError:
         print("!!! LLM response was not valid JSON. Check ai/logs.")
     

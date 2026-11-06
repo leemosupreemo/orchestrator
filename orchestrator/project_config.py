@@ -56,7 +56,7 @@ def recent_projects_path() -> Path:
     return user_state_dir() / "projects.json"
 
 
-def load_recent_projects() -> dict[str, Any]:
+def load_recent_projects(prune_missing: bool = True) -> dict[str, Any]:
     path = recent_projects_path()
     if not path.exists():
         return {"version": 1, "active": None, "projects": []}
@@ -67,6 +67,28 @@ def load_recent_projects() -> dict[str, Any]:
     data.setdefault("version", 1)
     data.setdefault("active", None)
     data.setdefault("projects", [])
+
+    if prune_missing:
+        valid_projects = []
+        changed = False
+        for project in data.get("projects", []):
+            root_val = project.get("root")
+            if not root_val:
+                changed = True
+                continue
+            root_path = Path(root_val).expanduser()
+            if root_path.exists() and root_path.is_dir():
+                valid_projects.append(project)
+            else:
+                changed = True
+
+        if changed:
+            data["projects"] = valid_projects
+            active = data.get("active")
+            if active and not any(p.get("name") == active for p in valid_projects):
+                data["active"] = valid_projects[0]["name"] if valid_projects else None
+            save_recent_projects(data)
+
     return data
 
 
@@ -74,6 +96,42 @@ def save_recent_projects(data: dict[str, Any]) -> None:
     path = recent_projects_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def forget_project(reference: str | Path) -> bool:
+    data = load_recent_projects(prune_missing=False)
+    ref_str = str(reference).strip()
+    resolved_path = None
+    try:
+        p = Path(ref_str).expanduser()
+        if p.exists():
+            resolved_path = safe_resolve(p)
+    except Exception:
+        pass
+
+    new_projects = []
+    removed = False
+    for project in data.get("projects", []):
+        proj_root_str = project.get("root", "")
+        proj_name = project.get("name", "")
+        proj_root = None
+        try:
+            proj_root = safe_resolve(Path(proj_root_str).expanduser())
+        except Exception:
+            pass
+
+        if proj_name == ref_str or proj_root_str == ref_str or (resolved_path and proj_root == resolved_path):
+            removed = True
+        else:
+            new_projects.append(project)
+
+    if removed:
+        data["projects"] = new_projects
+        active = data.get("active")
+        if active == ref_str or (resolved_path and not any(p.get("name") == active for p in new_projects)):
+            data["active"] = new_projects[0]["name"] if new_projects else None
+        save_recent_projects(data)
+    return removed
 
 
 def project_display_name(root: Path) -> str:
@@ -85,7 +143,7 @@ def project_display_name(root: Path) -> str:
 def remember_project(root: Path, name: str | None = None, active: bool = True) -> None:
     root = safe_resolve(root.expanduser())
     display_name = name or project_display_name(root)
-    data = load_recent_projects()
+    data = load_recent_projects(prune_missing=True)
     projects = [
         project for project in data.get("projects", [])
         if safe_resolve(Path(project.get("root", "")).expanduser()) != root
@@ -200,6 +258,21 @@ class ProjectConfig:
     firebase_groups: str | None = None
 
     @property
+    def stack(self) -> Any:
+        from orchestrator.stack_detection import detect_project_stack
+        return detect_project_stack(self.root)
+
+    @property
+    def uses_xcode(self) -> bool:
+        """Whether this project needs Xcode-specific configuration and tooling."""
+        return bool(
+            self.xcode_project or self.xcode_workspace
+            or any("xcodebuild" in command for command in
+                   (self.build_command or "", self.test_command or ""))
+            or self.firebase_distribution or self.visual_app_path
+        )
+
+    @property
     def config_dir(self) -> Path:
         return self.runtime_dir / "config"
 
@@ -311,8 +384,14 @@ def load_project_config() -> ProjectConfig:
     project_name = data.get("project_name") or root.name
     xcode_project = data.get("xcode_project") or _first_match(root, "*.xcodeproj")
     xcode_workspace = data.get("xcode_workspace") or _first_match(root, "*.xcworkspace")
-    scheme = data.get("scheme") or (Path(xcode_project).stem if xcode_project else project_name)
-    test_target = data.get("test_target") or f"{scheme}Tests"
+    build_cmd = data.get("build_command")
+    test_cmd = data.get("test_command")
+    if not (xcode_project or xcode_workspace) and (build_cmd or test_cmd):
+        scheme = data.get("scheme")
+        test_target = data.get("test_target", "")
+    else:
+        scheme = data.get("scheme") or (Path(xcode_project).stem if xcode_project else project_name)
+        test_target = data.get("test_target") or f"{scheme}Tests"
     derived_data_path = data.get("derived_data_path") or f"/tmp/{project_name.lower()}_orchestrator_dd"
 
     return ProjectConfig(

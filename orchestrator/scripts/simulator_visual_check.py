@@ -14,7 +14,17 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
-from common import OUTPUT_DIR, ROOT, extract_commands, get_best_simulator_destination, timestamp, write_text
+from common import (
+    OUTPUT_DIR,
+    ROOT,
+    extract_commands,
+    get_best_simulator_destination,
+    command_with_destination,
+    print_divider,
+    print_header,
+    timestamp,
+    write_text,
+)
 from manual_run import cleanup_logs, stream_command
 from orchestrator.project_config import PROJECT_CONFIG
 
@@ -30,20 +40,6 @@ DEFAULT_BUNDLE_ID = PROJECT_CONFIG.app_bundle_id or ""
 def simulator_udid(destination: str) -> str | None:
     match = re.search(r"(?:^|,)id=([^,]+)", destination)
     return match.group(1) if match else None
-
-
-def command_with_destination(command: str, destination: str) -> str:
-    parts = shlex.split(command)
-    cleaned: list[str] = []
-    i = 0
-    while i < len(parts):
-        if parts[i] == "-destination":
-            i += 2
-            continue
-        cleaned.append(parts[i])
-        i += 1
-    cleaned.extend(["-destination", destination])
-    return shlex.join(cleaned)
 
 
 def run_simctl(args: list[str], log_file: Path) -> bool:
@@ -173,12 +169,16 @@ def main() -> None:
             time.sleep(max(0, args.interval))
 
     report_lines = [
-        "# Simulator Visual Check",
+        "# 📱 Simulator Visual Check Report",
         "",
-        f"- Destination: `{destination}`",
-        f"- Bundle ID: `{bundle_id}`",
-        f"- App path: `{app_path}`",
-        f"- Build: `{'skipped' if args.no_build else 'passed'}`",
+        "## Overview",
+        f"- **Captured Scope:** Active foreground root view & initial UI state of `{bundle_id}` after launch.",
+        f"- **Screenshots Taken:** {len(screenshot_paths)} screenshot(s) (with {args.wait:.1f}s post-launch settle delay).",
+        f"- **Target Simulator:** `{destination}`",
+        f"- **Bundle Identifier:** `{bundle_id}`",
+        f"- **App Binary:** `{app_path}`",
+        f"- **Build Status:** `{'Skipped (reused binary)' if args.no_build else 'Passed'}`",
+        f"- **Output Folder:** [{out_dir.name}](file://{out_dir.resolve()})",
         "",
         "## Screenshots",
         "",
@@ -189,15 +189,27 @@ def main() -> None:
     )
     report_lines.extend([
         "",
-        "Review the screenshots for layout clipping, overlap, blank views, and incorrect positioning.",
+        "## Visual QA Checklist",
+        "- [ ] Verify root view layout and element alignment across safe area insets.",
+        "- [ ] Check for text clipping, missing labels, or truncated strings.",
+        "- [ ] Ensure light/dark color contrast and asset rendering look correct.",
+        "- [ ] Confirm that no unhandled blank, error, or loading freeze states occurred on startup.",
         "",
     ])
     write_text(out_dir / "report.md", "\n".join(report_lines))
 
-    print("\n# ✅ Simulator Visual Check Captured")
-    print(f"Report: {markdown_link('Open report', out_dir / 'report.md')}")
-    for path in screenshot_paths:
-        print(f"Screenshot: {markdown_link(path.name, path)}")
+    print_header("📱 Simulator Visual Check Complete")
+    print(f"   \033[1;36m• Target App:\033[0m        \033[1;97m{bundle_id}\033[0m \033[90m({app_path.name})\033[0m")
+    print(f"   \033[1;36m• Scope Captured:\033[0m    \033[97mForeground root view & initial UI state after launch\033[0m")
+    print(f"   \033[1;36m• Screenshots:\033[0m       \033[1;93m{len(screenshot_paths)} screenshot(s)\033[0m \033[90m({args.wait:.1f}s post-launch settle delay)\033[0m")
+    print(f"   \033[1;36m• Target Device:\033[0m     \033[97m{destination}\033[0m")
+    print(f"   \033[1;36m• Output Folder:\033[0m     {markdown_link(str(out_dir.relative_to(ROOT)), out_dir)}")
+    print(f"   \033[1;36m• Visual Report:\033[0m     {markdown_link('Open report.md', out_dir / 'report.md')}")
+    if screenshot_paths:
+        print(f"   \033[1;36m• Captured Images:\033[0m")
+        for idx, path in enumerate(screenshot_paths, start=1):
+            print(f"     \033[90m- Screenshot #{idx}:\033[0m {markdown_link(path.name, path)}")
+    print_divider()
     cleanup_logs(manual_base)
 
 

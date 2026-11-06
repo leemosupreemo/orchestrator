@@ -33,3 +33,6 @@ web/.env.local
 
 .firebase/
 *.tsbuildinfo
+
+exports/
+*.zip

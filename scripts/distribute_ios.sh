@@ -15,7 +15,8 @@ ASC_KEY_PATH=""
 FIREBASE_PLIST_PATH=""
 RELEASE_NOTES="AI Generated Build"
 TESTERS=""
-GROUPS=""
+DIST_GROUPS=""
+BUILD_NUMBER=""
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -32,7 +33,8 @@ while [[ "$#" -gt 0 ]]; do
         --firebase-plist) FIREBASE_PLIST_PATH="$2"; shift ;;
         --release-notes) RELEASE_NOTES="$2"; shift ;;
         --testers) TESTERS="$2"; shift ;;
-        --groups) GROUPS="$2"; shift ;;
+        --groups) DIST_GROUPS="$2"; shift ;;
+        --build-number) BUILD_NUMBER="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -41,6 +43,10 @@ done
 if [ -z "$PROJECT_PATH" ] && [ -z "$WORKSPACE_PATH" ]; then
     echo "Error: --project or --workspace is required."
     exit 1
+fi
+
+if [ -z "$BUILD_NUMBER" ]; then
+    BUILD_NUMBER="$(date +%Y%m%d%H%M%S)"
 fi
 
 if [ -z "$SCHEME" ]; then
@@ -59,14 +65,19 @@ if [ -n "${KEYCHAIN_PASSWORD:-}" ]; then
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" ~/Library/Keychains/login.keychain-db >/dev/null 2>&1 || true
 fi
 
-echo "🚀 Starting Distribution for $SCHEME..."
+echo "🚀 Starting Distribution for $SCHEME (Build: $BUILD_NUMBER)..."
 
 # 1. Archive
-echo "📦 Archiving project..."
+echo "📦 Archiving project (setting CURRENT_PROJECT_VERSION=$BUILD_NUMBER)..."
 
 AUTH_FLAGS=""
 if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_PATH" ]; then
     AUTH_FLAGS="-authenticationKeyID $ASC_KEY_ID -authenticationKeyIssuerID $ASC_ISSUER_ID -authenticationKeyPath $ASC_KEY_PATH"
+fi
+
+DEVELOPMENT_TEAM_FLAG=""
+if [ -n "$DEVELOPMENT_TEAM" ]; then
+    DEVELOPMENT_TEAM_FLAG="DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM"
 fi
 
 if [ -n "$WORKSPACE_PATH" ]; then
@@ -79,7 +90,8 @@ if [ -n "$WORKSPACE_PATH" ]; then
             -destination "generic/platform=iOS" \
             CODE_SIGN_STYLE=Manual \
             PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_SPECIFIER" \
-            ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"} \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            $DEVELOPMENT_TEAM_FLAG \
             $AUTH_FLAGS \
             -allowProvisioningUpdates
     else
@@ -89,7 +101,8 @@ if [ -n "$WORKSPACE_PATH" ]; then
             -configuration "$CONFIGURATION" \
             -archivePath "$ARCHIVE_PATH" \
             -destination "generic/platform=iOS" \
-            ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"} \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            $DEVELOPMENT_TEAM_FLAG \
             $AUTH_FLAGS \
             -allowProvisioningUpdates
     fi
@@ -103,7 +116,8 @@ else
             -destination "generic/platform=iOS" \
             CODE_SIGN_STYLE=Manual \
             PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_SPECIFIER" \
-            ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"} \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            $DEVELOPMENT_TEAM_FLAG \
             $AUTH_FLAGS \
             -allowProvisioningUpdates
     else
@@ -113,10 +127,16 @@ else
             -configuration "$CONFIGURATION" \
             -archivePath "$ARCHIVE_PATH" \
             -destination "generic/platform=iOS" \
-            ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"} \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            $DEVELOPMENT_TEAM_FLAG \
             $AUTH_FLAGS \
             -allowProvisioningUpdates
     fi
+fi
+
+# Ensure archive metadata reflects build number
+if [ -f "$ARCHIVE_PATH/Info.plist" ]; then
+    /usr/libexec/PlistBuddy -c "Set :ApplicationProperties:CFBundleVersion $BUILD_NUMBER" "$ARCHIVE_PATH/Info.plist" 2>/dev/null || true
 fi
 
 # 2. Export IPA
@@ -150,7 +170,7 @@ if [ -f "$GS_INFO_PATH" ]; then
         --app "$APP_ID" \
         --release-notes "$RELEASE_NOTES" \
         $( [ ! -z "$TESTERS" ] && echo "--testers $TESTERS" ) \
-        $( [ ! -z "$GROUPS" ] && echo "--groups $GROUPS" )
+        $( [ ! -z "$DIST_GROUPS" ] && echo "--groups $DIST_GROUPS" )
 else
     echo "❌ Missing GoogleService-Info.plist: $GS_INFO_PATH"
     echo "      - You can specify the path with --firebase-plist"

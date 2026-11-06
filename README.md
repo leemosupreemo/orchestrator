@@ -1,45 +1,46 @@
-# Swift Orchestrator
+# Orchestrator (Beta)
 
-Swift Orchestrator is a standalone, multi-agent AI orchestration platform designed for Swift and Xcode projects. It provides a rich, interactive dev console for automating software engineering tasks—from bug fixes and feature planning to fleet-wide test execution and Firebase distribution.
+**Build product features and fix bugs by coordinating multiple machines and LLMs through one end-to-end development workflow.**
 
-Unlike generic AI coding tools, Orchestrator is built specifically for the complexities of the Apple ecosystem, supporting deep integration with `xcodebuild`, simulators, and remote Mac build farms.
+Orchestrator brings planning, implementation, review, testing, and delivery into a single multi-agent process. It distributes work across local and remote machines, assigns different LLMs to specialized roles, and carries each change from an idea or bug report through verification.
+
+Orchestrator began with deep support for Swift and Xcode. It is now expanding across languages, with beta support for Rust, Python, Node.js/TypeScript, Go, Swift Package Manager, and Xcode projects.
 
 ---
 
 ## 🚀 Key Features
 
 *   **Interactive Dev Console**: A terminal-based UI designed for speed. Single-key shortcuts (`y/n`, `A`/`F`/`Q`) and real-time status bars make orchestration feel like a native tool.
-*   **Structured Multi-Agent Workflow**: Jobs pass through specialized agents:
-    *   **Planner**: Analyzes requirements and drafts a multi-step implementation plan.
-    *   **Builder**: Executes the plan, writing code and running terminal tools.
-    *   **Reviewer**: Performs a technical audit of changes before they are finalized.
-    *   **Verifier**: Validates that the implementation meets the original goal and maintains system integrity.
-*   **Fleet Orchestration**: Dispatch heavy builds or exhaustive test suites to remote Macs via SSH. The Orchestrator manages code syncing, package installation, and log retrieval automatically.
-*   **Project-Local Intelligence**: Store role-specific prompt overrides (`.orchestrator/prompts/`) and architecture guides (`AGENTS.md`) directly in your repo to keep agents grounded in your project's conventions.
-*   **Interactive AI Login**: Missing an API key or session? Log in to providers (`antigravity`, `claude`, `gh`, etc.) directly from the discovery wizard without restarting.
-*   **Automated PR & Issue Workflow**: Seamlessly integrates with `gh` CLI to create issues, open PRs, and post-automated status updates.
+*   **Structured Multi-Agent Workflow**: Jobs pass through specialized agents, with feature work guided by a test-driven development (TDD) philosophy:
+    *   **Planner**: Analyzes requirements and drafts a multi-step plan that defines tests before production code.
+    *   **Verifier**: Checks the plan against the codebase for feasibility, architectural fit, regression risks, and appropriate test coverage.
+    *   **Builder**: Follows the Red–Green–Refactor cycle: write a failing test, implement the minimum code needed to pass, then improve the code while keeping tests green.
+    *   **Reviewer**: Audits the implementation, test coverage, and regression risks before changes are finalized.
+*   **Fleet Orchestration**: Dispatch heavy builds or exhaustive test suites to remote machines via SSH. The Orchestrator handles branch synchronization, worker package installation, remote execution, and job output automatically.
+*   **Interactive Account Setup**: Detect installed AI and GitHub CLIs, then sign in or add API keys from the wizard without restarting.
+*   **Automated GitHub PR & Issue Workflow**: Integrates with GitHub through the `gh` CLI to create issues, open pull requests, and post automated status updates.
+*   **Multi-Language Project Setup (Beta)**: Detect Rust, Python, Node.js/TypeScript, Go, Swift Package Manager, and Xcode projects, then configure the appropriate build and test commands.
 
 ---
 
 ## 🛠️ Install
 
-Recommended CLI install via `pipx`:
+Orchestrator requires Python 3.11 or newer. With `pipx` installed:
 
 ```bash
-brew install pipx
 pipx ensurepath
 pipx install "git+https://github.com/leemosupreemo/orchestrator.git"
 orchestrator --help
 ```
 
-### Quick Start (First Project)
+### Quick Start
 
-1.  **Initialize**: Run the wizard in your project root to detect schemes and set up config.
+1.  **Configure**: Run the wizard from the project root.
     ```bash
-    cd /path/to/MySwiftProject
+    cd /path/to/MyProject
     orchestrator wizard
     ```
-2.  **Verify**: Ensure your environment (CLIs, API keys) is ready.
+2.  **Verify**: Check prerequisites, AI provider access, and machine configuration.
     ```bash
     orchestrator check
     ```
@@ -48,18 +49,40 @@ orchestrator --help
     orchestrator console
     ```
 
+### Setup Wizard
+
+The wizard detects your project stack and guides you through five steps:
+
+1. **Project**: Confirm the project and its build/test settings.
+2. **AI**: Choose at least one model and sign in if needed.
+3. **Tools**: Optionally configure GitHub, custom prompts, SSH workers, and Apple delivery.
+4. **Review**: Edit, apply, or cancel before files are written.
+5. **Verify**: Validate the configuration and index the project.
+
+You need a project name, an AI model, and valid build/test settings for your stack. Worker and delivery fields are required only when enabled. Prompts clearly label how to skip optional fields or keep defaults; use **Ctrl-S** to skip an optional section and **Ctrl-Q** to quit.
+
+See the [User Guide](docs/user-guide.md#first-run-wizard) for every option, non-interactive setup, and generated file.
+
+### Multi-Language Support (Beta)
+
+- Swift
+- Rust
+- Python
+- JavaScript and TypeScript
+- Go
+
 ---
 
 ## 🧩 Agent Hierarchy
 
 | Agent | Role | Output |
 | :--- | :--- | :--- |
-| **Planner** | Strategic analysis & Step-by-step planning | `plan.json` |
-| **Builder** | Code implementation & Tool execution | File changes |
-| **Reviewer** | Technical audit & PR readiness check | Review comments |
-| **Verifier** | Goal validation & regression testing | Pass/Fail status |
-| **Debug Agent** | Iterative fix & test-loop management | Bug fixes |
-| **Build Checker** | Log analysis & error diagnostics | Root cause insights |
+| **Planner** | Codebase research, scoping, and test planning | Grounded implementation plan |
+| **Verifier** | Plan feasibility and architecture validation | Approval status, corrections, and risks |
+| **Builder** | Test-driven implementation and validation | Tested code changes |
+| **Reviewer** | Diff review against the brief and acceptance criteria | Risk-ranked findings and verdict |
+| **Debug Agent** | Evidence-based root-cause investigation | Hypothesis and targeted action plan |
+| **Build Checker** | Build and test log triage | Ranked blockers and recommended fix order |
 
 ---
 
@@ -75,33 +98,30 @@ The Dev Console is the primary way to interact with the Orchestrator. It feature
 
 ## 📡 Remote Workers (Fleet)
 
-Scale your workflow by adding remote Macs as workers. Remote workers can handle:
-- **Builds**: Offload heavy `xcodebuild` tasks.
+Scale your workflow by adding remote machines as workers. Remote workers can handle:
+- **Builds**: Offload resource-intensive build jobs.
 - **Tests**: Run exhaustive UI or unit test suites in parallel.
 - **Execution**: The Orchestrator syncs your repository and its own runtime to the worker automatically.
 
 Add workers in `.orchestrator/config/machines.json` and prepare them with:
 ```bash
-orchestrator worker-install --machine mac2
-orchestrator worker-check --machine mac2
+orchestrator worker-install --machine worker1
+orchestrator worker-check --machine worker1
 ```
+
+---
+
+## 📱 Mobile Delivery
+
+For iOS projects, Orchestrator can archive and sign an app, upload the IPA to Firebase App Distribution, and release it to configured tester emails or groups for installation on multiple devices.
+
+For a phone-operated workflow, use [Secure ShellFish](https://secureshellfish.app/) on iPhone or iPad to connect over SSH to the machine running Orchestrator. From there, you can coordinate the job, run builds and tests, and distribute the resulting beta build through Firebase.
 
 ---
 
 ## ⚙️ Project Configuration
 
-The core configuration lives in `.orchestrator/project.json`.
-
-```json
-{
-  "project_name": "MyApp",
-  "base_branch": "main",
-  "scheme": "MyApp",
-  "test_target": "MyAppTests",
-  "branch_prefix": "ai/issue",
-  "firebase_distribution": true
-}
-```
+The wizard writes stack-specific project and build/test settings to `.orchestrator/project.json`.
 
 Validate your configuration any time:
 ```bash
@@ -110,10 +130,11 @@ orchestrator check-config
 
 ### 🆙 Keeping Up to Date
 
-Easily update your local installation and your remote fleet with one command:
+Use the command that matches your installation:
 ```bash
-orchestrator update          # Updates local package (Git/Pip)
-orchestrator update --fleet  # Updates all remote workers
+pipx upgrade orchestrator     # pipx installation
+orchestrator update           # Editable Git checkout
+orchestrator update --fleet   # Enabled remote machines
 ```
 
 ---
@@ -122,8 +143,6 @@ orchestrator update --fleet  # Updates all remote workers
 
 - [Getting Started](docs/getting-started.md): What Orchestrator does and the first commands to run.
 - [User Guide](docs/user-guide.md): Comprehensive setup, commands, and troubleshooting.
-- [Migration Guide](docs/migration-guide.md): Transitioning from legacy local scripts.
-- [AI Workflow](docs/ai-workflow.md): Understanding the agentic lifecycle.
 
 ---
 
@@ -135,10 +154,19 @@ For developers contributing to the Orchestrator itself:
 git clone https://github.com/leemosupreemo/orchestrator.git
 cd orchestrator
 python3 -m pip install -e .
-python3 -m unittest discover tests
+python3 -m unittest discover -s tests
 ```
 
 Package install smoke test:
 ```bash
 python3 tests/smoke_package_install.py
 ```
+
+---
+
+## 📄 License
+
+Copyright © 2026 The Jaunt Company. All rights reserved.
+
+This project is source-available for viewing and evaluation, but is
+not released under an open-source license. See [LICENSE](LICENSE) for details.

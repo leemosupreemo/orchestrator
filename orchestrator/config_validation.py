@@ -10,7 +10,7 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
 
     if not config.project_name:
         errors.append("project_name is required.")
-    if not config.scheme:
+    if config.uses_xcode and not config.scheme:
         errors.append("scheme is required. Set it in .orchestrator/project.json.")
     if not config.xcode_project and not config.xcode_workspace and not config.build_command:
         errors.append("Configure xcode_project, xcode_workspace, or build_command.")
@@ -18,8 +18,9 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
         errors.append(f"xcode_project does not exist: {config.xcode_project}")
     if config.xcode_workspace and not (config.root / config.xcode_workspace).exists():
         errors.append(f"xcode_workspace does not exist: {config.xcode_workspace}")
-    if not config.test_target and not config.test_command:
-        errors.append("Configure test_target or test_command.")
+    if not config.test_command and (not config.uses_xcode or not config.test_target):
+        errors.append("Configure test_target or test_command." if config.uses_xcode
+                      else "Configure test_command for a non-Xcode project.")
     if config.firebase_distribution:
         if config.delivery_provider and config.delivery_provider != "firebase":
             errors.append("Only delivery_provider='firebase' is currently supported.")

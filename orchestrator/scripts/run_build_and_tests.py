@@ -18,7 +18,10 @@ from common import (
     print_phase, 
     is_disk_full_error, 
     purge_zombie_processes,
-    get_best_simulator_destination
+    get_best_simulator_destination,
+    get_fallback_simulator_destinations,
+    command_with_destination,
+    extract_destination_from_command,
 )
 from llm import run_llm
 from model_router import ModelRole
@@ -129,21 +132,24 @@ def resolve_command(cmd: str) -> str:
     if "xcodebuild" in cmd:
         try:
             dest = get_best_simulator_destination()
-            parts = shlex.split(cmd)
-            dest_indices = [i for i, x in enumerate(parts) if x == "-destination"]
-
-            if dest_indices:
-                for idx in reversed(dest_indices):
-                    if idx + 1 < len(parts): del parts[idx + 1]
-                    del parts[idx]
-            
-            # Add the local destination
-            parts.extend(["-destination", dest])
-            return shlex.join(parts)
+            return command_with_destination(cmd, dest)
         except Exception:
-            # Fallback for complex strings
             return cmd
     return cmd
+
+
+def uses_configured_test_tool(command: str, base_command: str) -> bool:
+    """Recognize focused commands using the project's configured executable.
+
+    This is a format check, not a sandbox: commands already run as shell code.
+    Reject malformed quoting and prose instead of maintaining a language list.
+    """
+    try:
+        command_parts = shlex.split(command)
+        base_parts = shlex.split(base_command)
+    except ValueError:
+        return False
+    return bool(command_parts and base_parts and command_parts[0] == base_parts[0])
 
 
 def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
@@ -165,7 +171,7 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
     if override:
         o = override.strip().lower()
         # Robust N/A check
-        is_na = any(x in o for x in {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"})
+        is_na = o in {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"}
         
         if is_na:
             test_cmd = None
@@ -174,7 +180,9 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
             is_standalone_test = True
         elif "xcodebuild test" in override:
             test_cmd = override
-        elif override.startswith("-only-testing") or override.startswith("-skip-testing"):
+        elif uses_configured_test_tool(override, raw_test_cmd):
+            test_cmd = override
+        elif "xcodebuild" in raw_test_cmd and override.startswith(("-only-testing", "-skip-testing")):
             # Traditional -only-testing override
             test_cmd = f"{raw_test_cmd} {override}"
         else:
@@ -187,7 +195,7 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
     final_test_cmd = resolve_command(test_cmd)
 
     # Only run xcodebuild build if it's not a standalone non-ios test or if we are forced
-    if is_infra and is_standalone_test:
+    if is_infra and is_standalone_test and "xcodebuild" in build_cmd:
         print_phase("skipping_ios_build", subtext="infra task with standalone tests")
         build_ok = True
     else:
@@ -202,7 +210,24 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
             if build_result.returncode != 0:
                 cap_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True)
                 full_output = cap_result.stdout + "\n" + cap_result.stderr
-                environment_issue = detect_simulator_environment_issue(full_output)
+
+                # If destination mismatch, attempt automated fallback retry
+                if "xcodebuild" in build_cmd and "Unable to find a device matching the provided destination specifier" in full_output:
+                    curr_dest = extract_destination_from_command(build_cmd)
+                    for candidate in get_fallback_simulator_destinations(curr_dest):
+                        if candidate == curr_dest: continue
+                        print(f"\n\033[1;93m⚠️  Simulator destination rejected during build ({curr_dest}). Retrying with: {candidate}...\033[0m")
+                        retry_cmd = command_with_destination(build_cmd, candidate)
+                        retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=False)
+                        if retry_res.returncode == 0:
+                            build_cmd = retry_cmd
+                            build_ok = True
+                            break
+                    if build_ok:
+                        write_text(out_dir / "build.log", "** BUILD SUCCEEDED ON FALLBACK DESTINATION **")
+                        break
+
+                environment_issue = detect_simulator_environment_issue(full_output) if "xcodebuild" in build_cmd else None
                 if environment_issue:
                     write_text(out_dir / "environment_failure.md", environment_issue + "\n\n--- Raw output ---\n" + full_output)
                     write_text(out_dir / "build.log", full_output)
@@ -236,6 +261,20 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
         test_result = run_shell(final_test_cmd, cwd=ROOT, check=False, capture=True)
         full_test_output = test_result.stdout + "\n\nSTDERR:\n" + test_result.stderr
         
+        # If destination mismatch, attempt automated fallback retry
+        if test_result.returncode != 0 and "xcodebuild" in final_test_cmd and "Unable to find a device matching the provided destination specifier" in full_test_output:
+            curr_dest = extract_destination_from_command(final_test_cmd)
+            for candidate in get_fallback_simulator_destinations(curr_dest):
+                if candidate == curr_dest: continue
+                print(f"\n\033[1;93m⚠️  Simulator destination rejected during testing ({curr_dest}). Retrying with: {candidate}...\033[0m")
+                retry_cmd = command_with_destination(final_test_cmd, candidate)
+                retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=True)
+                full_test_output = retry_res.stdout + "\n\nSTDERR:\n" + retry_res.stderr
+                if retry_res.returncode == 0:
+                    test_result = retry_res
+                    final_test_cmd = retry_cmd
+                    break
+
         if test_result.returncode != 0 and is_disk_full_error(full_test_output) and attempt < max_retries:
             print("\n\033[1;93m⚠️  DISK FULL DETECTED during tests. Attempting automated recovery...\033[0m")
             purge_zombie_processes([job.get("assigned_machine", "local")], silent=False)
@@ -250,7 +289,7 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
             return True, True
 
         if test_result.returncode != 0:
-            environment_issue = detect_simulator_environment_issue(full_test_output)
+            environment_issue = detect_simulator_environment_issue(full_test_output) if "xcodebuild" in final_test_cmd else None
             if environment_issue:
                 write_text(out_dir / "environment_failure.md", environment_issue + "\n\n--- Raw output ---\n" + full_test_output)
                 raise EnvironmentValidationError(environment_issue)
@@ -286,14 +325,15 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
         print("---------------------------\n")
 
         # Extract xcresult summary
-        xc_summary = extract_xcresult_summary(test_result.stdout)
+        xc_summary = extract_xcresult_summary(test_result.stdout) if "xcodebuild" in final_test_cmd else None
         if xc_summary:
             write_text(out_dir / f"test_results_{ts}.txt", xc_summary)
 
         write_text(out_dir / f"test_analysis_{ts}.md", analysis)
         
         # Capture system logs on failure
-        capture_system_logs(out_dir / f"system_{ts}.log")
+        if "xcodebuild" in final_test_cmd:
+            capture_system_logs(out_dir / f"system_{ts}.log")
         
         return True, False
 

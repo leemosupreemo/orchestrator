@@ -30,9 +30,10 @@ class VisualDeliveryConfigTests(unittest.TestCase):
         self.assertNotIn("old-destination", updated)
 
     @patch("deliver_build.send_final_notification")
+    @patch("deliver_build.ensure_keychain_unlocked", return_value=(True, "Keychain is unlocked"))
     @patch("deliver_build.subprocess.Popen")
     @patch("deliver_build.subprocess.check_output")
-    def test_deliver_build_uses_configured_distribution_script(self, mock_check_output, mock_popen, _notify) -> None:
+    def test_deliver_build_uses_configured_distribution_script(self, mock_check_output, mock_popen, _unlock, _notify) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "SampleApp.xcodeproj").mkdir()
@@ -50,7 +51,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            mock_check_output.side_effect = [b"feature/build\n", b"2026-06-06 00:00:00\n"]
+            mock_check_output.side_effect = [b"feature/build\n", b"20260902231500\n", b"2026-06-06 00:00:00\n"]
             process = MagicMock()
             process.stdout = []
             process.wait.return_value = 0
@@ -82,6 +83,8 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             self.assertEqual(cmd[0:2], ["/bin/bash", str(script)])
             self.assertIn("--project", cmd)
             self.assertIn(str(root / "SampleApp.xcodeproj"), cmd)
+            self.assertIn("--build-number", cmd)
+            self.assertIn("20260902231500", cmd)
 
     @patch("simulator_visual_check.plistlib.load")
     @patch("simulator_visual_check.open", create=True)
@@ -132,11 +135,12 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             self.assertEqual(launch_call[0][0][0][2], "com.test.resolved-bundle-id")
 
     @patch("deliver_build.send_final_notification")
+    @patch("deliver_build.ensure_keychain_unlocked", return_value=(True, "Keychain is unlocked"))
     @patch("deliver_build.subprocess.Popen")
     @patch("deliver_build.subprocess.check_output")
     @patch("deliver_build.format_markdown_for_terminal")
     def test_deliver_build_diagnoses_signing_team_mismatch(
-        self, mock_format_markdown, mock_check_output, mock_popen, _notify
+        self, mock_format_markdown, mock_check_output, mock_popen, _unlock, _notify
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -155,7 +159,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            mock_check_output.side_effect = [b"feature/build\n", b"2026-06-06 00:00:00\n"]
+            mock_check_output.side_effect = [b"feature/build\n", b"20260902231500\n", b"2026-06-06 00:00:00\n"]
             process = MagicMock()
             process.stdout = [
                 "/Users/leemosupreemo/Documents/Themis/ThemisPlayground.xcodeproj: "
@@ -201,11 +205,12 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             self.assertIn("nmeskin.Themis", printed_output)
 
     @patch("deliver_build.send_final_notification")
+    @patch("deliver_build.ensure_keychain_unlocked", return_value=(True, "Keychain is unlocked"))
     @patch("deliver_build.subprocess.Popen")
     @patch("deliver_build.subprocess.check_output")
     @patch("deliver_build.format_markdown_for_terminal")
     def test_deliver_build_diagnoses_firebase_distribution_404(
-        self, mock_format_markdown, mock_check_output, mock_popen, _notify
+        self, mock_format_markdown, mock_check_output, mock_popen, _unlock, _notify
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -226,7 +231,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            mock_check_output.side_effect = [b"feature/build\n", b"2026-06-06 00:00:00\n"]
+            mock_check_output.side_effect = [b"feature/build\n", b"20260902231500\n", b"2026-06-06 00:00:00\n"]
             process = MagicMock()
             process.stdout = [
                 "Error: failed to distribute to testers/groups: Request to ... had HTTP Error: 404, Requested entity was not found.\n"

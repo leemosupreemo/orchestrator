@@ -225,8 +225,9 @@ def _check():
     has_node = shutil.which("node") is not None
     print_result(has_node, "Node.js", "INSTALLED" if has_node else "MISSING", "Node.js")
 
-    has_xcode = shutil.which("xcodebuild") is not None
-    print_result(has_xcode, "Xcode CLI Tools", "INSTALLED" if has_xcode else "MISSING", "Xcode CLI Tools")
+    if PROJECT_CONFIG.uses_xcode:
+        has_xcode = shutil.which("xcodebuild") is not None
+        print_result(has_xcode, "Xcode CLI Tools", "INSTALLED" if has_xcode else "MISSING", "Xcode CLI Tools")
     
     # Git Check
     print_header("1a. Git Repository Sanity")
@@ -544,7 +545,8 @@ def _check():
     print("     \033[90mSee docs/recommended-mcp-plugins.md for setup guidance.\033[0m")
     
     if m_path.exists():
-        print("\n\033[1;92m" + "="*20 + " VERIFICATION COMPLETE " + "="*20 + "\033[0m\n")
+        print_header("Verification Complete")
+        print()
     else:
         print(f"\n\033[93m💡 NEXT STEP: Create '{m_path}' to use remote workers.\033[0m")
 

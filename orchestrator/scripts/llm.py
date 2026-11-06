@@ -10,8 +10,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line
-from model_registry import get_model, ModelTier, get_all_models, preferred_cli
+from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
+from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error
 from model_router import get_prioritized_models, ModelRole
 
 class LLMTimeoutError(RuntimeError):
@@ -59,21 +59,19 @@ def extract_json_block(text: str) -> str:
             in_string = False
             escape = False
             for i in range(start_idx, len(text)):
-                char = text[i]
-                if char == '"' and not escape:
+                c = text[i]
+                if c == '"' and not escape:
                     in_string = not in_string
-                
-                if not in_string:
-                    if char == opener:
+                elif not in_string:
+                    if c == opener:
                         stack += 1
-                    elif char == closer:
+                    elif c == closer:
                         stack -= 1
                         if stack == 0:
-                            text = text[start_idx:i+1]
+                            text = text[start_idx:i+1].strip()
                             break
-                
-                if char == '\\':
-                    escape = not escape
+                if c == '\\' and not escape:
+                    escape = True
                 else:
                     escape = False
 
@@ -89,7 +87,11 @@ def is_quota_error(error_msg: str) -> bool:
         "usage limit", "quota", "rate limit", "credits", 
         "may not exist", "access to it", "not have access",
         "model not found", "unauthorized", "overloaded",
-        "not logged in", "please run /login"
+        "not logged in", "please run /login",
+        "invalid api key", "fix external api key", "api key",
+        "anthropic_api_key", "connectors are disabled",
+        "auth source is set", "authentication", "forbidden",
+        "bad credentials", "auth error"
     ]
     return any(x in error_msg.lower() for x in keywords)
 
@@ -123,7 +125,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=actual_session_id)
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id)
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
@@ -143,13 +145,15 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             last_error = exc
             continue
         except RuntimeError as exc:
-            if is_quota_error(str(exc)):
-                print(f"⚠️  {current_model} hit quota limit. Attempting fallback...")
-                last_error = exc
-                continue
-            raise
-        except Exception:
-            raise
+            err_str = str(exc)
+            summary = summarize_cli_error(err_str)
+            print(f"⚠️  {current_model} failed ({summary}). Attempting fallback...")
+            last_error = exc
+            continue
+        except Exception as exc:
+            print(f"⚠️  {current_model} failed ({exc}). Attempting fallback...")
+            last_error = exc
+            continue
 
     raise RuntimeError(f"All models failed (quota limits reached). Last error: {last_error}")
 
@@ -180,17 +184,17 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
             safe_tools += ",replace,write_file"
         if provider_cli == "agy":
-            cmd_base = f"agy --model {model_id} --dangerously-skip-permissions --prompt -"
+            cmd_base = f"agy --model {shlex.quote(cli_model_id)} --dangerously-skip-permissions"
             if session_id:
                 cmd_base += f" --conversation {session_id}"
         else:
-            cmd_base = f"{provider_cli} --model {model_id} --skip-trust --prompt - --yolo --allowed-mcp-server-names {safe_servers} --allowed-tools {safe_tools} --raw-output --accept-raw-output-risk"
+            cmd_base = f"{provider_cli} --model {shlex.quote(cli_model_id)} --skip-trust --prompt - --yolo --allowed-mcp-server-names {safe_servers} --allowed-tools {safe_tools} --raw-output --accept-raw-output-risk"
             if session_id:
                 cmd_base += f" --session-id {session_id}"
     elif model_id == "gemini":
         provider_cli = preferred_cli("gemini")
         if provider_cli == "agy":
-            cmd_base = "agy --dangerously-skip-permissions --prompt -"
+            cmd_base = "agy --dangerously-skip-permissions"
             if session_id:
                 cmd_base += f" --conversation {session_id}"
         else:
@@ -246,7 +250,9 @@ def get_llm_env() -> dict[str, str]:
                 "gemini_api_key": "GEMINI_API_KEY",
                 "anthropic_api_key": "ANTHROPIC_API_KEY",
                 "codex_api_key": "CODEX_API_KEY",
-                "openai_api_key": "OPENAI_API_KEY"
+                "openai_api_key": "OPENAI_API_KEY",
+                "ollama_api_key": "OLLAMA_API_KEY",
+                "ollama_host": "OLLAMA_HOST"
             }
             
             for s_key, e_var in key_map.items():
@@ -318,7 +324,7 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
     elif model.startswith("gemini-3.1") or model.startswith("gpt-5.5") or model.startswith("claude-opus") or "qwen" in model.lower():
         thinking_label = "Thinking: Deep Reasoning model active"
     indicator = ProgressIndicator(label=thinking_label, hint="Ctrl-C to cancel")
-
+    detector = LoopTroubleDetector(start_time=start_time)
 
     try:
         while True:
@@ -357,6 +363,13 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
                     last_milestone=f"Stalled for {int(now - last_activity)}s (Last: {last_milestone})"
                 )
 
+            # Check time-based loop/stall warnings
+            time_notices = detector.check_time_triggers(now=now, last_output_time=last_activity)
+            if time_notices:
+                indicator.clear()
+                for notice in time_notices:
+                    print(f"\n{notice}\n", flush=True)
+
             # Update stylized indicator
             indicator.render(last_activity_time=last_activity)
             
@@ -374,6 +387,13 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
                 
                 # Reset activity timer on ANY output (stdout or stderr)
                 last_activity = time.time()
+                
+                # Check line for loop / trouble indicators
+                line_notices = detector.record_line(line, now=now)
+                if line_notices:
+                    indicator.clear()
+                    for notice in line_notices:
+                        print(f"\n{notice}\n", flush=True)
                 
                 if key.fileobj is process.stdout:
                     stdout_chunks.append(line)
@@ -405,7 +425,9 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
                         "tokens used",
                         "Received",
                         "chars in",
-                        "codex"
+                        "codex",
+                        "connectors are disabled",
+                        "conversation \""
                     ]
                     if not any(n.lower() in s_line.lower() for n in noise):
                         indicator.clear()

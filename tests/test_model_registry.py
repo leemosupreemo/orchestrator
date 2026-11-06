@@ -258,6 +258,30 @@ Error: Please sign in to view available models.
         self.assertIn("Gemini API: skipped", msg)
         self.assertIn("Antigravity CLI (agy): unavailable", msg)
         self.assertIn("Ollama: unavailable", msg)
+        self.assertIn("OpenCode CLI: skipped", msg)
+
+    def test_parse_opencode_models_output(self) -> None:
+        raw_output = """
+opencode/big-pickle
+opencode/deepseek-v4-flash-free
+opencode/laguna-s-2.1-free
+opencode/ling-3.0-flash-free
+opencode/longcat-2.0-free
+opencode/mimo-v2.5-free
+opencode/nemotron-3-ultra-free
+opencode/north-mini-code-free
+"""
+        parsed = model_registry.parse_opencode_models_output(raw_output)
+        self.assertEqual(parsed, [
+            "opencode/big-pickle",
+            "opencode/deepseek-v4-flash-free",
+            "opencode/laguna-s-2.1-free",
+            "opencode/ling-3.0-flash-free",
+            "opencode/longcat-2.0-free",
+            "opencode/mimo-v2.5-free",
+            "opencode/nemotron-3-ultra-free",
+            "opencode/north-mini-code-free",
+        ])
 
     def test_llm_command_routing_for_qwen_and_ollama(self) -> None:
         from orchestrator.scripts.llm import get_llm_command
@@ -281,12 +305,39 @@ Error: Please sign in to view available models.
         # Test routing when preferred_cli is "agy"
         mock_preferred_cli.return_value = "agy"
         cmd_gemini_agy = get_llm_command("gemini-3.1-pro-preview", "prompt.txt", session_id="abc-123")
-        self.assertIn("agy --model gemini-3.1-pro-preview --dangerously-skip-permissions --prompt - --conversation abc-123", cmd_gemini_agy)
+        self.assertIn("agy --model 'Gemini 3.1 Pro (High)' --dangerously-skip-permissions --conversation abc-123", cmd_gemini_agy)
+        self.assertNotIn("--prompt -", cmd_gemini_agy)
         
         # Test routing when preferred_cli is "gemini"
         mock_preferred_cli.return_value = "gemini"
         cmd_gemini_cli = get_llm_command("gemini-3.1-pro-preview", "prompt.txt", session_id="abc-123")
-        self.assertIn("gemini --model gemini-3.1-pro-preview --skip-trust --prompt - --yolo --allowed-mcp-server-names context7,exa,swiftlens --allowed-tools read_file,grep_search,glob --raw-output --accept-raw-output-risk --session-id abc-123", cmd_gemini_cli)
+        self.assertIn("gemini --model 'Gemini 3.1 Pro (High)' --skip-trust --prompt - --yolo --allowed-mcp-server-names context7,exa,swiftlens --allowed-tools read_file,grep_search,glob --raw-output --accept-raw-output-risk --session-id abc-123", cmd_gemini_cli)
+
+        # Test routing when preferred_cli is "agy" without session_id
+        mock_preferred_cli.return_value = "agy"
+        cmd_gemini_agy_no_session = get_llm_command("gemini-3.1-pro-preview", "prompt.txt")
+        self.assertEqual(cmd_gemini_agy_no_session, "cat \"prompt.txt\" | agy --model 'Gemini 3.1 Pro (High)' --dangerously-skip-permissions")
+
+    @patch("orchestrator.scripts.llm._run_llm_single")
+    def test_run_llm_fallback_on_runtime_error(self, mock_run_single) -> None:
+        from orchestrator.scripts.llm import run_llm
+        from model_router import ModelRole
+        
+        # Primary fails with auth/runtime error, second succeeds with valid json
+        mock_run_single.side_effect = [
+            RuntimeError("claude-opus-4-7 failed (code 1): Invalid API key"),
+            '{"title": "Test Plan", "status": "ok"}'
+        ]
+        
+        output, model, session_id = run_llm(
+            "claude-opus-4-7",
+            "Generate plan",
+            allowed_models=["claude-opus-4-7", "gemini-3.1-pro-preview"],
+            role=ModelRole.PLANNER
+        )
+        self.assertEqual(model, "gemini-3.1-pro-preview")
+        self.assertIn('"title": "Test Plan"', output)
+        self.assertEqual(mock_run_single.call_count, 2)
 
 
 if __name__ == "__main__":

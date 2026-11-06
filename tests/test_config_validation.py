@@ -52,6 +52,24 @@ def make_config(root: Path, **overrides) -> ProjectConfig:
 
 
 class ConfigValidationTests(unittest.TestCase):
+    def test_generic_project_does_not_require_scheme_or_test_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(Path(tmp), xcode_project=None, scheme=None,
+                                 test_target="", build_command="cargo build", test_command="cargo test")
+            self.assertEqual(validate_project_config(config), [])
+
+    def test_xcode_project_still_requires_scheme(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "SampleApp.xcodeproj").mkdir()
+            self.assertTrue(any("scheme is required" in error
+                                for error in validate_project_config(make_config(root, scheme=None))))
+
+    def test_generic_project_requires_test_command_even_with_legacy_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(Path(tmp), xcode_project=None, build_command="cargo build")
+            self.assertIn("Configure test_command for a non-Xcode project.", validate_project_config(config))
+
     def test_project_config_accepts_basic_xcode_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -1,6 +1,6 @@
-# Swift Orchestrator User Guide
+# Orchestrator User Guide
 
-This guide covers using the standalone package from any Swift/Xcode project.
+This guide covers using Orchestrator with supported project stacks. Swift and Xcode support is the most mature; support for additional languages is in beta.
 
 If you are new to Orchestrator, start with [Getting Started](getting-started.md) for the short overview and first-run path.
 
@@ -51,7 +51,17 @@ For a new project, prefer the wizard:
 orchestrator wizard
 ```
 
-The wizard initializes the project if needed, creates starter docs and a helper script, requires at least one LLM/model choice, optionally copies the role prompt Markdown files into project-local overrides, optionally adds SSH workers, and optionally configures Firebase distribution.
+The interactive wizard has five stages:
+
+1. **Project:** review detected settings together. Press Enter to accept them, or choose a field number to edit.
+2. **AI setup:** keep available models, select models by number, log in to a provider, or enter an API key. At least one model is required.
+3. **Optional tools:** select GitHub integration, SSH workers, custom role prompts, or (for Apple projects) Firebase delivery and signing. Enter skips optional setup; existing settings are retained.
+4. **Review and apply:** review the proposed settings and actions. Edit project fields or models, cancel without writing project files, or press Enter to save. Project configuration, API keys, prompt copies, and generated files are written only after applying. CLI logins/account switches happen immediately when selected; keychain setup and worker installation run after saving.
+5. **Verify and finish:** validate the saved configuration and index the project. Xcode projects can also check build settings; this does not compile the app. Completion appears only after all requested checks pass, with `orchestrator console` as the next step.
+
+Text fields accept ordinary letters and spaces, including `s` and `q`. The prompt labels optional fields and explains whether Enter keeps a default, skips that field, or continues. Use Ctrl-S to **skip the current section** where offered and Ctrl-Q to quit. Yes/no menus also accept S/Q; arrow-key selectors use B to return. Enter keeps the displayed default. Failed checks leave the applied configuration in place and show a command for retrying.
+
+Applying initializes the project if needed and creates missing starter docs and the helper script. `--force` replaces generated configuration and starter docs; the review screen calls this out before applying. Non-interactive runs keep their flag-driven flow without review prompts.
 
 Scriptable example:
 
@@ -63,6 +73,8 @@ orchestrator wizard \
   --firebase \
   --distribution-script-path scripts/distribute_ios.sh \
   --firebase-plist-path MyApp/GoogleService-Info.plist \
+  --team-id YOUR_TEAM_ID \
+  --method ad-hoc \
   --verify \
   --non-interactive
 ```
@@ -407,6 +419,10 @@ Firebase delivery is opt-in:
 ```
 
 `check-config` fails early if Firebase delivery is enabled but the distribution script or plist path is missing.
+
+The delivery workflow archives and signs the iOS app, uploads the IPA to Firebase App Distribution, and can release it to configured tester emails or groups. This lets multiple testers install the beta build on their devices.
+
+For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://secureshellfish.app/) to connect over SSH to the machine running Orchestrator. You can manage the coding workflow remotely, run builds and tests, and trigger Firebase delivery from the same terminal session.
 
 ## Troubleshooting
 

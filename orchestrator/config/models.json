@@ -39,6 +39,7 @@
       "tier": "HIGH",
       "capabilities": ["reasoning", "coding", "context", "vision"],
       "cost_factor": 5.0,
+      "api_model_id": "Gemini 3.1 Pro (High)",
       "aliases": ["gemini", "antigravity", "agy"],
       "required_clis": ["gemini"]
     },
@@ -48,6 +49,7 @@
       "tier": "MEDIUM",
       "capabilities": ["speed", "context", "vision"],
       "cost_factor": 1.0,
+      "api_model_id": "Gemini 3.6 Flash (High)",
       "required_clis": ["gemini"]
     },
     {
@@ -56,6 +58,62 @@
       "tier": "LOW",
       "capabilities": ["speed", "context"],
       "cost_factor": 0.5,
+      "api_model_id": "Gemini 3.6 Flash (Medium)",
+      "required_clis": ["gemini"]
+    },
+    {
+      "id": "gemini-3.6-flash-high",
+      "family": "gemini",
+      "tier": "HIGH",
+      "capabilities": ["speed", "coding", "context", "vision"],
+      "cost_factor": 1.5,
+      "api_model_id": "Gemini 3.6 Flash (High)",
+      "aliases": ["gemini-3.6-flash"],
+      "required_clis": ["gemini"]
+    },
+    {
+      "id": "gemini-3.6-flash-medium",
+      "family": "gemini",
+      "tier": "MEDIUM",
+      "capabilities": ["speed", "context", "vision"],
+      "cost_factor": 1.0,
+      "api_model_id": "Gemini 3.6 Flash (Medium)",
+      "required_clis": ["gemini"]
+    },
+    {
+      "id": "gemini-3.6-flash-low",
+      "family": "gemini",
+      "tier": "LOW",
+      "capabilities": ["speed", "context"],
+      "cost_factor": 0.5,
+      "api_model_id": "Gemini 3.6 Flash (Low)",
+      "required_clis": ["gemini"]
+    },
+    {
+      "id": "gemini-3.5-flash-high",
+      "family": "gemini",
+      "tier": "HIGH",
+      "capabilities": ["speed", "context", "vision"],
+      "cost_factor": 1.2,
+      "api_model_id": "Gemini 3.5 Flash (High)",
+      "required_clis": ["gemini"]
+    },
+    {
+      "id": "gemini-3.5-flash-medium",
+      "family": "gemini",
+      "tier": "MEDIUM",
+      "capabilities": ["speed", "context"],
+      "cost_factor": 0.8,
+      "api_model_id": "Gemini 3.5 Flash (Medium)",
+      "required_clis": ["gemini"]
+    },
+    {
+      "id": "gemini-3.5-flash-low",
+      "family": "gemini",
+      "tier": "LOW",
+      "capabilities": ["speed", "context"],
+      "cost_factor": 0.4,
+      "api_model_id": "Gemini 3.5 Flash (Low)",
       "required_clis": ["gemini"]
     },
     {
@@ -131,8 +189,56 @@
       "required_clis": ["codex"]
     },
     {
+      "id": "gpt-4.5-preview",
+      "family": "openai",
+      "tier": "EXTREME",
+      "capabilities": ["reasoning", "coding", "context"],
+      "cost_factor": 8.0,
+      "required_clis": ["codex"]
+    },
+    {
+      "id": "gpt-4o",
+      "family": "openai",
+      "tier": "HIGH",
+      "capabilities": ["coding", "speed", "vision"],
+      "cost_factor": 3.0,
+      "required_clis": ["codex"]
+    },
+    {
+      "id": "gpt-4o-mini",
+      "family": "openai",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.5,
+      "required_clis": ["codex"]
+    },
+    {
+      "id": "o1",
+      "family": "openai",
+      "tier": "EXTREME",
+      "capabilities": ["reasoning", "coding"],
+      "cost_factor": 10.0,
+      "required_clis": ["codex"]
+    },
+    {
+      "id": "o1-mini",
+      "family": "openai",
+      "tier": "MEDIUM",
+      "capabilities": ["reasoning", "speed"],
+      "cost_factor": 1.5,
+      "required_clis": ["codex"]
+    },
+    {
+      "id": "o3-mini",
+      "family": "openai",
+      "tier": "MEDIUM",
+      "capabilities": ["reasoning", "coding", "speed"],
+      "cost_factor": 1.5,
+      "required_clis": ["codex"]
+    },
+    {
       "id": "deepseek",
-      "family": "deepseek",
+      "family": "ollama",
       "tier": "HIGH",
       "capabilities": ["coding", "reasoning"],
       "cost_factor": 0.0,
@@ -151,7 +257,7 @@
       "family": "opencode",
       "tier": "LOW",
       "capabilities": ["coding", "speed"],
-      "cost_factor": 1.0,
+      "cost_factor": 0.0,
       "aliases": ["opencode", "big-pickle"],
       "required_clis": ["opencode"]
     },
@@ -161,6 +267,52 @@
       "tier": "LOW",
       "capabilities": ["coding", "speed"],
       "cost_factor": 0.0,
+      "aliases": ["deepseek-v4-flash-free"],
+      "required_clis": ["opencode"]
+    },
+    {
+      "id": "opencode/laguna-s-2.1-free",
+      "family": "opencode",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["laguna-s-2.1-free"],
+      "required_clis": ["opencode"]
+    },
+    {
+      "id": "opencode/ling-3.0-flash-free",
+      "family": "opencode",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["ling-3.0-flash-free"],
+      "required_clis": ["opencode"]
+    },
+    {
+      "id": "opencode/longcat-2.0-free",
+      "family": "opencode",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["longcat-2.0-free"],
+      "required_clis": ["opencode"]
+    },
+    {
+      "id": "opencode/mimo-v2.5-free",
+      "family": "opencode",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["mimo-v2.5-free"],
+      "required_clis": ["opencode"]
+    },
+    {
+      "id": "opencode/minimax-m2.5-free",
+      "family": "opencode",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["minimax-m2.5-free"],
       "required_clis": ["opencode"]
     },
     {
@@ -169,6 +321,25 @@
       "tier": "LOW",
       "capabilities": ["coding", "speed"],
       "cost_factor": 0.0,
+      "aliases": ["nemotron-3-super-free"],
+      "required_clis": ["opencode"]
+    },
+    {
+      "id": "opencode/nemotron-3-ultra-free",
+      "family": "opencode",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["nemotron-3-ultra-free"],
+      "required_clis": ["opencode"]
+    },
+    {
+      "id": "opencode/north-mini-code-free",
+      "family": "opencode",
+      "tier": "LOW",
+      "capabilities": ["coding", "speed"],
+      "cost_factor": 0.0,
+      "aliases": ["north-mini-code-free"],
       "required_clis": ["opencode"]
     },
     {
@@ -177,6 +348,7 @@
       "tier": "LOW",
       "capabilities": ["coding", "speed"],
       "cost_factor": 0.0,
+      "aliases": ["qwen3.6-plus-free"],
       "required_clis": ["opencode"]
     },
     {

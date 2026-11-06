@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_text, print_phase, StatusBar
+from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_text, print_phase, StatusBar, format_clarification_history, format_investigation_history
 from llm import run_llm, extract_json_block
 from model_router import ModelRole
 from run_build_and_tests import run_build_and_tests
@@ -22,6 +22,16 @@ def make_brief(job: dict) -> str:
     verification = job.get("verification")
     references = reference_context(job)
     
+    clarification_text = ""
+    history = job.get("clarification_history", [])
+    if history:
+        clarification_text = f"\n---\n{format_clarification_history(history)}\n"
+
+    investigation_text = ""
+    inv_history = format_investigation_history(job)
+    if inv_history:
+        investigation_text = f"\n---\n{inv_history}\n"
+
     verification_text = ""
     if verification:
         verification_text = f'''
@@ -44,6 +54,8 @@ Title: {job["title"]}
 
 Summary:
 {plan.get("summary", "No summary provided.")}
+{clarification_text}
+{investigation_text}
 {verification_text}
 Repro steps:
 ''' + "\n".join(f'- {x}' for x in plan.get("repro_steps", [])) + f'''
@@ -58,7 +70,10 @@ Constraints:
 ''' + "\n".join(f'- {x}' for x in plan.get("constraints", [])) + f'''
 
 Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
+''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + (f'''
+
+Test recommendations (TDD):
+''' + "\n".join(f'- {x}' for x in plan.get("test_recommendations", [])) if plan.get("test_recommendations") else "") + f"\n{references}\n"
     elif job["type"] == "feature-plan":
         return f'''# Feature task brief
 
@@ -67,6 +82,8 @@ Title: {job["title"]}
 
 Summary:
 {plan.get("summary", "No summary provided.")}
+{clarification_text}
+{investigation_text}
 
 Acceptance criteria:
 ''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
@@ -84,9 +101,13 @@ Instructions:
 
 Summary:
 {plan.get("summary", "No summary provided.")}
+{clarification_text}
+{investigation_text}
 
 Acceptance criteria:
-''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f"\n{references}\n"
+''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
+Likely files:
+''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
     else:
         return f'''# Feature task brief
 
@@ -95,6 +116,8 @@ Title: {job["title"]}
 
 Summary:
 {plan.get("summary", "No summary provided.")}
+{clarification_text}
+{investigation_text}
 {verification_text}
 {references}
 '''
@@ -172,15 +195,25 @@ def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]
         likely_files = job.get("plan", {}).get("likely_files", [])
         is_infra = any("orchestrator/" in f or "scripts/" in f for f in likely_files)
         
+        stack = PROJECT_CONFIG.stack
         if is_infra:
             prompt_name = "builder_infra.md"
             test_index = generate_test_index(ROOT / "tests", likely_files=likely_files)
         else:
             prompt_name = "builder_bug.md" if job["type"] in {"bug-fix", "bug-investigate"} else "builder_feature_task.md"
-            test_index = generate_test_index(ROOT / PROJECT_CONFIG.test_target, likely_files=likely_files)
+            test_dir = ROOT / PROJECT_CONFIG.test_target if (PROJECT_CONFIG.test_target and (ROOT / PROJECT_CONFIG.test_target).exists()) else ROOT
+            test_index = generate_test_index(test_dir, likely_files=likely_files)
 
         prompt_template = (PROMPTS_DIR / prompt_name).read_text(encoding="utf-8")
         brief = make_brief(job)
+
+        stack_context = f"""
+### PROJECT STACK CONTEXT
+- Detected Stack: {stack.display_name}
+- Primary Language: {stack.language}
+- Build Command: {PROJECT_CONFIG.build_command or stack.build_command or 'None'}
+- Test Command: {PROJECT_CONFIG.test_command or stack.test_command or 'None'}
+"""
 
         debug_context = ""
         if job.get("status") == "debugging" and "debug_proposal" in job:
@@ -213,7 +246,7 @@ Grounding docs to inspect first:
 - docs/architecture.md
 - docs/coding-standards.md
 - docs/build-test-commands.md
-
+{stack_context}
 Available Tests (use for selecting test_command):
 {test_index}
 {debug_context}
@@ -247,6 +280,7 @@ Brief:
     job["updated_at"] = now_iso()
 
     import json
+    parsed_output = {}
     try:
         json_output = extract_json_block(output)
         parsed_output = json.loads(json_output)
@@ -266,6 +300,11 @@ Brief:
         if "test_command" in parsed_output:
             job["test_command_override"] = parsed_output["test_command"]
             print(f"      - LLM selected specific tests: {job['test_command_override']}")
+
+        if "summary" in parsed_output and parsed_output["summary"]:
+            job["builder_summary"] = parsed_output["summary"]
+        if "hypothesis" in parsed_output and parsed_output["hypothesis"]:
+            job["builder_hypothesis"] = parsed_output["hypothesis"]
     except json.JSONDecodeError:
         if not resume: # Only warn if we just generated it
             print("      - Warning: LLM output was not valid JSON, using default test suite.")
@@ -277,11 +316,8 @@ Brief:
 
     build_ok, test_ok = run_build_and_tests(job, summary_file)
     
-    # Try to return the parsed output so caller can see if work was done
-    try:
-        final_parsed = json.loads(output)
-    except:
-        final_parsed = {}
+    # Return parsed output dictionary so callers can inspect what was built
+    final_parsed = parsed_output if isinstance(parsed_output, dict) else {}
         
     return build_ok, test_ok, summary_file, final_parsed
 

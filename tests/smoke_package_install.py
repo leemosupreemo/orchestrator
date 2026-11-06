@@ -8,12 +8,14 @@ import tempfile
 from pathlib import Path
 
 
+import os
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(cmd: list[str], cwd: Path | None = None) -> None:
+def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("$ " + " ".join(cmd))
-    subprocess.run(cmd, cwd=str(cwd or PACKAGE_ROOT), check=True)
+    subprocess.run(cmd, cwd=str(cwd or PACKAGE_ROOT), env=env, check=True)
 
 
 def main() -> int:
@@ -23,15 +25,20 @@ def main() -> int:
         project = temp_dir / "FixtureApp"
         project.mkdir()
         (project / "FixtureApp.xcodeproj").mkdir()
+        user_state = temp_dir / "user_state"
+        user_state.mkdir()
 
-        run([sys.executable, "-m", "venv", str(venv)])
+        env = os.environ.copy()
+        env["ORCHESTRATOR_USER_STATE_DIR"] = str(user_state)
+
+        run([sys.executable, "-m", "venv", str(venv)], env=env)
         python = venv / "bin" / "python"
         orchestrator = venv / "bin" / "orchestrator"
 
-        run([str(python), "-m", "pip", "install", "-e", str(PACKAGE_ROOT)])
-        run([str(orchestrator), "--help"])
-        run([str(orchestrator), "init", "--root", str(project), "--project-name", "FixtureApp", "--force"])
-        run([str(orchestrator), "check-config"], cwd=project)
+        run([str(python), "-m", "pip", "install", "-e", str(PACKAGE_ROOT)], env=env)
+        run([str(orchestrator), "--help"], env=env)
+        run([str(orchestrator), "init", "--root", str(project), "--project-name", "FixtureApp", "--force"], env=env)
+        run([str(orchestrator), "check-config"], cwd=project, env=env)
 
         config_path = project / ".orchestrator" / "project.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))

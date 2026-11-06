@@ -30,5 +30,6 @@ def trace_braces(file_path):
         for ln, cn in stack:
             print(f"Line {ln}, col {cn}")
 
-if len(sys.argv) > 1:
-    trace_braces(sys.argv[1])
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        trace_braces(sys.argv[1])

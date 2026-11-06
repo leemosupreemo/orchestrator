@@ -16,13 +16,14 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
-from common import ROOT, read_json, format_markdown_for_terminal, ProgressIndicator
+from common import ROOT, read_json, format_markdown_for_terminal, ProgressIndicator, print_header, ensure_keychain_unlocked
 from orchestrator.project_config import PROJECT_CONFIG
 
 def send_final_notification(job: dict[str, Any], title: str, branch: str, success: bool):
     job_id = job.get("job_id", "unknown")
     status_str = "SUCCESSFUL" if success else "FAILED"
-    print(f"      - Triggering final {status_str} notification for job {job_id}...", flush=True)
+    color = "\033[1;92m" if success else "\033[1;91m"
+    print(f"\n   {color}🔔 Triggering final {status_str} notification for job {job_id}...\033[0m", flush=True)
     try:
         subject = f"Build Delivery {status_str}"
         msg = f"Build delivery for Issue #{job.get('issue_number', 'N/A')} has {status_str.lower()}.\nTitle: {title}\nBranch: {branch}"
@@ -31,7 +32,7 @@ def send_final_notification(job: dict[str, Any], title: str, branch: str, succes
             
         subprocess.run([sys.executable, str(SCRIPTS_DIR / "notify.py"), subject, msg, job_id], cwd=str(ROOT), check=False, timeout=30)
     except Exception as e:
-        print(f"      - Notification system failed: {e}", flush=True)
+        print(f"   \033[91m⚠️ Notification system failed: {e}\033[0m", flush=True)
 
 def deliver_build(job_path: Path):
     job = read_json(job_path)
@@ -41,37 +42,47 @@ def deliver_build(job_path: Path):
     job_id = job.get("job_id")
     
     if not branch:
-        print(f"!!! Error: No active branch found for job {job_id}. Cannot create a build.")
+        print(f"\033[1;91m!!! Error: No active branch found for job {job_id}. Cannot create a build.\033[0m", flush=True)
         return
 
-    print(f"\n--- Delivering Build to Device: {job_id} ---")
-    print(f"      - Target Branch: {branch}")
-    print(f"      - Feature/Bug:   {title}")
+    print_header(f"DELIVERING BUILD TO DEVICE: {job_id}")
+    print(f"   \033[1;36m• Target Branch:\033[0m \033[1;97m{branch}\033[0m", flush=True)
+    print(f"   \033[1;36m• Feature/Bug:\033[0m   \033[97m{title}\033[0m", flush=True)
+    
+    # Pre-flight check: Auto unlock keychain upfront
+    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
+    if unlocked:
+        print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
+    else:
+        print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
     
     # 0. Pre-flight check: Ensure signing configuration is present
     dist_errors = PROJECT_CONFIG.validate_distribution_config()
     if dist_errors:
         config_file = PROJECT_CONFIG.runtime_dir / "project.json"
-        print("\n\033[1;91m!!! Error: Distribution configuration is incomplete:\033[0m")
+        print("\n\033[1;91m!!! Error: Distribution configuration is incomplete:\033[0m", flush=True)
         for err in dist_errors:
-            print(f"      - {err}")
-        print(f"\n\033[93mPlease run 'orchestrator wizard' or configure the following config file:\033[0m")
-        print(f"      \033[1;97m{config_file}\033[0m")
+            print(f"      - {err}", flush=True)
+        print(f"\n\033[93mPlease run 'orchestrator wizard' or configure the following config file:\033[0m", flush=True)
+        print(f"      \033[1;97m{config_file}\033[0m", flush=True)
         sys.exit(1)
     
     # 1. Ensure we are on the correct branch
     current_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
     if current_branch != branch:
-        print(f"\n      - Switching to branch: {branch}...")
+        print(f"\n   \033[93m🔄 Switching to branch:\033[0m \033[1;97m{branch}\033[0m...", flush=True)
         subprocess.run(["git", "checkout", "-f", branch], cwd=str(ROOT), check=True)
     else:
-        print(f"\n      - Already on correct branch: {branch}")
+        print(f"\n   \033[1;92m✓ Branch Status:\033[0m \033[90mAlready on correct branch '{branch}'\033[0m", flush=True)
     
     # 2. Build Release Notes
+    build_number = job.get("build_number") or subprocess.check_output(['date', '+%Y%m%d%H%M%S']).decode('utf-8').strip()
+    built_at = subprocess.check_output(['date', '+%Y-%m-%d %H:%M:%S']).decode('utf-8').strip()
     release_notes = f"""AI Job: {job_id}
 Title: {title}
 Branch: {branch}
-Built: {subprocess.check_output(['date', '+%Y-%m-%d %H:%M:%S']).decode('utf-8').strip()}
+Build: {build_number}
+Built: {built_at}
 """
     
     # 3. Call the existing distribution script
@@ -79,16 +90,16 @@ Built: {subprocess.check_output(['date', '+%Y-%m-%d %H:%M:%S']).decode('utf-8').
     dist_script = ROOT / (PROJECT_CONFIG.distribution_script_path or "scripts/distribute_ios.sh")
     
     if not dist_script.exists():
-        print(f"!!! Error: Distribution script not found at {dist_script}")
+        print(f"\033[1;91m!!! Error: Distribution script not found at {dist_script}\033[0m", flush=True)
         return
 
-    print(f"\n      - Triggering distribution pipeline (Archiving, Exporting, Uploading)...")
-    print("      - This may take 5-10 minutes. Please wait.\n")
+    print(f"\n\033[1;94m🚀 Triggering Distribution Pipeline (Archiving, Exporting, Uploading)...\033[0m", flush=True)
+    print("   \033[90mℹ️ Archiving & uploading may take 5-10 minutes. Please wait...\033[0m", flush=True)
     
     log_dir = ROOT / "logs"
     log_dir.mkdir(exist_ok=True)
     dist_log = log_dir / f"distribution_{job_id}.log"
-    print(f"      - Logging to: {dist_log.relative_to(ROOT)}")
+    print(f"   \033[1;36m• Log File:\033[0m      \033[1;97m{dist_log.relative_to(ROOT)}\033[0m\n", flush=True)
     
     try:
         # Run the bash script and capture output to both console and file
@@ -116,6 +127,7 @@ Built: {subprocess.check_output(['date', '+%Y-%m-%d %H:%M:%S']).decode('utf-8').
             cmd.extend(["--scheme", PROJECT_CONFIG.scheme])
             
         cmd.extend(["--release-notes", release_notes])
+        cmd.extend(["--build-number", str(build_number)])
         
         provisioning_profile = getattr(PROJECT_CONFIG, "provisioning_profile_specifier", None)
         if provisioning_profile:

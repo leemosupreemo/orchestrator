@@ -71,6 +71,11 @@ class SetupDistributionTests(unittest.TestCase):
             self.assertIn("<key>teamID</key>", export_opts)
             self.assertIn("<string>ABC123DEFG</string>", export_opts)
 
+            # Verify distribute_ios.sh contains automated build number logic
+            dist_script_content = (app_root / "scripts" / "distribute_ios.sh").read_text(encoding="utf-8")
+            self.assertIn("--build-number", dist_script_content)
+            self.assertIn("CURRENT_PROJECT_VERSION", dist_script_content)
+
     def test_infer_firebase_plist_path_prefers_project_directory(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orchestrator-app-") as temp_dir:
             app_root = Path(temp_dir).resolve()
