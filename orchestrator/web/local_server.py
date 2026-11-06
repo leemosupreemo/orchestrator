@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import base64
+import hmac
+import ipaddress
 import json
 import mimetypes
 import os
 import re
+import secrets
+import shutil
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -191,17 +196,54 @@ class LocalCommandRunner:
             record["error"] = str(exc)
 
 
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
 class LocalUIHandler(BaseHTTPRequestHandler):
     runner: LocalCommandRunner
     static_dir: Path
+    api_token: str
 
     def log_message(self, format: str, *args: Any) -> None:
         # Silent logging for clean terminal
         pass
 
+    def _client_is_loopback(self) -> bool:
+        try:
+            return ipaddress.ip_address(self.client_address[0]).is_loopback
+        except ValueError:
+            return False
+
+    def _has_valid_token(self) -> bool:
+        supplied = self.headers.get("Authorization", "")
+        expected = f"Bearer {self.api_token}"
+        return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+
+    def _api_allowed(self) -> bool:
+        """Reject other sites, and require the token outside direct loopback use.
+
+        The Host check stops DNS rebinding: a hostile domain resolving to
+        127.0.0.1 connects from loopback but cannot present a loopback Host.
+        """
+        host = self.headers.get("Host", "").lower()
+        origin = self.headers.get("Origin")
+        try:
+            if origin is not None and urllib.parse.urlsplit(origin).netloc.lower() != host:
+                self._send_json({"error": "Cross-origin request refused"}, status=HTTPStatus.FORBIDDEN)
+                return False
+            hostname = urllib.parse.urlsplit(f"//{host}").hostname
+        except ValueError:
+            hostname = None
+        if (self._client_is_loopback() and hostname in _LOOPBACK_HOSTS) or self._has_valid_token():
+            return True
+        self._send_json({"error": "Access token required"}, status=HTTPStatus.UNAUTHORIZED)
+        return False
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path.startswith("/api/") and not self._api_allowed():
+            return
 
         # API Endpoints
         if path == "/api/worker":
@@ -259,6 +301,8 @@ class LocalUIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path.startswith("/api/") and not self._api_allowed():
+            return
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length > 0 else b""
 
@@ -291,7 +335,12 @@ class LocalUIHandler(BaseHTTPRequestHandler):
             target = self.static_dir / "index.html"
         else:
             rel = path.lstrip("/")
-            target = self.static_dir / rel
+            target = (self.static_dir / rel).resolve()
+            if not target.is_relative_to(self.static_dir.resolve()):
+                self.send_response(HTTPStatus.NOT_FOUND)
+                self.end_headers()
+                self.wfile.write(b"404 Not Found")
+                return
             if not target.is_file():
                 # SPA Fallback
                 target = self.static_dir / "index.html"
@@ -315,6 +364,7 @@ class LocalUIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime or "application/octet-stream")
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-cache" if target.name.endswith(".html") else "max-age=31536000")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(content)
 
@@ -323,7 +373,6 @@ class LocalUIHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -356,32 +405,51 @@ def get_tailscale_ip() -> str | None:
     return None
 
 
-_BACKGROUND_SERVER: tuple[HTTPServer, str, str, str | None] | None = None
+_BACKGROUND_SERVER: tuple[HTTPServer, str, str | None, str | None] | None = None
 
 
-def get_or_start_background_server(host: str = "0.0.0.0", port: int = 4040, project_root: Path | None = None) -> tuple[str, str, str | None]:
+class LocalHTTPServer(HTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer's reverse DNS lookup of the host can stall startup for over 30 seconds.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+def make_handler(projects: dict[str, Path], static_dir: Path, api_token: str) -> type[LocalUIHandler]:
+    class CustomHandler(LocalUIHandler):
+        pass
+
+    CustomHandler.runner = LocalCommandRunner(projects)
+    CustomHandler.static_dir = static_dir
+    CustomHandler.api_token = api_token
+    return CustomHandler
+
+
+def server_urls(host: str, port: int, api_token: str) -> tuple[str, str | None, str | None]:
+    """Return local, LAN and Tailscale URLs; only network URLs carry the token."""
+    local_url = f"http://127.0.0.1:{port}"
+    if host in _LOOPBACK_HOSTS:
+        return local_url, None, None
+    query = urllib.parse.urlencode({"token": api_token})
+    if host != "0.0.0.0":
+        return local_url, f"http://{host}:{port}/?{query}", None
+    ts_ip = get_tailscale_ip()
+    ts_url = f"http://{ts_ip}:{port}/?{query}" if ts_ip else None
+    return local_url, f"http://{get_lan_ip()}:{port}/?{query}", ts_url
+
+
+def get_or_start_background_server(host: str = "127.0.0.1", port: int = 4040, project_root: Path | None = None) -> tuple[str, str | None, str | None]:
     global _BACKGROUND_SERVER
     if _BACKGROUND_SERVER is not None:
         return _BACKGROUND_SERVER[1], _BACKGROUND_SERVER[2], _BACKGROUND_SERVER[3]
 
-    static_dir = get_static_dir()
-    projects = discover_local_projects(project_root)
-    runner = LocalCommandRunner(projects)
+    api_token = secrets.token_urlsafe(32)
+    handler = make_handler(discover_local_projects(project_root), get_static_dir(), api_token)
 
-    class CustomHandler(LocalUIHandler):
-        pass
-
-    CustomHandler.runner = runner
-    CustomHandler.static_dir = static_dir
-
-    lan_ip = get_lan_ip()
-    ts_ip = get_tailscale_ip()
     for test_port in range(port, port + 20):
         try:
-            httpd = HTTPServer((host, test_port), CustomHandler)
-            local_url = f"http://127.0.0.1:{test_port}"
-            network_url = f"http://{lan_ip}:{test_port}"
-            ts_url = f"http://{ts_ip}:{test_port}" if ts_ip else None
+            httpd = LocalHTTPServer((host, test_port), handler)
+            local_url, network_url, ts_url = server_urls(host, test_port, api_token)
             thread = threading.Thread(target=httpd.serve_forever, daemon=True)
             thread.start()
             _BACKGROUND_SERVER = (httpd, local_url, network_url, ts_url)
@@ -394,47 +462,42 @@ def get_or_start_background_server(host: str = "0.0.0.0", port: int = 4040, proj
 
 
 def start_local_ui_server(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 4040,
     open_browser: bool = True,
     project_root: Path | None = None
 ) -> None:
-    static_dir = get_static_dir()
     projects = discover_local_projects(project_root)
-    runner = LocalCommandRunner(projects)
+    api_token = secrets.token_urlsafe(32)
+    handler = make_handler(projects, get_static_dir(), api_token)
 
-    class CustomHandler(LocalUIHandler):
-        pass
-
-    CustomHandler.runner = runner
-    CustomHandler.static_dir = static_dir
-
-    lan_ip = get_lan_ip()
-    ts_ip = get_tailscale_ip()
     server_address = (host, port)
     try:
-        httpd = HTTPServer(server_address, CustomHandler)
+        httpd = LocalHTTPServer(server_address, handler)
     except OSError as e:
         if e.errno == 48:  # Address already in use
             alt_port = port + 1
             print(f"\033[93mPort {port} in use, trying port {alt_port}...\033[0m")
             server_address = (host, alt_port)
-            httpd = HTTPServer(server_address, CustomHandler)
+            httpd = LocalHTTPServer(server_address, handler)
             port = alt_port
         else:
             raise
 
-    local_url = f"http://127.0.0.1:{port}"
-    network_url = f"http://{lan_ip}:{port}"
-    ts_url = f"http://{ts_ip}:{port}" if ts_ip else None
-    
+    local_url, network_url, ts_url = server_urls(host, port, api_token)
+
     print("\n" + "=" * 64)
     print(f"\033[1;96m  ✨ Orchestrator Web Control Room\033[0m")
     print("=" * 64)
     print(f"  \033[1;92m● Local:    \033[0m  \033[4;94m{local_url}\033[0m")
-    print(f"  \033[1;92m● Network:  \033[0m  \033[4;94m{network_url}\033[0m  \033[90m(LAN)\033[0m")
+    if network_url:
+        print(f"  \033[1;92m● Network:  \033[0m  \033[4;94m{network_url}\033[0m  \033[90m(LAN)\033[0m")
     if ts_url:
         print(f"  \033[1;92m● Tailscale:\033[0m  \033[4;94m{ts_url}\033[0m  \033[90m(Accessible from anywhere on your Tailscale network)\033[0m")
+    if network_url:
+        print("  \033[93m● Network links contain an access token that gives full control. Don't share them.\033[0m")
+    else:
+        print("  \033[90m● Other devices: \033[0m  run with --host 0.0.0.0 to get a secure link")
     print(f"  \033[90m● Projects: \033[0m  {', '.join(projects.keys())}")
     print(f"  \033[90m● Mode:     \033[0m  Zero-Setup Local Engine (No Firebase required)")
     print("-" * 64)

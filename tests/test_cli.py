@@ -402,10 +402,10 @@ class CliTests(unittest.TestCase):
     @patch("orchestrator.web.local_server.start_local_ui_server")
     def test_ui_and_web_commands_dispatch(self, mock_start_server) -> None:
         self.assertEqual(cli.main(["ui", "--port", "5050", "--no-open"]), 0)
-        mock_start_server.assert_called_with(host="0.0.0.0", port=5050, open_browser=False, project_root=None)
+        mock_start_server.assert_called_with(host="127.0.0.1", port=5050, open_browser=False, project_root=None)
 
         self.assertEqual(cli.main(["web", "--port", "6060"]), 0)
-        mock_start_server.assert_called_with(host="0.0.0.0", port=6060, open_browser=True, project_root=None)
+        mock_start_server.assert_called_with(host="127.0.0.1", port=6060, open_browser=True, project_root=None)
 
     @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(True, [{"user": "devuser", "host": "github.com", "active": True}], "devuser"))
     @patch("orchestrator.cli.run_script", return_value=0)

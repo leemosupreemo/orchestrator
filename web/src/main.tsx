@@ -4,6 +4,7 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth, db, signIn, logOut, collection, doc, onSnapshot, query, orderBy, limit, setDoc, updateDoc, serverTimestamp } from './firebase';
 import menu from './menu.json';
 import { ModelList, RunLog, ToolOutput } from './tool-output';
+import { apiFetch } from './local-api';
 import './style.css';
 
 type Data = Record<string, any>;
@@ -295,8 +296,11 @@ function App() {
     if (IS_LOCALHOST) {
       (window as any).__IS_LOCAL_API__ = true;
     }
-    fetch('/api/worker')
-      .then(r => r.json())
+    apiFetch('/api/worker')
+      .then(r => {
+        if (r.status === 401) setError('Access token required. Open the Network link printed by "orchestrator ui" on your Mac.');
+        return r.json();
+      })
       .then(data => {
         if (data && data.local_mode) {
           (window as any).__IS_LOCAL_API__ = true;
@@ -318,7 +322,7 @@ function App() {
     if (!user) return;
     if (isLocalApi) {
       const poll = () => {
-        fetch('/api/worker')
+        apiFetch('/api/worker')
           .then(r => r.json())
           .then(data => {
             if (data) {
@@ -330,17 +334,17 @@ function App() {
           })
           .catch(() => {});
 
-        fetch(`/api/projects/${encodeURIComponent(project)}/jobs`)
+        apiFetch(`/api/projects/${encodeURIComponent(project)}/jobs`)
           .then(r => r.json())
           .then(data => setJobs(Array.isArray(data) ? data : []))
           .catch(() => {});
 
-        fetch(`/api/projects/${encodeURIComponent(project)}/archives`)
+        apiFetch(`/api/projects/${encodeURIComponent(project)}/archives`)
           .then(r => r.json())
           .then(data => setArchives(Array.isArray(data) ? data : []))
           .catch(() => {});
 
-        fetch('/api/commands')
+        apiFetch('/api/commands')
           .then(r => r.json())
           .then(data => setCommands(Array.isArray(data) ? data : []))
           .catch(() => {});
@@ -382,7 +386,7 @@ function App() {
       const payload:Data={id,status:'queued',requested_by:user.email,project_id:project,operation,inputs,created_at:serverTimestamp()};
       if (job) { payload.job_id=job.job_id; payload.expected_revision=job.revision; }
       if (isLocalApi) {
-        await fetch('/api/commands', {
+        await apiFetch('/api/commands', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -450,7 +454,7 @@ function App() {
   {view==='tests' && <AppTests project={project} commands={commands} onSubmit={(op,inputs,stay)=>submit(op,inputs,undefined,stay)} busy={busy} workerTestPlans={worker.test_plans?.[project]}/>}
   {view==='new' && <NewJob project={project} onSubmit={inputs=>submit('job.create',inputs)} busy={busy} availableModels={commands.find(x=>x.operation==='tool.models'&&x.project_id===project&&x.status==='succeeded'&&Array.isArray(x.result?.models))?.result?.models||[]} defaultModels={commands.find(x=>x.operation==='tool.models'&&x.project_id===project&&x.status==='succeeded'&&x.result?.selected)?.result?.selected||['codex']} availableMachines={(commands.find(x=>x.operation==='tool.fleet'&&x.project_id===project&&x.status==='succeeded')?.result?.machines||[]).map((m:any)=>m.name||m.id||m)} defaultMachines={commands.find(x=>x.operation==='tool.fleet'&&x.project_id===project&&x.status==='succeeded'&&x.result?.selected?.length)?.result?.selected||['local']} suggestedSubsystems={detectedSubsystems}/>}
   {view==='tools' && <div className="page"><div className="page-heading"><div><h1>Configuration & Tools</h1><p>Manage project settings, models, fleet machines, and diagnostic tools.</p></div></div><div className="tools-grid"><label className="field tool-picker"><span>Tool</span><select value={tool.operation} onChange={e=>setTool(menu.tools.find(item=>item.operation===e.target.value)||menu.tools[0])}>{menu.tools.map(item=><option key={item.operation} value={item.operation}>{item.label}</option>)}</select></label><ToolPanel item={tool} project={project} onSubmit={(op,inputs)=>submit(op,inputs,undefined,true)} busy={busy} commands={commands} projects={worker.project_ids||[project]} onProject={setProject} onAddProject={()=>setShowAddProject(true)}/></div></div>}
-  {view==='activity' && <ActivityFeed commands={commands} jobs={[...jobs, ...archives]} onNavigateJob={jobId => navigate('jobs', jobId)} onCancelCommand={cmdId => isLocalApi ? fetch(`/api/commands/${cmdId}/cancel`,{method:'POST'}).catch(e=>setError(safeMessage(e))) : updateDoc(doc(db,'commands',cmdId),{status:'cancelled'}).catch(e=>setError(safeMessage(e)))}/>}
+  {view==='activity' && <ActivityFeed commands={commands} jobs={[...jobs, ...archives]} onNavigateJob={jobId => navigate('jobs', jobId)} onCancelCommand={cmdId => isLocalApi ? apiFetch(`/api/commands/${cmdId}/cancel`,{method:'POST'}).catch(e=>setError(safeMessage(e))) : updateDoc(doc(db,'commands',cmdId),{status:'cancelled'}).catch(e=>setError(safeMessage(e)))}/>}
   {showAddProject && <AddProjectModal onClose={()=>setShowAddProject(false)} onSubmit={(op,inputs,stay)=>submit(op,inputs,undefined,stay)} busy={busy} commands={commands} onAdded={newId=>{setProject(newId);setSelected(null);setHistory([]);setShowAddProject(false);}}/>}
   {showWorkflowModal && <WorkflowGuideModal onClose={()=>setShowWorkflowModal(false)}/>}
   </main></div>;
@@ -498,7 +502,7 @@ async function uploadArtifact(project: string, file: File): Promise<string> {
     let binary = '';
     for (const byte of bytes) binary += String.fromCharCode(byte);
     const b64 = btoa(binary);
-    const res = await fetch(`/api/projects/${encodeURIComponent(project)}/artifacts`, {
+    const res = await apiFetch(`/api/projects/${encodeURIComponent(project)}/artifacts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

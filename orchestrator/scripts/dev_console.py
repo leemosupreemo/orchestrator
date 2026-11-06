@@ -7140,9 +7140,12 @@ def handle_open_web_ui() -> None:
         print(f"  \033[1;96m✨ Web Control Room is Active!\033[0m")
         print("=" * 64)
         print(f"  \033[1;92m● Local:    \033[0m  \033[4;94m{local_url}\033[0m")
-        print(f"  \033[1;92m● Network:  \033[0m  \033[4;94m{network_url}\033[0m  \033[90m(LAN)\033[0m")
+        if network_url:
+            print(f"  \033[1;92m● Network:  \033[0m  \033[4;94m{network_url}\033[0m  \033[90m(LAN)\033[0m")
         if ts_url:
             print(f"  \033[1;92m● Tailscale:\033[0m  \033[4;94m{ts_url}\033[0m  \033[90m(Tailscale IP)\033[0m")
+        if not network_url:
+            print("  \033[90m● Other devices: run 'orchestrator ui --host 0.0.0.0' to get a secure link\033[0m")
         print("-" * 64)
         input("\n\033[1;96mTap Enter to return to console menu...\033[0m")
     except Exception as e:

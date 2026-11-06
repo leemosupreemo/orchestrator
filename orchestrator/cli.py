@@ -2279,13 +2279,13 @@ def _main(argv: list[str] | None = None) -> int:
     passthrough.add_argument("script_args", nargs=argparse.REMAINDER)
 
     ui_parser = subparsers.add_parser("ui", help="Launch local Web Control Room in browser")
-    ui_parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind to (default: 0.0.0.0)")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind to (default: 127.0.0.1). Use 0.0.0.0 for other devices; they need the printed token link.")
     ui_parser.add_argument("--port", type=int, default=4040, help="Port to listen on (default: 4040)")
     ui_parser.add_argument("--no-open", action="store_true", help="Do not open browser automatically")
     ui_parser.add_argument("--project", help="Recent project name or project root path")
 
     web_parser = subparsers.add_parser("web", help="Alias for 'ui'")
-    web_parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind to (default: 0.0.0.0)")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind to (default: 127.0.0.1). Use 0.0.0.0 for other devices; they need the printed token link.")
     web_parser.add_argument("--port", type=int, default=4040, help="Port to listen on (default: 4040)")
     web_parser.add_argument("--no-open", action="store_true", help="Do not open browser automatically")
     web_parser.add_argument("--project", help="Recent project name or project root path")
