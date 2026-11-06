@@ -51,7 +51,7 @@ class FakeTransport:
     def remove_archive(self, project_id, job_id):
         self.archives.pop((project_id, job_id), None)
 
-    def heartbeat(self, projects):
+    def heartbeat(self, projects, test_plans=None):
         self.heartbeats.append(projects)
 
     def interrupted(self):
@@ -181,6 +181,23 @@ class WebWorkerTests(unittest.TestCase):
         job = json.loads(self.path.read_text())
         file_path = self.root / job["reference_artifacts"][0]["path"]
         self.assertEqual(file_path.read_bytes(), b"Reference content")
+
+    def test_create_job_with_uploaded_spec_artifact(self):
+        command = {"status": "queued", "requested_by": "owner", "project_id": "test",
+                   "operation": "job.create", "inputs": {"job_type": "feature", "prompt": "New feature",
+                                                          "allowed_models": ["codex"], "allowed_machines": ["local"],
+                                                          "artifact_id": "spec-art-1"}}
+        transport = FakeTransport({"cmd-create": command})
+        seen_files = []
+        def fake_create(root, options, *, runner=None):
+            path = Path(options["_trusted_source_file"])
+            seen_files.append((path.name, path.is_file(), path.read_bytes()))
+            return {"job_id": "job-new", "status": "planned", "type": "feature", "revision": 1}
+        with patch.dict(Worker.process.__globals__, {"create_job": fake_create}):
+            Worker({"test": self.root}, transport, owner_email="owner").process("cmd-create")
+            self.assertEqual(transport.results["cmd-create"]["status"], "succeeded")
+            self.assertEqual(transport.results["cmd-create"]["result"]["job_id"], "job-new")
+            self.assertEqual(seen_files, [("lobby.txt", True, b"Reference content")])
 
 
 if __name__ == "__main__":

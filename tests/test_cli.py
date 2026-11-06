@@ -342,6 +342,15 @@ class CliTests(unittest.TestCase):
             self.assertIn("--provisioning-profile", setup_args)
             self.assertIn("Profile B", setup_args)
 
+    @patch("orchestrator.web.local_server.start_local_ui_server")
+    def test_ui_and_web_commands_dispatch(self, mock_start_server) -> None:
+        self.assertEqual(cli.main(["ui", "--port", "5050", "--no-open"]), 0)
+        mock_start_server.assert_called_with(host="0.0.0.0", port=5050, open_browser=False, project_root=None)
+
+        self.assertEqual(cli.main(["web", "--port", "6060"]), 0)
+        mock_start_server.assert_called_with(host="0.0.0.0", port=6060, open_browser=True, project_root=None)
+
 
 if __name__ == "__main__":
     unittest.main()
+

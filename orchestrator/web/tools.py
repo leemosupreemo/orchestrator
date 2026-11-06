@@ -416,20 +416,23 @@ def _instructions(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _archive(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
-    directory = root / ".orchestrator" / "jobs"
-    archived = directory / "archive"
     action = inputs.get("action", "list")
     if action == "list":
-        return {"jobs": [p.stem for p in sorted(archived.glob("*.json"))]}
+        jobs = []
+        for base in (root / ".orchestrator" / "jobs" / "archive", root / "ai" / "jobs" / "archive"):
+            if base.exists():
+                jobs.extend(p.stem for p in sorted(base.glob("*.json")))
+        return {"jobs": sorted(set(jobs))}
     job_id = inputs.get("job_id")
     if action != "restore" or not isinstance(job_id, str) or not _NAME.fullmatch(job_id):
         raise ValueError("Unknown archive action or job")
-    source = archived / f"{job_id}.json"
-    target = directory / f"{job_id}.json"
-    if not source.is_file() or target.exists():
-        raise ValueError("Cannot restore job")
-    source.replace(target)
-    return {"restored": job_id}
+    for base in (root / ".orchestrator" / "jobs", root / "ai" / "jobs"):
+        source = base / "archive" / f"{job_id}.json"
+        target = base / f"{job_id}.json"
+        if source.is_file() and not target.exists():
+            source.replace(target)
+            return {"restored": job_id}
+    raise ValueError("Cannot restore job")
 
 
 def _run_local(root: Path, operation: Operation, inputs: dict[str, Any],
@@ -483,43 +486,78 @@ def _run_local(root: Path, operation: Operation, inputs: dict[str, Any],
     return response
 
 
-def run_app_tests(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
+def _find_test_plans(root: Path, target: str | None) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    search_dirs = []
+    if target:
+        search_dirs.extend([root / target / "TestPlans", root / target])
+    search_dirs.extend([root / "TestPlans", root])
+    for d in search_dirs:
+        if d.is_dir():
+            for p in sorted(d.glob("*.xctestplan")):
+                if p.name not in seen:
+                    seen.add(p.name)
+                    candidates.append(p)
+    if not candidates:
+        for p in sorted(root.glob("**/*.xctestplan")):
+            parts = p.relative_to(root).parts
+            if any(part.startswith(".") or part in {"build", "DerivedData", "Pods", "Carthage"} for part in parts[:-1]):
+                continue
+            if p.name not in seen:
+                seen.add(p.name)
+                candidates.append(p)
+    return sorted(candidates, key=lambda p: p.name)
+
+
+def run_app_tests(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     config = _read(root / ".orchestrator" / "project.json", {})
     target = config.get("test_target")
-    if not isinstance(target, str) or not _NAME.fullmatch(target):
-        raise ValueError("Project test target is not configured")
-    plans = sorted((root / target / "TestPlans").glob("*.xctestplan"))
+    safe_target = target if isinstance(target, str) and _NAME.fullmatch(target) else None
+    plans = _find_test_plans(root, safe_target)
     action = inputs.get("action", "list")
     if action == "list":
-        return {"plans": [p.name for p in plans], "visual_check": True, "test_target": target}
+        return {
+            "plans": [p.name for p in plans],
+            "plan_paths": [str(p.relative_to(root)) for p in plans],
+            "visual_check": True,
+            "test_target": target or (safe_target or "App"),
+        }
     if action == "plan":
         selected = inputs.get("plan")
-        plan = next((p for p in plans if p.name == selected), None)
+        plan = next((p for p in plans if p.name == selected or str(p.relative_to(root)) == selected), None)
         if plan is None:
             raise ValueError("Select a configured Xcode test plan")
-        data = json.loads(plan.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(plan.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Could not read test plan file {plan.name}") from exc
         flags = []
         for entry in data.get("testTargets", []):
             name = entry.get("target", {}).get("name", target)
             if not isinstance(name, str) or not _NAME.fullmatch(name):
-                raise ValueError("Invalid test target in plan")
+                name = safe_target or "Tests"
             selected_tests = entry.get("selectedTests", [])
             if selected_tests:
                 flags.extend(f"-only-testing:{name}/{test}" for test in selected_tests)
             else:
                 flags.append(f"-only-testing:{name}")
-        command = [sys.executable, str(_PACKAGE / "scripts" / "manual_run.py"), "test", "--test-only", " ".join(flags)]
+        command = [sys.executable, str(_PACKAGE / "scripts" / "manual_run.py"), "test"]
+        if flags:
+            command.extend(["--test-only", " ".join(flags)])
     elif action == "visual":
         command = [sys.executable, str(_PACKAGE / "scripts" / "simulator_visual_check.py")]
     else:
         raise ValueError("Unknown app test action")
-    result = subprocess.run(command, cwd=root, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
-                            capture_output=True, text=True, timeout=3600, check=False)
+    if progress:
+        progress(f"Starting {action} check for {root.name}…\n")
+    result = _run_command(command, cwd=root, env={**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root)},
+                          timeout=3600, progress=progress)
     return {"exit_code": result.returncode, "output": (result.stdout + result.stderr)[-20000:]}
 
 
 def run_refresh(root: Path) -> dict[str, Any]:
-    from .jobs import list_jobs
+    from .jobs import list_jobs, _job_path
     active_jobs = list_jobs(root)
     closed = set()
     if active_jobs:
@@ -529,11 +567,11 @@ def run_refresh(root: Path) -> dict[str, Any]:
             raise RuntimeError("GitHub issue sync failed: " + result.stderr[-500:])
         closed = {item["number"] for item in json.loads(result.stdout)}
     archived = []
-    archive_dir = root / ".orchestrator" / "jobs" / "archive"
-    archive_dir.mkdir(parents=True, exist_ok=True)
     for job in active_jobs:
         if job.get("issue_number") in closed:
-            path = root / ".orchestrator" / "jobs" / f"{job['job_id']}.json"
+            path = _job_path(root, job['job_id'])
+            archive_dir = path.parent / "archive"
+            archive_dir.mkdir(parents=True, exist_ok=True)
             data = _read(path, {})
             data["status"] = "completed"
             data["completed_at"] = datetime.now(timezone.utc).isoformat()
@@ -622,6 +660,43 @@ def run_tool(root: Path, operation: Operation, inputs: dict[str, Any], *,
                 "headless_signing": bool(os.environ.get("KEYCHAIN_PASSWORD")), "ci_token": bool(os.environ.get("FIREBASE_TOKEN")),
                 "setup": "On the Mac worker run firebase login and orchestrator keychain-setup, then refresh status."}
     if operation == Operation.TOOL_PROJECT:
+        action = inputs.get("action", "show")
+        if action == "discover":
+            candidates = []
+            seen = set()
+            roots = [
+                Path.home() / "projects",
+                Path.home() / "Projects",
+                Path.home() / "Documents",
+                Path.home() / "Developer",
+                Path.home() / "Desktop",
+            ]
+            for search_root in roots:
+                if not search_root.is_dir():
+                    continue
+                try:
+                    for item in search_root.iterdir():
+                        if item.name.startswith(".") or not item.is_dir():
+                            continue
+                        path_str = str(item.resolve())
+                        if path_str in seen:
+                            continue
+                        has_orch = (item / ".orchestrator").is_dir() or (item / ".orchestrator" / "project.json").is_file()
+                        has_pkg = (item / "Package.swift").is_file()
+                        has_xcode = any(item.glob("*.xcodeproj")) or any(item.glob("*.xcworkspace"))
+                        if has_orch or has_pkg or has_xcode:
+                            seen.add(path_str)
+                            ptype = "Swift Package" if has_pkg else "Xcode Project" if has_xcode else "Orchestrator Project"
+                            candidates.append({
+                                "id": re.sub(r"[^A-Za-z0-9_-]", "-", item.name.lower())[:64],
+                                "name": item.name,
+                                "path": path_str,
+                                "type": ptype,
+                                "has_orchestrator": has_orch,
+                            })
+                except Exception:
+                    continue
+            return {"candidates": candidates, "current": str(root)}
         return {"current": str(root), "change": "Select another configured project in the web project picker."}
     if operation in {Operation.TOOL_AUDIT, Operation.TOOL_SELF_TESTS, Operation.TOOL_UPDATE}:
         return _run_local(root, operation, inputs, progress)

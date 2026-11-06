@@ -79,6 +79,7 @@ def create_job(root: Path, options: dict[str, Any], runner: Runner = None) -> di
     branch_mode = options.get("branch_mode", "new")
     if branch_mode not in {"new", "current", "manual"}:
         raise ValueError("Invalid branch mode")
+    source_file = options.get("_trusted_source_file")
     spec_url = options.get("spec_url")
     if spec_url:
         if not isinstance(spec_url, str):
@@ -88,6 +89,10 @@ def create_job(root: Path, options: dict[str, Any], runner: Runner = None) -> di
             _validate_public_https_url(spec_url)
         elif not _safe_relative_path(root, spec_url).is_file():
             raise ValueError("Specification file must be inside the selected project")
+    elif source_file:
+        source_path = Path(source_file)
+        if not source_path.is_file():
+            raise ValueError("Uploaded specification file missing")
     argv = [sys.executable, str(_SCRIPTS / "new_job.py"), job_type,
             "--allowed-models", ",".join(models), "--allowed-machines", ",".join(machines),
             "--branch-mode", branch_mode]
@@ -114,6 +119,8 @@ def create_job(root: Path, options: dict[str, Any], runner: Runner = None) -> di
             else:
                 source_path = _safe_relative_path(root, spec_url)
             argv.extend(["--spec-file", str(source_path)])
+        elif source_file:
+            argv.extend(["--spec-file", str(source_file)])
         payload_path = Path(temporary) / "input.json"
         payload_path.write_text(json.dumps(options), encoding="utf-8")
         payload_path.chmod(0o600)
@@ -131,7 +138,13 @@ def create_job(root: Path, options: dict[str, Any], runner: Runner = None) -> di
 def _job_path(root: Path, job_id: str) -> Path:
     if not _ID.fullmatch(job_id):
         raise ValueError("Invalid job ID")
-    return root / ".orchestrator" / "jobs" / f"{job_id}.json"
+    primary = root / ".orchestrator" / "jobs" / f"{job_id}.json"
+    if primary.is_file():
+        return primary
+    legacy = root / "ai" / "jobs" / f"{job_id}.json"
+    if legacy.is_file():
+        return legacy
+    return primary
 
 
 def _read_job(path: Path) -> dict[str, Any]:
@@ -139,22 +152,40 @@ def _read_job(path: Path) -> dict[str, Any]:
     job = json.loads(raw)
     if not isinstance(job, dict):
         raise ValueError("Job file must contain an object")
-    job["revision"] = int.from_bytes(hashlib.sha256(raw).digest()[:8], "big")
+    job["revision"] = int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") & 0x7FFFFFFFFFFFFFFF
     return job
 
 
 def list_jobs(root: Path) -> list[dict[str, Any]]:
-    directory = root / ".orchestrator" / "jobs"
-    if not directory.exists():
-        return []
-    return [_read_job(path) for path in sorted(directory.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)]
+    seen: set[str] = set()
+    jobs: list[dict[str, Any]] = []
+    for base in (root / ".orchestrator" / "jobs", root / "ai" / "jobs"):
+        if base.exists():
+            for path in sorted(base.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                try:
+                    job = _read_job(path)
+                    if job["job_id"] not in seen:
+                        seen.add(job["job_id"])
+                        jobs.append(job)
+                except Exception:
+                    pass
+    return sorted(jobs, key=lambda j: j.get("created_at") or "", reverse=True)
 
 
 def list_archived_jobs(root: Path) -> list[dict[str, Any]]:
-    directory = root / ".orchestrator" / "jobs" / "archive"
-    if not directory.exists():
-        return []
-    return [_read_job(path) for path in sorted(directory.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)]
+    seen: set[str] = set()
+    jobs: list[dict[str, Any]] = []
+    for base in (root / ".orchestrator" / "jobs" / "archive", root / "ai" / "jobs" / "archive"):
+        if base.exists():
+            for path in sorted(base.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                try:
+                    job = _read_job(path)
+                    if job["job_id"] not in seen:
+                        seen.add(job["job_id"])
+                        jobs.append(job)
+                except Exception:
+                    pass
+    return sorted(jobs, key=lambda j: j.get("completed_at") or j.get("created_at") or "", reverse=True)
 
 
 def get_job(root: Path, job_id: str) -> dict[str, Any]:

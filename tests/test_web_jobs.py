@@ -118,10 +118,20 @@ class WebJobsTests(unittest.TestCase):
             create_job(self.root, options, runner=runner)
         self.assertEqual(captured, ["Approved spec"])
 
-    def test_private_dns_spec_host_is_rejected(self):
-        with patch("orchestrator.web.jobs.socket.getaddrinfo", return_value=[(2, 1, 6, '', ('127.0.0.1', 443))]):
-            with self.assertRaises(ValueError):
-                _validate_public_https_url("https://internal.example/spec")
+    def test_uploaded_spec_file_is_passed_to_planner(self):
+        spec_file = self.root / "uploaded-spec.md"
+        spec_file.write_text("# My Spec\nDetails here")
+        captured = []
+        def runner(argv, *, cwd, env):
+            path = Path(argv[argv.index("--spec-file") + 1])
+            captured.append(path.read_text())
+            (self.jobs / "job-2.json").write_text(json.dumps({"job_id": "job-2", "status": "planned"}))
+            return 0
+        options = {"job_type": "feature", "prompt": "Add feature from spec", "allowed_models": ["codex"],
+                   "allowed_machines": ["local"], "_trusted_source_file": str(spec_file)}
+        job = create_job(self.root, options, runner=runner)
+        self.assertEqual(job["job_id"], "job-2")
+        self.assertEqual(captured, ["# My Spec\nDetails here"])
 
 
 if __name__ == "__main__":

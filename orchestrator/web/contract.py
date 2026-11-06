@@ -56,7 +56,7 @@ JOB_MUTATIONS = frozenset({
 
 INPUT_FIELDS: dict[Operation, frozenset[str]] = {
     Operation.TESTS_RUN: frozenset({"action", "plan"}),
-    Operation.JOB_CREATE: frozenset({"job_type", "prompt", "repro", "expected", "subsystems", "vibe", "quick", "spec_url", "yolo", "branch_mode", "preset", "planner", "builder", "reviewer", "allowed_models", "allowed_machines", "stitch"}),
+    Operation.JOB_CREATE: frozenset({"job_type", "prompt", "repro", "expected", "subsystems", "vibe", "quick", "spec_url", "artifact_id", "spec_file_name", "yolo", "branch_mode", "preset", "planner", "builder", "reviewer", "allowed_models", "allowed_machines", "stitch"}),
     Operation.JOB_REVISE: frozenset({"feedback"}),
     Operation.JOB_ITERATE: frozenset({"feedback"}),
     Operation.JOB_REOPEN_BUG: frozenset({"feedback", "log_paths"}),
@@ -70,7 +70,7 @@ INPUT_FIELDS: dict[Operation, frozenset[str]] = {
     Operation.TOOL_KEYS: frozenset({"action"}),
     Operation.TOOL_FLEET: frozenset({"action", "machine_ids", "name", "new_name", "ssh_target", "repo_path"}),
     Operation.TOOL_BASE_BRANCH: frozenset({"branch"}),
-    Operation.TOOL_PROJECT: frozenset({"project_id"}),
+    Operation.TOOL_PROJECT: frozenset({"project_id", "path", "action"}),
     Operation.TOOL_ARCHIVE: frozenset({"action", "job_id"}),
     Operation.TOOL_INSTRUCTIONS: frozenset({"action", "name", "content"}),
     Operation.TOOL_EMAIL: frozenset({"action", "email", "provider", "content", "sender_email", "display_name"}),

@@ -4325,6 +4325,27 @@ def check_essential_environment(session_allowed_machines: list[str]):
             print("\n    Check complete. You can run it again any time from the Configuration menu.")
             input("    \033[1;96mPress Enter to start the Orchestrator...\033[0m")
 
+def handle_open_web_ui() -> None:
+    try:
+        from orchestrator.web.local_server import get_or_start_background_server
+        import webbrowser
+        local_url, network_url, ts_url = get_or_start_background_server(port=4040, project_root=ROOT)
+        if os.environ.get("SSH_CLIENT") is None and os.environ.get("SSH_TTY") is None:
+            webbrowser.open(local_url)
+        print("\n" + "=" * 64)
+        print(f"  \033[1;96m✨ Web Control Room is Active!\033[0m")
+        print("=" * 64)
+        print(f"  \033[1;92m● Local:    \033[0m  \033[4;94m{local_url}\033[0m")
+        print(f"  \033[1;92m● Network:  \033[0m  \033[4;94m{network_url}\033[0m  \033[90m(LAN)\033[0m")
+        if ts_url:
+            print(f"  \033[1;92m● Tailscale:\033[0m  \033[4;94m{ts_url}\033[0m  \033[90m(Tailscale IP)\033[0m")
+        print("-" * 64)
+        input("\n\033[1;96mTap Enter to return to console menu...\033[0m")
+    except Exception as e:
+        print(f"\n    \033[1;91m⚠️ Could not launch Web Control Room: {e}\033[0m")
+        time.sleep(2.0)
+
+
 def main_loop():
     # Sync with GitHub on launch
     clear_screen()
@@ -4366,6 +4387,7 @@ def main_loop():
                 print("\033[1;96m" + r"""
   O R C H E S T R A T O R
   -----------------------""" + f"\n  v{__version__}\033[0m")
+                print("  \033[90m💡 Web Control Room:\033[0m Run '\033[1;96morchestrator ui\033[0m' or press [\033[1;96mW\033[0m] to open in browser")
                 print_header("AI Job History")
                 jobs = list_jobs()
                 if not jobs:
@@ -4389,6 +4411,7 @@ def main_loop():
                 
                 print_header("Actions")
                 print("[\033[96mN\033[0m] New Job")
+                print("[\033[96mW\033[0m] Open Web Control Room (Browser)")
                 print("[\033[93mV\033[0m] Run your unit tests")
                 print("[\033[93mC\033[0m] Configuration & Tools")
                 print("[\033[93mR\033[0m] Refresh & Sync (GitHub)")
@@ -4496,6 +4519,9 @@ def main_loop():
                     if choice == "q":
                         print("\nLeaving Orchestrator... have a good day!")
                         break
+                    elif choice == "w":
+                        handle_open_web_ui()
+                        continue
                     elif choice == "c":
                         session_allowed_machines, session_allowed_models = handle_configuration_menu(session_allowed_machines, session_allowed_models)
                         continue

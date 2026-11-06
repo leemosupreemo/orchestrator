@@ -1,0 +1,450 @@
+from __future__ import annotations
+
+import base64
+import json
+import mimetypes
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.parse
+import uuid
+import webbrowser
+from http import HTTPStatus
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+from typing import Any
+
+from orchestrator.project_config import (
+    DEFAULT_RUNTIME_DIRNAME,
+    find_project_root,
+    load_recent_projects,
+    safe_cwd,
+    safe_resolve,
+)
+from orchestrator.web.contract import Operation, validate_command
+from orchestrator.web.jobs import create_job, list_jobs, list_archived_jobs, run_job_action, _job_path
+from orchestrator.web.projection import project_job, redact_data, redact_text
+from orchestrator.web.tools import run_tool, run_app_tests, run_refresh, _find_test_plans, _read, _NAME
+
+
+def get_static_dir() -> Path:
+    pkg_dist = Path(__file__).resolve().parent / "dist"
+    if pkg_dist.is_dir() and (pkg_dist / "index.html").is_file():
+        return pkg_dist
+    repo_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
+    if repo_dist.is_dir() and (repo_dist / "index.html").is_file():
+        return repo_dist
+    return pkg_dist
+
+
+def discover_local_projects(explicit_root: Path | None = None) -> dict[str, Path]:
+    projects: dict[str, Path] = {}
+    
+    # 1. Explicit root or environment variable
+    if explicit_root and explicit_root.is_dir():
+        name = explicit_root.name
+        projects[name] = explicit_root.resolve()
+    elif os.environ.get("ORCHESTRATOR_PROJECT_ROOT"):
+        p = Path(os.environ["ORCHESTRATOR_PROJECT_ROOT"]).resolve()
+        if p.is_dir():
+            projects[p.name] = p
+
+    # 2. Configured web projects JSON env var
+    if os.environ.get("ORCHESTRATOR_WEB_PROJECTS"):
+        try:
+            extra = json.loads(os.environ["ORCHESTRATOR_WEB_PROJECTS"])
+            for k, v in extra.items():
+                p = Path(v).expanduser().resolve()
+                if p.is_dir():
+                    projects[k] = p
+        except Exception:
+            pass
+
+    # 3. Current working directory
+    current = safe_resolve(safe_cwd())
+    for cand in [current, *current.parents]:
+        if (cand / DEFAULT_RUNTIME_DIRNAME / "project.json").exists():
+            projects[cand.name] = cand
+            break
+
+    # 4. Recent projects from user config
+    try:
+        recent = load_recent_projects()
+        for item in recent.get("projects", []):
+            name = item.get("name")
+            root_str = item.get("root")
+            if name and root_str:
+                p = Path(root_str).resolve()
+                if p.is_dir() and name not in projects:
+                    projects[name] = p
+    except Exception:
+        pass
+
+    if not projects:
+        projects["default"] = current
+
+    return projects
+
+
+class LocalCommandRunner:
+    def __init__(self, projects: dict[str, Path]):
+        self.projects = projects
+        self.commands: list[dict[str, Any]] = []
+        self.artifacts: dict[str, tuple[str, bytes]] = {}
+        self._lock = threading.Lock()
+
+    def add_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cmd_id = payload.get("id") or str(uuid.uuid4())
+        record = {
+            "id": cmd_id,
+            "project_id": payload.get("project_id", list(self.projects.keys())[0]),
+            "operation": payload.get("operation", ""),
+            "inputs": payload.get("inputs", {}),
+            "job_id": payload.get("job_id"),
+            "expected_revision": payload.get("expected_revision"),
+            "status": "queued",
+            "requested_by": payload.get("requested_by", "local@localhost"),
+            "created_at": {"seconds": int(time.time()), "nanoseconds": 0},
+            "output": "",
+        }
+        with self._lock:
+            self.commands.insert(0, record)
+            # Keep last 50 commands
+            if len(self.commands) > 50:
+                self.commands = self.commands[:50]
+
+        threading.Thread(target=self._execute, args=(record,), daemon=True).start()
+        return record
+
+    def store_artifact(self, artifact_id: str, filename: str, data: bytes) -> None:
+        with self._lock:
+            self.artifacts[artifact_id] = (filename, data)
+
+    def _execute(self, record: dict[str, Any]) -> None:
+        cmd_id = record["id"]
+        project_id = record["project_id"]
+        op = record["operation"]
+        inputs = record["inputs"]
+        job_id = record.get("job_id")
+        expected_rev = record.get("expected_revision")
+
+        record["status"] = "running"
+        root = self.projects.get(project_id)
+        if not root or not root.is_dir():
+            record["status"] = "failed"
+            record["error"] = f"Project '{project_id}' not found on local machine."
+            return
+
+        def progress_cb(text: str) -> None:
+            record["output"] = (record.get("output", "") + redact_text(text))[-20000:]
+
+        try:
+            if op == Operation.JOB_CREATE.value or op == "job.create":
+                art_id = inputs.get("artifact_id")
+                if art_id and art_id in self.artifacts:
+                    name, data = self.artifacts[art_id]
+                    with tempfile.TemporaryDirectory(prefix="orchestrator-spec-") as tmp:
+                        safe_name = re.sub(r"[^A-Za-z0-9._-]", "-", name or "spec.md")[:128]
+                        src = Path(tmp) / safe_name
+                        src.write_bytes(data)
+                        inputs["_trusted_source_file"] = str(src)
+                        inputs["_trusted_file_name"] = name
+                        job = create_job(root, inputs)
+                else:
+                    job = create_job(root, inputs)
+                record["result"] = {"job_id": job["job_id"]}
+                record["status"] = "succeeded"
+            elif op.startswith("job."):
+                job = run_job_action(root, job_id, Operation(op), inputs, expected_rev)
+                res = {"job_id": job["job_id"], "revision": job["revision"]}
+                if "_web_result" in job:
+                    res.update(job["_web_result"])
+                record["result"] = res
+                record["status"] = "succeeded"
+            elif op == Operation.TESTS_RUN.value or op == "tests.run":
+                res = run_app_tests(root, inputs, progress=progress_cb)
+                record["result"] = redact_data(res)
+                record["status"] = "failed" if res.get("exit_code", 0) != 0 else "succeeded"
+            elif op == Operation.PROJECT_REFRESH.value or op == "project.refresh":
+                res = run_refresh(root)
+                record["result"] = redact_data(res)
+                record["status"] = "succeeded"
+            elif op == Operation.TOOL_PROJECT.value and inputs.get("action") == "add":
+                new_id = str(inputs.get("project_id", "")).strip()
+                raw_path = str(inputs.get("path", "")).strip()
+                new_path = Path(raw_path).expanduser().resolve()
+                if not new_path.is_dir():
+                    raise ValueError(f"Directory not found: {raw_path}")
+                self.projects[new_id] = new_path
+                record["result"] = {"registered": new_id, "path": str(new_path), "projects": sorted(self.projects.keys())}
+                record["status"] = "succeeded"
+            else:
+                res = run_tool(root, Operation(op), inputs, progress=progress_cb)
+                record["result"] = redact_data(res)
+                record["status"] = "failed" if isinstance(res, dict) and res.get("exit_code", 0) != 0 else "succeeded"
+        except Exception as exc:
+            record["status"] = "failed"
+            record["error"] = str(exc)
+
+
+class LocalUIHandler(BaseHTTPRequestHandler):
+    runner: LocalCommandRunner
+    static_dir: Path
+
+    def log_message(self, format: str, *args: Any) -> None:
+        # Silent logging for clean terminal
+        pass
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        # API Endpoints
+        if path == "/api/worker":
+            test_plans: dict[str, list[str]] = {}
+            for pid, root in self.runner.projects.items():
+                try:
+                    cfg = _read(root / ".orchestrator" / "project.json", {})
+                    target = cfg.get("test_target")
+                    safe_target = target if isinstance(target, str) and _NAME.fullmatch(target) else None
+                    plans = _find_test_plans(root, safe_target)
+                    test_plans[pid] = [p.name for p in plans]
+                except Exception:
+                    test_plans[pid] = []
+
+            data = {
+                "project_ids": sorted(self.runner.projects.keys()),
+                "last_seen": {"seconds": int(time.time()), "nanoseconds": 0},
+                "test_plans": test_plans,
+                "local_mode": True,
+            }
+            self._send_json(data)
+            return
+
+        if path == "/api/commands":
+            self._send_json(self.runner.commands)
+            return
+
+        # /api/projects/<pid>/jobs
+        m_jobs = re.match(r"^/api/projects/([^/]+)/jobs$", path)
+        if m_jobs:
+            pid = urllib.parse.unquote(m_jobs.group(1))
+            root = self.runner.projects.get(pid)
+            if root and root.is_dir():
+                jobs = [project_job(j) for j in list_jobs(root)]
+                self._send_json(jobs)
+            else:
+                self._send_json([])
+            return
+
+        # /api/projects/<pid>/archives
+        m_arch = re.match(r"^/api/projects/([^/]+)/archives$", path)
+        if m_arch:
+            pid = urllib.parse.unquote(m_arch.group(1))
+            root = self.runner.projects.get(pid)
+            if root and root.is_dir():
+                archs = [project_job(j) for j in list_archived_jobs(root)]
+                self._send_json(archs)
+            else:
+                self._send_json([])
+            return
+
+        # Static assets
+        self._serve_static(path)
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length > 0 else b""
+
+        if path == "/api/commands":
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+                record = self.runner.add_command(payload)
+                self._send_json(record, status=HTTPStatus.CREATED)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/projects/") and "/artifacts" in path:
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+                art_id = payload.get("artifact_id") or payload.get("id") or str(uuid.uuid4())
+                filename = payload.get("name", "spec.md")
+                raw_data = payload.get("data", "")
+                data_bytes = base64.b64decode(raw_data) if raw_data else b""
+                self.runner.store_artifact(art_id, filename, data_bytes)
+                self._send_json({"id": art_id}, status=HTTPStatus.CREATED)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._send_json({"error": "Endpoint not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _serve_static(self, path: str) -> None:
+        if path == "/" or not path:
+            target = self.static_dir / "index.html"
+        else:
+            rel = path.lstrip("/")
+            target = self.static_dir / rel
+            if not target.is_file():
+                # SPA Fallback
+                target = self.static_dir / "index.html"
+
+        if not target.is_file():
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.end_headers()
+            self.wfile.write(b"404 Not Found")
+            return
+
+        mime, _ = mimetypes.guess_type(str(target))
+        if target.name.endswith(".js") or target.name.endswith(".mjs"):
+            mime = "text/javascript"
+        elif target.name.endswith(".css"):
+            mime = "text/css"
+        elif target.name.endswith(".html"):
+            mime = "text/html"
+
+        content = target.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-cache" if target.name.endswith(".html") else "max-age=31536000")
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+        encoded = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(encoded)
+
+
+import socket
+
+
+def get_lan_ip() -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def get_tailscale_ip() -> str | None:
+    try:
+        ts = shutil.which("tailscale")
+        if ts:
+            res = subprocess.run([ts, "ip", "-4"], capture_output=True, text=True, timeout=2, check=False)
+            if res.returncode == 0:
+                ip = res.stdout.strip().split("\n")[0].strip()
+                if ip:
+                    return ip
+    except Exception:
+        pass
+    return None
+
+
+_BACKGROUND_SERVER: tuple[HTTPServer, str, str, str | None] | None = None
+
+
+def get_or_start_background_server(host: str = "0.0.0.0", port: int = 4040, project_root: Path | None = None) -> tuple[str, str, str | None]:
+    global _BACKGROUND_SERVER
+    if _BACKGROUND_SERVER is not None:
+        return _BACKGROUND_SERVER[1], _BACKGROUND_SERVER[2], _BACKGROUND_SERVER[3]
+
+    static_dir = get_static_dir()
+    projects = discover_local_projects(project_root)
+    runner = LocalCommandRunner(projects)
+
+    class CustomHandler(LocalUIHandler):
+        pass
+
+    CustomHandler.runner = runner
+    CustomHandler.static_dir = static_dir
+
+    lan_ip = get_lan_ip()
+    ts_ip = get_tailscale_ip()
+    for test_port in range(port, port + 20):
+        try:
+            httpd = HTTPServer((host, test_port), CustomHandler)
+            local_url = f"http://127.0.0.1:{test_port}"
+            network_url = f"http://{lan_ip}:{test_port}"
+            ts_url = f"http://{ts_ip}:{test_port}" if ts_ip else None
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            _BACKGROUND_SERVER = (httpd, local_url, network_url, ts_url)
+            return local_url, network_url, ts_url
+        except OSError as e:
+            if e.errno == 48:
+                continue
+            raise
+    raise RuntimeError(f"Could not bind local UI server on ports {port}-{port+20}")
+
+
+def start_local_ui_server(
+    host: str = "0.0.0.0",
+    port: int = 4040,
+    open_browser: bool = True,
+    project_root: Path | None = None
+) -> None:
+    static_dir = get_static_dir()
+    projects = discover_local_projects(project_root)
+    runner = LocalCommandRunner(projects)
+
+    class CustomHandler(LocalUIHandler):
+        pass
+
+    CustomHandler.runner = runner
+    CustomHandler.static_dir = static_dir
+
+    lan_ip = get_lan_ip()
+    ts_ip = get_tailscale_ip()
+    server_address = (host, port)
+    try:
+        httpd = HTTPServer(server_address, CustomHandler)
+    except OSError as e:
+        if e.errno == 48:  # Address already in use
+            alt_port = port + 1
+            print(f"\033[93mPort {port} in use, trying port {alt_port}...\033[0m")
+            server_address = (host, alt_port)
+            httpd = HTTPServer(server_address, CustomHandler)
+            port = alt_port
+        else:
+            raise
+
+    local_url = f"http://127.0.0.1:{port}"
+    network_url = f"http://{lan_ip}:{port}"
+    ts_url = f"http://{ts_ip}:{port}" if ts_ip else None
+    
+    print("\n" + "=" * 64)
+    print(f"\033[1;96m  ✨ Orchestrator Web Control Room\033[0m")
+    print("=" * 64)
+    print(f"  \033[1;92m● Local:    \033[0m  \033[4;94m{local_url}\033[0m")
+    print(f"  \033[1;92m● Network:  \033[0m  \033[4;94m{network_url}\033[0m  \033[90m(LAN)\033[0m")
+    if ts_url:
+        print(f"  \033[1;92m● Tailscale:\033[0m  \033[4;94m{ts_url}\033[0m  \033[90m(Accessible from anywhere on your Tailscale network)\033[0m")
+    print(f"  \033[90m● Projects: \033[0m  {', '.join(projects.keys())}")
+    print(f"  \033[90m● Mode:     \033[0m  Zero-Setup Local Engine (No Firebase required)")
+    print("-" * 64)
+    print(f"  \033[93mPress Ctrl+C to stop the local UI server.\033[0m\n")
+
+    if open_browser and os.environ.get("SSH_CLIENT") is None and os.environ.get("SSH_TTY") is None:
+        threading.Thread(target=lambda: (time.sleep(0.3), webbrowser.open(local_url)), daemon=True).start()
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n\033[93mStopping local UI server...\033[0m")
+        httpd.server_close()

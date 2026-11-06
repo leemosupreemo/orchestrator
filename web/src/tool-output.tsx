@@ -111,6 +111,10 @@ function ResultSections({command,result}:{command:Data;result:Data}) {
   if(command.operation==='tool.distribution'&&command.inputs?.action!=='smoke_test') {
     return <><h4>Delivery readiness</h4><CheckList items={[{label:'Distribution configured',ok:Boolean(result.configured)},{label:'Firebase CLI installed',ok:Boolean(result.firebase_cli)},{label:'Firebase signed in',ok:Boolean(result.firebase_logged_in)},{label:'Google service file',ok:Boolean(result.google_service_info)},{label:'Export options',ok:Boolean(result.export_options)},{label:'Headless signing',ok:Boolean(result.headless_signing),optional:true,detail:'Needed for unattended signing; manual signing can use another setup.'}]}/>{result.setup&&<p>{result.setup}</p>}</>;
   }
+  if(command.operation==='tool.project') {
+    const candidates:Data[]=result.candidates||[];
+    return <>{candidates.length>0&&<><h4>Discovered projects on Mac</h4><div className="result-cards">{candidates.map((cand:Data)=><div className="result-card" key={cand.path}><strong>{cand.name} ({cand.id})</strong><span>{cand.type}{cand.has_orchestrator?' · Configured':''}</span><small>{cand.path}</small></div>)}</div></>}</>;
+  }
   return null;
 }
 
@@ -121,6 +125,7 @@ const specializedKeys:Record<string,string[]>={
   'tool.email':['notification_emails','notification_provider','sender_email','display_name','sender_ready'],
   'tool.docs':['content'],
   'tool.distribution':['configured','firebase_cli','firebase_logged_in','google_service_info','export_options','headless_signing','setup'],
+  'tool.project':['candidates','current','change','registered','projects','path'],
 };
 
 export function ToolOutput({command,showModels=true}:{command:Data;showModels?:boolean}) {

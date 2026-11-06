@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import base64
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -11,9 +12,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .contract import Operation, validate_command
-from .jobs import create_job, list_jobs, list_archived_jobs, run_job_action
+from .jobs import create_job, list_jobs, list_archived_jobs, run_job_action, _job_path
 from .projection import project_job, redact_data, redact_text
-from .tools import run_tool, run_app_tests, run_refresh
+from .tools import run_tool, run_app_tests, run_refresh, _find_test_plans, _read, _NAME
 
 
 class Transport(Protocol):
@@ -27,7 +28,7 @@ class Transport(Protocol):
     def remove_job(self, project_id: str, job_id: str) -> None: ...
     def archived_ids(self, project_id: str) -> set[str]: ...
     def remove_archive(self, project_id: str, job_id: str) -> None: ...
-    def heartbeat(self, projects: list[str]) -> None: ...
+    def heartbeat(self, projects: list[str], test_plans: dict[str, list[str]] | None = None) -> None: ...
     def fetch_artifact(self, project_id: str, artifact_id: str) -> tuple[str, bytes]: ...
     def progress(self, command_id: str, output: str) -> None: ...
 
@@ -38,6 +39,11 @@ class Worker:
         self.transport = transport
         self.owner_email = owner_email
         self._locks = {key: threading.Lock() for key in projects}
+        self._published_active: dict[tuple[str, str], int] = {}
+        self._published_archived: dict[tuple[str, str], int] = {}
+        self._known_active_ids: dict[str, set[str]] = {}
+        self._known_archived_ids: dict[str, set[str]] = {}
+        self._last_test_plans: dict[str, list[str]] = {}
 
     def process(self, command_id: str) -> None:
         raw = self.transport.claim(command_id)
@@ -50,7 +56,10 @@ class Worker:
                                         ("project_id", "operation", "job_id", "inputs", "expected_revision") if key in raw})
             root = self.projects.get(command.project_id)
             if root is None:
-                raise ValueError("Project is not configured on this worker")
+                if command.operation == Operation.TOOL_PROJECT and self.projects:
+                    root = next(iter(self.projects.values()))
+                else:
+                    raise ValueError("Project is not configured on this worker")
             def runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
                 process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                            stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -67,7 +76,18 @@ class Worker:
                 return code
             with self._locks[command.project_id]:
                 if command.operation == Operation.JOB_CREATE:
-                    job = create_job(root, command.inputs, runner=runner)
+                    inputs = dict(command.inputs)
+                    if inputs.get("artifact_id"):
+                        name, data = self.transport.fetch_artifact(command.project_id, inputs["artifact_id"])
+                        with tempfile.TemporaryDirectory(prefix="orchestrator-web-spec-") as temporary:
+                            safe_name = re.sub(r"[^A-Za-z0-9._-]", "-", name or "spec.md")[:128]
+                            source = Path(temporary) / safe_name
+                            source.write_bytes(data)
+                            inputs["_trusted_source_file"] = str(source)
+                            inputs["_trusted_file_name"] = name
+                            job = create_job(root, inputs, runner=runner)
+                    else:
+                        job = create_job(root, inputs, runner=runner)
                     result = {"job_id": job["job_id"]}
                     self.transport.publish_job(command.project_id, project_job(job))
                 elif command.operation.value.startswith("job."):
@@ -87,16 +107,31 @@ class Worker:
                     result = {"job_id": job["job_id"], "revision": job["revision"]}
                     if "_web_result" in job:
                         result.update(job["_web_result"])
-                    if (root / ".orchestrator" / "jobs" / f"{job['job_id']}.json").exists():
+                    if _job_path(root, job["job_id"]).is_file():
                         self.transport.publish_job(command.project_id, project_job(job))
                     else:
                         self.transport.publish_archive(command.project_id, project_job(job))
                         self.transport.remove_job(command.project_id, job["job_id"])
                 elif command.operation == Operation.TESTS_RUN:
-                    result = run_app_tests(root, command.inputs)
+                    result = run_app_tests(root, command.inputs,
+                                           progress=lambda output: self.transport.progress(command_id, redact_text(output)))
                 elif command.operation == Operation.PROJECT_REFRESH:
                     result = run_refresh(root)
                     self.reconcile()
+                elif command.operation == Operation.TOOL_PROJECT and command.inputs.get("action") == "add":
+                    new_id = str(command.inputs.get("project_id", "")).strip()
+                    raw_path = str(command.inputs.get("path", "")).strip()
+                    new_path = Path(raw_path).expanduser().resolve()
+                    if not new_id or not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", new_id):
+                        raise ValueError("Project ID must contain only letters, numbers, dashes, and underscores (1-64 chars)")
+                    if not new_path.is_dir():
+                        raise ValueError(f"Directory not found on Mac worker: {raw_path}")
+                    self.projects[new_id] = new_path
+                    if new_id not in self._locks:
+                        self._locks[new_id] = threading.Lock()
+                    _save_persistent_projects(self.projects)
+                    self.reconcile()
+                    result = {"registered": new_id, "path": str(new_path), "projects": sorted(self.projects.keys())}
                 else:
                     result = run_tool(root, command.operation, command.inputs,
                                       progress=lambda output: self.transport.progress(command_id, redact_text(output)))
@@ -106,43 +141,101 @@ class Worker:
         except Exception as exc:
             self.transport.finish(command_id, "failed", {"error": redact_text(str(exc))})
 
-    def reconcile(self) -> None:
+    def reconcile(self, sync_github: bool = False) -> None:
+        test_plans: dict[str, list[str]] = {}
         for project_id, root in self.projects.items():
+            if sync_github:
+                try:
+                    run_refresh(root)
+                except Exception:
+                    pass
             active = list_jobs(root)
+            active_ids = {job["job_id"] for job in active}
             for job in active:
-                self.transport.publish_job(project_id, project_job(job))
+                key = (project_id, job["job_id"])
+                rev = job.get("revision", 0)
+                if key not in self._published_active or self._published_active[key] != rev:
+                    self.transport.publish_job(project_id, project_job(job))
+                    self._published_active[key] = rev
+
             archived = list_archived_jobs(root)
+            archived_ids = {job["job_id"] for job in archived}
             for job in archived:
-                self.transport.publish_archive(project_id, project_job(job))
-            for old_id in self.transport.active_ids(project_id) - {job["job_id"] for job in active}:
-                self.transport.remove_job(project_id, old_id)
-            for old_id in self.transport.archived_ids(project_id) - {job["job_id"] for job in archived}:
-                self.transport.remove_archive(project_id, old_id)
-        self.transport.heartbeat(sorted(self.projects))
+                key = (project_id, job["job_id"])
+                rev = job.get("revision", 0)
+                if key not in self._published_archived or self._published_archived[key] != rev:
+                    self.transport.publish_archive(project_id, project_job(job))
+                    self._published_archived[key] = rev
+
+            prev_active = self._known_active_ids.get(project_id)
+            if prev_active is None or prev_active != active_ids:
+                try:
+                    for old_id in self.transport.active_ids(project_id) - active_ids:
+                        self.transport.remove_job(project_id, old_id)
+                        self._published_active.pop((project_id, old_id), None)
+                except Exception:
+                    pass
+                self._known_active_ids[project_id] = active_ids
+
+            prev_archived = self._known_archived_ids.get(project_id)
+            if prev_archived is None or prev_archived != archived_ids:
+                try:
+                    for old_id in self.transport.archived_ids(project_id) - archived_ids:
+                        self.transport.remove_archive(project_id, old_id)
+                        self._published_archived.pop((project_id, old_id), None)
+                except Exception:
+                    pass
+                self._known_archived_ids[project_id] = archived_ids
+
+            try:
+                config = _read(root / ".orchestrator" / "project.json", {})
+                target = config.get("test_target")
+                safe_target = target if isinstance(target, str) and _NAME.fullmatch(target) else None
+                plans = _find_test_plans(root, safe_target)
+                test_plans[project_id] = [p.name for p in plans]
+            except Exception:
+                test_plans[project_id] = []
+        self._last_test_plans = test_plans
+        self.transport.heartbeat(sorted(self.projects), test_plans)
 
     def recover(self) -> None:
         for command_id in self.transport.interrupted():
             self.transport.finish(command_id, "failed", {
                 "error": "Worker stopped during this operation. Review local project state before retrying."})
 
-    def run_forever(self, poll_seconds: float = 2.0) -> None:
-        self.recover()
+    def run_forever(self, poll_seconds: float = 3.0, github_sync_seconds: float = 60.0) -> None:
+        try:
+            self.recover()
+        except Exception:
+            pass
         def heartbeat_loop() -> None:
             while True:
                 try:
-                    self.transport.heartbeat(sorted(self.projects))
+                    self.transport.heartbeat(sorted(self.projects), self._last_test_plans or None)
                 except Exception:
                     pass
-                time.sleep(10)
+                time.sleep(15)
         threading.Thread(target=heartbeat_loop, daemon=True).start()
         next_reconcile = 0.0
+        next_github_sync = 0.0
+        backoff = 0
         while True:
-            if time.monotonic() >= next_reconcile:
-                self.reconcile()
-                next_reconcile = time.monotonic() + 15
-            for command_id in self.transport.pending():
-                self.process(command_id)
-            time.sleep(poll_seconds)
+            try:
+                now = time.monotonic()
+                if now >= next_reconcile:
+                    sync_github = now >= next_github_sync
+                    self.reconcile(sync_github=sync_github)
+                    next_reconcile = now + 15.0
+                    if sync_github:
+                        next_github_sync = now + github_sync_seconds
+                for command_id in self.transport.pending():
+                    self.process(command_id)
+                backoff = 0
+                time.sleep(poll_seconds)
+            except Exception:
+                sleep_time = min(60.0, 5.0 * (2 ** min(backoff, 4)))
+                backoff += 1
+                time.sleep(sleep_time)
 
 
 class FirebaseTransport:
@@ -201,16 +294,22 @@ class FirebaseTransport:
     def remove_archive(self, project_id: str, job_id: str) -> None:
         self.db.collection("projects").document(project_id).collection("archives").document(job_id).delete()
 
-    def heartbeat(self, projects: list[str]) -> None:
-        self.db.collection("workers").document("mac").set({
-            "project_ids": projects, "last_seen": self.firestore.SERVER_TIMESTAMP})
+    def heartbeat(self, projects: list[str], test_plans: dict[str, list[str]] | None = None) -> None:
+        data: dict[str, Any] = {
+            "project_ids": projects,
+            "last_seen": self.firestore.SERVER_TIMESTAMP
+        }
+        if test_plans is not None:
+            data["test_plans"] = test_plans
+        self.db.collection("workers").document("mac").set(data, merge=True)
 
     def fetch_artifact(self, project_id: str, artifact_id: str) -> tuple[str, bytes]:
         if not artifact_id or len(artifact_id) > 128 or not all(c.isalnum() or c in "_-" for c in artifact_id):
             raise ValueError("Invalid artifact ID")
         ref = self.db.collection("projects").document(project_id).collection("artifacts").document(artifact_id)
         metadata = ref.get().to_dict()
-        if not metadata or metadata.get("content_type") not in {"image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain"}:
+        ct = str(metadata.get("content_type", ""))
+        if not (ct in {"image/png", "image/jpeg", "image/webp", "application/pdf", "application/json", "application/x-yaml"} or ct.startswith("text/")):
             raise ValueError("Unsupported reference artifact")
         count, size = metadata.get("chunk_count"), metadata.get("size")
         if type(count) is not int or not 1 <= count <= 90 or type(size) is not int or not 1 <= size <= 10 * 1024 * 1024:
@@ -227,17 +326,57 @@ class FirebaseTransport:
         return str(metadata.get("name", "reference")), data
 
 
+def _projects_config_path() -> Path:
+    return Path.home() / ".config" / "orchestrator" / "projects.json"
+
+
+def _load_projects() -> dict[str, Path]:
+    projects: dict[str, Path] = {}
+    cfg = _projects_config_path()
+    if cfg.is_file():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(k, str) and isinstance(v, str):
+                        p = Path(v).expanduser().resolve()
+                        if p.is_dir():
+                            projects[k] = p
+        except Exception:
+            pass
+    project_json = os.environ.get("ORCHESTRATOR_WEB_PROJECTS")
+    if project_json:
+        try:
+            data = json.loads(project_json)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(k, str) and isinstance(v, str):
+                        p = Path(v).expanduser().resolve()
+                        if p.is_dir():
+                            projects[k] = p
+        except Exception:
+            pass
+    return projects
+
+
+def _save_persistent_projects(projects: dict[str, Path]) -> None:
+    try:
+        cfg = _projects_config_path()
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps({k: str(v) for k, v in projects.items()}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def main() -> None:
     firebase_project = os.environ.get("ORCHESTRATOR_FIREBASE_PROJECT")
     owner_email = os.environ.get("ORCHESTRATOR_WEB_OWNER_EMAIL")
-    project_json = os.environ.get("ORCHESTRATOR_WEB_PROJECTS")
-    if not firebase_project or not owner_email or not project_json:
-        raise SystemExit("Set ORCHESTRATOR_FIREBASE_PROJECT, ORCHESTRATOR_WEB_OWNER_EMAIL, and ORCHESTRATOR_WEB_PROJECTS")
-    projects = json.loads(project_json)
-    if not isinstance(projects, dict) or not projects:
-        raise SystemExit("ORCHESTRATOR_WEB_PROJECTS must map project IDs to local paths")
-    Worker({key: Path(value) for key, value in projects.items()},
-           FirebaseTransport(firebase_project), owner_email).run_forever()
+    if not firebase_project or not owner_email:
+        raise SystemExit("Set ORCHESTRATOR_FIREBASE_PROJECT and ORCHESTRATOR_WEB_OWNER_EMAIL")
+    projects = _load_projects()
+    if not projects:
+        raise SystemExit("No projects configured in ORCHESTRATOR_WEB_PROJECTS or ~/.config/orchestrator/projects.json")
+    Worker(projects, FirebaseTransport(firebase_project), owner_email).run_forever()
 
 
 if __name__ == "__main__":
