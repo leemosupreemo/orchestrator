@@ -2278,6 +2278,18 @@ def _main(argv: list[str] | None = None) -> int:
     passthrough.add_argument("script_name")
     passthrough.add_argument("script_args", nargs=argparse.REMAINDER)
 
+    ui_parser = subparsers.add_parser("ui", help="Launch local Web Control Room in browser")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind to (default: 127.0.0.1). Use 0.0.0.0 for other devices; they need the printed token link.")
+    ui_parser.add_argument("--port", type=int, default=4040, help="Port to listen on (default: 4040)")
+    ui_parser.add_argument("--no-open", action="store_true", help="Do not open browser automatically")
+    ui_parser.add_argument("--project", help="Recent project name or project root path")
+
+    web_parser = subparsers.add_parser("web", help="Alias for 'ui'")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind to (default: 127.0.0.1). Use 0.0.0.0 for other devices; they need the printed token link.")
+    web_parser.add_argument("--port", type=int, default=4040, help="Port to listen on (default: 4040)")
+    web_parser.add_argument("--no-open", action="store_true", help="Do not open browser automatically")
+    web_parser.add_argument("--project", help="Recent project name or project root path")
+
     args = parser.parse_args(argv)
     if args.command == "init":
         return init_project(args)
@@ -2287,6 +2299,13 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         return run_script("dev_console.py", [])
+    if args.command in ("ui", "web"):
+        if args.project and apply_project_env(args.project):
+            return 1
+        from orchestrator.web.local_server import start_local_ui_server
+        project_root = Path(os.environ["ORCHESTRATOR_PROJECT_ROOT"]).resolve() if os.environ.get("ORCHESTRATOR_PROJECT_ROOT") else None
+        start_local_ui_server(host=args.host, port=args.port, open_browser=not args.no_open, project_root=project_root)
+        return 0
     if args.command == "distribute":
         if args.project and apply_project_env(args.project):
             return 1

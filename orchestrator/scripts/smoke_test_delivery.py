@@ -16,20 +16,20 @@ if str(SCRIPTS_DIR) not in sys.path:
 from common import ROOT, JOBS_DIR, write_json, timestamp, prompt_confirm, print_header, ensure_keychain_unlocked
 from orchestrator.project_config import PROJECT_CONFIG
 
-def run_smoke_delivery():
+def run_smoke_delivery(non_interactive: bool = False):
     global PROJECT_CONFIG
     print_header("SMOKE TEST: BUILD & DELIVERY PIPELINE")
     
     # 0. Pre-flight check: Ensure signing configuration is present
     print("\033[1;36m[STEP 1/3]\033[0m \033[1;97mPre-flight Configuration Check\033[0m", flush=True)
-    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
+    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=not non_interactive)
     if unlocked:
         print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
     else:
         print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
 
     dist_errors = PROJECT_CONFIG.validate_distribution_config()
-    if dist_errors:
+    if dist_errors and not non_interactive:
         print("\n\033[1;93m⚠️  Distribution configuration is incomplete. Attempting automatic detection and setup...\033[0m", flush=True)
         try:
             from setup_distribution import setup_distribution
@@ -66,7 +66,7 @@ def run_smoke_delivery():
         print("", flush=True)
         
         wizard_desc = "Runs the interactive project configuration wizard to set up Apple Team ID, Firebase credentials, and provisioning profiles."
-        if prompt_confirm("Would you like to run the Setup Wizard now?", default=True, description=wizard_desc, clear_screen=False):
+        if not non_interactive and prompt_confirm("Would you like to run the Setup Wizard now?", default=True, description=wizard_desc, clear_screen=False):
             print("\n\033[1;96mStarting Orchestrator Wizard...\033[0m", flush=True)
             cli_path = SCRIPTS_DIR.parent / "cli.py"
             res = subprocess.run([sys.executable, str(cli_path), "wizard"], cwd=str(ROOT))
@@ -135,10 +135,11 @@ def run_smoke_delivery():
         if job_file.exists():
             os.remove(job_file)
             print(f"   \033[92m✓ Automatically cleaned up temporary mock job ({job_file.name}).\033[0m\n", flush=True)
+        raise
 
 if __name__ == "__main__":
     try:
-        run_smoke_delivery()
+        run_smoke_delivery(non_interactive="--non-interactive" in sys.argv[1:])
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(1)

@@ -7,6 +7,11 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+.worktrees/
+node_modules/
+web/dist/
+firebase-debug.log
+firebase-debug.*.log
 build/
 dist/
 
@@ -22,5 +27,12 @@ test_onboarding_proj/
 # Swift build artifacts and module cache
 .build/
 *.pcm
+
+firestore-debug.log
+web/.env.local
+
+.firebase/
+*.tsbuildinfo
+
 exports/
 *.zip
