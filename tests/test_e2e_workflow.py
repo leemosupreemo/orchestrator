@@ -161,7 +161,7 @@ class E2EWorkflowTests(unittest.TestCase):
         prompts = self.plan_with_docs(self.prd_with_non_goals())
         verifier = [p for p in prompts if "### GENERATED PLAN ###" in p]
         self.assertTrue(verifier, "the verifier did not run")
-        self.assertIn("Reject or flag a plan that builds something under", verifier[0])
+        self.assertIn("builds something under \"Not this\"", verifier[0])
         self.assertIn("No chat", verifier[0])
 
     def plan_json(self, tasks):
@@ -328,7 +328,7 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertEqual(len(job_files), 1)
         job_data = json.loads(job_files[0].read_text())
         self.assertIsNone(job_data["verification"])
-        self.assertEqual(job_data["status"], "planned")
+        self.assertEqual(job_data["status"], "human-needed")
         mock_create_issue.assert_called_once()
 
     @patch("orchestrator.scripts.dev_console.prompt_radio")

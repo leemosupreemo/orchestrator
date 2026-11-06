@@ -4939,7 +4939,7 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_slow_model_work_is_started_and_polled_not_held_open(self):
         page = self.js[self.js.index("pages.product = async"):self.js.index("async function hydrateAuthImages")]
-        self.assertEqual(page.count("waitForTask("), 3)  # draft, import and picking one up again on return; the epic breakdown polls the same way from its own section
+        self.assertEqual(page.count("waitForTask("), 4)  # draft, import, reverse-engineering, and picking one up again on return; the epic breakdown polls the same way from its own section
         epics = self.js[self.js.index("function epicsSection("):self.js.index("pages.devlogs = async")]
         self.assertEqual(epics.count("waitForTask("), 1)
         fn = self.js[self.js.index("async function waitForTask"):self.js.index("function productStripHtml")]

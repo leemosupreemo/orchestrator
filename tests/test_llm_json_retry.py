@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +21,15 @@ PLAN = '```json\n{"title": "Add bonus", "tasks": []}\n```'
 
 
 class JsonRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": self.tmp.name})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
     def run_llm(self, replies, role=ModelRole.PLANNER, allowed=None):
         prompts = []
 

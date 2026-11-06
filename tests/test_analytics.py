@@ -95,7 +95,7 @@ class PlanTests(unittest.TestCase):
         self.assertIn("`seat_claimed`", text)
         self.assertIn("Mixpanel integration", text)
         self.assertIn("at most", A.instrumentation_context({"kpis": [{"name": "E", "event": "e_ev", "direction": "down", "target": 2.0, "unit": ""}]}, None))
-        self.assertEqual(A.instrumentation_context(self.FEATURES[1], "Mixpanel"), "")
+        self.assertIn("No KPI is defined for this feature yet", A.instrumentation_context(self.FEATURES[1], "Mixpanel"))
 
 
 class Resp:

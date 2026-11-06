@@ -195,7 +195,7 @@ class ServerFlowTests(Isolated):
     def test_new_project_state_includes_prd_sections(self):
         state = ui.new_project_state()
         self.assertIn("prd_sections", state)
-        self.assertEqual([s["id"] for s in state["prd_sections"]], ["pitch", "who", "features", "look", "not"])
+        self.assertEqual([s["id"] for s in state["prd_sections"]], ["pitch", "who", "features", "look", "not", "success"])
 
     def test_success_switches_project_and_clears_the_draft(self):
         np.save_draft({"answers": ANSWERS, "parent": str(self.home), "host": "local"})
