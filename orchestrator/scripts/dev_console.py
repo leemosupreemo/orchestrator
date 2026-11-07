@@ -7150,7 +7150,7 @@ def handle_open_web_ui() -> None:
         input("\n\033[1;96mTap Enter to return to console menu...\033[0m")
     except Exception as e:
         print(f"\n    \033[1;91m⚠️ Could not launch Web Control Room: {e}\033[0m")
-        time.sleep(2.0)
+        input("\n\033[1;96mTap Enter to return to console menu...\033[0m")
 
 def setup_xcode_cloud_scripts(root: Path) -> list[Path]:
     """Generates standard Xcode Cloud lifecycle hook scripts in ci_scripts/."""

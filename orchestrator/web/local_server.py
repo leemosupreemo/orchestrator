@@ -33,6 +33,7 @@ from orchestrator.project_config import (
 from orchestrator.web.contract import Operation, validate_command
 from orchestrator.web.jobs import create_job, list_jobs, list_archived_jobs, run_job_action, _job_path
 from orchestrator.web.projection import project_job, redact_data, redact_text
+from orchestrator.web.ui_build import DIST_DIR, ensure_ui_built
 from orchestrator.web.tools import run_tool, run_app_tests, run_refresh, _find_test_plans, _read, _NAME
 
 
@@ -49,13 +50,7 @@ def _project_id(name: str) -> str:
 
 
 def get_static_dir() -> Path:
-    pkg_dist = Path(__file__).resolve().parent / "dist"
-    if pkg_dist.is_dir() and (pkg_dist / "index.html").is_file():
-        return pkg_dist
-    repo_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
-    if repo_dist.is_dir() and (repo_dist / "index.html").is_file():
-        return repo_dist
-    return pkg_dist
+    return DIST_DIR
 
 
 def discover_local_projects(explicit_root: Path | None = None) -> dict[str, Path]:
@@ -502,6 +497,7 @@ def get_or_start_background_server(host: str = "127.0.0.1", port: int = 4040, pr
     if _BACKGROUND_SERVER is not None:
         return _BACKGROUND_SERVER[1], _BACKGROUND_SERVER[2], _BACKGROUND_SERVER[3]
 
+    ensure_ui_built()
     api_token = secrets.token_urlsafe(32)
     handler = make_handler(discover_local_projects(project_root), get_static_dir(), api_token)
 
@@ -526,6 +522,7 @@ def start_local_ui_server(
     open_browser: bool = True,
     project_root: Path | None = None
 ) -> None:
+    ensure_ui_built()
     projects = discover_local_projects(project_root)
     api_token = secrets.token_urlsafe(32)
     handler = make_handler(projects, get_static_dir(), api_token)
