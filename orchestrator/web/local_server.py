@@ -36,6 +36,18 @@ from orchestrator.web.projection import project_job, redact_data, redact_text
 from orchestrator.web.tools import run_tool, run_app_tests, run_refresh, _find_test_plans, _read, _NAME
 
 
+_COMMAND_FIELDS = ("project_id", "operation", "job_id", "inputs", "expected_revision")
+_NEW_PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_ARTIFACT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
+_MAX_BODY_BYTES = 16 * 1024 * 1024  # Room for a maximum artifact after base64 encoding.
+
+
+def _project_id(name: str) -> str:
+    """Turn a folder or project name into an ID the command contract accepts."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).lstrip("-_.")[:128] or "project"
+
+
 def get_static_dir() -> Path:
     pkg_dist = Path(__file__).resolve().parent / "dist"
     if pkg_dist.is_dir() and (pkg_dist / "index.html").is_file():
@@ -92,7 +104,7 @@ def discover_local_projects(explicit_root: Path | None = None) -> dict[str, Path
     if not projects:
         projects["default"] = current
 
-    return projects
+    return {_project_id(name): root for name, root in projects.items()}
 
 
 class LocalCommandRunner:
@@ -101,18 +113,21 @@ class LocalCommandRunner:
         self.commands: list[dict[str, Any]] = []
         self.artifacts: dict[str, tuple[str, bytes]] = {}
         self._lock = threading.Lock()
+        self._project_locks: dict[str, threading.Lock] = {}
 
     def add_command(self, payload: dict[str, Any]) -> dict[str, Any]:
-        cmd_id = payload.get("id") or str(uuid.uuid4())
+        if not isinstance(payload, dict):
+            raise ValueError("Command must be an object")
+        command = validate_command({key: payload[key] for key in _COMMAND_FIELDS if key in payload})
         record = {
-            "id": cmd_id,
-            "project_id": payload.get("project_id", list(self.projects.keys())[0]),
-            "operation": payload.get("operation", ""),
-            "inputs": payload.get("inputs", {}),
-            "job_id": payload.get("job_id"),
-            "expected_revision": payload.get("expected_revision"),
+            "id": str(uuid.uuid4()),
+            "project_id": command.project_id,
+            "operation": command.operation.value,
+            "inputs": command.inputs,
+            "job_id": command.job_id,
+            "expected_revision": command.expected_revision,
             "status": "queued",
-            "requested_by": payload.get("requested_by", "local@localhost"),
+            "requested_by": "local@localhost",
             "created_at": {"seconds": int(time.time()), "nanoseconds": 0},
             "output": "",
         }
@@ -125,19 +140,53 @@ class LocalCommandRunner:
         threading.Thread(target=self._execute, args=(record,), daemon=True).start()
         return record
 
+    def cancel_command(self, command_id: str) -> dict[str, Any]:
+        with self._lock:
+            record = next((item for item in self.commands if item["id"] == command_id), None)
+            if record is None:
+                raise LookupError("Command not found")
+            if record["status"] != "queued":
+                raise ValueError(f"Only queued commands can be cancelled (this one is {record['status']})")
+            record["status"] = "cancelled"
+            return record
+
     def store_artifact(self, artifact_id: str, filename: str, data: bytes) -> None:
         with self._lock:
             self.artifacts[artifact_id] = (filename, data)
 
     def _execute(self, record: dict[str, Any]) -> None:
-        cmd_id = record["id"]
+        # Run one command per project at a time; waiting commands stay cancellable.
+        with self._lock:
+            project_lock = self._project_locks.setdefault(record["project_id"], threading.Lock())
+        with project_lock:
+            with self._lock:
+                if record["status"] != "queued":
+                    return
+                record["status"] = "running"
+            self._run(record)
+
+    def _with_artifact(self, inputs: dict[str, Any], action: Any) -> Any:
+        art_id = inputs.get("artifact_id")
+        if not art_id:
+            return action(inputs)
+        with self._lock:
+            artifact = self.artifacts.get(art_id)
+        if artifact is None:
+            raise ValueError("Uploaded file not found. Upload it again.")
+        name, data = artifact
+        with tempfile.TemporaryDirectory(prefix="orchestrator-spec-") as tmp:
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "-", name or "spec.md")[:128]
+            src = Path(tmp) / safe_name
+            src.write_bytes(data)
+            return action({**inputs, "_trusted_source_file": str(src), "_trusted_file_name": name})
+
+    def _run(self, record: dict[str, Any]) -> None:
         project_id = record["project_id"]
         op = record["operation"]
         inputs = record["inputs"]
         job_id = record.get("job_id")
         expected_rev = record.get("expected_revision")
 
-        record["status"] = "running"
         root = self.projects.get(project_id)
         if not root or not root.is_dir():
             record["status"] = "failed"
@@ -148,39 +197,32 @@ class LocalCommandRunner:
             record["output"] = (record.get("output", "") + redact_text(text))[-20000:]
 
         try:
-            if op == Operation.JOB_CREATE.value or op == "job.create":
-                art_id = inputs.get("artifact_id")
-                if art_id and art_id in self.artifacts:
-                    name, data = self.artifacts[art_id]
-                    with tempfile.TemporaryDirectory(prefix="orchestrator-spec-") as tmp:
-                        safe_name = re.sub(r"[^A-Za-z0-9._-]", "-", name or "spec.md")[:128]
-                        src = Path(tmp) / safe_name
-                        src.write_bytes(data)
-                        inputs["_trusted_source_file"] = str(src)
-                        inputs["_trusted_file_name"] = name
-                        job = create_job(root, inputs)
-                else:
-                    job = create_job(root, inputs)
+            if op == Operation.JOB_CREATE.value:
+                job = self._with_artifact(inputs, lambda opts: create_job(root, opts))
                 record["result"] = {"job_id": job["job_id"]}
                 record["status"] = "succeeded"
             elif op.startswith("job."):
-                job = run_job_action(root, job_id, Operation(op), inputs, expected_rev)
+                def action(opts: dict[str, Any]) -> dict[str, Any]:
+                    return run_job_action(root, job_id, Operation(op), opts, expected_rev)
+                job = self._with_artifact(inputs, action) if op == Operation.JOB_ATTACH_REFERENCE.value else action(inputs)
                 res = {"job_id": job["job_id"], "revision": job["revision"]}
                 if "_web_result" in job:
                     res.update(job["_web_result"])
                 record["result"] = res
                 record["status"] = "succeeded"
-            elif op == Operation.TESTS_RUN.value or op == "tests.run":
+            elif op == Operation.TESTS_RUN.value:
                 res = run_app_tests(root, inputs, progress=progress_cb)
                 record["result"] = redact_data(res)
                 record["status"] = "failed" if res.get("exit_code", 0) != 0 else "succeeded"
-            elif op == Operation.PROJECT_REFRESH.value or op == "project.refresh":
+            elif op == Operation.PROJECT_REFRESH.value:
                 res = run_refresh(root)
                 record["result"] = redact_data(res)
                 record["status"] = "succeeded"
             elif op == Operation.TOOL_PROJECT.value and inputs.get("action") == "add":
                 new_id = str(inputs.get("project_id", "")).strip()
                 raw_path = str(inputs.get("path", "")).strip()
+                if not _NEW_PROJECT_ID.fullmatch(new_id):
+                    raise ValueError("Project ID must contain only letters, numbers, dashes, and underscores (1-64 chars)")
                 new_path = Path(raw_path).expanduser().resolve()
                 if not new_path.is_dir():
                     raise ValueError(f"Directory not found: {raw_path}")
@@ -193,7 +235,7 @@ class LocalCommandRunner:
                 record["status"] = "failed" if isinstance(res, dict) and res.get("exit_code", 0) != 0 else "succeeded"
         except Exception as exc:
             record["status"] = "failed"
-            record["error"] = str(exc)
+            record["error"] = redact_text(str(exc))
 
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -304,6 +346,9 @@ class LocalUIHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/") and not self._api_allowed():
             return
         length = int(self.headers.get("Content-Length", "0"))
+        if length > _MAX_BODY_BYTES:
+            self._send_json({"error": "Request is too large"}, status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
         body = self.rfile.read(length) if length > 0 else b""
 
         if path == "/api/commands":
@@ -315,13 +360,27 @@ class LocalUIHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        m_cancel = re.match(r"^/api/commands/([^/]+)/cancel$", path)
+        if m_cancel:
+            try:
+                self._send_json(self.runner.cancel_command(urllib.parse.unquote(m_cancel.group(1))))
+            except LookupError as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.NOT_FOUND)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.CONFLICT)
+            return
+
         if path.startswith("/api/projects/") and "/artifacts" in path:
             try:
                 payload = json.loads(body.decode("utf-8")) if body else {}
                 art_id = payload.get("artifact_id") or payload.get("id") or str(uuid.uuid4())
-                filename = payload.get("name", "spec.md")
+                if not isinstance(art_id, str) or not _ARTIFACT_ID.fullmatch(art_id):
+                    raise ValueError("Invalid artifact ID")
+                filename = str(payload.get("name", "spec.md"))
                 raw_data = payload.get("data", "")
-                data_bytes = base64.b64decode(raw_data) if raw_data else b""
+                data_bytes = base64.b64decode(raw_data, validate=True) if raw_data else b""
+                if len(data_bytes) > _MAX_ARTIFACT_BYTES:
+                    raise ValueError("Uploaded file is larger than 10 MB")
                 self.runner.store_artifact(art_id, filename, data_bytes)
                 self._send_json({"id": art_id}, status=HTTPStatus.CREATED)
             except Exception as e:
