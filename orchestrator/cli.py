@@ -2303,8 +2303,13 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         from orchestrator.web.local_server import start_local_ui_server
+        from orchestrator.web.ui_build import UIUnavailable
         project_root = Path(os.environ["ORCHESTRATOR_PROJECT_ROOT"]).resolve() if os.environ.get("ORCHESTRATOR_PROJECT_ROOT") else None
-        start_local_ui_server(host=args.host, port=args.port, open_browser=not args.no_open, project_root=project_root)
+        try:
+            start_local_ui_server(host=args.host, port=args.port, open_browser=not args.no_open, project_root=project_root)
+        except UIUnavailable as error:
+            print(error)
+            return 1
         return 0
     if args.command == "distribute":
         if args.project and apply_project_env(args.project):

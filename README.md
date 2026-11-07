@@ -33,6 +33,8 @@ pipx install "git+https://github.com/leemosupreemo/orchestrator.git"
 orchestrator --help
 ```
 
+The browser UI (`orchestrator ui`) is built during installation and needs [Node.js](https://nodejs.org). Without it, everything else still installs: add Node.js and rerun the install command with `--force` to get the UI.
+
 ### Quick Start
 
 1.  **Configure**: Run the wizard from the project root.
@@ -156,6 +158,8 @@ cd orchestrator
 python3 -m pip install -e .
 python3 -m unittest discover -s tests
 ```
+
+In a checkout, `orchestrator ui` and the console's `W` option rebuild the web UI whenever `web/` has changed. To build it yourself, run `npm --prefix web run build`; the output goes to `orchestrator/web/dist`.
 
 Package install smoke test:
 ```bash
