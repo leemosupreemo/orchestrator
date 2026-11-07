@@ -121,6 +121,12 @@ class WebResearchRunTests(unittest.TestCase):
         self.assertFalse(llm_call.call_args.kwargs["web"])
         self.assertIn("<<<ORCHESTRATOR-WEB>>>off", out)
 
+    def test_it_says_which_model_and_only_falls_back_to_a_couple_that_can_search(self):
+        code, out, llm_call = self.run_script(["deepseek", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-7"])
+        self.assertEqual(code, 0)
+        self.assertIn("<<<ORCHESTRATOR-STAGE>>>claude-opus-4-8 with web search", out)
+        self.assertEqual(llm_call.call_args.kwargs["allowed_models"], ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"])
+
     def test_without_the_flag_nothing_searches(self):
         _, out, llm_call = self.run_script(["claude-sonnet-4-6"], args=())
         self.assertFalse(llm_call.call_args.kwargs["web"])

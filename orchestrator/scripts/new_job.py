@@ -29,7 +29,7 @@ from common import (
     StatusBar,
 )
 from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
-from model_router import ModelRole, get_prioritized_models
+from model_router import AUTO, ModelRole, auto_assign_roles, get_prioritized_models, profile_job
 from model_registry import get_model, ModelTier
 from probe_machine import load_machines
 from orchestrator.run_check import models_machines_can_run
@@ -41,13 +41,6 @@ from orchestrator import plan_size, slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
-DEFAULTS = {
-    "bug": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
-    "feature": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
-    "coverage": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
-    "quick": {"planner": "gemini-3-flash-preview", "builder": "codex", "reviewer": "gemini-3.1-flash-lite-preview"},
-}
-
 PRESETS = {
     "balanced": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
     "hard-bug": {"planner": "gemini", "builder": "claude-opus-4-7", "reviewer": "gemini"},
@@ -58,6 +51,16 @@ PRESETS = {
 
 BRANCH_MODE_CHOICES = ["new", "current", "manual"]
 VERIFICATION_STATUSES = {"approved", "rejected", "concerns"}
+
+
+def team_role_settings() -> dict[str, str]:
+    """The AI tools page's role choices (settings "default_models"); a missing or "auto" role is picked per job."""
+    try:
+        from common import CONFIG_DIR
+        saved = read_json(CONFIG_DIR / "settings.json").get("default_models") if (CONFIG_DIR / "settings.json").exists() else {}
+    except Exception:
+        saved = {}
+    return {role: str(model) for role, model in (saved or {}).items() if isinstance(saved, dict) and model and model != AUTO}
 
 
 def normalize_branch_mode(branch_mode: str | None) -> str:
@@ -482,16 +485,17 @@ def main(args_override: list[str] | None = None) -> None:
             existing_job = read_json(job_path)
             print(f"      - Updating existing job: {existing_job.get('job_id')}")
 
-    # Define defaults for 'quick' job
-    job_type_for_defaults = args.job_type
-    if job_type_for_defaults == "design": job_type_for_defaults = "feature"
-    defaults = PRESETS[args.preset] if args.preset else (PRESETS["free"] if args.free else DEFAULTS[job_type_for_defaults])
     # A re-plan keeps the job's own choices; only what is passed explicitly changes them.
     # (Otherwise the first re-plan resets a free-only or restricted job to the paid defaults.)
     saved = existing_job or {}
-    planner = args.planner or saved.get("planner") or defaults["planner"]
-    builder = args.builder or saved.get("builder") or defaults["builder"]
-    reviewer = args.reviewer or saved.get("reviewer") or defaults["reviewer"]
+    team = team_role_settings()
+
+    def chosen(role: str) -> str:
+        """Passed in, else the job's own, else a preset, else the AI tools page's choice; "auto" picks per job below."""
+        return (getattr(args, role) or saved.get(role) or (PRESETS[args.preset][role] if args.preset else "")
+                or team.get(role) or AUTO)
+
+    planner, builder, reviewer = chosen("planner"), chosen("builder"), chosen("reviewer")
 
     # Load spec from file or URL if provided
     file_spec_content = ""
@@ -526,11 +530,12 @@ def main(args_override: list[str] | None = None) -> None:
     if args.free:
         from model_registry import get_free_models
         free_models = [m.id for m in get_free_models()]
-        if free_models:
-            allowed_models = free_models
-            print(f"      - Free-models-only mode active: Restricted to {len(allowed_models)} free models: {', '.join(allowed_models)}")
-        else:
-            allowed_models = args.allowed_models.split(",") if args.allowed_models else DEFAULT_FALLBACKS
+        if not free_models:
+            print("\n\033[1;91m⚠️  ERROR: Free models only was chosen, but no free model is set up.\033[0m")
+            print("\033[90m(Install OpenCode for free hosted models, or turn off Free models only.)\033[0m")
+            sys.exit(1)
+        allowed_models = free_models
+        print(f"      - Free-models-only mode active: Restricted to {len(allowed_models)} free models: {', '.join(allowed_models)}")
     elif args.allowed_models:
         allowed_models = args.allowed_models.split(",")
     elif saved.get("allowed_models"):
@@ -551,6 +556,23 @@ def main(args_override: list[str] | None = None) -> None:
         print("\033[90m(Run with --allowed-models <ids> or select models in the interactive prompt.)\033[0m")
         sys.exit(1)
         
+    # Auto: the best usable model for each role, for this job's brief and the models it may use.
+    auto_roles = [role for role, value in (("planner", planner), ("builder", builder), ("reviewer", reviewer)) if value == AUTO]
+    auto_assignment = None
+    if auto_roles:
+        profile = profile_job(args.job_type, f"{args.summary or ''}\n{file_spec_content}")
+        picks = auto_assign_roles(allowed_models, profile)
+        if not picks and args.free:
+            print("\n\033[1;91m⚠️  ERROR: None of the free models can run on this computer right now.\033[0m")
+            print("\033[90m(Install or sign in to OpenCode, or turn off Free models only.)\033[0m")
+            sys.exit(1)
+        if picks:
+            planner, builder, reviewer = (picks[r] if v == AUTO else v for r, v in
+                                          (("planner", planner), ("builder", builder), ("reviewer", reviewer)))
+            auto_assignment = {"roles": {role: picks[role] for role in auto_roles}, "complexity": profile.complexity,
+                               "reasons": profile.reasons}
+            print(f"      - Auto picked {', '.join(f'{r} {picks[r]}' for r in auto_roles)} ({profile.complexity} job: {'; '.join(profile.reasons)})")
+
     # Ensure initial choices are within allowed set (resolve aliases first)
     p_meta = get_model(planner)
     b_meta = get_model(builder)
@@ -1110,6 +1132,7 @@ def main(args_override: list[str] | None = None) -> None:
             "verification": verification,
             "builder": builder,
             "reviewer": reviewer,
+            "auto_assignment": auto_assignment or job.get("auto_assignment"),
             "yolo": args.yolo,
             "branch_mode": branch_mode,
             "branch": selected_branch,

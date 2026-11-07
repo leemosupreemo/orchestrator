@@ -1,6 +1,6 @@
 """How to get an AI working with Orchestrator: each provider, what it costs, and how to install and sign in.
 
-This is the one list of providers: the setup checklist's tool and API-key lists and the API Keys page come from it.
+This is the one list of providers: the setup checklist's tool and API-key lists and the AI tools page (each service with its API key) come from it.
 
 Facts here change (prices, free tiers, install commands), so they live in one place and say when they were last
 checked. The web page shows them with what's already installed and signed in on this computer, free options first.
@@ -34,19 +34,20 @@ PROVIDERS: list[dict[str, str]] = [
     {"id": "claude", "name": "Claude Code (Anthropic)", "cli": "claude", "cost": "subscription",
      "what": "Included with a Claude Pro or Max plan, or pay as you go with an Anthropic API key.",
      "install": "curl -fsSL https://claude.ai/install.sh | bash", "install_alt": "",
-     "sign_in": "Run `claude` once and sign in, or add an Anthropic API key under API Keys.",
+     "sign_in": "Run `claude` once and sign in, or add an Anthropic API key below.",
      "link": "https://docs.claude.com/en/docs/claude-code/overview", "key": "anthropic_api_key", "env": "ANTHROPIC_API_KEY",
      "key_label": "Claude"},
     {"id": "codex", "name": "Codex (OpenAI)", "cli": "codex", "cost": "subscription",
      "what": "Included with ChatGPT Plus, Pro and Business plans, or pay as you go with an OpenAI API key.",
      "install": "npm install -g @openai/codex@latest", "install_alt": "brew install --cask codex",
-     "sign_in": "Run `codex` once and sign in with ChatGPT, or add an OpenAI API key under API Keys.",
+     "sign_in": "Run `codex` once and sign in with ChatGPT, or add an OpenAI API key below.",
      "link": "https://developers.openai.com/codex/cli", "key": "openai_api_key", "env": "OPENAI_API_KEY",
      "key_label": "Codex / OpenAI"},
     {"id": "gemini", "name": "Gemini CLI (Google)", "cli": "gemini", "cost": "pay-per-use",
      "what": "Needs a Gemini API key now that free Google-account access has ended. For free Google access, use the Antigravity CLI.",
      "install": "npm install -g @google/gemini-cli", "install_alt": "",
-     "sign_in": "Add a Gemini API key under API Keys.", "link": "https://github.com/google-gemini/gemini-cli",
+     "sign_in": "Google sign-in no longer works for Gemini CLI. Add a Gemini API key below, or use the Antigravity CLI.",
+     "key_only": True, "link": "https://github.com/google-gemini/gemini-cli",
      "key": "gemini_api_key", "env": "GEMINI_API_KEY", "key_label": "Antigravity / Gemini"},
     {"id": "pool", "name": "Poolside", "cli": "pool", "cost": "free",
      "what": "Poolside's coding agent and ACP runtime. Free developer access to Poolside-hosted models, with the option to bring your own endpoint (an OpenRouter key, an OpenAI-compatible gateway, or a local model server).",
@@ -65,7 +66,20 @@ API_KEYS = [(p["key"], p["key_label"], p["env"]) for p in PROVIDERS if p.get("ke
 # model no tools to call (claude -p, codex exec, ollama — it outputs a plan the orchestrator applies) or are
 # interactive and not used in headless runs (copilot). This is surfaced on the AI tools page so a user can pick
 # a yolo provider for fully-unattended jobs.
-AUTO_APPROVE_CLIS = {"gemini", "agy", "pool", "opencode"}
+YOLO_FLAGS = {"agy": "--dangerously-skip-permissions", "gemini": "--yolo", "pool": "--unsafe-auto-allow", "opencode": "--auto"}
+AUTO_APPROVE_CLIS = set(YOLO_FLAGS)
+
+
+def yolo_on(settings: dict, cli: str) -> bool:
+    """Whether `cli` runs with its auto-approve flag: on unless the owner turned it off (settings["cli_yolo"][cli])."""
+    choice = (settings.get("cli_yolo") or {}).get(cli) if isinstance(settings.get("cli_yolo"), dict) else None
+    return cli in YOLO_FLAGS and choice is not False
+
+
+def without_yolo(command: str, cli: str) -> str:
+    """`command` with `cli`'s auto-approve flag taken out; tools stop and ask before changing files."""
+    flag = YOLO_FLAGS.get(cli)
+    return " ".join(part for part in command.split(" ") if part != flag) if flag else command
 
 # Optional helpers for the AI tools themselves (docs/recommended-mcp-plugins.md has the detail; a test keeps them in step).
 PLUGINS: list[dict[str, str]] = [
@@ -80,15 +94,18 @@ _INSTALL_LOCK = threading.Lock()
 _INSTALLING: set[str] = set()
 
 
-def with_status(installed: Callable[[str], bool], ready: Callable[[str], bool], saved_keys: set[str]) -> dict:
-    """The providers, free first, each with `installed` and `ready` (signed in, or an API key saved), and the plugins."""
+def with_status(installed: Callable[[str], bool], ready: Callable[[str], bool], saved_keys: set[str],
+                settings: dict | None = None) -> dict:
+    """The providers, free first, each with `installed`, `ready` (signed in, or an API key saved) and its YOLO switch,
+    and the plugins."""
     out = []
     for provider in sorted(PROVIDERS, key=lambda p: COST_ORDER[p["cost"]]):
         has_cli = installed(provider["cli"])
         key_saved = provider.get("key") in saved_keys
         out.append({**provider, "cost_label": COST_LABELS[provider["cost"]], "installed": has_cli,
                     "ready": (has_cli and ready(provider["cli"])) or key_saved, "key_saved": key_saved,
-                    "auto_approve": provider["cli"] in AUTO_APPROVE_CLIS})
+                    "auto_approve": yolo_on(settings or {}, provider["cli"]),
+                    "yolo_supported": provider["cli"] in YOLO_FLAGS})
     return {"providers": out, "any_ready": any(p["ready"] for p in out), "plugins": PLUGINS, "checked": CHECKED}
 
 

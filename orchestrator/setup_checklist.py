@@ -67,7 +67,9 @@ def _cli_ready(cli: str) -> bool:
     if cli in commands:
         res = _run(commands[cli], timeout=5)
         return bool(res and res.returncode == 0 and (cli != "opencode" or res.stdout.strip()))
-    if cli in ("agy", "gemini"):
+    if cli == "gemini":
+        return False  # Google-account access to Gemini CLI has ended; only a Gemini API key (counted separately) works
+    if cli == "agy":
         home = Path.home() / ".gemini"
         return (home / "oauth_creds.json").exists() or (home / "google_accounts.json").exists()
     if cli == "ollama":

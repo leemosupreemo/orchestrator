@@ -155,12 +155,15 @@ class BackgroundTasks:
         self._items: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-    def start(self, work: Callable[[], Any], commit: Callable[[Any], Any] | None = None) -> str:
+    def start(self, work: Callable[..., Any], commit: Callable[[Any], Any] | None = None, *, progress: bool = False) -> str:
         """Run `work` in the background. `commit` (if given) saves its result, and is skipped when the person cancelled meanwhile;
-        what it returns is what the page gets."""
+        what it returns is what the page gets. With `progress`, `work` is passed a TaskProgress so the page can say what's happening."""
         release = self.gate.hold()
         task_id = secrets.token_hex(6)
         item: dict[str, Any] = {"status": "running", "at": time.time()}
+        if progress:
+            item["stage"] = "Starting"
+        reporter = TaskProgress(item, self._lock)
         with self._lock:
             for old in [k for k, v in self._items.items() if v["status"] != "running" and time.time() - v["at"] > self.KEEP_SECONDS]:
                 del self._items[old]
@@ -168,7 +171,7 @@ class BackgroundTasks:
 
         def run() -> None:
             try:
-                result = work()
+                result = work(reporter) if progress else work()
                 with self._lock:
                     if item.get("status") != "canceled":
                         item.update(status="done", result=commit(result) if commit else result)
@@ -198,7 +201,32 @@ class BackgroundTasks:
     def get(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
             item = self._items.get(task_id)
-        return None if item is None else {k: v for k, v in item.items() if k != "at"}
+            if item is None:
+                return None
+            view = {k: v for k, v in item.items() if k != "at"}
+        if "stage" in view:  # tasks that report progress also say how long they've been going
+            view["elapsed"] = int(time.time() - item["at"])
+        return view
+
+
+class TaskProgress:
+    """What a background task tells the page while it runs: a short stage, an optional detail, and whether the person cancelled."""
+
+    def __init__(self, item: dict[str, Any], lock: threading.Lock) -> None:
+        self._item, self._lock = item, lock
+
+    def update(self, stage: str, detail: str = "") -> None:
+        with self._lock:
+            if self._item.get("status") == "running":
+                self._item.update(stage=stage, detail=detail)
+
+    def last(self) -> str:
+        with self._lock:
+            return " · ".join(part for part in (self._item.get("stage"), self._item.get("detail")) if part)
+
+    def cancelled(self) -> bool:
+        with self._lock:
+            return self._item.get("status") == "canceled"
 
 
 # --------------------------------------------------------------------------- terminal sessions
@@ -2048,18 +2076,86 @@ def git_state(root: Path) -> dict[str, Any]:
     return state
 
 
-def research_call(server: Any, root: Path, prompt: str, timeout: int = 240) -> tuple[str, bool]:
-    """One model turn that may search the web (job_chat_run.py --web), in an empty scratch folder. Returns (answer, whether it searched)."""
+_RUNNING_LLM = re.compile(r"Running LLM \(([^,]+), timeout")
+_FALLBACK = re.compile(r"⚠️\s+(\S+) (timed out|failed \((.*)\))\. Attempting fallback")
+_RECEIVED = re.compile(r"\[output\] Received (\d+) chars")
+STAGE_MARKER = "<<<ORCHESTRATOR-STAGE>>>"
+
+
+def research_stage(line: str) -> tuple[str, str] | None:
+    """A known line from job_chat_run.py as a short stage for the page. Anything else (CLI noise, warnings) is ignored."""
+    line = line.strip()
+    if line.startswith(STAGE_MARKER):
+        return "Asking the model", line[len(STAGE_MARKER):].strip()
+    if match := _RUNNING_LLM.search(line):
+        return "Waiting for an answer", f"{match.group(1)} is researching"
+    if match := _FALLBACK.search(line):
+        reason = "didn't answer in time" if match.group(2) == "timed out" else f"failed: {(match.group(3) or '')[:90]}"
+        return "Trying another model", f"{match.group(1)} {reason}"
+    if match := _RECEIVED.search(line):
+        return "Reading the answer", f"{match.group(1)} characters received"
+    return None
+
+
+def _stop_group(proc: subprocess.Popen) -> None:
+    """The model CLI is a grandchild (cat … | claude …), so stop the whole group, not just the Python child."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=3)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def research_call(server: Any, root: Path, prompt: str, timeout: int = 240, progress: "TaskProgress | None" = None) -> tuple[str, bool]:
+    """One model turn that may search the web (job_chat_run.py --web), in an empty scratch folder. Returns (answer, whether it searched).
+    With `progress`, each step is reported as it happens, and a cancel stops the model."""
+    out: list[str] = []
+    err: list[str] = []
     with tempfile.TemporaryDirectory(prefix="orchestrator-model-") as scratch:
         argv = orchestrator_argv("script", "job_chat_run.py", "--web", "--timeout", str(max(30, timeout - 15)), "--cwd", scratch)
+        env = {**server.child_env(), "PYTHONUNBUFFERED": "1"}
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root, env=env, text=True,
+                                start_new_session=True)
+
+        def read_out() -> None:
+            for line in proc.stdout:
+                out.append(line)
+                if progress and (stage := research_stage(line)):
+                    progress.update(*stage)
+
+        readers = [threading.Thread(target=read_out, daemon=True),
+                   threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True)]
+        for reader in readers:
+            reader.start()
         try:
-            res = subprocess.run(argv, input=prompt, cwd=root, env=server.child_env(), capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise UIError("The research took too long. Try again.", HTTPStatus.GATEWAY_TIMEOUT)
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        deadline = time.monotonic() + timeout
+        while proc.poll() is None:
+            if progress and progress.cancelled():
+                _stop_group(proc)
+                raise UIError("Stopped.", HTTPStatus.CONFLICT)
+            if time.monotonic() > deadline:
+                last = progress.last() if progress else ""
+                _stop_group(proc)
+                minutes = max(1, round(timeout / 60))
+                raise UIError(f"No answer after {minutes} min{f' (last step: {last})' if last else ''}. Try again, or choose a faster model "
+                              "in Configuration > Models.", HTTPStatus.GATEWAY_TIMEOUT)
+            time.sleep(0.25)
+        for reader in readers:
+            reader.join(timeout=2)
+    stdout = "".join(out)
     marker = "<<<ORCHESTRATOR-REPLY>>>"
-    if res.returncode != 0 or marker not in res.stdout:
-        raise UIError((res.stderr.strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
-    head, reply = res.stdout.split(marker, 1)
+    if proc.returncode != 0 or marker not in stdout:
+        raise UIError(("".join(err).strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
+    head, reply = stdout.split(marker, 1)
     return reply, "<<<ORCHESTRATOR-WEB>>>on" in head
 
 
@@ -2080,21 +2176,40 @@ def package_review_job(server: Any, root: Path, research: Callable[[Path, str], 
     except Exception:
         stack = ""
 
-    def work() -> dict[str, Any]:
-        def ask(extra: str = "") -> tuple[dict[str, Any], bool]:
-            reply, searched = research(root, package_store.review_prompt(prd_text, features, installed, stack, web=True, decided=decided) + extra)
-            return package_store.parse_suggestions(reply, features, installed, decided), searched
+    def work(progress: TaskProgress | None = None) -> dict[str, Any]:
+        # One budget covers the whole review, the retry included, so it ends before the page stops waiting.
+        deadline = time.monotonic() + package_store.REVIEW_BUDGET_SECONDS
 
+        def ask(extra: str = "") -> tuple[dict[str, Any], bool]:
+            remaining = int(deadline - time.monotonic())
+            if remaining < 30:
+                raise UIError("The review ran out of time before the model gave a usable answer. Try again.", HTTPStatus.GATEWAY_TIMEOUT)
+            prompt = package_store.review_prompt(prd_text, features, installed, stack, web=True, decided=decided) + extra
+            reply, searched = research(root, prompt, timeout=remaining, progress=progress) if progress else research(root, prompt, timeout=remaining)
+            if progress:
+                progress.update("Checking the suggestions", "Matching them to your features and the packages you already have")
+            try:
+                return package_store.parse_suggestions(reply, features, installed, decided), searched
+            except package_store.PackageError:
+                (rt / package_store.LAST_ANSWER_FILE).write_text(reply, encoding="utf-8")
+                raise
+
+        if progress:
+            progress.update("Reading your requirements", f"{len(features)} feature{'s' * (len(features) != 1)}, "
+                                                          f"{len(installed)} package{'s' * (len(installed) != 1)} already in the project")
         try:
             try:
                 found, searched = ask()
             except package_store.PackageError:
+                if progress:
+                    progress.update("Asking again", "The first answer couldn't be read as package suggestions")
                 found, searched = ask(package_store.REMINDER)
         except package_store.PackageError as exc:
             package_store.note_prd(rt, fingerprint, error=f"{exc} Try again, or add packages yourself.", snapshot=raw_prd)
             raise UIError(f"{exc} Try again, or add packages yourself.", HTTPStatus.BAD_GATEWAY)
         except UIError as exc:
-            package_store.note_prd(rt, fingerprint, error=str(exc), snapshot=raw_prd)
+            if not (progress and progress.cancelled()):  # a cancel isn't a failure worth showing
+                package_store.note_prd(rt, fingerprint, error=str(exc), snapshot=raw_prd)
             raise
         found["searched"] = searched
         return found
@@ -3217,96 +3332,6 @@ AVAILABLE_MODELS = [
 ]
 
 
-def pick_best_default_models(active_providers: set[str] | list[str] | None = None) -> dict[str, str]:
-    """Picks optimal role model assignments (architect, planner, builder, reviewer) based on active/available AI providers."""
-    active = set(active_providers or [])
-    has_claude = "claude" in active
-    has_gemini = "agy" in active or "gemini" in active
-    has_openai = "codex" in active
-    has_opencode = "opencode" in active
-    has_ollama = "ollama" in active
-    has_pool = "pool" in active
-
-    if not active:
-        return {
-            "architect": "claude-sonnet-4-6",
-            "planner": "claude-sonnet-4-6",
-            "builder": "claude-sonnet-4-6",
-            "reviewer": "claude-sonnet-4-6",
-        }
-
-    # Architect: deep reasoning, standards & plan checks
-    if has_claude:
-        architect = "claude-sonnet-4-6"
-    elif has_gemini:
-        architect = "gemini-3.1-pro-preview"
-    elif has_openai:
-        architect = "o3-mini"
-    elif has_opencode:
-        architect = "opencode/big-pickle"
-    elif has_pool:
-        architect = "pool"
-    elif has_ollama:
-        architect = "deepseek"
-    else:
-        architect = "claude-sonnet-4-6"
-
-    # Planner: breaking down goals, reading code
-    if has_claude:
-        planner = "claude-sonnet-4-6"
-    elif has_gemini:
-        planner = "gemini-3.1-pro-preview"
-    elif has_openai:
-        planner = "gpt-4o"
-    elif has_opencode:
-        planner = "opencode/big-pickle"
-    elif has_pool:
-        planner = "pool"
-    elif has_ollama:
-        planner = "deepseek"
-    else:
-        planner = "claude-sonnet-4-6"
-
-    # Builder: writing code and tests
-    if has_claude:
-        builder = "claude-sonnet-4-6"
-    elif has_openai:
-        builder = "gpt-4o"
-    elif has_gemini:
-        builder = "gemini-3.1-pro-preview"
-    elif has_opencode:
-        builder = "opencode/big-pickle"
-    elif has_pool:
-        builder = "pool"
-    elif has_ollama:
-        builder = "deepseek"
-    else:
-        builder = "claude-sonnet-4-6"
-
-    # Reviewer: fast verification, large context window
-    if has_gemini:
-        reviewer = "gemini-3-flash-preview"
-    elif has_claude:
-        reviewer = "claude-sonnet-4-6"
-    elif has_openai:
-        reviewer = "gpt-4o"
-    elif has_opencode:
-        reviewer = "opencode/big-pickle"
-    elif has_pool:
-        reviewer = "pool"
-    elif has_ollama:
-        reviewer = "deepseek"
-    else:
-        reviewer = "claude-sonnet-4-6"
-
-    return {
-        "architect": architect,
-        "planner": planner,
-        "builder": builder,
-        "reviewer": reviewer,
-    }
-
-
 def settings_path(root: Path) -> Path:
     return runtime_dir(root) / "config" / "settings.json"
 
@@ -3322,26 +3347,35 @@ PROVIDER_MODEL_CLIS = {"claude": ["claude"], "codex": ["codex"], "gemini": ["gem
 
 def provider_models() -> dict[str, list[dict[str, Any]]]:
     """Every known model per AI tool, strongest first, from the bundled list plus whatever a refresh has found."""
-    from orchestrator.scripts.model_registry import get_all_models
+    from orchestrator.scripts.model_registry import get_all_models, model_usable
     models = get_all_models()
     out: dict[str, list[dict[str, Any]]] = {}
     for provider, clis in PROVIDER_MODEL_CLIS.items():
         found = sorted((m for m in models if set(m.required_clis) & set(clis)), key=lambda m: (int(m.tier), m.id))
-        out[provider] = [{"id": m.id, "name": m.id, "tier": m.tier.name.title(), "caps": [c.value.title() for c in m.capabilities]} for m in found]
+        out[provider] = [{"id": m.id, "name": m.id, "tier": m.tier.name.title(), "caps": [c.value.title() for c in m.capabilities],
+                          "usable": model_usable(m)} for m in found]
     return out
+
+
+def _team_model(models_cfg: Any, role: str) -> str:
+    """The AI tools page's model for `role`, or "" when it's Auto (each job picks its own)."""
+    value = str((models_cfg if isinstance(models_cfg, dict) else {}).get(role) or "")
+    return "" if value == "auto" else value
+
+
+def _product_model(settings: dict[str, Any]) -> str:
+    """The model for the Product page's AI: the one picked there, else the AI tools page's reviewer, else "" (its own default)."""
+    return str(settings.get("product_model") or "") or _team_model(settings.get("default_models"), "reviewer")
 
 
 def available_models() -> list[dict[str, str]]:
-    """The model choices for roles: the recommended few first, then every other model that is known."""
-    from orchestrator.scripts.model_registry import get_all_models
+    """The model choices for roles: only models that can run here now (installed tool, offered by the account)."""
+    from orchestrator.scripts.model_registry import get_all_models, runnable_here
     labels = {"claude": "Anthropic", "gemini": "Google", "openai": "OpenAI", "opencode": "OpenCode", "ollama": "Ollama", "qwen": "Ollama", "pool": "Poolside", "hermes": "NousResearch"}
-    out = list(AVAILABLE_MODELS)
-    seen = {m["id"] for m in out}
-    for m in sorted(get_all_models(), key=lambda m: (m.family, int(m.tier), m.id)):
-        if m.id not in seen and m.family in labels:
-            seen.add(m.id)
-            out.append({"id": m.id, "label": m.id, "provider": labels[m.family]})
-    return out
+    names = {m["id"]: m["label"] for m in AVAILABLE_MODELS}
+    usable = [m for m in get_all_models() if runnable_here(m)]
+    return [{"id": m.id, "label": names.get(m.id, m.id), "provider": labels[m.family]}
+            for m in sorted(usable, key=lambda m: (m.family, int(m.tier), m.id)) if m.family in labels]
 
 
 def refresh_models(root: Path) -> dict[str, Any]:
@@ -3364,8 +3398,9 @@ def ai_providers_state(root: Path) -> dict[str, Any]:
     search = tool_search_path()
     ready = set(checklist.ready_llm_providers({}))  # cached briefly: signing-in checks run the tools
     from orchestrator.scripts.model_registry import models_last_synced
+    settings = read_settings(root)
     state = ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready,
-                                     checklist.saved_api_keys(read_settings(root)))
+                                     checklist.saved_api_keys(settings), settings)
     return {**state, "models": provider_models(), "models_synced": models_last_synced()}
 
 
@@ -3450,12 +3485,8 @@ def config_state(root: Path) -> dict[str, Any]:
     ai_state = ai_providers_state(root)
     ready_providers = [p["id"] for p in ai_state.get("providers", []) if p.get("ready")]
     installed_providers = [p["id"] for p in ai_state.get("providers", []) if p.get("installed")]
-    defaults = pick_best_default_models(ready_providers or installed_providers)
-    saved_models = settings.get("default_models")
-    if isinstance(saved_models, dict) and saved_models:
-        model_assignments = {**defaults, **saved_models}
-    else:
-        model_assignments = defaults
+    saved_models = settings.get("default_models") if isinstance(settings.get("default_models"), dict) else {}
+    model_assignments = {role: saved_models.get(role) or "auto" for role in ("architect", "planner", "builder", "reviewer")}
     return {
         "base_branch": base_branch(root, settings),
         "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
@@ -4776,12 +4807,12 @@ class UIServer(ThreadingHTTPServer):
         except OSError:
             pass
         try:
-            work, commit = package_review_job(self, root, lambda r, prompt: research_call(self, r, prompt))
+            work, commit = package_review_job(self, root, lambda r, prompt, **kw: research_call(self, r, prompt, **kw))
         except UIError:
             package_store.note_prd(rt, fingerprint, snapshot=text)
             return False
         package_store.note_prd(rt, data["prd_hash"], running=datetime.now().astimezone().isoformat(timespec="seconds"))
-        self.tasks.start(work, commit)
+        self.tasks.start(work, commit, progress=True)
         return True
 
     def plan_tick(self, jobs: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
@@ -5108,8 +5139,7 @@ class UIHandler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and parts == ["product"]:
                 settings = read_settings(root)
-                models_cfg = settings.get("default_models", {})
-                current_model = models_cfg.get("reviewer") or "claude-sonnet-4-6"
+                current_model = _product_model(settings) or "claude-sonnet-4-6"
                 resp = doc.overview()
                 resp["model"] = current_model
                 resp["available_models"] = available_models()
@@ -5202,9 +5232,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 body = self._body()
                 new_model = _text(body, "model", required=True, limit=100)
                 settings = read_settings(root)
-                if "default_models" not in settings or not isinstance(settings["default_models"], dict):
-                    settings["default_models"] = {}
-                settings["default_models"]["reviewer"] = new_model
+                settings["product_model"] = new_model  # its own setting: the job roles on the AI tools page stay as they are
                 write_settings(root, settings)
                 self._json({"ok": True, "model": new_model})
             elif method == "POST" and parts == ["product", "draft"]:
@@ -5215,9 +5243,8 @@ class UIHandler(BaseHTTPRequestHandler):
                 current = doc.read() or prd_doc.template()
                 digest = prd_doc.project_digest(root, commits)
                 settings = read_settings(root)
-                models_cfg = settings.get("default_models", {})
                 req_model = _text(body, "model", limit=100) if body.get("model") else ""
-                chosen_model = req_model or models_cfg.get("reviewer") or ""
+                chosen_model = req_model or _product_model(settings) or ""
                 self._start_proposal(root, current, prd_doc.draft_prompt(digest, current), lambda reply: prd_doc.parse_draft(reply, current), 270, model=chosen_model)
             elif method == "POST" and parts == ["product", "import"]:
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
@@ -5255,8 +5282,7 @@ class UIHandler(BaseHTTPRequestHandler):
                     raw = self._read_upload()
                 current = doc.read() or prd_doc.template()
                 settings = read_settings(root)
-                models_cfg = settings.get("default_models", {})
-                chosen_model = chosen_model or models_cfg.get("reviewer") or ""
+                chosen_model = chosen_model or _product_model(settings) or ""
 
                 def summarise_reverse(reply: str) -> dict[str, Any]:
                     proposal = prd_doc.parse_draft(reply, current)
@@ -5457,9 +5483,9 @@ class UIHandler(BaseHTTPRequestHandler):
         view["features"] = [{"id": f["id"], "name": f.get("name", f["id"])} for f in feature_store.load(runtime_dir(root))]
         return view
 
-    def _research_call(self, root: Path, prompt: str, timeout: int = 240) -> tuple[str, bool]:
+    def _research_call(self, root: Path, prompt: str, timeout: int = 240, progress: TaskProgress | None = None) -> tuple[str, bool]:
         """Like _model_call, but the model may search the web when one that can is available. Returns (answer, searched)."""
-        return research_call(self.server, root, prompt, timeout)
+        return research_call(self.server, root, prompt, timeout, progress)
 
     def _static(self, path: str, query: dict[str, list[str]]) -> None:
         if path in ("/", "/index.html"):
@@ -5630,8 +5656,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 current = prd_doc.template()
                 digest = prd_doc.project_digest(p, commits)
                 settings = read_settings(p)
-                models_cfg = settings.get("default_models", {})
-                chosen_model = str(body.get("model") or "") or models_cfg.get("reviewer") or ""
+                chosen_model = str(body.get("model") or "") or _product_model(settings) or ""
                 prompt = prd_doc.draft_prompt(digest, current)
 
                 def work() -> dict[str, Any]:
@@ -6197,8 +6222,8 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["packages", "review"]:
             # A model reads the product requirements and features, searches the web where it can, and suggests packages: in the background.
             self._body()
-            work, commit = package_review_job(self.server, root, lambda r, prompt: self._research_call(r, prompt))
-            self._json({"task": self.server.tasks.start(work, commit)}, HTTPStatus.ACCEPTED)
+            work, commit = package_review_job(self.server, root, lambda r, prompt, **kw: self._research_call(r, prompt, **kw))
+            self._json({"task": self.server.tasks.start(work, commit, progress=True)}, HTTPStatus.ACCEPTED)
         elif method == "POST" and parts == ["jobs", "split-bugs"]:
             # Pasted notes about several bugs, separated into one each in the background; the page shows them for review first.
             text = _text(self._body(), "text", required=True, limit=20_000)
@@ -6454,6 +6479,17 @@ class UIHandler(BaseHTTPRequestHandler):
             provider_id = _choice(body, "provider", [p["id"] for p in ai_providers.PROVIDERS])
             self._json({"task": self.server.tasks.start(lambda: ai_providers.install_provider(provider_id))}, HTTPStatus.ACCEPTED)
             self._audit("ai_provider_install_started", provider=provider_id)
+        elif method == "POST" and parts == ["ai-providers", "yolo"]:
+            self._require_owner("change how AI tools approve changes")
+            body = self._body()
+            from orchestrator import ai_providers
+            cli = _choice(body, "cli", sorted(ai_providers.YOLO_FLAGS))
+            on = body.get("on") is True
+            settings = read_settings(root)
+            settings["cli_yolo"] = {**(settings.get("cli_yolo") if isinstance(settings.get("cli_yolo"), dict) else {}), cli: on}
+            write_settings(root, settings)
+            self._audit("ai_tool_yolo_changed", cli=cli, on=on)
+            self._json({"cli": cli, "on": on})
         elif method == "POST" and parts == ["models", "dismiss"]:
             self._body()
             dismiss_models_notice()

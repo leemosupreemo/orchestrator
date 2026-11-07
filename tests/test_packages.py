@@ -251,6 +251,44 @@ class AutomaticReviewStateTests(unittest.TestCase):
         self.assertEqual(pk.link_for({"ecosystem": "gradle", "name": "no-colon"}), "")
 
 
+class ReadableAnswerTests(unittest.TestCase):
+    GOOD = '{"packages": [{"name": "zod", "ecosystem": "npm", "purpose": "Validation", "why": "Chat"}], "notes": "", "sources": []}'
+
+    def names(self, reply):
+        return [p["name"] for p in pk.parse_suggestions(reply, [], [])["packages"]]
+
+    def test_prose_with_braces_before_the_json(self):
+        self.assertEqual(self.names("I compared {a few} options, see Package.swift { deps }.\n" + self.GOOD), ["zod"])
+
+    def test_a_code_sample_block_before_the_json_block(self):
+        reply = "Add it like this:\n```swift\n.package(url: \"x\") { }\n```\nThen:\n```json\n" + self.GOOD + "\n```"
+        self.assertEqual(self.names(reply), ["zod"])
+
+    def test_prose_after_the_json(self):
+        self.assertEqual(self.names(self.GOOD + "\n\nLet me know if you want more {options}."), ["zod"])
+
+    def test_an_unreadable_answer_says_how_it_began(self):
+        with self.assertRaises(pk.PackageError) as caught:
+            pk.parse_suggestions('Here you go: {"packages": [{"name": "zod",', [], [])
+        self.assertIn("wasn't readable as package suggestions", str(caught.exception))
+        self.assertIn("Here you go", str(caught.exception))
+
+    def test_an_answer_without_json_still_says_nothing_was_suggested(self):
+        with self.assertRaises(pk.PackageError) as caught:
+            pk.parse_suggestions("No packages are needed.", [], [])
+        self.assertIn("didn't suggest", str(caught.exception))
+
+
+class ReviewInProgressTests(unittest.TestCase):
+    def test_a_recent_review_is_running_and_an_old_one_is_stale(self):
+        from datetime import datetime, timedelta
+        now = datetime.now().astimezone()
+        self.assertTrue(pk.review_in_progress((now - timedelta(seconds=30)).isoformat(), now))
+        self.assertFalse(pk.review_in_progress((now - timedelta(seconds=pk.REVIEW_BUDGET_SECONDS + 300)).isoformat(), now))
+        self.assertFalse(pk.review_in_progress("", now))
+        self.assertFalse(pk.review_in_progress("not a time", now))
+
+
 class ResearchTests(unittest.TestCase):
     FEATURES = [{"id": "lobby", "name": "Lobby", "summary": "Friends meet", "paths": ["app/lobby/"]}, {"id": "chat", "name": "Chat", "summary": ""}]
     INSTALLED = [{"name": "react", "ecosystem": "npm", "version": "18", "manifest": "package.json", "kind": "runtime"}]

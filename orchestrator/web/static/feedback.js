@@ -248,7 +248,7 @@
         contentHtml = `
           <button type="button" class="feedback-close-btn" id="feedback-modal-close" aria-label="Close">✕</button>
           <h2 class="feedback-title">Enjoying Orchestrator?</h2>
-          <p class="feedback-subtitle" style="text-align:center; padding: 0 8px;">
+          <p class="feedback-subtitle">
             ${currentUserName ? `${escapeHtml(currentUserName)}, we'd love to know if you're enjoying Orchestrator!` : "We'd love to know if you're enjoying Orchestrator!"}
           </p>
           <div class="feedback-choice-grid">

@@ -189,28 +189,29 @@
     };
   }
 
-  // API keys: a card on Add an AI (owners only; members' config has no keys).
-  function apiKeysCard(state) {
-    const keys = Array.isArray(state.keys) ? state.keys : [];
-    const rows = keys.map((key) => {
-      const isOllama = key.id === "ollama_api_key";
-      const status = statusLabel(key);
-      return `<div class="configuration-setting-row">
+  // An API key row: its status, and Set / Replace / Clear. Shown inside its AI service (owners only; members' config has no keys).
+  function apiKeyRow(key, state) {
+    return `<div class="configuration-setting-row ai-key-row">
         <div class="main-col">
-          <strong>${escapeHtml(key.label)}</strong>
-          <span class="configuration-status">${escapeHtml(status)}</span>
-          ${isOllama ? `<small>Host URL: ${escapeHtml(state.ollama_host || "Default local Ollama host")}</small>` : ""}
+          <strong>API key</strong>
+          <span class="configuration-status">${escapeHtml(statusLabel(key))}</span>
+          ${key.id === "ollama_api_key" ? `<small>Host URL: ${escapeHtml(state.ollama_host || "Default local Ollama host")}</small>` : ""}
         </div>
         <div class="row">
           <button type="button" class="btn small" data-config-action="key-set" data-id="${escapeHtml(key.id)}" data-label="${escapeHtml(key.label)}">${key.saved ? "Replace" : "Set"}</button>
           ${key.saved ? `<button type="button" class="btn small danger" data-config-action="key-clear" data-id="${escapeHtml(key.id)}" data-label="${escapeHtml(key.label)}">Clear</button>` : ""}
         </div>
       </div>`;
-    }).join("");
+  }
+
+  // Keys whose AI service isn't in the list (for example when the tool list couldn't be checked) keep a card of their own.
+  function otherKeysCard(keys, state) {
+    if (!keys.length) return "";
+    const rows = keys.map((key) => apiKeyRow(key, state).replace("<strong>API key</strong>", `<strong>${escapeHtml(key.label)}</strong>`)).join("");
     return `<section class="card configuration-card" id="api-keys">
           <div class="card-h"><h2>API keys</h2><span class="count">${keys.length}</span></div>
           <p class="card-b muted card-note">Use a provider through its API instead of its app. Saved key values are never shown.</p>
-          <div class="configuration-setting-list">${rows || `<div class="empty">No providers are available.</div>`}</div>
+          <div class="configuration-setting-list">${rows}</div>
         </section>`;
   }
 
@@ -269,10 +270,11 @@
     return `Model lists last refreshed ${days < 1 ? "today" : days === 1 ? "yesterday" : `${days} days ago`}.`;
   }
 
-  function modelTreeHtml(providerId, providerReady = false, known = null) {
-    const models = known && known.length ? known : PROVIDER_MODELS[providerId] || []; // the server's list; the built-in one is only a fallback
+  function modelTreeHtml(providerId, providerReady = false, known = null, newIds = new Set()) {
+    const listed = known && known.length ? known : PROVIDER_MODELS[providerId] || []; // the server's list; the built-in one is only a fallback
+    const models = [...listed.filter((m) => m.usable !== false), ...listed.filter((m) => m.usable === false)]; // what you can use first
     if (!models.length) return "";
-    return `<details class="fold model-tree" ${providerReady ? "open" : ""}>
+    return `<details class="fold model-tree" ${providerReady || models.some((m) => newIds.has(m.id)) ? "open" : ""}>
       <summary class="model-tree-summary">
         <strong>Supported models</strong>
         <span class="count">${models.length}</span>
@@ -280,12 +282,14 @@
       <div class="model-tree-content">
         <ul class="model-tree-branch">
           ${models.map((m, idx) => `
-            <li class="model-tree-item ${idx === models.length - 1 ? 'last-node' : ''}">
+            <li class="model-tree-item ${idx === models.length - 1 ? 'last-node' : ''}${newIds.has(m.id) ? " model-new" : ""}">
               <div class="model-tree-row">
                 <strong class="mono model-id">${escapeHtml(m.id)}</strong>
                 ${m.name && m.name !== m.id ? `<span class="muted model-label">${escapeHtml(m.name)}</span>` : ""}
                 ${m.tier ? `<span class="pill ${m.tier === 'Recommended' ? 'done' : m.tier === 'Free' ? 'ok' : ''}">${escapeHtml(m.tier)}</span>` : ""}
                 ${m.caps?.length ? `<span class="model-caps muted">${escapeHtml(m.caps.join(" · "))}</span>` : ""}
+                ${newIds.has(m.id) ? `<span class="pill working">New</span>` : ""}
+                ${m.usable === false ? `<span class="pill muted">Not offered to you</span>` : ""}
               </div>
             </li>
           `).join("")}
@@ -294,59 +298,8 @@
     </details>`;
   }
 
-  function bestDefaultModels(providers = []) {
-    const active = new Set(
-      providers.filter((p) => p.ready).map((p) => p.id)
-    );
-    if (!active.size) {
-      providers.filter((p) => p.installed).forEach((p) => active.add(p.id));
-    }
-    const hasClaude = active.has("claude");
-    const hasGemini = active.has("agy") || active.has("gemini");
-    const hasOpenAI = active.has("codex");
-    const hasOpenCode = active.has("opencode");
-    const hasOllama = active.has("ollama");
-    const hasPool = active.has("pool");
-
-    const architect = hasClaude ? "claude-sonnet-4-6"
-      : hasGemini ? "gemini-3.1-pro-preview"
-      : hasOpenAI ? "o3-mini"
-      : hasOpenCode ? "opencode/big-pickle"
-      : hasPool ? "pool"
-      : hasOllama ? "deepseek"
-      : "claude-sonnet-4-6";
-
-    const planner = hasClaude ? "claude-sonnet-4-6"
-      : hasGemini ? "gemini-3.1-pro-preview"
-      : hasOpenAI ? "gpt-4o"
-      : hasOpenCode ? "opencode/big-pickle"
-      : hasPool ? "pool"
-      : hasOllama ? "deepseek"
-      : "claude-sonnet-4-6";
-
-    const builder = hasClaude ? "claude-sonnet-4-6"
-      : hasOpenAI ? "gpt-4o"
-      : hasGemini ? "gemini-3.1-pro-preview"
-      : hasOpenCode ? "opencode/big-pickle"
-      : hasPool ? "pool"
-      : hasOllama ? "deepseek"
-      : "claude-sonnet-4-6";
-
-    const reviewer = hasGemini ? "gemini-3-flash-preview"
-      : hasClaude ? "claude-sonnet-4-6"
-      : hasOpenAI ? "gpt-4o"
-      : hasOpenCode ? "opencode/big-pickle"
-      : hasPool ? "pool"
-      : hasOllama ? "deepseek"
-      : "claude-sonnet-4-6";
-
-    return { architect, planner, builder, reviewer };
-  }
-
   function roleAssignmentsCard(state = {}) {
     const modelsData = state.models || {};
-    const providers = state.ai?.providers || [];
-    const defaults = bestDefaultModels(providers);
     const assignments = modelsData.assignments || {};
     const available = modelsData.available && modelsData.available.length ? modelsData.available : [
       {id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Recommended)", provider: "Anthropic"},
@@ -366,9 +319,12 @@
       {id: "reviewer", label: "Reviewer", desc: "Reads the changes and the test results, and looks for what could break"}
     ];
     const formRows = roles.map((role) => {
-      const currentVal = assignments[role.id] || defaults[role.id] || "claude-sonnet-4-6";
-      const options = available.map((m) => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? " selected" : ""}>${escapeHtml(m.label || m.name || m.id)} (${escapeHtml(m.provider)})</option>`).join("");
-      return `<div class="configuration-setting-row">
+      const currentVal = assignments[role.id] || "auto";
+      const listed = currentVal === "auto" || available.some((m) => m.id === currentVal);
+      const options = `<option value="auto"${currentVal === "auto" ? " selected" : ""}>Auto: best for each job</option>`
+        + (listed ? "" : `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)} (not available here)</option>`)
+        + available.map((m) => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? " selected" : ""}>${escapeHtml(m.label || m.name || m.id)} (${escapeHtml(m.provider)})</option>`).join("");
+      return `<div class="configuration-setting-row role-row">
         <div class="main-col">
           <strong>${escapeHtml(role.label)}</strong>
           <small>${escapeHtml(role.desc)}</small>
@@ -379,9 +335,9 @@
     return `<section class="card configuration-card" id="team-models">
       <div class="card-h"><h2>Team Role Assignments</h2></div>
       <form class="card-b stack" id="config-models-form">
-        <p class="muted">Which AI model each role (architect, planner, builder, reviewer) uses by default.</p>
+        <p class="muted">Auto picks the best model you can use for each role, from the job's size and kind, and keeps to free models when a job asks for them. Choose a model to always use it instead.</p>
         <div class="configuration-setting-list">${formRows}</div>
-        <div class="row end" style="margin-top:16px;">
+        <div class="row end mt-16">
           <button class="btn primary" type="submit" disabled title="No changes were made">Save</button>
         </div>
       </form>
@@ -394,15 +350,33 @@
     const ai = state.ai || {providers: [], plugins: []};
     const providers = ai.providers || [];
     const owner = state.viewer?.role !== "member";
-    const status = (p) => p.installed ? p.ready ? `<span class="pill done">Ready</span>` : `<span class="pill attention">Needs sign-in</span>`
+    const keys = Array.isArray(state.keys) ? state.keys : null;
+    const newIds = new Set(state.newModels || []);
+    const newCount = (p) => (ai.models?.[p.id] || []).filter((m) => newIds.has(m.id)).length;
+    const keyOf = (p) => keys && p.key ? keys.find((k) => k.id === p.key) : null;
+    const status = (p) => p.installed ? p.ready ? `<span class="pill done">Ready</span>`
+        : `<span class="pill attention">${p.key_only ? "Needs API key" : "Needs sign-in"}</span>`
       : p.key_saved ? `<span class="pill attention">Not installed · API key saved</span>` : `<span class="pill">Not installed</span>`;
-    const toolRow = (p) => `<details class="ai-tool" data-provider="${escapeHtml(p.id)}">
-        <summary><span class="ai-tool-name">${escapeHtml(p.name)}</span>${status(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span>${p.auto_approve ? `<span class="pill done" title="Auto-accepts tool changes without asking (YOLO)">YOLO</span>` : `<span class="pill muted" title="Does not auto-accept tool changes">Plan-first</span>`}</summary>
+    // How many models the service lists, and how many of those this account can run now.
+    const modelCount = (p) => {
+      const models = ai.models?.[p.id] || [];
+      if (!models.length) return "";
+      const usable = p.ready ? models.filter((m) => m.usable !== false).length : 0;
+      const fresh = newCount(p);
+      return `<span class="ai-tool-count">${models.length} model${models.length === 1 ? "" : "s"} · ${p.ready ? `${usable} you can use` : "set up to use"}${fresh ? ` · <span class="model-new-count">${fresh} new</span>` : ""}</span>`;
+    };
+    const yolo = (p) => !p.yolo_supported
+      ? `<span class="pill muted" title="Hands its changes to Orchestrator to apply, so there is nothing to approve">Plan-first</span>`
+      : owner ? `<label class="yolo-switch" title="On: changes files without asking, so jobs run unattended. Off: asks first, and a job can stop to wait."><input type="checkbox" role="switch" data-yolo-cli="${escapeHtml(p.cli)}"${p.auto_approve ? " checked" : ""}><span>YOLO</span></label>`
+      : `<span class="pill ${p.auto_approve ? "done" : "muted"}">${p.auto_approve ? "YOLO on" : "YOLO off"}</span>`;
+    const toolRow = (p) => `<details class="ai-tool" data-provider="${escapeHtml(p.id)}"${newCount(p) ? " open" : ""}>
+        <summary><span class="ai-tool-title"><span class="ai-tool-name">${escapeHtml(p.name)}</span>${modelCount(p)}</span>${status(p)}${yolo(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span></summary>
         <div class="ai-tool-details stack">
           <p>${escapeHtml(p.what)}</p>
-          ${!p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>` : !p.ready ? `<p class="muted">${escapeHtml(p.sign_in)}</p>` : `<p class="ai-ready-note">Ready to use on this computer.</p>`}
-          <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${p.key && Array.isArray(state.keys) ? ` · <button type="button" class="linklike" data-scroll-to="#api-keys">Add an API key instead</button>` : ""}</p>
-          ${modelTreeHtml(p.id, false, ai.models?.[p.id])}
+          ${!p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><div><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button></div>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>` : !p.ready ? `<p class="muted">${escapeHtml(p.sign_in)}</p>` : `<p class="ai-ready-note">Ready to use on this computer.</p>`}
+          ${keyOf(p) ? apiKeyRow(keyOf(p), state) : ""}
+          <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a></p>
+          ${modelTreeHtml(p.id, false, ai.models?.[p.id], newIds)}
         </div>
       </details>`;
     const providerGroup = (title, items) => {
@@ -420,7 +394,7 @@
       title: "Manage AI tools",
       sub: ai.any_ready ? "Choose which tools are available to your jobs." : "Install and connect an AI tool to plan, build, and review jobs.",
       html: `<div class="configuration-page">
-        ${available && owner ? `<section class="card configuration-card" id="ai-models-refresh"><div class="card-b row between align-center gap-3">
+        ${available && owner ? `<section class="card configuration-card" id="ai-models-refresh"><div class="card-b row between align-center gap-12">
           <p class="muted" id="ai-models-status">${modelsSyncedText(ai.models_synced)}</p>
           <button type="button" class="btn small" id="ai-refresh-models">Refresh models</button></div></section>` : ""}
         ${available ? `${providerGroup("Installed", installed)}
@@ -430,12 +404,12 @@
           <div class="ai-machine-status-list" id="ai-secondary-computers">${secondary.map((m) => `<div class="ai-machine-status" data-ai-machine="${escapeHtml(m.name)}"><strong>${escapeHtml(m.name)}</strong><span class="muted">Checking…</span></div>`).join("")}</div>
         </section>` : ""}
         ${roleAssignmentsCard(state)}
-        ${Array.isArray(state.keys) ? apiKeysCard(state) : ""}
+        ${keys ? otherKeysCard(keys.filter((k) => !providers.some((p) => p.key === k.id)), state) : ""}
         <section class="card configuration-card">
           <div class="card-h"><h2>Helpful plugins for your AI tools</h2></div>
           <div class="card-b stack">
             <p class="muted">Optional. They give the AI richer context while it works; Orchestrator runs without them.</p>
-            <div class="row align-center gap-3">
+            <div class="row align-center gap-12">
               <a href="#/connections?section=mcp" class="btn small">View recommended MCPs &amp; mobile tools ↗</a>
               <a href="docs/recommended-mcp-plugins.md" target="_blank" rel="noopener" class="linklike">Plugin recommendations doc ↗</a>
             </div>

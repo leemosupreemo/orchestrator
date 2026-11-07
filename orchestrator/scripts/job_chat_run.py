@@ -13,7 +13,9 @@ from llm import run_llm, web_capable
 from model_router import get_prioritized_models
 
 MARKER = "<<<ORCHESTRATOR-REPLY>>>"
-WEB_MARKER = "<<<ORCHESTRATOR-WEB>>>"  # on/off: did the model get to search the web (printed before the reply)
+WEB_MARKER = "<<<ORCHESTRATOR-WEB>>>"
+STAGE_MARKER = "<<<ORCHESTRATOR-STAGE>>>"  # a progress line for the page, before the reply
+MAX_FALLBACKS = 2  # on/off: did the model get to search the web (printed before the reply)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,8 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     if not model:
         print("No model is available. Check Configuration > Models.", file=sys.stderr)
         return 1
+    # A couple of fallbacks of the same kind, not the whole catalog: each one can take the full timeout.
+    fallbacks = [m for m in candidates if m != model and (web_capable(m) or not web)][:MAX_FALLBACKS]
+    print(f"{STAGE_MARKER}{model}{' with web search' if web else ''}", flush=True)
     try:
-        text, _model_used, _session = run_llm(model, prompt, cwd=Path(args.cwd) if args.cwd else None, timeout=args.timeout, role="reviewer", web=web)
+        text, _model_used, _session = run_llm(model, prompt, cwd=Path(args.cwd) if args.cwd else None, timeout=args.timeout, role="reviewer", web=web,
+                                              allowed_models=[model, *fallbacks], raw=True)
     except Exception as exc:  # surfaced to the UI as the error message
         print(f"{exc}", file=sys.stderr)
         return 1

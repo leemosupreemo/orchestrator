@@ -362,7 +362,7 @@
           <strong>${escapeHtml(p.name)}</strong>
           <span class="muted">${escapeHtml(String(p.jobs_count || 0))} job${p.jobs_count === 1 ? "" : "s"}</span>
         </div>
-        <p class="muted mono" style="font-size: var(--text-xs); overflow-wrap: anywhere;">${escapeHtml(p.root || "")}</p>
+        <p class="muted mono t-secondary wrap-anywhere">${escapeHtml(p.root || "")}</p>
         ${latest ? `<p class="account-machine-meta">Latest: <strong>${escapeHtml(latest.title || latest.job_id)}</strong> <span class="badge ${latest.status === "completed" || latest.status === "done" ? "ok" : latest.status === "failed" ? "bad" : "muted"}">${escapeHtml(latest.status || "planned")}</span></p>` : ""}
       </article>`;
     }).join("") : `<p class="muted">No recent projects found in this snapshot.</p>`;
@@ -376,10 +376,10 @@
           <span class="badge ${statusTone}">${escapeHtml(j.status || "planned")}</span>
         </div>
         <p class="muted account-machine-meta">${escapeHtml([j.project, j.type, j.updated_at || j.created_at].filter(Boolean).join(" · "))}</p>
-        ${j.summary ? `<p style="font-size: var(--text-sm); margin: 0;">${escapeHtml(j.summary)}</p>` : ""}
+        ${j.summary ? `<p class="t-secondary m-0">${escapeHtml(j.summary)}</p>` : ""}
         ${tasks.length ? `<details class="more">
-          <summary class="muted" style="cursor: pointer; font-size: var(--text-xs);">${tasks.length} task${tasks.length === 1 ? "" : "s"}</summary>
-          <ul style="margin: var(--space-2) 0 0; padding-left: var(--space-4); font-size: var(--text-sm);">
+          <summary class="muted t-secondary cursor-pointer">${tasks.length} task${tasks.length === 1 ? "" : "s"}</summary>
+          <ul class="indented-list mt-8 t-secondary">
             ${tasks.map((t) => `<li>${t.status === "done" || t.status === "completed" ? "✓" : "○"} ${escapeHtml(t.title || "Task")}</li>`).join("")}
           </ul>
         </details>` : ""}
@@ -387,7 +387,7 @@
     }).join("") : `<p class="muted">No recent jobs found in this snapshot.</p>`;
 
     return `<div class="signin-wrap"><div class="signin-card account-card">
-      <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2);">
+      <div class="row between gap-8 mb-8">
         <button type="button" class="btn small ghost" data-account-action="back-machines">← All computers</button>
         <span class="badge muted">Offline snapshot</span>
       </div>
@@ -398,17 +398,17 @@
       <div class="notice">
         This is a read-only snapshot synced from your Mac. To run new tasks or edit code, wake your computer and open Orchestrator.
       </div>
-      <div class="row gap-10" style="margin: var(--space-3) 0 var(--space-4);">
+      <div class="row gap-10 mt-12 mb-16">
         <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
         <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
       </div>
-      <div class="stack" style="gap: var(--space-4);">
-        <h3 style="margin: 0; font-size: var(--text-base);">Projects (${projects.length})</h3>
+      <div class="stack">
+        <h3 class="t-subsection">Projects (${projects.length})</h3>
         <div class="account-machines">${projectCards}</div>
-        <h3 style="margin: var(--space-2) 0 0; font-size: var(--text-base);">Recent Jobs (${jobs.length})</h3>
+        <h3 class="t-subsection mt-8">Recent Jobs (${jobs.length})</h3>
         <div class="account-machines">${jobCards}</div>
       </div>
-      <div class="row gap-10" style="margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border);">
+      <div class="row gap-10 divider-top">
         <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
         <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
       </div>

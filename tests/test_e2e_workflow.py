@@ -119,6 +119,39 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIsNone(job_data["branch"])
         mock_create_issue.assert_called_once()
 
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue", return_value=124)
+    def test_auto_fills_roles_the_ai_tools_page_leaves_on_auto(self, _issue, mock_llm):
+        mock_llm.return_value = (json.dumps({"title": "Auto Job", "summary": "S", "assumptions": [], "constraints": [], "risks": [],
+            "tasks": [{"title": "T", "description": "D", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]}),
+            "mock-model", "mock-session-id")
+        picks = {"architect": "gpt-6.1-sol", "planner": "gpt-6.1-sol", "builder": "gpt-6.1-sol", "reviewer": "claude-sonnet-4-6"}
+        from orchestrator.scripts import new_job
+        with patch("orchestrator.scripts.new_job.ROOT", self.root), \
+             patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths), \
+             patch("orchestrator.scripts.new_job.team_role_settings", return_value={"builder": "claude-opus-4-8"}), \
+             patch("orchestrator.scripts.new_job.auto_assign_roles", return_value=picks) as assign, \
+             patch("sys.stdin", io.StringIO("")):
+            new_job.main(["bug", "--summary", "intermittent crash from a race condition", "--branch-mode", "manual",
+                          "--no-dispatch", "--allowed-models", "gpt-6.1-sol,claude-sonnet-4-6,claude-opus-4-8"])
+        profile = assign.call_args.args[1]
+        self.assertEqual(profile.complexity, "complex")  # read from the brief
+        job = json.loads(next((self.root / ".orchestrator" / "jobs").glob("*.json")).read_text())
+        self.assertEqual((job["planner"], job["builder"], job["reviewer"]), ("gpt-6.1-sol", "claude-opus-4-8", "claude-sonnet-4-6"))
+        self.assertEqual(job["auto_assignment"]["roles"], {"planner": "gpt-6.1-sol", "reviewer": "claude-sonnet-4-6"})  # the chosen builder stays
+        self.assertEqual(job["auto_assignment"]["complexity"], "complex")
+
+    @patch("orchestrator.scripts.new_job.create_issue", return_value=125)
+    def test_free_only_stops_instead_of_using_paid_models(self, _issue):
+        from orchestrator.scripts import new_job
+        with patch("orchestrator.scripts.new_job.ROOT", self.root), \
+             patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths), \
+             patch("model_registry.get_free_models", return_value=[]), patch("sys.stdin", io.StringIO("")), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            with self.assertRaises(SystemExit):
+                new_job.main(["feature", "--summary", "add a screen", "--branch-mode", "manual", "--no-dispatch", "--free"])
+        self.assertIn("Free models only was chosen, but no free model is set up", out.getvalue())
+
     PLAN = json.dumps({
         "title": "Context Test", "summary": "Summary", "assumptions": [], "constraints": [], "risks": [],
         "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}],

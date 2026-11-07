@@ -203,7 +203,8 @@ class SignInTests(ServerTestCase):
         token = self.sign_in(source="settings")
         member = {"tester@example.com": "settings"}
         for path, body in (("/api/ai-providers/install", {"provider": "opencode"}),
-                           ("/api/ai-providers/check-machines", {})):
+                           ("/api/ai-providers/check-machines", {}),
+                           ("/api/ai-providers/yolo", {"cli": "opencode", "on": False})):
             with self.subTest(path=path):
                 res, data = self.as_user(token, "POST", path, body=body, sources=member)
                 self.assertEqual(res.status, 403)
@@ -1332,7 +1333,7 @@ const ai = {checked: "October 2026", any_ready: false, plugins: [{name: "Playwri
   {id: "claude", name: "Claude Code", cost_label: "Subscription", what: "Plans", install: "y", install_alt: "", sign_in: "z",
    link: "https://docs.claude.com", installed: true, ready: true},
 ]};
-const page = P.render("ai", {ai, keys: []});
+const page = P.render("ai", {ai, keys: [{id: "openai_api_key", label: "Codex / OpenAI", saved: false, env: false}]});
 const member = P.render("ai", {ai});  // members' config carries no keys
 process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: page.html, member: member.html, entry: P.resolve("ai", "member")?.route || null}));
 """)
@@ -1346,9 +1347,10 @@ process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: pag
         self.assertIn("Needs sign-in", installed)
         self.assertNotIn("Install here", installed)  # already installed: only the sign-in step
         self.assertIn('data-provider="opencode"', not_installed)
-        codex = installed[installed.index('data-provider="codex"'):]
-        self.assertIn("Add an API key instead", codex)
-        self.assertNotIn("Add an API key instead", result["member"])
+        codex = installed[installed.index('data-provider="codex"'):installed.index('data-provider="claude"')]
+        self.assertIn('data-config-action="key-set" data-id="openai_api_key"', codex)  # the key lives with its service
+        self.assertNotIn('id="api-keys"', html)  # no separate keys card when every key has its service
+        self.assertNotIn("key-set", result["member"])
         self.assertNotIn('id="api-keys"', result["member"])
         claude = html[html.index('data-provider="claude"'):]
         self.assertIn("Ready", claude)
@@ -1409,57 +1411,26 @@ process.stdout.write(JSON.stringify({html: page.html}));
         self.assertIn('submitBtn.title = "No changes were made"', app_js)
         self.assertIn('submitBtn.removeAttribute("title")', app_js)
 
-    def test_best_default_model_config_adapts_to_available_tools(self):
-        # 1. When only Google / Antigravity is ready
-        google_res = self.run_configuration_script("""
-const page = globalThis.ConfigurationPages.render('ai', {
-  ai: {
-    providers: [
-      {id: 'agy', name: 'Antigravity CLI', installed: true, ready: true, cost_label: 'Free-limited', link: 'https://example.com'},
-      {id: 'claude', name: 'Claude Code', installed: false, ready: false, cost_label: 'Subscription', link: 'https://example.com'}
-    ]
-  }
-});
+    def test_job_page_says_why_auto_picked_its_models(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn("job.auto_assignment ? `<div class=\"progress-foot muted\">Picked by Auto for a ${esc(job.auto_assignment.complexity", js)
+
+    def test_team_roles_default_to_auto_and_keep_a_chosen_model(self):
+        result = self.run_configuration_script("""
+const models = {available: [{id: 'gpt-6.1-sol', label: 'gpt-6.1-sol', provider: 'OpenAI'}],
+                assignments: {architect: 'auto', planner: 'auto', builder: 'gpt-6.1-sol', reviewer: 'gemini-3.1-pro-preview'}};
+const page = globalThis.ConfigurationPages.render('ai', {ai: {providers: []}, models});
 process.stdout.write(JSON.stringify({html: page.html}));
 """)
-        self.assertIn('<option value="gemini-3.1-pro-preview" selected>Gemini 3.1 Pro (Google)</option>', google_res["html"])
-        self.assertIn('<option value="gemini-3-flash-preview" selected>Gemini 3 Flash (Google)</option>', google_res["html"])
-
-        # 2. When only OpenAI / Codex is ready
-        openai_res = self.run_configuration_script("""
-const page = globalThis.ConfigurationPages.render('ai', {
-  ai: {
-    providers: [
-      {id: 'codex', name: 'Codex', installed: true, ready: true, cost_label: 'Subscription', link: 'https://example.com'},
-      {id: 'claude', name: 'Claude Code', installed: false, ready: false, cost_label: 'Subscription', link: 'https://example.com'}
-    ]
-  }
-});
-process.stdout.write(JSON.stringify({html: page.html}));
-""")
-        self.assertIn('<option value="o3-mini" selected>o3-mini (OpenAI)</option>', openai_res["html"])
-        self.assertIn('<option value="gpt-4o" selected>GPT-4o (OpenAI)</option>', openai_res["html"])
-
-        # 3. Backend pick_best_default_models verification
-        from orchestrator.web.server import pick_best_default_models
-        gemini_defaults = pick_best_default_models(["agy"])
-        self.assertEqual(gemini_defaults["architect"], "gemini-3.1-pro-preview")
-        self.assertEqual(gemini_defaults["reviewer"], "gemini-3-flash-preview")
-
-        codex_defaults = pick_best_default_models(["codex"])
-        self.assertEqual(codex_defaults["architect"], "o3-mini")
-        self.assertEqual(codex_defaults["builder"], "gpt-4o")
-
-        opencode_defaults = pick_best_default_models(["opencode"])
-        self.assertEqual(opencode_defaults["builder"], "opencode/big-pickle")
-
-        pool_defaults = pick_best_default_models(["pool"])
-        self.assertEqual(pool_defaults["architect"], "pool")
-        self.assertEqual(pool_defaults["builder"], "pool")
-
-        multi_defaults = pick_best_default_models(["claude", "gemini"])
-        self.assertEqual(multi_defaults["architect"], "claude-sonnet-4-6")
-        self.assertEqual(multi_defaults["reviewer"], "gemini-3-flash-preview")
+        html = result["html"]
+        self.assertEqual(html.count('<option value="auto" selected>Auto: best for each job</option>'), 2)
+        self.assertIn('<option value="gpt-6.1-sol" selected>gpt-6.1-sol (OpenAI)</option>', html)
+        # a saved model this computer can no longer run stays visible instead of silently switching
+        self.assertIn('<option value="gemini-3.1-pro-preview" selected>gemini-3.1-pro-preview (not available here)</option>', html)
+        from orchestrator.web import server
+        self.assertFalse(hasattr(server, "pick_best_default_models"))  # no fixed per-tool defaults: Auto decides per job
+        self.assertEqual(server._team_model({"reviewer": "auto"}, "reviewer"), "")
+        self.assertEqual(server._team_model({"reviewer": "claude-sonnet-5"}, "reviewer"), "claude-sonnet-5")
 
     def test_firebase_settings_are_named_as_setup_separate_from_app_delivery(self):
         result = self.run_configuration_script("""
@@ -1954,13 +1925,15 @@ process.stdout.write(JSON.stringify({
         routes = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "routes.js").read_text()
         self.assertIn('"config/base-branch": "git"', routes)
 
-    def test_home_has_a_jobs_section_and_a_completed_and_archived_section(self):
+    def test_home_has_jobs_then_completed_then_archived_sections(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
         self.assertIn('id="home-jobs"', home)
         self.assertIn('id="home-finished"', home)
         self.assertLess(home.index('id="home-jobs"'), home.index('id="home-finished"'))
-        self.assertIn("Completed &amp; archived", home)
+        self.assertNotIn("Completed &amp; archived", home)
+        self.assertIn('<h2>Completed <span class="count">', home)
+        self.assertLess(home.index('id="home-finished"'), home.index('id="home-archived-section"'))
         self.assertIn('api("jobs/archived")', home)
         self.assertNotIn('done: ["Completed"', home)  # finished work isn't a filter of the first list any more
         self.assertIn("all: [\"All\", (j) => !isFinished(j)]", home)
@@ -1968,6 +1941,30 @@ process.stdout.write(JSON.stringify({
         self.assertIn("data-restore-job", home)
         self.assertIn('api("config/archived-restore"', home)
         self.assertIn("this archive can't be read", home)  # a corrupt archive is listed, without Restore
+
+    def test_run_detail_can_copy_and_export_its_log(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        header = app[app.index("function runHeader(r)"):app.index("function openImageModal")]
+        self.assertIn('data-run-log="copy"', header)
+        self.assertIn('data-run-log="export"', header)
+        self.assertIn('state.you?.role === "member") ? ""', header)  # logs stay private to owners
+        self.assertIn("const log = `logs/ui/${r.id}-${r.action}.log`", header)
+        self.assertIn("navigator.clipboard.writeText(log)", app)
+        self.assertIn('downloadText(file.endsWith(".log")', app)
+        activity = app[app.index("pages.activity = async"):app.index("pages.file = async")]
+        self.assertIn('href="#/runs/${encodeURIComponent(r.id)}"', activity)  # earlier runs open the same detail page
+
+    def test_run_log_path_matches_how_runs_are_saved(self):
+        self.assertTrue(ui.RUN_LOG.fullmatch("20261107-101500-a1b2c3-run_tests.log"))
+
+    def test_stale_jobs_archive_button_says_archive_and_appears_with_the_jobs(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
+        button = home[home.index("data-archive-jobs='${attrJSON(staleJobs"):]
+        button = button[:button.index("</button>")]
+        self.assertTrue(button.endswith(">Archive"))
+        self.assertIn('data-shown-with="stale-list" hidden', button)
+        self.assertIn('[data-shown-with="${CSS.escape(all.dataset.showAll)}"]', app)
 
     def test_empty_jobs_on_home_has_simplified_message_and_link_to_start_new_job(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -2284,6 +2281,17 @@ class ReadApiTests(ServerTestCase):
         self.assertTrue(claude["installed"] and claude["ready"])
         self.assertTrue(data["any_ready"])
         self.assertTrue(data["plugins"])
+
+    def test_yolo_switch_is_saved_per_tool_and_shown_in_the_provider_list(self):
+        res, data = self.request("POST", "/api/ai-providers/yolo", {"cli": "opencode", "on": False}, headers=UI_HEADERS)
+        self.assertEqual((res.status, data), (200, {"cli": "opencode", "on": False}))
+        self.assertEqual(ui.read_settings(self.root)["cli_yolo"], {"opencode": False})
+        res, data = self.request("GET", "/api/ai-providers")
+        by_id = {p["id"]: p for p in data["providers"]}
+        self.assertFalse(by_id["opencode"]["auto_approve"])
+        self.assertTrue(by_id["agy"]["auto_approve"])
+        res, data = self.request("POST", "/api/ai-providers/yolo", {"cli": "claude", "on": True}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)  # plan-first tools have no YOLO flag
 
     def test_ai_provider_install_runs_as_a_background_task(self):
         with patch("orchestrator.ai_providers.install_provider", return_value={"provider": "OpenCode"}) as install:
@@ -4316,6 +4324,31 @@ class AccessibilityStaticTests(unittest.TestCase):
         # A ratchet: inline styles in app.js may only go down. Lower this number when you remove one.
         self.assertLessEqual((static / "app.js").read_text().count('style="'), 62)
 
+    def test_text_uses_the_type_roles(self):
+        """Every size and weight comes from the type roles (docs/superpowers/specs/2026-11-07-web-ui-type-and-alignment-design.md)."""
+        import re
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        scripts = {p.name: p.read_text() for p in sorted(static.glob("*.js"))}
+        defined = set(re.findall(r"(--[a-z0-9-]+):", css))
+        used = {v for text in [css, *scripts.values()] for v in re.findall(r"var\((--[^,)\s]+)", text)}
+        self.assertEqual(used - defined, set(), "every var(--x) must be defined, spelled exactly")
+        sizes = [v.strip() for v in re.findall(r"font-size:\s*([^;}]+)", css)]
+        allowed_size = re.compile(r"^(var\(--type-[a-z]+\)|inherit|0?\.\d+em|1em|16px !important)$")
+        self.assertEqual([v for v in sizes if not allowed_size.match(v)], [], "font-size uses var(--type-*)")
+        weights = [v.strip() for v in re.findall(r"font-weight:\s*([^;}]+)", css)]
+        self.assertEqual([v for v in weights if not re.match(r"^(var\(--weight-[a-z]+\)|inherit)$", v)], [],
+                         "font-weight uses var(--weight-*)")
+        self.assertNotRegex(css, r"(?<![-\w])font:\s*\d", "no shorthand font sizes outside the body rule's tokens")
+        inline = [(name, s) for name, text in scripts.items() for s in re.findall(r'style="([^"]*)"', text)
+                  if re.search(r"(^|;|\s)(font-size|font-weight|margin[a-z-]*|padding[a-z-]*|gap)\s*:", s)]
+        self.assertEqual(inline, [], "inline styles don't set text size, weight or spacing")
+        utility = re.compile(r"^((gap|mt|mb|pt|pb|ml|mr|text|font|t)-[a-z0-9-]+|flex-wrap|cursor-pointer)$")
+        classes = {c for text in scripts.values() for attr in re.findall(r'class="([^"$]*)"', text)
+                   for c in attr.split() if utility.match(c)}
+        self.assertEqual(sorted(c for c in classes if not re.search(r"\." + re.escape(c) + r"(?![\w-])", css)), [],
+                         "every utility class used in markup is defined")
+
     def test_brand_mark_uses_app_icon(self):
         self.assertIn('.brand-mark {', self.css)
         self.assertIn('url("icon-192.png")', self.css)
@@ -4527,13 +4560,17 @@ class AccessibilityStaticTests(unittest.TestCase):
         listed = server.provider_models()
         self.assertTrue(listed["claude"] and listed["codex"])
         self.assertTrue(all({"id", "tier", "caps"} <= set(m) for m in listed["claude"]))
-        ids = [m["id"] for m in server.available_models()]
-        self.assertEqual(ids[:len(server.AVAILABLE_MODELS)], [m["id"] for m in server.AVAILABLE_MODELS])  # the recommended few stay first
-        self.assertGreater(len(ids), len(server.AVAILABLE_MODELS))
+        self.assertTrue(all("usable" in m for m in listed["claude"]))
+        from orchestrator.scripts.model_registry import get_model, runnable_here
+        with patch("orchestrator.scripts.model_registry.runnable_here", side_effect=lambda m: m.id != "claude-opus-4-8"):
+            ids = [m["id"] for m in server.available_models()]
+        self.assertIn("claude-sonnet-4-6", ids)
+        self.assertNotIn("claude-opus-4-8", ids)  # role choices are only models that can run here
         self.assertIn('parts == ["ai-providers", "refresh-models"]', Path(server.__file__).read_text())
         self.assertIn("ai.models?.[p.id]", (Path(server.__file__).parent / "static" / "configuration.js").read_text())  # not the built-in list
         self.assertIn('api("ai-providers/refresh-models"', self.js)
-        self.assertIn("p.auto_approve", (Path(server.__file__).parent / "static" / "configuration.js").read_text())  # the YOLO / plan-first badge is surfaced on the AI tools page
+        self.assertIn("p.auto_approve", (Path(server.__file__).parent / "static" / "configuration.js").read_text())  # the YOLO switch / plan-first badge is surfaced on the AI tools page
+        self.assertIn('api("ai-providers/yolo"', self.js)
 
     def test_home_job_table_shows_type_column_and_mobile_layout_keeps_date_sole_column(self):
         row = self.js[self.js.index("function jobTableRow"):self.js.index("function elapsed")]
@@ -5102,7 +5139,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
     def test_job_hero_and_containers_use_design_tokens(self):
-        self.assertIn(".job-hero-title { margin: 0; font-size: var(--text-lg); font-weight: 650;", self.css)
+        self.assertIn(".job-hero-title { margin: 0; font-size: var(--type-body); font-weight: var(--weight-bold);", self.css)
         self.assertIn(".job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1);", self.css)
         self.assertIn(".job-hero.tone-attention { border-color: var(--warn); background: var(--warn-soft); }", self.css)
         self.assertIn(".banner { display: flex; align-items: center; gap: var(--space-3) var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--border);", self.css)
@@ -5374,7 +5411,7 @@ class PackagesApiTests(ServerTestCase):
     def research(self, answers, searched=True):
         replies, prompts = iter(answers), []
 
-        def fake(handler, root, prompt, timeout=240):
+        def fake(handler, root, prompt, timeout=240, progress=None):
             prompts.append(prompt)
             return next(replies), searched
 
@@ -5467,7 +5504,7 @@ class PackagesApiTests(ServerTestCase):
         self.server.PACKAGE_REVIEW_SETTLE_SECONDS = settle
         calls = []
 
-        def fake(server, root, prompt, timeout=240):
+        def fake(server, root, prompt, timeout=240, progress=None):
             calls.append(prompt)
             return answer, True
 
@@ -5561,7 +5598,7 @@ class PackagesApiTests(ServerTestCase):
         rt = ui.runtime_dir(self.root)
         self.server.PACKAGE_REVIEW_SETTLE_SECONDS = 0
 
-        def boom(server, root, prompt, timeout=240):
+        def boom(server, root, prompt, timeout=240, progress=None):
             raise ui.UIError("The research took too long. Try again.")
 
         with patch.object(ui, "research_call", boom):
@@ -6848,7 +6885,8 @@ class ProductEndpointTests(ServerTestCase):
         self.assertIn("+Reverse-engineered application.", task["result"]["diff"])
 
     def test_product_overview_returns_model_and_available_models(self):
-        _, data = self.request("GET", "/api/product")
+        with patch("orchestrator.scripts.model_registry.runnable_here", return_value=True):  # every tool installed, whatever this machine has
+            _, data = self.request("GET", "/api/product")
         self.assertEqual(data["model"], "claude-sonnet-4-6")
         self.assertTrue(isinstance(data["available_models"], list))
         self.assertTrue(any(m["id"] == "claude-sonnet-4-6" for m in data["available_models"]))
@@ -6859,6 +6897,7 @@ class ProductEndpointTests(ServerTestCase):
         self.assertEqual(data, {"ok": True, "model": "gemini-3.1-pro-preview"})
         _, get_data = self.request("GET", "/api/product")
         self.assertEqual(get_data["model"], "gemini-3.1-pro-preview")
+        self.assertNotIn("default_models", ui.read_settings(self.root))  # the job roles stay on Auto
 
         # Rejects empty or invalid model
         self.assertEqual(self.post("/api/product/model", {"model": ""})[0].status, 400)

@@ -291,7 +291,7 @@ function renderLanguagesBar(languages, { className = "", maxLabels = 3 } = {}) {
     </span>`;
   }).join("");
 
-  const moreLabel = hasMore ? `<span class="muted" style="font-size: 10.5px;">+${languages.length - maxLabels}</span>` : "";
+  const moreLabel = hasMore ? `<span class="muted t-tag">+${languages.length - maxLabels}</span>` : "";
   const tooltip = languages.map((l) => `${l.name}: ${l.percent}%`).join(" · ");
 
   const inner = `
@@ -775,20 +775,20 @@ const dialogs = {
   discard_job(params) { return runAction("discard", { job: params.job }); },
   async delete_job(params) {
     const values = await formDialog("Delete Job", `
-      <p class="muted" style="margin-bottom: var(--space-3);">Do you want to revert changes or just delete and keep changes?</p>
-      <div class="stack" style="gap: var(--space-2);">
-        <label style="display: flex; gap: var(--space-3); align-items: flex-start; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); cursor: pointer;">
-          <input type="radio" name="mode" value="revert" checked style="margin-top: 3px;">
+      <p class="muted">Do you want to revert changes or just delete and keep changes?</p>
+      <div class="stack gap-8">
+        <label class="radio-card">
+          <input type="radio" name="mode" value="revert" checked>
           <div>
-            <strong style="display: block; margin-bottom: 2px;">Revert changes</strong>
-            <span class="muted" style="font-size: var(--text-sm);">Reverts files modified by this job and deletes its branch.</span>
+            <strong class="block">Revert changes</strong>
+            <span class="muted t-secondary">Reverts files modified by this job and deletes its branch.</span>
           </div>
         </label>
-        <label style="display: flex; gap: var(--space-3); align-items: flex-start; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); cursor: pointer;">
-          <input type="radio" name="mode" value="keep" style="margin-top: 3px;">
+        <label class="radio-card">
+          <input type="radio" name="mode" value="keep">
           <div>
-            <strong style="display: block; margin-bottom: 2px;">Delete and keep changes</strong>
-            <span class="muted" style="font-size: var(--text-sm);">Deletes the job, but preserves all code changes and branches.</span>
+            <strong class="block">Delete and keep changes</strong>
+            <span class="muted t-secondary">Deletes the job, but preserves all code changes and branches.</span>
           </div>
         </label>
       </div>`, "Continue");
@@ -827,7 +827,7 @@ const dialogs = {
   },
   async export_job_bundle(params) {
     const values = await formDialog("Export Job Bundle", `
-      <p class="muted" style="margin-bottom:10px;">Select how you want to export all context, brief, git diffs, and execution logs for this job.</p>
+      <p class="muted">Select how you want to export all context, brief, git diffs, and execution logs for this job.</p>
       <label class="field"><span>Export Destination</span>
         <select name="destination">
           <option value="direct">Direct Download (.ZIP archive in browser)</option>
@@ -1827,7 +1827,7 @@ function showSignInGate(message) {
   if (existingCard) {
     const msgEl = $("#signin-gate-message");
     if (msgEl) {
-      msgEl.innerHTML = message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : "";
+      msgEl.innerHTML = message ? `<p class="signin-error">${esc(message)}</p>` : "";
     }
     return;
   }
@@ -1850,8 +1850,8 @@ function showSignInGate(message) {
     <div class="signin-wrap">
       <div class="signin-card">
         <div>
-          <h2 style="margin: 0; font-size: 1.3rem; font-weight: 700;">Sign In</h2>
-          <div id="signin-gate-message">${message ? `<p class="muted" style="margin: 0.35rem 0 0; font-size: 0.92rem;"><span style="color: var(--bad);">${esc(message)}</span></p>` : ""}</div>
+          <h2 class="t-section">Sign In</h2>
+          <div id="signin-gate-message">${message ? `<p class="signin-error">${esc(message)}</p>` : ""}</div>
         </div>
         <figure class="signin-preview">
           <h3>The app in your head. Made real.</h3>
@@ -1915,39 +1915,39 @@ function showSignInGate(message) {
             </div>
           </form>
         </div>
-        ${hostedUser ? `<button type="button" class="btn primary sso-continue-btn ${lastUsed && lastUsed !== "token" ? "last-used" : ""}" id="account-continue-btn" style="width: 100%; justify-content: center; position: relative;">
+        ${hostedUser ? `<button type="button" class="btn primary sso-continue-btn ${lastUsed && lastUsed !== "token" ? "last-used" : ""}" id="account-continue-btn">
           <span>Continue as ${esc(hostedUser.email || "you")}</span>
           <span class="last-used-tag">Last used</span>
         </button>` : ""}
         ${isRemote && !hosted ? `
-        <div class="backend-config-card" style="margin-top: 0.75rem; padding: 0.65rem 0.85rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.82rem; text-align: left;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
-            <span style="font-weight: 600; color: var(--text);">Mac Backend URL:</span>
-            <span style="font-size: 0.75rem; color: ${backend ? "var(--ok)" : "var(--warn, #d99a00)"};">${backend ? "Configured" : "Required for phone"}</span>
+        <div class="backend-config-card">
+          <div class="row between gap-8">
+            <span class="t-label">Mac Backend URL:</span>
+            <span class="t-secondary ${backend ? "ok-text" : "warn-text"}">${backend ? "Configured" : "Required for phone"}</span>
           </div>
-          <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com or Tailscale" value="${esc(backend)}" style="width: 100%; box-sizing: border-box; font-size: 0.85rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text);">
-          <small class="muted" style="display: block; margin-top: 0.35rem; line-height: 1.3;">Run <code>orchestrator ui --tunnel</code> on your Mac to generate an HTTPS URL for your phone.</small>
+          <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com or Tailscale" value="${esc(backend)}">
+          <small class="muted block">Run <code>orchestrator ui --tunnel</code> on your Mac to generate an HTTPS URL for your phone.</small>
         </div>
         ` : ""}
         ${blockedProvider ? `<p class="muted signin-fallback">Pop-ups still blocked? <button type="button" class="linklike" id="redirect-fallback">Try full-page ${esc(blockedProvider.name)} sign-in</button>.${hosted ? "" : " Some browsers can't finish this way; the access token below always works."}</p>` : ""}
         ${hosted ? "" : `
-        <details class="manual-token-details ${lastUsed === "token" ? "last-used-section" : ""}" open style="font-size: 0.82rem; margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
-          <summary class="muted" style="cursor: pointer; user-select: none; text-align: center; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 8px;">
+        <details class="manual-token-details ${lastUsed === "token" ? "last-used-section" : ""}" open>
+          <summary class="muted">
             <span>Sign in with CLI access token</span>
             ${lastUsed === "token" ? `<span class="last-used-tag token-tag">Last used</span>` : ""}
           </summary>
-          <form id="signin-form" class="stack" style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem;">
+          <form id="signin-form" class="stack gap-12 mt-12">
             <label class="field">
               <span>CLI Access Token</span>
-              <input type="password" id="signin-token" name="token" value="${esc(token)}" placeholder="Paste access token from terminal" autocomplete="current-password" style="font-family: var(--mono); font-size: 0.9rem;">
+              <input type="password" id="signin-token" name="token" value="${esc(token)}" placeholder="Paste access token from terminal" autocomplete="current-password" class="mono">
             </label>
             ${!isRemote ? `
             <label class="field">
               <span>Backend URL</span>
-              <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(backend)}" style="font-size: 0.85rem;">
+              <input type="url" id="signin-backend" name="backend" placeholder="e.g. https://...trycloudflare.com" value="${esc(backend)}">
             </label>
             ` : ""}
-            <button type="submit" id="signin-submit-btn" class="btn ${lastUsed === "token" ? "primary last-used" : ""}" style="width: 100%; justify-content: center; padding: 0.55rem; position: relative;">
+            <button type="submit" id="signin-submit-btn" class="btn ${lastUsed === "token" ? "primary last-used" : ""}">
               <span>Use Access Token</span>
               ${lastUsed === "token" ? `<span class="last-used-tag">Last used</span>` : ""}
             </button>
@@ -2583,7 +2583,7 @@ async function createReleaseTag() {
       </div>
       <label class="field"><span>Release version</span><input name="tag" required maxlength="120" value="${esc(preview.suggested_tag)}" placeholder="v0.1.0" spellcheck="false"></label>
       ${preview.can_push ? `<label class="check"><input type="checkbox" name="publish" checked><span>Publish this tag to the Git remote (origin)</span></label>` : `<p class="muted">No remote is configured. The tag will be saved locally.</p>`}
-      <p class="muted font-13">Your current branch and uncommitted changes stay as they are.</p>`, "Create release tag");
+      <p class="muted t-secondary">Your current branch and uncommitted changes stay as they are.</p>`, "Create release tag");
     if (!values) return;
     const body = {tag: values.tag, commit: preview.commit, push: Boolean(values.publish)};
     let result = await api("delivery/release", {method: "POST", body});
@@ -2865,7 +2865,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("scroll", repositionOpenHomeHealthPopovers, true);
 if (typeof window !== "undefined") window.addEventListener("resize", repositionOpenHomeHealthPopovers);
 
-// Archive keeps the branch and files; Home's Completed & archived section (or Undo here) brings a job back as it was.
+// Archive keeps the branch and files; Home's Archived section (or Undo here) brings a job back as it was.
 document.addEventListener("click", async (e) => {
   const button = e.target.closest("[data-archive-jobs]");
   if (!button) return;
@@ -2991,7 +2991,7 @@ pages.home = async (_, query) => {
               <div class="stale-jobs">
                 <p class="stale-jobs-text">${staleJobs.length === 1 ? "1 job hasn't" : `${staleJobs.length} jobs haven't`} changed in over ${STALE_DAYS} days.</p>
                 <button type="button" class="btn small" data-show-all="stale-list">Show</button>
-                <button type="button" class="btn small" data-archive-jobs='${attrJSON(staleJobs.map((j) => j.id))}'>Archive ${staleJobs.length === 1 ? "it" : "them"}</button>
+                <button type="button" class="btn small" data-archive-jobs='${attrJSON(staleJobs.map((j) => j.id))}' data-shown-with="stale-list" hidden>Archive</button>
               </div>
               <div class="job-table-body" id="stale-list">${staleJobs.map((j) => jobTableRow(j, { hidden: true })).join("")}</div>` : ""}
           </div>
@@ -2999,15 +2999,17 @@ pages.home = async (_, query) => {
         ${elsewhereLine(waiting.elsewhere)}
       </section>
 
-      ${finishedJobs.length || archivedJobs.length ? `<section class="card" id="home-finished">
-        <div class="card-h"><h2>Completed &amp; archived <span class="count">${finishedJobs.length + archivedJobs.length}</span></h2></div>
-        ${finishedJobs.length ? `<div class="job-table"><div class="job-table-body" id="finished-list">
+      ${finishedJobs.length ? `<section class="card mb-16" id="home-finished">
+        <div class="card-h"><h2>Completed <span class="count">${finishedJobs.length}</span></h2></div>
+        <div class="job-table"><div class="job-table-body" id="finished-list">
           ${finishedJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}</div>
-          ${finishedJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="finished-list">Show all ${finishedJobs.length}</button></div>` : ""}</div>` : ""}
-        ${archivedJobs.length ? `<details class="fold" id="home-archived"${requested === "archived" ? " open" : ""}><summary class="card-h"><h2>Archived <span class="count">${archivedJobs.length}</span></h2></summary>
+          ${finishedJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="finished-list">Show all ${finishedJobs.length}</button></div>` : ""}</div>
+      </section>` : ""}
+      ${archivedJobs.length ? `<section class="card" id="home-archived-section">
+        <details class="fold" id="home-archived"${requested === "archived" ? " open" : ""}><summary class="card-h"><h2>Archived <span class="count">${archivedJobs.length}</span></h2></summary>
           <div class="list">${archivedJobs.map((j) => `<div class="item"><div class="main-col"><div class="title">${esc(j.title)}</div>
             <div class="meta"><span class="mono">${esc(j.job_id)}</span> · ${esc(j.status)}${j.corrupt ? " · this archive can't be read" : ""}</div></div>
-            <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div></details>` : ""}
+            <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div></details>
       </section>` : ""}`,
     after: () => {
       const homeModelSelect = view.querySelector("#prd-home-model-select");
@@ -3029,7 +3031,7 @@ pages.home = async (_, query) => {
           }
         });
       }
-      if (jumpToFinished) $("#home-finished")?.scrollIntoView({ block: "start" });
+      if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
       $("#yolo-all")?.addEventListener("click", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
@@ -3429,12 +3431,12 @@ pages.job = async ([id]) => {
       ${runs.filter((r) => r.running).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
 
       ${isAutoImprove ? `
-        <div class="banner info mb-16 row align-center justify-between" style="border-left: 3px solid #fbbf24; background: rgba(245, 158, 11, 0.08); padding: 12px 16px;">
+        <div class="banner info improve-banner mb-16 row align-center justify-between">
           <div class="row align-center gap-8">
-            <span style="font-size: 1.25rem;">🏆</span>
+            <span class="t-section">🏆</span>
             <div>
               <strong>Orchestrator Improvement Job</strong>
-              <div class="muted" style="font-size: var(--text-xs);">This job adds a feature or fix to Orchestrator itself.</div>
+              <div class="muted t-secondary">This job adds a feature or fix to Orchestrator itself.</div>
             </div>
           </div>
           <div>
@@ -3508,6 +3510,7 @@ pages.job = async ([id]) => {
           <div class="progress-foot muted">
             ${esc(testsDisplay)}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}` : ""}
           </div>
+          ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto for a ${esc(job.auto_assignment.complexity || "standard")} job: ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
         </div>
       </section>
 
@@ -3541,7 +3544,7 @@ pages.job = async ([id]) => {
           <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more (see the full diffstat below)</div>` : ""}</div>
         </div>
         ${changes?.hypothesis ? `<div class="card-b card-b-split text-sm"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
-        ${changes?.diffstat ? `<details class="raw" style="border-top: 1px solid var(--border);"><summary style="padding: 8px 16px; font-size: 12.5px; color: var(--muted); cursor: pointer;">View full diffstat (${allFiles.length} files)</summary><pre class="file" style="margin: 0; border: none; border-radius: 0;">${esc(changes.diffstat)}</pre></details>` : ""}
+        ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View full diffstat (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
 
       ${uxReviewCard(s, data.ux_review)}
@@ -3662,12 +3665,12 @@ pages.job = async ([id]) => {
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const bodyHtml = `
           <div class="stack gap-12">
-            <div class="muted" style="font-size: var(--text-xs);">
+            <div class="muted t-secondary">
               File location: <span class="mono">${esc(briefDoc.path || `.orchestrator/output/${id}/brief.md`)}</span>
             </div>
             <label class="field">
               <span>Brief Markdown</span>
-              <textarea name="text" rows="18" class="mono" style="font-size: var(--text-xs); line-height: 1.5; resize: vertical;" required>${esc(briefDoc.text || "")}</textarea>
+              <textarea name="text" rows="18" class="mono code-editor" required>${esc(briefDoc.text || "")}</textarea>
             </label>
           </div>
         `;
@@ -4228,10 +4231,40 @@ document.addEventListener("click", (e) => {
     toggle.setAttribute("aria-expanded", String(open));
     return;
   }
+  const logAction = e.target.closest("[data-run-log]");
+  if (logAction) {
+    const { runLog: action, path, name } = logAction.dataset;
+    logAction.disabled = true;
+    const fetched = api(`file?path=${encodeURIComponent(path)}`).then(({ text }) => plainLog(text));
+    if (action === "copy") {
+      // Safari only lets a page copy during the tap itself, so the clipboard write starts now and waits for the log.
+      const copied = window.ClipboardItem && navigator.clipboard?.write
+        ? navigator.clipboard.write([new ClipboardItem({ "text/plain": fetched.then((log) => new Blob([log], { type: "text/plain" })) })])
+        : fetched.then((log) => navigator.clipboard.writeText(log));
+      Promise.all([fetched, copied])
+        .then(([log]) => toast(log.trim() ? "Log copied" : "This log is empty so far."))
+        .catch((err) => toast(err?.status === 404 ? "No saved log for this run yet." : "Couldn't copy here. Use Export instead.", true))
+        .finally(() => { logAction.disabled = false; });
+      return;
+    }
+    fetched
+      .then((log) => {
+        if (!log.trim()) { toast("This log is empty so far."); return; }
+        {
+          const file = `${(name || "run").replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "run"}-${path.split("/").pop()}`;
+          downloadText(file.endsWith(".log") ? file : `${file}.log`, log, "text/plain");
+        }
+      })
+      .catch((err) => toast(err?.status === 404 ? "No saved log for this run yet." : err.message, true))
+      .finally(() => { logAction.disabled = false; });
+    return;
+  }
   const all = e.target.closest("[data-show-all]");
   if (all) {
     const list = document.getElementById(all.dataset.showAll);
     list.querySelectorAll("[hidden]").forEach((el) => { el.hidden = false; });
+    // Actions on those items (like Archive) only make sense once the items are on screen.
+    document.querySelectorAll(`[data-shown-with="${CSS.escape(all.dataset.showAll)}"]`).forEach((el) => { el.hidden = false; });
     all.remove();
   }
 });
@@ -4253,7 +4286,7 @@ pages.delivery = async (args, query) => {
     <div class="card-h">
       <h2>Release versions</h2>
       <div class="row gap-8 align-center">
-        <span class="muted font-13">Base branch: <strong class="mono">${esc(baseBranchName)}</strong></span>
+        <span class="muted t-secondary">Base branch: <strong class="mono">${esc(baseBranchName)}</strong></span>
         ${d.live?.commit ? `<button type="button" class="btn small" data-create-release data-owner-only>Create release tag</button>` : ""}
       </div>
     </div>
@@ -4267,7 +4300,7 @@ pages.delivery = async (args, query) => {
             ${hasTag ? `
               <div class="branch-meta-title">
                 <code class="mono branch-commit-hash">${esc(d.live.tag)}</code>
-                ${releasesUrl ? `<a class="muted font-13" href="${esc(releasesUrl)}" target="_blank" rel="noopener">View all releases on GitHub ↗</a>` : ""}
+                ${releasesUrl ? `<a class="muted t-secondary" href="${esc(releasesUrl)}" target="_blank" rel="noopener">View all releases on GitHub ↗</a>` : ""}
               </div>
               <div class="branch-meta-sub">
                 <span>Tagged on base branch <strong>${esc(baseBranchName)}</strong></span>
@@ -4314,7 +4347,7 @@ pages.delivery = async (args, query) => {
         </div>
       </div>
 
-      <p class="muted font-13">Tags anchor official versions on your base branch (<strong>${esc(baseBranchName)}</strong>) to track what changed since you shipped. Creating a tag records a milestone in Git; it does not deploy or upload your app.</p>
+      <p class="muted t-secondary">Tags anchor official versions on your base branch (<strong>${esc(baseBranchName)}</strong>) to track what changed since you shipped. Creating a tag records a milestone in Git; it does not deploy or upload your app.</p>
       ${!d.live?.commit ? `<a class="btn small" href="#/git">Sync the base branch in Git setup</a>` : ""}
     </div>
   </section>`;
@@ -4323,8 +4356,8 @@ pages.delivery = async (args, query) => {
     <div class="card-h">
       <h2>Branch &amp; Test Build</h2>
       <div class="row gap-8 align-center">
-        <span class="muted font-13">Branch:</span>
-        <select id="delivery-branch-select" class="mono" style="min-width: 140px;">
+        <span class="muted t-secondary">Branch:</span>
+        <select id="delivery-branch-select" class="inline-select">
           ${branches.map((b) => `<option value="${esc(b)}" ${b === selected_branch ? "selected" : ""}>${esc(b)}${b === current_branch ? " (current)" : ""}</option>`).join("")}
         </select>
       </div>
@@ -4377,7 +4410,7 @@ pages.delivery = async (args, query) => {
       ` : `
         <form id="delivery-build-form" class="stack gap-12 mt-8 pt-12" style="border-top: 1px solid var(--border);">
           <div class="field">
-            <span class="label">Send to</span>
+            <span>Send to</span>
             <div class="row gap-16 align-center flex-wrap">
               <label class="row gap-6 align-center cursor-pointer">
                 <input type="radio" name="recipient_type" value="me" checked>
@@ -4387,7 +4420,7 @@ pages.delivery = async (args, query) => {
                 <input type="radio" name="recipient_type" value="group">
                 <span>Tester group:</span>
               </label>
-              <select id="delivery-group-select" name="group" style="min-width: 140px;" ${testers.groups.length ? "" : "disabled"}>
+              <select id="delivery-group-select" name="group" class="inline-select" ${testers.groups.length ? "" : "disabled"}>
                 ${testers.groups.length ? testers.groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("") : `<option value="">No groups configured</option>`}
               </select>
               <button type="button" class="btn small ghost" id="delivery-new-group-btn" title="Create a new Firebase tester group">+ New group</button>
@@ -4400,7 +4433,6 @@ pages.delivery = async (args, query) => {
           <div class="row gap-10 align-center">
             <button type="submit" class="btn primary" ${act("distribute")}>Launch build for testing</button>
             ${testers.invite_url ? `
-              <span class="muted">·</span>
               <button type="button" class="btn small ghost" data-setup-copy="${esc(testers.invite_url)}">Copy invite link</button>
             ` : ""}
           </div>
@@ -4694,7 +4726,11 @@ pages.packages = async () => {
         <p>When your product requirements are set or change in a meaningful way (about a paragraph of new content, not a small tweak), Orchestrator looks for packages and tools that would help, searching the web where it can. Each one is listed below with a link: accept the ones you want, reject the rest. Nothing is installed until you add it.</p>
         ${running ? `<p class="muted" id="pkg-running" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Reviewing your requirements for packages…</p>` : ""}
         ${review?.error ? `<div class="notice bad">${esc(review.error)}</div>` : ""}
-        <p class="muted" id="pkg-progress" role="status" hidden></p>${reviewNote}
+        <div class="pkg-progress" id="pkg-progress" role="status" aria-live="polite" hidden>
+          <div class="row gap-10 wrap"><strong id="pkg-stage"></strong><button type="button" class="btn small" id="pkg-cancel">Cancel</button></div>
+          <p class="muted" id="pkg-detail"></p>
+          <p class="muted" id="pkg-slow" hidden>This is taking longer than usual. The model may be slow or searching widely. You can keep waiting, or cancel and try again. It stops on its own after ${Math.round(PACKAGE_REVIEW_BUDGET_SECONDS / 60)} minutes.</p>
+        </div>${reviewNote}
         ${owner ? `<label class="check"><input type="checkbox" id="pkg-auto" ${auto ? "checked" : ""}><span>Review automatically when the requirements change meaningfully</span></label>` : ""}</div></section>
       ${suggested.length ? `<section class="card mb-16" id="pkg-suggested"><div class="card-h"><h2>Suggested</h2><span class="count">${suggested.length}</span></div><div class="list">${suggested.map(suggestedRow).join("")}</div></section>` : ""}
       ${planned.length ? `<section class="card mb-16" id="pkg-planned"><div class="card-h"><h2>Accepted</h2><span class="count">${planned.length}</span></div><div class="list">${planned.map(plannedRow).join("")}</div></section>` : ""}
@@ -4729,19 +4765,38 @@ pages.packages = async () => {
       });
       $("#pkg-review")?.addEventListener("click", async (e) => {
         const button = e.currentTarget, idle = button.innerHTML, note = $("#pkg-progress");
+        const stage = $("#pkg-stage"), detail = $("#pkg-detail"), slow = $("#pkg-slow"), cancel = $("#pkg-cancel");
+        let started = null;
         button.disabled = true; button.setAttribute("aria-busy", "true");
         button.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Researching…`;
-        if (note) { note.hidden = false; note.textContent = "Reading your requirements and features, then looking for packages. This can take a minute or two."; }
+        const show = (r = {}) => {
+          if (!note) return;
+          note.hidden = false;
+          stage.textContent = `${r.stage || "Starting"} · ${clockTime(r.elapsed || 0)}`;
+          detail.textContent = r.detail || "Reading your requirements and features, then looking for packages. This usually takes a minute or two.";
+          slow.hidden = !(r.elapsed >= PACKAGE_REVIEW_SLOW_SECONDS);
+        };
+        const reset = () => {
+          if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; }
+          if (note) note.hidden = true;
+        };
+        const onCancel = async () => {
+          cancel.disabled = true;
+          if (started?.task) await api(`product/task/${encodeURIComponent(started.task)}/cancel`, { method: "POST", body: {} }).catch(() => {});
+        };
+        cancel?.addEventListener("click", onCancel, { once: true });
+        if (cancel) cancel.disabled = false;
+        show();
         try {
           const before = packages.filter((p) => p.status === "suggested").length;
-          const result = await waitForTask(await api("packages/review", { method: "POST", body: {} }));
+          started = await api("packages/review", { method: "POST", body: {} });
+          const result = await waitForTask(started, { onProgress: show });
           const added = result.packages.filter((p) => p.status === "suggested").length - before;
           toast(added > 0 ? `${plural(added, "suggestion")} added.` : "Nothing new to suggest right now.");
           route();
         } catch (err) {
-          toast(err.message, true);
-          if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; }
-          if (note) note.hidden = true;
+          toast(err.name === "AbortError" ? "Stopped. Nothing was changed." : err.message, err.name !== "AbortError");
+          reset();
         }
       });
     },
@@ -5442,7 +5497,7 @@ pages.help = async () => {
       <details><summary>A job won't run</summary><p>Jobs need a Git repository, a machine, a model and a ready AI provider. GitHub workflows also need GitHub sign-in. The <a href="#/checkup">Onboarding checklist</a> shows what's missing and where to fix it.</p></details>
       <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. All of it is optional, and “not sure yet” is a fine answer. Draft it from your project, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
       <details><summary>I changed my mind about a job</summary><p>Use <strong>Revise plan</strong> in the job's More menu to re-plan, or <strong>Discard job</strong> to revert its changes and delete its branch. Discard can't be undone.</p></details>
-      <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job you archived can be restored from <a href="#/?filter=archived">Archived</a>, in the Completed &amp; archived section at the bottom of Home.</p></details>
+      <details><summary>I deleted something by mistake</summary><p>Deleting a feature or KPI shows an Undo for 10 seconds. A job you archived can be restored from <a href="#/?filter=archived">Archived</a>, the last section on Home.</p></details>
       <details><summary>How do I get alerts when I'm away?</summary><p>Everything is under <a href="#/config/alerts">Configuration → Alerts</a>: this browser or phone (turned on in the hosted app, alerts arrive even with Orchestrator closed, and you're told if your computer goes offline mid-run; on iPhone, add it to your Home Screen first), Slack, email, and a notification on your Mac. The sidebar's <strong>Notify me when done</strong> is a shortcut for this device.</p></details>
       <details><summary>Where are the full guides?</summary><p>In <strong>Orchestrator guides</strong> below. The terminal console has everything too: use <strong>Open full console</strong>.</p></details>
     </div></section>
@@ -5494,8 +5549,8 @@ pages.help = async () => {
 // Everything written about the project in one place: the product requirements, a page for every feature and every job (composed
 // from the live project, so it can't go stale), and the project's own markdown files. One file can be downloaded with all of it.
 
-function downloadText(name, text) {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+function downloadText(name, text, type = "text/markdown") {
+  const url = URL.createObjectURL(new Blob([text], { type: `${type};charset=utf-8` }));
   const a = Object.assign(document.createElement("a"), { href: url, download: name });
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -5571,14 +5626,16 @@ function showPrdUpdate(note) {
 
 // The list of AI models changed (a refresh, or the Codex login offering something new): say so once, over the page, until it is dismissed.
 let lastModelsNotice; // undefined until the first poll, so a change made while you were away is shown but doesn't also fire an alert
+let newModelIds = []; // the models that note announced, highlighted on the AI tools page for the rest of this visit
 function showModelsUpdate(note) {
   if (!note) { if (lastModelsNotice) clearMessage(`models:${lastModelsNotice}`); lastModelsNotice = null; return; }
   if (note.id === lastModelsNotice) return;
   const first = lastModelsNotice === undefined;
   if (lastModelsNotice) clearMessage(`models:${lastModelsNotice}`);
   lastModelsNotice = note.id;
+  newModelIds = note.added || [];
   const seen = () => api("models/dismiss", { method: "POST", body: {} }).catch(() => {});
-  notify("info", `AI models updated. ${note.summary}`, {
+  notify("info", `AI models updated: ${note.summary}`, {
     id: `models:${note.id}`, sticky: true, onDismiss: seen,
     actions: [{ label: "See models", href: "#/config/ai", after: seen }],
   });
@@ -5597,6 +5654,10 @@ async function undoPrdUpdate(noteId) {
 
 // Slow model work runs on the server in the background: start it, then ask how it is getting on. (A tunnel closes any single
 // request held open for about 100 seconds, so waiting on one long request made slower models look like failures.)
+const PACKAGE_REVIEW_SLOW_SECONDS = 120;
+const PACKAGE_REVIEW_BUDGET_SECONDS = 360; // packages.REVIEW_BUDGET_SECONDS
+const clockTime = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+
 async function waitForTask(started, opts) {
   const { task } = started;
   const began = Date.now();
@@ -5612,6 +5673,7 @@ async function waitForTask(started, opts) {
       if (e.status === 404 || ++misses >= 4) throw e;
       continue;
     } // a dropped connection is retried a few times
+    if (r.status === "running") opts?.onProgress?.(r);
     if (r.status === "done") return r.result;
     if (r.status === "canceled" || r.status === "cancelled") throw new DOMException("Aborted", "AbortError");
     if (r.status === "error") throw new Error(r.error);
@@ -5767,7 +5829,7 @@ pages.product = async (_, query) => {
             <div class="prd-features-edit" id="prd-features-list"></div>
             <div class="row items-center gap-10 mt-8">
               <button type="button" class="btn small ghost" id="prd-feature-add">+ Add feature</button>
-              <span class="muted text-xs">Press Enter to add another feature</span>
+              <span class="muted t-secondary">Press Enter to add another feature</span>
             </div>
             <div class="row gap-10 mt-12">
               <button type="button" class="btn primary" id="prd-save-features">Save</button>
@@ -7077,14 +7139,14 @@ pages["test-cases"] = async (_, query) => {
             </div>
             ${allAreas.length > 1 ? `
               <div class="row gap-8" style="align-items:center;">
-                <span class="muted" style="font-size:12px;">Area:</span>
+                <span class="muted t-secondary">Area:</span>
                 <select id="tc-area-select" class="btn small">
                   <option value="all" ${areaFilter === "all" ? "selected" : ""}>All areas</option>
                   ${allAreas.map((a) => `<option value="${esc(a)}" ${areaFilter === a ? "selected" : ""}>${esc(a)}</option>`).join("")}
                 </select>
               </div>` : ""}
             <div class="row gap-8" style="align-items:center;">
-              <span class="muted" style="font-size:12px;">Type:</span>
+              <span class="muted t-secondary">Type:</span>
               <select id="tc-type-select" class="btn small">
                 <option value="all" ${typeFilter === "all" ? "selected" : ""}>All types</option>
                 ${allTypes.map(([t, label]) => `<option value="${t}" ${typeFilter === t ? "selected" : ""}>${esc(label)}</option>`).join("")}
@@ -7111,7 +7173,7 @@ pages["test-cases"] = async (_, query) => {
           <div class="card-b">
             <div class="empty">
               ${caseView.cases.length ? "No test cases match the current filter." : "No test cases in library yet."}
-              <div style="margin-top:12px;">
+              <div class="mt-12">
                 <button class="btn small primary" id="btn-create-tc-empty">Create your first test case</button>
               </div>
             </div>
@@ -7637,6 +7699,7 @@ pages.config = async (args = []) => {
   }
   if (section === "ai") {
     try { config.ai = await api("ai-providers"); } catch { config.ai = null; }
+    config.newModels = newModelIds;
   }
   const result = ConfigurationPages.render(section, config);
   if (section === "email") {
@@ -7820,6 +7883,25 @@ pages.config = async (args = []) => {
           view.addEventListener("click", onInstall);
           cleanup.push(() => view.removeEventListener("click", onInstall));
 
+          // The YOLO switch sits in a row's summary; the checkbox owns its state, so a click, a tap on its label or Space all work.
+          const onYolo = async (event) => {
+            const input = event.target.closest?.("input[data-yolo-cli]");
+            if (!input) return;
+            const on = input.checked;
+            input.disabled = true;
+            try {
+              await api("ai-providers/yolo", {method: "POST", body: {cli: input.dataset.yoloCli, on}});
+              toast(on ? "YOLO on: this tool changes files without asking." : "YOLO off: this tool asks before changing files.");
+            } catch (error) {
+              input.checked = !on;
+              toast(error.message, true);
+            } finally {
+              input.disabled = false;
+            }
+          };
+          view.addEventListener("change", onYolo);
+          cleanup.push(() => view.removeEventListener("change", onYolo));
+
           const modelsButton = $("#ai-refresh-models");
           if (modelsButton) {
             const refreshModels = async ({quiet = false} = {}) => {
@@ -7896,7 +7978,7 @@ pages.config = async (args = []) => {
             showConfigMutationDialog(
               `Customize ${name} Instructions`,
               `<label class="field"><span>Prompt Instructions (.md)</span><small>Starts from the built-in instructions. Edit them, or use Reset to go back.</small>
-               <textarea name="content" style="min-height:220px; font-family:var(--mono); font-size:12px;" required>${esc(content || "")}</textarea></label>`,
+               <textarea name="content" class="mono code-editor tall" required>${esc(content || "")}</textarea></label>`,
               "Save Instructions",
               (values) => ({part: "role-prompts", body: {id, content: values.content}}),
               "Instructions saved"
@@ -8525,7 +8607,7 @@ async function linkPickerHtml({ prefer = [], label = "Link from your apps", empt
   const html = `<div class="link-picker field"><span>${esc(label)} <span class="muted">(optional)</span></span>
     <div class="row"><select class="lp-provider" aria-label="App">${providers.map((p) => `<option value="${esc(p.id)}" data-search="${p.searchable}">${esc(p.name)}</option>`).join("")}</select>
       <input type="text" class="lp-input" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;min-width:160px"><button type="button" class="btn small lp-add">Add</button></div>
-    <div class="row justify-between align-center mt-2 text-xs">
+    <div class="row justify-between align-center mt-8 t-secondary">
       <span class="muted">Connected apps: ${providers.map((p) => esc(p.name)).join(", ")}</span>
       <a href="#/connections" class="linklike">Connect more apps ↗</a>
     </div>
@@ -8907,7 +8989,7 @@ pages.activity = async () => {
   const finished = state.runs.filter((r) => !r.running);
   // Runs from before Orchestrator last started are read back from their saved logs (owners only: logs are private).
   const earlier = state.you?.role === "member" ? [] : ((await api("runs/history").catch(() => null))?.runs || []);
-  const earlierRow = (r) => `<a class="item" href="#/file?path=${encodeURIComponent(r.log)}">
+  const earlierRow = (r) => `<a class="item" href="#/runs/${encodeURIComponent(r.id)}">
     <div class="main-col"><div class="title">${esc(r.title)}</div><div class="meta">${esc(ago(r.started))}</div></div><div class="side"><span class="muted">Log</span></div></a>`;
   return {
     title: "Activity",
@@ -9199,16 +9281,22 @@ const KEYS = [
   ["y", "y"], ["n", "n"], ["q", "q"], ["Ctrl-C", "\x03"], ["Ctrl-D", "\x04"],
 ];
 
+// A terminal transcript as plain text: no colour codes or cursor moves.
+const plainLog = (text) => String(text || "").replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])/g, "").replace(/\r\n?/g, "\n");
 function runHeader(r) {
   // The top-left Back returns to the job (or wherever you came from); opened directly, it falls back to the job.
   if (r.job && current.page === "run") current.parent = `#/jobs/${encodeURIComponent(r.job)}`;
   const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
+  const log = `logs/ui/${r.id}-${r.action}.log`; // every run is saved here, so the full log is there even after a restart
   return {
     title: r.title,
     sub: "",
-    actions: r.running
-      ? `<button class="btn danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…' : "Stop"}</button>`
-      : "",
+    actions: ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
+      : `<button class="btn" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
+        + `<button class="btn" data-run-log="export" data-path="${esc(log)}" data-name="${esc(r.title)}">Export</button>`)
+      + (r.running
+        ? `<button class="btn danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…' : "Stop"}</button>`
+        : ""),
   };
 }
 
@@ -9224,7 +9312,7 @@ function openImageModal({ title, src, authSrc, fullUrl }) {
         <img src="${esc(src)}" ${authSrc ? `data-auth-src="${esc(authSrc)}"` : ""} alt="${esc(title)}" class="image-preview-modal-img">
       </div>
       <div class="image-preview-modal-foot row align-center justify-between">
-        <span class="mono text-xs muted">${esc(title)}</span>
+        <span class="mono t-secondary muted">${esc(title)}</span>
         <a class="btn small ghost" href="${esc(fullUrl || src)}" target="_blank" rel="noopener">Open full size in new tab ↗</a>
       </div>
     </div>
@@ -9713,15 +9801,15 @@ function runStatus(r, vc = null) {
             <input type="password" id="keychain-pwd-input" placeholder="Mac login password" autocomplete="current-password" aria-label="Mac login password" class="keychain-pwd-input" required>
             <button type="submit" class="btn small primary" id="keychain-unlock-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-lock"/></svg> Unlock keychain</button>
           </div>
-          <div class="keychain-pwd-note muted text-xs mt-4">
+          <div class="keychain-pwd-note muted t-secondary mt-4">
             🔒 Stored strictly locally in <code>.secrets/project-secrets.zsh</code> on this Mac to allow background builds. Never sent to remote servers.
           </div>
           <div id="keychain-unlock-result" class="mt-4" hidden></div>
         </form>
 
         <details class="keychain-manual-fold mt-8">
-          <summary class="text-xs text-muted cursor-pointer">Or unlock manually in Terminal</summary>
-          <div class="keychain-manual-body mt-4 text-xs stack gap-4">
+          <summary class="t-secondary text-muted cursor-pointer">Or unlock manually in Terminal</summary>
+          <div class="keychain-manual-body mt-4 t-secondary stack gap-4">
             <p class="muted">Run this in Terminal on your Mac to unlock the login keychain:</p>
             <div class="row gap-4 items-center flex-wrap">
               <code class="code-box user-select-all">security unlock-keychain ~/Library/Keychains/login.keychain-db</code>
@@ -9752,7 +9840,7 @@ function runStatus(r, vc = null) {
         <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
 
         <form class="inline-apikey-form" id="inline-apikey-form" onsubmit="return false;" data-rerun-action="${esc(rerunAction)}"${targetJob ? ` data-rerun-params='${attrJSON(rerunParams)}'` : ""}>
-          <div class="row gap-8 items-center flex-wrap mt-2">
+          <div class="row gap-8 items-center flex-wrap mt-8">
             <select id="apikey-provider-select" class="apikey-select" aria-label="AI provider">
               <option value="anthropic_api_key">Anthropic (Claude)</option>
               <option value="openai_api_key">OpenAI (Codex / ChatGPT)</option>
@@ -9762,7 +9850,7 @@ function runStatus(r, vc = null) {
             <input type="password" id="apikey-val-input" placeholder="Paste API key (sk-…)" autocomplete="off" aria-label="API key" class="apikey-input" required>
             <button type="submit" class="btn small primary" id="apikey-save-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg> Save key &amp; Rerun</button>
           </div>
-          <div class="apikey-note muted text-xs mt-4">
+          <div class="apikey-note muted t-secondary mt-4">
             🔒 Saved locally in settings.json on this Mac. Never transmitted to external servers.
           </div>
         </form>
@@ -9986,7 +10074,7 @@ function wireKeychainUnlock(container) {
           pwdInput.focus();
         }
         if (resultEl) {
-          resultEl.innerHTML = `<div class="text-danger text-xs mt-2">${esc(err.message || "Failed to unlock keychain. Check your password.")}</div>`;
+          resultEl.innerHTML = `<div class="text-danger t-secondary mt-8">${esc(err.message || "Failed to unlock keychain. Check your password.")}</div>`;
           resultEl.hidden = false;
         }
       }
@@ -10314,7 +10402,7 @@ pages.run = async ([id]) => {
       } catch {}
       const exitMatch = logText.match(/\[exited(?: with code (\d+))?\]/);
       const exitCode = exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1;
-      const cleanLog = logText.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])/g, "").replace(/\r/g, "\n");
+      const cleanLog = plainLog(logText);
       const nonExitedLines = cleanLog.split(/\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[exited"));
       const recentLines = nonExitedLines.slice(-40);
       const errorCandidates = recentLines.filter((l) => /error|failed|fatal|exception|cannot|command not found|denied|locked|timed? ?out/i.test(l) && !/cleaned up|notification/i.test(l));
@@ -10475,7 +10563,7 @@ pages["auto-improve"] = async (_, query) => {
                     <div class="col-date">
                       <span class="date-relative">${esc(ago(j.updated))}</span>
                     </div>
-                    <div class="row gap-8 align-center" style="margin-left: auto; padding-right: 12px;">
+                    <div class="row gap-8 align-center push-right">
                       <a class="btn small ghost" href="#/jobs/${encodeURIComponent(j.id)}">Open</a>
                       ${submitted ? `
                         <button type="button" class="btn small ghost" disabled>Submitted</button>

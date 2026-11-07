@@ -12,6 +12,125 @@ from orchestrator.runtime_control import ActivityGate, BusyError, InstanceLease
 from orchestrator.web.server import BackgroundTasks, SessionManager
 
 
+class TaskProgressTests(unittest.TestCase):
+    def test_a_task_reports_its_stage_and_how_long_it_has_run(self):
+        tasks = BackgroundTasks()
+        reached, release = threading.Event(), threading.Event()
+
+        def work(progress):
+            progress.update("Asking the model", "claude with web search")
+            reached.set()
+            release.wait(3)
+            return "ok"
+
+        task = tasks.start(work, progress=True)
+        self.assertTrue(reached.wait(3))
+        view = tasks.get(task)
+        self.assertEqual((view["stage"], view["detail"]), ("Asking the model", "claude with web search"))
+        self.assertGreaterEqual(view["elapsed"], 0)
+        release.set()
+        for _ in range(100):
+            if tasks.get(task)["status"] == "done":
+                break
+            threading.Event().wait(0.02)
+        self.assertEqual(tasks.get(task)["result"], "ok")
+
+    def test_work_sees_a_cancel(self):
+        tasks = BackgroundTasks()
+        seen, started = threading.Event(), threading.Event()
+
+        def work(progress):
+            started.set()
+            for _ in range(200):
+                if progress.cancelled():
+                    seen.set()
+                    return None
+                threading.Event().wait(0.01)
+
+        task = tasks.start(work, progress=True)
+        self.assertTrue(started.wait(3))
+        tasks.cancel(task)
+        self.assertTrue(seen.wait(3))
+        self.assertEqual(tasks.get(task)["status"], "canceled")
+
+
+class ResearchCallTests(unittest.TestCase):
+    """research_call runs the model as a child process: it reports steps, keeps to its deadline and stops the whole group."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.server = type("S", (), {"child_env": lambda self: dict(os.environ)})()
+
+    def script(self, body):
+        path = self.root / "fake_chat.py"
+        path.write_text(body)
+        return [sys.executable, "-u", str(path)]
+
+    def call(self, body, timeout, progress=None):
+        from unittest.mock import patch
+        from orchestrator.web import server as ui
+        with patch.object(ui, "orchestrator_argv", return_value=self.script(body)):
+            return ui.research_call(self.server, self.root, "prompt", timeout, progress)
+
+    def progress(self):
+        from orchestrator.web.server import TaskProgress
+        item = {"status": "running"}
+        return item, TaskProgress(item, threading.Lock())
+
+    def test_steps_are_reported_and_the_reply_is_returned(self):
+        item, progress = self.progress()
+        reply, searched = self.call(
+            "import sys\nsys.stdin.read()\n"
+            "print('<<<ORCHESTRATOR-STAGE>>>claude-x with web search')\n"
+            "print('      - Running LLM (claude-x, timeout=60s)...')\n"
+            "print('        [output] Received 12 chars in 1.0s')\n"
+            "print('<<<ORCHESTRATOR-WEB>>>on')\nprint('<<<ORCHESTRATOR-REPLY>>>')\nprint('{\"packages\": []}')\n", 20, progress)
+        self.assertEqual(reply.strip(), '{"packages": []}')
+        self.assertTrue(searched)
+        self.assertEqual(item["stage"], "Reading the answer")
+
+    def test_a_slow_model_is_stopped_at_the_deadline_with_its_grandchild(self):
+        from orchestrator.web.server import UIError
+        marker = self.root / "grandchild.pid"
+        item, progress = self.progress()
+        body = ("import subprocess, sys, time\nsys.stdin.read()\n"
+                f"p = subprocess.Popen(['sleep', '60'])\nopen({str(marker)!r}, 'w').write(str(p.pid))\n"
+                "print('      - Running LLM (claude-x, timeout=60s)...', flush=True)\ntime.sleep(60)\n")
+        started = __import__("time").monotonic()
+        with self.assertRaises(UIError) as caught:
+            self.call(body, 2, progress)
+        self.assertLess(__import__("time").monotonic() - started, 15)
+        self.assertIn("No answer after", str(caught.exception))
+        self.assertIn("claude-x is researching", str(caught.exception))
+        pid = int(marker.read_text())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            threading.Event().wait(0.1)
+        else:
+            self.fail("the model's own process was left running")
+
+    def test_a_cancel_stops_the_model(self):
+        from orchestrator.web.server import UIError
+        item, progress = self.progress()
+        threading.Timer(0.5, lambda: item.update(status="canceled")).start()
+        with self.assertRaises(UIError) as caught:
+            self.call("import sys, time\nsys.stdin.read()\ntime.sleep(60)\n", 30, progress)
+        self.assertIn("Stopped", str(caught.exception))
+
+    def test_cli_noise_is_not_shown_as_a_step(self):
+        from orchestrator.web.server import research_stage
+        self.assertIsNone(research_stage("        [stderr] ERROR rmcp::transport::worker: invalid_token"))
+        self.assertEqual(research_stage("⚠️  claude-x failed (rate limited). Attempting fallback..."),
+                         ("Trying another model", "claude-x failed: rate limited"))
+        self.assertEqual(research_stage("⚠️  claude-x timed out. Attempting fallback..."),
+                         ("Trying another model", "claude-x didn't answer in time"))
+
+
 class ActivityGateTests(unittest.TestCase):
     def test_prepare_refuses_active_work(self):
         gate = ActivityGate()

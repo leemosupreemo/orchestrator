@@ -16,7 +16,7 @@ import json
 import re
 import secrets
 import tomllib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -267,6 +267,21 @@ def load(runtime: Path) -> dict[str, Any]:
             "running": data.get("running") if isinstance(data.get("running"), str) else ""}  # when an automatic review started, while one is going
 
 
+# The whole review, retry included. It must end before the page stops waiting (7 minutes, waitForTask in app.js).
+REVIEW_BUDGET_SECONDS = 360
+LAST_ANSWER_FILE = "packages-last-answer.txt"  # the raw answer that couldn't be read, kept to see why
+
+
+def review_in_progress(running: str, now: datetime | None = None) -> bool:
+    """A review marked as running, unless it started longer ago than any review can take (the computer restarted mid-review)."""
+    try:
+        started = datetime.fromisoformat(running)
+    except (TypeError, ValueError):
+        return False
+    now = now or datetime.now(started.tzinfo)
+    return now - started < timedelta(seconds=REVIEW_BUDGET_SECONDS + 120)
+
+
 def save(runtime: Path, data: dict[str, Any]) -> None:
     path = store_path(runtime)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -500,7 +515,7 @@ def overview(root: Path, runtime: Path) -> dict[str, Any]:
     have = {(i["ecosystem"], _norm(i["ecosystem"], i["name"])) for i in installed}
     data = load(runtime)
     packages = [{**p, "installed": (p["ecosystem"], _norm(p["ecosystem"], p["name"])) in have, "link": link_for(p)} for p in data["packages"]]
-    return {"installed": installed, "packages": packages, "review": data["review"], "ecosystems": ECOSYSTEMS, "auto": data["auto"], "running": bool(data["running"])}
+    return {"installed": installed, "packages": packages, "review": data["review"], "ecosystems": ECOSYSTEMS, "auto": data["auto"], "running": review_in_progress(data["running"])}
 
 
 # ---------------------------------------------------------------- the research step
@@ -549,18 +564,25 @@ REMINDER = ('\n\nYour last answer could not be used. Reply with ONLY one JSON ob
 
 
 def _object_from(reply: str) -> Any:
+    """The suggestions object from a model's answer. A model that searched often writes prose, a code sample or a second block
+    around the JSON, so every code block and then every "{" is tried until one decodes to an object with "packages"."""
     text = reply.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    if fenced:
-        text = fenced.group(1).strip()
-    start = text.find("{")
-    if start < 0:
+    if "{" not in text:
         raise PackageError("The model didn't suggest any packages.")
-    try:
-        value, _ = json.JSONDecoder().raw_decode(text[start:])
-    except json.JSONDecodeError:
-        raise PackageError("The model's answer wasn't readable.")
-    return value
+    decoder, first = json.JSONDecoder(), None
+    blocks = [b.strip() for b in re.findall(r"```[\w-]*\s*(.*?)```", text, re.S)] + [text]
+    for block in blocks:
+        for start in (i for i, ch in enumerate(block) if ch == "{"):
+            try:
+                value, _ = decoder.raw_decode(block[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and "packages" in value:
+                return value
+            first = value if first is None else first
+    if first is not None and not isinstance(first, dict):
+        return first
+    raise PackageError(f"The model's answer wasn't readable as package suggestions. It began: \"{_text(text, 120)}\"")
 
 
 def parse_suggestions(reply: str, features: list[dict[str, Any]], installed: list[dict[str, str]],

@@ -66,7 +66,7 @@ window.DesktopSetup = {
                 <details class="fold advanced-settings" ${needsAttention ? "open" : ""}>
                   <summary class="card-h">
                     <span>Build, test &amp; branch settings</span>
-                    <span class="muted text-xs">${needsAttention ? "Configure required commands" : `Automated (${esc(inspection.stack || "detected")})`}</span>
+                    <span class="muted t-secondary">${needsAttention ? "Configure required commands" : `Automated (${esc(inspection.stack || "detected")})`}</span>
                   </summary>
                   <div class="card-b stack gap-12">
                     <label class="field">

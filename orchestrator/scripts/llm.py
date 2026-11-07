@@ -155,7 +155,8 @@ JSON_REMINDER = (
 )
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False) -> tuple[str, str, str]:
+    """`raw` returns the whole answer. Otherwise only its JSON part comes back, which cuts prose and links from a conversational answer."""
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model
@@ -193,7 +194,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, **protection, **({"web": True} if web else {}))
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
@@ -348,7 +349,22 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
     else:
         cmd_base = f"{model_id}"
 
+    cmd_base = _apply_yolo_choice(cmd_base)
     return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}{image_args(cmd_base, images)}'
+
+
+def _apply_yolo_choice(cmd_base: str) -> str:
+    """Drop the tool's auto-approve flag when the owner turned YOLO off for it on the AI tools page."""
+    from orchestrator.ai_providers import YOLO_FLAGS, yolo_on, without_yolo
+    cli = cmd_base.split(" ", 1)[0]
+    if cli not in YOLO_FLAGS:
+        return cmd_base
+    try:
+        from common import read_json
+        settings = read_json(CONFIG_DIR / "settings.json") if (CONFIG_DIR / "settings.json").exists() else {}
+    except Exception:
+        settings = {}
+    return cmd_base if yolo_on(settings, cli) else without_yolo(cmd_base, cli)
 
 
 def get_llm_env() -> dict[str, str]:
@@ -395,7 +411,7 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
-def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False) -> str:
+def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
         prompt = f"[SOURCE: {source}]\n\n{prompt}"
@@ -597,4 +613,6 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
         combined_output = f"{full_stdout}\n{full_stderr}".strip()
         raise RuntimeError(f"{model} failed (code {process.returncode}):\n{combined_output}")
 
+    if raw:
+        return re.sub(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', full_stdout).strip()
     return extract_json_block(full_stdout)

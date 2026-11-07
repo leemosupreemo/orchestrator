@@ -170,7 +170,7 @@ class ConnectionUIBehaviorTests(unittest.TestCase):
         html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
         self.assertNotIn('<a class="brand-home"', html)
         self.assertIn('<span class="brand-mark" role="img" aria-label="Orchestrator"></span>', html)
-        self.assertIn('.brand { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); font-weight: 650; font-size: var(--text-lg); padding: 0 var(--space-3); }', self.style_css)
+        self.assertIn('.brand { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); font-weight: var(--weight-bold); font-size: var(--type-body); padding: 0 var(--space-3); }', self.style_css)
         self.assertIn('.sidebar .brand { padding: 0 var(--space-3); }', self.style_css)
 
     def test_search_shortcut_only_on_mac_pc_desktop_none_on_mobile(self):

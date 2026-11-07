@@ -22,7 +22,7 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 
 ## Cards
 
-- The header is a title bar (tinted, `--text-lg` heading): the title on the left, a count may sit beside it, actions on
+- The header is a title bar (tinted, section-title heading): the title on the left, a count may sit beside it, actions on
   the right.
 - At most two visible actions, as small buttons, the secondary one first and the main one last; anything else goes in a
   More menu.
@@ -106,15 +106,37 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 
 | Scale | Tokens |
 |---|---|
-| Spacing | `--space-0` 2, `--space-1` 4, `--space-2` 8, `--space-3` 12, `--space-4` 16, `--space-5` 20, `--space-6` 24, `--space-7` 32, `--space-8` 40 |
-| Type | `--text-2xs` 11, `--text-xs` 12, `--text-sm` 13, `--text-md` 14, `--text-base` 15, `--text-lg` 16, `--text-xl` 18, `--text-2xl` 22, `--text-3xl` 28 |
+| Spacing | `--space-0` 2, `--space-1` 4, `--space-1-5` 6, `--space-2` 8, `--space-2-5` 10, `--space-3` 12, `--space-4` 16, `--space-5` 20, `--space-6` 24, `--space-7` 32, `--space-8` 40 |
+| Type size | `--type-display` 28, `--type-page` 22, `--type-section` 18, `--type-body` 15, `--type-secondary` 13, `--type-tag` 11 |
+| Type weight | `--weight-regular` 400, `--weight-medium` 550, `--weight-bold` 650 |
 | Radius | `--r-xs` 4, `--r-sm` 6, `--r-md` 8, `--r-lg` 12 (cards; `--radius`), `--r-pill` |
 | Control height | `--control-xs` 28 (inline), `--control-sm` 32 (small buttons), `--control-md` 38 (default), `--control-lg` 44 (touch), `--control-xl` 48 |
 | Shadow | `--shadow` (cards), `--shadow-2` (menus, popovers), `--shadow-3` (dialogs, drawers) |
 | Layer | `--z-raised`, `--z-inner`, `--z-sticky`, `--z-float`, `--z-header`, `--z-palette`, `--z-drawer`, `--z-menu`, `--z-toast`; a backdrop is its layer minus one |
 
 Every `var(--x)` must be defined; `test_design_tokens_hold` checks this, the layers, the control heights and the shadows,
-and ratchets the number of inline styles in `app.js` down.
+and ratchets the number of inline styles in `app.js` down. `test_text_uses_the_type_roles` checks that every `font-size`
+and `font-weight` comes from the type tokens, that no inline style sets text size, weight or spacing, and that every
+utility class used in markup is defined.
+
+### Type roles
+
+Every piece of text is one of these. Markup built in scripts uses the `t-*` class; existing selectors read the tokens.
+
+| Role | Class | Size / weight | Used for |
+|---|---|---|---|
+| Display | `.t-display` | 28 bold | Sign-in and empty-state heroes |
+| Page title | `.t-page` | 22 bold | The page `h1` |
+| Section title | `.t-section` | 18 bold | Card titles |
+| Subsection title | `.t-subsection` | 15 bold | `h3` in a card, hero titles, row titles |
+| Body | `.t-body` | 15 regular | Running text, inputs, buttons, notices |
+| Field label | `.t-label` | 15 medium | The label of a form field; never upper-case |
+| Secondary | `.t-secondary` | 13 regular, muted | Page subtitle, row meta, hints, timestamps |
+| Tag | `.t-tag` | 11 bold, upper-case | Small overline labels ("LATEST COMMIT") |
+
+Code uses `0.9em` of the text around it. Phones use the same sizes; only text fields on touch screens are 16px, so
+iPhone Safari does not zoom in. A card's title, its controls and its content start on one left edge
+(`--container-pad-x`); a row inside a card body does not add a second inset.
 
 Rules checked on every page at 360, 430 and 1440 px, light and dark:
 - No horizontal scroll. A control that sizes itself to its content (a select, a long path) needs `max-width` and its parents `min-width: 0`.
@@ -127,8 +149,8 @@ Rules checked on every page at 360, 430 and 1440 px, light and dark:
 Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable status, warnings and next steps:
 - **Tone pairing**: Tinted containers pair tone borders with matching soft backgrounds (`--warn` + `--warn-soft`, `--accent` + `--accent-soft`, `--ok` + `--ok-soft`, `--bad` + `--bad-soft`). Text uses `--text` or high-contrast ink tokens.
 - **Visual hierarchy**:
-  - The hero title (`.job-hero-title`) is an `h2` styled with `--text-lg` (16px), `font-weight: 650`, and line-height 1.3. It never uses a tiny pill badge for the container's title.
-  - The description (`.job-hero-reason` or banner body) uses `--text-md` (14px). Spacing between title and description is `--space-1` (4px) to keep them grouped.
+  - The hero title (`.job-hero-title`) is an `h2` in the subsection role (`--type-body`, `--weight-bold`), line-height 1.3. It never uses a tiny pill badge for the container's title.
+  - The description (`.job-hero-reason` or banner body) uses `--type-body`. Spacing between title and description is `--space-1` (4px) to keep them grouped.
 - **Button sizing & proportions**:
   - Hero action buttons use standard `.btn.primary` (`min-height: 38px`, padding `--space-2` `--space-4`), not bloated 48px `.big` buttons. On phones (`<= 760px`), primary actions stretch to full width with `min-height: 44px`.
   - Banners use `.btn.small` (`min-height: 32px`).

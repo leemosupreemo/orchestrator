@@ -708,10 +708,18 @@ def provider_login_metadata() -> list[ModelMetadata]:
     """Every model the providers say they can run, as registry entries."""
     return codex_login_metadata() + agy_models_metadata() + opencode_models_metadata() + ollama_models_metadata() + claude_models_metadata()
 
+def gh_copilot_installed() -> bool:
+    """Whether `gh copilot` can run: the gh command alone isn't enough, its Copilot extension must be installed too."""
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return shutil.which("gh") is not None and (data / "gh" / "extensions" / "gh-copilot").exists()
+
+
 def model_usable(m: ModelMetadata) -> bool:
     """False for a model its provider says it can't run now, which would only fail and fall back. Unknown means usable."""
     if is_codex_model(m):
         return codex_usable(m)
+    if m.id == "copilot":
+        return gh_copilot_installed()
     cache = read_provider_cache()
     if m.family == "gemini" and cache.get("agy") and preferred_cli("gemini") in {"agy", "antigravity"}:
         offered = {_norm(x) for entry in cache["agy"] for x in (entry["slug"], entry["name"])}
@@ -723,6 +731,14 @@ def model_usable(m: ModelMetadata) -> bool:
         wanted = {m.id, m.id.split(":")[0], "deepseek-coder" if m.id == "deepseek" else m.id}
         return bool(wanted & installed)
     return True
+
+_NOT_FOR_CODE = re.compile(r"image|video|[itr]2v\b|\bwan\d|embed|tts|whisper", re.IGNORECASE)  # media models a service also lists
+
+
+def runnable_here(m: ModelMetadata) -> bool:
+    """A model a job could use now: its tool is installed, its provider offers it, and it writes code (not images or video)."""
+    return not _NOT_FOR_CODE.search(m.id) and model_usable(m) and all(cli_is_available(cli) for cli in m.required_clis)
+
 
 def model_substitute(m: ModelMetadata) -> ModelMetadata | None:
     """The model its provider does offer that best stands in for `m`: the closest standing, the person's own default or the highest effort."""
@@ -757,9 +773,6 @@ def usable_model_ids() -> list[str]:
 def _seen_path() -> Path:
     return Path(os.environ.get("ORCHESTRATOR_USER_STATE_DIR") or Path.home() / ".orchestrator") / "models_seen.json"
 
-def _names(ids: list[str], limit: int = 4) -> str:
-    return ", ".join(ids[:limit]) + (f" and {len(ids) - limit} more" if len(ids) > limit else "")
-
 def models_notice() -> dict[str, Any] | None:
     """What changed in the list of models since the person last dismissed the note, or None. The first time it is asked it
     only records the list."""
@@ -776,9 +789,10 @@ def models_notice() -> dict[str, Any] | None:
     removed = [m for m in baseline if m not in current]
     if not added and not removed:
         return None
-    parts = ([f"New: {_names(added)}."] if added else []) + ([f"No longer available: {_names(removed)}."] if removed else [])
+    # Counts only: the names can run to dozens, and the AI tools page shows them, highlighted.
+    parts = ([f"{len(added)} new"] if added else []) + ([f"{len(removed)} no longer available"] if removed else [])
     return {"id": hashlib.sha1("\n".join(added + ["-"] + removed).encode()).hexdigest()[:10], "added": added, "removed": removed,
-            "summary": " ".join(parts)}
+            "summary": ", ".join(parts) + "."}
 
 def _write_baseline(ids: list[str]) -> None:
     path = _seen_path()

@@ -70,6 +70,43 @@ class AiProviderTests(unittest.TestCase):
         for pid in ("claude", "codex", "ollama"):
             self.assertFalse(by_id[pid]["auto_approve"], f"{pid} should not auto-approve")
 
+    def test_yolo_is_on_by_default_and_each_tool_can_turn_it_off(self):
+        self.assertEqual(set(ai_providers.YOLO_FLAGS), ai_providers.AUTO_APPROVE_CLIS)
+        settings = {"cli_yolo": {"opencode": False}}
+        self.assertTrue(ai_providers.yolo_on({}, "agy"))
+        self.assertFalse(ai_providers.yolo_on(settings, "opencode"))
+        self.assertTrue(ai_providers.yolo_on(settings, "pool"))
+        self.assertFalse(ai_providers.yolo_on({}, "claude"))  # plan-first: no flag to turn on
+        by_id = {p["id"]: p for p in ai_providers.with_status(lambda cli: True, lambda cli: True, set(), settings)["providers"]}
+        self.assertEqual((by_id["opencode"]["yolo_supported"], by_id["opencode"]["auto_approve"]), (True, False))
+        self.assertEqual((by_id["agy"]["yolo_supported"], by_id["agy"]["auto_approve"]), (True, True))
+        self.assertEqual((by_id["claude"]["yolo_supported"], by_id["claude"]["auto_approve"]), (False, False))
+
+    def test_turning_yolo_off_removes_only_that_tools_flag(self):
+        self.assertEqual(ai_providers.without_yolo("opencode run --model opencode/big-pickle --auto", "opencode"),
+                         "opencode run --model opencode/big-pickle")
+        self.assertEqual(ai_providers.without_yolo("agy --model 'x' --dangerously-skip-permissions", "agy"), "agy --model 'x'")
+        self.assertEqual(ai_providers.without_yolo("pool exec --unsafe-auto-allow -p -", "pool"), "pool exec -p -")
+        self.assertEqual(ai_providers.without_yolo("claude -p --model claude-sonnet-4-6", "claude"),
+                         "claude -p --model claude-sonnet-4-6")
+
+    def test_gemini_cli_is_not_ready_from_a_google_sign_in(self):
+        """Gemini CLI's Google-account access has ended; the sign-in file it shares with Antigravity doesn't make it ready."""
+        from orchestrator.setup_checklist import _cli_ready
+        import shutil as _shutil, tempfile
+        home = Path(tempfile.mkdtemp())
+        (home / ".gemini").mkdir()
+        (home / ".gemini" / "oauth_creds.json").write_text("{}")
+        try:
+            with patch("orchestrator.setup_checklist.shutil.which", return_value="/usr/local/bin/x"), \
+                 patch("orchestrator.setup_checklist.Path.home", return_value=home):
+                self.assertTrue(_cli_ready("agy"))
+                self.assertFalse(_cli_ready("gemini"))
+        finally:
+            _shutil.rmtree(home, ignore_errors=True)
+        by_id = {p["id"]: p for p in self.status(installed=("gemini",), keys=("gemini_api_key",))["providers"]}
+        self.assertTrue(by_id["gemini"]["ready"])  # a Gemini API key still works
+
     def test_pool_readiness_uses_credentials_file(self):
         from orchestrator.setup_checklist import _cli_ready
         import shutil as _shutil

@@ -575,7 +575,7 @@ class ModelsNoticeTests(unittest.TestCase):
         self.ids = ["b-model", "c-model", "d-model"]
         note = model_registry.models_notice()
         self.assertEqual((note["added"], note["removed"]), (["c-model", "d-model"], ["a-model"]))
-        self.assertEqual(note["summary"], "New: c-model, d-model. No longer available: a-model.")
+        self.assertEqual(note["summary"], "2 new, 1 no longer available.")  # counts: the names are on the AI tools page
         self.assertEqual(model_registry.models_notice()["id"], note["id"])  # same note on every look, so the page shows it once
         model_registry.dismiss_models_notice()
         self.assertIsNone(model_registry.models_notice())
@@ -592,7 +592,9 @@ class ModelsNoticeTests(unittest.TestCase):
     def test_long_lists_are_shortened(self):
         model_registry.models_notice()
         self.ids = self.ids + [f"new-{i}" for i in range(9)]
-        self.assertIn("and 5 more", model_registry.models_notice()["summary"])
+        note = model_registry.models_notice()
+        self.assertEqual(note["summary"], "9 new.")  # a long list stays one short line; the names are on the AI tools page
+        self.assertEqual(len(note["added"]), 9)
 
 
 if __name__ == "__main__":
