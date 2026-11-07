@@ -779,6 +779,11 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
             return state("needs_you", "attention", "Approve plan", "Approve the plan to start building its tasks.", "approve", "Approve plan")
         return state("needs_you", "attention", "Planned", "Start building when you're happy with the plan.", "schedule", "Start")
     if status == "review-needed":
+        base = job.get("base_branch")
+        if not pr and base and job.get("branch") == base:
+            return state("needs_you", "attention", "Ready for review",
+                         f"The changes are committed on {base} on this computer: the job worked on the current branch, so there "
+                         f"is nothing to merge, and {base} wasn't pushed. Mark it complete when you're happy.", "complete", "Mark complete")
         if pr:
             return state("needs_you", "attention", "Ready to merge", f"PR #{pr} is ready for your review.", "merge", "Merge & complete")
         if job.get("code_host") == "git" and job.get("branch"):

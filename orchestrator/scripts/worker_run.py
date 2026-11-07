@@ -785,7 +785,13 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         print_phase("pull_request")
         status_bar.render()
         print(f"[4/4] Implementation successful. Opening/updating Pull Request...")
-        if PROJECT_CONFIG.uses_github:
+        base = job.get("base_branch") or PROJECT_CONFIG.base_branch
+        if job.get("branch") == base:
+            # The job worked on the base branch itself ("Use the current branch"): there's no branch to review or merge,
+            # and pushing would publish unreviewed work on the base branch.
+            print(f"      - The changes are committed on {base} on this computer. Nothing was pushed: push {base} when you're ready.")
+            pr_number, pr_url = None, None
+        elif PROJECT_CONFIG.uses_github:
             pr_number, pr_url = open_or_update_pr(job_path, publish_result=job)
         else:
             print("      - Plain git (no GitHub): pushing the branch for review instead of opening a pull request.")

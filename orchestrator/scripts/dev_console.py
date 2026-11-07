@@ -4082,7 +4082,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
     branch = job.get("branch")
 
     if not pr_number:
-        if branch and job.get("code_host") == "git":
+        if branch and (job.get("code_host") == "git" or branch == (job.get("base_branch") or PROJECT_CONFIG.base_branch)):
             handle_local_merge(job)
             return
         print("!!! Error: No PR number found for this job.")
@@ -4147,6 +4147,11 @@ def handle_local_merge(job: dict[str, Any]):
     """Merge & complete without a pull request (plain git): merge the job's branch into its base on this computer."""
     branch = job["branch"]
     base = job.get("base_branch") or PROJECT_CONFIG.base_branch
+    if branch == base:  # the job worked on the base branch itself: nothing to merge
+        archive_path = archive_job(job)
+        print(f"\n✅ The changes are already on {base}. Archived to {archive_path.name}")
+        _back_to_menu()
+        return
     print_header(f"Merging {branch} into {base}")
     ok, message = merge_branch_locally(branch, base, f"Merge {branch}: {job.get('title', job.get('job_id'))}")
     print(f"      - {message}")

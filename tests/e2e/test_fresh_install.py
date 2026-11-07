@@ -47,11 +47,16 @@ class FreshInstallTests(unittest.TestCase):
             cls.machines_at_setup = json.loads(cls.machines_at_setup.read_text())["machines"]
             app.connect_opencode()  # "Next, connect an AI provider"
             # Free models only, as OpenCode's own sign-in text tells a new person to choose.
-            cls.first = app.run("new_job", new_job_form("feature", FEATURE, free=True))
+            cls.remote_main = app.project.git("rev-parse", "origin/main")
+            cls.first = app.run("new_job", new_job_form("feature", FEATURE, free=True))  # the form's default: the current branch
             cls.first_job = next(iter(app.jobs()), {})
-            cls.merge = app.run("merge", {"job": cls.first_job.get("id", "")}) if cls.first_job else None
+            cls.complete = app.run(cls.first_job["state"]["next"]["action"], {"job": cls.first_job["id"]}) if cls.first_job.get("state", {}).get("next") else None
             cls.second = app.run("new_job", new_job_form("quick", QUICK, branch_mode="new"))
             cls.second_job = next((j for j in app.jobs() if j["id"] == cls.second.get("result_job")), {})
+            branch = cls.second_job.get("branch") or "main"
+            cls.second_changed = app.project.git("diff", "--name-only", f"main...{branch}").splitlines()
+            cls.second_readme = app.project.git("show", f"{branch}:README.md")
+            cls.merge = app.run("merge", {"job": cls.second_job["id"]}) if cls.second_job else None
         except Exception:
             cls.app.stop()
             raise
@@ -61,7 +66,7 @@ class FreshInstallTests(unittest.TestCase):
         cls.app.stop()
 
     def explain(self, *runs) -> str:
-        runs = runs or (self.first, self.merge, self.second)
+        runs = runs or (self.first, self.complete, self.second, self.merge)
         server = self.app.server_log.read_text()[-1500:] if self.app.server_log.exists() else ""
         return "\n".join(f"--- {r['action']} (exit {r['exit_code']})\n{r['output'][-2500:]}" for r in runs if r) + f"\n--- server log\n{server}"
 
@@ -109,10 +114,19 @@ class FreshInstallTests(unittest.TestCase):
         self.assertTrue(now and all(m.startswith("opencode/") for m in now), now)
 
     # ---- the first job
-    def test_the_first_job_runs_from_the_form_to_ready_to_merge(self):
+    def test_the_first_job_runs_from_the_form_on_the_current_branch_and_is_left_for_review(self):
         self.assertEqual(self.first["exit_code"], 0, self.explain(self.first))
         self.assertEqual(self.first_job["status"], "review-needed", self.explain(self.first))
-        self.assertEqual(self.first_job["state"]["next"]["action"], "merge")
+        self.assertEqual(self.first_job["branch"], "main")
+        self.assertIn("LONG_WORD_BONUS", self.git("show", "main:wordgame/scoring.py"))
+        # Its work is on main on this computer: there is no branch to merge, and main isn't pushed for you.
+        self.assertEqual(self.first_job["state"]["next"]["action"], "complete", self.first_job["state"])
+        self.assertIn("committed on main", self.first_job["state"]["reason"])
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/main").split()[0], self.remote_main, "main was pushed during the job")
+
+    def test_mark_complete_finishes_the_first_job(self):
+        self.assertEqual(self.complete["exit_code"], 0, self.explain(self.complete))
+        self.assertNotIn(self.first_job["id"], [j["id"] for j in self.app.jobs()])
 
     def test_every_role_ran_on_the_ready_tool_and_nothing_else_was_tried(self):
         calls = self.app.project.llm_calls()
@@ -120,21 +134,21 @@ class FreshInstallTests(unittest.TestCase):
         self.assertTrue(all(c["model"].startswith("opencode/") for c in calls), {c["model"] for c in calls})
         self.assertEqual(self.app.real_cli_calls(), [], "a job ran an AI tool that isn't signed in")
 
-    def test_merge_and_complete_lands_the_change_and_the_projects_tests_pass(self):
+    def test_merge_and_complete_lands_the_second_job_on_main_and_the_projects_tests_pass(self):
         self.assertEqual(self.merge["exit_code"], 0, self.explain(self.merge))
+        self.assertIn("seven or more letters", (self.app.project.root / "README.md").read_text())
         self.assertIn("LONG_WORD_BONUS", (self.app.project.root / "wordgame" / "scoring.py").read_text())
         result = self.app.project.run_tests()
         self.assertEqual(result.returncode, 0, result.stderr[-1500:])
-        self.assertNotIn(self.first_job["id"], [j["id"] for j in self.app.jobs()], "the merged job should leave the list")
+        self.assertNotIn(self.second_job["id"], [j["id"] for j in self.app.jobs()], "the merged job should leave the list")
 
     # ---- the second job
     def test_a_quick_job_on_its_own_branch_finishes_too(self):
         self.assertEqual(self.second["exit_code"], 0, self.explain(self.second))
         self.assertEqual(self.second_job.get("status"), "review-needed", self.explain(self.second))
-        branch = self.second_job["branch"]
-        self.assertNotEqual(branch, "main")
-        self.assertIn("README.md", self.git("diff", "--name-only", f"main...{branch}").splitlines())
-        self.assertIn("seven or more letters", self.git("show", f"{branch}:README.md"))
+        self.assertNotEqual(self.second_job["branch"], "main")
+        self.assertIn("README.md", self.second_changed)
+        self.assertIn("seven or more letters", self.second_readme)
 
     def test_nothing_reaches_github_or_a_real_model(self):
         self.assertEqual(self.app.project.gh()["unsupported"], [])
