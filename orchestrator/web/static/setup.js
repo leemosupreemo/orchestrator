@@ -101,7 +101,6 @@ window.DesktopSetup = {
                         <input type="text" name="test_target" value="${esc(values.test_target || "")}">
                       </label>
                     </div>
-                    <input type="hidden" name="models" value="codex">
                   </div>
                 </details>
                 <div class="setup-actions row items-center gap-12 wrap mt-8">
@@ -182,7 +181,6 @@ window.DesktopSetup = {
           if (button) button.disabled = true;
           try {
             const settings = Object.fromEntries(fields.map(([key]) => [key, form.get(key) || null]));
-            settings.models = String(form.get("models") || "codex").split(",").map(v => v.trim()).filter(Boolean);
             const result = await api("setup/apply", {method: "POST", body: {root: selected, values: settings}});
             if (!result.ok) { showError(result.errors.join("\n")); return; }
             await onReady();

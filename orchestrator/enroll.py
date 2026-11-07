@@ -101,7 +101,7 @@ def read_token(token: str | None, from_stdin: bool) -> str:
     return token
 
 
-def _project(spec: str, models: list[str], system: System) -> Path:
+def _project(spec: str, models: list[str] | None, system: System) -> Path:
     """The project folder, cloned if `spec` is a git URL, and configured if it wasn't already."""
     if GIT_URL.match(spec):
         name = re.sub(r"\.git$", "", spec.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]) or "project"
@@ -123,7 +123,7 @@ def _project(spec: str, models: list[str], system: System) -> Path:
         remember_project(Path(found["root"]), active=True)
         return Path(found["root"])
     values = {key: value for key, value in found["inferred"].items() if key in FIELDS and value}
-    applied = apply_project_setup(root, {**values, "models": models})
+    applied = apply_project_setup(root, {**values, **({"models": models} if models else {})})  # none named: follow what is ready
     if not applied["ok"]:
         problems = "\n".join(f"    - {error}" for error in applied["errors"])
         raise EnrollError(f"{root} needs a little setup Orchestrator couldn't work out:\n{problems}\n"
@@ -148,7 +148,7 @@ def enroll(token: str, project: str, system: System | None = None, models: list[
                               "then run this again.")
         if system.app is not None and str(system.app).startswith("/Volumes/"):
             raise EnrollError("Copy Orchestrator to Applications first; it can't run from the disk image.")
-        root = _project(project, models or ["codex"], system)
+        root = _project(project, models or None, system)
         say(f"  ✓ Project: {root}")
         machine = account.load_machine()
         if machine:

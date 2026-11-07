@@ -19,6 +19,7 @@ python3 -m unittest discover -s tests
 `tests/e2e/` builds a throwaway project (git repo with a local remote, passing tests, the product documents, orchestrator config) and drives the real scripts through plan, architect check, approval, build, test, commit, push, draft pull request and review. `gh` is replaced by `tests/e2e/fake_gh.py`, so nothing reaches GitHub.
 
 - **Offline** (`tests/e2e/test_pipeline_offline.py`, part of the normal suite, about 5 s): a scripted `opencode` CLI (`tests/e2e/fake_opencode.py`) stands in for the model. It records every prompt, so the tests can check what each role was told, and it misbehaves on purpose (prose instead of JSON, concerns on the first verification).
+- **Fresh install, through the web app** (`tests/e2e/test_fresh_install.py`, part of the normal suite, about 20 s): a computer that has never run Orchestrator, from first open to its first jobs finished. It starts the web server the way the Mac app does (no project yet) in an empty home folder, sets up existing code with the payload the setup page sends, connects OpenCode afterwards (the order the setup page asks for), then creates, runs and merges a feature job and a quick job from the New job form's payload. Every other AI tool is a stub that looks installed but signed out and records any call: the test fails if a job uses a tool that isn't ready, reaches a real model, or a step waits for input nobody in the web app can give.
 - **Live, free models only** (`tests/e2e/test_live_free_models.py`, about 10 minutes, skipped unless asked for):
 
   ```bash

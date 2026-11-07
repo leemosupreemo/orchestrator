@@ -80,7 +80,7 @@ def _plan() -> dict:
 
 
 def build(prompt: str = "") -> dict:
-    if "two_tasks" in BEHAVIOUR and "Document the bonus" in prompt.split("Brief:")[-1][:600]:
+    if "Document the bonus" in prompt.split("Brief:")[-1][:600]:  # the two_tasks plan's second task, or a quick job asking for it
         readme = Path("README.md")
         readme.write_text(readme.read_text() + "\nWords of seven or more letters score a 10 point bonus.\n")
         return {"test_command": "python3 -m unittest discover -s tests", "summary": "Documented the bonus.", "files_changed": ["README.md"]}

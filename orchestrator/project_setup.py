@@ -63,6 +63,40 @@ def _atomic_json(path: Path, data: Any) -> None:
             os.unlink(temporary)
 
 
+def models_ready_here(root: Path) -> list[str]:
+    """The models this computer can run right now: its tool ready as the AI tools page counts it (signed in, or an API key
+    saved), the model offered, and not image-only. An installed tool nobody has signed in to doesn't count."""
+    from orchestrator import ai_providers, setup_checklist as checklist
+    from orchestrator.scripts.model_registry import CLI_ALIASES, get_all_models, runnable_here
+    try:
+        settings = json.loads((root / ".orchestrator/config/settings.json").read_text())
+    except (OSError, ValueError):
+        settings = {}
+    keys = checklist.saved_api_keys(settings if isinstance(settings, dict) else {})
+    ready = set(checklist.ready_llm_providers({})) | {p["cli"] for p in ai_providers.PROVIDERS if p.get("key") in keys}
+    ready_cli = lambda cli: any(name in ready for name in CLI_ALIASES.get(cli, (cli,)))
+    return [m.id for m in get_all_models() if runnable_here(m) and all(ready_cli(cli) for cli in m.required_clis)]
+
+
+def refresh_ready_models(root: Path) -> None:
+    """Bring each computer marked `models_follow_ready` up to date with the models ready on it. Setup happens before an AI
+    is connected, so the list it starts with is often empty; jobs call this before choosing models."""
+    path = root / ".orchestrator/config/machines.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    machines = data.get("machines") if isinstance(data, dict) else None
+    follow = [m for m in machines or [] if isinstance(m, dict) and m.get("models_follow_ready") and m.get("execution_mode") == "local"]
+    if not follow:
+        return
+    ready = models_ready_here(root)
+    if any(m.get("models") != ready for m in follow):
+        for m in follow:
+            m["models"] = ready
+        _atomic_json(path, data)
+
+
 def apply_project_setup(root: Path, values: dict[str, Any]) -> dict[str, Any]:
     root = _folder(root)
     if not isinstance(values, dict):
@@ -82,8 +116,6 @@ def apply_project_setup(root: Path, values: dict[str, Any]) -> dict[str, Any]:
     config = replace(load_project_config(root), **changes)
     errors = validate_project_config(config)
     machines_path = root / ".orchestrator/config/machines.json"
-    if not machines_path.exists() and not models:
-        errors.append("Choose at least one AI model for this computer.")
     if errors:
         return {"ok": False, "root": str(root), "errors": errors}
     data.setdefault("project_name", config.project_name)
@@ -91,9 +123,12 @@ def apply_project_setup(root: Path, values: dict[str, Any]) -> dict[str, Any]:
     data.setdefault("pr_base_branch", data["base_branch"])
     _atomic_json(root / ".orchestrator/project.json", data)
     if not machines_path.exists():
+        # No models chosen (the app's setup, which comes before connecting an AI): this computer follows whatever is ready on it.
+        follow = models is None
         _atomic_json(machines_path, {"version": 1, "machines": [{
             "name": "local", "enabled": True, "execution_mode": "local", "repo_path": str(root),
-            "roles": ["planner", "reviewer", "worker", "build", "test"], "models": models,
+            "roles": ["planner", "reviewer", "worker", "build", "test"], "models": models_ready_here(root) if follow else models,
+            **({"models_follow_ready": True} if follow else {}),
             "priority": 100, "max_concurrent_jobs": 1, "max_heavy_jobs": 1,
             "supports_xcode": config.uses_xcode, "supports_simulator": config.uses_xcode,
             "supports_backend_tests": True}]})

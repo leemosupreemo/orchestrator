@@ -28,7 +28,7 @@ try:
 except:
     pass
 
-from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence, is_ai_branch, merge_branch_locally
+from common import web_run, ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence, is_ai_branch, merge_branch_locally
 from llm import SUPPORTED_MODELS, DEFAULT_FALLBACKS, run_llm, extract_json_block
 from model_router import ModelRole
 from model_registry import get_all_models, ModelTier
@@ -4071,6 +4071,12 @@ def handle_discard_job(job: dict[str, Any], confirmed: bool = False):
     if not confirmed:
         input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
+def _back_to_menu() -> None:
+    """Wait for Enter before the console menu comes back. Started from the web app there is no menu and nobody to press it."""
+    if not web_run():
+        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+
+
 def handle_merge_cleanup(job: dict[str, Any]):
     pr_number = job.get("pr_number")
     branch = job.get("branch")
@@ -4091,7 +4097,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
         if is_draft:
             print("\n\033[1;91m!!! Error: PR is still a DRAFT.\033[0m")
             print("Please mark the PR as 'Ready for Review' on GitHub before merging.")
-            input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+            _back_to_menu()
             return
     except Exception as e:
         print(f"      - Note: Could not verify PR draft status: {e}")
@@ -4104,7 +4110,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
         print("\n\033[1;91m!!! Error: PR merge failed.\033[0m")
         print("The merge was blocked by GitHub (check draft status, CI failures, or conflicts).")
         print("\033[93mLocal branch cleanup ABORTED to preserve your work.\033[0m")
-        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        _back_to_menu()
         return
 
     # 3. Local branch cleanup (ONLY if merge succeeded and AI-managed)
@@ -4135,7 +4141,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
     archive_path = archive_job(job)
 
     print(f"\n✅ Successfully merged and archived to {archive_path.name}")
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    _back_to_menu()
 
 def handle_local_merge(job: dict[str, Any]):
     """Merge & complete without a pull request (plain git): merge the job's branch into its base on this computer."""
@@ -4146,7 +4152,7 @@ def handle_local_merge(job: dict[str, Any]):
     print(f"      - {message}")
     if not ok:
         print("\n\033[1;91m!!! Merge didn't happen. The job is still ready for review.\033[0m")
-        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+        _back_to_menu()
         return
     if is_ai_branch(branch):
         print(f"      - Deleting local branch: {branch}...")
@@ -4158,7 +4164,7 @@ def handle_local_merge(job: dict[str, Any]):
         print(f"      - Note: couldn't update linked apps: {exc}")
     archive_path = archive_job(job)
     print(f"\n✅ Merged and archived to {archive_path.name}")
-    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+    _back_to_menu()
 
 def handle_archived_jobs_menu(session_allowed_machines, session_allowed_models):
     while True:

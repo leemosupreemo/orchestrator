@@ -527,9 +527,12 @@ def main(args_override: list[str] | None = None) -> None:
 
     # Model Selection
     all_models = sorted(list(SUPPORTED_MODELS))
+    from orchestrator.project_setup import models_ready_here, refresh_ready_models
+    refresh_ready_models(ROOT)  # the computer set up in the app follows the AI tools ready on it
     if args.free:
         from model_registry import get_free_models
-        free_models = [m.id for m in get_free_models()]
+        ready_here = set(models_ready_here(ROOT))  # installed isn't enough: a signed-out tool would only fail
+        free_models = [m.id for m in get_free_models() if m.id in ready_here]
         if not free_models:
             print("\n\033[1;91m⚠️  ERROR: Free models only was chosen, but no free model is set up.\033[0m")
             print("\033[90m(Install OpenCode for free hosted models, or turn off Free models only.)\033[0m")
@@ -544,7 +547,14 @@ def main(args_override: list[str] | None = None) -> None:
         footer = (
             "[\033[1;96mA\033[0m] Select All  [\033[1;92mF\033[0m] Free Only  [\033[1;93mN\033[0m] Deselect All  [\033[1;91mB\033[0m] Back"
         )
-        runnable = models_machines_can_run(DEFAULT_FALLBACKS, load_machines())  # a model no machine has switched on would only be refused later
+        from model_registry import get_all_models, runnable_here
+        usable = [m.id for m in get_all_models() if runnable_here(m)]
+        # A model no machine has switched on would only be refused later; one this computer can't run fails the plan.
+        runnable = models_machines_can_run([m for m in DEFAULT_FALLBACKS if m in usable], load_machines())
+        if not runnable and not interactive():
+            print("\n\033[1;91m⚠️  ERROR: No AI model that this job may use can run right now.\033[0m")
+            print("\033[90m(Set up an AI tool under AI tools, and switch its models on for a computer under Computers.)\033[0m")
+            sys.exit(1)
         if DEFAULT_FALLBACKS and not runnable:
             print("\033[1;93m⚠️  None of the models you can use is switched on for a machine, so this job will not be able to start.\033[0m")
             print("\033[90m(Turn a model on for a machine under Machines, then run the job again.)\033[0m")
