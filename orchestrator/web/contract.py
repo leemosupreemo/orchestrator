@@ -56,7 +56,7 @@ JOB_MUTATIONS = frozenset({
 
 INPUT_FIELDS: dict[Operation, frozenset[str]] = {
     Operation.TESTS_RUN: frozenset({"action", "plan"}),
-    Operation.JOB_CREATE: frozenset({"job_type", "prompt", "repro", "expected", "subsystems", "vibe", "quick", "spec_url", "artifact_id", "spec_file_name", "yolo", "branch_mode", "preset", "planner", "builder", "reviewer", "allowed_models", "allowed_machines", "stitch"}),
+    Operation.JOB_CREATE: frozenset({"job_type", "prompt", "repro", "expected", "subsystems", "vibe", "quick", "spec_url", "artifact_id", "spec_file_name", "yolo", "branch_mode", "preset", "planner", "builder", "reviewer", "allowed_models", "allowed_machines", "stitch", "free"}),
     Operation.JOB_REVISE: frozenset({"feedback"}),
     Operation.JOB_ITERATE: frozenset({"feedback"}),
     Operation.JOB_REOPEN_BUG: frozenset({"feedback", "log_paths"}),
@@ -66,7 +66,7 @@ INPUT_FIELDS: dict[Operation, frozenset[str]] = {
     Operation.JOB_MODELS: frozenset({"allowed_models"}),
     Operation.JOB_DEBUG: frozenset({"feedback", "max_iterations", "notes", "bug_reproduced"}),
     Operation.JOB_RERUN: frozenset({"branch_mode", "log_paths"}),
-    Operation.TOOL_MODELS: frozenset({"allowed_models", "refresh", "live_discovery"}),
+    Operation.TOOL_MODELS: frozenset({"allowed_models", "refresh", "live_discovery", "yolo"}),
     Operation.TOOL_KEYS: frozenset({"action"}),
     Operation.TOOL_FLEET: frozenset({"action", "machine_ids", "name", "new_name", "ssh_target", "repo_path"}),
     Operation.TOOL_BASE_BRANCH: frozenset({"branch"}),

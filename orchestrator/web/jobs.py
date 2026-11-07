@@ -105,6 +105,8 @@ def create_job(root: Path, options: dict[str, Any], runner: Runner = None) -> di
             argv.extend([flag, value])
     if options.get("stitch"):
         argv.append("--stitch")
+    if options.get("free"):
+        argv.append("--free")
     if options.get("yolo"):
         argv.append("--yolo")
     else:

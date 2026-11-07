@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth, db, signIn, logOut, collection, doc, onSnapshot, query, orderBy, limit, setDoc, updateDoc, serverTimestamp } from './firebase';
 import menu from './menu.json';
-import { ModelList, RunLog, ToolOutput } from './tool-output';
+import { ModelList, RunLog, ServiceSummary, ToolOutput } from './tool-output';
 import { apiFetch, ensureOk } from './local-api';
 import './style.css';
 
@@ -565,7 +565,8 @@ function NewJob({
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
-  const [preset, setPreset] = useState('balanced');
+  const [preset, setPreset] = useState('auto');
+  const [freeOnly, setFreeOnly] = useState(false);
   const [yolo, setYolo] = useState(false);
   const [stitch, setStitch] = useState(false);
   const [review, setReview] = useState(false);
@@ -598,10 +599,7 @@ function NewJob({
     ...(availableModels.map(m => ({ id: typeof m === 'string' ? m : m.id, name: typeof m === 'string' ? m : m.name || m.id }))),
     ...defaultModels.map(id => ({ id, name: id })),
     { id: 'codex', name: 'OpenAI Codex' },
-    { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro' },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-    { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet' },
-    { id: 'gpt-5', name: 'GPT-5' }
+    { id: 'gemini', name: 'Antigravity default' }
   ];
   const allModelOptions = Array.from(new Map(catalogList.map(item => [item.id, item])).values());
 
@@ -618,6 +616,7 @@ function NewJob({
     allowed_machines: selectedMachines,
     branch_mode: branch,
     preset,
+    free: freeOnly || undefined,
     spec_file_name: specFile?.name || undefined,
     yolo,
     stitch,
@@ -779,19 +778,24 @@ function NewJob({
           <label className="field">
             <span>Model preset</span>
             <select value={preset} onChange={e => setPreset(e.target.value)}>
-              <option value="balanced">Balanced (Standard default)</option>
+              <option value="auto">Auto (Best fit per role)</option>
+              <option value="balanced">Balanced (Standard)</option>
               <option value="fast">Fast (Quick fixes)</option>
               <option value="hard-bug">Hard bug (Deep reasoning)</option>
               <option value="architecture">Architecture (Major refactor)</option>
             </select>
             <small className="field-hint">
+              {preset === 'auto' && 'Auto: Checks which models your accounts can really use, reads the job, then picks the best fit for each role. Frontier models are saved for complex work, and a different model reviews the build.'}
               {preset === 'fast' && 'Fast: Lowest latency and token cost. Uses Flash models for planning and review. Best for minor tweaks and quick fixes.'}
               {preset === 'hard-bug' && 'Hard bug: Deep reasoning tier. Uses frontier reasoning for builder to investigate subtle state, race conditions, and memory leaks.'}
               {preset === 'architecture' && 'Architecture: Highest capability. Uses frontier models across planning and building for major system design and refactoring.'}
-              {preset === 'balanced' && 'Balanced: High-context planning with specialized coding. Recommended default for regular features and standard fixes.'}
+              {preset === 'balanced' && 'Balanced: High-context planning with specialized coding. A fixed team for regular features and standard fixes.'}
             </small>
           </label>
         </div>
+        <label className="check">
+          <input type="checkbox" checked={freeOnly} onChange={e => setFreeOnly(e.target.checked)} /> Free models only: never use a paid model, and replaces the allowed models below
+        </label>
         <label className="check">
           <input type="checkbox" checked={stitch} onChange={e => setStitch(e.target.checked)} /> Design first with Stitch
         </label>
@@ -832,7 +836,7 @@ function NewJob({
                 <span>Planner model role</span>
                 <small className="field-hint">Plans tasks and identifies likely files</small>
                 <select value={planner} onChange={e => setPlanner(e.target.value)} aria-label="Planner model override">
-                  <option value="">Default (Follows Preset)</option>
+                  <option value="">{preset === 'auto' ? 'Auto' : 'Default (Follows Preset)'}</option>
                   {allModelOptions.map(m => (
                     <option key={m.id} value={m.id}>
                       {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
@@ -844,7 +848,7 @@ function NewJob({
                 <span>Builder model role</span>
                 <small className="field-hint">Writes Swift code & runs build loops</small>
                 <select value={builder} onChange={e => setBuilder(e.target.value)} aria-label="Builder model override">
-                  <option value="">Default (Follows Preset)</option>
+                  <option value="">{preset === 'auto' ? 'Auto' : 'Default (Follows Preset)'}</option>
                   {allModelOptions.map(m => (
                     <option key={m.id} value={m.id}>
                       {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
@@ -856,7 +860,7 @@ function NewJob({
                 <span>Reviewer model role</span>
                 <small className="field-hint">Verifies criteria & checks regressions</small>
                 <select value={reviewer} onChange={e => setReviewer(e.target.value)} aria-label="Reviewer model override">
-                  <option value="">Default (Follows Preset)</option>
+                  <option value="">{preset === 'auto' ? 'Auto' : 'Default (Follows Preset)'}</option>
                   {allModelOptions.map(m => (
                     <option key={m.id} value={m.id}>
                       {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
@@ -1302,7 +1306,7 @@ function JobDetail({job,project,archived,back,onAction,onOpenWorkflow}:{job:Data
       onAction(action.operation,{artifact_id:id,description:extra},job);
     } catch(e) {setUploadError(safeMessage(e));} finally {setUploading(false);}
   }
-  return <div className="page"><button className="back" onClick={back}>← All jobs</button><div className="page-heading"><div><h1>{job.title||job.job_id}</h1></div><StatusTransitionDropdown job={job} archived={archived} onSelectAction={chosenOp => { const chosen = actions.find(a => a.operation === chosenOp); if (chosen) { setAction(chosen); setValue(''); setExtra(''); } }} onOpenWorkflow={onOpenWorkflow}/></div><div className="detail-grid"><div><div className="panel section"><h2>Plan & progress</h2><p>{job.plan?.summary||'No plan summary published yet.'}</p>{job.plan?.tasks?.length>0 && <ol className="tasks">{job.plan.tasks.map((task:any,i:number)=><li key={i} className={job.completed_task_indices?.includes(i)?'done':''}>{typeof task==='string'?task:task.title||task.description||JSON.stringify(task)}</li>)}</ol>}</div><div className="panel section"><h2>Context</h2><div className="facts">{[['Branch',job.branch],['Issue',job.issue_number],['Pull request',job.pr_number],['Planner',job.planner],['Builder',job.builder],['Reviewer',job.reviewer],['Models',job.allowed_models?.join(', ')],['Machines',job.allowed_machines?.join(', ')],['Logs',job.last_manual_log_paths?.join(', ')]].filter(x=>x[1]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div></div></div><div className="panel section action-panel"><h2>{archived?'Archived job':'Job actions'}</h2><p>{archived?'Restore this job from Configuration & Tools to run new actions.':'Actions follow this job\'s CLI status.'}</p>{!archived&&actions.length>0&&<label className="field"><span>Select action</span><select value={action?.operation||''} onChange={e=>{const chosen=actions.find(a=>a.operation===e.target.value)||null;setAction(chosen);setValue('');setExtra('')}}><option value="">Select an action…</option>{actions.map((item,i)=><option key={item.operation+i} value={item.operation}>{item.label}</option>)}</select></label>}{action && <div className="action-form"><h3>{action.label}</h3>{['job.revise','job.iterate','job.reopen_bug','job.ask_ai','job.link_logs','job.models','job.attach_reference','job.debug'].includes(action.operation) && <Field label={action.operation==='job.ask_ai'?'Question':action.operation==='job.link_logs'?'Project-relative log paths, one per line':action.operation==='job.models'?'Model IDs, comma separated':action.operation==='job.attach_reference'?'HTTP(S) reference URL':'Feedback'} value={value} onChange={setValue} textarea={['job.revise','job.iterate','job.ask_ai'].includes(action.operation)}/ >}{action.operation==='job.debug'&&<Field label="Maximum debug iterations (1–20)" value={iterationCount} onChange={setIterationCount}/ >}{action.operation==='job.rerun'&&<label className="field"><span>Branch mode</span><select value={rerunBranch} onChange={e=>setRerunBranch(e.target.value)}><option value="new">New branch</option><option value="current">Current branch</option><option value="manual">Manual</option></select></label>}{action.operation==='job.attach_reference'&&<label className="field"><span>Or upload a PNG, JPEG, WebP, PDF, or text file (10 MB max)</span><input type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain" onChange={e=>setFile(e.target.files?.[0]||null)}/></label>}{uploadError&&<p className="error">{uploadError}</p>}{['job.ask_ai','job.attach_reference'].includes(action.operation)&&<Field label={action.operation==='job.ask_ai'?'Model ID':'Description'} value={extra} onChange={setExtra}/>}<ActionButton className="primary" disabled={uploading} disabledReason="Uploading reference artifact…" onClick={runSelected}>{uploading?'Uploading…':'Run action →'}</ActionButton></div>}</div></div></div>;
+  return <div className="page"><button className="back" onClick={back}>← All jobs</button><div className="page-heading"><div><h1>{job.title||job.job_id}</h1>{job.auto_assignment&&<small className="auto-assignment">Auto team{job.auto_assignment.free_only?' (free only)':''}: {job.auto_assignment.complexity} job because {(job.auto_assignment.reasons||[]).join(', ')}. Planner {job.planner}, builder {job.builder}, reviewer {job.reviewer}.</small>}</div><StatusTransitionDropdown job={job} archived={archived} onSelectAction={chosenOp => { const chosen = actions.find(a => a.operation === chosenOp); if (chosen) { setAction(chosen); setValue(''); setExtra(''); } }} onOpenWorkflow={onOpenWorkflow}/></div><div className="detail-grid"><div><div className="panel section"><h2>Plan & progress</h2><p>{job.plan?.summary||'No plan summary published yet.'}</p>{job.plan?.tasks?.length>0 && <ol className="tasks">{job.plan.tasks.map((task:any,i:number)=><li key={i} className={job.completed_task_indices?.includes(i)?'done':''}>{typeof task==='string'?task:task.title||task.description||JSON.stringify(task)}</li>)}</ol>}</div><div className="panel section"><h2>Context</h2><div className="facts">{[['Branch',job.branch],['Issue',job.issue_number],['Pull request',job.pr_number],['Planner',job.planner],['Builder',job.builder],['Reviewer',job.reviewer],['Models',job.allowed_models?.join(', ')],['Machines',job.allowed_machines?.join(', ')],['Logs',job.last_manual_log_paths?.join(', ')]].filter(x=>x[1]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div></div></div><div className="panel section action-panel"><h2>{archived?'Archived job':'Job actions'}</h2><p>{archived?'Restore this job from Configuration & Tools to run new actions.':'Actions follow this job\'s CLI status.'}</p>{!archived&&actions.length>0&&<label className="field"><span>Select action</span><select value={action?.operation||''} onChange={e=>{const chosen=actions.find(a=>a.operation===e.target.value)||null;setAction(chosen);setValue('');setExtra('')}}><option value="">Select an action…</option>{actions.map((item,i)=><option key={item.operation+i} value={item.operation}>{item.label}</option>)}</select></label>}{action && <div className="action-form"><h3>{action.label}</h3>{['job.revise','job.iterate','job.reopen_bug','job.ask_ai','job.link_logs','job.models','job.attach_reference','job.debug'].includes(action.operation) && <Field label={action.operation==='job.ask_ai'?'Question':action.operation==='job.link_logs'?'Project-relative log paths, one per line':action.operation==='job.models'?'Model IDs, comma separated':action.operation==='job.attach_reference'?'HTTP(S) reference URL':'Feedback'} value={value} onChange={setValue} textarea={['job.revise','job.iterate','job.ask_ai'].includes(action.operation)}/ >}{action.operation==='job.debug'&&<Field label="Maximum debug iterations (1–20)" value={iterationCount} onChange={setIterationCount}/ >}{action.operation==='job.rerun'&&<label className="field"><span>Branch mode</span><select value={rerunBranch} onChange={e=>setRerunBranch(e.target.value)}><option value="new">New branch</option><option value="current">Current branch</option><option value="manual">Manual</option></select></label>}{action.operation==='job.attach_reference'&&<label className="field"><span>Or upload a PNG, JPEG, WebP, PDF, or text file (10 MB max)</span><input type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain" onChange={e=>setFile(e.target.files?.[0]||null)}/></label>}{uploadError&&<p className="error">{uploadError}</p>}{['job.ask_ai','job.attach_reference'].includes(action.operation)&&<Field label={action.operation==='job.ask_ai'?'Model ID':'Description'} value={extra} onChange={setExtra}/>}<ActionButton className="primary" disabled={uploading} disabledReason="Uploading reference artifact…" onClick={runSelected}>{uploading?'Uploading…':'Run action →'}</ActionButton></div>}</div></div></div>;
 }
 function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject,onAddProject}:{item:Action;project:string;onSubmit:(operation:string,inputs?:Data)=>void;busy:boolean;commands:Data[];projects:string[];onProject:(id:string)=>void;onAddProject:()=>void}) {
   const op=item.operation;
@@ -1325,10 +1329,13 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject,onAdd
       return Object.entries(matchInputs).every(([k, v]) => inp[k] === v);
     });
 
-  const modelLoading=isPending('tool.models', i => !i.refresh && !i.live_discovery && !Array.isArray(i.allowed_models));
+  const modelLoading=isPending('tool.models', i => !i.refresh && !i.live_discovery && !i.yolo && !Array.isArray(i.allowed_models));
+  const yoloSaving=isPending('tool.models', i => Boolean(i.yolo));
   const modelSyncing=isPending('tool.models', i => i.refresh === true);
   const modelDiscovering=isPending('tool.models', i => i.live_discovery === true);
   const modelSaving=isPending('tool.models', i => Array.isArray(i.allowed_models));
+  const [showSyncDetails,setShowSyncDetails]=useState(false);
+  useEffect(()=>setShowSyncDetails(false),[latest?.id]);
   const modelChanges=selectedModels.length!==savedModels.length||selectedModels.some(id=>!savedModels.includes(id));
   useEffect(()=>setModelSelection(null),[modelResult?.selected?.join(',')]);
   useEffect(()=>{if(op==='tool.models'&&!modelResult&&!latest&&!busy&&catalogRequested.current!==project){catalogRequested.current=project;onSubmit('tool.models',{})}},[op,project,modelResult,latest,busy,onSubmit]);
@@ -1352,12 +1359,23 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject,onAdd
           {modelDiscovering ? <><span className="spin">⟳</span> Discovering live models…</> : 'Discover live models →'}
         </button>
       </div>
-      {latest&&latest.status==='succeeded'&&(
-        <div className="catalog-status-banner">
-          <span>✓ <strong>{latest.inputs?.live_discovery?'Live model discovery completed':latest.inputs?.refresh?'Catalog sync completed':'Catalog reloaded'}</strong>: {models.length} model{models.length===1?'':'s'} in catalog ({selectedModels.length} enabled)</span>
-          {latest.result?.sync?.message&&<small>{latest.result.sync.message}</small>}
-        </div>
-      )}
+      {latest&&latest.status==='succeeded'&&(()=>{
+        const sync=latest.result?.sync;
+        const newIds:string[]=Array.isArray(sync?.new_models)?sync.new_models:[];
+        const newModels=models.filter(m=>newIds.includes(m.id));
+        const lines=String(sync?.message||'').split('\n').filter(Boolean);
+        const hasMore=newModels.length>0||lines.length>1;
+        return <div className="catalog-status-banner">
+          <span>✓ <strong>{latest.inputs?.live_discovery?'Live model discovery completed':latest.inputs?.refresh?'Catalog sync completed':'Catalog reloaded'}</strong>: {models.length} model{models.length===1?'':'s'} in catalog ({selectedModels.length} enabled){newIds.length>0&&<> · <strong className="model-new-count">{newIds.length} new</strong></>}</span>
+          {lines[0]&&<small>{lines[0]}</small>}
+          {hasMore&&<button type="button" className="link-button" aria-expanded={showSyncDetails} onClick={()=>setShowSyncDetails(v=>!v)}>{showSyncDetails?'Hide models':'See models'}</button>}
+          {showSyncDetails&&<div className="catalog-status-details">
+            {newModels.length>0&&<ModelList models={newModels} selected={selectedModels} highlight={newIds}/>}
+            {lines.length>1&&<pre>{lines.slice(1).join('\n')}</pre>}
+          </div>}
+        </div>;
+      })()}
+      {models.length>0&&<ServiceSummary services={modelResult?.services||[]} models={models} selected={selectedModels} yolo={modelResult?.yolo||{}} disabled={busy||yoloSaving} onYolo={(cli,on)=>onSubmit('tool.models',{yolo:{[cli]:on}})}/>}
       {models.length>0&&<>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'8px',marginTop:'1.25rem'}}>
           <div>
@@ -1386,7 +1404,7 @@ function ToolPanel({item,project,onSubmit,busy,commands,projects,onProject,onAdd
           </div>
         </div>
         <p style={{marginTop:'0.5rem'}}>Switch models on or off for new jobs. At least one model must stay enabled.</p>
-        <ModelList models={models} selected={selectedModels} disabled={busy||modelSaving} onToggle={id=>setModelSelection(current=>{const chosen=current??savedModels;return chosen.includes(id)?chosen.filter(model=>model!==id):[...chosen,id]})}/>
+        <ModelList models={models} selected={selectedModels} highlight={Array.isArray(latest?.result?.sync?.new_models)?latest.result.sync.new_models:[]} disabled={busy||modelSaving} onToggle={id=>setModelSelection(current=>{const chosen=current??savedModels;return chosen.includes(id)?chosen.filter(model=>model!==id):[...chosen,id]})}/>
         <button className="primary" disabled={busy||modelSaving||!modelChanges||!selectedModels.length} onClick={()=>onSubmit('tool.models',{allowed_models:selectedModels})}>
           {modelSaving?<><span className="spin">⟳</span> Saving models…</>:'Save enabled models →'}
         </button>

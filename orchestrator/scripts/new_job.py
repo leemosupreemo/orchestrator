@@ -26,7 +26,8 @@ from common import (
     StatusBar,
 )
 from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
-from model_router import ModelRole, get_prioritized_models
+from model_availability import get_snapshot, is_available
+from model_router import AUTO_PRESET, ModelRole, auto_assign_roles, fit_to_allowed, get_prioritized_models, profile_job
 from model_registry import get_model, ModelTier
 from probe_machine import load_machines
 from manual_run import capture_logs
@@ -37,15 +38,15 @@ DEFAULTS = {
     "bug": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
     "feature": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
     "coverage": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
-    "quick": {"planner": "gemini-3-flash-preview", "builder": "codex", "reviewer": "gemini-3.1-flash-lite-preview"},
+    "quick": {"planner": "gemini-3.8-flash-medium", "builder": "codex", "reviewer": "gemini-3.8-flash-low"},
 }
 
 PRESETS = {
     "balanced": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
     "hard-bug": {"planner": "gemini", "builder": "claude-opus-4-7", "reviewer": "gemini"},
     "architecture": {"planner": "claude-opus-4-7", "builder": "claude-opus-4-7", "reviewer": "gemini"},
-    "fast": {"planner": "gemini-3-flash-preview", "builder": "codex", "reviewer": "gemini-3.1-flash-lite-preview"},
-    "free": {"planner": "opencode/qwen-3.7-max", "builder": "qwen2.5-coder", "reviewer": "opencode/big-pickle"},
+    "fast": {"planner": "gemini-3.8-flash-medium", "builder": "codex", "reviewer": "gemini-3.8-flash-low"},
+    "free": {"planner": "opencode/glm-5.3-flash-free", "builder": "opencode/glm-5.3-flash-free", "reviewer": "opencode/big-pickle"},
 }
 
 BRANCH_MODE_CHOICES = ["new", "current", "manual"]
@@ -351,7 +352,7 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--planner")
     parser.add_argument("--builder")
     parser.add_argument("--reviewer")
-    parser.add_argument("--preset", choices=PRESETS.keys())
+    parser.add_argument("--preset", choices=[AUTO_PRESET, *PRESETS])
     parser.add_argument("--no-dispatch", action="store_true")
     parser.add_argument("--branch-mode", choices=BRANCH_MODE_CHOICES + ["current", "manual"])
     parser.add_argument("--branch", help="Manual branch name override")
@@ -382,7 +383,7 @@ def main(args_override: list[str] | None = None) -> None:
     # Define defaults for 'quick' job
     job_type_for_defaults = args.job_type
     if job_type_for_defaults == "design": job_type_for_defaults = "feature"
-    defaults = PRESETS[args.preset] if args.preset else DEFAULTS[job_type_for_defaults]
+    defaults = PRESETS.get(args.preset) or DEFAULTS[job_type_for_defaults]
     planner = args.planner or defaults["planner"]
     builder = args.builder or defaults["builder"]
     reviewer = args.reviewer or defaults["reviewer"]
@@ -417,14 +418,17 @@ def main(args_override: list[str] | None = None) -> None:
 
     # Model Selection
     all_models = sorted(list(SUPPORTED_MODELS))
+    snapshot = get_snapshot() if args.free or args.preset == AUTO_PRESET else None
     if args.free:
         from model_registry import get_free_models
-        free_models = [m.id for m in get_free_models()]
-        if free_models:
-            allowed_models = free_models
-            print(f"      - Free-models-only mode active: Restricted to {len(allowed_models)} free models: {', '.join(allowed_models)}")
-        else:
-            allowed_models = args.allowed_models.split(",") if args.allowed_models else DEFAULT_FALLBACKS
+        free_models = [m.id for m in get_free_models() if is_available(m, snapshot) is not False]
+        if not free_models:
+            # Free-only is a promise about cost, so never fall back to paid models.
+            print("\n\033[1;91m⚠️  ERROR: No free models are available on this Mac.\033[0m")
+            print("Run `opencode auth login`, pull an Ollama model, or turn off free-only mode.")
+            sys.exit(1)
+        allowed_models = free_models
+        print(f"      - Free-models-only mode active: Restricted to {len(allowed_models)} free models: {', '.join(allowed_models)}")
     elif args.allowed_models:
         allowed_models = args.allowed_models.split(",")
     else:
@@ -440,17 +444,10 @@ def main(args_override: list[str] | None = None) -> None:
         sys.exit(1)
         
     # Ensure initial choices are within allowed set (resolve aliases first)
-    p_meta = get_model(planner)
-    b_meta = get_model(builder)
-    r_meta = get_model(reviewer)
-    
-    planner = p_meta.id if p_meta else planner
-    builder = b_meta.id if b_meta else builder
-    reviewer = r_meta.id if r_meta else reviewer
+    planner = fit_to_allowed(planner, allowed_models)
+    builder = fit_to_allowed(builder, allowed_models)
+    reviewer = fit_to_allowed(reviewer, allowed_models)
 
-    if planner not in allowed_models: planner = allowed_models[0]
-    if builder not in allowed_models: builder = allowed_models[0]
-    if reviewer not in allowed_models: reviewer = allowed_models[0]
 
     # Machine Selection
     machines_config = load_machines()
@@ -644,6 +641,21 @@ def main(args_override: list[str] | None = None) -> None:
 
         if not raw_input_text.strip():
             raise ValueError("No input provided.")
+
+    # Auto picks a model for each role the user did not set, now that the brief is known.
+    auto_assignment = None
+    if args.preset == AUTO_PRESET:
+        profile = profile_job(args.job_type, raw_input_text, stitch=bool(args.stitch))
+        assigned = auto_assign_roles(allowed_models, snapshot, profile)
+        if assigned:
+            planner = fit_to_allowed(args.planner or assigned[ModelRole.PLANNER], allowed_models)
+            builder = fit_to_allowed(args.builder or assigned[ModelRole.BUILDER], allowed_models)
+            reviewer = fit_to_allowed(args.reviewer or assigned[ModelRole.REVIEWER], allowed_models)
+            auto_assignment = {"complexity": profile.complexity, "reasons": profile.reasons, "free_only": bool(args.free)}
+            print(f"      - Auto role assignment ({profile.complexity}: {'; '.join(profile.reasons)}): "
+                  f"planner={planner}, builder={builder}, reviewer={reviewer}")
+        else:
+            print("      - Auto role assignment: none of the allowed models are available, so using defaults.")
 
     planning_context = {
         "job_id": f"new-{args.job_type}",
@@ -873,6 +885,8 @@ def main(args_override: list[str] | None = None) -> None:
         else:
             job["human_clarification_question"] = None
         
+        if auto_assignment:
+            job["auto_assignment"] = auto_assignment
         write_json(paths.job_file, job)
         write_text(paths.brief_file, body)
 

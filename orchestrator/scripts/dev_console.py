@@ -31,7 +31,7 @@ except:
 from common import ROOT, CONFIG_DIR, JOBS_DIR, ARCHIVE_DIR, OUTPUT_DIR, DOCS_DIR, read_json, write_json, now_iso, timestamp, get_best_simulator_destination, get_simulator_diagnostic, prompt_radio, prompt_confirm, format_job_id, format_index, prompt_checkbox, BackException, KeyInterruptException, get_key, StatusBar, print_divider, extract_commands, print_phase, ProgressIndicator, LoopTroubleDetector, get_test_plan_flags, print_choice_prompt, get_choice_prompt, clear_choice_placeholder, purge_zombie_processes, print_header, get_header_string, print_section, print_subtitle, format_section_header, format_subtitle, prompt_input, prompt_password, format_markdown_for_terminal, print_wrapped_option, extract_step_from_line, record_clarification, find_latest_runtime_log, flush_stdin, get_github_url, get_github_links, record_interactive_investigation, format_investigation_history, get_job_test_summary, parse_test_output, count_created_tests_in_diff, analyze_debug_loop_convergence
 from llm import SUPPORTED_MODELS, DEFAULT_FALLBACKS, run_llm, extract_json_block
 from model_router import ModelRole
-from model_registry import get_all_models, ModelTier
+from model_registry import gemini_access_status, get_all_models, ModelTier
 from probe_machine import load_machines, probe_machine
 from orchestrator.project_config import PACKAGE_ROOT, PROJECT_CONFIG
 
@@ -275,8 +275,7 @@ def get_model_selection_data() -> tuple[list[str], dict[str, str], dict[str, lis
                 res = subprocess.run(["codex", "login", "status"], capture_output=True, text=True, timeout=5.0)
                 ready = res.returncode == 0
             elif binary in {"gemini", "antigravity", "agy"}:
-                ready = (os.path.exists(os.path.expanduser("~/.gemini/oauth_creds.json")) or 
-                         os.path.exists(os.path.expanduser("~/.gemini/google_accounts.json")))
+                ready = gemini_access_status() == "Ready"
             elif binary == "opencode":
                 res = subprocess.run(["opencode", "auth", "status"], capture_output=True, text=True, timeout=5.0)
                 if res.returncode == 0:
@@ -6206,12 +6205,8 @@ def handle_api_keys(session_allowed_machines, session_allowed_models):
             return "Unknown"
 
     def get_gemini_status():
-        import shutil
-        import os
-        if not (shutil.which("agy") or shutil.which("antigravity") or shutil.which("gemini")): return "Not Installed"
-        if os.path.exists(os.path.expanduser("~/.gemini/oauth_creds.json")) or os.path.exists(os.path.expanduser("~/.gemini/google_accounts.json")):
-            return "Logged In"
-        return "Not Logged In"
+        return {"Ready": "Logged In", "Not ready": "Not Logged In", "Not installed": "Not Installed",
+                "Discontinued": "Discontinued"}.get(gemini_access_status(), "Not Logged In")
 
     def get_ollama_status():
         import shutil
@@ -6338,6 +6333,10 @@ def handle_api_keys(session_allowed_machines, session_allowed_models):
                     raw_auth = "Env Var API key"
                     auth_color = "\033[1;96m"
                     is_ready = True
+                elif status == "Discontinued":
+                    raw_auth = "Discontinued, install agy"
+                    auth_color = "\033[1;91m"
+                    is_ready = False
                 elif status == "Not Logged In":
                     raw_auth = "Sign-in required"
                     auth_color = "\033[1;91m"

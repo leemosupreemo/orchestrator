@@ -110,6 +110,68 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertIsNone(job_data["branch"])
         mock_create_issue.assert_called_once()
 
+    def _create_job_with_roles(self, extra_args, mock_create_issue, mock_llm, snapshot=None):
+        snapshot = snapshot or {"providers": {"codex": ["gpt-6.1-sol"], "agy": ["gemini-4-argon-medium"]}}
+        mock_create_issue.return_value = 125
+        mock_llm.return_value = (json.dumps({
+            "title": "Auto Roles",
+            "summary": "Summary",
+            "assumptions": [],
+            "constraints": [],
+            "risks": [],
+            "tasks": [{"title": "Task 1", "description": "Desc", "acceptance_criteria": ["AC"], "likely_files": [], "tests": [], "complexity": "low"}]
+        }), "mock-model", "mock-session-id")
+        from orchestrator.scripts import new_job
+        import model_registry
+        model_registry._ALL_MODELS_CACHE = None
+        self.addCleanup(setattr, model_registry, "_ALL_MODELS_CACHE", None)
+        args = ["feature", "--branch-mode", "manual", "--no-dispatch", "--yolo",
+                "--allowed-models", "codex,gemini", *extra_args]
+        with patch("orchestrator.scripts.new_job.ROOT", self.root):
+          with patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+            with patch.object(model_registry, "load_custom_models", return_value=[]):
+              with patch("orchestrator.scripts.new_job.get_snapshot", return_value=snapshot):
+                with patch("sys.stdin", io.StringIO("Auto Roles\nAC1\n\nConstraints\n\n")):
+                  new_job.main(args)
+        job_files = list((self.root / ".orchestrator" / "jobs").glob("*.json"))
+        self.assertEqual(len(job_files), 1)
+        return json.loads(job_files[0].read_text())
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_auto_preset_assigns_roles_from_alias_allowed_models(self, mock_create_issue, mock_llm):
+        job = self._create_job_with_roles(["--preset", "auto"], mock_create_issue, mock_llm)
+        self.assertEqual(job["planner"], "codex")
+        self.assertEqual(job["builder"], "codex")
+        self.assertEqual(job["reviewer"], "gemini")
+        self.assertEqual(job["auto_assignment"]["complexity"], "standard")
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_auto_preset_keeps_explicit_role_override(self, mock_create_issue, mock_llm):
+        job = self._create_job_with_roles(["--preset", "auto", "--builder", "gemini"], mock_create_issue, mock_llm)
+        self.assertEqual(job["builder"], "gemini")
+        self.assertEqual(job["planner"], "codex")
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_free_only_auto_job_uses_only_free_available_models(self, mock_create_issue, mock_llm):
+        snapshot = {"providers": {"opencode": ["opencode/big-pickle", "opencode/glm-5.3-flash-free"], "codex": ["gpt-6.1-sol"], "agy": []}}
+        job = self._create_job_with_roles(["--preset", "auto", "--free"], mock_create_issue, mock_llm, snapshot)
+        self.assertEqual(job["planner"], "opencode/glm-5.3-flash-free")
+        self.assertEqual(job["builder"], "opencode/glm-5.3-flash-free")
+        self.assertEqual(job["reviewer"], "opencode/big-pickle")
+        self.assertTrue(job["auto_assignment"]["free_only"])
+        self.assertNotIn("gpt-6.1-sol", job["allowed_models"])
+
+    @patch("orchestrator.scripts.new_job.run_llm")
+    @patch("orchestrator.scripts.new_job.create_issue")
+    def test_free_only_stops_rather_than_using_a_paid_model(self, mock_create_issue, mock_llm):
+        snapshot = {"providers": {"opencode": [], "ollama": [], "copilot": [], "codex": ["gpt-6.1-sol"]}}
+        with self.assertRaises(SystemExit):
+            self._create_job_with_roles(["--preset", "auto", "--free"], mock_create_issue, mock_llm, snapshot)
+        mock_llm.assert_not_called()
+
     @patch("orchestrator.scripts.new_job.flush_stdin")
     @patch("orchestrator.scripts.new_job.run_llm")
     @patch("orchestrator.scripts.new_job.create_issue")

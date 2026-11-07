@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 import types
@@ -32,9 +33,15 @@ class WebToolsTests(unittest.TestCase):
         settings = json.loads((self.root / ".orchestrator" / "config" / "settings.json").read_text())
         self.assertEqual(settings["global_base_branch"], "develop")
 
-    def test_model_catalog_shows_effective_default_and_saved_selection(self):
+    def test_unsaved_selection_enables_models_the_account_can_use(self):
+        snapshot = {"providers": {"codex": ["gpt-6.1-sol"], "agy": [], "opencode": [], "ollama": [], "claude": [], "copilot": []}}
+        with patch("model_availability.read_snapshot", return_value=snapshot):
+            self.assertEqual(run_tool(self.root, Operation.TOOL_MODELS, {})["selected"], ["codex", "gpt-6.1-sol"])
+
+    @patch("model_availability.read_snapshot", return_value=None)
+    def test_model_catalog_shows_effective_default_and_saved_selection(self, _snapshot):
         catalog = run_tool(self.root, Operation.TOOL_MODELS, {})
-        default = next(model["id"] for model in catalog["models"] if "codex" in model.get("aliases", []))
+        default = next(model["id"] for model in catalog["models"] if model["id"] == "codex")
         self.assertEqual(catalog["selected"], [default])
         other = next(model["id"] for model in catalog["models"] if model["id"] != default)
         selected = run_tool(self.root, Operation.TOOL_MODELS, {"allowed_models": [other]})
@@ -122,6 +129,43 @@ class WebToolsTests(unittest.TestCase):
         result = run_tool(self.root, Operation.TOOL_KEYS, {})
         self.assertIn("codex", result["cli_available"])
         self.assertIn("gemini", result["sign_in_commands"])
+
+    def test_key_status_flags_discontinued_gemini_cli(self):
+        with patch("shutil.which", side_effect=lambda cli: "/bin/gemini" if cli == "gemini" else None):
+            result = run_tool(self.root, Operation.TOOL_KEYS, {})
+        self.assertEqual(result["cli_status"]["gemini"], "Discontinued")
+        self.assertIn("antigravity-cli", result["sign_in_commands"]["gemini"])
+        self.assertFalse(result["legacy_gemini_cli"])
+
+    def test_model_services_do_not_count_discontinued_gemini_cli_as_connected(self):
+        with patch("shutil.which", side_effect=lambda cli: "/bin/gemini" if cli == "gemini" else None), \
+                patch("model_availability.read_snapshot", return_value=None), \
+                patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            services = run_tool(self.root, Operation.TOOL_MODELS, {})["services"]
+        self.assertFalse(next(s for s in services if s["family"] == "gemini")["connected"])
+
+    def test_yolo_setting_saves_per_service_and_keeps_antigravity_default(self):
+        with patch("model_availability.read_snapshot", return_value=None):
+            result = run_tool(self.root, Operation.TOOL_MODELS, {})
+            self.assertEqual(result["yolo"], {"agy": True, "claude": False, "codex": False, "opencode": False})
+            self.assertEqual(next(s for s in result["services"] if s["family"] == "openai")["yolo_cli"], "codex")
+            result = run_tool(self.root, Operation.TOOL_MODELS, {"yolo": {"claude": True}})
+            self.assertTrue(result["yolo"]["claude"])
+            result = run_tool(self.root, Operation.TOOL_MODELS, {"yolo": {"agy": False}})
+            self.assertEqual(result["yolo"], {"agy": False, "claude": True, "codex": False, "opencode": False})
+            for bad in ({"ollama": True}, {"claude": "yes"}, {}, ["claude"]):
+                with self.assertRaises(ValueError):
+                    run_tool(self.root, Operation.TOOL_MODELS, {"yolo": bad})
+
+    def test_model_services_use_the_availability_snapshot(self):
+        snapshot = {"providers": {"agy": ["gemini-4-argon-high", "claude-opus-5-5-high"], "opencode": ["opencode/big-pickle", "meta/muse"], "copilot": [], "claude": None}}
+        with patch("model_availability.read_snapshot", return_value=snapshot), patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            services = {s["family"]: s for s in run_tool(self.root, Operation.TOOL_MODELS, {})["services"]}
+        self.assertEqual(services["gemini"]["available"], 1)
+        self.assertEqual(services["opencode"]["available"], 2)
+        self.assertEqual(services["copilot"]["available"], 0)
+        self.assertFalse(services["copilot"]["connected"])
+        self.assertIsNone(services["claude"]["available"])
 
     def test_email_test_uses_notification_script(self):
         run_tool(self.root, Operation.TOOL_EMAIL, {"action": "add", "email": "me@example.com"})

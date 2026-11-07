@@ -599,13 +599,14 @@ def parse_csv(value: str | None) -> list[str]:
 
 
 def check_cli_auth(cli_name: str) -> tuple[bool, str]:
-    if cli_name == "gemini":
-        if shutil.which("agy") is not None:
-            cli_name = "agy"
-        elif shutil.which("antigravity") is not None:
-            cli_name = "antigravity"
-        else:
-            cli_name = "gemini"
+    if cli_name in {"gemini", "antigravity", "agy"}:
+        from orchestrator.scripts.model_registry import gemini_access_status
+        status = gemini_access_status()
+        return status == "Ready", {
+            "Ready": "\033[92mREADY\033[0m",
+            "Not installed": "\033[1;91mNOT INSTALLED\033[0m",
+            "Discontinued": "\033[1;91mDISCONTINUED (install Antigravity CLI)\033[0m",
+        }.get(status, "\033[1;91mNOT LOGGED IN\033[0m")
 
     if shutil.which(cli_name) is None:
         return False, "\033[1;91mNOT INSTALLED\033[0m"
@@ -617,8 +618,6 @@ def check_cli_auth(cli_name: str) -> tuple[bool, str]:
         elif cli_name == "codex":
             res = subprocess.run(["codex", "login", "status"], capture_output=True, text=True, timeout=5)
             ready = res.returncode == 0
-        elif cli_name in {"gemini", "antigravity", "agy"}:
-            ready = True
         elif cli_name == "opencode":
             res = subprocess.run(["opencode", "auth", "status"], capture_output=True, text=True, timeout=5)
             ready = res.returncode == 0

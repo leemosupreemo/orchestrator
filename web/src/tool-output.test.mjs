@@ -5,7 +5,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 const built = await build({ entryPoints: ['src/tool-output.tsx'], bundle: true, platform: 'node', format: 'esm', write: false });
-const { ModelList, ToolOutput } = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
+const { ModelList, ServiceSummary, ToolOutput } = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 const render = command => renderToStaticMarkup(createElement(ToolOutput, { command }));
 
 test('running tool presents a live log with clear status', () => {
@@ -60,12 +60,40 @@ test('other tool lists display one item per line', () => {
   assert.doesNotMatch(html, /guide\.md, architecture\.md/);
 });
 
-test('provider readiness separates sign-in from fallback keys', () => {
+test('provider readiness groups sign-in and fallback key by service', () => {
   const html = render({ operation: 'tool.keys', inputs: { action: 'status' }, status: 'succeeded', result: { cli_status: { codex: 'Ready', claude: 'Not installed' }, configured: { openai: false }, sign_in_commands: { claude: 'claude auth login' } } });
   assert.match(html, /CLI sign-in/);
-  assert.match(html, /Fallback API keys/);
   assert.match(html, /On the Mac: claude auth login/);
-  assert.match(html, /Not configured \(optional if CLI sign-in works\)/);
+  const claudeCard = html.split('service-card').find(card => card.includes('Anthropic (Claude)'));
+  assert.match(claudeCard, /Fallback API key/);
+  assert.match(claudeCard, /Not configured/);
+  const openaiCard = html.split('service-card').find(card => card.includes('OpenAI'));
+  assert.doesNotMatch(openaiCard, /Fallback API key/);
+});
+
+test('discontinued Gemini CLI is flagged with the Antigravity install command', () => {
+  const html = render({ operation: 'tool.keys', inputs: { action: 'status' }, status: 'succeeded', result: { cli_status: { gemini: 'Discontinued' }, configured: { gemini: false }, sign_in_commands: { gemini: 'brew install --cask antigravity-cli' } } });
+  const card = html.split('service-card').find(part => part.includes('Google (Gemini)'));
+  assert.match(card, /Not ready/);
+  assert.match(card, /Antigravity CLI/);
+  assert.match(card, /Discontinued · On the Mac: brew install --cask antigravity-cli/);
+});
+
+test('leftover Gemini CLI is noted without blocking Antigravity', () => {
+  const html = render({ operation: 'tool.keys', inputs: { action: 'status' }, status: 'succeeded', result: { cli_status: { gemini: 'Ready' }, configured: { gemini: false }, legacy_gemini_cli: true } });
+  const card = html.split('service-card').find(part => part.includes('Google (Gemini)'));
+  assert.match(card, /service-status ready/);
+  assert.match(card, /old Gemini CLI is also installed/);
+});
+
+test('service cards show a YOLO switch only for services that support it', () => {
+  const services = [{ family: 'claude', yolo_cli: 'claude', catalog: 2 }, { family: 'ollama', catalog: 1 }];
+  const html = renderToStaticMarkup(createElement(ServiceSummary, { services, models: [], selected: [], yolo: { claude: true }, onYolo: () => {} }));
+  const [claudeCard, ollamaCard] = html.split(/class="service-card(?: connected)?"/).slice(1);
+  assert.match(claudeCard, /YOLO mode on/);
+  assert.match(claudeCard, /role="switch"/);
+  assert.match(claudeCard, /checked/);
+  assert.doesNotMatch(ollamaCard, /YOLO/);
 });
 
 test('fleet output identifies selected machines and failed probes', () => {

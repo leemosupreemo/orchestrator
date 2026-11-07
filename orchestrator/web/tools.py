@@ -144,6 +144,59 @@ def _settings_path(root: Path) -> Path:
     return root / ".orchestrator" / "config" / "settings.json"
 
 
+_SERVICE_ACCESS = {  # family -> (CLI binaries, settings/env key)
+    "claude": (("claude",), "anthropic_api_key"), "openai": (("codex",), "openai_api_key"),
+    "gemini": (("gemini",), "gemini_api_key"), "opencode": (("opencode",), None),
+    "ollama": (("ollama",), None), "copilot": (("gh",), None),
+}
+
+
+def _usable_catalog_ids(catalog: list[dict[str, Any]]) -> list[str]:
+    """Until the user saves a selection, enable every model the account is confirmed to use."""
+    sys.path.insert(0, str(_PACKAGE / "scripts"))
+    from model_availability import is_available, read_snapshot
+    from model_registry import get_model
+    snapshot = read_snapshot()
+    if not snapshot:
+        return []
+    return [model["id"] for model in catalog
+            if (meta := get_model(model["id"])) and is_available(meta, snapshot) is True]
+
+
+_LISTING_PROVIDER = {"openai": "codex", "gemini": "agy", "opencode": "opencode", "ollama": "ollama"}
+
+
+def _model_services(catalog: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-service summary: connection, catalog size, and models the user can actually reach."""
+    sys.path.insert(0, str(_PACKAGE / "scripts"))
+    from model_availability import is_available, read_snapshot
+    from model_registry import FAMILY_YOLO_CLI, cli_is_supported, get_model
+    snapshot = read_snapshot()
+    in_catalog: dict[str, int] = {}
+    for model in catalog:
+        family = str(model.get("family") or "other")
+        in_catalog[family] = in_catalog.get(family, 0) + 1
+    services = []
+    for family in sorted(in_catalog):
+        clis, key = _SERVICE_ACCESS.get(family, ((), None))
+        clis = {*clis, *(cli for model in catalog if model.get("family") == family for cli in model.get("required_clis", []))}
+        has_key = bool(key and (settings.get(key) or os.environ.get(key.upper())))
+        available = None
+        connected = has_key or any(cli_is_supported(cli) for cli in clis)
+        if snapshot:
+            listed = snapshot["providers"].get(_LISTING_PROVIDER.get(family, ""))
+            if isinstance(listed, list):
+                available = len([name for name in listed if family != "gemini" or name.startswith("gemini")])
+            else:
+                checks = [is_available(meta, snapshot) for meta in (get_model(m["id"]) for m in catalog if m.get("family") == family) if meta]
+                available = None if None in checks else sum(checks)
+            if available is not None:
+                connected = has_key or available > 0
+        services.append({"family": family, "connected": connected, "catalog": in_catalog.get(family, 0), "available": available,
+                         "yolo_cli": FAMILY_YOLO_CLI.get(family)})
+    return services
+
+
 def _models(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     settings_path = _settings_path(root)
     settings = _read(settings_path, {})
@@ -152,12 +205,25 @@ def _models(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] 
         if progress:
             progress("Checking available model sources…")
         sys.path.insert(0, str(_PACKAGE / "scripts"))
-        from model_registry import sync_models
+        from model_registry import get_all_models, sync_models
+        known_ids = {model.id for model in get_all_models()}
         success, message = sync_models(live_discovery=bool(inputs.get("live_discovery")))
-        sync_result = {"success": success, "message": message}
+        new_ids = sorted({model.id for model in get_all_models()} - known_ids) if success else []
+        sync_result = {"success": success, "message": message, "new_models": new_ids}
+        from model_availability import refresh_snapshot
+        refresh_snapshot()
         if progress:
             progress(f"Model discovery {'finished' if success else 'failed'}: {message}")
     catalog = _read(_PACKAGE / "config" / "models.json", {"models": []})["models"]
+    sys.path.insert(0, str(_PACKAGE / "scripts"))
+    from model_registry import CLI_YOLO_FLAGS, yolo_settings
+    if "yolo" in inputs:
+        changes = inputs["yolo"]
+        if (not isinstance(changes, dict) or not changes
+                or any(cli not in CLI_YOLO_FLAGS or not isinstance(on, bool) for cli, on in changes.items())):
+            raise ValueError("Choose a valid YOLO setting")
+        settings["cli_yolo"] = {**yolo_settings(settings), **changes}
+        _write(settings_path, settings)
     if "allowed_models" in inputs:
         selected = inputs["allowed_models"]
         ids = {model["id"] for model in catalog}
@@ -165,12 +231,13 @@ def _models(root: Path, inputs: dict[str, Any], progress: Callable[[str], None] 
             raise ValueError("Choose valid models")
         settings["web_allowed_models"] = selected
         _write(settings_path, settings)
-    default = next((model["id"] for model in catalog if "codex" in model.get("aliases", [])), None)
+    default = next((model["id"] for model in catalog if model["id"] == "codex"), None)
     valid_ids = {model["id"] for model in catalog}
     selected = [model for model in (settings.get("web_allowed_models") or []) if model in valid_ids]
     if not selected:
-        selected = [default] if default else []
-    return {"models": catalog, "selected": selected, "sync": sync_result}
+        selected = _usable_catalog_ids(catalog) or ([default] if default else [])
+    return {"models": catalog, "selected": selected, "sync": sync_result,
+            "services": _model_services(catalog, settings), "yolo": yolo_settings(settings)}
 
 
 def _keys(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
@@ -195,12 +262,15 @@ def _keys(root: Path, inputs: dict[str, Any]) -> dict[str, Any]:
             cli_status[name] = "Ready" if result.returncode == 0 else "Not ready"
         except (OSError, subprocess.TimeoutExpired):
             cli_status[name] = "Unknown"
-    cli_status["gemini"] = "Not installed" if not any(shutil.which(name) for name in ("agy", "antigravity", "gemini")) else (
-        "Ready" if any((Path.home() / ".gemini" / filename).is_file() for filename in ("oauth_creds.json", "google_accounts.json")) else "Not ready")
+    sys.path.insert(0, str(_PACKAGE / "scripts"))
+    from model_registry import ANTIGRAVITY_INSTALL_COMMAND, gemini_access_status
+    cli_status["gemini"] = gemini_access_status()
+    needs_install = cli_status["gemini"] in {"Not installed", "Discontinued"}
     return {"configured": {name: bool(settings.get(field) or os.environ.get(field.upper())) for name, field in keys.items()},
             "cli_status": cli_status,
             "cli_available": {name: bool(shutil.which(name)) for name in ("agy", "gemini", "claude", "codex", "gh", "opencode", "ollama")},
-            "sign_in_commands": {"gemini": "agy", "claude": "claude auth login", "codex": "codex login", "github": "gh auth login", "opencode": "opencode auth login"},
+            "legacy_gemini_cli": cli_status["gemini"] != "Discontinued" and bool(shutil.which("gemini")),
+            "sign_in_commands": {"gemini": ANTIGRAVITY_INSTALL_COMMAND if needs_install else "agy", "claude": "claude auth login", "codex": "codex login", "github": "gh auth login", "opencode": "opencode auth login"},
             "setup": "Run provider sign-in or enter fallback API keys in the local Orchestrator CLI on the Mac worker. Credentials never travel through Firestore."}
 
 

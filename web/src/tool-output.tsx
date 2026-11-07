@@ -7,16 +7,35 @@ const statusText:Record<string,string> = {queued:'Waiting for Mac worker',runnin
 const hidden = new Set(['output','exit_code','checklist','fleet','models']);
 const providerName:Record<string,string> = {openai:'OpenAI',claude:'Anthropic (Claude)',gemini:'Google (Gemini)',opencode:'OpenCode',qwen:'Qwen',deepseek:'DeepSeek',copilot:'GitHub Copilot'};
 
-export function ModelList({models,selected=[],onToggle,disabled=false}:{models:Data[];selected?:string[];onToggle?:(id:string)=>void;disabled?:boolean}) {
+const yoloRisk:Record<string,string>={codex:'Also turns off the Codex sandbox, so commands can reach the network and files outside the project.'};
+
+export function ServiceSummary({services,models,selected,yolo={},onYolo,disabled=false}:{services:Data[];models:Data[];selected:string[];yolo?:Record<string,boolean>;onYolo?:(cli:string,on:boolean)=>void;disabled?:boolean}) {
+  if(!services.length)return null;
+  return <div className="service-summary" aria-label="Model services">{services.map(service=>{
+    const enabled=models.filter(model=>model.family===service.family&&selected.includes(model.id)).length;
+    const known=typeof service.available==='number';
+    return <div className={`service-card${service.connected?' connected':''}`} key={service.family}>
+      <div className="service-card-heading"><strong>{providerName[service.family]||title(String(service.family))}</strong><span className={`service-status ${service.connected?'ready':'missing'}`}>{service.connected?'Connected':'Not connected'}</span></div>
+      <dl><div><dt>In catalog</dt><dd>{service.catalog}</dd></div><div><dt>Enabled</dt><dd>{enabled}</dd></div><div><dt>Available to you</dt><dd>{known?service.available:'—'}</dd></div></dl>
+      {!known&&<small>Run Sync or live discovery to check which models your account can use.</small>}
+      {service.yolo_cli&&<label className="yolo-toggle">
+        <input type="checkbox" role="switch" aria-label={`YOLO mode for ${providerName[service.family]||title(String(service.family))}`} checked={Boolean(yolo[service.yolo_cli])} disabled={disabled||!onYolo}
+          onChange={e=>{const on=e.target.checked;if(on&&!window.confirm(`Turn on YOLO mode for ${providerName[service.family]||title(String(service.family))}? Jobs will edit files and run commands on the Mac without asking. ${yoloRisk[service.yolo_cli]||''}`.trim()))return;onYolo?.(service.yolo_cli,on);}}/>
+        <span><strong>YOLO mode {yolo[service.yolo_cli]?'on':'off'}</strong><small>{yolo[service.yolo_cli]?'Edits files and runs commands without asking.':'Asks first, so jobs are refused anything that needs permission.'}</small></span>
+      </label>}
+    </div>})}</div>;
+}
+
+export function ModelList({models,selected=[],highlight=[],onToggle,disabled=false}:{models:Data[];selected?:string[];highlight?:string[];onToggle?:(id:string)=>void;disabled?:boolean}) {
   if(!models.length)return <p>No models are available in the catalog.</p>;
   const groups=Object.entries(models.reduce((grouped:Record<string,Data[]>,model)=>{const family=String(model.family||'other');(grouped[family]??=[]).push(model);return grouped},{}));
   return <div className="model-groups" aria-label="Available LLM models">{groups.map(([family,items])=><section className="model-group" key={family}><div className="model-group-heading"><h4>{providerName[family]||title(family)}</h4><span>{items.length} model{items.length===1?'':'s'}</span></div><div className="model-list">{items.map(model=>{
-    const checked=selected.includes(model.id);
-    const content=<><span className="model-card-heading"><strong>{model.id}</strong><span className={`model-selected ${checked?'enabled':'disabled'}`}>{checked?'Enabled':'Disabled'}</span></span>
+    const checked=selected.includes(model.id);const isNew=highlight.includes(model.id);
+    const content=<><span className="model-card-heading"><strong>{model.id}{isNew&&<span className="model-new-badge">New</span>}</strong><span className={`model-selected ${checked?'enabled':'disabled'}`}>{checked?'Enabled':'Disabled'}</span></span>
       <span className="model-card-meta">{providerName[model.family]||title(String(model.family||'Unknown provider'))} · {title(String(model.tier||'Unrated').toLowerCase())} tier</span>
       {Array.isArray(model.capabilities)&&model.capabilities.length>0&&<span className="model-card-tags">{model.capabilities.map((capability:string)=><span key={capability}>{title(capability)}</span>)}</span>}
       {Array.isArray(model.required_clis)&&model.required_clis.length>0&&<small>Requires {model.required_clis.join(', ')} CLI</small>}</>;
-    return onToggle?<label className={`model-card selectable${checked?' selected':''}`} key={model.id}><input type="checkbox" aria-label={`Enable ${model.id}`} checked={checked} disabled={disabled||(checked&&selected.length===1)} onChange={()=>onToggle(model.id)}/><span>{content}</span></label>:<div className="model-card" key={model.id}>{content}</div>;
+    return onToggle?<label className={`model-card selectable${checked?' selected':''}${isNew?' is-new':''}`} key={model.id}><input type="checkbox" aria-label={`Enable ${model.id}`} checked={checked} disabled={disabled||(checked&&selected.length===1)} onChange={()=>onToggle(model.id)}/><span>{content}</span></label>:<div className={`model-card${isNew?' is-new':''}`} key={model.id}>{content}</div>;
   })}</div></section>)}</div>;
 }
 
@@ -92,7 +111,23 @@ function ResultSections({command,result}:{command:Data;result:Data}) {
   if(command.operation==='tool.keys') {
     const cli=result.cli_status||{};
     const keys=result.configured||{};
-    return <><h4>CLI sign-in</h4><CheckList items={Object.entries(cli).map(([name,state])=>{const signIn=result.sign_in_commands?.[name==='gh'?'github':name];return {label:providerName[name]||title(name),ok:state==='Ready',detail:String(state)+(state==='Ready'||!signIn?'':` · On the Mac: ${signIn}`)};})}/><h4>Fallback API keys</h4><CheckList items={Object.entries(keys).map(([name,configured])=>({label:providerName[name]||title(name),ok:Boolean(configured),optional:true,detail:configured?'Configured on Mac':'Not configured (optional if CLI sign-in works)'}))}/>{result.setup&&<p>{result.setup}</p>}</>;
+    const services:{name:string;cli:string;cliLabel?:string;key?:string;signIn?:string}[]=[
+      {name:'claude',cli:'claude',key:'anthropic',signIn:result.sign_in_commands?.claude},
+      {name:'openai',cli:'codex',key:'openai',signIn:result.sign_in_commands?.codex},
+      {name:'gemini',cli:'gemini',cliLabel:'Antigravity CLI',key:'gemini',signIn:result.sign_in_commands?.gemini},
+      {name:'opencode',cli:'opencode',signIn:result.sign_in_commands?.opencode},
+      {name:'ollama',cli:'ollama'},
+      {name:'copilot',cli:'gh',signIn:result.sign_in_commands?.github}];
+    return <><div className="service-summary access-summary">{services.filter(service=>cli[service.cli]!==undefined||service.key).map(service=>{
+      const state=String(cli[service.cli]??'Not installed');
+      const cliReady=state==='Ready';
+      const keyConfigured=service.key?Boolean(keys[service.key]):false;
+      const ready=cliReady||keyConfigured;
+      return <div className={`service-card${ready?' connected':''}`} key={service.name}>
+        <div className="service-card-heading"><strong>{providerName[service.name]||title(service.name)}</strong><span className={`service-status ${ready?'ready':'missing'}`}>{ready?'Ready':'Not ready'}</span></div>
+        <CheckList items={[{label:service.cliLabel||'CLI sign-in',ok:cliReady,optional:Boolean(service.key),detail:state+(cliReady||!service.signIn?'':` · On the Mac: ${service.signIn}`)+(service.name==='gemini'&&result.legacy_gemini_cli?' · The old Gemini CLI is also installed but is not used':'')}]}/>
+        {service.key&&(!cliReady||keyConfigured)&&<CheckList items={[{label:'Fallback API key',ok:keyConfigured,optional:true,detail:keyConfigured?'Configured on Mac':'Not configured · use instead of the CLI'}]}/>}
+      </div>})}</div>{result.setup&&<p>{result.setup}</p>}</>;
   }
   if(command.operation==='tool.fleet') {
     const machines:Data[]=result.machines||[];
@@ -119,7 +154,7 @@ function ResultSections({command,result}:{command:Data;result:Data}) {
 }
 
 const specializedKeys:Record<string,string[]>={
-  'tool.keys':['cli_status','configured','cli_available','sign_in_commands','setup'],
+  'tool.keys':['cli_status','configured','cli_available','legacy_gemini_cli','sign_in_commands','setup'],
   'tool.fleet':['machines','selected','probes','candidates'],
   'tool.instructions':['files','role_prompts','content'],
   'tool.email':['notification_emails','notification_provider','sender_email','display_name','sender_ready'],

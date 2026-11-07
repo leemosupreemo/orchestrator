@@ -127,8 +127,14 @@ def model_names_overlap(left: str, right: str) -> bool:
     return bool(equivalent_model_names(left).intersection(equivalent_model_names(right)))
 
 
+def _shares_cli(left: str, right: str) -> bool:
+    left_model, right_model = get_model(left), get_model(right)
+    return bool(left_model and right_model and set(left_model.required_clis) & set(right_model.required_clis))
+
+
 def machine_supports_model(machine: dict[str, Any], candidate: str) -> bool:
-    return any(model_names_overlap(candidate, machine_model) for machine_model in machine.get("models", []))
+    return any(model_names_overlap(candidate, machine_model) or _shares_cli(candidate, machine_model)
+               for machine_model in machine.get("models", []))
 
 
 def model_allowed(candidate: str, allowed_models: list[str] | None) -> bool:

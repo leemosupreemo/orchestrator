@@ -1507,6 +1507,30 @@ p {
 .catalog-status-banner strong { color: var(--text-primary); }
 .catalog-status-banner small { display: block; margin-top: 2px; color: var(--text-muted); }
 
+.catalog-status-banner .link-button { margin: var(--space-2) 0 0; padding: 0; background: none; border: 0; color: var(--accent-primary); font-size: var(--text-xs); font-weight: var(--fw-semibold); cursor: pointer; }
+.catalog-status-details pre { margin: var(--space-2) 0 0; white-space: pre-wrap; font-size: var(--text-xs); color: var(--text-muted); }
+.model-new-count { color: var(--accent-primary); }
+.model-card.is-new { border-color: var(--accent-primary); box-shadow: 0 0 0 1px var(--accent-primary); }
+.model-new-badge { margin-left: 6px; padding: 1px 6px; border-radius: var(--radius-xs); background: var(--accent-primary); color: var(--bg-surface-1, #fff); font-size: var(--text-2xs); font-weight: var(--fw-semibold); vertical-align: middle; }
+
+.service-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-2); margin: var(--space-3) 0; }
+.service-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); background: var(--bg-surface-2); border: 1px solid var(--border-default); border-radius: var(--radius-md); }
+.service-card.connected { border-color: var(--accent-border); }
+.service-card-heading { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); }
+.service-status { font-size: var(--text-2xs); color: var(--text-muted); }
+.service-status.ready { color: var(--accent-primary); }
+.service-card dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); margin: 0; }
+.service-card dt { font-size: var(--text-2xs); color: var(--text-muted); }
+.service-card dd { margin: 0; font-size: var(--text-md); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.service-card small { font-size: var(--text-xs); color: var(--text-muted); }
+
+.auto-assignment { display: block; margin-top: var(--space-1); color: var(--text-muted); font-size: var(--text-xs); }
+
+.yolo-toggle { display: flex; gap: var(--space-2); align-items: flex-start; padding-top: var(--space-2); border-top: 1px solid var(--border-subtle); cursor: pointer; }
+.yolo-toggle input { margin-top: 3px; accent-color: var(--accent-primary); }
+.yolo-toggle span { display: flex; flex-direction: column; gap: 2px; }
+.yolo-toggle strong { font-size: var(--text-xs); color: var(--text-primary); }
+
 .spec-section { margin: var(--space-3) 0; }
 .spec-label { display: block; font-size: var(--text-xs); color: var(--text-secondary); font-weight: var(--fw-bold); margin-bottom: 6px; }
 .spec-dropzone {

@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
-from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error
+from model_registry import CLI_YOLO_FLAGS, get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, yolo_settings
 from model_router import get_prioritized_models, ModelRole
 
 class LLMTimeoutError(RuntimeError):
@@ -160,6 +160,17 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
 import selectors
 
+def _yolo_flag(cli: str) -> str:
+    """Returns the CLI's permission-skipping flag when YOLO is on for it in the project settings."""
+    try:
+        from common import read_json
+        settings_path = CONFIG_DIR / "settings.json"
+        settings = read_json(settings_path) if settings_path.exists() else {}
+    except Exception:
+        settings = {}
+    return f" {CLI_YOLO_FLAGS[cli]}" if yolo_settings(settings).get(cli) else ""
+
+
 def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None) -> str:
     # Resolve actual model ID
     m_meta = get_model(model)
@@ -169,12 +180,13 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
     cli_model_id = m_meta.api_model_id if m_meta and m_meta.api_model_id else model_id
 
     if model_id == "codex":
-        cmd_base = "codex exec"
-    elif model_id.startswith("gpt-5"):
-        cmd_base = f"codex exec --model {cli_model_id}"
+        cmd_base = f"codex exec{_yolo_flag('codex')}"
+    elif model_id.startswith(("gpt-5", "gpt-6")):
+        cmd_base = f"codex exec{_yolo_flag('codex')} --model {cli_model_id}"
         if m_meta and m_meta.reasoning_effort:
             cmd_base += f" -c model_reasoning_effort={m_meta.reasoning_effort}"
-    elif model_id.startswith("gemini-") or (m_meta and m_meta.family == "gemini"):
+    # The bare "gemini" id is handled below, so agy uses the account's default model.
+    elif model_id != "gemini" and (model_id.startswith("gemini-") or (m_meta and m_meta.family == "gemini")):
         provider_cli = preferred_cli("gemini")
         # Safe Agentic Planning: Allow read/search/docs servers for intelligence, 
         # but hide mutating/heavy servers (maestro, XcodeBuildMCP, ssh-manager, github) 
@@ -184,7 +196,7 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
             safe_tools += ",replace,write_file"
         if provider_cli == "agy":
-            cmd_base = f"agy --model {shlex.quote(cli_model_id)} --dangerously-skip-permissions"
+            cmd_base = f"agy --model {shlex.quote(cli_model_id)}{_yolo_flag('agy')}"
             if session_id:
                 cmd_base += f" --conversation {session_id}"
         else:
@@ -194,7 +206,7 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
     elif model_id == "gemini":
         provider_cli = preferred_cli("gemini")
         if provider_cli == "agy":
-            cmd_base = "agy --dangerously-skip-permissions"
+            cmd_base = f"agy{_yolo_flag('agy')}"
             if session_id:
                 cmd_base += f" --conversation {session_id}"
         else:
@@ -206,11 +218,11 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
             if session_id:
                 cmd_base += f" --session-id {session_id}"
     elif model_id.startswith("claude-"):
-        cmd_base = f"claude -p --model {model_id}"
+        cmd_base = f"claude -p{_yolo_flag('claude')} --model {model_id}"
         if session_id:
             cmd_base += f" --session-id {session_id}"
     elif model_id == "claude":
-        cmd_base = "claude -p --model claude-sonnet-4-6"
+        cmd_base = f"claude -p{_yolo_flag('claude')} --model claude-sonnet-4-6"
         if session_id:
             cmd_base += f" --session-id {session_id}"
     elif model_id == "deepseek":
@@ -219,12 +231,12 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         cmd_base = f"ollama run {model_id}"
     elif model_id == "copilot":
         cmd_base = "gh copilot"
-    elif model_id.startswith("opencode/"):
-        cmd_base = f"opencode run --model {model_id}"
+    elif "/" in model_id:
+        cmd_base = f"opencode run{_yolo_flag('opencode')} --model {model_id}"
     elif model_id == "opencode":
-        cmd_base = "opencode run --model opencode/big-pickle"
+        cmd_base = f"opencode run{_yolo_flag('opencode')} --model opencode/big-pickle"
     elif m_meta and m_meta.family == "opencode":
-        cmd_base = f"opencode run --model opencode/{model_id.replace('opencode/', '')}"
+        cmd_base = f"opencode run{_yolo_flag('opencode')} --model opencode/{model_id.replace('opencode/', '')}"
     else:
         cmd_base = f"{model_id}"
 

@@ -435,6 +435,44 @@ def preferred_cli(cli_name: str, installed: dict[str, bool] | None = None) -> st
             return candidate
     return candidates[0]
 
+# The Gemini CLI is deprecated upstream and replaced by the Antigravity CLI (agy).
+DISCONTINUED_CLIS = {"gemini"}
+ANTIGRAVITY_INSTALL_COMMAND = "brew install --cask antigravity-cli"
+
+def cli_is_supported(cli_name: str) -> bool:
+    """Like cli_is_available, but a discontinued CLI doesn't count."""
+    candidates = CLI_ALIASES.get(cli_name, (cli_name,))
+    return any(c not in DISCONTINUED_CLIS and shutil.which(c) is not None for c in candidates)
+
+def gemini_access_status() -> str:
+    """Returns Ready, Not ready, Not installed, Discontinued or Unknown for Google model access."""
+    binary = next((name for name in ("agy", "antigravity") if shutil.which(name)), None)
+    if binary is None:
+        return "Discontinued" if shutil.which("gemini") else "Not installed"
+    # ~/.gemini/oauth_creds.json and google_accounts.json belong to the old CLI, so they prove nothing here.
+    if not (Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").is_file():
+        return "Not ready"
+    try:
+        result = subprocess.run([binary, "models"], capture_output=True, text=True, timeout=8, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return "Unknown"
+    return "Ready" if result.returncode == 0 and parse_agy_models_output(result.stdout) else "Not ready"
+
+# Flags that let a CLI edit files and run commands without asking. Headless runs
+# can't answer a prompt, so with YOLO off those actions are refused instead.
+CLI_YOLO_FLAGS = {
+    "agy": "--dangerously-skip-permissions",
+    "claude": "--dangerously-skip-permissions",
+    "codex": "--dangerously-bypass-approvals-and-sandbox",
+    "opencode": "--auto",
+}
+CLI_YOLO_DEFAULTS = {"agy": True}  # Antigravity always ran this way before the setting existed.
+FAMILY_YOLO_CLI = {"gemini": "agy", "claude": "claude", "openai": "codex", "opencode": "opencode"}
+
+def yolo_settings(settings: dict[str, Any]) -> dict[str, bool]:
+    saved = settings.get("cli_yolo") if isinstance(settings.get("cli_yolo"), dict) else {}
+    return {cli: bool(saved.get(cli, CLI_YOLO_DEFAULTS.get(cli, False))) for cli in CLI_YOLO_FLAGS}
+
 def load_custom_models() -> list[ModelMetadata]:
     """Loads custom models from ~/.orchestrator/custom_models.json or project config."""
     custom_models = []
@@ -465,7 +503,10 @@ def get_all_models() -> list[ModelMetadata]:
     if _ALL_MODELS_CACHE is None:
         bundled_models = load_bundled_models()
         merged = {m.id: m for m in (bundled_models or MODELS)}
+        claimed = {name: m.id for m in merged.values() for name in (m.id, *m.aliases)}
         for m in load_custom_models():
+            # A saved copy can carry an alias the catalog has since moved to another model.
+            m.aliases = [alias for alias in m.aliases if claimed.get(alias, m.id) == m.id]
             merged[m.id] = m
         _ALL_MODELS_CACHE = list(merged.values())
     return _ALL_MODELS_CACHE
@@ -473,8 +514,12 @@ def get_all_models() -> list[ModelMetadata]:
 def get_model(model_id: str) -> ModelMetadata | None:
     # Check ID and aliases against all models
     all_m = get_all_models()
+    # An exact id always wins, so a stale alias in custom_models.json can't shadow it.
     for m in all_m:
-        if model_id == m.id or model_id in m.aliases:
+        if model_id == m.id:
+            return m
+    for m in all_m:
+        if model_id in m.aliases:
             return m
     return None
 
@@ -545,6 +590,8 @@ def parse_agy_models_output(output: str) -> list[str]:
             continue
 
         line = line.lstrip("-*• \t")
+        # `agy models` prints "<id>\t<display name>"; only the id is usable.
+        line = line.split("\t", 1)[0].strip()
         lower_line = line.lower()
         if not lower_line.startswith(("gemini", "claude", "gpt", "models/gemini", "models/claude", "models/gpt")):
             continue
@@ -673,8 +720,10 @@ def discover_from_sources_with_details() -> DiscoveryResult:
         try:
             res = subprocess.run([agy_cli, "models"], capture_output=True, text=True, timeout=10)
             if res.returncode == 0:
+                # agy also lists Claude and GPT models, but under ids the other CLIs reject.
                 for mid in parse_agy_models_output(res.stdout):
-                    discovered.append(heuristic_classify(mid, "gemini"))
+                    if mid.startswith("gemini"):
+                        discovered.append(heuristic_classify(mid, "gemini"))
                 details.append(f"Antigravity CLI ({agy_cli}): found {len(discovered) - before} model(s).")
             else:
                 msg = summarize_cli_error(f"{res.stderr}\n{res.stdout}")

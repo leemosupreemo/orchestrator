@@ -18,7 +18,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
 from common import CONFIG_DIR, DOCS_DIR, ROOT, read_json, print_header, print_divider, ProgressIndicator, StatusBar
-from model_registry import cli_is_available, preferred_cli
+from model_registry import cli_is_supported, preferred_cli
 from orchestrator.project_config import PROJECT_CONFIG
 
 REMEDIATION_GUIDE = {
@@ -476,7 +476,7 @@ def _check():
 
     claude_ok = check_cli_status("claude", "Claude Code", ["auth", "status"])
     codex_ok = check_cli_status("codex", "Codex CLI", ["login", "status"])
-    antigravity_ok = cli_is_available("gemini")
+    antigravity_ok = cli_is_supported("gemini")
     if antigravity_ok:
         print_result(True, "Antigravity CLI", "INSTALLED")
     else:

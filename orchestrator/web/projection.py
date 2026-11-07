@@ -37,7 +37,7 @@ def project_job(job: dict[str, Any]) -> dict[str, Any]:
         "branch", "issue_number", "pr_number", "planner", "builder", "reviewer",
         "allowed_models", "allowed_machines", "completed_task_indices", "debug_phase",
         "iteration", "max_iterations", "ai_modified_files", "ai_untracked_files",
-        "last_manual_log_paths", "reference_artifacts", "llm_sessions",
+        "last_manual_log_paths", "reference_artifacts", "llm_sessions", "auto_assignment",
     )
     projection = {key: job[key] for key in keys if key in job}
     projection["actions"] = [{"label": item.label, "operation": item.operation.value}
