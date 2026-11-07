@@ -4,7 +4,7 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth, db, signIn, logOut, collection, doc, onSnapshot, query, orderBy, limit, setDoc, updateDoc, serverTimestamp } from './firebase';
 import menu from './menu.json';
 import { ModelList, RunLog, ToolOutput } from './tool-output';
-import { apiFetch } from './local-api';
+import { apiFetch, ensureOk } from './local-api';
 import './style.css';
 
 type Data = Record<string, any>;
@@ -386,11 +386,11 @@ function App() {
       const payload:Data={id,status:'queued',requested_by:user.email,project_id:project,operation,inputs,created_at:serverTimestamp()};
       if (job) { payload.job_id=job.job_id; payload.expected_revision=job.revision; }
       if (isLocalApi) {
-        await apiFetch('/api/commands', {
+        await ensureOk(await apiFetch('/api/commands', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
-        });
+        }));
       } else {
         await setDoc(doc(db,'commands',id),payload);
       }
@@ -454,7 +454,7 @@ function App() {
   {view==='tests' && <AppTests project={project} commands={commands} onSubmit={(op,inputs,stay)=>submit(op,inputs,undefined,stay)} busy={busy} workerTestPlans={worker.test_plans?.[project]}/>}
   {view==='new' && <NewJob project={project} onSubmit={inputs=>submit('job.create',inputs)} busy={busy} availableModels={commands.find(x=>x.operation==='tool.models'&&x.project_id===project&&x.status==='succeeded'&&Array.isArray(x.result?.models))?.result?.models||[]} defaultModels={commands.find(x=>x.operation==='tool.models'&&x.project_id===project&&x.status==='succeeded'&&x.result?.selected)?.result?.selected||['codex']} availableMachines={(commands.find(x=>x.operation==='tool.fleet'&&x.project_id===project&&x.status==='succeeded')?.result?.machines||[]).map((m:any)=>m.name||m.id||m)} defaultMachines={commands.find(x=>x.operation==='tool.fleet'&&x.project_id===project&&x.status==='succeeded'&&x.result?.selected?.length)?.result?.selected||['local']} suggestedSubsystems={detectedSubsystems}/>}
   {view==='tools' && <div className="page"><div className="page-heading"><div><h1>Configuration & Tools</h1><p>Manage project settings, models, fleet machines, and diagnostic tools.</p></div></div><div className="tools-grid"><label className="field tool-picker"><span>Tool</span><select value={tool.operation} onChange={e=>setTool(menu.tools.find(item=>item.operation===e.target.value)||menu.tools[0])}>{menu.tools.map(item=><option key={item.operation} value={item.operation}>{item.label}</option>)}</select></label><ToolPanel item={tool} project={project} onSubmit={(op,inputs)=>submit(op,inputs,undefined,true)} busy={busy} commands={commands} projects={worker.project_ids||[project]} onProject={setProject} onAddProject={()=>setShowAddProject(true)}/></div></div>}
-  {view==='activity' && <ActivityFeed commands={commands} jobs={[...jobs, ...archives]} onNavigateJob={jobId => navigate('jobs', jobId)} onCancelCommand={cmdId => isLocalApi ? apiFetch(`/api/commands/${cmdId}/cancel`,{method:'POST'}).catch(e=>setError(safeMessage(e))) : updateDoc(doc(db,'commands',cmdId),{status:'cancelled'}).catch(e=>setError(safeMessage(e)))}/>}
+  {view==='activity' && <ActivityFeed commands={commands} jobs={[...jobs, ...archives]} onNavigateJob={jobId => navigate('jobs', jobId)} onCancelCommand={cmdId => isLocalApi ? apiFetch(`/api/commands/${encodeURIComponent(cmdId)}/cancel`,{method:'POST'}).then(ensureOk).catch(e=>setError(safeMessage(e))) : updateDoc(doc(db,'commands',cmdId),{status:'cancelled'}).catch(e=>setError(safeMessage(e)))}/>}
   {showAddProject && <AddProjectModal onClose={()=>setShowAddProject(false)} onSubmit={(op,inputs,stay)=>submit(op,inputs,undefined,stay)} busy={busy} commands={commands} onAdded={newId=>{setProject(newId);setSelected(null);setHistory([]);setShowAddProject(false);}}/>}
   {showWorkflowModal && <WorkflowGuideModal onClose={()=>setShowWorkflowModal(false)}/>}
   </main></div>;

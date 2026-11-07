@@ -32,6 +32,15 @@ test('stored token survives a reload without the link', async () => {
   assert.equal(state.calls[0].auth, 'Bearer abc');
 });
 
+test('ensureOk passes success through and reports the server error', async () => {
+  browser('http://127.0.0.1:4040/');
+  const { ensureOk } = await load();
+  const ok = { ok: true };
+  assert.equal(await ensureOk(ok), ok);
+  await assert.rejects(ensureOk({ ok: false, status: 400, json: async () => ({ error: 'Unknown operation' }) }), /Unknown operation/);
+  await assert.rejects(ensureOk({ ok: false, status: 500, json: async () => { throw new Error('not json'); } }), /Request failed \(500\)/);
+});
+
 test('no token means no Authorization header', async () => {
   const state = browser('http://127.0.0.1:4040/');
   const { apiFetch } = await load();

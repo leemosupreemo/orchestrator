@@ -16,6 +16,13 @@ function loadToken(): string {
   return token;
 }
 
+export async function ensureOk(response: Response): Promise<Response> {
+  if (response.ok) return response;
+  let message = '';
+  try { message = (await response.json()).error; } catch {}
+  throw new Error(message || `Request failed (${response.status})`);
+}
+
 export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   cachedToken ??= loadToken();
   const headers = new Headers(init.headers);
