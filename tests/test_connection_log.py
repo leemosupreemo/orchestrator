@@ -126,11 +126,12 @@ class TunnelOutputTests(ServerTestCase):
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
         # When file size >= MAX_TUNNEL_BYTES, open_tunnel_log rotates to .1
-        with patch.object(Path, "stat") as mock_stat:
-            mock_stat.return_value = SimpleNamespace(st_size=connection_log.MAX_TUNNEL_BYTES + 10)
-            handle2 = connection_log.open_tunnel_log()
-            self.assertIsNotNone(handle2)
-            handle2.close()
+        with path.open("r+b") as full:
+            full.truncate(connection_log.MAX_TUNNEL_BYTES + 10)  # sparse, so it takes no real disk space
+        handle2 = connection_log.open_tunnel_log()
+        self.assertIsNotNone(handle2)
+        handle2.close()
+        self.assertEqual(path.stat().st_size, 0, "a full log starts again empty")
         self.assertTrue(path.with_name(path.name + ".1").exists())
 
         # When open raises OSError, returns None

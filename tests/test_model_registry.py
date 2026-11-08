@@ -24,7 +24,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.tmp_home = Path(self.tmp_dir.name)
         codex = patch.dict(os.environ, {"CODEX_HOME": str(self.tmp_home / "no-codex"), "CLAUDE_CONFIG_DIR": str(self.tmp_home / "no-claude"),
-                                        "ORCHESTRATOR_USER_STATE_DIR": str(self.tmp_home / "state")})  # not this computer's logins or model lists
+                                        "ORCHESTRATOR_USER_STATE_DIR": str(self.tmp_home / ".orchestrator")})  # not this computer's logins or model lists
         codex.start()
         self.addCleanup(codex.stop)
         # Clear cache before each test

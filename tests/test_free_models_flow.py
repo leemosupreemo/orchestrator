@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +52,9 @@ class FreeModelsFlowTests(unittest.TestCase):
     def test_free_models_prioritize_reasoning_for_planner(self):
         free_models = [m.id for m in model_registry.get_free_models()]
         self.assertIn("copilot", free_models)
-        planners = get_prioritized_models(role=ModelRole.PLANNER, allowed_models=free_models)
+        # As if every tool were installed and signed in, so the ranking doesn't depend on this computer.
+        with patch("model_router.model_usable", return_value=True):
+            planners = get_prioritized_models(role=ModelRole.PLANNER, allowed_models=free_models)
         # Copilot has REASONING, CODING, and SPEED capabilities and tier HIGH
         self.assertIn("copilot", planners[:3])
 

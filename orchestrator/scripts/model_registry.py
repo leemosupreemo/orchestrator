@@ -459,7 +459,7 @@ def load_custom_models() -> list[ModelMetadata]:
     custom_models = []
     
     # Check global config
-    global_config = Path.home() / ".orchestrator" / "custom_models.json"
+    global_config = _state_dir() / "custom_models.json"
     
     # Check project config if ORCHESTRATOR_PROJECT_ROOT is set
     project_config = None
@@ -757,7 +757,7 @@ _SOURCES_KEY: tuple | None = None
 
 def _sources_key() -> tuple:
     """Changes whenever a file the registry is built from does."""
-    paths = [Path(__file__).resolve().parents[1] / "config" / "models.json", Path.home() / ".orchestrator" / "custom_models.json",
+    paths = [Path(__file__).resolve().parents[1] / "config" / "models.json", _state_dir() / "custom_models.json",
              codex_home() / "auth.json", codex_home() / "models_cache.json", codex_home() / "config.toml",
              provider_cache_path(), *claude_config_files()]
     return tuple((p.stat().st_mtime_ns if p.exists() else 0) for p in paths)
@@ -1121,7 +1121,7 @@ def discover_from_sources_with_details(keys: dict[str, str] | None = None) -> Di
 
 def models_last_synced() -> float | None:
     """When the model list was last refreshed on this computer, as a Unix time, or None if it never was."""
-    path = Path.home() / ".orchestrator" / "custom_models.json"
+    path = _state_dir() / "custom_models.json"
     return path.stat().st_mtime if path.is_file() else None
 
 def discover_from_sources() -> list[ModelMetadata]:
@@ -1138,7 +1138,7 @@ def sync_models(live_discovery: bool = False, keys: dict[str, str] | None = None
     import urllib.error
     import ssl
     
-    global_config = Path.home() / ".orchestrator" / "custom_models.json"
+    global_config = _state_dir() / "custom_models.json"
     global_config.parent.mkdir(parents=True, exist_ok=True)
     
     new_models = []
