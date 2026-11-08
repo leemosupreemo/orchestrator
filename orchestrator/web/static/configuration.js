@@ -177,7 +177,7 @@
         <div class="configuration-chooser-list">
           ${group.entries.map((entry) => entry.enabled
             ? `<a class="configuration-choice" href="${escapeHtml(entry.route)}"><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.description)}</span></a>`
-            : `<button type="button" class="configuration-choice is-disabled" disabled><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.description)}</span><small>${escapeHtml(entry.status)}</small></button>`
+            : `<button type="button" class="configuration-choice" disabled><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.description)}</span><small>${escapeHtml(entry.status)}</small></button>`
           ).join("")}
         </div>
       </section>

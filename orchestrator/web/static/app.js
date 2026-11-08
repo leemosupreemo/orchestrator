@@ -323,6 +323,9 @@ function moreMenu(items, { label = "More", left = false, compact = false } = {})
   }).join("");
   return `<details class="more${left ? " left" : ""}"><summary class="btn">${esc(label)} ▾</summary><div class="more-menu">${body}</div></details>`;
 }
+// A design token's current value, for code that can't use CSS (the terminal).
+const cssToken = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 const act = (action, params) => `data-action="${action}"${params ? ` data-params='${attrJSON(params)}'` : ""}`;
 
 // ---------------------------------------------------------------- running actions
@@ -1192,7 +1195,7 @@ function renderProjectSelect(select) {
   let html = groups.map(([label, projects]) => `<optgroup label="${esc(label)}">${projects.map(o =>
     `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
   ).join("")}</optgroup>`).join("");
-  if (state.you?.role !== "member") html += `<option value="__manage__" class="manage-projects-option" style="background-color: var(--manage-option-bg, #323947); color: var(--text);">📁 Manage all projects...</option>`;
+  if (state.you?.role !== "member") html += `<option value="__manage__" class="manage-projects-option">📁 Manage all projects...</option>`;
   if (select.dataset.html !== html) {
     select.innerHTML = html;
     select.dataset.html = html;
@@ -2583,7 +2586,7 @@ async function createReleaseTag() {
       <p>Project: <strong>${esc(state.project?.name || "Current project")}</strong></p>
       <p>Bookmark this committed state on your base branch (<strong>${esc(preview.branch)}</strong>) as a release milestone to track future changes. Creating a tag records a version in Git; it does not deploy your app.</p>
       <div class="card-b-split pt-8 mt-8 mb-12">
-        <div class="text-sm"><strong>Commit on ${esc(preview.branch)}:</strong> <code class="mono">${esc(preview.commit.slice(0, 10))}</code> · ${esc(preview.subject)}</div>
+        <div class="t-secondary"><strong>Commit on ${esc(preview.branch)}:</strong> <code class="mono">${esc(preview.commit.slice(0, 10))}</code> · ${esc(preview.subject)}</div>
       </div>
       <label class="field"><span>Release version</span><input name="tag" required maxlength="120" value="${esc(preview.suggested_tag)}" placeholder="v0.1.0" spellcheck="false"></label>
       ${preview.can_push ? `<label class="check"><input type="checkbox" name="publish" checked><span>Publish this tag to the Git remote (origin)</span></label>` : `<p class="muted">No remote is configured. The tag will be saved locally.</p>`}
@@ -3547,7 +3550,7 @@ pages.job = async ([id]) => {
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
           <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more (see the full diffstat below)</div>` : ""}</div>
         </div>
-        ${changes?.hypothesis ? `<div class="card-b card-b-split text-sm"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
+        ${changes?.hypothesis ? `<div class="card-b card-b-split t-secondary"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View full diffstat (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
 
@@ -3569,11 +3572,11 @@ pages.job = async ([id]) => {
               ${allFiles.length ? `<button type="button" class="btn small" data-scope-adopt='${esc(JSON.stringify(allFiles))}'>Adopt current files as plan scope</button>` : ""}
             </div>
           ` : ""}
-          ${actionableFindings.map((f) => `<div class="scope-finding"><div class="row gap-10"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
+          ${actionableFindings.map((f) => `<div class="scope-finding"><div class="row gap-12"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
             <div class="muted">${esc(f.detail)}</div>
             ${f.files.length ? `<ul class="scope-files mono">${f.files.slice(0, 12).map((p) => `<li>${esc(p)}</li>`).join("")}${f.files.length > 12 ? `<li class="muted">+${f.files.length - 12} more</li>` : ""}</ul>
               <div><button class="btn small" data-scope-accept='${esc(JSON.stringify(f.files))}'>Accept as in scope</button></div>` : ""}</div>`).join("")}
-          ${actionableFindings.some((f) => f.files.length) || scope.accepted ? `<div class="row gap-10">
+          ${actionableFindings.some((f) => f.files.length) || scope.accepted ? `<div class="row gap-12">
             ${actionableFindings.some((f) => f.files.length) ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(scope.trim.summary)}&spec=${encodeURIComponent(scope.trim.spec)}">Create a job to trim it</a>` : ""}
             ${scope.accepted ? `<button class="btn small ghost" data-scope-reset>Reset accepted</button>` : ""}</div>` : ""}
         </div></section>` : ""}
@@ -3601,7 +3604,7 @@ pages.job = async ([id]) => {
           <div class="card-h">
             <h2>Simulator Visual QA</h2>
             <div class="row gap-8">
-              ${visualChecks[0].video ? `<span class="pill pill-sm">Video recorded</span>` : ""}
+              ${visualChecks[0].video ? `<span class="pill">Video recorded</span>` : ""}
               <span class="count">${visualChecks[0].screenshots.length} captured</span>
             </div>
           </div>
@@ -3928,7 +3931,7 @@ pages.new = async (_, query) => {
       ${st.recent === null ? `<small class="muted">Looking for recent logs…</small>` : rows || `<small class="muted">No recent logs found. Upload one below, or pull device logs first.</small>`}
       ${uploadBox("Upload logs or screenshots", "A crash log, a console dump, a screenshot of the problem. We read the end of each log.", "image/*,.log,.txt,.json,.md,.crash,.ips")}</fieldset>`;
   };
-  const featureSelect = () => features.length ? `${field(`Part of a feature${opt("optional")}`, `<select name="feature" id="nj-feature-select"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}${f.kpis?.length ? ` · ${plural(f.kpis.length, "KPI")}` : ""}</option>`).join("")}</select>`)}<div id="nj-feature-measurement" class="muted text-sm" aria-live="polite"></div>` : "";
+  const featureSelect = () => features.length ? `${field(`Part of a feature${opt("optional")}`, `<select name="feature" id="nj-feature-select"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}${f.kpis?.length ? ` · ${plural(f.kpis.length, "KPI")}` : ""}</option>`).join("")}</select>`)}<div id="nj-feature-measurement" class="muted t-secondary" aria-live="polite"></div>` : "";
 
   const fieldsHtml = async () => {
     const v = st.v;
@@ -4210,7 +4213,7 @@ function combineLine(f) {
     : r.status === "conflict" ? `<span class="pill failed">Conflict</span> <span class="muted">These don't merge cleanly: ${files}.</span>`
     : r.status === "build-failed" || r.status === "test-failed" ? `<span class="pill failed">${r.status === "build-failed" ? "Build fails" : "Tests fail"} together</span> <span class="muted">Each branch passed alone; the combination doesn't.</span>`
     : `<span class="muted">${esc(r.error || "Couldn't check.")}</span>`;
-  return `<div class="row gap-10">${say}${stale}<button type="button" class="btn small" ${act("verify_feature", { feature: f.id })}>${r ? "Check again" : "Check together"}</button></div>`;
+  return `<div class="row gap-12">${say}${stale}<button type="button" class="btn small" ${act("verify_feature", { feature: f.id })}>${r ? "Check again" : "Check together"}</button></div>`;
 }
 
 pages.features = async () => {
@@ -4311,7 +4314,7 @@ pages.delivery = async (args, query) => {
               </div>
             ` : `
               <div class="branch-meta-title">
-                <span class="muted text-sm">No releases tagged yet on <strong>${esc(baseBranchName)}</strong>.</span>
+                <span class="muted t-secondary">No releases tagged yet on <strong>${esc(baseBranchName)}</strong>.</span>
               </div>
               <div class="branch-meta-sub">
                 <span>Tag a release milestone when you ship to track new changes that follow.</span>
@@ -4329,10 +4332,10 @@ pages.delivery = async (args, query) => {
               <div class="branch-meta-title">
                 ${unreleasedCount === 0 ? `
                   <span class="pill done">Up to date</span>
-                  <span class="text-sm">No unreleased commits on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong>.</span>
+                  <span class="t-secondary">No unreleased commits on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong>.</span>
                 ` : `
                   <span class="pill attention">${unreleasedCount} unreleased commit${unreleasedCount === 1 ? "" : "s"}</span>
-                  <span class="text-sm">on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong></span>
+                  <span class="t-secondary">on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong></span>
                 `}
               </div>
               <div class="branch-meta-sub">
@@ -4341,7 +4344,7 @@ pages.delivery = async (args, query) => {
             ` : `
               <div class="branch-meta-title">
                 <span class="pill working">${unreleasedCount} commit${unreleasedCount === 1 ? "" : "s"}</span>
-                <span class="text-sm">accumulated on <strong>${esc(baseBranchName)}</strong> awaiting initial release tag.</span>
+                <span class="t-secondary">accumulated on <strong>${esc(baseBranchName)}</strong> awaiting initial release tag.</span>
               </div>
               <div class="branch-meta-sub">
                 <span>Click "Create release tag" above to establish your initial release version anchor.</span>
@@ -4398,7 +4401,7 @@ pages.delivery = async (args, query) => {
             <span>Release notes <span class="muted">(optional)</span></span>
             <input type="text" name="notes" placeholder="e.g. Test notes for this build">
           </label>
-          <div class="row gap-10 align-center">
+          <div class="row gap-12 align-center">
             <button type="submit" class="btn primary" ${act("distribute")}>Launch build for testing</button>
             ${testers.invite_url ? `
               <button type="button" class="btn small ghost" data-setup-copy="${esc(testers.invite_url)}">Copy invite link</button>
@@ -4425,7 +4428,7 @@ pages.delivery = async (args, query) => {
                 ${branch_commit.author ? `<span>by <strong>${esc(branch_commit.author)}</strong></span><span class="sep">·</span>` : ""}
                 <span>${esc(branch_commit.when)}</span>
               </div>
-            ` : `<div class="muted text-sm">No commit information found for this branch.</div>`}
+            ` : `<div class="muted t-secondary">No commit information found for this branch.</div>`}
           </div>
         </div>
         <div class="branch-meta-row">
@@ -4441,7 +4444,7 @@ pages.delivery = async (args, query) => {
               <div class="branch-meta-sub">
                 <span>Updated ${esc(ago(latest_job.updated))}</span>
               </div>
-            ` : `<div class="muted text-sm">No Orchestrator jobs have run on this branch yet.</div>`}
+            ` : `<div class="muted t-secondary">No Orchestrator jobs have run on this branch yet.</div>`}
           </div>
         </div>
       </div>
@@ -4558,7 +4561,7 @@ const DECISION_LABEL = { keep: "Keep", iterate: "Iterate", drop: "Drop" };
 function kpiFormBody(k = {}) {
   return `<label class="field"><span>What you're measuring</span><input type="text" name="name" required maxlength="80" value="${esc(k.name || "")}" placeholder="e.g. Seat claim rate"></label>
     <label class="field"><span>Event that measures it</span><input type="text" name="event" required pattern="[a-z][a-z0-9_]{1,59}" value="${esc(k.event || "")}" placeholder="lobby_seat_claimed" autocapitalize="off"><small class="muted">Lowercase letters, numbers and underscores. The builder is told to emit it.</small></label>
-    <div class="row gap-10">
+    <div class="row gap-12">
       <label class="field flex-1"><span>Better when</span><select name="direction"><option value="up" ${k.direction !== "down" ? "selected" : ""}>It goes up</option><option value="down" ${k.direction === "down" ? "selected" : ""}>It goes down</option></select></label>
       <label class="field flex-1"><span>Target <span class="muted">(optional)</span></span><input type="number" name="target" step="any" value="${k.target ?? ""}"></label>
       <label class="field flex-1"><span>Unit</span><input type="text" name="unit" maxlength="20" value="${esc(k.unit || "")}" placeholder="%"></label>
@@ -4595,7 +4598,7 @@ function providerMcpTree(providerId, providerName, list) {
       <span class="count">${count} / ${items.length} installed</span>
     </summary>
     <div class="model-tree-content">
-      <p class="muted text-sm mb-8">Model Context Protocol lets AI agents query funnels, retention, and events live during jobs.</p>
+      <p class="muted t-secondary mb-8">Model Context Protocol lets AI agents query funnels, retention, and events live during jobs.</p>
       <ul class="model-tree-branch">
         ${items.map((m, idx) => `
           <li class="model-tree-item ${idx === items.length - 1 ? 'last-node' : ''}">
@@ -4638,7 +4641,7 @@ function analyticsConnectionCards(data, manageOnly = false) {
           ${statusPill}
         </div>
         <div class="muted">${esc(ANALYTICS_BLURBS[p.id] || "Product analytics and event tracking.")}</div>
-        <div class="muted text-sm">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
+        <div class="muted t-secondary">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
         <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a>${dashboardUrl ? ` · <a href="${esc(dashboardUrl)}" target="_blank" rel="noopener">Open ${esc(p.name)} project ↗</a>` : ""}</p>
         <div class="row" ${manageOnly ? "" : "data-owner-only"}>
           ${manageOnly ? `<a href="#/measure?provider=${encodeURIComponent(p.id)}" class="btn small primary">${isReady ? "Manage" : "Connect"} ${esc(p.name)} ↗</a>` : isReady ? `
@@ -4685,7 +4688,7 @@ function packageFormBody(p = {}, data) {
   return `${adding ? `<label class="field"><span>Package link</span><input type="url" name="url" maxlength="500" value="${esc(p.url || "")}" placeholder="https://www.npmjs.com/package/lodash" autocapitalize="off" spellcheck="false">
       <small class="hint-text">Paste a page from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub and the name and ecosystem are filled in. Or leave it and type the name.</small></label>` : ""}
     <label class="field"><span>Package name${adding ? ` <span class="muted">(optional with a link)</span>` : ""}</span><input type="text" name="name" ${adding ? "" : "required"} maxlength="100" value="${esc(p.name || "")}" placeholder="e.g. lodash, requests, pointfreeco/swift-snapshot-testing" autocapitalize="off" spellcheck="false"></label>
-    <div class="row gap-10">
+    <div class="row gap-12">
       <label class="field flex-1"><span>Ecosystem</span><select name="ecosystem">${eco}</select></label>
       <label class="field flex-1"><span>Version <span class="muted">(optional)</span></span><input type="text" name="version" maxlength="40" value="${esc(p.version || "")}" placeholder="latest"></label>
     </div>
@@ -4732,7 +4735,7 @@ pages.packages = async () => {
         ${running ? `<p class="muted" id="pkg-running" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Reviewing your requirements for packages…</p>` : ""}
         ${review?.error ? `<div class="notice bad">${esc(review.error)}</div>` : ""}
         <div class="pkg-progress" id="pkg-progress" role="status" aria-live="polite" hidden>
-          <div class="row gap-10 wrap"><strong id="pkg-stage"></strong><button type="button" class="btn small" id="pkg-cancel">Cancel</button></div>
+          <div class="row gap-12 wrap"><strong id="pkg-stage"></strong><button type="button" class="btn small" id="pkg-cancel">Cancel</button></div>
           <p class="muted" id="pkg-detail"></p>
           <p class="muted" id="pkg-slow" hidden>This is taking longer than usual. The model may be slow or searching widely. You can keep waiting, or cancel and try again. It stops on its own after ${Math.round(PACKAGE_REVIEW_BUDGET_SECONDS / 60)} minutes.</p>
         </div>${reviewNote}
@@ -4839,7 +4842,7 @@ pages.measure = async (_, query) => {
           <div class="stat"><div class="k">With a recorded result</div><div class="v">${measuredKpis.length}</div></div>
           <div class="stat"><div class="k">Analytics platform</div><div class="v">${data.provider ? esc(data.provider_name || data.provider) : "None connected"}</div></div>
         </div>
-        <div class="row gap-10 wrap mt-8">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}</div>
+        <div class="row gap-12 wrap mt-8">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}</div>
       </section>
       <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><a class="btn small" href="#/product?section=success">Edit in Product ↗</a></div>
         <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="muted">Optional project-wide outcomes and targets live in the Product requirements. Add them when you know what success should look like.</p>`}</div>
@@ -5110,7 +5113,7 @@ function uxChecklistHtml(checklist) {
     const [tone, label] = mark[status] || mark.pending;
     return `<div class="item ux-check"><span class="pill ${tone}">${label}</span>
       <div class="main-col"><div class="title">${esc(definition?.name || c.id)}</div>
-        ${definition ? `<p class="muted text-sm">${esc(definition.criterion)}</p>` : ""}
+        ${definition ? `<p class="muted t-secondary">${esc(definition.criterion)}</p>` : ""}
         ${c.note && c.note !== "not reported" ? `<p class="ux-check-evidence">${esc(c.note)}</p>` : ""}</div></div>`;
   }).join("")}</div>`;
 }
@@ -5721,7 +5724,7 @@ function productStripHtml(p) {
     <div class="card-b stack">
       ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-10 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a><a class="btn small" href="#/product?reverse=1" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</a>${modelPicker}</div>`}
+           <div class="row gap-12 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a><a class="btn small" href="#/product?reverse=1" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</a>${modelPicker}</div>`}
     </div></section>`;
 }
 
@@ -5762,7 +5765,7 @@ pages.product = async (_, query) => {
         <div class="import-option import-option-apps" id="prd-apps-section">
           <strong>Connected apps</strong>
           <span>Import live designs, UI frames, and tickets from Figma, Jira, Trello, and more</span>
-          <div class="connected-apps-list">${connectedApps.length ? connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("") : `<span class="muted text-sm">None connected</span>`}</div>
+          <div class="connected-apps-list">${connectedApps.length ? connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("") : `<span class="muted t-secondary">None connected</span>`}</div>
           <div class="connected-apps-actions row gap-8 mt-4">
             ${connectedApps.length ? `<button type="button" class="btn small primary" id="prd-add-app">Choose reference</button>` : ""}
             <a href="#/connections" class="btn small ${connectedApps.length ? "ghost" : "primary"}">${connectedApps.length ? "Connect more" : "Connect an app"}</a>
@@ -5778,7 +5781,7 @@ pages.product = async (_, query) => {
   const render = () => `
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2></div>
         <div class="card-b stack">
-          <div class="row gap-10 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
+          <div class="row gap-12 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
           <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div>
         </div></section>
       <div id="prd-panel"></div>
@@ -5789,8 +5792,8 @@ pages.product = async (_, query) => {
           <div class="side"><button type="button" class="btn small ghost" data-prd-source="${esc(d.target.replace("source/", ""))}">Download</button></div></div>`).join("")}</div></div></section>` : ""}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
         <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
-        <div class="row gap-10 items-center wrap">
-          <span class="muted text-sm">Model:</span>
+        <div class="row gap-12 align-center wrap">
+          <span class="muted t-secondary">Model:</span>
           <select id="prd-update-model-select" class="prd-model-select" aria-label="AI model for product requirements">
             ${(p.available_models || [
               { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Recommended)" },
@@ -5832,11 +5835,11 @@ pages.product = async (_, query) => {
           const initialFeatures = rawLines.length ? rawLines : [""];
           box.innerHTML = `<div class="muted">${esc(hint)}</div>
             <div class="prd-features-edit" id="prd-features-list"></div>
-            <div class="row items-center gap-10 mt-8">
+            <div class="row align-center gap-12 mt-8">
               <button type="button" class="btn small ghost" id="prd-feature-add">+ Add feature</button>
               <span class="muted t-secondary">Press Enter to add another feature</span>
             </div>
-            <div class="row gap-10 mt-12">
+            <div class="row gap-12 mt-12">
               <button type="button" class="btn primary" id="prd-save-features">Save</button>
               <button type="button" class="btn ghost" id="prd-cancel-features">Cancel</button>
             </div>`;
@@ -5925,7 +5928,7 @@ pages.product = async (_, query) => {
         }
 
         box.innerHTML = `<div class="muted">${esc(hint)}</div><label class="field"><span class="sr-only">${esc(title)}</span><textarea rows="${id === "pitch" ? 5 : 8}" id="prd-text-${id}" spellcheck="true" aria-label="Edit ${esc(title)}">${esc(currentBody)}</textarea></label>
-          <div class="row gap-10"><button type="button" class="btn primary" id="prd-save-${id}">Save</button><button type="button" class="btn ghost" id="prd-cancel-${id}">Cancel</button></div>`;
+          <div class="row gap-12"><button type="button" class="btn primary" id="prd-save-${id}">Save</button><button type="button" class="btn ghost" id="prd-cancel-${id}">Cancel</button></div>`;
         $(`#prd-text-${id}`).focus();
         $(`#prd-cancel-${id}`).addEventListener("click", onCancel);
         $(`#prd-save-${id}`).addEventListener("click", async () => {
@@ -6117,7 +6120,7 @@ pages.product = async (_, query) => {
                 return `<div class="card proposal-section-item" id="prop-sec-${esc(s.id)}">
                   <div class="card-h">
                     <h3 class="proposal-sec-title">${esc(s.title)}</h3>
-                    <div class="row gap-10 items-center">
+                    <div class="row gap-12 align-center">
                       <button type="button" class="btn small ghost" data-revert-sec="${esc(s.id)}" ${canRevert ? "" : "disabled"}>Revert</button>
                       <button type="button" class="btn small" data-edit-sec="${esc(s.id)}">Edit</button>
                     </div>
@@ -6128,7 +6131,7 @@ pages.product = async (_, query) => {
                 </div>`;
               }).join("")}
             </div>
-            <div class="row gap-10 mt-12 items-center">
+            <div class="row gap-12 mt-12 align-center">
               <button type="button" class="btn primary" id="prd-proposal-done">Done</button>
             </div>
           </div></section>`;
@@ -6254,7 +6257,7 @@ pages.product = async (_, query) => {
           <input type="file" id="prd-import-input" accept=".md,.markdown,.txt,.docx,.pdf" hidden>
           <p class="muted">The fields above get a short summary of it, and the whole document stays attached so jobs can read the detail.</p>
           <label class="field"><span>Or paste it</span><textarea id="prd-import-text" rows="6" aria-label="Paste your PRD"></textarea></label>
-          <div class="row gap-10"><button type="button" class="btn primary" id="prd-import-go" disabled>Submit</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
+          <div class="row gap-12"><button type="button" class="btn primary" id="prd-import-go" disabled>Submit</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
         const input = $("#prd-import-input"), zone = $("#prd-drop"), goBtn = $("#prd-import-go"), textEl = $("#prd-import-text");
         let picked = null;
         const sync = () => {
@@ -6346,7 +6349,7 @@ pages.product = async (_, query) => {
           <div class="setup-hint">
             <small class="muted">Uses the REA MCP server (<code>rea-agents</code>). To configure REA locally in your agent environment: <code>npx -y rea-agents setup</code></small>
           </div>
-          <div class="row gap-10">
+          <div class="row gap-12">
             <button type="button" class="btn primary" id="prd-reverse-go" disabled>Reverse engineer</button>
             <button type="button" class="btn ghost" id="prd-reverse-cancel">Cancel</button>
           </div>
@@ -6537,10 +6540,10 @@ function epicsSection(initial, { onPrdChanged }) {
       <div class="row"><a class="btn" href="#/connections?card=jira">Connect Jira</a></div></div></section>`;
     if (!owner) return `<section class="card mb-16"><div class="card-h"><h2>Jira</h2></div><div class="card-b"><span class="muted">Connected to ${esc(j.site)}. The owner of this computer sends and imports epics.</span></div></section>`;
     const body = !j.project
-      ? `<form class="row gap-10 end wrap" id="epic-jira-project"><label class="field"><span>Jira project key</span><input name="project" placeholder="ABC" maxlength="10" autocomplete="off" required></label>
+      ? `<form class="row gap-12 end wrap" id="epic-jira-project"><label class="field"><span>Jira project key</span><input name="project" placeholder="ABC" maxlength="10" autocomplete="off" required></label>
           <button type="submit" class="btn primary">Save</button></form>
          <span class="muted">The project epics are created in, and imported from. It's the letters in your ticket numbers (ABC-123).</span>`
-      : `<div class="row gap-10 wrap"><button type="button" class="btn primary" id="epic-jira-send" ${ov.epics.some((e) => e.status === "approved" && !e.jira) ? "" : "disabled"}>Send approved epics to Jira</button>
+      : `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="epic-jira-send" ${ov.epics.some((e) => e.status === "approved" && !e.jira) ? "" : "disabled"}>Send approved epics to Jira</button>
           <button type="button" class="btn" id="epic-jira-load">Import epics from Jira</button></div>
          <span class="muted">Epics are created in ${esc(j.project)} on ${esc(j.site)}, and each approved epic then shows its Jira key. Nothing is sent until you press the button.</span>
          <div id="epic-jira-panel">${jiraList ? FeaturePlan.renderJiraImport(jiraList, j.project) : ""}</div>`;
@@ -6880,7 +6883,7 @@ pages.tests = async (_, query) => {
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
       ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>
-        <div class="row gap-10 align-center">
+        <div class="row gap-12 align-center">
           <div class="filters">${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
             `<a class="btn small ${k === caseFilter ? "on" : ""}" href="#/tests?cases=${k}${query.get("q") ? `&q=${encodeURIComponent(query.get("q"))}` : ""}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary[k]})`}</a>`).join("")}</div>
           <a class="btn small ghost" href="#/tests/cases">Manage cases</a>
@@ -7132,12 +7135,12 @@ pages["test-cases"] = async (_, query) => {
           <h2>Filter &amp; Search</h2>
         </div>
         <div class="card-b stack">
-          <form id="tc-search-form" class="row gap-10">
+          <form id="tc-search-form" class="row gap-12">
             <input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Search test cases by ID, title, expected, covers…" aria-label="Search test cases" style="flex:1">
             <button class="btn small" type="submit">Search</button>
             ${q ? `<a class="btn small ghost" href="${queryUrl({ q: "" })}">Clear search</a>` : ""}
           </form>
-          <div class="row gap-10" style="flex-wrap:wrap; align-items:center;">
+          <div class="row gap-12" style="flex-wrap:wrap; align-items:center;">
             <div class="filters">
               ${[["all", "All"], ...Object.entries(TC_STATUS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
                 `<a class="btn small ${k === caseFilter ? "on" : ""}" href="${queryUrl({ status: k })}">${esc(label)}${k === "all" ? ` (${caseView.cases.length})` : ` (${caseView.summary?.[k] ?? 0})`}</a>`).join("")}
@@ -8786,7 +8789,7 @@ pages["new-project"] = async (_, query) => {
     } else {
       ideaChoice = `<div class="banner attention np-idea-choice"><p>You were already starting <strong>“${esc(current || draft.answers.name || "a project")}”</strong>.
         Continue that, or start over with your new idea, <strong>“${esc(ideaAnswers.pitch)}”</strong>?</p>
-        <div class="row gap-10"><button type="button" class="btn small" id="np-keep-draft">Continue what I started</button>
+        <div class="row gap-12"><button type="button" class="btn small" id="np-keep-draft">Continue what I started</button>
           <button type="button" class="btn small primary" id="np-use-idea">Start with the new idea</button></div></div>`;
     }
   }
@@ -9811,7 +9814,7 @@ function runStatus(r, vc = null) {
         <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
 
         <form class="keychain-unlock-form" id="keychain-unlock-form" onsubmit="return false;">
-          <div class="row gap-8 items-center flex-wrap">
+          <div class="row gap-8 align-center flex-wrap">
             <input type="password" id="keychain-pwd-input" placeholder="Mac login password" autocomplete="current-password" aria-label="Mac login password" class="keychain-pwd-input" required>
             <button type="submit" class="btn small primary" id="keychain-unlock-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-lock"/></svg> Unlock keychain</button>
           </div>
@@ -9822,15 +9825,15 @@ function runStatus(r, vc = null) {
         </form>
 
         <details class="keychain-manual-fold mt-8">
-          <summary class="t-secondary text-muted cursor-pointer">Or unlock manually in Terminal</summary>
+          <summary class="t-secondary muted cursor-pointer">Or unlock manually in Terminal</summary>
           <div class="keychain-manual-body mt-4 t-secondary stack gap-4">
             <p class="muted">Run this in Terminal on your Mac to unlock the login keychain:</p>
-            <div class="row gap-4 items-center flex-wrap">
+            <div class="row gap-4 align-center flex-wrap">
               <code class="code-box user-select-all">security unlock-keychain ~/Library/Keychains/login.keychain-db</code>
               <button type="button" class="btn small ghost" data-copy="security unlock-keychain ~/Library/Keychains/login.keychain-db">Copy</button>
             </div>
             <p class="muted">To whitelist codesigning for background builds without future prompts:</p>
-            <div class="row gap-4 items-center flex-wrap">
+            <div class="row gap-4 align-center flex-wrap">
               <code class="code-box user-select-all">security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "&lt;your-password&gt;" ~/Library/Keychains/login.keychain-db</code>
               <button type="button" class="btn small ghost" data-copy='security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "&lt;your-password&gt;" ~/Library/Keychains/login.keychain-db'>Copy</button>
             </div>
@@ -9854,7 +9857,7 @@ function runStatus(r, vc = null) {
         <p class="run-status-notice-desc">${esc(guidance.detail)}</p>
 
         <form class="inline-apikey-form" id="inline-apikey-form" onsubmit="return false;" data-rerun-action="${esc(rerunAction)}"${targetJob ? ` data-rerun-params='${attrJSON(rerunParams)}'` : ""}>
-          <div class="row gap-8 items-center flex-wrap mt-8">
+          <div class="row gap-8 align-center flex-wrap mt-8">
             <select id="apikey-provider-select" class="apikey-select" aria-label="AI provider">
               <option value="anthropic_api_key">Anthropic (Claude)</option>
               <option value="openai_api_key">OpenAI (Codex / ChatGPT)</option>
@@ -10071,7 +10074,7 @@ function wireKeychainUnlock(container) {
         const res = await api("keychain/unlock", { method: "POST", body: { password: pwd } });
         toast(res?.message || "Keychain unlocked");
         if (resultEl) {
-          resultEl.innerHTML = `<div class="banner done py-2 px-3 text-sm row gap-4 items-center"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> <span>${esc(res?.message || "Keychain unlocked and saved locally.")} You can now rerun the job.</span></div>`;
+          resultEl.innerHTML = `<div class="banner done t-secondary row gap-4 align-center"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> <span>${esc(res?.message || "Keychain unlocked and saved locally.")} You can now rerun the job.</span></div>`;
           resultEl.hidden = false;
         }
         if (unlockBtn) {
@@ -10670,7 +10673,7 @@ function attachSavedTerminal(text, failed) {
   if (window.Terminal) {
     const term = new window.Terminal({
       cursorBlink: false, fontSize: window.innerWidth < 760 ? 12 : 13, scrollback: 20000,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", theme: { background: "#0f1216" },
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", theme: { background: cssToken("--term-bg"), foreground: cssToken("--term-text") },
     });
     const fitAddon = window.FitAddon ? new window.FitAddon.FitAddon() : null;
     if (fitAddon) term.loadAddon(fitAddon);
@@ -10720,7 +10723,7 @@ function attachTerminal(id) {
   if (window.Terminal) {
     const term = new window.Terminal({
       cursorBlink: true, fontSize: window.innerWidth < 760 ? 12 : 13, scrollback: 20000,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", theme: { background: "#0f1216" },
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", theme: { background: cssToken("--term-bg"), foreground: cssToken("--term-text") },
     });
     const fitAddon = window.FitAddon ? new window.FitAddon.FitAddon() : null;
     if (fitAddon) term.loadAddon(fitAddon);

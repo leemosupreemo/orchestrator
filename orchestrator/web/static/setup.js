@@ -28,7 +28,7 @@ window.DesktopSetup = {
             <h2>Start with an idea</h2>
           </div>
           <div class="card-b stack">
-            <p class="muted text-sm">Describe what you want to build. You can change everything later.</p>
+            <p class="muted t-secondary">Describe what you want to build. You can change everything later.</p>
             <form id="desktop-idea" class="stack gap-12">
               <label class="field">
                 <span>What do you want to build?</span>
@@ -48,14 +48,14 @@ window.DesktopSetup = {
           <div class="card-b stack">
             ${inspection ? `
               <div class="setup-detected-summary stack gap-8">
-                <div class="row items-center justify-between wrap gap-8">
+                <div class="row align-center justify-between wrap gap-8">
                   <div>
                     <strong>${esc(values.project_name || "Project")}</strong>
-                    <span class="muted text-sm mono ml-8">${esc(selected)}</span>
+                    <span class="muted t-secondary mono ml-8">${esc(selected)}</span>
                   </div>
                   <a class="btn small ghost" href="#/setup">Change folder</a>
                 </div>
-                <p class="muted text-sm">Automated configuration detected for your project. Review or refine settings below.</p>
+                <p class="muted t-secondary">Automated configuration detected for your project. Review or refine settings below.</p>
               </div>
               <form id="desktop-folder" hidden><input type="hidden" name="root" value="${esc(selected)}"></form>
               <form id="desktop-apply" class="stack gap-16">
@@ -75,11 +75,11 @@ window.DesktopSetup = {
                     </label>
                     <label class="field">
                       <span>Build command</span>
-                      <input type="text" name="build_command" class="mono text-sm" value="${esc(values.build_command || "")}" placeholder="e.g. swift build or npm run build">
+                      <input type="text" name="build_command" class="mono t-secondary" value="${esc(values.build_command || "")}" placeholder="e.g. swift build or npm run build">
                     </label>
                     <label class="field">
                       <span>Test command</span>
-                      <input type="text" name="test_command" class="mono text-sm" value="${esc(values.test_command || "")}" placeholder="e.g. swift test or pytest">
+                      <input type="text" name="test_command" class="mono t-secondary" value="${esc(values.test_command || "")}" placeholder="e.g. swift test or pytest">
                     </label>
                     <div class="row gap-12 wrap">
                       <label class="field flex-1">
@@ -103,18 +103,18 @@ window.DesktopSetup = {
                     </div>
                   </div>
                 </details>
-                <div class="setup-actions row items-center gap-12 wrap mt-8">
+                <div class="setup-actions row align-center gap-12 wrap mt-8">
                   <button class="btn primary" type="submit">Save and continue setup</button>
-                  <span class="muted text-sm">Next, connect an AI provider and check tools.</span>
+                  <span class="muted t-secondary">Next, connect an AI provider and check tools.</span>
                 </div>
               </form>
             ` : `
-              <p class="muted text-sm">Choose a project folder on your computer to inspect and set up.</p>
+              <p class="muted t-secondary">Choose a project folder on your computer to inspect and set up.</p>
               <form id="desktop-folder" class="stack gap-12">
                 <label class="field">
                   <span>Project folder</span>
                   <div class="row gap-8 wrap">
-                    <input type="text" name="root" class="mono text-sm flex-1" value="${esc(selected)}" required placeholder="/Users/you/Projects/MyApp">
+                    <input type="text" name="root" class="mono t-secondary flex-1" value="${esc(selected)}" required placeholder="/Users/you/Projects/MyApp">
                     <button class="btn" type="submit">Review folder</button>
                   </div>
                 </label>

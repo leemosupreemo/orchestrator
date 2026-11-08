@@ -189,7 +189,7 @@
         <button type="button" class="btn small ghost" data-plan-action="stop">Stop</button>`;
     return `<section class="card mb-16" id="plan-run">
       <div class="card-h"><h2>${plan.finished ? "The plan is built" : plan.paused ? "Building the plan (paused)" : "Building the plan"}</h2>
-        <span class="count">${done}/${plan.rows.length}</span><div class="row gap-10">${controls}</div></div>
+        <span class="count">${done}/${plan.rows.length}</span><div class="row gap-12">${controls}</div></div>
       <div class="card-b stack">${plan.auto_approve ? `<p class="muted">Plans are approved automatically unless they raise a question.</p>` : `<p class="muted">Each feature's plan waits for you to approve it.</p>`}
         <div class="list">${rows}</div></div></section>`;
   }

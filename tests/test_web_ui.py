@@ -5161,7 +5161,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(".job-type-card:has(input:checked)::before {", self.css)
         for job_type in ("bug", "feature", "design", "coverage", "quick"):
             self.assertIn(f".job-type-{job_type}::before {{ background-image: url('data:image/svg+xml,", self.css)
-            self.assertIn(f".job-type-{job_type}:has(input:checked)", self.css)
+            self.assertIn(f".job-type-{job_type} {{ --job: var(--job-{job_type}); }}", self.css)
+            self.assertEqual(self.css.count(f"--job-{job_type}: #"), 2, "a light and a dark colour")
+        # The selected card takes its type's colour (and must outrank `.segmented label:has(input:checked)`).
+        self.assertIn(".segmented .job-type-card:has(input:checked) { border-color: var(--job);", self.css)
         self.assertIn("job-type-card job-type-${v}", self.js)
 
     def test_auto_improve_orchestrator_page_renders_creation_form_and_tracked_jobs(self):

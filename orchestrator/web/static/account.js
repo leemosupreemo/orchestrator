@@ -131,7 +131,7 @@
           <textarea name="pitch" rows="4" required maxlength="600" placeholder="e.g. A turn-based word game to play with friends"></textarea></label>
         <label class="field"><span>Name it <span class="muted">(optional, a working name is fine)</span></span>
           <input name="name" maxlength="80" autocomplete="off"></label>
-        <div class="row gap-10"><button type="submit" class="btn primary">Next: where it runs</button>
+        <div class="row gap-12"><button type="submit" class="btn primary">Next: where it runs</button>
           <button type="button" class="btn ghost" data-account-action="idea-existing">I already have code</button></div>
       </form>`;
   }
@@ -173,7 +173,7 @@
         <li>Install Orchestrator on the computer with your projects:<pre class="mono" data-cli-install>${escapeHtml(installCommand)}</pre></li>
         <li>On that computer, run <code>orchestrator connect</code>. It shows a code.</li>
         <li>Enter the code here:
-          <form class="row gap-10 account-code-form" data-account-form="code">
+          <form class="row gap-12 account-code-form" data-account-form="code">
             <input name="code" required autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9"
                    placeholder="ABCD-2345" aria-label="Code from orchestrator connect" value="${escapeHtml(pendingCodeValue ? formatCode(pendingCodeValue) : "")}" class="mono">
             <button type="submit" class="btn primary">Add computer</button>
@@ -207,12 +207,12 @@
         <strong>Quickest: one command</strong>
         <p>Open Terminal on that computer and paste this. It installs what's missing, shows a code to confirm here, and keeps Orchestrator running.</p>
         <pre class="mono" data-cli-quick>${escapeHtml(QUICK_INSTALL_COMMAND)}</pre>
-        <div class="row gap-10"><button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="${escapeHtml(QUICK_INSTALL_COMMAND)}">Copy command</button></div>
+        <div class="row gap-12"><button type="button" class="btn small ghost" data-account-action="copy-cmd" data-cmd="${escapeHtml(QUICK_INSTALL_COMMAND)}">Copy command</button></div>
       </div>
       <ol class="account-steps">
         <li><strong>Download Orchestrator</strong>
           <div data-mac-downloads>${release ? `<p>Requires macOS ${escapeHtml(release.minimum_macos)} or later. Version ${escapeHtml(release.version)}.</p>
-            <div class="row gap-10"><a class="btn primary" href="${escapeHtml(release.arm64.url)}">Download for Apple Silicon</a>
+            <div class="row gap-12"><a class="btn primary" href="${escapeHtml(release.arm64.url)}">Download for Apple Silicon</a>
             <a class="btn" href="${escapeHtml(release.x86_64.url)}">Download for Intel</a></div>
             <p class="muted">Not sure which? Open Apple menu → About This Mac. “Chip” means Apple Silicon; “Processor: Intel” means Intel.</p>`
             : `<p class="notice">The Mac app download is not available yet. You can connect an app you already have, or use the advanced setup below.</p>`}</div>
@@ -222,7 +222,7 @@
       </ol>
       <details class="account-add"><summary>Already have the app? Enter a connection code</summary>
         <p>Choose Connect this Mac in the app, then enter the code it shows.</p>
-        <form class="row gap-10 account-code-form" data-account-form="code">
+        <form class="row gap-12 account-code-form" data-account-form="code">
           <input name="code" required autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9"
             placeholder="ABCD-2345" aria-label="Connection code" class="mono">
           <button type="submit" class="btn primary">Connect Mac</button>
@@ -247,7 +247,7 @@
   function addMacSteps() {
     return `<div class="account-steps">
         <p class="muted">For a Mac you reach over SSH, like a Mac mini in a closet. It needs automatic login for the user Orchestrator runs as.</p>
-        <form class="row gap-10" data-account-form="enroll">
+        <form class="row gap-12" data-account-form="enroll">
           <input name="project" autocomplete="off" spellcheck="false" class="mono" aria-label="Project: a git URL or a folder on that Mac"
                  placeholder="git@github.com:you/app.git or ~/Projects/app">
           <button type="submit" class="btn primary">Make a command</button>
@@ -398,7 +398,7 @@
       <div class="notice">
         This is a read-only snapshot synced from your Mac. To run new tasks or edit code, wake your computer and open Orchestrator.
       </div>
-      <div class="row gap-10 mt-12 mb-16">
+      <div class="row gap-12 mt-12 mb-16">
         <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
         <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
       </div>
@@ -408,7 +408,7 @@
         <h3 class="t-subsection mt-8">Recent Jobs (${jobs.length})</h3>
         <div class="account-machines">${jobCards}</div>
       </div>
-      <div class="row gap-10 divider-top">
+      <div class="row gap-12 divider-top">
         <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
         <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
       </div>
@@ -427,7 +427,7 @@
       </div></div>
       <p class="muted">It will be added to <strong>${escapeHtml(email)}</strong>, and you'll be able to open it from anywhere you sign in.
         Only connect a computer where you just chose <strong>Connect this Mac</strong> in Orchestrator or started command-line pairing yourself.</p>
-      <div class="row gap-10">
+      <div class="row gap-12">
         <button type="button" class="btn primary" data-account-action="claim">Add computer</button>
         <button type="button" class="btn ghost" data-account-action="cancel-pair">Cancel</button>
       </div>
