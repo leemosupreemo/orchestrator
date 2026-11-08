@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import os
 import plistlib
@@ -32,47 +33,78 @@ def distribution_script_options(script_path: Path) -> set[str]:
     return set(re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", script_text))
 
 
-def build_delivery_receipt(log_content: str, testers: str | None, groups: str | None) -> dict[str, Any]:
-    """Read the exported IPA named by the delivery script and return verified metadata."""
-    matches = re.findall(r"^IPA:\s*(.+?\.ipa)\s*$", log_content, flags=re.MULTILINE)
-    if not matches:
+# What `firebase appdistribution:distribute` prints once the build is in Firebase (new, updated or unchanged release).
+FIREBASE_UPLOADED = re.compile(r"(?:uploaded new release|uploaded update to existing release|re-uploaded already existing release)\s+(\S+)\s+\((\S+)\)\s+successfully", re.IGNORECASE)
+FIREBASE_CONSOLE = re.compile(r"View this release in the Firebase console:\s*(\S+)")
+
+
+def find_exported_ipa(log_content: str, since: float | None = None) -> Path | None:
+    """The IPA the delivery script built. Scripts are asked to print `IPA: <path>`; older or hand-written ones don't, so also try
+    any .ipa path in the output, the folder xcodebuild says it exported to, and the usual export folders, newest first, skipping
+    any IPA older than this run."""
+    def usable(path: Path) -> bool:
+        try:
+            return path.is_file() and (since is None or path.stat().st_mtime >= since - 5)
+        except OSError:
+            return False
+
+    def resolve(raw: str) -> Path:
+        path = Path(raw.strip().strip("'\"")).expanduser()
+        return path if path.is_absolute() else ROOT / path
+
+    named = re.findall(r"^IPA:\s*(.+?\.ipa)\s*$", log_content, flags=re.MULTILINE)
+    mentioned = re.findall(r"(?:^|[\s'\"=])((?:/|~/)[^\s'\"]+\.ipa)\b", log_content, flags=re.MULTILINE)
+    for raw in [*reversed(named), *reversed(mentioned)]:
+        if (path := resolve(raw)).is_file():  # a path the script names is trusted whatever its age
+            return path
+    folders = [resolve(d) for d in re.findall(r"^\s*Exported .+? to:\s*(.+?)\s*$", log_content, flags=re.MULTILINE)]
+    folders += [Path(p) for p in glob.glob("/tmp/*export*")] + [ROOT / "build"]
+    found = [ipa for folder in folders if folder.is_dir() for ipa in folder.glob("*.ipa") if usable(ipa)]
+    return max(found, key=lambda ipa: ipa.stat().st_mtime) if found else None
+
+
+def build_delivery_receipt(log_content: str, testers: str | None, groups: str | None, since: float | None = None) -> dict[str, Any]:
+    """What reached testers: the exported IPA's version and checksum, or, when the IPA can't be found, Firebase's own confirmation
+    of the upload. Empty when neither shows the build was delivered."""
+    uploaded = FIREBASE_UPLOADED.findall(log_content)
+    console = FIREBASE_CONSOLE.findall(log_content)
+    ipa_path = find_exported_ipa(log_content, since)
+    if ipa_path is None and not uploaded:
         return {}
 
-    ipa_path = Path(matches[-1]).expanduser()
-    if not ipa_path.is_absolute():
-        ipa_path = ROOT / ipa_path
-    if not ipa_path.is_file():
-        return {}
-
-    version = None
-    build = None
-    try:
-        with zipfile.ZipFile(ipa_path) as ipa:
-            info_name = next(
-                name for name in ipa.namelist()
-                if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", name)
-            )
-            info = plistlib.loads(ipa.read(info_name))
-            version = info.get("CFBundleShortVersionString")
-            build = info.get("CFBundleVersion")
-    except (OSError, KeyError, StopIteration, plistlib.InvalidFileException, zipfile.BadZipFile):
-        pass
-
-    digest = hashlib.sha256()
-    with ipa_path.open("rb") as ipa_file:
-        for chunk in iter(lambda: ipa_file.read(1024 * 1024), b""):
-            digest.update(chunk)
+    version, build = uploaded[-1] if uploaded else (None, None)
+    sha256 = None
+    if ipa_path is not None:
+        try:
+            with zipfile.ZipFile(ipa_path) as ipa:
+                info_name = next(
+                    name for name in ipa.namelist()
+                    if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", name)
+                )
+                info = plistlib.loads(ipa.read(info_name))
+                version = info.get("CFBundleShortVersionString", version)
+                build = info.get("CFBundleVersion", build)
+        except (OSError, KeyError, StopIteration, plistlib.InvalidFileException, zipfile.BadZipFile):
+            pass
+        digest = hashlib.sha256()
+        with ipa_path.open("rb") as ipa_file:
+            for chunk in iter(lambda: ipa_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        sha256 = digest.hexdigest()
 
     return {
         "status": "delivered",
         "provider": "firebase",
-        "ipa_path": str(ipa_path),
+        "ipa_path": str(ipa_path) if ipa_path else None,
         "version": str(version) if version is not None else None,
         "build": str(build) if build is not None else None,
         "testers": testers,
         "groups": groups,
-        "sha256": digest.hexdigest(),
+        "sha256": sha256,
+        "console_url": console[-1] if console else None,
+        "confirmed_by": "ipa" if ipa_path else "firebase",
     }
+
 
 def send_final_notification(job: dict[str, Any], title: str, branch: str, success: bool):
     job_id = job.get("job_id", "unknown")
@@ -236,6 +268,7 @@ Built: {built_at}
         if groups:
             cmd.extend(["--groups", groups])
         
+        started_at = time.time()
         with open(dist_log, "w") as f:
             process = subprocess.Popen(
                 cmd,
@@ -283,7 +316,7 @@ Built: {built_at}
         
         if res == 0:
             log_content = dist_log.read_text(encoding="utf-8", errors="replace")
-            receipt = build_delivery_receipt(log_content, testers, groups)
+            receipt = build_delivery_receipt(log_content, testers, groups, since=started_at)
             if receipt:
                 receipt.update({
                     "job_id": job_id,
@@ -298,12 +331,21 @@ Built: {built_at}
                 print("\n✅ Build delivered to Firebase successfully!", flush=True)
                 print(f"      Version: {receipt.get('version') or 'unknown'} ({receipt.get('build') or 'unknown'})", flush=True)
                 print(f"      Recipients: {groups or testers}", flush=True)
-                print(f"      IPA: {receipt['ipa_path']}", flush=True)
+                if receipt.get("ipa_path"):
+                    print(f"      IPA: {receipt['ipa_path']}", flush=True)
+                else:
+                    print("      Confirmed by Firebase's upload message (the script didn't say where it saved the IPA).", flush=True)
+                if receipt.get("console_url"):
+                    print(f"      Firebase: {receipt['console_url']}", flush=True)
                 print(f"      Receipt: {receipt_path}", flush=True)
             else:
-                print("\n❌ Distribution could not be verified.", flush=True)
-                print("      The project script exited successfully but did not report a readable IPA path.", flush=True)
-                print("      Update it to print 'IPA: /absolute/path/to/App.ipa' after Firebase succeeds.", flush=True)
+                script_name = dist_script.relative_to(ROOT) if dist_script.is_relative_to(ROOT) else dist_script
+                print(f"\n      {script_name} finished without errors, but its output doesn't show the build reaching Firebase:", flush=True)
+                print("      there's no 'IPA: <path>' line, no exported .ipa from this run, and no Firebase upload message.", flush=True)
+                print("      Testers may not have the build. Check the log above for the upload step, or the Firebase console.", flush=True)
+                print(f"      To fix it for next time, add  echo \"IPA: $IPA_PATH\"  as the last line of {script_name}", flush=True)
+                print("      (use the variable that holds the exported .ipa's path).", flush=True)
+                print(f"❌ Couldn't confirm the build reached testers: {script_name} didn't report the IPA it uploaded.", flush=True)
                 send_final_notification(job, title, branch, False)
                 sys.exit(1)
             print("      - Finalizing and sending notifications...", flush=True)

@@ -56,6 +56,46 @@ class VisualDeliveryConfigTests(unittest.TestCase):
             self.assertEqual(receipt["groups"], "internal-testers")
             self.assertEqual(len(receipt["sha256"]), 64)
 
+    def test_delivery_receipt_finds_the_ipa_xcodebuild_exported_when_the_script_names_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ipa_path = Path(temp_dir) / "Themis.ipa"
+            with zipfile.ZipFile(ipa_path, "w") as archive:
+                archive.writestr("Payload/Themis.app/Info.plist", plistlib.dumps({"CFBundleShortVersionString": "2.0", "CFBundleVersion": "9"}))
+            log = f"📤 Exporting IPA...\nExported ThemisPlayground to: {temp_dir}\n** EXPORT SUCCEEDED **\n✅ Distribution Complete!\n"
+
+            receipt = deliver_build.build_delivery_receipt(log, testers=None, groups="internal-testers", since=ipa_path.stat().st_mtime - 1)
+
+            self.assertEqual(receipt["ipa_path"], str(ipa_path))
+            self.assertEqual((receipt["version"], receipt["build"]), ("2.0", "9"))
+            self.assertEqual(receipt["confirmed_by"], "ipa")
+
+    def test_delivery_receipt_ignores_an_ipa_left_from_an_earlier_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ipa_path = Path(temp_dir) / "Old.ipa"
+            ipa_path.write_bytes(b"old")
+            log = f"Exported App to: {temp_dir}\n"
+
+            self.assertEqual(deliver_build.build_delivery_receipt(log, None, "g", since=ipa_path.stat().st_mtime + 600), {})
+
+    def test_delivery_receipt_accepts_firebases_upload_message_without_an_ipa(self) -> None:
+        log = ("i  appdistribution: uploading binary...\n"
+               "✔  appdistribution: uploaded new release 1.4 (52) successfully!\n"
+               "i  appdistribution: View this release in the Firebase console: https://console.firebase.google.com/project/p/appdistribution/app/ios:x/releases/abc\n"
+               "✔  appdistribution: distributed to testers/groups successfully\n")
+
+        with patch("deliver_build.find_exported_ipa", return_value=None):
+            receipt = deliver_build.build_delivery_receipt(log, testers=None, groups="internal-testers")
+
+        self.assertEqual(receipt["status"], "delivered")
+        self.assertEqual((receipt["version"], receipt["build"]), ("1.4", "52"))
+        self.assertIsNone(receipt["ipa_path"])
+        self.assertEqual(receipt["confirmed_by"], "firebase")
+        self.assertTrue(receipt["console_url"].startswith("https://console.firebase.google.com/"))
+
+    def test_delivery_receipt_is_empty_when_nothing_confirms_delivery(self) -> None:
+        with patch("deliver_build.find_exported_ipa", return_value=None):
+            self.assertEqual(deliver_build.build_delivery_receipt("✅ Distribution Complete!\n", None, "g"), {})
+
     def test_visual_check_command_replaces_destination(self) -> None:
         command = "xcodebuild build -project App.xcodeproj -destination old-destination"
 
