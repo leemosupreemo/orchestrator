@@ -228,6 +228,7 @@ require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'
 globalThis.esc = Html.escape;
 globalThis.pill = (tone, label) => `<span class="pill ${tone}">${label}</span>`;
 globalThis.stoppingRuns = new Set();
+globalThis.runningMark = '<span class="run-spin" aria-hidden="true"></span>';
 globalThis.ago = () => 'just now';
 globalThis.jobPill = () => '<span class="pill working">Running</span>';
 globalThis.jobKind = (j) => j.kind;

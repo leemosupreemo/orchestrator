@@ -425,6 +425,26 @@ div.import-option:hover { border-color: var(--border); background: var(--panel);
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: var(--space-2); animation: pulse 1.6s infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+/* Running: a ring with one bright arc that turns, in the text's colour, sized to the text beside it. */
+.run-spin {
+  display: inline-block; width: .9em; height: .9em; margin-right: var(--space-1); vertical-align: -.12em; flex-shrink: 0;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; border-radius: 50%;
+  animation: spin .9s linear infinite;
+}
+/* A job page's banner while it runs: a bar that sweeps along its bottom edge (no overflow clipping, so menus still show). */
+.job-hero.is-running { position: relative; }
+.job-hero.is-running::after {
+  content: ""; position: absolute; left: var(--radius); right: var(--radius); bottom: 0; height: 3px; pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 35% 100%;
+  animation: run-sweep 1.6s ease-in-out infinite;
+}
+.job-hero.is-running .job-hero-title { display: inline-flex; align-items: center; }
+.job-hero.is-running .job-hero-title .run-spin { color: var(--accent); }
+@keyframes run-sweep { from { background-position: -60% 0; } to { background-position: 160% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .run-spin { animation: none; border-color: currentColor; border-right-color: transparent; }
+  .job-hero.is-running::after { animation: none; background: var(--accent); opacity: .4; }
+}
 
 .list { display: flex; flex-direction: column; }
 .item {

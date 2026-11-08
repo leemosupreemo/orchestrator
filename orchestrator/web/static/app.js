@@ -265,10 +265,14 @@ function ago(ts) {
 }
 
 const pill = (tone, label) => `<span class="pill ${esc(tone)}">${esc(label)}</span>`;
-const jobPill = (j) => j.active_run ? `<span class="pill working"><span class="dot"></span>Working</span>` : pill(j.state.tone, j.state.label);
+// A small turning ring that says "this is running right now" (a job building, or a run in progress).
+const runningMark = `<span class="run-spin" aria-hidden="true"></span>`;
+const jobIsRunning = (j) => Boolean(j.active_run) || j.state?.label === "Building";
+const jobPill = (j) => j.active_run ? `<span class="pill working">${runningMark}Working</span>`
+  : jobIsRunning(j) ? `<span class="pill working">${runningMark}${esc(j.state.label)}</span>` : pill(j.state.tone, j.state.label);
 
 function runPill(r) {
-  if (r.running) return r.waiting ? pill("attention", "Waiting for you") : `<span class="pill working"><span class="dot"></span>Running</span>`;
+  if (r.running) return r.waiting ? pill("attention", "Waiting for you") : `<span class="pill working">${runningMark}Running</span>`;
   if (r.action === "console" || r.stopped) return pill("", "Stopped");
   return r.exit_code === 0 ? pill("done", "Finished") : pill("failed", `Failed (exit ${r.exit_code})`);
 }
@@ -3462,9 +3466,9 @@ pages.job = async ([id]) => {
         `).join("")}
       </nav>
 
-      ${reviewingPlan ? "" : `<section class="job-hero tone-${esc(s.state.tone || "")}">
+      ${reviewingPlan ? "" : `<section class="job-hero tone-${esc(s.state.tone || "")}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
         <div class="job-hero-main">
-          <h2 class="job-hero-title">${esc(s.state.label || s.status)}</h2>
+          <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
@@ -4354,7 +4358,7 @@ pages.delivery = async (args, query) => {
 
   const branchCard = `<section class="card mb-16">
     <div class="card-h">
-      <h2>Branch &amp; Test Build</h2>
+      <h2>Test Build</h2>
       <div class="row gap-8 align-center">
         <span class="muted t-secondary">Branch:</span>
         <select id="delivery-branch-select" class="inline-select">
@@ -4363,6 +4367,49 @@ pages.delivery = async (args, query) => {
       </div>
     </div>
     <div class="card-b stack">
+      ${!testers.configured ? `
+        <div class="notice">
+          <div class="stack">
+            <strong>Distribution is not set up yet.</strong>
+            <p class="muted">Configure Firebase App Distribution and code signing to build and install test versions on your devices.</p>
+            <div><a class="btn small primary" href="#/config/firebase">Set up Firebase</a></div>
+          </div>
+        </div>
+      ` : `
+        <form id="delivery-build-form" class="stack gap-12">
+          <div class="field">
+            <span>Send to</span>
+            <div class="row gap-16 align-center flex-wrap">
+              <label class="row gap-6 align-center cursor-pointer">
+                <input type="radio" name="recipient_type" value="me" checked>
+                <span>Just me ${user_email ? `<span class="muted">(${esc(user_email)})</span>` : ""}</span>
+              </label>
+              <label class="row gap-6 align-center cursor-pointer">
+                <input type="radio" name="recipient_type" value="group">
+                <span>Tester group:</span>
+              </label>
+              <select id="delivery-group-select" name="group" class="inline-select" ${testers.groups.length ? "" : "disabled"}>
+                ${testers.groups.length ? testers.groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("") : `<option value="">No groups configured</option>`}
+              </select>
+              <button type="button" class="btn small ghost" id="delivery-new-group-btn" title="Create a new Firebase tester group">+ New group</button>
+            </div>
+          </div>
+          <label class="field">
+            <span>Release notes <span class="muted">(optional)</span></span>
+            <input type="text" name="notes" placeholder="e.g. Test notes for this build">
+          </label>
+          <div class="row gap-10 align-center">
+            <button type="submit" class="btn primary" ${act("distribute")}>Launch build for testing</button>
+            ${testers.invite_url ? `
+              <button type="button" class="btn small ghost" data-setup-copy="${esc(testers.invite_url)}">Copy invite link</button>
+            ` : ""}
+          </div>
+          ${!testers.cli_installed ? `
+            <div class="notice bad">The Firebase CLI isn't installed on this machine (<code>firebase-tools</code>). Run <code>npm i -g firebase-tools</code>.</div>
+          ` : ""}
+        </form>
+      `}
+
       <div class="branch-meta-box">
         <div class="branch-meta-row">
           <div class="branch-meta-label">
@@ -4399,48 +4446,6 @@ pages.delivery = async (args, query) => {
         </div>
       </div>
 
-      ${!testers.configured ? `
-        <div class="notice">
-          <div class="stack">
-            <strong>Distribution is not set up yet.</strong>
-            <p class="muted">Configure Firebase App Distribution and code signing to build and install test versions on your devices.</p>
-            <div><a class="btn small primary" href="#/config/firebase">Set up Firebase</a></div>
-          </div>
-        </div>
-      ` : `
-        <form id="delivery-build-form" class="stack gap-12 mt-8 pt-12" style="border-top: 1px solid var(--border);">
-          <div class="field">
-            <span>Send to</span>
-            <div class="row gap-16 align-center flex-wrap">
-              <label class="row gap-6 align-center cursor-pointer">
-                <input type="radio" name="recipient_type" value="me" checked>
-                <span>Just me ${user_email ? `<span class="muted">(${esc(user_email)})</span>` : ""}</span>
-              </label>
-              <label class="row gap-6 align-center cursor-pointer">
-                <input type="radio" name="recipient_type" value="group">
-                <span>Tester group:</span>
-              </label>
-              <select id="delivery-group-select" name="group" class="inline-select" ${testers.groups.length ? "" : "disabled"}>
-                ${testers.groups.length ? testers.groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("") : `<option value="">No groups configured</option>`}
-              </select>
-              <button type="button" class="btn small ghost" id="delivery-new-group-btn" title="Create a new Firebase tester group">+ New group</button>
-            </div>
-          </div>
-          <label class="field">
-            <span>Release notes <span class="muted">(optional)</span></span>
-            <input type="text" name="notes" placeholder="e.g. Test notes for this build">
-          </label>
-          <div class="row gap-10 align-center">
-            <button type="submit" class="btn primary" ${act("distribute")}>Launch build for testing</button>
-            ${testers.invite_url ? `
-              <button type="button" class="btn small ghost" data-setup-copy="${esc(testers.invite_url)}">Copy invite link</button>
-            ` : ""}
-          </div>
-          ${!testers.cli_installed ? `
-            <div class="notice bad">The Firebase CLI isn't installed on this machine (<code>firebase-tools</code>). Run <code>npm i -g firebase-tools</code>.</div>
-          ` : ""}
-        </form>
-      `}
     </div>
   </section>`;
 
@@ -9681,6 +9686,15 @@ function runFailureGuidance(r) {
         detail: err || "Firebase credentials or distribution app ID are not configured or lacked permission.",
         action: `<a class="btn small primary" href="#/config/integrations">Configure Firebase</a>`,
         secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : `<button type="button" class="btn small" ${act(r.action || "distribute")}>Retry distribution</button>`,
+      };
+    }
+    if (lower.includes("couldn't confirm the build reached testers") || lower.includes("could not be verified")) {
+      const script = (err.match(/:\s*(\S+) didn't report/) || [])[1] || "the distribution script";
+      return {
+        title: "Build may not have reached testers",
+        detail: `${script} finished without errors, but nothing in its output confirms the upload: no "IPA: <path>" line, no exported .ipa from this run, and no Firebase upload message. Check Firebase App Distribution to see whether the build arrived. To stop this happening, add echo "IPA: $IPA_PATH" as the last line of ${script} (using the variable that holds the exported .ipa's path), then retry.`,
+        action: `<button type="button" class="btn small primary" ${act(r.action || "distribute", targetJob ? { job: targetJob } : undefined)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Retry distribution</button>`,
+        secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "",
       };
     }
     if (err) {
