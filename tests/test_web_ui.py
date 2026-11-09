@@ -4982,7 +4982,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('id="prd-link-input"', page)
         self.assertNotIn('id="prd-add-link"', page)
         self.assertIn('connected-apps-list', page)
-        self.assertIn('Import live designs, UI frames, and tickets from Figma, Jira, Trello, and more', page)
+        self.assertIn('"Bring in designs and tickets from Figma, Jira or Trello."', page)  # nothing connected: no "None connected", just the button
+        self.assertNotIn("None connected", page[page.index('id="prd-apps-section"'):][:1200])
+        pkgs = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn("Good packages mean less to build and fewer bugs", pkgs)
         self.assertIn('providerIcon(a.id)', page)
         self.assertIn('href="#/connections"', page)
         self.assertIn('Connect more', page)
@@ -5792,7 +5795,7 @@ class PackagesApiTests(ServerTestCase):
             self.assertTrue(kind in jobs, kind)
         self.assertTrue('href="#/packages" data-route="packages"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())
         self.assertTrue('["Packages", "#/packages"' in app)  # the command palette
-        for needle in ("Review automatically when the requirements change meaningfully", "about a paragraph of new content", 'id="pkg-auto"', "Reviewing your requirements for packages…", "p.link ?"):
+        for needle in ("Review automatically when the requirements change meaningfully", "change in a big way", 'id="pkg-auto"', "Reviewing your requirements for packages…", "p.link ?"):
             self.assertTrue(needle in page, needle)  # it runs on its own, says so while it works, and every line has a link
         self.assertTrue('id="packages-badge"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())  # the sidebar count
         self.assertTrue("renderPackagesBadge();" in app and "state.packages_suggested" in app)

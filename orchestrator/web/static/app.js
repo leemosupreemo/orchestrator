@@ -5350,7 +5350,7 @@ pages.packages = async () => {
     actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn primary" id="pkg-review">Recommend packages</button>` : "",
     html: `
       <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
-        <p>When your product requirements are set or change in a meaningful way (about a paragraph of new content, not a small tweak), Orchestrator looks for packages and tools that would help, searching the web where it can. Each one is listed below with a link: accept the ones you want, reject the rest. Nothing is installed until you add it.</p>
+        <p>Good packages mean less to build and fewer bugs: proven code for things like sign-in, payments and charts. Orchestrator suggests some whenever your product requirements change in a big way. Add the ones you want. Nothing is installed until you do.</p>
         ${running ? `<p class="muted" id="pkg-running" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Reviewing your requirements for packages…</p>` : ""}
         ${review?.error ? `<div class="notice bad">${esc(review.error)}</div>` : ""}
         <div class="pkg-progress" id="pkg-progress" role="status" aria-live="polite" hidden>
@@ -6387,8 +6387,8 @@ pages.product = async (_, query) => {
         </div>
         <div class="import-option import-option-apps" id="prd-apps-section">
           <strong>Connected apps</strong>
-          <span>Import live designs, UI frames, and tickets from Figma, Jira, Trello, and more</span>
-          <div class="connected-apps-list">${connectedApps.length ? connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("") : `<span class="muted t-secondary">None connected</span>`}</div>
+          <span>${connectedApps.length ? "Bring in designs and tickets from your connected apps." : "Bring in designs and tickets from Figma, Jira or Trello."}</span>
+          ${connectedApps.length ? `<div class="connected-apps-list">${connectedApps.map((a) => `<span class="chip">${providerIcon(a.id)}${esc(a.name)}</span>`).join("")}</div>` : ""}
           <div class="connected-apps-actions row gap-8 mt-4">
             ${connectedApps.length ? `<button type="button" class="btn small primary" id="prd-add-app">Choose reference</button>` : ""}
             <a href="#/connections" class="btn small ${connectedApps.length ? "ghost" : "primary"}">${connectedApps.length ? "Connect more" : "Connect an app"}</a>
