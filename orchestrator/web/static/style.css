@@ -1412,6 +1412,25 @@ dialog h2 {
   background: var(--panel);
   border-color: var(--text);
 }
+/* The sign-in screen: one plain column on the page (no card), logo and title, the animation, then the options lower down */
+.signin-wrap:has(.signin-plain) { padding: var(--space-8) var(--space-4) var(--space-8); }
+.signin-card.signin-plain { max-width: 460px; padding: 0; background: transparent; border: 0; box-shadow: none; gap: var(--space-6); }
+.signin-head { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+.signin-logo { width: var(--control-xl); height: var(--control-xl); border-radius: var(--r-md); }
+.signin-title { margin: var(--space-2) 0 0; font-size: var(--type-display); font-weight: var(--weight-bold); letter-spacing: -.02em; line-height: 1.15; }
+.signin-plain .signin-preview { margin: 0; }
+.signin-plain .signin-preview h3, .signin-plain .signin-preview .signin-privacy { text-align: left; }
+.signin-plain .sso-buttons { margin-top: var(--space-4); }
+.signin-plain .sso-btn { min-height: var(--control-xl); border-radius: var(--r-pill); padding-inline: var(--space-6); background: transparent; color: var(--text); border-color: var(--border); }
+.signin-plain .sso-btn:hover { background: var(--panel-2); border-color: var(--muted); }
+.signin-plain .sso-btn .icon { left: var(--space-5); }
+.signin-or { display: flex; align-items: center; gap: var(--space-3); color: var(--muted); font-size: var(--type-tag); text-transform: uppercase; letter-spacing: .06em; }
+.signin-or::before, .signin-or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.signin-plain .manual-token-details, .signin-plain .notice { border-radius: var(--r-lg); }
+@media (max-width: 480px) {
+  .signin-wrap:has(.signin-plain) { padding: var(--space-6) var(--space-4) var(--space-8); }
+  .signin-card.signin-plain { padding: 0; }
+}
 .email-signin-panel {
   display: flex;
   flex-direction: column;

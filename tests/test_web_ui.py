@@ -693,6 +693,19 @@ class SignInPrivacyTests(unittest.TestCase):
         self.assertIn("your code and assets stay on your computer.", preview)
         self.assertIn(".signin-preview .signin-privacy", css)
 
+    def test_sign_in_is_a_plain_column_with_the_animation_above_the_options(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
+        gate = js[js.index("function showSignInGate"):][:8000]
+        self.assertIn('class="signin-card signin-plain"', gate)
+        self.assertIn('class="brand-mark signin-logo"', gate)
+        self.assertLess(gate.index('class="signin-title"'), gate.index('<figure class="signin-preview">'))
+        self.assertLess(gate.index('<figure class="signin-preview">'), gate.index('class="sso-buttons"'))
+        self.assertLess(gate.index('id="github-signin-btn"'), gate.index('class="signin-or"'))
+        self.assertLess(gate.index('class="signin-or"'), gate.index('id="email-signin-btn"'))
+        for rule in (".signin-card.signin-plain {", ".signin-plain .sso-btn {", "border-radius: var(--r-pill);", ".signin-or {"):
+            self.assertIn(rule, css)
+
 
 class ProjectTitleTests(unittest.TestCase):
     def test_home_names_the_project_without_a_second_switcher_and_branch_is_labelled(self):
@@ -4999,10 +5012,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Swift package resolution required", guidance)
 
     def test_signin_modal_omits_orchestrator_icon_and_title(self):
-        # Sign-in modal card begins directly with heading without redundant app brand mark or title
+        # No "Orchestrator" title row on the sign-in screen: just the logo over "Sign in", as in the login design it follows
         gate = self.js[self.js.index("function showSignInGate"):self.js.index("function showSignInGate") + 2500]
         self.assertNotIn("signin-brand", gate)
-        self.assertNotIn("brand-mark", gate)
+        self.assertEqual(gate.count("brand-mark"), 1)
         signing_in = self.js[self.js.index("function showSigningIn"):self.js.index("function cpApi")]
         self.assertNotIn("signin-brand", signing_in)
         self.assertNotIn("brand-mark", signing_in)

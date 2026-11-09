@@ -1953,11 +1953,12 @@ function showSignInGate(message) {
   const isLastProvider = (p) => lastUsed === p;
   view.innerHTML = `
     <div class="signin-wrap">
-      <div class="signin-card">
-        <div>
-          <h2 class="t-section">Sign In</h2>
+      <div class="signin-card signin-plain">
+        <header class="signin-head">
+          <span class="brand-mark signin-logo" role="img" aria-label="Orchestrator"></span>
+          <h2 class="signin-title">Sign in</h2>
           <div id="signin-gate-message">${message ? `<p class="signin-error">${esc(message)}</p>` : ""}</div>
-        </div>
+        </header>
         <figure class="signin-preview">
           <h3>The app in your head. Made real.</h3>
           <p class="signin-privacy">Private: your code and assets stay on your computer.</p>
@@ -1986,6 +1987,7 @@ function showSignInGate(message) {
             <span>Continue with GitHub</span>
             ${isLastProvider("github") ? `<span class="last-used-tag">Last used</span>` : ""}
           </button>
+          <div class="signin-or" role="separator" aria-label="or"><span>or</span></div>
           <button type="button" class="sso-btn email-btn ${isLastProvider("email") ? "last-used" : ""}" id="email-signin-btn">
             <svg class="icon"><use href="#i-mail"/></svg>
             <span>Continue with email</span>
