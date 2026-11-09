@@ -866,6 +866,7 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "tag": tag,
         "is_orchestrator_improvement": is_auto_improve,
         "submitted_for_inclusion": bool(job.get("submitted_for_inclusion")),
+        "yolo": bool(job.get("yolo") or job.get("is_yolo")),
     }
 
 
@@ -6249,8 +6250,10 @@ class UIHandler(BaseHTTPRequestHandler):
 
             self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
         elif method == "POST" and parts == ["jobs", "yolo-all"]:
-            self._body()
-            self._json(self._yolo_all(root))
+            on = self._body().get("on", True)
+            if not isinstance(on, bool):
+                raise UIError("on must be true or false.")
+            self._json(self._yolo_all(root) if on else self._yolo_all_off(root))
         elif method == "POST" and parts == ["jobs", "archive"]:
             ids = self._body().get("ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids) or len(ids) > 500:
@@ -6805,6 +6808,28 @@ class UIHandler(BaseHTTPRequestHandler):
                                         params.get("_attachments") if key == "new_job" else None,
                                         tag=params.get("_tag") or params.get("tag") if key == "new_job" else None)
         self._json({"run": session.summary()}, HTTPStatus.CREATED)
+
+    def _in_progress_jobs(self, root: Path) -> list[dict[str, Any]]:
+        """The Home page's In progress list: building, queued, paused, or with a run going."""
+        running = set(self.server.sessions.running_job_ids())
+        return [job for job in list_jobs(root)
+                if job["state"]["group"] == "working" or job["state"]["label"] == "Paused" or job["id"] in running]
+
+    def _yolo_all_off(self, root: Path) -> dict[str, Any]:
+        """Turn YOLO off for every in-progress job: each stops for review and confirmations again from its next step.
+        Nothing is started or stopped."""
+        self._require_owner("turn off YOLO mode for jobs")
+        turned_off = []
+        for job in self._in_progress_jobs(root):
+            path = jobs_dir(root) / f"{job['id']}.json"
+            record = read_json_file(path)
+            if not record or not (record.get("yolo") or record.get("is_yolo")):
+                continue
+            record["yolo"] = record["is_yolo"] = False  # the worker reads both spellings
+            write_json_file(path, record)
+            turned_off.append({"id": job["id"], "title": job["title"]})
+        self._audit("jobs_yolo_all_off", turned_off=len(turned_off))
+        return {"turned_off": turned_off}
 
     def _yolo_all(self, root: Path) -> dict[str, Any]:
         """Continue every in-progress job in YOLO mode: it builds on without stopping for review. A job with a worker running is

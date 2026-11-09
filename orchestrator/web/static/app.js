@@ -264,6 +264,8 @@ function ago(ts) {
   return new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// A small "i" that explains a term: the text shows on hover, and on tap or keyboard focus (phones have no hover).
+const infoTip = (text) => `<button type="button" class="info-tip" aria-label="${esc(text)}" data-tip="${esc(text)}">i</button>`;
 const pill = (tone, label) => `<span class="pill ${esc(tone)}">${esc(label)}</span>`;
 // A small turning ring that says "this is running right now" (a job building, or a run in progress).
 const runningMark = `<span class="run-spin" aria-hidden="true"></span>`;
@@ -2532,7 +2534,7 @@ function statusLine(p) {
   // Only what needs a glance: work not yet committed, work running, or a missing machine or model. The language mix
   // is on the project's card under Projects.
   const stats = [
-    p.dirty_files ? `<a href="#/git">${p.dirty_files} uncommitted</a>` : "",
+    p.dirty_files ? `<a href="#/git?show=changes">${p.dirty_files} uncommitted</a>` : "", // straight to the files, not the top of Git setup
     running ? `<a href="#/activity">${running} running</a>` : "",
     p.machine_count === 0 ? `<a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>`
       : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
@@ -2807,8 +2809,6 @@ document.addEventListener("click", async (e) => {
 });
 
 const HOME_JOBS_SHOWN = 10;
-const STALE_DAYS = 14;
-const isStaleJob = (j) => j.state?.group === "needs_you" && !j.active_run && j.updated && Date.now() / 1000 - j.updated > STALE_DAYS * 86400;
 
 function homeHealthIndicator(s) {
   if (!s?.items) return `<details class="home-health-inline home-health-yellow"><summary class="home-health-trigger" title="System health: status unavailable"><span class="home-health-light" aria-hidden="true"></span><span>Status unavailable</span></summary><div class="home-health-popover"><strong>System health</strong><p>Setup checks could not be loaded. Reload Home to try again.</p></div></details>`;
@@ -2896,27 +2896,36 @@ function elsewhereLine(items) {
   return `<div class="card-b muted">Also waiting in other projects: ${[...byProject].map(([root, p]) => `<button type="button" class="linklike" data-switch-project="${esc(root)}" data-then="#/">${esc(p.name)} (${p.n})</button>`).join(", ")}</div>`;
 }
 
-// Continue every in-progress job in YOLO mode: queued and paused ones start again where they left off, building ones are switched over.
-async function yoloAll(button, jobs) {
-  const list = jobs.slice(0, 6).map((j) => `<li>${esc(j.title)} <span class="muted">· ${esc(j.state.label)}</span></li>`).join("");
-  const more = jobs.length > 6 ? `<li class="muted">and ${jobs.length - 6} more</li>` : "";
-  const ok = await formDialog(`Continue ${jobs.length === 1 ? "1 job" : `${jobs.length} jobs`} in YOLO mode?`,
-    `<p>They keep building without stopping for review or confirmations. Queued and paused jobs start again where they left off; a job that's already building is switched over.</p><ul>${list}${more}</ul>`,
-    "YOLO all", { danger: true });
-  if (!ok) return;
-  const idle = button.innerHTML;
-  button.disabled = true;
-  button.setAttribute("aria-busy", "true");
-  button.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Starting…`;
+// The YOLO all switch. On: every in-progress job continues in YOLO mode (queued and paused ones start again where they left
+// off, building ones are switched over). Off: they stop for review and confirmations again from their next step.
+async function yoloAll(input, jobs) {
+  const on = input.checked;
+  const label = input.nextElementSibling;
+  const idle = label.textContent;
+  if (on) {
+    const list = jobs.slice(0, 6).map((j) => `<li>${esc(j.title)} <span class="muted">· ${esc(j.state.label)}</span></li>`).join("");
+    const more = jobs.length > 6 ? `<li class="muted">and ${jobs.length - 6} more</li>` : "";
+    const ok = await formDialog(`Continue ${jobs.length === 1 ? "1 job" : `${jobs.length} jobs`} in YOLO mode?`,
+      `<p>They keep building without stopping for review or confirmations. Queued and paused jobs start again where they left off; a job that's already building is switched over.</p><ul>${list}${more}</ul>`,
+      "YOLO all", { danger: true });
+    if (!ok) { input.checked = false; return; }
+  }
+  input.disabled = true;
+  input.setAttribute("aria-busy", "true");
+  label.textContent = on ? "Starting…" : "Turning off…";
   try {
-    const r = await api("jobs/yolo-all", { method: "POST", body: {} });
-    const parts = [r.started.length && `${r.started.length} started`, r.switched.length && `${r.switched.length} already building, switched to YOLO`, r.failed.length && `${r.failed.length} couldn't start`].filter(Boolean);
-    toast(parts.join(" · ") || "Nothing to continue.", r.failed.length > 0);
+    const r = await api("jobs/yolo-all", { method: "POST", body: { on } });
+    if (on) {
+      const parts = [r.started.length && `${r.started.length} started`, r.switched.length && `${r.switched.length} already building, switched to YOLO`, r.failed.length && `${r.failed.length} couldn't start`].filter(Boolean);
+      toast(parts.join(" · ") || "Nothing to continue.", r.failed.length > 0);
+    } else {
+      toast(r.turned_off.length ? `YOLO off for ${plural(r.turned_off.length, "job")}: they stop for review again.` : "YOLO was already off.");
+    }
     await refreshState();
     route();
   } catch (err) {
     toast(err.message, true);
-    if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; }
+    if (input.isConnected) { input.checked = !on; input.disabled = false; input.removeAttribute("aria-busy"); label.textContent = idle; }
   }
 }
 
@@ -2950,9 +2959,6 @@ pages.home = async (_, query) => {
   const finishedJobs = sortedJobs.filter(isFinished);
   // What YOLO all continues is exactly the In progress list: work that is mid-build, never a job waiting for your decision.
   const inProgress = sortedJobs.filter(HOME_FILTERS.working[1]);
-  // Jobs that have waited on you for weeks fold into one line you can clear, so the list shows what's current.
-  const staleJobs = filteredJobs.filter(isStaleJob);
-  const currentJobs = filteredJobs.filter((j) => !isStaleJob(j));
 
   const runningBanner = runningRuns.length
     ? `<section class="card mb-16"><div class="card-h"><h2>Running now</h2><span class="count">${runningRuns.length}</span></div>
@@ -2979,7 +2985,7 @@ pages.home = async (_, query) => {
                 return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
               }).join("")}
             </div>
-            ${inProgress.length && state.you?.role !== "member" ? `<button type="button" class="btn small primary" id="yolo-all" data-yolo-count="${inProgress.length}" title="Continue every in-progress job without stopping for review">YOLO all (${inProgress.length})</button>` : ""}
+            ${inProgress.length && state.you?.role !== "member" ? `<label class="yolo-switch home-yolo" title="On: every in-progress job keeps building without stopping for review. Off: they stop for review again."><input type="checkbox" role="switch" id="yolo-all" data-yolo-count="${inProgress.length}"${inProgress.every((j) => j.yolo) ? " checked" : ""}><span>YOLO all (${inProgress.length})</span></label>` : ""}
           </div>
         </div>
         ${filteredJobs.length ? `
@@ -2991,16 +2997,9 @@ pages.home = async (_, query) => {
               <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified"><span class="date-header-long">Last modified</span><span class="date-header-short">Date</span>${sortArrow("updated")}</button>
             </div>
             <div class="job-table-body" id="job-list">
-              ${currentJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
+              ${filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
             </div>
-            ${currentJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${currentJobs.length}</button></div>` : ""}
-            ${staleJobs.length ? `
-              <div class="stale-jobs">
-                <p class="stale-jobs-text">${staleJobs.length === 1 ? "1 job hasn't" : `${staleJobs.length} jobs haven't`} changed in over ${STALE_DAYS} days.</p>
-                <button type="button" class="btn small" data-show-all="stale-list">Show</button>
-                <button type="button" class="btn small" data-archive-jobs='${attrJSON(staleJobs.map((j) => j.id))}' data-shown-with="stale-list" hidden>Archive</button>
-              </div>
-              <div class="job-table-body" id="stale-list">${staleJobs.map((j) => jobTableRow(j, { hidden: true })).join("")}</div>` : ""}
+            ${filteredJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${filteredJobs.length}</button></div>` : ""}
           </div>
         ` : `<div class="empty">${runningRuns.length && activeJobs.every(isRunningNow) ? "Everything in progress is running above." : !activeJobs.length ? (jobs.length ? "Nothing in progress. Finished jobs are below." : 'No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.') : "No jobs match this filter."}</div>`}
         ${elsewhereLine(waiting.elsewhere)}
@@ -3039,7 +3038,7 @@ pages.home = async (_, query) => {
         });
       }
       if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
-      $("#yolo-all")?.addEventListener("click", (e) => yoloAll(e.currentTarget, inProgress));
+      $("#yolo-all")?.addEventListener("change", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
         try { await api("config/archived-restore", { method: "POST", body: { id: b.dataset.restoreJob } }); toast("Job restored"); route(); }
@@ -4294,7 +4293,7 @@ pages.delivery = async (args, query) => {
       <h2>Release versions</h2>
       <div class="row gap-8 align-center">
         <span class="muted t-secondary">Base branch: <strong class="mono">${esc(baseBranchName)}</strong></span>
-        ${d.live?.commit ? `<button type="button" class="btn small" data-create-release data-owner-only>Create release tag</button>` : ""}
+        ${d.live?.commit ? `<button type="button" class="btn small go" data-create-release data-owner-only>Create release tag</button>` : ""}
       </div>
     </div>
     <div class="card-b stack">
@@ -4735,7 +4734,7 @@ pages.packages = async () => {
         ${running ? `<p class="muted" id="pkg-running" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Reviewing your requirements for packages…</p>` : ""}
         ${review?.error ? `<div class="notice bad">${esc(review.error)}</div>` : ""}
         <div class="pkg-progress" id="pkg-progress" role="status" aria-live="polite" hidden>
-          <div class="row gap-12 wrap"><strong id="pkg-stage"></strong><button type="button" class="btn small" id="pkg-cancel">Cancel</button></div>
+          <div class="row gap-12 wrap"><strong id="pkg-stage"></strong><button type="button" class="btn small danger" id="pkg-cancel">Cancel</button></div>
           <p class="muted" id="pkg-detail"></p>
           <p class="muted" id="pkg-slow" hidden>This is taking longer than usual. The model may be slow or searching widely. You can keep waiting, or cancel and try again. It stops on its own after ${Math.round(PACKAGE_REVIEW_BUDGET_SECONDS / 60)} minutes.</p>
         </div>${reviewNote}
@@ -5790,6 +5789,7 @@ pages.product = async (_, query) => {
         <div class="card-b stack"><div class="muted">The fields above are short summaries. These are the full documents you imported; jobs read them when they need the detail.</div>
         <div class="list">${p.sources.map((d) => `<div class="item"><div class="main-col"><div class="title">${esc(d.label)}</div><div class="meta mono">docs/product/${esc(d.target)}</div></div>
           <div class="side"><button type="button" class="btn small ghost" data-prd-source="${esc(d.target.replace("source/", ""))}">Download</button></div></div>`).join("")}</div></div></section>` : ""}
+      ${epics ? epics.html() : ""}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
         <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
         <div class="row gap-12 align-center wrap">
@@ -5809,8 +5809,7 @@ pages.product = async (_, query) => {
         </div>
         <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
-        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>
-      ${epics ? epics.html() : ""}`;
+        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
     title: "Product",
     sub: "",
@@ -6205,7 +6204,7 @@ pages.product = async (_, query) => {
         const started = since;
         panel().innerHTML = `<div class="prd-busy" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
           <div><strong>${esc(text)}</strong><div class="prd-busy-sub">This can take a few minutes. <span data-elapsed>${Math.floor((Date.now() - started) / 1000)}s</span></div></div>
-          ${onCancel ? `<button type="button" class="btn small" id="prd-busy-cancel" aria-label="Cancel drafting" title="Stop drafting">Cancel</button>` : ""}</div>`;
+          ${onCancel ? `<button type="button" class="btn small danger" id="prd-busy-cancel" aria-label="Cancel drafting" title="Stop drafting">Cancel</button>` : ""}</div>`;
         const el = panel().querySelector("[data-elapsed]");
         const timer = setInterval(() => { if (!el.isConnected) return clearInterval(timer); el.textContent = `${Math.floor((Date.now() - started) / 1000)}s`; }, 1000);
         if (onCancel) {
@@ -6568,7 +6567,7 @@ function epicsSection(initial, { onPrdChanged }) {
     technique = $("#epic-technique")?.value || technique;
     box.innerHTML = busy = `<div class="prd-busy" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
       <div><strong>Reading your requirements and breaking them down…</strong><div class="prd-busy-sub">This can take a minute. It carries on if you leave this page.</div></div>
-      <button type="button" class="btn small" id="epic-break-cancel">Cancel</button></div>`;
+      <button type="button" class="btn small danger" id="epic-break-cancel">Cancel</button></div>`;
     $("#epic-break")?.setAttribute("disabled", "");
     const mine = working;
     try {
@@ -6669,7 +6668,7 @@ function epicsSection(initial, { onPrdChanged }) {
   return {
     data: () => ov,
     set: (data) => { ov = data; },
-    html: () => `<div class="page-part" id="sec-epics"><h2>Epics</h2>
+    html: () => `<div class="page-part" id="sec-epics"><h2>Epics ${infoTip("An epic is a big piece of work, like a whole feature or goal, that's too large for one job. It's split into smaller jobs that together deliver it.")}</h2>
       <p class="muted">Your product broken into epics. Approved ones become jobs marked Epic, waiting until you plan them.</p></div>
       <div id="epics-body">${body()}</div>`,
     breakDown,
@@ -6898,7 +6897,7 @@ pages.tests = async (_, query) => {
           : `<p class="muted">Not measured yet.</p>`}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
-      <section class="card"><div class="card-h"><h2>Suites</h2>
+      <section class="card" id="test-suites"><div class="card-h"><h2>Suites</h2>
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
         ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
       ${state.project.mobile_app !== false && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><div class="card-h"><h2>Simulator visual check</h2></div>
@@ -6967,7 +6966,7 @@ pages.tests = async (_, query) => {
                   <div class="framework-guide-row"><strong>How to use:</strong> <span>${codeSpans(guide.howToUse)}</span></div>
                 </div>
                 <p class="muted">${esc(guide.status)}</p>
-                ${key === "canary_suite" ? (f.installed ? "" : `<div><button type="button" class="btn small" ${act("scaffold_canary")}>Add sample suite</button></div>`)
+                ${key === "canary_suite" ? (f.installed ? "" : `<div><button type="button" class="btn small go" ${act("scaffold_canary")}>Add sample suite</button></div>`)
                   : key === "coverage_py" && !f.installed ? `<div><button type="button" class="btn small" ${act("coverage")}>Auto-add coverage.py</button></div>`
                   : f.auto && !f.installed ? `<div><button type="button" class="btn small" ${act("add_framework", { framework: key })}>${f.auto === "brew" ? "Install with Homebrew" : f.auto === "spm" ? "Add package &amp; starter test" : "Add starter test"}</button></div>`
                   : key !== "xcbeautify" ? `<div><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add meaningful tests using ${f.name}`)}">Create test job</a></div>` : ""}</div></details>`;
@@ -6976,6 +6975,11 @@ pages.tests = async (_, query) => {
       })() : ""}`,
 
     after: () => {
+      // "View test suites" on a failed run's card: this card also shows on this page, where a link to #/tests alone would
+      // go nowhere. Scroll to the suites instead, whether you arrived by the link or tapped it here.
+      const toSuites = () => $("#test-suites")?.scrollIntoView({ block: "start" });
+      if (query.get("show") === "suites") toSuites();
+      $("#next-step")?.addEventListener("click", (e) => { if (e.target.closest("[data-show-suites]")) { e.preventDefault(); toSuites(); } }); // the card can be filled in later
       $("#suite-filter").addEventListener("submit", (e) => {
         e.preventDefault();
         location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
@@ -7249,7 +7253,7 @@ pages["test-cases"] = async (_, query) => {
   };
 };
 
-pages.git = async () => {
+pages.git = async (_, query) => {
   const g = await api("git");
   const owner = state.you?.role !== "member";
   const destination = `${g.sync_remote}/${(g.sync_ref || "").replace(/^refs\/heads\//, "")}`;
@@ -7260,8 +7264,7 @@ pages.git = async () => {
   const row = (label, value, action = "") => `<div class="git-setting-row"><dt>${label}</dt><dd><div class="git-setting-value">${value}</div>${action ? `<div class="git-setting-action">${action}</div>` : ""}</dd></div>`;
   const editButton = (id, label, title) => owner ? `<button type="button" class="btn small ghost" id="${id}" title="${title}">${label}</button>` : "";
   const workflow = g.mode === "github" ? "GitHub issues and pull requests" : "Local job records and branches";
-  const workflowDetail = g.mode === "github" ? "Approved work is merged on GitHub." : "Approved work is merged on this computer.";
-  const reviewLinks = /GitLab|Bitbucket/.test(g.provider || "") ? " Finished branches include a link to create a review request on your host." : "";
+  const reviewLinks = /GitLab|Bitbucket/.test(g.provider || "") ? "Finished branches link to a review request." : "";
   const branchCard = `<section class="card">
     <div class="card-h git-sync-header"><h2>Branch and sync</h2><div class="card-actions">
       <button type="button" class="btn small ghost" id="git-pull" aria-describedby="git-sync-reason" ${!g.can_pull ? "disabled" : ""}>Pull</button>
@@ -7284,7 +7287,7 @@ pages.git = async () => {
       <button type="button" class="btn small ghost" id="git-fetch" ${!g.can_fetch ? "disabled" : ""}>Fetch updates</button></div>
     ${g.last_commit ? `<div class="card-caption git-commit-caption"><span>Last commit</span><span>${clamped(g.last_commit, 100)}</span></div>` : ""}
   </section>`;
-  const changesCard = `<section class="card">
+  const changesCard = `<section class="card" id="git-changes">
     <div class="card-h"><h2>Uncommitted changes <span class="count">${g.changes_total}</span></h2></div>
     ${(g.change_groups || []).map(group => `<section class="git-change-group">
       <h3>${esc(group.label)} <span class="count">${group.changes.length}</span></h3>
@@ -7333,28 +7336,28 @@ pages.git = async () => {
   const sourceControlCard = sc ? `<section class="card" id="git-source-control">
     <div class="card-h"><h2>Source control</h2>${sc.current ? `<span class="pill done">${esc(sc.options.find(o => o.key === sc.current)?.label || "")}</span>` : `<span class="pill attention">Not chosen yet</span>`}</div>
     <div class="card-b stack">
-      <p class="sc-blurb">${esc(sc.blurb)}</p>
-      <label class="field"><span>${sc.current ? "Change where your code is kept" : "Where will your code be kept?"}</span>
+      ${sc.current ? "" : `<p class="sc-blurb">${esc(sc.blurb)}</p>`}
+      <label class="field"><span>${sc.current ? "Switch to" : "Where will your code be kept?"}</span>
         <select id="sc-select" ${owner ? "" : "disabled"}>${sc.current ? "" : '<option value="" selected>Choose one…</option>'}${sc.options.map(o => `<option value="${esc(o.key)}" ${o.key === sc.current ? "selected" : ""}>${esc(o.label)}${o.key === sc.current ? " (current)" : ""}</option>`).join("")}</select></label>
       <div id="sc-detail" aria-live="polite"></div>
     </div></section>` : "";
   const baseBranchOptions = g.branches.map(branch => `<option value="${esc(branch)}" ${branch === g.base_branch ? "selected" : ""}>${esc(branch)}</option>`).join("")
     || `<option value="" selected disabled>No local branches</option>`;
   const problemCount = problems.length + (missingLabels.length ? 1 : 0) + publishing.problems.length;
-  const problemCard = problemCount ? `<section class="card git-problems-card" id="git-problems-card"><div class="card-h"><h2>Needs attention <span class="count">${problemCount}</span></h2><span class="git-problems-summary">Fix these to restore Git integration.</span></div><dl class="git-settings-list">
+  const problemCard = problemCount ? `<section class="card git-problems-card" id="git-problems-card"><div class="card-h"><h2>Needs attention <span class="count">${problemCount}</span></h2></div><dl class="git-settings-list">
     ${problems.map(check => { const [issue, remedy] = problemCopy(check); return row(esc(issue), `<span>${esc(remedy)}</span>`, check.id === "issues" && g.web_url ? external(`${g.web_url}/settings`, "Settings") : ""); }).join("")}
-    ${missingLabels.length ? row("Job labels missing", `<span>${missingLabels.length} labels</span><small>Create only missing labels. Custom labels stay unchanged.</small>`, owner ? '<button type="button" class="btn small ghost" id="git-repair-labels">Create missing</button>' : "") : ""}
-    ${publishing.problems.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${clamped(job.detail, 120)}</span><small>Review the job result, then retry.</small>`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a><button type="button" class="btn small ghost" data-git-publish="${esc(job.id)}" ${!g.origin ? "disabled" : ""}>Retry</button></div>`)}</div>`).join("")}
+    ${missingLabels.length ? row("Job labels", `<span>${missingLabels.length} missing</span>`, owner ? '<button type="button" class="btn small go" id="git-repair-labels">Create missing</button>' : "") : ""}
+    ${publishing.problems.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${clamped(job.detail, 120)}</span>`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a><button type="button" class="btn small ghost" data-git-publish="${esc(job.id)}" ${!g.origin ? "disabled" : ""}>Retry</button></div>`)}</div>`).join("")}
   </dl></section>` : "";
   const configuration = health.configuration || {};
   const integrationCard = g.is_repo ? `<section class="card"><div class="card-h"><h2>Job integration</h2></div><dl class="git-settings-list">
-    ${row("Job workflow", `<span>${workflow}</span><small>${workflowDetail}${reviewLinks}</small>`, editButton("git-workflow", "Change", "Change job workflow"))}
-    ${row("Base branch", `<form id="git-base-branch-form" class="git-base-branch-form"><div class="git-base-branch-controls"><label class="sr-only" for="git-base-branch">Base branch for jobs</label><select id="git-base-branch" name="branch" aria-label="Base branch for jobs" ${!g.branches.length ? "disabled" : ""}>${baseBranchOptions}</select><button type="submit" class="btn small ghost" ${!g.branches.length ? "disabled" : ""}>Save</button></div><small>Jobs compare against and merge into this branch.</small></form>`)}
-    ${row("Publishing", `<span>${g.mode === "github" ? "Finished work becomes a draft pull request." : g.origin ? "Finished job branches are pushed to origin." : "Finished work stays on local job branches."}</span><small>Review, revisions and completion stay on each job’s page.</small>`)}
-    ${row("Project configuration", `<span>${esc(configuration.detail || "Fetch remote branches to compare committed configuration.")}</span><small>Compared with the last fetched base branch; changes are not automatically uploaded.</small>`, configuration.url ? external(configuration.url, "View committed file") : "")}
+    ${row("Job workflow", `<span>${workflow}</span>${reviewLinks ? `<small>${reviewLinks}</small>` : ""}`, editButton("git-workflow", "Change", "Change job workflow"))}
+    ${row("Base branch", `<form id="git-base-branch-form" class="git-base-branch-form"><div class="git-base-branch-controls"><label class="sr-only" for="git-base-branch">Base branch for jobs</label><select id="git-base-branch" name="branch" aria-label="Base branch for jobs" ${!g.branches.length ? "disabled" : ""}>${baseBranchOptions}</select><button type="submit" class="btn small ghost" ${!g.branches.length ? "disabled" : ""}>Save</button></div></form>`)}
+    ${row("Publishing", `<span>${g.mode === "github" ? "Finished work becomes a draft pull request." : g.origin ? "Finished job branches are pushed to origin." : "Finished work stays on local job branches."}</span>`)}
+    ${row("Project configuration", `<span>${esc(configuration.detail || "Fetch to compare with the base branch.")}</span>`, configuration.url ? external(configuration.url, "View committed file") : "")}
   </dl>
   ${g.mode === "github" ? `<details class="git-label-details"><summary>Managed job labels <span class="muted">${labels.length ? `${labels.length - missingLabels.length}/${labels.length} present` : "Not checked"}</span></summary>
-    <p class="git-section-note">Orchestrator updates its generated status labels as jobs progress. Keep your own labels; manage names, colors and descriptions on GitHub.</p>
+    <p class="git-section-note">Kept up to date as jobs move. Your own labels are left alone.</p>
     ${labels.length ? `<dl class="git-settings-list">${labels.map(label => row(`<span class="mono">${esc(label.name)}</span>`, `<span>${esc(label.description)}</span><small>${label.present ? "Present" : "Missing"}</small>`)).join("")}</dl>` : '<p class="git-section-note">Job labels appear here after repository status is gathered.</p>'}
     ${health.labels_url ? `<div class="card-caption git-host-links">${external(health.labels_url, "Manage labels on GitHub")}</div>` : ""}
   </details>` : ""}
@@ -7362,13 +7365,21 @@ pages.git = async () => {
   ${(health.links || []).some(link => link.label !== "Repository") ? `<div class="card-caption git-host-links" aria-label="GitHub repository pages">${health.links.filter(link => link.label !== "Repository").map(link => external(link.url, esc(link.label))).join("")}</div>` : ""}
   </section>` : "";
   const advancedCard = g.is_repo ? `<section class="card"><details class="git-advanced-tools"><summary class="card-h"><h2>Advanced Git tools</h2><span class="git-disclosure" aria-hidden="true">⌄</span></summary><div class="git-advanced-content">
-    <p class="git-section-note">Jobs manage their own branches. Use these tools for manual maintenance of this computer’s checkout.</p>${branchCard}${changesCard}
+    <p class="git-section-note">Manual maintenance. Jobs manage their own branches.</p>${branchCard}${changesCard}
   </div></details></section>` : "";
   return {
     title: "Git setup",
     sub: !g.is_repo || !g.has_commits ? esc(branchLabel) : "", // the Source control dropdown says what's in use; only a repo that isn't ready needs a line here
     html: `<div class="git-page">${problemCard}${sourceControlCard}${connectionCard}${integrationCard}${advancedCard}</div>`,
     after: () => {
+      // "N uncommitted" links here: open Advanced Git tools and bring the changed files into view (one file opens on its own).
+      if (query?.get("show") === "changes") {
+        const tools = $(".git-advanced-tools");
+        if (tools) tools.open = true;
+        const files = document.querySelectorAll("#git-changes details.diff-file");
+        if (files.length === 1) files[0].open = true;
+        $("#git-changes")?.scrollIntoView({ block: "start" });
+      }
       if (g.health?.checking_task) {
         waitForTask({task: g.health.checking_task}).then(async () => {
           if (location.hash.startsWith("#/git")) { await refreshState(); await route(); }
@@ -7459,6 +7470,7 @@ pages.git = async () => {
           const o = sc.options.find(x => x.key === pick.value);
           if (!o) { detail.innerHTML = `<p class="muted">Pick one to see what it's good and bad at, and the steps to set it up.</p>`; return; }
           const here = o.key === sc.current, off = !owner ? "disabled" : "";
+          if (here) { detail.innerHTML = ""; return; } // in use already: the header says so; the pros, cons and steps are for comparing
           const button = (id, label, primary = false, disabled = false) => `<button type="button" class="btn small ${primary ? "primary" : ""}" data-sc="${id}" ${off || disabled ? "disabled" : ""}>${label}</button>`;
           const actions = here ? `<span class="muted">This is what the project uses now.</span>`
             : !g.is_repo ? `${button("init", "Initialize repository", true)}<span class="muted">Do this first: it turns this folder into a Git repository.</span>`
@@ -9602,7 +9614,7 @@ function runFailureGuidance(r) {
         title: "Tests failed during coverage",
         detail: "Coverage measurement requires all tests to pass to produce accurate measurements. Fix failing tests to unblock coverage, or let AI automatically diagnose the failure log and repair them.",
         action: `<button type="button" class="btn small primary" ${act("new_job", fixParams)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</button>`,
-        secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
+        secondary: `<a class="btn small" href="#/tests?show=suites" data-show-suites>View test suites</a>`,
       };
     }
     if (lower.includes("pip install coverage") || lower.includes("coverage.py")) {
@@ -9661,7 +9673,7 @@ function runFailureGuidance(r) {
       title: "Test suite execution failed",
       detail: err ? `One or more tests in the suite failed: ${err.slice(0, 300)}. Let AI diagnose and fix them, or inspect test suites.` : "One or more tests in the suite failed. Let AI automatically diagnose the failure log and repair the tests, or inspect your test suites.",
       action: `<button type="button" class="btn small primary" ${act("new_job", fixParams)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</button>`,
-      secondary: `<a class="btn small" href="#/tests">View test suites</a>`,
+      secondary: `<a class="btn small" href="#/tests?show=suites" data-show-suites>View test suites</a>`,
     };
   }
 
@@ -9747,7 +9759,7 @@ function runFailureGuidance(r) {
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small primary" data-auto-recover="5" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Auto-recovering in <span data-recover-countdown>5</span>s…</button>`
       : r.action ? `<button type="button" class="btn small primary" data-auto-recover="5" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Auto-recovering in <span data-recover-countdown>5</span>s…</button>` : "";
-    const cancelBtn = `<button type="button" class="btn small ghost" data-cancel-autorecover>Cancel</button>`;
+    const cancelBtn = `<button type="button" class="btn small danger" data-cancel-autorecover>Cancel</button>`;
     const backBtn = targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "";
     return {
       title: "Run interrupted while model was thinking",

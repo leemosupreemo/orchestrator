@@ -322,7 +322,12 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
 }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.06); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.btn.danger { color: var(--bad); }
+/* Tinted actions: green (go) does the thing a row is asking for (create, add, install, set up); red (danger) stops,
+   cancels or removes. Subtle: a tint of the colour, not a solid fill, so the page's one primary button still leads. */
+.btn.go, .btn.danger { --tone: var(--ok); background: color-mix(in srgb, var(--tone) 10%, var(--panel)); border-color: color-mix(in srgb, var(--tone) 35%, var(--border)); color: var(--tone); }
+.btn.danger { --tone: var(--bad); }
+.btn.go:hover:not(:disabled), .btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--tone) 16%, var(--panel)); border-color: color-mix(in srgb, var(--tone) 55%, var(--border)); color: var(--tone); }
+.btn.go:active, .btn.danger:active { background: color-mix(in srgb, var(--tone) 20%, var(--panel)); }
 .btn.ghost { background: transparent; border-color: var(--border); color: var(--text); }
 .btn.ghost:hover { background: var(--panel-2); border-color: var(--border); }
 .btn.small { padding: var(--space-1) var(--space-3); min-height: var(--control-sm); font-size: var(--type-secondary); }
@@ -1833,8 +1838,6 @@ dialog h2 {
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-.stale-jobs { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--container-pad-x); border-top: 1px solid var(--border); background: var(--panel-2); }
-.stale-jobs-text { margin: 0 auto 0 0; color: var(--muted); font-size: var(--type-secondary); }
 .job-table-row:last-child {
   border-bottom: 0;
 }
@@ -2389,6 +2392,9 @@ dialog h2 {
 .yolo-switch input:checked { background: var(--ok); }
 .yolo-switch input:checked::after { transform: translateX(14px); }
 .yolo-switch input:checked + span { color: var(--ok); }
+/* Home: YOLO all sits apart from the job filters, at the far end of the row. */
+.home-yolo { margin-left: auto; padding-left: var(--space-3); border-left: 1px solid var(--border); white-space: nowrap; }
+@media (max-width: 760px) { .home-yolo { padding-left: 0; border-left: 0; } }
 .ai-tool-details .ai-key-row { padding: var(--space-3) 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .ai-tool-cost { color: var(--muted); font-size: var(--type-secondary); text-align: right; justify-self: end; }
 @media (max-width: 760px) {
@@ -3140,8 +3146,8 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .messages[hidden] { display: none; }
 .msg {
   --kind: var(--accent);
-  pointer-events: auto; display: flex; align-items: flex-start; gap: var(--space-3);
-  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  pointer-events: auto; display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   background: var(--panel); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--kind); border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
   font-size: var(--type-body); line-height: 1.4;
@@ -3151,13 +3157,13 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .msg-warning { --kind: var(--warn); }
 .msg-cancel { --kind: var(--warn); }
 .msg-error { --kind: var(--bad); }
-.msg-icon { flex: 0 0 22px; height: 22px; margin-top: 1px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--kind); color: var(--panel); font-size: var(--type-secondary); font-weight: var(--weight-bold); }
+.msg-icon { flex: 0 0 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--kind); color: var(--panel); font-size: var(--type-secondary); font-weight: var(--weight-bold); }
 .msg-body { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); overflow-wrap: anywhere; }
 .msg-text { flex: 1 1 14ch; }
 .msg-actions { display: inline-flex; flex-wrap: wrap; gap: var(--space-2); }
-.msg-action { display: inline-flex; align-items: center; min-height: var(--control-sm); padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); color: var(--text); font: inherit; font-size: var(--type-secondary); font-weight: var(--weight-medium); text-decoration: none; cursor: pointer; }
+.msg-action { display: inline-flex; align-items: center; min-height: var(--control-xs); padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); color: var(--text); font: inherit; font-size: var(--type-secondary); font-weight: var(--weight-medium); text-decoration: none; cursor: pointer; }
 .msg-action:hover { border-color: var(--kind); }
-.msg-close { flex: 0 0 auto; width: 32px; height: 32px; margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) 0 0; border: 0; border-radius: var(--r-md); background: transparent; color: var(--muted); font-size: var(--type-secondary); cursor: pointer; }
+.msg-close { flex: 0 0 auto; width: var(--control-xs); height: var(--control-xs); margin: 0; border: 0; border-radius: var(--r-md); background: transparent; color: var(--muted); font-size: var(--type-secondary); cursor: pointer; }
 .msg-close:hover { background: var(--panel-2); color: var(--text); }
 .msg-new { animation: msg-in .18s ease-out; }
 @keyframes msg-in { from { opacity: 0; transform: translateY(calc(-1 * var(--space-2))); } }
@@ -4539,6 +4545,15 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 .page-part { margin: var(--space-8) 0 var(--space-4); padding-top: var(--space-6); border-top: 1px solid var(--border); }
 .page-part h2 { margin: 0 0 var(--space-1); font-size: var(--type-section); }
 .page-part p { margin: 0; }
+/* "i" info tips (infoTip in app.js): the explanation shows on hover, tap or focus */
+.info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-left: var(--space-1); padding: 0; vertical-align: middle;
+  border: 1px solid var(--border); border-radius: 50%; background: var(--panel-2); color: var(--muted); font: italic var(--weight-bold) 11px/1 Georgia, serif; cursor: help; }
+.info-tip:hover, .info-tip:focus-visible { color: var(--text); border-color: var(--muted); }
+.info-tip::after { content: attr(data-tip); position: absolute; z-index: var(--z-menu); top: calc(100% + var(--space-2)); left: calc(-1 * var(--space-2));
+  width: max-content; max-width: min(280px, calc(100vw - 2 * var(--space-4))); padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--panel); color: var(--text); box-shadow: var(--shadow-2); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; font-style: normal; font-weight: var(--weight-regular); font-size: var(--type-secondary); line-height: 1.4; text-align: left; white-space: normal;
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity var(--motion-fast); }
+.info-tip:hover::after, .info-tip:focus::after { opacity: 1; visibility: visible; }
 
 .ux-platforms { border: 0; padding: 0; margin: 0; }
 .ux-platforms legend { font-weight: var(--weight-medium); margin-bottom: var(--space-2); padding: 0; }

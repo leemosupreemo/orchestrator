@@ -436,7 +436,7 @@
       <button type="button" class="btn small danger" data-config-action="email-remove" data-email="${escapeHtml(recipient)}">Remove</button>
     </div>`).join("");
     return `<section class="card configuration-card">
-          <div class="card-h"><h2>Email sender</h2><button type="button" class="btn small" data-config-action="email-sender">Configure sender</button></div>
+          <div class="card-h"><h2>Email sender</h2><button type="button" class="btn small go" data-config-action="email-sender">Configure sender</button></div>
           <div class="card-b stack">
             <strong>${escapeHtml(readiness)}</strong>
             <span class="configuration-status">${isResend
@@ -446,7 +446,7 @@
         </section>
         <section class="card configuration-card">
           <div class="card-h"><h2>Email recipients</h2><div class="row">
-            <button type="button" class="btn small" data-config-action="email-add">Add recipient</button>
+            <button type="button" class="btn small go" data-config-action="email-add">Add recipient</button>
             ${recipients.length ? `<button type="button" class="btn small primary" data-config-action="email-test">Send test email</button>` : ""}
           </div></div>
           <div class="configuration-setting-list">${recipientRows || `<div class="empty">No recipients yet</div>`}</div>
@@ -561,7 +561,7 @@
       sub: "People with these emails can sign in with Google, Apple, GitHub or email and use this computer from anywhere. Each sign-in lasts 30 days.",
       html: `<div class="configuration-page">
         <section class="card configuration-card">
-          <div class="card-h"><h2>Allowed emails</h2><button type="button" class="btn small" data-config-action="access-add">Add email</button></div>
+          <div class="card-h"><h2>Allowed emails</h2><button type="button" class="btn small go" data-config-action="access-add">Add email</button></div>
           <div class="configuration-setting-list">${emailRows || `<div class="empty">No one yet, so sign-in is closed. The access token still works.</div>`}</div>
         </section>
         <section class="card configuration-card">
@@ -622,7 +622,7 @@
           <small>Roles: ${(m.roles || []).join(", ") || "General"} ${m.xcode ? "· Xcode ready" : ""} ${m.simulator ? "· Simulator ready" : ""}</small>
         </div>
         <div class="row">
-          ${m.mode !== "local" ? `<button type="button" class="btn small" data-config-action="machine-install" data-name="${escapeHtml(m.name)}">Install</button>` : ""}
+          ${m.mode !== "local" ? `<button type="button" class="btn small go" data-config-action="machine-install" data-name="${escapeHtml(m.name)}">Install</button>` : ""}
           <button type="button" class="btn small" data-config-action="machine-toggle" data-name="${escapeHtml(m.name)}">${m.enabled ? "Disable" : "Enable"}</button>
           ${m.mode !== "local" ? `<button type="button" class="btn small danger" data-config-action="machine-remove" data-name="${escapeHtml(m.name)}">Remove</button>` : ""}
         </div>
@@ -637,7 +637,7 @@
             <h2>Build & Test Machines</h2>
             <div class="row">
               ${root.Account?.active?.() ? `<a class="btn small" href="#/computers">Your computers</a>` : ""}
-              <button type="button" class="btn small" data-config-action="fleet-add">Add worker</button>
+              <button type="button" class="btn small go" data-config-action="fleet-add">Add worker</button>
               <button type="button" class="btn small" data-config-action="fleet-check">Check health</button>
               <button type="button" class="btn small" data-config-action="fleet-sync">Sync code</button>
               <button type="button" class="btn small primary" data-config-action="fleet-llm">Test LLMs</button>
@@ -686,7 +686,7 @@
             </div>
             <p>Orchestrator can automatically run pre-build checks and linting during Xcode Cloud runs via <code>ci_scripts/ci_post_clone.sh</code>.</p>
             <div class="row">
-              <button type="button" class="btn small" data-config-action="xcode-setup">Configure ci_scripts</button>
+              <button type="button" class="btn small go" data-config-action="xcode-setup">Configure ci_scripts</button>
             </div>
           </div>
         </section>

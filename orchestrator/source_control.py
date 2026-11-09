@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-BLURB = ("Source control keeps a history of every change to your code, so you can undo a mistake, see what changed and why, let several jobs work "
-         "side by side without colliding, and keep a copy that survives a broken laptop. Orchestrator's jobs each work on their own branch, so it relies on it.")
+BLURB = "Source control keeps a history of every change, so you can undo mistakes and jobs can work side by side on their own branches."
 
 # action: what the page's button does. github = sign in, then create or connect. connect = paste the repository's clone URL. local = keep it here.
 OPTIONS: list[dict[str, Any]] = [

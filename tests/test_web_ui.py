@@ -1957,14 +1957,50 @@ process.stdout.write(JSON.stringify({
     def test_run_log_path_matches_how_runs_are_saved(self):
         self.assertTrue(ui.RUN_LOG.fullmatch("20261107-101500-a1b2c3-run_tests.log"))
 
-    def test_stale_jobs_archive_button_says_archive_and_appears_with_the_jobs(self):
+    def test_action_buttons_are_tinted_green_to_go_and_red_to_stop(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        css = (static / "style.css").read_text()
+        self.assertIn(".btn.go, .btn.danger { --tone: var(--ok);", css)
+        self.assertIn(".btn.danger { --tone: var(--bad); }", css)
+        app = (static / "app.js").read_text()
+        self.assertIn('class="btn small go" id="git-repair-labels">Create missing', app)
+        for cancel in ('id="pkg-cancel"', 'id="prd-busy-cancel"', 'id="epic-break-cancel"', "data-cancel-autorecover"):
+            self.assertIn(f'class="btn small danger" {cancel}', app)  # these stop work that's under way
+        self.assertIn('class="btn small danger" data-plan-action="stop">Stop', (static / "feature-plan.js").read_text())
+
+    def test_view_test_suites_works_on_the_tests_page_itself(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertEqual(app.count('<a class="btn small" href="#/tests?show=suites" data-show-suites>View test suites</a>'), 2)
+        self.assertNotIn('href="#/tests">View test suites', app)  # the failed run's card shows on Tests too: #/tests alone went nowhere
+        tests = app[app.index("pages.tests = async"):]
+        tests = tests[:tests.index("\npages.")]
+        self.assertIn('<section class="card" id="test-suites">', tests)
+        self.assertIn('if (query.get("show") === "suites") toSuites();', tests)
+        self.assertIn('e.target.closest("[data-show-suites]")', tests)
+
+    def test_epics_explains_itself_and_sits_above_keeping_it_up_to_date(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('<h2>Epics ${infoTip("An epic is a big piece of work', app)
+        self.assertLess(app.index('${epics ? epics.html() : ""}'), app.index("<h2>Keeping it up to date</h2>"))
+        self.assertEqual(app.count('${epics ? epics.html() : ""}'), 1)
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".info-tip:hover::after, .info-tip:focus::after { opacity: 1; visibility: visible; }", css)  # tap focuses it on phones
+
+    def test_uncommitted_link_opens_the_changed_files(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('<a href="#/git?show=changes">${p.dirty_files} uncommitted</a>', app)
+        git = app[app.index("pages.git = async (_, query)"):]
+        git = git[:git.index("\npages.")]
+        self.assertIn('id="git-changes"', git)
+        self.assertIn('query?.get("show") === "changes"', git)
+        self.assertIn("tools.open = true", git)  # the changes live inside the collapsed Advanced Git tools
+        self.assertIn('$("#git-changes")?.scrollIntoView', git)
+
+    def test_home_lists_every_job_however_long_it_has_waited(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
-        button = home[home.index("data-archive-jobs='${attrJSON(staleJobs"):]
-        button = button[:button.index("</button>")]
-        self.assertTrue(button.endswith(">Archive"))
-        self.assertIn('data-shown-with="stale-list" hidden', button)
-        self.assertIn('[data-shown-with="${CSS.escape(all.dataset.showAll)}"]', app)
+        self.assertNotIn("stale", home.lower())  # no folding away of jobs that haven't changed in weeks
+        self.assertIn("filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN }))", home)
 
     def test_empty_jobs_on_home_has_simplified_message_and_link_to_start_new_job(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -4990,7 +5026,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn('data-route="epics"', (self.STATIC / "index.html").read_text())
         self.assertIn('"epics": "product?section=epics"', (self.STATIC / "routes.js").read_text())  # old links land on the section
         self.assertIn("epicsSection(epicsData", page)
-        self.assertLess(page.index('<h2>History</h2>'), page.index("epics.html()"))  # at the bottom
+        self.assertLess(page.index("epics.html()"), page.index('<h2>Keeping it up to date</h2>'))  # after the requirements, before upkeep and History
         self.assertIn('id="sec-epics"', self.js)
         self.assertNotIn("suggestFeatures", self.js)  # one way to break the PRD down
         self.assertNotIn('api("features/propose"', self.js)
@@ -5827,6 +5863,29 @@ class YoloAllTests(ServerTestCase):
             _, data = self.post("/api/jobs/yolo-all")
         self.assertEqual((started, data), ([], {"started": [], "switched": [], "failed": []}))
 
+    def test_turning_it_off_turns_yolo_off_for_in_progress_jobs_and_starts_nothing(self):
+        self.write("queued", "scheduled", yolo=True, is_yolo=True)
+        self.write("building", "executing", worker_pid=os.getpid(), is_yolo=True)
+        self.write("plain", "scheduled")
+        self.write("done", "completed", yolo=True, is_yolo=True)  # not in progress: left alone
+        started, patcher = self.launcher()
+        with patcher:
+            res, data = self.post("/api/jobs/yolo-all", {"on": False})
+        self.assertEqual(res.status, 200, data)
+        self.assertEqual(started, [])
+        self.assertEqual(sorted(e["id"] for e in data["turned_off"]), ["building", "queued"])
+        for job in ("queued", "building"):
+            self.assertFalse(self.read(job)["yolo"] or self.read(job)["is_yolo"], job)
+        self.assertTrue(self.read("done")["is_yolo"])
+        self.assertNotIn("yolo", self.read("plain"))
+        self.assertEqual(self.post("/api/jobs/yolo-all", {"on": "no"})[0].status, 400)
+
+    def test_job_summaries_say_whether_a_job_is_in_yolo_mode(self):
+        self.write("a", "scheduled", is_yolo=True)
+        self.write("b", "scheduled")
+        jobs = {j["id"]: j["yolo"] for j in ui.list_jobs(self.root)}
+        self.assertEqual((jobs["a"], jobs["b"]), (True, False))
+
     def test_archived_jobs_have_their_own_light_endpoint(self):
         directory = ui.jobs_dir(self.root) / "archive"
         directory.mkdir(parents=True)
@@ -5839,6 +5898,8 @@ class YoloAllTests(ServerTestCase):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
         self.assertIn('id="yolo-all"', home)
+        self.assertIn('role="switch"', home)  # a switch: on continues every in-progress job, off stops them for review again
+        self.assertIn("inProgress.every((j) => j.yolo)", home)
         self.assertIn("inProgress.length", home)  # only when there is something to continue
         self.assertIn("const inProgress = sortedJobs.filter(HOME_FILTERS.working[1])", home)  # the button counts exactly what the In progress filter shows
         self.assertIn('j.state.label === "Paused"', home)
@@ -5846,6 +5907,7 @@ class YoloAllTests(ServerTestCase):
         self.assertIn("formDialog(", yolo)  # asks first: it removes the review stops
         self.assertIn('api("jobs/yolo-all"', yolo)
         self.assertIn("Starting…", yolo)
+        self.assertIn("body: { on }", yolo)
 
 
 class RunHistoryTests(ServerTestCase):

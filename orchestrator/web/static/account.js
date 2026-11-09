@@ -315,7 +315,7 @@
             <summary class="btn small ghost" aria-label="More options for ${escapeHtml(m.name)}">More</summary>
             <div class="account-machine-menu">
               ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
-              ${canUpdate ? `<button type="button" class="btn small ghost" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
+              ${canUpdate ? `<button type="button" class="btn small go" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
               ${m.has_snapshot ? `<button type="button" class="btn small ghost" data-account-action="view-snapshot" data-id="${escapeHtml(m.id)}">View offline snapshot</button>` : ""}
               <details class="account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
                 ${m.reachable && outdated(m.api_version) ? `<p class="muted">${code(`This computer runs an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`)}</p>` : ""}

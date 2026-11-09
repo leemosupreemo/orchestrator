@@ -178,7 +178,7 @@ def configuration_status(root: Path, runtime: Path, base: str) -> dict:
     try:
         committed = run(root, ["git", "show", f"{reference}:{relative}"])
     except RepositoryError:
-        return {"status": "untracked", "detail": "Project configuration is not committed on the last fetched base branch."}
+        return {"status": "untracked", "detail": "Not committed on the base branch."}
     local = (runtime / "project.json").read_text(errors="replace") if (runtime / "project.json").is_file() else ""
     matches = committed == local
     return {"status": "matches" if matches else "different", "path": relative,
@@ -203,7 +203,7 @@ def publishing_jobs(root: Path, runtime: Path, origin: str, mode: str, base: str
         problem = job.get("publish_error") or ("Work is ready for review, but no pull request is recorded." if missing_pr else "")
         issue = str(job.get("issue_number") or "")
         pr = str(job.get("pr_number") or "")
-        detail = problem or ("Pull request recorded" if pr else "Branch published" if job.get("last_published_at") else "Publishing is recorded when a job finishes.")
+        detail = problem or ("Pull request recorded" if pr else "Branch published" if job.get("last_published_at") else "Not published yet.")
         item = {"id": file.stem, "title": job.get("title") or file.stem, "branch": branch,
                 "detail": detail,
                 "problem": bool(problem), "last_published_at": job.get("last_published_at"),

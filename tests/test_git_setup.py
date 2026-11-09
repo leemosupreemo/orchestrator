@@ -367,7 +367,8 @@ pages.git().then(async result => {
     def test_a_connected_project_shows_its_choice_as_current_and_offers_to_change_it(self):
         html = self.render(origin="git@gitlab.com:team/app.git", provider="GitLab", source_control={
             "current": "gitlab", "blurb": "Why.", "options": [{"key": "gitlab", "label": "GitLab"}, {"key": "github", "label": "GitHub"}]})["html"]
-        self.assertIn("Change where your code is kept", html)
+        self.assertIn("<span>Switch to</span>", html)
+        self.assertNotIn("Why.", html)  # the why is for choosing; once chosen it is left out
         self.assertIn('<option value="gitlab" selected>GitLab (current)</option>', html)
         self.assertNotIn("Choose one…", html)
         self.assertIn('<span class="pill done">GitLab</span>', html)
@@ -377,7 +378,8 @@ pages.git().then(async result => {
         self.assertIn("GitLab", html)
         self.assertIn("Gathering Git and host access", html)
         self.assertNotIn("Sign in to GitHub", html)
-        self.assertIn("merged on this computer", html)
+        self.assertIn("Local job records and branches", html)
+        self.assertIn("Finished branches link to a review request.", html)
 
     def test_members_cannot_change_connection_settings(self):
         html = self.render(role="member")["html"]

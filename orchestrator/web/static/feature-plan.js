@@ -186,7 +186,7 @@
     const controls = plan.finished ? `<button type="button" class="btn small" data-plan-action="stop">Dismiss</button>`
       : `${plan.paused ? `<button type="button" class="btn small primary" data-plan-action="resume">Resume</button>`
         : `<button type="button" class="btn small" data-plan-action="pause">Pause</button>`}
-        <button type="button" class="btn small ghost" data-plan-action="stop">Stop</button>`;
+        <button type="button" class="btn small danger" data-plan-action="stop">Stop</button>`;
     return `<section class="card mb-16" id="plan-run">
       <div class="card-h"><h2>${plan.finished ? "The plan is built" : plan.paused ? "Building the plan (paused)" : "Building the plan"}</h2>
         <span class="count">${done}/${plan.rows.length}</span><div class="row gap-12">${controls}</div></div>
