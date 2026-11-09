@@ -7,8 +7,10 @@ checked. The web page shows them with what's already installed and signed in on 
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
+from pathlib import Path
 from typing import Callable
 
 CHECKED = "October 2026"
@@ -57,6 +59,17 @@ PROVIDERS: list[dict[str, str]] = [
 ]
 
 CLIS = [p["cli"] for p in PROVIDERS]
+
+# Where the installers put their tools: OpenCode's in ~/.opencode/bin, Claude's, Poolside's and Antigravity's in ~/.local/bin,
+# Homebrew's in /opt/homebrew/bin or /usr/local/bin. A server started from the Dock or launchd has none of these on its PATH,
+# and an installer's edit to the shell profile only reaches new terminals, so tools are looked for (and run) with them added.
+TOOL_DIRS = [Path.home() / ".opencode" / "bin", Path.home() / ".local" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+
+
+def tool_path(base: str | None = None) -> str:
+    """`base` (this process's PATH by default) with the installers' folders added after it."""
+    parts = [p for p in (os.environ.get("PATH", "") if base is None else base).split(os.pathsep) if p]
+    return os.pathsep.join(parts + [str(d) for d in TOOL_DIRS if str(d) not in parts])
 API_KEYS = [(p["key"], p["key_label"], p["env"]) for p in PROVIDERS if p.get("key")]  # (setting, label, environment variable)
 
 # Providers the orchestrator runs with an explicit flag that auto-accepts all tool / permission requests

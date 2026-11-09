@@ -53,6 +53,14 @@ class SetupChecklistTests(unittest.TestCase):
             self.assertFalse(items["remote"]["required"])
             self.assertTrue(all(not items[k]["required"] for k in ("firebase", "email", "prompts")))
 
+    def test_no_ai_yet_offers_to_set_up_a_free_one_in_one_click(self):
+        with tempfile.TemporaryDirectory() as d:
+            llm = _by_id(_checklist(Path(d), providers=[]))["llm"]
+            self.assertEqual(llm["action"], {"type": "free_ai", "label": "Set up free AI"})
+            self.assertIn("one click", llm["detail"])
+            ready = _by_id(_checklist(Path(d), providers=["opencode"]))["llm"]  # one is ready: the usual page
+            self.assertEqual(ready["action"]["type"], "route")
+
     def test_github_project_needs_github(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

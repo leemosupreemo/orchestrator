@@ -2996,6 +2996,9 @@ document.addEventListener("click", async (e) => {
     } else if (item.action.type === "run") {
       closeSetupPanel();
       runAction(item.action.action, item.action.params || {});
+    } else if (item.action.type === "free_ai") {
+      closeSetupPanel();
+      setUpFreeAi();
     } else if (item.action.type === "git_init") {
       go.disabled = true;
       try {
@@ -3783,6 +3786,73 @@ async function signInWithSentry() {
     return;
   }
   if (wait.isConnected) again(`<div class="notice bad">The code ran out before it was approved. Start again for a new one.</div>`);
+}
+
+// Set up free AI (server: orchestrator/ai_setup.py): install OpenCode if needed, test its free models, turn them on for jobs,
+// with a live checklist of the steps. No terminal, no account. When it can't finish it says why and offers another way.
+const FREE_AI_STEPS = [["check", "Checking this computer"], ["install", "Installing OpenCode"], ["verify", "Testing the free models"], ["ready", "Turning it on for jobs"]];
+async function setUpFreeAi() {
+  const rows = FREE_AI_STEPS.map(([id, label]) => `<li class="ai-step" data-step="${id}"><span class="ai-step-icon" aria-hidden="true"></span>
+    <span class="ai-step-text"><strong>${esc(label)}</strong><small class="muted" data-step-detail></small></span></li>`).join("");
+  formDialog("Set up free AI", `<p class="muted">Orchestrator installs OpenCode, a free AI tool that needs no account or card, and turns on its free models for your jobs.</p>
+    <ol class="ai-steps" id="ai-steps">${rows}</ol><div id="ai-free-result" aria-live="polite"></div>`, "Done", { cancelLabel: "Close" });
+  const ok = $("#dialog-ok");
+  if (ok) ok.hidden = true;
+  const box = $("#ai-steps"), out = $("#ai-free-result");
+  const row = (id) => box?.querySelector(`[data-step="${id}"]`);
+  const setRow = (id, cls, detail) => {
+    const el = row(id);
+    if (!el) return;
+    el.className = `ai-step ${cls}`;
+    if (detail !== undefined) el.querySelector("[data-step-detail]").textContent = detail;
+  };
+  let reached = -1;
+  const advance = (stage, detail) => {
+    const at = FREE_AI_STEPS.findIndex(([id]) => id === stage);
+    if (at < 0) return;
+    for (let i = 0; i < at; i++) {
+      const id = FREE_AI_STEPS[i][0];
+      if (i > reached) setRow(id, "is-skipped", id === "install" ? "Already installed" : "");
+      else setRow(id, "is-done");
+    }
+    setRow(stage, "is-active", detail);
+    reached = Math.max(reached, at);
+  };
+  advance("check", "Starting…");
+  let result;
+  try {
+    result = await waitForTask(await api("ai-providers/free", { method: "POST", body: {} }), { onProgress: (r) => advance(r.stage, r.detail) });
+  } catch (err) {
+    if (out) out.innerHTML = `<div class="notice bad">${esc(err.message)}</div>`;
+    if (ok) { ok.hidden = false; ok.textContent = "Close"; }
+    return;
+  }
+  // The result can arrive before the page saw every step: tick off everything before the step it ended on.
+  const settle = (last) => {
+    const at = FREE_AI_STEPS.findIndex(([id]) => id === last);
+    for (let i = 0; i < at; i++) {
+      const id = FREE_AI_STEPS[i][0];
+      if (id === "install") setRow(id, result.installed_now ? "is-done" : "is-skipped", result.installed_now ? "Installed" : "Already installed");
+      else setRow(id, "is-done", "");
+    }
+  };
+  if (result.ok) {
+    settle("ready");
+    setRow("ready", "is-done", `${plural(result.models.length, "free model")} on`);
+    if (out) out.innerHTML = `<div class="notice good"><strong>Your free AI is ready.</strong> Jobs can use it now. To use Claude or ChatGPT instead, connect them under <a href="#/config/ai" data-free-ai-more>Manage AI tools</a>.</div>`;
+    await loadSetup(true).catch(() => null);
+    if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
+  } else {
+    settle(result.step);
+    setRow(result.step, "is-failed");
+    const fb = result.fallback;
+    if (out) out.innerHTML = `<div class="notice bad">${esc(result.message)}</div>
+      ${fb ? `<p class="muted">${esc(fb.why)} <a href="#/config/ai" data-free-ai-more>Connect ${esc(fb.name)} or another AI</a>.</p>` : ""}`;
+  }
+  out?.querySelectorAll("[data-free-ai-more]").forEach((link) => link.addEventListener("click", () => $("#dialog")?.close("cancel")));
+  if (ok) ok.hidden = false;
+  const cancel = $("#dialog-cancel");
+  if (cancel) cancel.hidden = true; // finished: one button to close it
 }
 
 pages.job = async ([id]) => {
@@ -8646,6 +8716,7 @@ pages.config = async (args = []) => {
         view.addEventListener("click", onClick);
         cleanup.push(() => view.removeEventListener("click", onClick));
         if (section === "ai") {
+          $("#ai-free-setup")?.addEventListener("click", () => setUpFreeAi()); // the card with id="ai-free-setup" (configuration.js)
           const onInstall = async (event) => {
             const button = event.target.closest("[data-ai-install]");
             if (!button || button.disabled) return;

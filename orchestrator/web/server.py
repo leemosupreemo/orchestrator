@@ -3678,7 +3678,8 @@ def settings_path(root: Path) -> Path:
 def tool_search_path() -> str:
     """Where to look for command-line tools: this process's PATH plus where installers usually put them, which a server
     started from the Dock or launchd doesn't have on its PATH."""
-    return os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")])
+    from orchestrator import ai_providers
+    return ai_providers.tool_path()
 
 
 PROVIDER_MODEL_CLIS = {"claude": ["claude"], "codex": ["codex"], "gemini": ["gemini"], "agy": ["gemini"], "ollama": ["ollama"], "opencode": ["opencode"], "pool": ["pool"], "hermes": ["hermes"]}
@@ -5293,6 +5294,8 @@ class UIServer(ThreadingHTTPServer):
         # serving this UI. `-P` (see orchestrator_argv) keeps cwd off the import path and this puts
         # the UI's package first; unlike PYTHONSAFEPATH it isn't inherited by the scripts we start.
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PACKAGE_PARENT), env.get("PYTHONPATH")]))
+        from orchestrator import ai_providers
+        env["PATH"] = ai_providers.tool_path(env.get("PATH", ""))  # AI tools where their installers put them (OpenCode's ~/.opencode/bin)
         try:
             settings = read_settings(self.root)
             for kid, label, env_var in API_KEYS:
@@ -6927,6 +6930,14 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(result)
         elif method == "GET" and parts == ["ai-providers"]:
             self._json(ai_providers_state(root))
+        elif method == "POST" and parts == ["ai-providers", "free"]:
+            # Set up free AI in one step (orchestrator/ai_setup.py): check, install OpenCode, test its free models, turn them on.
+            self._require_owner("set up an AI tool")
+            self._body()
+            from orchestrator import ai_setup
+            self._json({"task": self.server.tasks.start(lambda progress: ai_setup.ensure_free_ai(root, progress), progress=True)},
+                       HTTPStatus.ACCEPTED)
+            self._audit("ai_free_setup_started")
         elif method == "POST" and parts == ["ai-providers", "install"]:
             self._require_owner("install an AI provider")
             body = self._body()

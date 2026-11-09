@@ -1121,6 +1121,22 @@ dialog h2 {
 .notice.bad { border-color: var(--bad); background: var(--bad-soft); }
 /* The code shown while signing in to Sentry: big enough to compare with the one on Sentry's page */
 .sentry-code { align-self: flex-start; padding: var(--space-2) var(--space-4); border: 1px dashed var(--border); border-radius: var(--r-md); background: var(--panel); font-size: var(--type-section); font-weight: var(--weight-bold); letter-spacing: .12em; }
+/* Set up free AI: a checklist that ticks off as each step finishes */
+.ai-steps { list-style: none; margin: var(--space-3) 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.ai-step { display: flex; align-items: flex-start; gap: var(--space-3); color: var(--muted); }
+.ai-step-text { display: flex; flex-direction: column; gap: 2px; }
+.ai-step-icon { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border); display: inline-flex; align-items: center; justify-content: center; font-size: var(--type-tag); font-weight: var(--weight-bold); }
+.ai-step.is-active { color: var(--text); }
+.ai-step.is-active .ai-step-icon { border-color: var(--accent); border-top-color: transparent; animation: spin 0.9s linear infinite; }
+.ai-step.is-done, .ai-step.is-skipped { color: var(--text); }
+.ai-step.is-done .ai-step-icon { border-color: var(--ok); background: var(--ok); color: #fff; }
+.ai-step.is-done .ai-step-icon::before { content: "✓"; }
+.ai-step.is-skipped .ai-step-icon { border-color: var(--ok); color: var(--ok); }
+.ai-step.is-skipped .ai-step-icon::before { content: "✓"; }
+.ai-step.is-failed { color: var(--text); }
+.ai-step.is-failed .ai-step-icon { border-color: var(--bad); background: var(--bad); color: #fff; }
+.ai-step.is-failed .ai-step-icon::before { content: "!"; }
+.ai-free-card { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
 .notice.good { border-color: var(--ok); background: var(--ok-soft); }
 .notice .row { margin-top: var(--space-3); }
 

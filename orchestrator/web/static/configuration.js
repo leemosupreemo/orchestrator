@@ -394,6 +394,10 @@
       title: "Manage AI tools",
       sub: ai.any_ready ? "Choose which tools are available to your jobs." : "Install and connect an AI tool to plan, build, and review jobs.",
       html: `<div class="configuration-page">
+        ${available && owner && !ai.any_ready ? `<section class="card configuration-card ai-free-card"><div class="card-b row between align-center gap-12 wrap">
+          <div class="stack gap-4"><strong>Start with a free AI</strong>
+            <span class="muted">One click: Orchestrator installs OpenCode and turns on its free models. No account, card or terminal needed.</span></div>
+          <button type="button" class="btn primary" id="ai-free-setup">Set up free AI</button></div></section>` : ""}
         ${available && owner ? `<section class="card configuration-card" id="ai-models-refresh"><div class="card-b row between align-center gap-12">
           <p class="muted" id="ai-models-status">${modelsSyncedText(ai.models_synced)}</p>
           <button type="button" class="btn small" id="ai-refresh-models">Refresh models</button></div></section>` : ""}

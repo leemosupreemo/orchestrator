@@ -60,10 +60,11 @@ def github_cli_state(fresh: bool = False) -> dict[str, Any]:
 
 
 def _cli_ready(cli: str) -> bool:
-    if not shutil.which(cli):
+    found = shutil.which(cli, path=ai_providers.tool_path())  # also where installers put tools, e.g. OpenCode's ~/.opencode/bin
+    if not found:
         return False
-    commands = {"claude": ["claude", "auth", "status"], "codex": ["codex", "login", "status"],
-                "opencode": ["opencode", "models"]}
+    commands = {"claude": [found, "auth", "status"], "codex": [found, "login", "status"],
+                "opencode": [found, "models"]}
     if cli in commands:
         res = _run(commands[cli], timeout=5)
         return bool(res and res.returncode == 0 and (cli != "opencode" or res.stdout.strip()))
@@ -73,7 +74,7 @@ def _cli_ready(cli: str) -> bool:
         home = Path.home() / ".gemini"
         return (home / "oauth_creds.json").exists() or (home / "google_accounts.json").exists()
     if cli == "ollama":
-        res = _run(["ollama", "list"], timeout=3)
+        res = _run([found, "list"], timeout=3)
         return bool(res and res.returncode == 0)
     if cli == "pool":
         # `pool login` has no status subcommand; readiness is signaled by the credentials file
@@ -160,9 +161,11 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
                            hint=None if origin else "git remote add origin <url>", group="Git"))
     items += [
         _item("llm", "An AI model is ready", True, bool(providers) and bool(models),
-              "No AI is set up yet. Free options are available." if not providers
+              "No AI is set up yet. Set up a free one in one click, or connect your own." if not providers
               else "No model is assigned to a machine" if not models else "Ready to run jobs",
-              action={"type": "route", "to": "#/config/ai" if not providers else "#/config/models"}, group="AI"),
+              # No AI at all: set up the free one right here (ai_setup.py), no terminal and no account
+              action={"type": "free_ai", "label": "Set up free AI"} if not providers else {"type": "route", "to": "#/config/models"},
+              group="AI"),
         _item("machines", "A machine to run jobs on", True, bool(enabled_machines),
               (f"{len(enabled_machines)} enabled, {ssh_machines} remote over SSH" if ssh_machines else f"{len(enabled_machines)} enabled. Add other Macs to run jobs side by side.")
               if enabled_machines else "No enabled machines. Add or enable a machine.",

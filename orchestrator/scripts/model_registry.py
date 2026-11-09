@@ -609,9 +609,14 @@ def refresh_provider_models(timeout: int = 15) -> dict[str, Any]:
                 data["agy"] = found
         except Exception:
             pass
-    if shutil.which("opencode"):
+    try:  # also where installers put tools (OpenCode's ~/.opencode/bin), which a server started from the Dock doesn't have on PATH
+        from orchestrator.ai_providers import tool_path
+        opencode = shutil.which("opencode", path=tool_path())
+    except ImportError:
+        opencode = shutil.which("opencode")
+    if opencode:
         try:
-            res = subprocess.run(["opencode", "models"], capture_output=True, text=True, timeout=timeout)
+            res = subprocess.run([opencode, "models"], capture_output=True, text=True, timeout=timeout)
             found = parse_opencode_models_output(res.stdout)
             if res.returncode == 0 and found:
                 data["opencode"] = found

@@ -129,6 +129,36 @@ class SuiteLastRunTests(unittest.TestCase):
         self.assertIn('if key in ("test_suite", "test"):', server)  # recorded when one starts, and again when it ends
 
 
+class FreeAiSetupTests(ServerTestCase):
+    """Set up free AI: one button runs ai_setup.ensure_free_ai in the background, reporting each step."""
+
+    def test_it_runs_in_the_background_and_reports_each_step(self):
+        from orchestrator import ai_setup
+        def fake(root, progress=None, **kw):
+            for step, _ in ai_setup.STEPS:
+                progress.update(step, f"doing {step}")
+            return {"ok": True, "model": "opencode/x-free", "models": ["opencode/x-free"], "installed_now": True}
+        with patch.object(ai_setup, "ensure_free_ai", fake):
+            res, started = self.request("POST", "/api/ai-providers/free", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202, started)
+            for _ in range(50):
+                _, task = self.request("GET", f"/api/product/task/{started['task']}")
+                if task["status"] != "running":
+                    break
+                time.sleep(0.05)
+        self.assertEqual(task["status"], "done", task)
+        self.assertTrue(task["result"]["ok"])
+
+    def test_the_page_shows_a_live_checklist_and_a_way_to_connect_another(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        flow = js[js.index("const FREE_AI_STEPS"):][:4500]
+        for part in ('api("ai-providers/free"', "onProgress", "Checking this computer", "Installing OpenCode",
+                     "Testing the free models", "Turning it on for jobs", "result.fallback", "#/config/ai"):
+            self.assertIn(part, flow, part)
+        self.assertIn('item.action.type === "free_ai"', js)
+        self.assertIn('id="ai-free-setup"', js)  # also on the AI tools page
+
+
 class SentrySignInTests(ServerTestCase):
     """Connect Sentry by approving a code in the browser: the device code stays here, and the org comes from the token."""
 
