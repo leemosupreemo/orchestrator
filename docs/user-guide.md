@@ -103,6 +103,21 @@ The files in `.orchestrator/prompts/` are project-local role prompt overrides. T
 
 Use `--verify` to run setup/config checks before the wizard exits. Use `--install-workers` when the wizard adds SSH machines and should immediately run package install/check for those workers.
 
+## Trying Setup From Scratch
+
+To go through first-time setup as a new user would, as often as you like, without touching your own setup:
+
+```bash
+orchestrator sandbox            # opens the web app as on a brand-new Mac
+orchestrator sandbox --sample   # ...with a small sample git project to try "Add existing project"
+orchestrator sandbox --reset    # start over from a blank slate
+orchestrator sandbox --wipe     # delete it
+```
+
+It runs the web app the way the Mac app does on a first launch: no project yet, so setup asks for one. It uses a throwaway home folder at `~/.orchestrator-sandbox/<name>/home`, so projects, settings, sign-ins and anything setup installs (OpenCode, for example) stay there. It also can't see the AI and developer tools you've installed, so setup installs what it needs from scratch, as on a new Mac. `--keep-tools` lets it see them. Use `--name` to keep several sandboxes, for example one per scenario. It runs on port 8799, so the browser's sign-in for it is separate from your real one. Stop it with Ctrl+C; running the same command again carries on where you left off.
+
+Not isolated: the macOS Keychain, where Claude Code and GitHub's `gh` keep their sign-ins, so those may already show as signed in. An installer that starts a login shell can also see `/usr/local/bin`.
+
 ## Project Selection
 
 The easiest path is to run commands from the project root:

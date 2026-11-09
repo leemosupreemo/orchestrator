@@ -67,9 +67,12 @@ TOOL_DIRS = [Path.home() / ".opencode" / "bin", Path.home() / ".local" / "bin", 
 
 
 def tool_path(base: str | None = None) -> str:
-    """`base` (this process's PATH by default) with the installers' folders added after it."""
+    """`base` (this process's PATH by default) with the installers' folders added after it. ORCHESTRATOR_TOOL_DIRS replaces
+    those folders: `orchestrator sandbox` uses it so only tools installed inside the sandbox count."""
     parts = [p for p in (os.environ.get("PATH", "") if base is None else base).split(os.pathsep) if p]
-    return os.pathsep.join(parts + [str(d) for d in TOOL_DIRS if str(d) not in parts])
+    override = os.environ.get("ORCHESTRATOR_TOOL_DIRS")
+    dirs = [d for d in override.split(os.pathsep) if d] if override is not None else [str(d) for d in TOOL_DIRS]
+    return os.pathsep.join(parts + [d for d in dirs if d not in parts])
 API_KEYS = [(p["key"], p["key_label"], p["env"]) for p in PROVIDERS if p.get("key")]  # (setting, label, environment variable)
 
 # Providers the orchestrator runs with an explicit flag that auto-accepts all tool / permission requests

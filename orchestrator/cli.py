@@ -2586,6 +2586,15 @@ def _main(argv: list[str] | None = None) -> int:
     ui_parser.add_argument("--public-url", help="Stable public or tunnel URL for remote access")
     ui_parser.add_argument("--tailscale", action="store_true", help="Bind to Tailscale interface with stable MagicDNS URL")
 
+    sandbox_parser = subparsers.add_parser("sandbox", help="Try Orchestrator as on a brand-new Mac, in a throwaway home folder")
+    sandbox_parser.add_argument("--name", default="default", help="Keep several sandboxes side by side (default: default)")
+    sandbox_parser.add_argument("--reset", action="store_true", help="Start over: empty the sandbox first")
+    sandbox_parser.add_argument("--wipe", action="store_true", help="Delete the sandbox and exit")
+    sandbox_parser.add_argument("--sample", action="store_true", help="Add a small sample git project to try adding")
+    sandbox_parser.add_argument("--keep-tools", action="store_true", help="Let it see the AI and developer tools installed here")
+    sandbox_parser.add_argument("--port", type=int, default=8799)
+    sandbox_parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
+
     connect_parser = subparsers.add_parser("connect", help="Add this computer to your account, to use it from the web app")
     connect_parser.add_argument("--name", help="What to call this computer in the web app (default: its hostname)")
     connect_parser.add_argument("--status", action="store_true", help="Show which account this computer is connected to")
@@ -2720,6 +2729,14 @@ def _main(argv: list[str] | None = None) -> int:
             + (["--tailscale"] if getattr(args, "tailscale", False) else [])
         )
         return ui_main(ui_args)
+    if args.command == "sandbox":
+        from orchestrator import sandbox
+        try:
+            return sandbox.command(args.name, reset=args.reset, wipe_only=args.wipe, keep_tools=args.keep_tools,
+                                   sample=args.sample, port=args.port, open_browser=not args.no_open)
+        except ValueError as exc:
+            print(exc)
+            return 1
     if args.command == "connect":
         return connect_command(args.name, args.status)
     if args.command == "disconnect":
