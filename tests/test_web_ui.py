@@ -95,6 +95,55 @@ class ServerTestCase(unittest.TestCase):
         return res, data
 
 
+class SentrySignInTests(ServerTestCase):
+    """Connect Sentry by approving a code in the browser: the device code stays here, and the org comes from the token."""
+
+    def post(self, path, body=None):
+        return self.request("POST", path, body=body if body is not None else {}, headers=UI_HEADERS)
+
+    def test_it_is_offered_once_a_client_id_is_set(self):
+        from orchestrator import integrations
+        sentry = lambda settings: next(p for p in integrations.public_catalog({}, settings=settings) if p["id"] == "sentry")  # noqa: E731
+        self.assertNotIn("authorize_key", sentry({}))
+        self.assertEqual(sentry({"sentry_client_id": "cid"})["authorize_key"], "cid")
+
+    def test_approving_the_code_connects_sentry_with_the_tokens_organization(self):
+        from orchestrator import sentry_device
+        polls = [{"status": "pending"}, {"status": "done", "token": "tok", "refresh_token": "r", "expires": "2026-12-09"}]
+        connected = []
+        with patch.object(sentry_device, "client_id", lambda settings=None, env=None: "cid"), \
+             patch.object(sentry_device, "start", lambda cid: {"device_code": "secret-dev", "user_code": "ABCD-EFGH",
+                                                               "url": "https://sentry.io/oauth/device/?user_code=ABCD-EFGH", "expires_in": 600, "interval": 5}), \
+             patch.object(sentry_device, "poll", lambda cid, code: polls.pop(0)), \
+             patch.object(sentry_device, "organization", lambda token: {"slug": "acme", "name": "Acme"}), \
+             patch.object(ui, "connect_integration", lambda root, pid, values: connected.append((pid, values)) or {"ok": True, "who": "Acme"}):
+            res, started = self.post("/api/integrations/sentry/device")
+            self.assertEqual(res.status, 200, started)
+            self.assertEqual((started["user_code"], started["url"], started["interval"]), ("ABCD-EFGH", "https://sentry.io/oauth/device/?user_code=ABCD-EFGH", 5))
+            self.assertNotIn("device_code", started)  # the secret half never reaches the browser
+            _, waiting = self.post(f"/api/integrations/sentry/device/{started['id']}")
+            self.assertEqual(waiting["status"], "pending")
+            _, done = self.post(f"/api/integrations/sentry/device/{started['id']}")
+        self.assertEqual((done["status"], done["who"]), ("done", "Acme"))
+        self.assertEqual(connected, [("sentry", {"host": "sentry.io", "org": "acme", "token": "tok", "expires": "2026-12-09", "auth_type": "oauth"})])
+        res, gone = self.post(f"/api/integrations/sentry/device/{started['id']}")
+        self.assertEqual(res.status, 404)  # used up
+
+    def test_the_connect_dialog_offers_sign_in_first_and_keeps_the_token_form_for_self_hosted(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('const sentryOptionA = p.id === "sentry" && p.authorize_key ?', js)
+        self.assertIn('Advanced: use a token instead (self-hosted Sentry)', js)
+        flow = js[js.index("async function signInWithSentry"):][:3000]
+        for part in ('api("integrations/sentry/device"', "window.open(s.url", "s.user_code", "r.slow_down) interval += 5000",
+                     'r.status === "done"', '$("#dialog")?.close("cancel")', "Start again"):
+            self.assertIn(part, flow, part)
+
+    def test_without_a_client_id_it_says_to_use_a_token(self):
+        res, data = self.post("/api/integrations/sentry/device")
+        self.assertEqual(res.status, 400)
+        self.assertIn("Use a token instead", data["error"])
+
+
 class AuthTests(ServerTestCase):
     def test_api_requires_token(self):
         res, _ = self.request("GET", "/api/state", auth=False)

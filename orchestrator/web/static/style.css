@@ -1119,6 +1119,8 @@ dialog h2 {
 
 .notice { padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--warn); background: var(--warn-soft); color: var(--text); font-size: var(--type-body); line-height: 1.45; }
 .notice.bad { border-color: var(--bad); background: var(--bad-soft); }
+/* The code shown while signing in to Sentry: big enough to compare with the one on Sentry's page */
+.sentry-code { align-self: flex-start; padding: var(--space-2) var(--space-4); border: 1px dashed var(--border); border-radius: var(--r-md); background: var(--panel); font-size: var(--type-section); font-weight: var(--weight-bold); letter-spacing: .12em; }
 .notice.good { border-color: var(--ok); background: var(--ok-soft); }
 .notice .row { margin-top: var(--space-3); }
 

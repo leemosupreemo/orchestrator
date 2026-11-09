@@ -283,8 +283,8 @@ class ConnectByHandIsAdvancedTests(unittest.TestCase):
     def test_typing_a_token_by_hand_is_tucked_under_advanced(self):
         app = APP.read_text(encoding="utf-8")
         self.assertNotIn("Option B:", app[app.index("const figmaOptionA"):app.index("const dialogPromise")])
-        self.assertIn('const hasLogin = p.id === "figma" || p.id === "trello";', app)
-        self.assertIn('<details class="advanced conn-manual" id="conn-manual"><summary>Advanced: enter', app)
+        self.assertIn('const hasLogin = p.id === "figma" || p.id === "trello" || Boolean(sentryOptionA);', app)  # Sentry, once sign-in is set up
+        self.assertIn('<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : `Advanced: enter', app)
         self.assertIn("okBtn.hidden = !manual.open", app)
         self.assertIn('name="trello_login_key"', app)  # Trello's log-in needs only its API key, kept outside Advanced
         self.assertIn("<strong>1. Create an API token</strong>", app)  # Jira: one flow, its fields stay visible

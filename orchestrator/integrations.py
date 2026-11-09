@@ -793,6 +793,11 @@ def trello_app_key(settings: dict[str, Any] | None = None) -> str:
             or TRELLO_APP_KEY).strip()
 
 
+def _sentry_client_id(settings: dict[str, Any] | None = None) -> str:
+    from orchestrator import sentry_device
+    return sentry_device.client_id(settings)
+
+
 def figma_client_id(settings: dict[str, Any] | None = None) -> str:
     return (os.environ.get("ORCHESTRATOR_FIGMA_CLIENT_ID") or str((settings or {}).get("figma_client_id") or "")
             or FIGMA_CLIENT_ID).strip()
@@ -877,6 +882,8 @@ def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str
             "suggest": (suggest or {}).get(pid) or {},
             **({"authorize_key": trello_app_key(settings)} if pid == "trello" and trello_app_key(settings) else {}),
             **({"authorize_key": figma_client_id(settings)} if pid == "figma" and figma_client_id(settings) else {}),
+            # Sentry's sign-in (a code approved in the browser) once Orchestrator's Sentry app id is set; see sentry_device.py
+            **({"authorize_key": _sentry_client_id(settings)} if pid == "sentry" and _sentry_client_id(settings) else {}),
         })
     return out
 
@@ -922,6 +929,8 @@ def connect(provider_id: str, values: dict[str, str], previous: dict[str, str] |
     for extra_key in ("auth_type", "refresh_token"):
         if values.get(extra_key):
             creds[extra_key] = str(values[extra_key])
+    if not cls.token_max_days and values.get("auth_type") == "oauth" and values.get("expires"):
+        creds["expires"] = str(values["expires"])  # a signed-in token's own end date, so the usual reminder says to sign in again
     if cls.token_max_days:
         raw = str(values.get("expires") or "").strip()
         latest = date.today() + timedelta(days=cls.token_max_days)

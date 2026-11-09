@@ -637,6 +637,16 @@ Access and security:
 
 Builds running on a phone (Firebase App Distribution, TestFlight) can't be read over a cable from an SSH session, so the app ships its logs to a central store and Orchestrator pulls them back. Sentry Logs is the supported store: the app sends each log entry with a per-launch `app_session` attribute, plus one `remote_log.session_start` entry per launch carrying its build channel, version and build.
 
+### Connecting Sentry from the web app
+
+Under **Connections → Sentry**, **Sign in with Sentry** opens Sentry with a code filled in. Check that the code matches the one Orchestrator shows, pick your organization, and approve. Orchestrator then saves the connection itself: there's no token to create, and the organization comes with the sign-in. It asks for `org:read`, `project:read`, `event:read` and `event:write` (`event:write` lets jobs comment on and resolve issues). Sentry's sign-in tokens last 30 days; the usual reminder appears before it runs out, and you sign in again. Device Logs uses the same connection.
+
+Self-hosted Sentry, or a computer where sign-in isn't set up, uses **Advanced: use a token instead**: a personal token with those scopes, plus the organization slug.
+
+Sign-in needs Orchestrator registered once as a public OAuth application on sentry.io (in Sentry's developer or API application settings). It needs no redirect URL, because the device flow doesn't use one. Put its client ID in `ORCHESTRATOR_SENTRY_CLIENT_ID`, in the `sentry_client_id` setting, or in `CLIENT_ID` in `orchestrator/sentry_device.py` to turn it on for everyone. Orchestrator never needs the client secret.
+
+### From the command line
+
 One-time setup, from the project root:
 
 ```bash

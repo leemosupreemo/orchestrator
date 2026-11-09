@@ -4192,6 +4192,55 @@ def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) ->
     return {"ok": True, "who": who}
 
 
+# Sentry sign-ins in progress: id -> the secret device code, the client id, the project and when the code runs out.
+# The browser only ever sees the id, the code to type and the page to approve it on.
+SENTRY_SIGNINS: dict[str, dict[str, Any]] = {}
+_SENTRY_LOCK = threading.Lock()
+
+
+def start_sentry_signin(root: Path) -> dict[str, Any]:
+    from orchestrator import sentry_device
+    cid = sentry_device.client_id(read_settings(root))
+    try:
+        started = sentry_device.start(cid)
+    except sentry_device.DeviceError as exc:
+        raise UIError(str(exc)) from exc
+    sid = secrets.token_urlsafe(9)
+    with _SENTRY_LOCK:
+        now = time.time()
+        for old in [k for k, v in SENTRY_SIGNINS.items() if v["until"] < now]:
+            SENTRY_SIGNINS.pop(old, None)
+        SENTRY_SIGNINS[sid] = {"device_code": started["device_code"], "cid": cid, "root": str(root),
+                               "until": now + started["expires_in"]}
+    return {"id": sid, "user_code": started["user_code"], "url": started["url"],
+            "interval": started["interval"], "expires_in": started["expires_in"]}
+
+
+def poll_sentry_signin(root: Path, sid: str) -> dict[str, Any]:
+    """Check once (the page paces itself by Sentry's interval). When approved, connect Sentry like the token form does."""
+    from orchestrator import sentry_device
+    with _SENTRY_LOCK:
+        pending = SENTRY_SIGNINS.get(sid)
+    if not pending or pending["root"] != str(root):
+        raise UIError("That sign-in is no longer around. Start again.", HTTPStatus.NOT_FOUND)
+    if pending["until"] < time.time():
+        SENTRY_SIGNINS.pop(sid, None)
+        return {"status": "expired", "message": "The code ran out before it was approved. Start again for a new one."}
+    try:
+        result = sentry_device.poll(pending["cid"], pending["device_code"])
+        if result["status"] != "done":
+            if result["status"] != "pending":
+                SENTRY_SIGNINS.pop(sid, None)
+            return result
+        org = sentry_device.organization(result["token"])
+    except sentry_device.DeviceError as exc:
+        raise UIError(str(exc)) from exc
+    SENTRY_SIGNINS.pop(sid, None)
+    connected = connect_integration(root, "sentry", {"host": "sentry.io", "org": org["slug"], "token": result["token"],
+                                                     "expires": result["expires"], "auth_type": "oauth"})
+    return {"status": "done", "who": connected.get("who") or org["name"]}
+
+
 def save_integration_options(root: Path, provider_id: str, raw: Any) -> dict[str, Any]:
     cls = integrations.PROVIDERS.get(provider_id)
     if not cls or not cls.can_write:
@@ -6765,6 +6814,17 @@ class UIHandler(BaseHTTPRequestHandler):
             self._require_owner("change connected app settings")
             self._json({"options": save_integration_options(root, parts[1], self._body().get("options"))})
             self._audit("settings_changed", part="integrations")
+        elif method == "POST" and parts == ["integrations", "sentry", "device"]:
+            self._require_owner("change connected app credentials")
+            self._body()
+            self._json(start_sentry_signin(root))
+        elif method == "POST" and len(parts) == 4 and parts[:3] == ["integrations", "sentry", "device"]:
+            self._require_owner("change connected app credentials")
+            self._body()
+            result = poll_sentry_signin(root, parts[3])
+            if result.get("status") == "done":
+                self._audit("settings_changed", part="integrations")
+            self._json(result)
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "connect":
             self._require_owner("change connected app credentials")
             self._json(connect_integration(root, parts[1], self._body().get("values") or {}))

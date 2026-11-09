@@ -3746,6 +3746,45 @@ function clarificationThread(history) {
     <div class="clarify-msg clarify-you"><span class="clarify-who">You</span><p>${esc(h.answer || "")}</p></div>`).join("");
 }
 
+// Sentry's device sign-in, inside the Connect Sentry dialog: open Sentry's approval page with the code filled in, show the
+// code to check against, then ask every few seconds (as often as Sentry allows) until it's approved, refused or runs out.
+async function signInWithSentry() {
+  const btn = $("#sentry-signin-btn"), wait = $("#sentry-signin-wait");
+  if (!btn || !wait) return;
+  const again = (html) => { wait.innerHTML = html; btn.hidden = false; btn.disabled = false; btn.textContent = "Start again ↗"; };
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+  let s;
+  try { s = await api("integrations/sentry/device", { method: "POST", body: {} }); }
+  catch (err) { again(`<div class="notice bad">${esc(err.message)}</div>`); return; }
+  window.open(s.url, "_blank", "noopener");
+  btn.hidden = true;
+  wait.hidden = false;
+  wait.innerHTML = `<p>In the Sentry tab, check that it shows this code, then approve:</p>
+    <div class="sentry-code mono" aria-label="Code">${esc(s.user_code)}</div>
+    <p class="muted" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Waiting for you to approve… <a href="${esc(s.url)}" target="_blank" rel="noopener">Open Sentry again ↗</a></p>`;
+  let interval = Math.max(1, s.interval || 5) * 1000;
+  const until = Date.now() + (s.expires_in || 600) * 1000;
+  while (Date.now() < until && wait.isConnected) {
+    await new Promise((r) => setTimeout(r, interval));
+    if (!wait.isConnected) return; // the dialog was closed
+    let r;
+    try { r = await api(`integrations/sentry/device/${encodeURIComponent(s.id)}`, { method: "POST", body: {} }); }
+    catch (err) { again(`<div class="notice bad">${esc(err.message)}</div>`); return; }
+    if (r.slow_down) interval += 5000;
+    if (r.status === "pending") continue;
+    if (r.status === "done") {
+      $("#dialog")?.close("cancel");
+      toast(`Sentry connected${r.who ? ` (${r.who})` : ""}`);
+      route();
+      return;
+    }
+    again(`<div class="notice bad">${esc(r.message || "The sign-in stopped. Start again.")}</div>`);
+    return;
+  }
+  if (wait.isConnected) again(`<div class="notice bad">The code ran out before it was approved. Start again for a new one.</div>`);
+}
+
 pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
@@ -9203,6 +9242,15 @@ pages.connections = async (_, query) => {
               <div><button type="button" class="btn small primary" id="trello-dialog-quick-btn">Log in &amp; authorize with Trello ↗</button></div>
             </div>
 ` : "";
+          // Sentry: approve a code in the browser (device sign-in), once Orchestrator's Sentry app id is set. No token to make,
+          // and the organization comes with it. The token form stays under Advanced, for self-hosted Sentry.
+          const sentryOptionA = p.id === "sentry" && p.authorize_key ? `
+            <div class="card stack mb-16 conn-auth-box" id="sentry-signin">
+              <strong>Sign in with Sentry</strong>
+              <p class="muted">Approve Orchestrator in your browser. There's no token to create, and your organization is filled in for you.</p>
+              <div><button type="button" class="btn small primary" id="sentry-signin-btn">Sign in with Sentry ↗</button></div>
+              <div id="sentry-signin-wait" class="stack" hidden></div>
+            </div>` : "";
           const jiraOptionA = p.id === "jira" ? `
             <div class="card stack mb-16 conn-auth-box">
               <strong>1. Create an API token</strong>
@@ -9211,14 +9259,15 @@ pages.connections = async (_, query) => {
             </div>
             <div class="conn-auth-divider mb-8"><strong>2. Fill in your site and paste the token</strong></div>` : "";
           // Figma and Trello sign you in with a button; typing a token by hand is the fallback, tucked under Advanced.
-          const hasLogin = p.id === "figma" || p.id === "trello";
+          const hasLogin = p.id === "figma" || p.id === "trello" || Boolean(sentryOptionA);
           const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : "";
           const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
             ${figmaOptionA}
             ${trelloOptionA}
+            ${sentryOptionA}
             ${jiraOptionA}
             ${genericTokenLink}
-            ${hasLogin ? `<details class="advanced conn-manual" id="conn-manual"><summary>Advanced: enter ${p.id === "figma" ? "a personal access token" : "a key and token"} by hand</summary><div class="stack">` : ""}
+            ${hasLogin ? `<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : `Advanced: enter ${p.id === "figma" ? "a personal access token" : "a key and token"} by hand`}</summary><div class="stack">` : ""}
             ${Object.keys(p.suggest || {}).length ? `<p class="muted">Filled in from the Sentry setup found in this project. Check it, then add a token.</p>` : ""}
             ${p.fields.map((f) => `
             <label class="field"><span>${esc(f.label)}</span>
@@ -9286,6 +9335,7 @@ pages.connections = async (_, query) => {
               connectFigma(cid);
             });
           }
+          $("#sentry-signin-btn")?.addEventListener("click", () => signInWithSentry());
           if (quickTrello) {
             quickTrello.addEventListener("click", () => {
               const keyInput = $("#dialog-body input[name='trello_login_key']") || $("#dialog-body input[name='key']");
