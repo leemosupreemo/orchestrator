@@ -883,6 +883,15 @@ pre.file {
 details.raw summary { cursor: pointer; color: var(--muted); padding: var(--space-3) var(--space-4); }
 details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow: auto; }
 .question { font-size: var(--type-body); font-weight: var(--weight-medium); }
+/* A planner's questions and the answers, as a conversation: the AI on the left, you on the right */
+.clarify-card { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.clarify-msg { display: flex; flex-direction: column; gap: var(--space-1); max-width: 85%; padding: var(--space-2) var(--space-3); border-radius: var(--r-lg); }
+.clarify-msg p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.clarify-ai { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); }
+.clarify-you { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.clarify-reply { display: flex; align-items: flex-end; gap: var(--space-2); }
+.clarify-reply .field { flex: 1 1 auto; margin: 0; }
 
 /* terminal */
 .term-wrap { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; }

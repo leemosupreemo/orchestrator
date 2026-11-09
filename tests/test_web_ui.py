@@ -727,6 +727,16 @@ process.stdout.write(JSON.stringify({
         self.assertIn("back: chosen && connected ? backName", js)
         self.assertIn('Manage computers...', js[js.index("function renderComputerSelect"):][:3000])
 
+    def test_freestyle_is_a_job_type_with_one_box_and_its_questions_read_as_a_conversation(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('["freestyle", "Freestyle", "Say it your way"]', js)
+        fields = js[js.index('case "freestyle":'):][:1500]
+        self.assertIn('name="summary" required', fields)
+        self.assertIn("asks a question or two", fields)
+        job = js[js.index("pages.job = async"):]
+        self.assertIn("clarificationThread(job.clarification_history)", job)
+        self.assertIn("function clarificationThread", js)
+
     def test_sign_in_is_a_plain_column_with_the_animation_above_the_options(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
@@ -2619,6 +2629,21 @@ class ActionTests(unittest.TestCase):
         for kind in ("feature", "design"):
             self.assertIn("record each choice in `assumptions`", self.spec_of(ui.build_new_job({"type": kind, "summary": "Something"}, self.root)))
         self.assertNotIn("--spec-file", ui.build_new_job({"type": "quick", "summary": "Tweak"}, self.root))
+
+    def test_freestyle_is_planned_as_a_feature_marked_freestyle(self):
+        long = "Make the lobby feel faster\n" + "and more " * 200
+        argv = ui.build_new_job({"type": "freestyle", "summary": long}, self.root)
+        self.assertEqual(argv[4:7], ["script", "new_job.py", "feature"])
+        self.assertIn("--freestyle", argv)
+        self.assertEqual(argv[argv.index("--summary") + 1], "Make the lobby feel faster")
+        spec = self.spec_of(argv)
+        self.assertIn("REQUEST (in their own words", spec)
+        self.assertIn("and more and more", spec)  # long requests are fine
+        self.assertNotIn("Anything left open", spec)  # its own instructions, added when it's planned
+        job = {"job_id": "x", "type": "feature-plan", "freestyle": True, "status": "planned"}
+        (self.root / "x.json").write_text(json.dumps(job))
+        summary = ui.job_summary(self.root / "x.json", job)
+        self.assertEqual(summary["kind"], "Freestyle")
 
     def test_the_old_you_decide_toggle_is_gone(self):
         argv = ui.build_new_job({"type": "bug", "summary": "x", "recommend": True}, self.root)

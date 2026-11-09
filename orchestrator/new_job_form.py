@@ -28,6 +28,33 @@ LATITUDE_NOTE = (
     "Only stop to ask when a wrong guess would be costly to undo or the goal itself is unclear."
 )
 
+# Freestyle: the request in the person's own words, with no job type chosen. It's planned as a feature, and the planner
+# may ask a question or two first, then follow up once they answer, for at most this many rounds.
+FREESTYLE_MAX_ROUNDS = 3
+
+
+def freestyle_note(asked: int) -> str:
+    """The planner's instructions for a freestyle request, given how many rounds of questions it has already asked."""
+    note = (
+        "\n\n## Freestyle request\n"
+        "The person wrote this in their own words, without choosing a kind of job. Work out what they want (something new, "
+        "a fix, a design change, tests, or a small edit) and plan it as that.\n"
+    )
+    if asked >= FREESTYLE_MAX_ROUNDS:
+        return note + (
+            f"You've asked {asked} times already. Don't ask again: plan it now, and record each thing you had to decide in "
+            "`assumptions` with a one-line reason.\n"
+        )
+    return note + (
+        "If something that matters is unclear (what done looks like, which part of the product, or a choice only they can "
+        "make), ask before planning: put one or two short questions in `clarification_needed`, numbered, in plain words, "
+        "each answerable in a sentence. Don't ask what the code or the product documents already answer, and don't ask "
+        "for permission. When their answers are above, use them, and ask a follow-up only if an answer raised something "
+        f"new that matters: up to {FREESTYLE_MAX_ROUNDS} rounds in all (you've asked {asked} times so far). When it's clear "
+        "enough, plan it and record anything you assumed in `assumptions`.\n"
+    )
+
+
 UPLOAD_LIMIT = 25 * 1024 * 1024
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 LOG_EXTS = {".log", ".txt", ".json", ".md", ".crash", ".ips"}
@@ -79,6 +106,9 @@ def compose(job_type: str, f: dict[str, Any]) -> tuple[str, str]:
     if job_type == "quick":
         return summary, ""
     short = summary.splitlines()[0][:500]
+    if job_type == "freestyle":
+        spec = f"REQUEST (in their own words, no job type chosen):\n{summary}"
+        return short, spec + (f"\n\nADDITIONAL DETAILS:\n{details}" if details else "")
     if job_type == "bug":
         spec = f"SUMMARY: {summary}\n\nREPRO STEPS:\n{_clean(f.get('repro'))}\n\nEXPECTED BEHAVIOR:\n{_clean(f.get('expected'))}"
     elif job_type == "coverage":

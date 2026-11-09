@@ -123,7 +123,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSIONS_KEPT = 50
 IDLE_PROMPT_SECONDS = 20
 OUTPUT_MAX_WAIT_SECONDS = 20  # a long-poll answers within this, well inside the 100 s proxies such as Cloudflare allow
-JOB_TYPES = ["bug", "feature", "design", "coverage", "quick"]
+JOB_TYPES = ["bug", "feature", "design", "coverage", "quick", "freestyle"]
 BRANCH_MODES = ["new", "current", "manual"]
 # Runs a child as the leader of a new session with the pty as its controlling
 # terminal, so /dev/tty (getpass) and job-control signals behave as in a real
@@ -886,7 +886,7 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "display_id": display_id,
         "title": job.get("title") or job.get("summary") or path.stem,
         "type": kind,
-        "kind": KIND_LABELS.get(str(kind), str(kind or "Job").replace("-", " ").capitalize()),
+        "kind": "Freestyle" if job.get("freestyle") else KIND_LABELS.get(str(kind), str(kind or "Job").replace("-", " ").capitalize()),
         "status": job.get("status") or "unknown",
         "approach": approach,
         "state": job_state(job),
@@ -3118,7 +3118,7 @@ def upload_display_name(path: Path) -> str:
 
 def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     job_type = _choice(params, "type", JOB_TYPES, "bug")
-    summary_in = _text(params, "summary", required=True, limit=20_000 if job_type in ("quick", "bug") else 500)
+    summary_in = _text(params, "summary", required=True, limit=20_000 if job_type in ("quick", "bug", "freestyle") else 500)
     fields = {"summary": summary_in, "details": _text(params, "spec", limit=200_000), "repro": _text(params, "repro", limit=20_000),
               "expected": _text(params, "expected", limit=20_000), "vibe": _text(params, "vibe", limit=200),
               "subsystems": _text(params, "subsystems", limit=5_000), "test_cases": _text(params, "test_cases", limit=20_000)}
@@ -3179,7 +3179,10 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
     if job_type == "quick":  # the terminal reads only the instruction for a quick change, so anything extra rides along in it
         summary = (summary + spec).strip()
         spec = ""
-    argv = orchestrator_argv("script", "new_job.py", job_type, "--summary", summary)
+    # Freestyle is planned as a feature, marked so the planner may ask first and the job is labelled Freestyle.
+    argv = orchestrator_argv("script", "new_job.py", "feature" if job_type == "freestyle" else job_type, "--summary", summary)
+    if job_type == "freestyle":
+        argv.append("--freestyle")
     if params.get("_feature"):
         argv += ["--feature", params["_feature"]]
     if params.get("_epic"):

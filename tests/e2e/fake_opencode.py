@@ -12,6 +12,7 @@ directory) or a review. Behaviour switches come from $FAKE_LLM_BEHAVIOUR, a comm
   prd_update     when asked whether a finished job changes the product requirements, add a feature to them
   prd_gut        ...answer with a document whose pitch has been emptied (which must be refused)
   concerns_once  the first verification raises concerns (the orchestrator should accept the suggestions and carry on)
+  asks_twice     a freestyle request: ask a question, then a follow-up once it's answered, then plan
 """
 from __future__ import annotations
 
@@ -132,7 +133,11 @@ def main() -> int:
         target = Path("docs/product/prd.md")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("# written by an agentic model\n")
-    if role == "planner":
+    if role == "planner" and "asks_twice" in BEHAVIOUR and "## Freestyle request" in prompt and prompt.count("**Answer / Decision**") < 2:
+        answered = prompt.count("**Answer / Decision**")
+        question = ["1. Which words should get the bonus? 2. How many points?", "Should punctuation count towards the length?"][answered]
+        print("```json\n" + json.dumps({**plan(), "clarification_needed": question}) + "\n```")
+    elif role == "planner":
         if "prose_first" in BEHAVIOUR and planner_calls == 1:
             print("I looked through the code and wrote my plan to plan.json. It adds the bonus in score().")
         else:

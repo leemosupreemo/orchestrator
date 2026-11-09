@@ -226,6 +226,54 @@ class PlanAnEpicTests(unittest.TestCase):
         self.assertEqual([l["ref"] for l in job.get("external_links") or []], ["WORD-3"])
 
 
+class FreestyleTests(unittest.TestCase):
+    """A freestyle request (no job type chosen) is planned as a feature, and the planner may ask: a question, a follow-up
+    once that's answered, then the plan. Each re-plan is shown every question and answer so far."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.project = p = DummyProject([FREE]).create().fake_models("asks_twice")
+        cls.steps = {"plan": p.orchestrator("script", "new_job.py", "feature", "--freestyle", "--summary", "make long words worth more",
+                                            "--branch-mode", "new", "--no-dispatch", "--planner", FREE, "--builder", FREE, "--reviewer", FREE,
+                                            "--allowed-models", FREE, "--allowed-machines", "local")}
+        cls.first = p.job()
+        cls.steps["answer1"] = action(p, "answer", "--answer", "Seven letters or more, 10 points")
+        cls.second = p.job()
+        cls.steps["answer2"] = action(p, "answer", "--answer", "No, only letters count")
+        cls.final = p.job()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def explain(self):
+        return "\n".join(f"$ {k} (exit {v.returncode})\n{v.stdout[-1200:]}\n{v.stderr[-600:]}" for k, v in self.steps.items())
+
+    def test_it_asks_then_follows_up_then_plans(self):
+        self.assertEqual([s.returncode for s in self.steps.values()], [0, 0, 0], self.explain())
+        self.assertEqual(self.first["status"], "human-needed", self.explain())
+        self.assertIn("Which words", self.first["human_clarification_question"])
+        self.assertEqual(self.second["status"], "human-needed", self.explain())
+        self.assertIn("punctuation", self.second["human_clarification_question"])
+        self.assertFalse(self.final.get("human_clarification_question"), self.explain())
+        self.assertNotEqual(self.final["status"], "human-needed")
+        self.assertEqual([h["answer"] for h in self.final["clarification_history"]], ["Seven letters or more, 10 points", "No, only letters count"])
+
+    def test_it_stays_a_freestyle_job_planned_as_a_feature(self):
+        self.assertTrue(self.final.get("freestyle"))
+        self.assertEqual(self.final["type"], "feature-plan")
+
+    def test_every_round_is_told_what_was_already_asked_and_answered(self):
+        prompts = [c["prompt"] for c in project_calls(self.project, "planner")]
+        self.assertGreaterEqual(len(prompts), 3, self.explain())
+        self.assertIn("## Freestyle request", prompts[0])
+        self.assertNotIn("**Answer / Decision**", prompts[0])
+        self.assertIn("Seven letters or more, 10 points", prompts[1])
+        self.assertIn("Seven letters or more, 10 points", prompts[-1])
+        self.assertIn("No, only letters count", prompts[-1])
+        self.assertIn("asked 2 times", prompts[-1])
+
+
 class LivingPrdTests(unittest.TestCase):
     """When a job finishes the worker asks whether it changes the product requirements, and keeps them true."""
 

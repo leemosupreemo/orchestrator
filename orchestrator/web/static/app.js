@@ -3668,6 +3668,12 @@ function wireJobPreview(view, id) {
   });
 }
 
+// The planner's questions and the person's answers, oldest first, read as a conversation.
+function clarificationThread(history) {
+  return (history || []).map((h) => `<div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p>${esc(h.question || "")}</p></div>
+    <div class="clarify-msg clarify-you"><span class="clarify-who">You</span><p>${esc(h.answer || "")}</p></div>`).join("");
+}
+
 pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
@@ -3974,8 +3980,16 @@ pages.job = async ([id]) => {
       ${unvalidatedTestsHtml}
       ${defectsHtml}
 
-      ${s.question ? `<section class="card mb-16"><div class="card-h"><h2>Question from the planner</h2></div><div class="card-b stack">
-        <p class="question">${clamped(s.question, 320)}</p>${s.state.next?.action === "answer" ? "" : `<div><button class="btn" ${act("answer", { job: s.id })}>Answer</button></div>`}</div></section>` : ""}
+      ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : "A question before planning"}</h2></div><div class="card-b stack">
+        ${clarificationThread(job.clarification_history)}
+        <div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p class="question">${esc(s.question)}</p></div>
+        <form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
+          <label class="field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
+          <button type="submit" class="btn primary">Send</button>
+        </form>
+        <small class="hint-text">The plan is redone with your answer. You approve it before anything is built.</small></div></section>`
+        : (job.clarification_history || []).length ? `<section class="card mb-16"><details class="fold"><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
+          <div class="card-b stack">${clarificationThread(job.clarification_history)}</div></details></section>` : ""}
 
       ${(data.blockers || []).map((b) => `<div class="banner attention"><p><strong>This job can't start yet.</strong> ${esc(b.text)}${b.route ? ` <a class="btn small" href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</p></div>`).join("")}
 
@@ -4163,6 +4177,13 @@ pages.job = async ([id]) => {
       hydrateAuthImages(); // the UX and design check's screenshots
       wireImagePreviews(view);
       wireJobPreview(view, id);
+      const reply = view.querySelector("#clarify-reply");
+      reply?.answer.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); reply.requestSubmit(); } });
+      reply?.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const text = reply.answer.value.trim();
+        if (text) runAction("answer", { job: reply.dataset.job, answer: text });
+      });
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const bodyHtml = `
           <div class="stack gap-12">
@@ -4302,6 +4323,7 @@ const JOB_TYPE_INFO = [
   ["design", "Design", "A screen or flow"],
   ["coverage", "Tests", "Add missing tests"],
   ["quick", "Quick change", "A small tweak"],
+  ["freestyle", "Freestyle", "Say it your way"],
 ];
 const NJ_VIBES = [["minimalist", "Minimalist: clean, lots of space"], ["glassmorphism", "Glassy: frosted glass, vivid colour"], ["brutalist", "Bold: raw, high contrast"],
   ["high-energy", "Playful: animated, dynamic"], ["gothic-noir", "Dark and moody"], ["other", "Something else…"]];
@@ -4489,6 +4511,9 @@ pages.new = async (_, query) => {
           </div>
           ${logPicker()}` };
       }
+      case "freestyle":
+        return { picker: null, html: `${field("What do you want?", `<textarea name="summary" required rows="6" maxlength="20000" placeholder="Anything: an idea, a problem, a change. Say it however you like.">${esc(v.summary)}</textarea>`,
+          "The AI works out what kind of work it is. If something important is unclear, it asks a question or two first, and you answer on the job's page.")}` };
       default:
         return { picker: null, html: `${field("What should change?", `<textarea name="summary" required rows="4" maxlength="20000" placeholder="e.g. Rename Foo to Bar everywhere and update the docs">${esc(v.summary)}</textarea>`, "This goes straight to the builder with no separate planning step.")}` };
     }

@@ -42,8 +42,26 @@ class ComposeTests(unittest.TestCase):
         short, _ = N.compose("feature", {"summary": "x" * 600 + "\nsecond"})
         self.assertEqual(len(short), 500)
 
+    def test_freestyle_is_the_request_in_their_own_words(self):
+        short, spec = N.compose("freestyle", {"summary": "The lobby feels slow and I want people to find a game faster\nmaybe show who's online"})
+        self.assertEqual(short, "The lobby feels slow and I want people to find a game faster")
+        self.assertTrue(spec.startswith("REQUEST (in their own words, no job type chosen):\nThe lobby feels slow"))
+        self.assertIn("maybe show who's online", spec)
+
+    def test_freestyle_asks_a_question_or_two_when_it_matters_and_stops_after_three_rounds(self):
+        first = N.freestyle_note(0)
+        self.assertIn("## Freestyle request", first)
+        self.assertIn("`clarification_needed`", first)
+        self.assertIn("one or two", first)
+        self.assertIn("follow-up", first)
+        self.assertIn(f"up to {N.FREESTYLE_MAX_ROUNDS}", first)
+        done = N.freestyle_note(N.FREESTYLE_MAX_ROUNDS)
+        self.assertIn("Don't ask again", done)
+        self.assertNotIn("one or two short", done)
+        self.assertEqual(N.FREESTYLE_MAX_ROUNDS, 3)
+
     def test_a_summary_is_required(self):
-        for kind in ("bug", "feature", "design", "coverage", "quick"):
+        for kind in ("bug", "feature", "design", "coverage", "quick", "freestyle"):
             with self.assertRaises(N.FormError):
                 N.compose(kind, {"summary": "  "})
 

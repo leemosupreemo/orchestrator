@@ -27,6 +27,7 @@ from common import (
     prompt_confirm,
     flush_stdin,
     StatusBar,
+    format_clarification_history,
 )
 from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
 from model_router import AUTO, ModelRole, auto_assign_roles, get_prioritized_models, profile_job
@@ -37,6 +38,7 @@ from manual_run import capture_logs
 import test_cases as tc
 from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import prd
+from orchestrator import new_job_form
 from orchestrator import plan_size, slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -472,6 +474,8 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
     parser.add_argument("--feature", help="Put the new job under this feature (its id)")
     parser.add_argument("--epic", help="This job plans that epic (its id): it takes the place of the epic's waiting job")
+    parser.add_argument("--freestyle", action="store_true",
+                        help="The request is in the person's own words with no job type chosen: plan it as a feature, and ask first if it's unclear")
     # Set by "Build the plan" (orchestrator/plan_run.py): the run this job belongs to.
     parser.add_argument("--plan-run", help=argparse.SUPPRESS)
     parser.add_argument("--summary", help="Summary or area of focus for the job (skips interactive input prompt if provided)")
@@ -496,6 +500,7 @@ def main(args_override: list[str] | None = None) -> None:
                 or team.get(role) or AUTO)
 
     planner, builder, reviewer = chosen("planner"), chosen("builder"), chosen("reviewer")
+    freestyle = bool(args.freestyle or saved.get("freestyle"))  # kept through re-plans
 
     # Load spec from file or URL if provided
     file_spec_content = ""
@@ -835,6 +840,12 @@ def main(args_override: list[str] | None = None) -> None:
             product_context = prd.context_block(ROOT)
             if product_context:
                 prompt_template = f"{prompt_template}\n{product_context}"
+            # Every question asked and answered so far, so a re-plan (and a follow-up question) builds on all of them.
+            asked_so_far = (existing_job or {}).get("clarification_history") or []
+            if asked_so_far:
+                revision_context += f"\n\n{format_clarification_history(asked_so_far)}\n"
+            if freestyle:
+                revision_context += new_job_form.freestyle_note(len(asked_so_far))
             llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
         
             llm_sessions = []
@@ -1172,6 +1183,8 @@ def main(args_override: list[str] | None = None) -> None:
             job["plan_run"] = args.plan_run
         if args.epic:
             job["epic"] = args.epic
+        if freestyle:
+            job["freestyle"] = True
         
         # Special override for design-to-feature transition
         if existing_job and args.job_type == "feature":
