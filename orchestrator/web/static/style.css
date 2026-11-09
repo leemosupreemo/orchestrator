@@ -3676,13 +3676,28 @@ body[data-page="run"] .topbar-actions {
 }
 
 /* Job page: the context rail beside the job on wide screens, under its top section on narrow ones */
-.job-layout { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "rail" "body"; }
+.job-layout { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "rail" "preview" "body"; }
 .job-top { grid-area: top; min-width: 0; }
+.job-layout > .job-preview { grid-area: preview; min-width: 0; }
 .job-body { grid-area: body; min-width: 0; }
 .job-rail { grid-area: rail; min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-4); }
 @media (min-width: 1100px) {
-  .job-layout { grid-template-columns: minmax(0, 1fr) 300px; grid-template-areas: "top rail" "body rail"; column-gap: var(--space-5); align-items: start; }
+  .job-layout { grid-template-columns: minmax(0, 1fr) 300px; grid-template-areas: "top rail" "preview rail" "body rail"; column-gap: var(--space-5); align-items: start; }
   .job-rail { position: sticky; top: var(--space-4); }
+}
+/* Side by side: the job on the left, its preview on the right, kept in view and as tall as the window */
+.job-preview-layout { display: none; }
+@media (min-width: 1280px) {
+  .job-preview-layout { display: inline-flex; }
+  .job-layout.split { grid-template-columns: minmax(360px, 1fr) minmax(0, 1.35fr); grid-template-areas: "top preview" "rail preview" "body preview"; }
+  .job-layout.split > .job-rail { position: static; }
+  /* The whole card fits the window (its controls never scroll out of reach); the frame takes what's left */
+  .job-layout.split > .job-preview { position: sticky; top: var(--space-4); align-self: start; display: flex; flex-direction: column;
+    height: calc(100vh - 120px); min-height: 520px; }
+  .job-layout.split > .job-preview > .card-b { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+  .job-layout.split .job-preview-frame { flex: 1 1 auto; height: auto; min-height: 280px; }
+  .job-layout.split .job-stepper { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2) var(--space-3); }
+  .job-layout.split .job-step-arrow { display: none; }
 }
 .rail-h { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: var(--control-sm); }
 .rail-empty { margin: 0; padding: var(--space-3) var(--space-4); border: 1px dashed var(--border); border-radius: var(--radius); font-size: var(--type-secondary); }
@@ -4701,6 +4716,9 @@ body.route-loading::before { content: ""; position: fixed; top: 0; left: 0; righ
 .job-preview-pins { position: absolute; inset: 0; z-index: var(--z-inner); cursor: crosshair; background: color-mix(in srgb, var(--accent) 6%, transparent); outline: 2px dashed var(--accent); outline-offset: -2px; }
 .job-preview-hint { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); padding: var(--space-1) var(--space-3); border-radius: var(--r-pill); background: var(--accent); color: #fff; font-size: var(--type-secondary); pointer-events: none; }
 .job-preview-pin { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--bad); border: 3px solid #fff; box-shadow: var(--shadow); }
+.job-preview-ask { align-items: flex-end; }
+.job-preview-ask .field { flex: 1 1 auto; margin: 0; }
+.job-preview-ask textarea { resize: vertical; min-height: var(--control-lg); }
 .job-preview-problems { padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--border)); }
 .job-preview-problems-count { flex: 1 1 200px; color: var(--bad); }
 .job-preview-problem-list { margin: var(--space-2) 0 0; padding-left: var(--space-5); max-height: 220px; overflow: auto; overflow-wrap: anywhere; }

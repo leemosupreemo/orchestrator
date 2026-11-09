@@ -3293,6 +3293,8 @@ const PREVIEW_DEVICES = [["desktop", "Desktop"], ["tablet", "Tablet"], ["phone",
 // browser turned that off. Each branch starts once per visit, so stopping a preview keeps it stopped.
 const PREVIEW_AUTOSTARTED = new Set();
 const previewAutoStart = () => { try { return localStorage.getItem("orchestrator.previewAutoStart") !== "off"; } catch { return true; } };
+// On wide screens the preview sits beside the job, like an app builder's chat and canvas; "Stacked" puts it back in line.
+const previewLayout = () => { try { return localStorage.getItem("orchestrator.previewLayout") === "stacked" ? "stacked" : "split"; } catch { return "split"; } };
 const PROBLEM_LABELS = { error: "Error", rejection: "Unhandled rejection", console: "console.error", resource: "Didn't load", request: "Request failed" };
 
 function jobPreviewCard(p, runs) {
@@ -3316,6 +3318,7 @@ function jobPreviewCard(p, runs) {
         <button type="button" class="btn small${liveFirst ? "" : " on"}" data-preview-tab="link" aria-pressed="${!liveFirst}" data-url="${esc(hosted.url)}">Link</button></div>` : ""}
       ${shown ? `<div class="row gap-4 job-preview-devices" role="group" aria-label="Screen size">
         ${PREVIEW_DEVICES.map(([key, label]) => `<button type="button" class="btn small" data-preview-device="${key}" aria-pressed="false">${label}</button>`).join("")}</div>
+      <button type="button" class="btn small ghost job-preview-layout" id="job-preview-layout" title="Show the preview beside the job or under it">${previewLayout() === "split" ? "Stacked" : "Side by side"}</button>
       <a class="btn small ghost" id="job-preview-open" href="${esc(shown.url)}" target="_blank" rel="noopener">Open ↗</a>` : ""}
     </div>
     <div class="card-b stack gap-12">
@@ -3331,6 +3334,10 @@ function jobPreviewCard(p, runs) {
         </div>
         <details><summary class="t-secondary">Show them</summary><ul class="job-preview-problem-list mono t-secondary" id="job-preview-problem-list"></ul></details>
       </div>
+      <form class="job-preview-ask row gap-8" id="job-preview-ask">
+        <label class="field"><span class="sr-only">Describe a change</span><textarea name="text" rows="2" required placeholder="Describe a change… (Enter sends, Shift+Enter for a new line)"></textarea></label>
+        <button type="submit" class="btn go">Send</button>
+      </form>
       <div class="job-preview-pickbar row gap-8 align-center wrap" id="job-preview-pickbar" hidden>
         <span class="t-secondary" id="job-preview-picked" aria-live="polite"></span>
         <button type="button" class="btn small go" id="job-preview-describe" disabled>Describe the change</button>
@@ -3485,6 +3492,22 @@ function wireJobPreview(view, id) {
     runAction("debug", { job: id, feedback }, { skipConfirm: true });
   };
 
+  card.querySelector("#job-preview-layout")?.addEventListener("click", () => {
+    try { localStorage.setItem("orchestrator.previewLayout", previewLayout() === "split" ? "stacked" : "split"); } catch { /* storage blocked */ }
+    route();
+  });
+  const ask = card.querySelector("#job-preview-ask");
+  ask?.text.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask.requestSubmit(); }
+  });
+  ask?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = ask.text.value.trim();
+    if (!text) return;
+    const where = card.querySelector(".on[data-preview-tab]")?.dataset.previewTab || (frame.src.startsWith("http://") ? "live" : "link");
+    ask.text.value = "";
+    sendFeedback(text, `Looking at the ${where === "live" ? "live" : "published"} preview of ${branch} (${frame.src}, ${box?.dataset.device || "desktop"} width): ${text}`);
+  });
   card.querySelector("#job-preview-clear")?.addEventListener("click", () => { problems = []; tell({ type: "clear" }); showProblems(); });
   card.querySelector("#job-preview-fix")?.addEventListener("click", () => {
     if (!problems.length) return;
@@ -3808,7 +3831,7 @@ pages.job = async ([id]) => {
       ? `<a class="ticket-chip" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(`${t.source}: ${t.title}`)}">${esc(t.ref || t.title)} ↗</a>`
       : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`}`).join("")}${isAutoImprove ? `<span class="sep">·</span><span class="prize-pill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Orchestrator Improvement</span>` : ""}${s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="sep">·</span><span class="accent">✓ Submitted for inclusion</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
-    html: `<div class="job-layout"><div class="job-top">
+    html: `<div class="job-layout${data.preview && (data.preview.live || data.preview.hosted) && previewLayout() === "split" ? " split" : ""}"><div class="job-top">
       ${runs.filter((r) => r.running && r.action !== "dev_preview").map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
 
       ${isAutoImprove ? `
@@ -3871,8 +3894,9 @@ pages.job = async ([id]) => {
 
       ${jobContextRail(s, data.context)}
 
-      <div class="job-body">
       ${jobPreviewCard(data.preview, runs)}
+
+      <div class="job-body">
       <section class="card mb-16">
         <div class="card-h"><h2>Progress</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks</span>` : ""}</div>
         <div class="card-b stack">

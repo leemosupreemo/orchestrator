@@ -301,6 +301,21 @@ class PreviewWiringTests(unittest.TestCase):
         for text in ("PREVIEW_AUTOSTARTED", "orchestrator.previewAutoStart", "Start the live preview when I open a job", "p.branch_exists"):
             self.assertIn(text, app)
 
+    def test_on_wide_screens_the_preview_sits_beside_the_job(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for text in ("orchestrator.previewLayout", "job-preview-layout", "Side by side", "Stacked", 'class="job-layout${'):
+            self.assertIn(text, app)
+        body = app[app.index('<div class="job-body">'):app.index("<!-- Technical Details -->")]
+        self.assertNotIn("jobPreviewCard(", body)  # a grid item of its own, so it can move beside the job
+        css = (ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        for text in (".job-layout > .job-preview { grid-area: preview;", ".job-layout.split", '"top preview"'):
+            self.assertIn(text, css)
+
+    def test_a_change_can_be_described_under_the_preview(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for text in ('id="job-preview-ask"', "Describe a change", "Shift+Enter"):
+            self.assertIn(text, app)
+
 
 if __name__ == "__main__":
     unittest.main()
