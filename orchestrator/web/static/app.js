@@ -2060,6 +2060,7 @@ function showSignInGate(message) {
             <span>Continue with email</span>
             ${isLastProvider("email") ? `<span class="last-used-tag">Last used</span>` : ""}
           </button>
+          <button type="button" class="linklike muted signin-forgot-link" id="signin-forgot-link">Forgot your password?</button>
         </div>
         <div id="email-signin-panel" class="email-signin-panel" ${isLastProvider("email") ? "" : "hidden"}>
           <form id="email-auth-form" class="stack email-auth-form">
@@ -2088,6 +2089,23 @@ function showSignInGate(message) {
               <button type="button" class="linklike muted email-auth-link-btn" id="email-auth-link-btn">Or email me a sign-in link</button>
             </div>
           </form>
+          <div id="email-reset-step" class="stack email-reset-step" hidden>
+            <div class="row gap-8 email-panel-header">
+              <strong>Reset your password</strong>
+              <button type="button" class="linklike muted email-panel-close" data-email-close title="Close">✕</button>
+            </div>
+            <form id="email-reset-form" class="stack">
+              <p class="muted">Enter the email you sign in with, and we'll send you a link to choose a new password.</p>
+              <label class="field"><span>Email address</span>
+                <input type="email" id="email-reset-email" name="email" required placeholder="you@example.com" autocomplete="email"></label>
+              <button type="submit" class="btn primary email-auth-submit-btn" id="email-reset-submit">Send reset link</button>
+            </form>
+            <div id="email-reset-sent" class="notice" role="status" aria-live="polite" hidden></div>
+            <div class="row gap-12 wrap email-reset-actions">
+              <button type="button" class="linklike" id="email-reset-back">← Back to sign in</button>
+              <button type="button" class="linklike" id="email-reset-again" hidden>Send again</button>
+            </div>
+          </div>
         </div>
         ${hostedUser ? `<button type="button" class="btn primary sso-continue-btn ${lastUsed && lastUsed !== "token" ? "last-used" : ""}" id="account-continue-btn">
           <span>Continue as ${esc(hostedUser.email || "you")}</span>
@@ -2364,22 +2382,66 @@ function showSignInGate(message) {
     });
   }
 
-  if (emailForgotBtn && emailInput) {
-    emailForgotBtn.addEventListener("click", async () => {
-      const email = (emailInput.value || "").trim();
-      if (!email) {
-        toast("Enter your email address first", true);
-        emailInput.focus();
-        return;
-      }
-      if (!window.firebase?.auth) {
-        toast("Firebase Auth is loading or unavailable", true);
-        return;
-      }
-      const result = await PasswordReset.requestReset(firebase.auth(), email); // the same answer whether or not the address has an account
-      toast(result.message, !result.ok);
-    });
+  // Forgot password: a step of its own in the email panel. Ask for the address (filled in if it was typed), send the
+  // link, then say so right there, with Send again after a short wait and a way back to signing in.
+  const resetStep = $("#email-reset-step"), resetForm = $("#email-reset-form"), resetEmail = $("#email-reset-email");
+  const resetSent = $("#email-reset-sent"), resetAgain = $("#email-reset-again"), resetSubmit = $("#email-reset-submit");
+  const RESEND_AFTER_S = 30;
+  let resendTimer = null;
+  function showResetForm(on) {
+    if (resetForm) resetForm.hidden = !on;
+    if (resetSent) resetSent.hidden = on;
+    if (resetAgain) resetAgain.hidden = on;
   }
+  function openPasswordReset(prefill = "") {
+    if (!emailPanel || !resetStep) return;
+    emailPanel.hidden = false;
+    $("#email-auth-form").hidden = true;
+    resetStep.hidden = false;
+    showResetForm(true);
+    if (resetEmail) { resetEmail.value = prefill || resetEmail.value; resetEmail.focus(); }
+  }
+  function closePasswordReset() {
+    clearInterval(resendTimer);
+    if (resetStep) resetStep.hidden = true;
+    $("#email-auth-form").hidden = false;
+    if (emailInput && resetEmail?.value) emailInput.value = resetEmail.value.trim();
+    setMode("signin", emailInput?.value || "");
+    emailInput?.focus();
+  }
+  async function sendReset() {
+    const email = (resetEmail?.value || "").trim();
+    if (!email) { resetEmail?.focus(); return; }
+    if (!window.firebase?.auth) { toast("Sign-in is still loading. Try again in a moment.", true); return; }
+    if (resetSubmit) { resetSubmit.disabled = true; resetSubmit.textContent = "Sending…"; }
+    const result = await PasswordReset.requestReset(firebase.auth(), email); // the same answer for every address
+    if (resetSubmit) { resetSubmit.disabled = false; resetSubmit.textContent = "Send reset link"; }
+    if (!result.ok) {
+      showResetForm(true);
+      if (resetSent) { resetSent.hidden = false; resetSent.className = "notice bad"; resetSent.textContent = result.message; }
+      return;
+    }
+    showResetForm(false);
+    if (resetSent) { resetSent.className = "notice good"; resetSent.innerHTML = `<strong>Check your email.</strong> ${esc(result.message)}`; }
+    // Send again, after a short wait so a second link isn't sent before the first has had a chance to arrive.
+    let left = RESEND_AFTER_S;
+    clearInterval(resendTimer);
+    if (resetAgain) { resetAgain.disabled = true; resetAgain.textContent = `Send again in ${left}s`; }
+    resendTimer = setInterval(() => {
+      left -= 1;
+      if (!resetAgain?.isConnected) { clearInterval(resendTimer); return; }
+      if (left > 0) { resetAgain.textContent = `Send again in ${left}s`; return; }
+      clearInterval(resendTimer);
+      resetAgain.disabled = false;
+      resetAgain.textContent = "Send again";
+    }, 1000);
+  }
+  if (emailForgotBtn) emailForgotBtn.addEventListener("click", () => openPasswordReset((emailInput?.value || "").trim()));
+  $("#signin-forgot-link")?.addEventListener("click", () => openPasswordReset((emailInput?.value || "").trim()));
+  resetForm?.addEventListener("submit", (e) => { e.preventDefault(); sendReset(); });
+  resetAgain?.addEventListener("click", () => sendReset());
+  $("#email-reset-back")?.addEventListener("click", closePasswordReset);
+  resetStep?.querySelector("[data-email-close]")?.addEventListener("click", () => { closePasswordReset(); emailPanel.hidden = true; });
 
   if (emailLinkBtn && emailInput) {
     emailLinkBtn.addEventListener("click", async () => {

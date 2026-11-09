@@ -1119,6 +1119,7 @@ dialog h2 {
 
 .notice { padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--warn); background: var(--warn-soft); color: var(--text); font-size: var(--type-body); line-height: 1.45; }
 .notice.bad { border-color: var(--bad); background: var(--bad-soft); }
+.notice.good { border-color: var(--ok); background: var(--ok-soft); }
 .notice .row { margin-top: var(--space-3); }
 
 /* Home only needs a project switcher when the sidebar's picker is hidden. */
@@ -1445,6 +1446,11 @@ dialog h2 {
   .signin-wrap:has(.signin-plain) { padding: var(--space-6) var(--space-4) var(--space-8); }
   .signin-card.signin-plain { padding: 0; }
 }
+/* Forgot password: a quiet link under the sign-in buttons, and its own step in the email panel */
+.signin-forgot-link { align-self: center; margin-top: var(--space-1); font-size: var(--type-secondary); }
+.email-reset-step p { margin: 0; }
+.email-reset-actions { justify-content: space-between; font-size: var(--type-secondary); }
+.email-reset-actions .linklike:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 .email-signin-panel {
   display: flex;
   flex-direction: column;

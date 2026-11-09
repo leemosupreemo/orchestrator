@@ -750,6 +750,21 @@ process.stdout.write(JSON.stringify({
         self.assertIn('<section class="card"><div class="card-b stack">', page)  # text and button in the same inset
         self.assertNotIn('<section class="card card-b stack">', page)
 
+    def test_forgot_password_is_a_step_of_its_own_on_the_sign_in_screen(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        gate = js[js.index("function showSignInGate"):js.index("function showSignInGate") + 20000]
+        # Reachable straight from the sign-in screen, not only from inside the email panel
+        self.assertIn('id="signin-forgot-link"', gate)
+        self.assertLess(gate.index('id="email-signin-btn"'), gate.index('id="signin-forgot-link"'))
+        step = gate[gate.index('id="email-reset-step"'):][:2000]
+        for part in ("Reset your password", 'id="email-reset-form"', 'id="email-reset-email"', "Send reset link",
+                     'id="email-reset-sent"', 'id="email-reset-again"', "Back to sign in"):
+            self.assertIn(part, step, part)
+        wiring = js[js.index("function openPasswordReset"):][:3500]
+        self.assertIn("PasswordReset.requestReset(firebase.auth(), email)", wiring)  # the same answer for every address
+        self.assertIn("RESEND_AFTER_S", wiring)  # Send again waits a little
+        self.assertIn("emailForgotBtn.addEventListener(\"click\", () => openPasswordReset(", js)  # opens the step, no longer sends at once
+
     def test_sign_in_is_a_plain_column_with_the_animation_above_the_options(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
