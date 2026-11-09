@@ -62,11 +62,11 @@
         <span class="label">Project <span id="project-kind"></span></span>
         <select id="project-select" aria-label="Project"></select>
       </label>
-      <label class="project-switch computer-switch" id="computer-switch" hidden>
-        <span class="label">Computer</span>
-        <select id="computer-select" aria-label="Computer"></select>
-      </label>
-      <button type="button" class="session-computer" id="session-computer" hidden></button>
+      <div class="machine-switch" id="machine-switch" hidden>
+        <span class="label">Machines</span>
+        <select id="computer-select" aria-label="Machines" hidden></select>
+        <button type="button" class="session-computer" id="session-computer" hidden></button>
+      </div>
       <button type="button" class="btn search-btn" id="search-btn" aria-haspopup="dialog"><span>Search Orchestrator</span><kbd>⌘K</kbd></button>
       <!-- What people open most sits at the top; settings they touch once are one place, under Settings. -->
       <nav class="nav" id="nav" aria-label="Main">

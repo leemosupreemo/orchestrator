@@ -5807,6 +5807,10 @@ class UIHandler(BaseHTTPRequestHandler):
     def _packages_view(self, root: Path) -> dict[str, Any]:
         view = package_store.overview(root, runtime_dir(root))
         view["features"] = [{"id": f["id"], "name": f.get("name", f["id"])} for f in feature_store.load(runtime_dir(root))]
+        # Worth a review: the requirements say something, and they've changed since the last one (or there hasn't been one).
+        raw_prd = prd_doc.Prd(root, runtime_dir(root)).read() or ""
+        last = (view.get("review") or {}).get("prd_hash")
+        view["review_due"] = prd_doc.is_filled_doc(raw_prd) and last != package_store.prd_fingerprint(raw_prd)
         return view
 
     def _research_call(self, root: Path, prompt: str, timeout: int = 240, progress: TaskProgress | None = None) -> tuple[str, bool]:

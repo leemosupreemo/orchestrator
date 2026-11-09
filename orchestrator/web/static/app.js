@@ -1239,9 +1239,19 @@ async function refreshState() {
 // that can be reached); choosing another switches to it and makes it the one opened next time. "Manage computers..." lists
 // them all. The list comes from the account, at most every 30 seconds.
 let accountMachines = null, accountMachinesAt = 0, accountMachinesLoading = false;
+// The Machines group shows when either of its controls does: the hosted app's menu, or the chip for a computer that isn't
+// the project's primary (on your own computer, the chip that says which one this is).
+function syncMachineSwitch() {
+  const box = $("#machine-switch");
+  if (box) box.hidden = ($("#computer-select")?.hidden ?? true) && ($("#session-computer")?.hidden ?? true);
+}
 function renderComputerSelect(select) {
-  const wrap = $("#computer-switch");
-  if (!select || !wrap) return;
+  fillComputerSelect(select);
+  syncMachineSwitch();
+}
+function fillComputerSelect(select) {
+  const wrap = select;
+  if (!select) return;
   if (!Account.active() || document.body.classList.contains("signin-gate")) { wrap.hidden = true; return; }
   if (!accountMachinesLoading && Date.now() - accountMachinesAt > 30000) {
     accountMachinesLoading = true;
@@ -5347,7 +5357,7 @@ pages.packages = async () => {
   return {
     title: "Packages",
     sub: "The libraries and plugins this project uses, and ones worth adding.",
-    actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn primary" id="pkg-review">Recommend packages</button>` : "",
+    actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn${data.review_due ? " primary" : ""}" id="pkg-review">Recommend packages</button>` : "",
     html: `
       <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
         <p>Good packages mean less to build and fewer bugs: proven code for things like sign-in, payments and charts. Orchestrator suggests some whenever your product requirements change in a big way. Add the ones you want. Nothing is installed until you do.</p>
@@ -7336,16 +7346,16 @@ pages.devlogs = async () => {
   setHeader({ title: "Device logs" });
   view.innerHTML = `<div class="empty">Loading app launches…</div>`;
   const { pulls, sessions } = await api("devlogs");
-  const base = { title: "Device logs", sub: "What the app logged on testers' phones" };
+  const base = { title: "Device logs" };
   if (!sessions.configured || /token|setup/i.test(sessions.error || "")) {
     const reason = (sessions.error || "").replace(/\s*Run: orchestrator logs setup\.?/i, "").trim();
     return { ...base, html: `
-      <section class="card card-b stack">
+      <section class="card"><div class="card-b stack">
         ${reason ? `<div class="notice bad">${esc(reason)}</div>` : ""}
         <p>${sessions.configured ? "Finish setup to read logs." : "Not set up for this project yet."} Setup finds the Sentry project in your repo,
         asks for a read-only token (scopes <code>org:read</code>, <code>project:read</code>, <code>event:read</code>), and checks it works.</p>
         <div data-owner-only><a class="btn primary" href="#/connections?connect=sentry">Connect Sentry</a></div>
-      </section>` };
+      </div></section>` };
   }
   const ok = !sessions.error;
   return {

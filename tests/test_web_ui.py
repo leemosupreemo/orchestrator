@@ -696,7 +696,13 @@ class SignInPrivacyTests(unittest.TestCase):
     def test_the_sidebar_picks_the_computer_and_manages_them(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         js, html = (static / "app.js").read_text(), (static / "index.html").read_text()
-        self.assertIn('<select id="computer-select" aria-label="Computer"></select>', html)
+        self.assertIn('<select id="computer-select" aria-label="Machines" hidden></select>', html)
+        box = html[html.index('id="machine-switch"'):][:400]
+        self.assertIn('<span class="label">Machines</span>', box)
+        self.assertIn('id="session-computer"', box)  # the chip lives in the same labelled group
+        self.assertLess(html.index('id="machine-switch"'), html.index('id="search-btn"'))
+        css = (static / "style.css").read_text()
+        self.assertIn(".machine-switch { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-2) var(--space-4); margin-bottom: var(--space-1); border-bottom: 1px solid var(--border); }", css)
         self.assertLess(html.index('id="project-select"'), html.index('id="computer-select"'))
         fn = js[js.index("function renderComputerSelect"):][:3000]
         for text in ("Account.active()", 'cpApi("machines")', "Manage computers...", "openAccount({ list: true })", "enterMachine(machine)", "(offline)"):
@@ -736,6 +742,13 @@ process.stdout.write(JSON.stringify({
         job = js[js.index("pages.job = async"):]
         self.assertIn("clarificationThread(job.clarification_history)", job)
         self.assertIn("function clarificationThread", js)
+
+    def test_device_logs_has_no_subtitle_and_its_connect_button_lines_up_with_the_text(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        page = js[js.index("pages.devlogs = async"):][:1600]
+        self.assertIn('const base = { title: "Device logs" };', page)
+        self.assertIn('<section class="card"><div class="card-b stack">', page)  # text and button in the same inset
+        self.assertNotIn('<section class="card card-b stack">', page)
 
     def test_sign_in_is_a_plain_column_with_the_animation_above_the_options(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -5645,6 +5658,16 @@ class PackagesApiTests(ServerTestCase):
         self.assertEqual(len(task["result"]["packages"]), 1)
         self.assertEqual(task["result"]["packages"][0]["status"], "dismissed")
         self.assertIn("npm: socket.io (dismissed)", prompts[0])
+
+    def test_recommending_is_the_blue_button_only_when_there_are_requirements_to_review(self):
+        self.assertFalse(self.request("GET", "/api/packages")[1]["review_due"])  # nothing written yet
+        self.write_prd()
+        self.assertTrue(self.request("GET", "/api/packages")[1]["review_due"])
+        answer = json.dumps({"packages": [], "notes": "", "sources": []})
+        self.research([answer])
+        self.assertFalse(self.request("GET", "/api/packages")[1]["review_due"])  # reviewed, and nothing changed since
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('class="btn${data.review_due ? " primary" : ""}" id="pkg-review"', app)
 
     def test_it_says_when_the_model_could_not_search_and_retries_once_on_a_bad_answer(self):
         self.write_prd()
