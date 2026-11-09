@@ -1139,6 +1139,7 @@ async function refreshState() {
     showModelsUpdate(newState.models_notice);
     checkRunnerVersion(newState.runner);
     state = newState;
+    restoreLastBranch();
     renderSlackBtn();
     renderPackagesBadge();
     const viewerRole = state.you?.role || "owner";
@@ -1427,6 +1428,7 @@ async function unlockWith(token, message) {
   document.querySelector(".app")?.classList.remove("session-locked");
   document.body.classList.remove("signin-gate");
   endSigningIn();
+  RESTORED_BRANCH.clear(); // signed in again: put the last used branch back
   await refreshState();
   route();
   let pushToken = null;
@@ -2678,9 +2680,35 @@ function statusLine(p) {
     ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</div>`;
 }
 
-// A branch checked out in another worktree folder is labelled: git won't switch to it here.
-function branchOption(b, current, elsewhere = {}) {
-  return `<option value="${esc(b)}" ${b === current ? "selected" : ""}>${esc(b)}${elsewhere?.[b] ? " (in another folder)" : ""}</option>`;
+// A branch checked out in another worktree folder is labelled: git won't switch to it here. So is the one last chosen here.
+function branchOption(b, current, elsewhere = {}, last = state.project?.last_branch) {
+  return `<option value="${esc(b)}" ${b === current ? "selected" : ""}>${esc(b)}${last === b ? " (last used)" : ""}${elsewhere?.[b] ? " (in another folder)" : ""}</option>`;
+}
+
+// The branch you last chose for a project goes back on when you open the app, sign in, or come back after a while (a job
+// may have left the folder on its own branch). Only when that's safe: nothing uncommitted, nothing running, and the branch
+// is here and not open in another folder. Otherwise it stays as it is, and the dropdown marks the last used one.
+// Once per project per visit, so switching away afterwards sticks.
+const RESTORED_BRANCH = new Set();
+const AWAY_FOR_BRANCH_MS = 30 * 60 * 1000;
+let hiddenSince = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hiddenSince = Date.now(); return; }
+  if (hiddenSince && Date.now() - hiddenSince > AWAY_FOR_BRANCH_MS) RESTORED_BRANCH.clear(); // back after a while: check again
+  hiddenSince = 0;
+});
+async function restoreLastBranch() {
+  const p = state.project;
+  if (!p?.root || RESTORED_BRANCH.has(p.root)) return;
+  RESTORED_BRANCH.add(p.root);
+  const last = p.last_branch;
+  if (!last || last === p.branch || !(p.branches || []).includes(last) || p.elsewhere?.[last]) return;
+  if (p.dirty_files || (state.runs || []).some((r) => r.running)) return;
+  try {
+    await api("runs", { method: "POST", body: { action: "git_checkout", params: { branch: last }, ...terminalSize() } });
+    toast(`Switched to ${last}, the branch you last used`);
+    setTimeout(() => refreshState().then(() => route()).catch(() => {}), 1500);
+  } catch { /* not allowed here (another computer is primary, say): it stays put, and the dropdown marks the last used one */ }
 }
 
 // git refuses to switch when uncommitted changes would be overwritten, so offer to set them aside.
@@ -7039,22 +7067,14 @@ pages.product = async (_, query) => {
         }
       };
 
-      // The first time the requirements have something in them, offer to break them down into epics. Asked once, on any device,
-      // and not on top of an import or a draft the person is looking at.
-      let offering = false;
+      // The first time the requirements have anything in them, they're broken down into epics without asking (the card
+      // under Epics said so). Once only: after that, Break down again is a button. Not while a draft or import is open.
       function offerBreakdown() {
-        if (offering || !epics || start || !prdFilled() || p.breakdown_offered || productEpics().length || open.imp || open.draft || open.reverse || $("#dialog")?.open) return;
-        if (panel()?.children.length) return;
-        offering = true;
-        const asked = formDialog("Break your product down?",
-          `<p>Split your requirements into <strong>epics</strong>, the big pieces of the product. You pick the ones to keep, and each becomes an Epic job that waits until you plan it.</p>
-           <p class="muted">You can also do this later from Epics, at the bottom of this page.</p>`, "Break it down", { compact: true });
-        $("#dialog-cancel").textContent = "Not now";
-        asked.then((answer) => {
-          p.breakdown_offered = true;
-          api("product/settings", { method: "POST", body: { breakdown_offered: true } }).catch(() => {});
-          if (answer) { $("#sec-epics")?.scrollIntoView({ block: "start" }); epics.breakDown(); }
-        });
+        if (!epics || start || !prdFilled() || p.breakdown_offered || productEpics().length || open.imp || open.draft || open.reverse) return;
+        if (panel()?.children.length || !$("#epics-busy")) return; // the breakdown card isn't up yet: next time the page redraws
+        p.breakdown_offered = true;
+        api("product/settings", { method: "POST", body: { breakdown_offered: true } }).catch(() => {});
+        epics.breakDown();
       }
 
       wire();
@@ -7095,8 +7115,8 @@ function epicsSection(initial, { onPrdChanged }) {
   let busy = "";       // its spinner, kept when the page around it redraws
 
   const breakdownCard = () => {
-    if (!ov.prd_filled) return `<section class="card mb-16"><div class="card-b stack"><strong>Write your product requirements first.</strong>
-      <span class="muted">Anything in any field is enough: the breakdown follows how much you've said.</span>
+    if (!ov.prd_filled) return `<section class="card mb-16"><div class="card-b stack"><strong>Epics fill in here on their own</strong>
+      <span class="muted">As soon as you fill in any product field above, your requirements are broken down into epics automatically. Anything in any field is enough: the breakdown follows how much you've said.</span>
       </div></section>`;
     return `<section class="card mb-16" id="epic-breakdown"><div class="card-h"><h2>Break down from the PRD</h2></div><div class="card-b stack">
       <p class="muted">Splits your requirements into epics. You pick the ones to keep.</p>

@@ -2845,6 +2845,36 @@ class WorktreeBranchTests(unittest.TestCase):
         self.assertIn("one place at a time", str(refused.exception))
         self.assertEqual(ui.build_git_checkout({"branch": "feature"}, self.root), ["git", "checkout", "feature"])
 
+    def test_the_branch_you_switch_to_is_remembered_for_next_time(self):
+        self.assertEqual(ui.last_branch(self.root), "")
+        ui.build_git_checkout({"branch": "feature"}, self.root)
+        self.assertEqual(ui.last_branch(self.root), "feature")
+        with self.assertRaises(ui.UIError):
+            ui.build_git_checkout({"branch": "cloud-logs"}, self.root)  # refused: not remembered
+        self.assertEqual(ui.last_branch(self.root), "feature")
+        ui.build_stash_checkout({"branch": "main"}, self.root)
+        self.assertEqual(ui.last_branch(self.root), "main")
+        ui.build_git_new_branch({"name": "fresh"}, self.root)
+        self.assertEqual(ui.read_settings(self.root).get("last_branch"), "fresh")
+        self.assertEqual(ui.last_branch(self.root), "")  # until it exists
+        subprocess.run(["git", "branch", "fresh"], cwd=self.root, check=True)
+        self.assertEqual(ui.last_branch(self.root), "fresh")
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        state = server[server.index("def project_state("):]
+        self.assertIn('"last_branch": last_branch(root),', state[:state.index("\ndef ")])
+
+    def test_the_page_puts_the_last_used_branch_back(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('last === b ? " (last used)" : ""', js)
+        restore = js[js.index("async function restoreLastBranch"):][:2500]
+        for guard in ("p.dirty_files", "p.elsewhere", "r.running", "(p.branches || []).includes(last)", "RESTORED_BRANCH.has(p.root)"):
+            self.assertIn(guard, restore)
+        self.assertIn('action: "git_checkout"', restore)
+        self.assertIn("the branch you last used", restore)
+        self.assertIn("restoreLastBranch();", js)
+        self.assertIn("RESTORED_BRANCH.clear()", js[js.index("async function unlockWith"):][:800])  # signing in again
+        self.assertIn("AWAY_FOR_BRANCH_MS", js)  # coming back to the tab after a while
+
     def test_the_page_labels_them_and_explains(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         switch = js[js.index("async function switchBranch"):][:900]
@@ -5064,8 +5094,14 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("suggestFeatures", self.js)  # one way to break the PRD down
         self.assertNotIn('api("features/propose"', self.js)
         offer = page[page.index("function offerBreakdown"):][:1500]
-        for part in ("prdFilled()", "p.breakdown_offered", "productEpics().length", "formDialog(", '"Not now"', "breakdown_offered: true", "epics.breakDown()"):
+        # No question: once the requirements have anything in them, the breakdown runs by itself, once
+        for part in ("prdFilled()", "p.breakdown_offered", "productEpics().length", "breakdown_offered: true", "epics.breakDown()", '$("#epics-busy")'):
             self.assertIn(part, offer, part)
+        self.assertNotIn("formDialog(", offer)
+        epics = self.js[self.js.index("function epicsSection("):][:2500]
+        self.assertIn("Epics fill in here on their own", epics)
+        self.assertIn("Anything in any field is enough", epics)
+        self.assertNotIn("Write your product requirements first.", epics)
         self.assertGreaterEqual(page.count("offerBreakdown();"), 2)  # when the page opens, and after the first thing is saved
         self.assertIn('query?.get("suggest") === "1"', page)  # the old link still lands somewhere useful
         self.assertIn("epics?.mount(start)", page)  # opened from the wizard, it starts straight away

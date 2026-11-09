@@ -2821,6 +2821,7 @@ def project_state(root: Path) -> dict[str, Any]:
         "branch": git(root, "branch", "--show-current"),
         "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
         "elsewhere": branches_elsewhere(root),
+        "last_branch": last_branch(root),
         "dirty_files": len([l for l in status.splitlines() if l.strip()]),
         "scheme": config.get("scheme"),
         "firebase_distribution": bool(config.get("firebase_distribution")),
@@ -3367,6 +3368,19 @@ def branches_elsewhere(root: Path) -> dict[str, str]:
     return out
 
 
+def remember_branch(root: Path, branch: str) -> None:
+    """The branch someone chose for this project, so the app can put it back when they return (see last_branch)."""
+    settings = read_settings(root)
+    if settings.get("last_branch") != branch:
+        write_settings(root, {**settings, "last_branch": branch})
+
+
+def last_branch(root: Path) -> str:
+    """The branch last chosen in the app for this project, while it still exists here; else ""."""
+    branch = str(read_settings(root).get("last_branch") or "")
+    return branch if branch and branch in git(root, "branch", "--format=%(refname:short)").splitlines() else ""
+
+
 def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
     branch = _text(params, "branch", required=True, limit=250)
     if branch not in git(root, "branch", "--format=%(refname:short)").splitlines():
@@ -3375,6 +3389,7 @@ def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
     if elsewhere:
         raise UIError(f"{branch} is checked out in another folder ({elsewhere}), and git keeps a branch in one place at a time. "
                       "Work on it in that folder, or choose another branch.")
+    remember_branch(root, branch)
     return ["git", "checkout", branch]
 
 
@@ -3391,6 +3406,7 @@ def build_git_new_branch(params: dict[str, Any], root: Path) -> list[str]:
     check = subprocess.run(["git", "check-ref-format", "--branch", name], cwd=root, capture_output=True, text=True)
     if check.returncode != 0 or name.startswith("-"):
         raise UIError("That isn't a valid branch name")
+    remember_branch(root, name)
     return ["git", "checkout", "-b", name]
 
 
