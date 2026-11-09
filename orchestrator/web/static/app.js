@@ -3289,6 +3289,11 @@ const SIDE_RUNS = new Set(["export_job", "web_preview", "dev_preview"]);
 // A web project's job page shows its branch in a frame: live from a dev server on this computer while it runs, else the
 // published preview link. "Point out a problem" puts a pin on the frame and sends what you write to the AI as a fix.
 const PREVIEW_DEVICES = [["desktop", "Desktop"], ["tablet", "Tablet"], ["phone", "Phone"]];
+// Opening a web job starts its live preview (on the computer running Orchestrator, once the branch exists), unless this
+// browser turned that off. Each branch starts once per visit, so stopping a preview keeps it stopped.
+const PREVIEW_AUTOSTARTED = new Set();
+const previewAutoStart = () => { try { return localStorage.getItem("orchestrator.previewAutoStart") !== "off"; } catch { return true; } };
+const PROBLEM_LABELS = { error: "Error", rejection: "Unhandled rejection", console: "console.error", resource: "Didn't load", request: "Request failed" };
 
 function jobPreviewCard(p, runs) {
   if (!p) return "";
@@ -3302,7 +3307,8 @@ function jobPreviewCard(p, runs) {
   const publishing = runs.some((r) => r.running && r.action === "web_preview");
   const owner = state.you?.role !== "member";
   const both = live && hosted;
-  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}">
+  const autostart = !live && !liveRun && onThisComputer && p.branch_exists;
+  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-autostart="${autostart ? "1" : ""}">
     <div class="card-h card-h-wrap">
       <h2>Preview</h2>
       ${both ? `<div class="row gap-4 job-preview-tabs" role="group" aria-label="Which preview">
@@ -3317,6 +3323,14 @@ function jobPreviewCard(p, runs) {
         <iframe title="Preview of ${esc(p.branch)}" src="${esc(shown.url)}" loading="lazy" referrerpolicy="no-referrer"></iframe>
         <div class="job-preview-pins" id="job-preview-pins" hidden><span class="job-preview-hint">Click where the problem is</span></div>
       </div>
+      <div class="job-preview-problems stack gap-8" id="job-preview-problems" hidden>
+        <div class="row gap-8 align-center wrap">
+          <strong class="job-preview-problems-count" id="job-preview-problems-count" aria-live="polite"></strong>
+          <button type="button" class="btn small go" id="job-preview-fix">Fix with AI</button>
+          <button type="button" class="btn small ghost" id="job-preview-clear">Clear</button>
+        </div>
+        <details><summary class="t-secondary">Show them</summary><ul class="job-preview-problem-list mono t-secondary" id="job-preview-problem-list"></ul></details>
+      </div>
       <div class="job-preview-pickbar row gap-8 align-center wrap" id="job-preview-pickbar" hidden>
         <span class="t-secondary" id="job-preview-picked" aria-live="polite"></span>
         <button type="button" class="btn small go" id="job-preview-describe" disabled>Describe the change</button>
@@ -3325,11 +3339,12 @@ function jobPreviewCard(p, runs) {
       : `<p class="muted t-secondary">See <strong class="mono">${esc(p.branch)}</strong> running: live on this computer as the AI works, or on a link to share.</p>`}
       <div class="row gap-8 align-center wrap">
         ${liveRun ? `<button type="button" class="btn small danger" id="job-preview-stop" data-run="${esc(liveRun.id)}">Stop live preview</button>`
-          : `<button type="button" class="btn small ${shown ? "" : "go"}" id="job-preview-live">Start live preview</button>`}
+          : `<button type="button" class="btn small ${shown ? "" : "go"}" id="job-preview-live"${p.branch_exists ? "" : ` disabled title="${esc(p.branch)} is made when the AI starts building"`}>Start live preview</button>`}
         ${owner && !p.gaps.length ? `<button type="button" class="btn small ${shown ? "" : "go"}" id="job-preview-publish"${publishing ? " disabled" : ""}>${publishing ? "Publishing…" : hosted ? (p.hosted_current ? "Publish link again" : "Update link") : "Publish link"}</button>` : ""}
         ${hosted ? `<button type="button" class="btn small ghost" data-setup-copy="${esc(hosted.url)}">Copy link</button>` : ""}
         ${shown ? `<button type="button" class="btn small" id="job-preview-point" aria-pressed="false">Point out a problem</button>` : ""}
       </div>
+      ${onThisComputer ? `<label class="yolo-switch" title="Remembered on this browser."><input type="checkbox" role="switch" id="job-preview-autostart"${previewAutoStart() ? " checked" : ""}><span>Start the live preview when I open a job</span></label>` : ""}
       ${p.gaps.length ? `<p class="muted t-secondary">To publish a link: ${p.gaps.map(esc).join(" ")}</p>` : owner ? `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its preview link without asking."><input type="checkbox" role="switch" id="job-preview-auto"${p.auto ? " checked" : ""}><span>Publish a link when a job is ready for review</span></label>` : ""}
     </div>
   </section>`;
@@ -3385,6 +3400,16 @@ function wireJobPreview(view, id) {
     }
   });
 
+  card.querySelector("#job-preview-autostart")?.addEventListener("change", (e) => {
+    try { localStorage.setItem("orchestrator.previewAutoStart", e.target.checked ? "on" : "off"); } catch { /* storage blocked */ }
+    toast(e.target.checked ? "Opening a web job starts its live preview" : "Live previews start only when you ask");
+  });
+  const liveStart = card.querySelector("#job-preview-live");
+  if (liveStart && !liveStart.disabled && card.dataset.autostart && previewAutoStart() && !PREVIEW_AUTOSTARTED.has(branch)) {
+    PREVIEW_AUTOSTARTED.add(branch);
+    liveStart.click();
+  }
+
   // Screen size: the frame narrows to a tablet's or a phone's width. Remembered on this browser.
   const box = card.querySelector("#job-preview-frame");
   const setDevice = (key) => {
@@ -3409,6 +3434,17 @@ function wireJobPreview(view, id) {
   const pickedLabel = card.querySelector("#job-preview-picked");
   const describeBtn = card.querySelector("#job-preview-describe");
   let helper = false, picking = false, picked = [], shotWaiting = null;
+  // Problems the helper saw on the live page (errors, failed requests…), listed under the frame to send to the AI.
+  let problems = [];
+  const problemsBox = card.querySelector("#job-preview-problems");
+  const showProblems = () => {
+    if (!problemsBox) return;
+    problemsBox.hidden = !problems.length;
+    const total = problems.reduce((n, x) => n + (x.count || 1), 0);
+    card.querySelector("#job-preview-problems-count").textContent = `⚠ ${plural(problems.length, "problem")} on this page${total > problems.length ? ` (${total} times)` : ""}`;
+    card.querySelector("#job-preview-problem-list").innerHTML = problems.map((x) =>
+      `<li><strong>${esc(PROBLEM_LABELS[x.kind] || x.kind)}</strong>${x.count > 1 ? ` ×${x.count}` : ""}: ${esc(x.message)}</li>`).join("");
+  };
   const tell = (message) => frame?.contentWindow?.postMessage({ source: "orchestrator", ...message }, "*");
   const pickHint = "Click an element on the page. Hold ⌘ or Shift to pick more. Esc cancels.";
   const stopPicking = () => {
@@ -3423,6 +3459,13 @@ function wireJobPreview(view, id) {
     if (!frame || e.source !== frame.contentWindow || e.data?.source !== "orchestrator-preview") return;
     const { type } = e.data;
     if (type === "ready") helper = true;
+    else if (type === "problems") { problems = Array.isArray(e.data.problems) ? e.data.problems.slice(-50) : []; showProblems(); }
+    else if (type === "problem" && e.data.problem?.message) {
+      const x = e.data.problem;
+      const i = problems.findIndex((y) => y.kind === x.kind && y.message === x.message);
+      if (i >= 0) problems[i] = x; else problems = [...problems, x].slice(-50);
+      showProblems();
+    }
     else if (type === "picked" && picking) {
       picked = Array.isArray(e.data.elements) ? e.data.elements.slice(0, 20) : [];
       pickedLabel.textContent = picked.length ? `${plural(picked.length, "element")} picked. ${picked.length === 1 ? "Hold ⌘ or Shift to pick more." : ""}` : pickHint;
@@ -3431,7 +3474,7 @@ function wireJobPreview(view, id) {
     else if (type === "shot" && shotWaiting) { shotWaiting(e.data.image || null); shotWaiting = null; }
   };
   window.addEventListener("message", onMessage);
-  frame?.addEventListener("load", () => { helper = false; if (picking) stopPicking(); tell({ type: "hello" }); });
+  frame?.addEventListener("load", () => { helper = false; problems = []; showProblems(); if (picking) stopPicking(); tell({ type: "hello" }); });
 
   const sendFeedback = (text, feedback) => {
     const busy = (state.runs || []).some((r) => r.running && (r.job === id) && !SIDE_RUNS.has(r.action));
@@ -3441,6 +3484,18 @@ function wireJobPreview(view, id) {
     }
     runAction("debug", { job: id, feedback }, { skipConfirm: true });
   };
+
+  card.querySelector("#job-preview-clear")?.addEventListener("click", () => { problems = []; tell({ type: "clear" }); showProblems(); });
+  card.querySelector("#job-preview-fix")?.addEventListener("click", () => {
+    if (!problems.length) return;
+    const lines = problems.map((x, i) => `${i + 1}. ${PROBLEM_LABELS[x.kind] || x.kind}${x.count > 1 ? ` (${x.count} times)` : ""} on ${x.page}: ${x.message}${x.stack ? `\n   ${x.stack.split("\n").slice(0, 6).join("\n   ")}` : ""}`);
+    const feedback = `These errors on the live preview of ${branch} (${box?.dataset.device || "desktop"} width) need fixing. Find the cause of each and fix it; don't just hide the message.\n${lines.join("\n")}`;
+    const summary = `Fix ${plural(problems.length, "error")} on the preview`;
+    problems = [];
+    tell({ type: "clear" });
+    showProblems();
+    sendFeedback(summary, feedback);
+  });
 
   point?.addEventListener("click", () => {
     if (picking || !pins.hidden) { stopPicking(); pins.hidden = true; return; }

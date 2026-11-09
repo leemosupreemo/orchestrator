@@ -9,6 +9,56 @@
   const send = (message) => parentWindow.postMessage({ source: "orchestrator-preview", ...message }, "*");
   const SHOT_LIBRARY = "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js";
 
+  // Problems on the page: errors, rejected promises nobody handled, console.error, files and requests that failed. Kept
+  // (the same one counted, not repeated) so the job page can list them and send them to the AI as a fix. Each is sent as it
+  // happens, and the whole list when the job page says hello (it may be listening only after the page has started).
+  const problems = [];
+  const clip = (value, n) => String(value ?? "").slice(0, n);
+  const text = (value) => {
+    if (value instanceof Error) return `${value.name}: ${value.message}`;
+    if (typeof value === "string") return value;
+    try { return JSON.stringify(value); } catch { return String(value); }
+  };
+  function report(kind, message, stack) {
+    message = clip(message, 500).trim();
+    if (!message) return;
+    let problem = problems.find((p) => p.kind === kind && p.message === message);
+    if (problem) problem.count += 1;
+    else {
+      problem = { kind, message, stack: clip(stack, 2000), page: location.pathname + location.search, count: 1 };
+      problems.push(problem);
+      if (problems.length > 50) problems.shift();
+    }
+    send({ type: "problem", problem });
+  }
+  window.addEventListener("error", (e) => {
+    const el = e.target;
+    if (el && el !== window && el.tagName) { // a script, stylesheet or image that didn't load
+      if (!ours(el)) report("resource", `Couldn't load <${el.tagName.toLowerCase()}> ${el.src || el.href || ""}`);
+      return;
+    }
+    report("error", e.error ? text(e.error) : e.message, e.error?.stack || (e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : ""));
+  }, true);
+  window.addEventListener("unhandledrejection", (e) => report("rejection", `Unhandled promise rejection: ${text(e.reason)}`, e.reason?.stack));
+  const consoleError = console.error;
+  console.error = function (...args) {
+    try { report("console", args.map(text).join(" "), args.find((a) => a instanceof Error)?.stack); } catch { /* never break the page's logging */ }
+    return consoleError.apply(this, args);
+  };
+  if (window.fetch) {
+    const realFetch = window.fetch;
+    window.fetch = function (input, init) {
+      const url = clip(typeof input === "string" ? input : input?.url || input, 300);
+      return realFetch.call(this, input, init).then((reply) => {
+        if (reply.status >= 500) report("request", `${reply.status} ${reply.statusText} from ${url}`);
+        return reply;
+      }, (err) => {
+        if (err?.name !== "AbortError") report("request", `Request to ${url} failed: ${text(err)}`);
+        throw err;
+      });
+    };
+  }
+
   let picking = false;
   let picked = [];
   const outline = (color, fill) => {
@@ -105,7 +155,8 @@
 
   window.addEventListener("message", async (e) => {
     if (e.source !== parentWindow || !e.data || e.data.source !== "orchestrator") return;
-    if (e.data.type === "hello") send({ type: "ready" });
+    if (e.data.type === "hello") { send({ type: "ready" }); send({ type: "problems", problems }); }
+    else if (e.data.type === "clear") problems.length = 0;
     else if (e.data.type === "pick") {
       picking = Boolean(e.data.on);
       if (!picking) { picked = []; redraw(); hoverBox.style.display = "none"; }

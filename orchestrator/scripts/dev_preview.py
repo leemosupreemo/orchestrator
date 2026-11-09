@@ -38,6 +38,8 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 HELPER = Path(__file__).resolve().parents[1] / "web" / "static" / "preview-helper.js"
 HELPER_PATH = "/__orchestrator/preview-helper.js"
 HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "te", "trailer", "content-length"}
+# Dropped from pages only: either would stop the job page showing the preview in its frame or adding the helper to it.
+PAGE_ONLY = {"content-security-policy", "x-frame-options"}
 
 
 def add_helper(html: bytes) -> bytes:
@@ -88,7 +90,7 @@ def proxy_handler(host: str, port: int) -> type[BaseHTTPRequestHandler]:
             html = "text/html" in (reply.getheader("Content-Type") or "") and not reply.getheader("Content-Encoding")
             self.send_response(reply.status, reply.reason)
             for name, value in reply.getheaders():
-                if name.lower() not in HOP_BY_HOP and not (html and name.lower() == "content-security-policy"):
+                if name.lower() not in HOP_BY_HOP and not (html and name.lower() in PAGE_ONLY):
                     self.send_header(name, value)
             if html:
                 data = add_helper(reply.read())

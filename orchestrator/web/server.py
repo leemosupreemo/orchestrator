@@ -1105,7 +1105,7 @@ def job_preview(root: Path, job: dict[str, Any], config: dict[str, Any] | None =
         return None
     head = git(root, "rev-parse", "--short", branch)
     hosted = next((p for p in web_previews(root) if p.get("branch") == branch), None)
-    return {"branch": branch, "gaps": web_preview_gaps(root, config), "hosted": hosted,
+    return {"branch": branch, "branch_exists": bool(head), "gaps": web_preview_gaps(root, config), "hosted": hosted,
             "hosted_current": bool(hosted and head and hosted.get("commit") == head),
             "live": next((p for p in live_previews(root) if p.get("branch") == branch), None),
             "auto": bool(read_settings(root).get("auto_preview"))}

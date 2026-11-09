@@ -144,6 +144,11 @@ class JobPreviewTests(unittest.TestCase):
         self.assertEqual(p["live"]["url"], "http://localhost:5173/")
         self.assertEqual([x["branch"] for x in server.live_previews(self.root)], ["job-1-branch"])  # a stopped server isn't listed
         self.assertEqual(p["gaps"], [])
+        self.assertTrue(p["branch_exists"])
+
+    def test_a_branch_that_doesnt_exist_yet_cant_start_a_live_preview(self):
+        p = server.job_preview(self.root, {"branch": "not-made-yet"})
+        self.assertFalse(p["branch_exists"])
 
     def test_only_web_projects_get_a_preview(self):
         (self.root / ".orchestrator").mkdir(exist_ok=True)
@@ -176,6 +181,7 @@ class PreviewProxyTests(unittest.TestCase):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html" if html else "text/javascript")
                 self.send_header("Content-Security-Policy", "default-src 'none'")
+                self.send_header("X-Frame-Options", "DENY")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -198,6 +204,7 @@ class PreviewProxyTests(unittest.TestCase):
         body, headers = self.get("/")
         self.assertIn(b'<head><script src="/__orchestrator/preview-helper.js"></script><title>', body)
         self.assertNotIn("Content-Security-Policy", headers)
+        self.assertNotIn("X-Frame-Options", headers)  # it would leave the job page's frame blank
         helper, _ = self.get("/__orchestrator/preview-helper.js")
         self.assertIn(b"orchestrator-preview", helper)
 
@@ -205,6 +212,7 @@ class PreviewProxyTests(unittest.TestCase):
         body, headers = self.get("/app.js")
         self.assertEqual(body, b"console.log(1)")
         self.assertEqual(headers.get("Content-Security-Policy"), "default-src 'none'")
+        self.assertEqual(headers.get("X-Frame-Options"), "DENY")
 
     def test_live_reload_sockets_are_passed_through(self):
         conn = self.socket.create_connection(("127.0.0.1", self.port), timeout=5)
@@ -278,6 +286,20 @@ class PreviewWiringTests(unittest.TestCase):
         css = (ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
         self.assertIn('.job-preview-frame[data-device="phone"] { max-width: 390px; }', css)
         self.assertIn("const SIDE_RUNS = new Set([\"export_job\", \"web_preview\", \"dev_preview\"]);", app)
+
+
+    def test_errors_on_the_live_preview_reach_the_job_page_and_can_be_sent_as_a_fix(self):
+        helper = (ROOT / "orchestrator" / "web" / "static" / "preview-helper.js").read_text()
+        for text in ('addEventListener("error"', '"unhandledrejection"', "console.error", 'type: "problem"', 'type: "problems"'):
+            self.assertIn(text, helper)
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for text in ('type === "problem"', "Fix with AI", "errors on the live preview of", "job-preview-problems"):
+            self.assertIn(text, app)
+
+    def test_opening_a_web_job_starts_its_live_preview_once(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for text in ("PREVIEW_AUTOSTARTED", "orchestrator.previewAutoStart", "Start the live preview when I open a job", "p.branch_exists"):
+            self.assertIn(text, app)
 
 
 if __name__ == "__main__":
