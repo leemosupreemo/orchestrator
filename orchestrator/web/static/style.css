@@ -1618,6 +1618,7 @@ dialog h2 {
 #account-continue-btn, #signin-submit-btn { width: 100%; justify-content: center; position: relative; }
 .backend-config-card { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-3); padding: var(--space-2-5) var(--space-3); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); font-size: var(--type-secondary); text-align: left; }
 .ok-text { color: var(--ok); }
+.bad-text { color: var(--bad); }
 .warn-text { color: var(--warn); }
 .manual-token-details { font-size: var(--type-secondary); margin-top: var(--space-2); border-top: 1px solid var(--border); padding-top: var(--space-3); }
 .manual-token-details > summary { cursor: pointer; user-select: none; text-align: center; font-weight: var(--weight-medium); display: flex; align-items: center; justify-content: center; gap: var(--space-2); }

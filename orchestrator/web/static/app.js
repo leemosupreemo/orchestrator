@@ -7545,6 +7545,13 @@ function testCaseRowsHtml(cases, { editable = false, actionPrefix = "tc" } = {})
 
 // Suites grouped by folder, like a file tree: a glance shows where the tests live and how many; open a folder to run
 // one suite. A single folder (or a filter) shows its suites straight away.
+// When a suite last ran and how it went: its own run, or Run all tests (said so), whichever was later.
+function suiteLastRun(r) {
+  if (!r) return `<span class="muted">Not run yet</span>`;
+  const how = r.ok === null || r.ok === undefined ? `<span class="pill working">running</span>` : r.ok ? `<span class="ok-text">passed</span>` : `<span class="bad-text">failed</span>`;
+  return `Ran ${esc(ago(r.at))}${r.all ? " (all tests)" : ""}, ${how}`;
+}
+
 function suiteGroupsHtml(suites, { open = false } = {}) {
   if (!suites.length) {
     return `<div class="empty stack gap-8">
@@ -7561,7 +7568,7 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
   return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([folder, rows]) => `
     <details class="fold suite-group"${expand ? " open" : ""}><summary class="card-h"><h3 class="mono">${esc(folder)}</h3>
       <span class="count">${rows.length} ${rows.length === 1 ? "suite" : "suites"} · ${plural(rows.reduce((n, s) => n + s.tests, 0), "test")}</span></summary>
-      <div class="list">${rows.map((s) => `<div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${plural(s.tests, "test")} · ${esc((s.path || "").split("/").pop())}</div></div>
+      <div class="list">${rows.map((s) => `<div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${plural(s.tests, "test")} · ${esc((s.path || "").split("/").pop())}</div><div class="meta suite-last-run">${suiteLastRun(s.last_run)}</div></div>
         <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`).join("")}</div></details>`).join("");
 }
 

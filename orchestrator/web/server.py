@@ -1323,6 +1323,33 @@ def resolve_job_path(root: Path, job_id: str) -> Path:
 RUN_LOG = re.compile(r"(\d{8}-\d{6})-([0-9a-f]{6})-([a-z0-9_]+)\.log")
 
 
+def _suite_runs_path(root: Path) -> Path:
+    return runtime_dir(root) / "state" / "suite-runs.json"
+
+
+def record_test_run(root: Path, suite: str | None, *, at: float, ok: bool | None = None) -> None:
+    """When a suite (or, with suite None, every test) last ran, and whether it passed: None while it runs."""
+    data = read_json_file(_suite_runs_path(root))
+    entry = {"at": at, "ok": ok}
+    if suite:
+        data.setdefault("suites", {})[suite] = entry
+    else:
+        data["all"] = entry
+    write_json_file(_suite_runs_path(root), data)
+
+
+def with_last_runs(root: Path, suites: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The suites, each with `last_run`: its own latest run or the latest Run all tests, whichever was later (None if neither)."""
+    data = read_json_file(_suite_runs_path(root))
+    every = data.get("all")
+    out = []
+    for suite in suites:
+        own = (data.get("suites") or {}).get(suite.get("name"))
+        latest = max((r for r in (own, every) if r), key=lambda r: r.get("at") or 0, default=None)
+        out.append({**suite, "last_run": {"at": latest["at"], "ok": latest.get("ok"), "all": latest is every} if latest else None})
+    return out
+
+
 def run_history(root: Path, limit: int = 50) -> list[dict[str, Any]]:
     """Runs started from the web app, read back from their saved transcripts, so the list outlives a restart."""
     folder = runtime_dir(root) / "logs" / "ui"
@@ -7037,7 +7064,9 @@ class UIHandler(BaseHTTPRequestHandler):
             state["health"]["checking_task"] = start_repository_check(self.server, root, state)
             self._json(state)
         elif method == "GET" and parts == ["tests"]:
-            self._json(self._tests(root, refresh=bool(query.get("refresh"))))
+            data = dict(self._tests(root, refresh=bool(query.get("refresh"))))
+            data["suites"] = with_last_runs(root, data.get("suites") or [])  # outside the cache: these change with every run
+            self._json(data)
         elif method == "GET" and parts == ["devlogs"]:
             self._json({"pulls": device_log_pulls(root), "sessions": self._device_sessions(root)})
         elif method == "GET" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "export-zip":
@@ -7222,7 +7251,24 @@ class UIHandler(BaseHTTPRequestHandler):
         self._audit("run_started", action=key, job=job_id)
         if job_id and key in AUTO_PREVIEW_AFTER:
             self._preview_when_ready(session, root, job_id)
+        if key in ("test_suite", "test"):
+            self._record_test_run(session, root, str(params.get("name") or "") if key == "test_suite" else None)
         return session
+
+    def _record_test_run(self, session: PtySession, root: Path, suite: str | None) -> None:
+        """Note a suite run (or Run all tests) as it starts, then whether it passed once it ends: the Tests page shows both."""
+        started = time.time()
+        record_test_run(root, suite, at=started)
+
+        def watch() -> None:
+            while session.running:
+                time.sleep(2)
+            try:
+                record_test_run(root, suite, at=started, ok=session.exit_code == 0)
+            except OSError:
+                pass
+
+        threading.Thread(target=watch, daemon=True, name="suite-run").start()
 
     def _preview_when_ready(self, session: PtySession, root: Path, job_id: str) -> None:
         """When a web project's job finishes work and is ready for review, publish its branch's preview link, if the project

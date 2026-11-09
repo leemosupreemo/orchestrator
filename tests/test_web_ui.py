@@ -95,6 +95,40 @@ class ServerTestCase(unittest.TestCase):
         return res, data
 
 
+class SuiteLastRunTests(unittest.TestCase):
+    """Each suite says when it last ran and how that went: its own Run, or Run all tests, whichever was later."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_suites_own_run_and_run_all_are_both_counted_whichever_is_latest(self):
+        suites = [{"name": "LobbyTests", "tests": 3}, {"name": "ScoreTests", "tests": 2}, {"name": "NeverRun", "tests": 1}]
+        ui.record_test_run(self.root, "LobbyTests", at=100)
+        ui.record_test_run(self.root, "LobbyTests", at=100, ok=False)
+        ui.record_test_run(self.root, None, at=200, ok=True)  # Run all tests, later
+        ui.record_test_run(self.root, "ScoreTests", at=300)   # its own run, later still and still going
+        out = {s["name"]: s.get("last_run") for s in ui.with_last_runs(self.root, suites)}
+        self.assertEqual(out["LobbyTests"], {"at": 200, "ok": True, "all": True})
+        self.assertEqual(out["ScoreTests"], {"at": 300, "ok": None, "all": False})
+        self.assertEqual(out["NeverRun"], {"at": 200, "ok": True, "all": True})  # Run all tests ran it too
+        with tempfile.TemporaryDirectory() as fresh:
+            self.assertIsNone(ui.with_last_runs(Path(fresh), suites)[0]["last_run"])  # nothing has run yet
+
+    def test_the_page_says_when_and_how_each_suite_last_ran(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        fn = js[js.index("function suiteGroupsHtml"):][:2500]
+        self.assertIn("suiteLastRun(s.last_run)", fn)
+        helper = js[js.index("function suiteLastRun"):][:900]
+        for part in ("Not run yet", "passed", "failed", "running", "(all tests)", "ago("):
+            self.assertIn(part, helper, part)
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        self.assertIn('if key in ("test_suite", "test"):', server)  # recorded when one starts, and again when it ends
+
+
 class SentrySignInTests(ServerTestCase):
     """Connect Sentry by approving a code in the browser: the device code stays here, and the org comes from the token."""
 
