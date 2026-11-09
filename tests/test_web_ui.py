@@ -3239,6 +3239,65 @@ class PtySessionTests(unittest.TestCase):
             self.assertTrue(finished)
             self.assertIn(b"ctty ok", out)
 
+    def test_disk_full_during_transcript_io_does_not_leave_a_run_running(self):
+        import errno
+        import threading
+        class FullDisk:
+            def __init__(self, fail):
+                self.fail = fail
+            def write(self, data):
+                if self.fail == "write":
+                    raise OSError(errno.ENOSPC, "No space left on device")
+            def flush(self):
+                if self.fail == "flush":
+                    raise OSError(errno.ENOSPC, "No space left on device")
+            def close(self):
+                if self.fail == "close":
+                    raise OSError(errno.ENOSPC, "No space left on device")
+        for operation in ("write", "flush", "close"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as tmp:
+                errors, released = [], []
+                with patch.object(Path, "open", return_value=FullDisk(operation)), patch.object(threading, "excepthook", errors.append):
+                    session = ui.PtySession("disk-full", "test", "Test",
+                        [sys.executable, "-c", "print('work completed', flush=True)"],
+                        Path(tmp), dict(os.environ), transcript=Path(tmp) / "run.log", on_exit=lambda: released.append(True))
+                    out, finished = self.collect(session, lambda _: False, timeout=2)
+                    session._proc.wait(timeout=5)
+                self.assertTrue(finished, f"{operation} failure left the run running")
+                self.assertEqual(session.exit_code, 0)
+                self.assertIsNotNone(session.ended)
+                self.assertIn(b"work completed", out)
+                self.assertEqual(errors, [])
+                self.assertEqual(released, [True])
+                self.assertIn(b"Run log could not be saved", out)
+
+    def test_stop_still_finishes_when_the_transcript_disk_is_full(self):
+        import errno
+        class FullDisk:
+            def write(self, data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            def flush(self):
+                pass
+            def close(self):
+                raise OSError(errno.ENOSPC, "No space left on device")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(Path, "open", return_value=FullDisk()):
+            session = ui.PtySession("stop-disk-full", "test", "Test",
+                [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+                Path(tmp), dict(os.environ), transcript=Path(tmp) / "run.log")
+            try:
+                output, _ = self.collect(session, lambda out: b"Run log could not be saved" in out, timeout=2)
+                self.assertIn(b"ready", output)
+                session.stop()
+                _, finished = self.collect(session, lambda _: False, timeout=5)
+                self.assertTrue(finished)
+                self.assertTrue(session.stopped)
+                self.assertNotEqual(session.exit_code, 0)
+                self.assertIsNotNone(session.ended)
+            finally:
+                if session._proc.poll() is None:
+                    session._proc.kill()
+                session._proc.wait(timeout=5)
+
     def test_stop_terminates_process_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = ui.PtySession("t3", "test", "Test", [sys.executable, "-c", "import time; time.sleep(60)"],

@@ -312,7 +312,11 @@ class PtySession:
         status = "exited" if code == 0 else f"exited with code {code}"
         self._append(f"\r\n\x1b[90m[{status}]\x1b[0m\r\n".encode())
         if self._transcript:
-            self._transcript.close()
+            transcript, self._transcript = self._transcript, None
+            try:
+                transcript.close()
+            except OSError as exc:
+                self._append(f"\r\n[Run log could not be saved: {exc}]\r\n".encode())
         if self._on_exit:
             self._on_exit()
         with self._cond:
@@ -346,8 +350,17 @@ class PtySession:
                 self._base += overflow
             self._cond.notify_all()
         if self._transcript:
-            self._transcript.write(chunk)
-            self._transcript.flush()
+            try:
+                self._transcript.write(chunk)
+                self._transcript.flush()
+            except OSError as exc:
+                # Disk failures must not kill the reader: it still drains output, reaps the process and releases the gate.
+                transcript, self._transcript = self._transcript, None
+                try:
+                    transcript.close()
+                except OSError:
+                    pass
+                self._append(f"\r\n[Run log could not be saved: {exc}. Output remains available while Orchestrator is open.]\r\n".encode())
 
     def read(self, offset: int, timeout: float) -> tuple[int, bytes, bool]:
         """Returns (next_offset, data, finished), waiting up to `timeout` for data."""
