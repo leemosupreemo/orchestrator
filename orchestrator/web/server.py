@@ -74,6 +74,7 @@ from orchestrator import inbox as inbox_view
 from orchestrator import task_revert
 from orchestrator import preflight
 from orchestrator import integration_check
+from orchestrator import home_status
 from orchestrator import new_job_form
 from orchestrator import notifier
 from orchestrator import plan_edit
@@ -4996,6 +4997,7 @@ class UIServer(ThreadingHTTPServer):
         self._stopping = threading.Event()
         self._repository_lock = threading.Lock()
         self._repository_check_tasks: dict[tuple[str, str], tuple[str, float]] = {}
+        self._home_status_tasks: dict[str, str] = {}
         self._publishing_jobs: set[tuple[str, str]] = set()
         self._plan_lock = threading.Lock()   # one plan-run decision at a time (background loop and page requests)
         self._plan_sessions: dict[str, Any] = {}  # feature id -> the planning run started for it
@@ -5005,7 +5007,7 @@ class UIServer(ThreadingHTTPServer):
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat"):
+                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_home_status_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -6206,6 +6208,34 @@ class UIHandler(BaseHTTPRequestHandler):
                     raise UIError("Not found", HTTPStatus.NOT_FOUND)
             except project_docs.DocsError as exc:
                 raise UIError(str(exc), HTTPStatus.NOT_FOUND)
+        elif parts in (["home-status"], ["home-status", "suggestions"]):
+            rt = runtime_dir(root)
+            try:
+                requirements = (root / prd_doc.PATH).read_text(encoding="utf-8")
+            except OSError:
+                requirements = ""
+            jobs = list_jobs(root)
+            if method == "GET" and parts == ["home-status"]:
+                self._json(home_status.view(rt, requirements, jobs))
+            elif method == "POST" and parts == ["home-status", "suggestions"]:
+                self._require_owner("generate project suggestions")
+                self._body()
+                with self.server._repository_lock:
+                    current = home_status.view(rt, requirements, jobs)
+                    key = str(root.resolve())
+                    previous = self.server._home_status_tasks.get(key)
+                    pending = self.server.tasks.get(previous) if previous else None
+                    if not current["stale"]:
+                        task_id = None
+                    elif pending and pending["status"] == "running":
+                        task_id = previous
+                    else:
+                        task_id = self.server.tasks.start(lambda: home_status.generate(rt, requirements, jobs,
+                            lambda prompt: self._model_call(root, prompt, timeout=75)))
+                        self.server._home_status_tasks[key] = task_id
+                self._json({"task": task_id}, HTTPStatus.ACCEPTED)
+            else:
+                raise UIError("Not found", HTTPStatus.NOT_FOUND)
         elif method == "GET" and parts == ["preflight"]:
             self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
         elif method == "GET" and parts == ["delivery"]:

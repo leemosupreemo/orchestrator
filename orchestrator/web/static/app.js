@@ -2772,11 +2772,8 @@ function statusLine(p) {
   const branchPicker = branches.length
     ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => branchOption(b, p.branch, p.elsewhere)).join("")}</select>`
     : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
-  // Only what needs a glance: work not yet committed, or a missing machine or model (running work has its own card). The language mix
-  // is on the project's card under Projects.
+  // Branch and setup controls stay here; project facts and uncommitted files live in the status card below.
   const stats = [
-    // Says what it's measured against: files that differ from the last commit on the checked-out branch. Opens the files.
-    p.dirty_files ? `<a href="#/git?show=changes" title="Files that differ from the last commit on ${esc(p.branch || "this branch")}">${p.dirty_files} uncommitted${p.branch ? ` on ${esc(p.branch)}` : ""}</a>` : "",
     p.machine_count === 0 ? `<a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>`
       : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
   ].filter(Boolean);
@@ -3217,14 +3214,21 @@ function homeProjectTitle(p) {
 }
 
 pages.home = async (_, query) => {
+  const p = state.project, homeBackend = getBackendUrl();
+  const sameProject = () => state.project?.root === p?.root && getBackendUrl() === homeBackend;
   await loadSetup();
+  if (!sameProject()) return {stale: true};
   if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
-  const [{ jobs }, waiting, product, archivedList] = await Promise.all([api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null)]);
+  const [{ jobs }, waiting, product, archivedList, homeGit, homeSuggestions] = await Promise.all([
+    api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
+    api("git").catch(() => ({})), api("home-status").catch(() => null),
+  ]);
+  if (!sameProject()) return {stale: true};
   const archivedJobs = archivedList?.archived || [];
-  const p = state.project;
   if (!p.branches) { // server predates the project-state branch list: use the Git endpoint
     try { p.branches = (await api("git")).branches || []; } catch { p.branches = []; }
   }
+  if (!sameProject()) return {stale: true};
   // 1) Default ordered by most recent
   const runningRuns = state.runs.filter((r) => r.running);
   const isRunningNow = (j) => runningRuns.some((r) => r.action !== "dev_preview" && (r.job === j.id || r.result_job === j.id)); // shown in Running now, not again in the list (a live preview isn't work on it)
@@ -3258,6 +3262,7 @@ pages.home = async (_, query) => {
     sub: statusLine(p),
     actions: `<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a>`,
     html: `
+      ${HomeStatus.render({project: p, git: homeGit, product, jobs, runs: state.runs, suggestions: homeSuggestions?.suggestions})}
       ${product && !product.sections.some((x) => x.filled) ? productStripHtml(product) : ""}
 
       ${runningBanner}
@@ -3307,6 +3312,30 @@ pages.home = async (_, query) => {
       </section>` : ""}`,
     after: () => {
       renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
+      // Keep the immediate facts and project-based suggestions visible while a cached AI answer is prepared.
+      let leftHome = false, suggestionTimer;
+      cleanup.push(() => { leftHome = true; clearTimeout(suggestionTimer); });
+      const stillHome = () => !leftHome && current.page === "home" && sameProject();
+      if (homeSuggestions?.stale && state.you?.role !== "member" && stillHome()) {
+        api("home-status/suggestions", {method: "POST", body: {}}).then(({task}) => {
+          if (!task || !stillHome()) return;
+          const poll = async () => {
+            if (!stillHome()) return;
+            try {
+              const result = await api(`product/task/${encodeURIComponent(task)}`);
+              if (!stillHome()) return;
+              if (result.status === "running") { suggestionTimer = setTimeout(poll, 2000); return; }
+              if (result.status !== "done") return;
+              const fresh = await api("home-status");
+              if (stillHome()) {
+                const card = $("#home-project-status");
+                if (card) card.outerHTML = HomeStatus.render({project: p, git: homeGit, product, jobs, runs: state.runs, suggestions: fresh.suggestions});
+              }
+            } catch { /* the project-based suggestions remain usable */ }
+          };
+          poll();
+        }).catch(() => {});
+      }
       const homeModelSelect = view.querySelector("#prd-home-model-select");
       if (homeModelSelect) {
         homeModelSelect.dataset.previous = homeModelSelect.value;
@@ -11975,7 +12004,8 @@ async function route() {
     const result = r.page === "setup" ? await DesktopSetup.render({api, esc, root: r.query.get("root"),
       onReady: async () => { await refreshState(); location.hash = "#/checkup"; await route(); }})
       : await pages[r.page](r.args, r.query);
-    if (current.page === r.page && current.args.join() === r.args.join()) {
+    if (result?.stale) return;
+    if (token === routeToken && current.page === r.page && current.args.join() === r.args.join()) {
       apply(result);
       if (r.page !== "run") $("#page-title")?.focus({ preventScroll: true }); // so screen readers announce the new page
     }
@@ -12018,6 +12048,7 @@ async function tick() {
   const page = current.page, args = current.args.join();
   try {
     const result = await pages[page](current.args, current.query);
+    if (result?.stale) return;
     if (current.page !== page || current.args.join() !== args) return;
     if (page === "ux-review" && updateUxReviewWhileEditing(result)) return;
     if (signatureOf(result) !== current.rendered) apply(result);

@@ -2197,8 +2197,8 @@ process.stdout.write(JSON.stringify({
 
     def test_uncommitted_link_opens_the_changed_files(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('${p.dirty_files} uncommitted${p.branch ? ` on ${esc(p.branch)}` : ""}</a>', app)  # says which branch it's measured against
-        self.assertIn('<a href="#/git?show=changes" title="Files that differ from the last commit on', app)
+        status = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "home-status.js").read_text()
+        self.assertIn('href="#/git?show=changes"', status)  # the card still opens the changed files
         self.assertIn('Uncommitted changes${g.branch ? ` on <span class="mono">${esc(g.branch)}</span>` : ""}', app)
         git = app[app.index("pages.git = async (_, query)"):]
         git = git[:git.index("\npages.")]
@@ -2210,7 +2210,8 @@ process.stdout.write(JSON.stringify({
     def test_home_lists_every_job_however_long_it_has_waited(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
-        self.assertNotIn("stale", home.lower())  # no folding away of jobs that haven't changed in weeks
+        filters = home[home.index("const HOME_FILTERS"):home.index("const requested")]
+        self.assertNotIn("stale", filters.lower())  # the job filters never hide older jobs; suggestions have their own cache freshness
         self.assertIn("filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN }))", home)
 
     def test_empty_jobs_on_home_has_simplified_message_and_link_to_start_new_job(self):

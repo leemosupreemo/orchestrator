@@ -4820,3 +4820,17 @@ body.route-loading::before { content: ""; position: fixed; top: 0; left: 0; righ
 .session-workers { color: var(--muted); }
 /* Under the analytics stats: the provider's region and status, lined up with the stats above. */
 .analytics-summary .analytics-provider-row { padding: 0 var(--space-4) var(--space-4); }
+
+/* Home: a brief, source-backed project overview with suggestions that open a draft job. */
+.home-project-status { border-color: var(--accent); background: linear-gradient(var(--accent-soft), var(--panel)); overflow: hidden; }
+.home-project-status .card-h { flex-wrap: wrap; gap: var(--space-2); }
+.home-status-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.home-status-facts li { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: var(--space-3); font-size: var(--type-secondary); }
+.home-status-facts li > span { min-width: 0; overflow-wrap: anywhere; }
+.home-status-facts strong { color: var(--muted); font-weight: var(--weight-medium); }
+.home-status-suggestions { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.home-status-suggestions h3 { margin: 0 0 var(--space-3); font-size: var(--type-secondary); }
+.home-suggestion-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+.home-suggestion { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); font-size: var(--type-secondary); text-decoration: none; min-width: 0; overflow-wrap: anywhere; }
+.home-suggestion:hover, .home-suggestion:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+@media (max-width: 680px) { .home-suggestion-list { grid-template-columns: 1fr; } .home-status-facts li { grid-template-columns: 1fr; gap: var(--space-1); } }
