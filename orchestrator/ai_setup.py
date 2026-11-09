@@ -99,14 +99,14 @@ def ensure_free_ai(root: Path, progress: Any = None, *, which: Callable[[str], s
         names = known() if callable(known) else known if known is not None else _known_free()
         return [m for m in names if is_free(m) and m in offered]
 
+    # Record what OpenCode offers today. Orchestrator counts only those of its OpenCode models (so paid ones it doesn't offer
+    # without an account aren't picked), and it learns free models that are new since its list was made.
+    say("verify", "Updating Orchestrator's list of OpenCode's models")
+    try:
+        refresh_known()
+    except Exception:  # noqa: BLE001 - a failed refresh just means nothing new was learned
+        pass
     free = known_free()
-    if not free and any(is_free(m) for m in offered):  # free models Orchestrator hasn't heard of yet: learn them, then look again
-        say("verify", "Updating Orchestrator's list of free models")
-        try:
-            refresh_known()
-        except Exception:  # noqa: BLE001 - a failed refresh just means nothing new was learned
-            pass
-        free = known_free()
     if not free:
         return stopped("verify", "OpenCode is installed, but it isn't offering any free models right now.")
 

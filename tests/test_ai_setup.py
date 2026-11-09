@@ -21,6 +21,14 @@ class Recorder:
     def update(self, stage: str, detail: str = "") -> None:
         self.steps.append((stage, detail))
 
+    def stages(self) -> list[str]:
+        """The steps in order, each once (a step may say more than one thing)."""
+        out: list[str] = []
+        for stage, _ in self.steps:
+            if not out or out[-1] != stage:
+                out.append(stage)
+        return out
+
 
 class FakeComputer:
     """OpenCode present or not, an installer that works or doesn't, and what `opencode models` lists."""
@@ -45,7 +53,7 @@ class FakeComputer:
 
     def run(self, root: Path, progress=None) -> dict:
         return ai_setup.ensure_free_ai(root, progress, which=self.which, install=self.install, list_models=self.models,
-                                       known=KNOWN, refresh=self.refreshed.append)
+                                       known=KNOWN, refresh_known=lambda: None, refresh=self.refreshed.append)
 
 
 class ToolFolderTests(unittest.TestCase):
@@ -54,6 +62,27 @@ class ToolFolderTests(unittest.TestCase):
         self.assertEqual(path[0], "/usr/bin")
         for folder in (str(Path.home() / ".opencode" / "bin"), str(Path.home() / ".local" / "bin"), "/opt/homebrew/bin"):
             self.assertIn(folder, path)
+
+
+class ToolFoundWhereInstalledTests(unittest.TestCase):
+    def test_models_count_a_tool_installed_outside_path(self):
+        import os
+        from orchestrator.scripts import model_registry
+        with tempfile.TemporaryDirectory() as d:
+            tool = Path(d) / "opencode"
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o755)
+            saved = {k: os.environ.get(k) for k in ("PATH", "ORCHESTRATOR_TOOL_DIRS")}
+            os.environ.update({"PATH": "/usr/bin:/bin", "ORCHESTRATOR_TOOL_DIRS": d})
+            try:
+                self.assertTrue(model_registry.cli_is_available("opencode"))
+                self.assertEqual(model_registry.preferred_cli("opencode"), "opencode")
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
 
 
 class FreeAiTests(unittest.TestCase):
@@ -71,7 +100,7 @@ class FreeAiTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["model"], "opencode/nemotron-3-ultra-free")
         self.assertFalse(result["installed_now"])
-        self.assertEqual([s for s, _ in progress.steps], ["check", "verify", "ready"])
+        self.assertEqual(progress.stages(), ["check", "verify", "ready"])
         self.assertEqual(fake.refreshed, [self.root])  # the computer's models follow at once, so setup ticks off
 
     def test_missing_opencode_is_installed_then_tested(self):
@@ -79,7 +108,7 @@ class FreeAiTests(unittest.TestCase):
         result = fake.run(self.root, progress)
         self.assertEqual(fake.installs, ["opencode"])
         self.assertTrue(result["ok"] and result["installed_now"])
-        self.assertEqual([s for s, _ in progress.steps], ["check", "install", "verify", "ready"])
+        self.assertEqual(progress.stages(), ["check", "install", "verify", "ready"])
         self.assertTrue(all(detail for _, detail in progress.steps))  # every step says something in plain words
 
     def test_an_installer_that_fails_says_why_and_offers_poolside(self):
@@ -109,12 +138,13 @@ class FreeAiTests(unittest.TestCase):
         self.assertEqual(result["model"], "opencode/beam-free")
         self.assertIn("Updating", " ".join(d for _, d in progress.steps))
 
-    def test_no_refresh_when_the_known_list_already_has_one(self):
+    def test_what_opencode_offers_is_always_recorded_so_its_paid_models_dont_count(self):
+        # Orchestrator only counts the OpenCode models OpenCode says it offers; that list must be fresh after setup
         learned = []
         fake = FakeComputer(installed=True)
         ai_setup.ensure_free_ai(self.root, Recorder(), which=fake.which, install=fake.install, list_models=fake.models,
                                 known=KNOWN, refresh_known=lambda: learned.append(True), refresh=fake.refreshed.append)
-        self.assertEqual(learned, [])
+        self.assertEqual(learned, [True])
 
     def test_the_steps_have_names_for_the_page(self):
         self.assertEqual([k for k, _ in ai_setup.STEPS], ["check", "install", "verify", "ready"])

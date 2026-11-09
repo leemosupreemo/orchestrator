@@ -434,12 +434,24 @@ def load_bundled_models() -> list[ModelMetadata]:
         print(f"Warning: Failed to load bundled model registry from {bundled_path}: {e}")
         return []
 
+def _which(name: str) -> str | None:
+    """A tool on PATH or where installers put tools (OpenCode's ~/.opencode/bin; see ai_providers.tool_path)."""
+    try:
+        from orchestrator.ai_providers import tool_path
+    except ImportError:
+        return shutil.which(name)
+    try:
+        return shutil.which(name, path=tool_path())
+    except TypeError:  # a stand-in for shutil.which (tests decide which tools exist) that takes no path: ask it plainly
+        return shutil.which(name)
+
+
 def cli_is_available(cli_name: str, installed: dict[str, bool] | None = None) -> bool:
     """Returns whether a CLI is installed, honoring provider-specific aliases."""
     candidates = CLI_ALIASES.get(cli_name, (cli_name,))
     if installed is not None:
         return any(installed.get(candidate, False) for candidate in candidates)
-    return any(shutil.which(candidate) is not None for candidate in candidates)
+    return any(_which(candidate) is not None for candidate in candidates)
 
 def preferred_cli(cli_name: str, installed: dict[str, bool] | None = None) -> str:
     """Returns the preferred installed CLI name for a provider."""
@@ -450,7 +462,7 @@ def preferred_cli(cli_name: str, installed: dict[str, bool] | None = None) -> st
                 return candidate
         return candidates[0]
     for candidate in candidates:
-        if shutil.which(candidate) is not None:
+        if _which(candidate) is not None:
             return candidate
     return candidates[0]
 
