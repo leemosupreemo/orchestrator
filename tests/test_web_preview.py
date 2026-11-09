@@ -136,7 +136,8 @@ class QuietExportTests(unittest.TestCase):
         server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
         self.assertIn("s.action not in SIDE_ACTIONS", server)
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('runs.find((r) => r.running && r.action !== "export_job")', app)
+        self.assertIn('runs.find((r) => r.running && !SIDE_RUNS.has(r.action))', app)
+        self.assertIn('const SIDE_RUNS = new Set(["export_job"', app)
         dialog = app[app.index("async export_job_bundle(params)"):app.index("async run_visual_check(params)")]
         self.assertNotIn('runAction("export_job"', dialog)  # no run page
         self.assertIn("toast(`Exported to ${where}`)", dialog)

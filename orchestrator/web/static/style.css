@@ -4679,3 +4679,12 @@ body.route-loading::before { content: ""; position: fixed; top: 0; left: 0; righ
     font-size: 16px !important;
   }
 }
+
+/* A web project's job page: its branch running in a frame, with pins for pointing out a problem. */
+.job-preview-tabs { margin-left: auto; }
+.job-preview-frame { position: relative; height: min(70vh, 720px); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--panel); }
+.job-preview-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+.job-preview-pins { position: absolute; inset: 0; z-index: var(--z-inner); cursor: crosshair; background: color-mix(in srgb, var(--accent) 6%, transparent); outline: 2px dashed var(--accent); outline-offset: -2px; }
+.job-preview-hint { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); padding: var(--space-1) var(--space-3); border-radius: var(--r-pill); background: var(--accent); color: #fff; font-size: var(--type-secondary); pointer-events: none; }
+.job-preview-pin { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--bad); border: 3px solid #fff; box-shadow: var(--shadow); }
+@media (max-width: 760px) { .job-preview-frame { height: 60vh; } }

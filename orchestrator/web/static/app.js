@@ -2972,7 +2972,7 @@ pages.home = async (_, query) => {
   }
   // 1) Default ordered by most recent
   const runningRuns = state.runs.filter((r) => r.running);
-  const isRunningNow = (j) => runningRuns.some((r) => r.job === j.id || r.result_job === j.id); // shown in Running now, not again in the list
+  const isRunningNow = (j) => runningRuns.some((r) => r.action !== "dev_preview" && (r.job === j.id || r.result_job === j.id)); // shown in Running now, not again in the list (a live preview isn't work on it)
   const sortedJobs = sortJobs(jobs);
 
   // Two sections: the work still going, and what's finished or put away. Old links with filter=done or filter=archived land on the second.
@@ -3210,11 +3210,138 @@ function waitingEpicPage({ id, s, job, runs, docs, links }) {
   };
 }
 
+// Runs about a job that aren't work on it (exporting it, previewing it): they don't make the job look busy.
+const SIDE_RUNS = new Set(["export_job", "web_preview", "dev_preview"]);
+
+// A web project's job page shows its branch in a frame: live from a dev server on this computer while it runs, else the
+// published preview link. "Point out a problem" puts a pin on the frame and sends what you write to the AI as a fix.
+function jobPreviewCard(p, runs) {
+  if (!p) return "";
+  const live = p.live, hosted = p.hosted;
+  // The live preview's address is on the computer running Orchestrator: from another device (a phone on the hosted app) it
+  // points at that device instead, so the published link is shown first there.
+  const onThisComputer = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
+  const liveFirst = live && (onThisComputer || !hosted);
+  const shown = liveFirst ? { kind: "live", url: live.url } : hosted ? { kind: "link", url: hosted.url } : null;
+  const liveRun = runs.find((r) => r.running && r.action === "dev_preview");
+  const publishing = runs.some((r) => r.running && r.action === "web_preview");
+  const owner = state.you?.role !== "member";
+  const both = live && hosted;
+  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}">
+    <div class="card-h card-h-wrap">
+      <h2>Preview</h2>
+      ${both ? `<div class="row gap-4 job-preview-tabs" role="group" aria-label="Which preview">
+        <button type="button" class="btn small${liveFirst ? " on" : ""}" data-preview-tab="live" aria-pressed="${liveFirst}" data-url="${esc(live.url)}">Live</button>
+        <button type="button" class="btn small${liveFirst ? "" : " on"}" data-preview-tab="link" aria-pressed="${!liveFirst}" data-url="${esc(hosted.url)}">Link</button></div>` : ""}
+      ${shown ? `<a class="btn small ghost" id="job-preview-open" href="${esc(shown.url)}" target="_blank" rel="noopener">Open ↗</a>` : ""}
+    </div>
+    <div class="card-b stack gap-12">
+      ${shown ? `<div class="job-preview-frame" id="job-preview-frame">
+        <iframe title="Preview of ${esc(p.branch)}" src="${esc(shown.url)}" loading="lazy" referrerpolicy="no-referrer"></iframe>
+        <div class="job-preview-pins" id="job-preview-pins" hidden><span class="job-preview-hint">Click where the problem is</span></div>
+      </div>
+      <p class="muted t-secondary" id="job-preview-caption">${liveFirst ? `Live from ${onThisComputer ? "this computer" : "the computer running Orchestrator (open this page there to see it)"}: changes show up as they're saved.` : `Link at ${esc(hosted.commit || "")}, ${esc(ago(hosted.at))}${p.hosted_current ? "" : ". The branch has newer commits: publish again to see them"}.`} If the frame stays blank, the site doesn't allow being shown inside another page: use Open ↗.</p>`
+      : `<p class="muted t-secondary">See <strong class="mono">${esc(p.branch)}</strong> running: live on this computer as the AI works, or on a link to share.</p>`}
+      <div class="row gap-8 align-center wrap">
+        ${liveRun ? `<button type="button" class="btn small danger" id="job-preview-stop" data-run="${esc(liveRun.id)}">Stop live preview</button>`
+          : `<button type="button" class="btn small ${shown ? "" : "go"}" id="job-preview-live">Start live preview</button>`}
+        ${owner && !p.gaps.length ? `<button type="button" class="btn small ${shown ? "" : "go"}" id="job-preview-publish"${publishing ? " disabled" : ""}>${publishing ? "Publishing…" : hosted ? (p.hosted_current ? "Publish link again" : "Update link") : "Publish link"}</button>` : ""}
+        ${hosted ? `<button type="button" class="btn small ghost" data-setup-copy="${esc(hosted.url)}">Copy link</button>` : ""}
+        ${shown ? `<button type="button" class="btn small" id="job-preview-point" aria-pressed="false">Point out a problem</button>` : ""}
+      </div>
+      ${p.gaps.length ? `<p class="muted t-secondary">To publish a link: ${p.gaps.map(esc).join(" ")}</p>` : owner ? `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its preview link without asking."><input type="checkbox" role="switch" id="job-preview-auto"${p.auto ? " checked" : ""}><span>Publish a link when a job is ready for review</span></label>` : ""}
+    </div>
+  </section>`;
+}
+
+async function setAutoPreview(e) {
+  try {
+    await api("previews/auto", { method: "POST", body: { on: e.target.checked } });
+    toast(e.target.checked ? "Jobs ready for review now publish their preview link" : "Preview links publish only when you ask");
+  } catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); }
+}
+
+function wireJobPreview(view, id) {
+  const card = view.querySelector("#job-preview");
+  if (!card) return;
+  const branch = card.dataset.branch;
+  const frame = card.querySelector("iframe");
+  card.querySelectorAll("[data-preview-tab]").forEach((tab) => tab.addEventListener("click", () => {
+    card.querySelectorAll("[data-preview-tab]").forEach((t) => { t.classList.toggle("on", t === tab); t.setAttribute("aria-pressed", String(t === tab)); });
+    frame.src = tab.dataset.url;
+    card.querySelector("#job-preview-open").href = tab.dataset.url;
+  }));
+  card.querySelector("[data-setup-copy]")?.addEventListener("click", async (e) => {
+    try { await navigator.clipboard.writeText(e.target.dataset.setupCopy); toast("Link copied"); } catch { toast("Couldn't copy the link", true); }
+  });
+  card.querySelector("#job-preview-publish")?.addEventListener("click", () => runAction("web_preview", { branch, job: id, title: `Preview link · ${branch}` }));
+  card.querySelector("#job-preview-auto")?.addEventListener("change", setAutoPreview);
+  card.querySelector("#job-preview-stop")?.addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try { await api(`runs/${encodeURIComponent(e.target.dataset.run)}/stop`, { method: "POST", body: {} }); toast("Live preview stopped"); }
+    catch (err) { toast(err.message, true); }
+    route();
+  });
+  card.querySelector("#job-preview-live")?.addEventListener("click", async (e) => {
+    const btn = e.target;
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    let run;
+    try { ({ run } = await api("runs", { method: "POST", body: { action: "dev_preview", params: { branch, job: id }, ...terminalSize() } })); }
+    catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = "Start live preview"; return; }
+    // Installing packages the first time can take a few minutes; the page shows the preview once the server prints its address.
+    for (let i = 0; i < 300 && card.isConnected; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      let d;
+      try { d = await api(`jobs/${encodeURIComponent(id)}`); } catch { continue; }
+      if (d.preview?.live) { route(); return; }
+      const mine = (d.runs || []).find((r) => r.id === run.id);
+      if (mine && !mine.running) {
+        toast("The live preview stopped before it started", true, { label: "Details", href: `#/runs/${run.id}` });
+        route();
+        return;
+      }
+    }
+  });
+
+  // Point out a problem: a click on the frame (over it, since the page inside can't be read from here) marks the spot.
+  const point = card.querySelector("#job-preview-point");
+  const pins = card.querySelector("#job-preview-pins");
+  point?.addEventListener("click", () => {
+    const on = pins.hidden;
+    pins.hidden = !on;
+    point.setAttribute("aria-pressed", String(on));
+    point.textContent = on ? "Cancel" : "Point out a problem";
+  });
+  pins?.addEventListener("click", async (e) => {
+    const box = pins.getBoundingClientRect();
+    const x = Math.round(((e.clientX - box.left) / box.width) * 100), y = Math.round(((e.clientY - box.top) / box.height) * 100);
+    const pin = document.createElement("span");
+    pin.className = "job-preview-pin";
+    pin.style.left = `${x}%`;
+    pin.style.top = `${y}%`;
+    pins.append(pin);
+    const values = await formDialog("What's wrong here?", `<p class="muted t-secondary">At the pin, ${x}% across and ${y}% down what the frame shows.</p>
+      <label class="field"><span>What you see, and what it should do</span><textarea name="text" rows="4" required placeholder="The button overlaps the title on narrow screens"></textarea></label>`, "Send to the AI", { compact: true });
+    pin.remove();
+    point.click();
+    if (!values?.text?.trim()) return;
+    const where = card.querySelector(".on[data-preview-tab]")?.dataset.previewTab || (frame.src.startsWith("http://") ? "live" : "link");
+    const feedback = `On the ${where === "live" ? "live" : "published"} preview of ${branch} (${frame.src}), at about ${x}% across and ${y}% down the visible page (frame ${Math.round(box.width)}×${Math.round(box.height)} px): ${values.text.trim()}`;
+    const busy = (state.runs || []).some((r) => r.running && (r.job === id) && !SIDE_RUNS.has(r.action));
+    if (busy) { // the AI is working on this job: the problem becomes a job of its own
+      location.hash = `#/new?type=quick&summary=${encodeURIComponent(values.text.trim().slice(0, 80))}&spec=${encodeURIComponent(feedback)}`;
+      return;
+    }
+    runAction("debug", { job: id, feedback }, { skipConfirm: true });
+  });
+}
+
 pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
 
-  const activeRun = runs.find((r) => r.running && r.action !== "export_job"); // an export isn't work on the job
+  const activeRun = runs.find((r) => r.running && !SIDE_RUNS.has(r.action)); // an export or preview isn't work on the job
   if (s.status === "backlog") return waitingEpicPage({ id, s, job, runs, docs, links });
   const summary = { ...s, active_run: !!activeRun };
 
@@ -3468,7 +3595,7 @@ pages.job = async ([id]) => {
       : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`}`).join("")}${isAutoImprove ? `<span class="sep">·</span><span class="prize-pill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Orchestrator Improvement</span>` : ""}${s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="sep">·</span><span class="accent">✓ Submitted for inclusion</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
     html: `<div class="job-layout"><div class="job-top">
-      ${runs.filter((r) => r.running).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
+      ${runs.filter((r) => r.running && r.action !== "dev_preview").map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
 
       ${isAutoImprove ? `
         <div class="banner info improve-banner mb-16 row align-center justify-between">
@@ -3531,6 +3658,7 @@ pages.job = async ([id]) => {
       ${jobContextRail(s, data.context)}
 
       <div class="job-body">
+      ${jobPreviewCard(data.preview, runs)}
       <section class="card mb-16">
         <div class="card-h"><h2>Progress</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks</span>` : ""}</div>
         <div class="card-b stack">
@@ -3702,6 +3830,7 @@ pages.job = async ([id]) => {
     after: () => {
       hydrateAuthImages(); // the UX and design check's screenshots
       wireImagePreviews(view);
+      wireJobPreview(view, id);
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const bodyHtml = `
           <div class="stack gap-12">
@@ -4412,6 +4541,7 @@ pages.delivery = async (args, query) => {
           ${(() => { const p = web.previews.find((x) => x.branch === selected_branch); return p ? `<div class="row gap-8 align-center wrap">
             <a class="btn small go" href="${esc(p.url)}" target="_blank" rel="noopener">Open preview ↗</a><button type="button" class="btn small ghost" data-setup-copy="${esc(p.url)}">Copy link</button>
             <span class="muted t-secondary">Latest: ${esc(p.commit || "")}, ${esc(ago(p.at))}</span></div>` : ""; })()}
+          ${state.you?.role !== "member" ? `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its preview link without asking."><input type="checkbox" role="switch" id="web-preview-auto"${web.auto ? " checked" : ""}><span>Publish a link when a job is ready for review</span></label>` : ""}
         </div>`;
 
   const branchCard = `<section class="card mb-16">
@@ -4534,6 +4664,7 @@ pages.delivery = async (args, query) => {
       }
 
       view.querySelector("#web-preview-btn")?.addEventListener("click", () => runAction("web_preview", { branch: selected_branch }));
+      view.querySelector("#web-preview-auto")?.addEventListener("change", setAutoPreview);
 
       const form = view.querySelector("#delivery-build-form");
       if (form) {

@@ -1020,6 +1020,59 @@ def web_preview_gaps(root: Path, config: dict[str, Any]) -> list[str]:
     return gaps
 
 
+# Runs that end a stretch of work on a job: when one finishes and the job is ready for review, its preview can publish itself.
+AUTO_PREVIEW_AFTER = frozenset({"execute", "resume", "debug"})
+
+
+def auto_preview_branch(root: Path, job_id: str) -> str:
+    """The branch to publish a preview of now that this job's work ended, or "" when it shouldn't: automatic previews are
+    off, it isn't a web project ready to publish, the job isn't ready for review, or its link is already up to date."""
+    if not read_settings(root).get("auto_preview"):
+        return ""
+    config = read_json_file(runtime_dir(root) / "project.json")
+    if not is_web_app(root, config) or web_preview_gaps(root, config):
+        return ""
+    path = resolve_job_path(root, job_id)
+    summary = job_summary(path, read_json_file(path))
+    branch = str(summary.get("branch") or "")
+    if summary.get("status") != "review-needed" or not branch:
+        return ""
+    head = git(root, "rev-parse", "--short", branch)
+    if not head:
+        return ""
+    published = next((p for p in web_previews(root) if p.get("branch") == branch), None)
+    return "" if published and published.get("commit") == head else branch
+
+
+def live_previews(root: Path) -> list[dict[str, Any]]:
+    """Dev servers running on this computer for a branch (see dev_preview.py), with their local address."""
+    folder = runtime_dir(root) / "output" / "dev-previews"
+    out = []
+    for path in folder.glob("*.json") if folder.is_dir() else []:
+        data = read_json_file(path)
+        try:
+            os.kill(int(data.get("pid") or 0), 0)
+        except (OSError, ValueError, TypeError):
+            continue  # it stopped without tidying up
+        if data.get("url") and data.get("branch"):
+            out.append({k: data.get(k) for k in ("branch", "url", "at")})
+    return out
+
+
+def job_preview(root: Path, job: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """A web project's previews of this job's branch, for the job page: the published link and the live one."""
+    config = read_json_file(runtime_dir(root) / "project.json") if config is None else config
+    branch = str(job.get("branch") or job.get("branch_name") or "")
+    if not branch or not is_web_app(root, config):
+        return None
+    head = git(root, "rev-parse", "--short", branch)
+    hosted = next((p for p in web_previews(root) if p.get("branch") == branch), None)
+    return {"branch": branch, "gaps": web_preview_gaps(root, config), "hosted": hosted,
+            "hosted_current": bool(hosted and head and hosted.get("commit") == head),
+            "live": next((p for p in live_previews(root) if p.get("branch") == branch), None),
+            "auto": bool(read_settings(root).get("auto_preview"))}
+
+
 def web_previews(root: Path) -> list[dict[str, Any]]:
     """Published preview links, newest first."""
     folder = runtime_dir(root) / "output" / "previews"
@@ -1045,7 +1098,8 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
                                   base_branch(root, settings), jobs, firebase, ci)
     data["web_url"] = repo_web_url(root)
     if is_web_app(root, config):
-        data["web"] = {"gaps": web_preview_gaps(root, config), "previews": web_previews(root)}
+        data["web"] = {"gaps": web_preview_gaps(root, config), "previews": web_previews(root),
+                       "auto": bool(settings.get("auto_preview"))}
 
     all_branches = [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200]
     current_git_branch = git(root, "branch", "--show-current") or base_branch(root, settings)
@@ -1720,6 +1774,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "completed_tasks": completed,
         "next_task": next_task,
         "approach": job.get("approach") or job.get("execution_strategy") or "Standard workflow",
+        "preview": job_preview(root, job),
     }
 
 
@@ -3140,6 +3195,13 @@ def build_web_preview(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("script", "web_preview.py", "--branch", branch, "--root", str(root))
 
 
+def build_dev_preview(params: dict[str, Any], root: Path) -> list[str]:
+    branch = _text(params, "branch", required=True, limit=200)
+    if branch.startswith("-"):
+        raise UIError("That isn't a branch name.")
+    return orchestrator_argv("script", "dev_preview.py", "--branch", branch, "--root", str(root))
+
+
 def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
     notes = _text(params, "notes", limit=4000)
     branch = _text(params, "branch", limit=200)
@@ -4464,7 +4526,7 @@ def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
 TERMINAL_ACTIONS = {"console", "wizard", "config_menu"}
 
 # Runs that are about a job but aren't work on it: they don't show the job as Working.
-SIDE_ACTIONS = frozenset({"export_job"})
+SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview"})
 
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
@@ -4499,6 +4561,7 @@ ACTIONS: dict[str, Action] = {
                        confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from the Archived filter on Home.", fields=["job"]),
     "web_preview": Action("Publish preview link", build_web_preview, fields=["branch"],
                           confirm="Builds this branch's latest commit and publishes it on a Firebase preview link that anyone with the link can open. It expires in 7 days."),
+    "dev_preview": Action("Live preview", build_dev_preview, fields=["branch"]),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
@@ -5644,7 +5707,8 @@ class UIHandler(BaseHTTPRequestHandler):
                 "font-src 'self' https://fonts.gstatic.com; "
                 "img-src 'self' data: blob: https://*.googleusercontent.com https://lh3.googleusercontent.com; "
                 "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.googleapis.com https://*.firebaseapp.com; "
-                "frame-src 'self' https://swift-orch-web-20260923.firebaseapp.com https://*.firebaseapp.com; "
+                "frame-src 'self' https://swift-orch-web-20260923.firebaseapp.com https://*.firebaseapp.com https://*.web.app "
+                "http://localhost:* http://127.0.0.1:*; "
                 "frame-ancestors 'none'"
             ),
         })
@@ -6514,6 +6578,13 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"step": publish_known_project(str(body.get("root") or ""), str(body.get("visibility") or "private"))})
         elif method == "GET" and parts == ["mcp", "status"]:
             self._json(mcp_status.status(project=root))
+        elif method == "POST" and parts == ["previews", "auto"]:
+            self._require_owner("change automatic previews")
+            settings = read_settings(root)
+            settings["auto_preview"] = bool(self._body().get("on"))
+            write_settings(root, settings)
+            self._audit("auto_preview", on=settings["auto_preview"])
+            self._json({"auto": settings["auto_preview"]})
         elif method == "POST" and parts == ["mcp", "install"]:
             self._require_owner("add MCP servers to AI tools")
             body = self._body()
@@ -6901,7 +6972,8 @@ class UIHandler(BaseHTTPRequestHandler):
         title = action.title
         job_title = ""
         job_id = str(params.get("job") or "") or None
-        if job_id and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
+        side = key in SIDE_ACTIONS  # an errand about the job (export, preview) runs alongside work on it
+        if job_id and not side and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
             raise UIError("This job already has a run in progress. Open it from Activity instead.", HTTPStatus.CONFLICT)
         if job_id:
             job_title = job_summary(resolve_job_path(root, job_id), read_json_file(resolve_job_path(root, job_id)))["title"]
@@ -6914,14 +6986,31 @@ class UIHandler(BaseHTTPRequestHandler):
         if action.env:
             env.update(action.env(params))
         with self.server._repository_lock:
-            if job_id and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
+            if job_id and not side and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
                 raise UIError("This job is busy. Wait for it to finish.", HTTPStatus.CONFLICT)
             session = self.server.sessions.start(key, title, argv, root, env,
                                                  runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
             session.job_id = job_id
             session.job_title = job_title if job_id else ""
         self._audit("run_started", action=key, job=job_id)
+        if job_id and key in AUTO_PREVIEW_AFTER:
+            self._preview_when_ready(session, root, job_id)
         return session
+
+    def _preview_when_ready(self, session: PtySession, root: Path, job_id: str) -> None:
+        """When a web project's job finishes work and is ready for review, publish its branch's preview link, if the project
+        has automatic previews turned on and the link isn't already at the branch's latest commit."""
+        def watch() -> None:
+            while session.running:
+                time.sleep(2)
+            try:
+                branch = auto_preview_branch(root, job_id)
+                if branch:
+                    self._launch_run("web_preview", {"branch": branch, "job": job_id, "title": f"Preview link · {branch}"}, root)
+            except Exception as exc:  # a preview is a convenience: never let it disturb the job
+                self._audit("auto_preview_failed", job=job_id, error=str(exc)[:200])
+
+        threading.Thread(target=watch, daemon=True, name=f"auto-preview-{job_id}").start()
 
     def _start_run(self, body: dict[str, Any], root: Path) -> None:
         key = str(body.get("action") or "")
