@@ -1232,21 +1232,41 @@ async function refreshState() {
   renderProjectSelect($("#project-select"));
 }
 
-// Which computer this session is on: the primary, where jobs start (and are handed to supporting computers from).
+// Which computer this session is on, and whether it's the project's primary: the one computer that starts its jobs (and
+// hands some to supporting computers). Another computer can look but not start work, until it's made primary.
 function renderSessionComputer(button) {
   const c = state.project?.computer;
   if (!button || !c || document.body.classList.contains("signin-gate")) { if (button) button.hidden = true; return; }
   const workers = c.workers || [];
+  const primary = c.primary !== false;
   button.hidden = false;
+  button.classList.toggle("is-secondary", !primary);
   button.innerHTML = `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-    <span class="session-computer-name">${esc(c.name)}</span><span class="pill session-primary">Primary</span>${workers.length ? `<span class="session-workers">+${workers.length}</span>` : ""}`;
-  const about = `This session is on ${c.name}, the primary computer: jobs you start here run from it${workers.length ? ` and are handed to ${workers.join(", ")}` : ""}.`;
+    <span class="session-computer-name">${esc(c.name)}</span>${primary ? `<span class="pill session-primary">Primary</span>` : `<span class="pill session-not-primary">Not primary</span>`}${primary && workers.length ? `<span class="session-workers">+${workers.length}</span>` : ""}`;
+  const about = primary
+    ? `This session is on ${c.name}, the primary computer for this project: jobs start here${workers.length ? ` and are handed to ${workers.join(", ")}` : ""}.`
+    : `${c.primary_name || "Another computer"} is the primary computer for this project, so jobs start there. You can look around here; to start work here, make ${c.name} primary.`;
   button.title = about;
-  button.setAttribute("aria-label", `${about} ${Account.isHosted() ? "Switch computer." : ""}`.trim());
-  button.onclick = () => {
-    if (Account.isHosted()) { openAccount({ list: true }); return; }
-    formDialog(`Primary: ${c.name}`, `<p>${esc(about)}</p>
-      <p class="muted t-secondary">${workers.length ? `Supporting computers: ${esc(workers.join(", "))}.` : "No supporting computers are set up, so every job runs here."} Jobs, history and settings for this project live on this computer.</p>`, "OK", { compact: true, cancelLabel: "Close" });
+  button.setAttribute("aria-label", about);
+  button.onclick = async () => {
+    if (primary) {
+      if (Account.isHosted()) { openAccount({ list: true }); return; }
+      formDialog(`Primary: ${c.name}`, `<p>${esc(about)}</p>
+        <p class="muted t-secondary">${workers.length ? `Supporting computers: ${esc(workers.join(", "))}.` : "No supporting computers are set up, so every job runs here."} Jobs, history and settings for this project live on this computer.${c.checked ? " Only one computer is primary for a project at a time." : ""}</p>`, "OK", { compact: true, cancelLabel: "Close" });
+      return;
+    }
+    const busy = c.primary_online && c.primary_busy > 0;
+    const ok = await formDialog(`Make ${c.name} primary?`, `<p>${esc(about)}</p>
+      <p>${busy ? `${esc(c.primary_name)} is running ${plural(c.primary_busy, "job")} right now. It can only hand over once they've finished or been stopped there.`
+        : `${esc(c.primary_name || "The other computer")} stops being primary: jobs for this project start here from now on. Jobs and history already on ${esc(c.primary_name || "it")} stay there.`}</p>`,
+      `Make ${c.name} primary`, { compact: true });
+    if (!ok) return;
+    try {
+      await api("computer/primary", { method: "POST", body: {} });
+      toast(`${c.name} is now the primary computer for this project`);
+      await refreshState();
+      route();
+    } catch (err) { toast(err.message, true); }
   };
 }
 

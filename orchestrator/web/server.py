@@ -2705,12 +2705,65 @@ def dismiss_models_notice() -> None:
     model_registry.dismiss_models_notice()
 
 
-def session_computer(machines: list[dict[str, Any]]) -> dict[str, Any]:
-    """The computer this session runs on: the primary for the project, which starts jobs and hands some to the supporting
-    computers listed in its machines.json."""
+def project_key(root: Path) -> str:
+    """How the account knows a project on any computer: its Git remote as host/owner/repo (the same for an https or SSH
+    clone), else its folder's name."""
+    remote = git(root, "remote", "get-url", "origin").strip()
+    found = re.match(r"^[a-z+]+://(?:[^@/]+@)?(.+)$", remote, re.I) or re.match(r"^(?:[^@/]+@)?([^:/]+):(.+)$", remote)
+    if found:
+        path = found.group(1) if found.lastindex == 1 else f"{found.group(1)}/{found.group(2)}"
+        return re.sub(r"\.git$", "", path.strip("/")).lower()[:200]
+    return f"folder:{root.name}".lower()[:200]
+
+
+PRIMARY_CACHE_SECONDS = 30
+_primary_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def primary_status(root: Path, refresh: bool = False) -> dict[str, Any]:
+    """Whether this computer is the project's primary, from the account. A computer not signed in to an account, or one
+    that can't reach it just now, carries on as primary: the check guards against two computers working the same project,
+    never against working at all."""
+    machine = account.load_machine()
+    if not machine:
+        return {"you": True, "enabled": False}
+    key = project_key(root)
+    cached = _primary_cache.get(key)
+    if cached and not refresh and time.time() - cached[0] < PRIMARY_CACHE_SECONDS:
+        return cached[1]
+    try:
+        reply = account.call("machine/primary", {"project": key, "label": project_display_name(root)}, machine, timeout=4)
+        status = {"you": bool(reply.get("you")), "enabled": True, "primary": reply.get("primary") or {}}
+    except account.AccountError as exc:
+        status = {"you": True, "enabled": True, "unknown": str(exc)}
+    _primary_cache[key] = (time.time(), status)
+    return status
+
+
+def claim_primary(root: Path) -> dict[str, Any]:
+    machine = account.load_machine()
+    if not machine:
+        raise UIError("This computer isn't signed in to an account, so it's always the primary.")
+    key = project_key(root)
+    try:
+        reply = account.call("machine/primary/claim", {"project": key, "label": project_display_name(root)}, machine, timeout=8)
+    except account.AccountError as exc:
+        raise UIError(str(exc), HTTPStatus.CONFLICT if exc.status == 409 else HTTPStatus.BAD_GATEWAY) from exc
+    status = {"you": bool(reply.get("you")), "enabled": True, "primary": reply.get("primary") or {}}
+    _primary_cache[key] = (time.time(), status)
+    return status
+
+
+def session_computer(machines: list[dict[str, Any]], root: Path | None = None) -> dict[str, Any]:
+    """The computer this session runs on, and whether it's the project's primary: the one that starts jobs and hands some
+    to the supporting computers listed in its machines.json."""
     machine = account.load_machine() or {}
+    status = primary_status(root) if root is not None else {"you": True, "enabled": False}
     return {"name": machine.get("name") or account.default_name(), "id": machine.get("machine_id") or "",
-            "workers": [str(m.get("name") or "") for m in machines if m.get("execution_mode") not in (None, "local") and m.get("name")]}
+            "workers": [str(m.get("name") or "") for m in machines if m.get("execution_mode") not in (None, "local") and m.get("name")],
+            "primary": status["you"], "primary_name": (status.get("primary") or {}).get("name", ""),
+            "primary_busy": (status.get("primary") or {}).get("running", 0) if not status["you"] else 0,
+            "primary_online": (status.get("primary") or {}).get("online", False), "checked": status["enabled"] and "unknown" not in status}
 
 
 def project_state(root: Path) -> dict[str, Any]:
@@ -2760,7 +2813,7 @@ def project_state(root: Path) -> dict[str, Any]:
             })
 
     return {
-        "computer": session_computer(machines),
+        "computer": session_computer(machines, root),
         "machine_count": len(machines),
         "model_count": len({model for m in machines for model in m.get("models", [])}),
         "name": project_display_name(root),
@@ -4588,6 +4641,10 @@ def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
 # app never sends people into a terminal menu: each of these has an app page (the console stays as a deliberate,
 # clearly labelled escape hatch in the sidebar).
 TERMINAL_ACTIONS = {"console", "wizard", "config_menu"}
+
+# Work that only the project's primary computer starts (as do runs on an existing job): two computers starting work on one
+# project would overwrite each other's code on shared supporting computers.
+PRIMARY_ONLY_ACTIONS = frozenset({"new_job", "fix", "plan_epic"})
 
 # Runs that are about a job but aren't work on it: they don't show the job as Working.
 SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview"})
@@ -6652,6 +6709,13 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"step": publish_known_project(str(body.get("root") or ""), str(body.get("visibility") or "private"))})
         elif method == "GET" and parts == ["mcp", "status"]:
             self._json(mcp_status.status(project=root))
+        elif method == "POST" and parts == ["computer", "primary"]:
+            self._require_owner("change which computer is primary")
+            self._body()
+            status = claim_primary(root)
+            self._audit("primary_claimed", project=project_key(root))
+            self._json({"computer": session_computer(read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) or [], root),
+                        "status": status})
         elif method == "POST" and parts == ["previews", "auto"]:
             self._require_owner("change automatic previews")
             settings = read_settings(root)
@@ -7047,6 +7111,12 @@ class UIHandler(BaseHTTPRequestHandler):
         job_title = ""
         job_id = str(params.get("job") or "") or None
         side = key in SIDE_ACTIONS  # an errand about the job (export, preview) runs alongside work on it
+        if (job_id or key in PRIMARY_ONLY_ACTIONS) and not side:
+            status = primary_status(root)
+            if not status["you"]:
+                name = (status.get("primary") or {}).get("name") or "Another computer"
+                raise UIError(f"{name} is the primary computer for this project, so jobs start there. Use it, or make this "
+                              "computer primary (from the computer name in the sidebar).", HTTPStatus.CONFLICT)
         if job_id and not side and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
             raise UIError("This job already has a run in progress. Open it from Activity instead.", HTTPStatus.CONFLICT)
         if job_id:

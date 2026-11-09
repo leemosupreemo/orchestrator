@@ -4716,6 +4716,8 @@ body.route-loading::before { content: ""; position: fixed; top: 0; left: 0; righ
 .session-computer .icon { width: 16px; height: 16px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; color: var(--muted); }
 .session-computer-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--weight-bold); }
 .session-primary { background: var(--accent-soft); color: var(--accent); }
+.session-not-primary { background: var(--warn-soft); color: var(--warn); }
+.session-computer.is-secondary { border-color: var(--warn); }
 .session-workers { color: var(--muted); }
 /* Under the analytics stats: the provider's region and status, lined up with the stats above. */
 .analytics-summary .analytics-provider-row { padding: 0 var(--space-4) var(--space-4); }

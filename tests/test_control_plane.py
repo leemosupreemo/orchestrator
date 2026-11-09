@@ -644,3 +644,55 @@ class EndToEndTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class PrimaryComputerTests(PlaneCase):
+    """One primary computer per project: the first to open it, until another takes over while it isn't running anything."""
+
+    def primary(self, machine, secret, claim=False, project="github.com/alice/shop"):
+        return self.call("POST", "/cp/machine/primary/claim" if claim else "/cp/machine/primary", {"project": project, "label": "Shop"},
+                         machine_auth=f"Machine {machine}:{secret}")
+
+    def test_the_first_computer_to_open_a_project_becomes_its_primary(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        status, first = self.primary(studio, s1)
+        self.assertEqual((status, first["you"], first["primary"]["name"]), (200, True, "Studio"))
+        _, second = self.primary(laptop, s2)
+        self.assertFalse(second["you"])
+        self.assertEqual(second["primary"]["name"], "Studio")
+        _, other = self.primary(laptop, s2, project="github.com/alice/blog")  # a different project has its own primary
+        self.assertTrue(other["you"])
+
+    def test_taking_over_waits_while_the_primary_is_running_jobs(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        self.primary(studio, s1)
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "https://studio.example.com", "running": 2}, machine_auth=f"Machine {studio}:{s1}")
+        status, refused = self.primary(laptop, s2, claim=True)
+        self.assertEqual(status, 409)
+        self.assertIn("Studio is still running 2 jobs", refused["error"])
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "https://studio.example.com", "running": 0}, machine_auth=f"Machine {studio}:{s1}")
+        status, taken = self.primary(laptop, s2, claim=True)
+        self.assertEqual((status, taken["you"]), (200, True))
+        self.assertFalse(self.primary(studio, s1)[1]["you"])
+
+    def test_an_offline_or_removed_primary_can_be_replaced(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        self.primary(studio, s1)
+        self.call("POST", "/cp/machine/heartbeat", {"endpoint": "https://studio.example.com", "running": 1}, machine_auth=f"Machine {studio}:{s1}")
+        self.clock.t += cp.ONLINE_WINDOW + 1  # it went quiet with a job showing: it isn't working on anything now
+        self.assertEqual(self.primary(laptop, s2, claim=True)[0], 200)
+        self.call("POST", "/cp/machines/remove", {"machine_id": laptop}, user="alice-token")
+        self.assertTrue(self.primary(studio, s1)[1]["you"])  # its primary was removed: the next to ask takes it
+
+    def test_accounts_dont_share_primaries(self):
+        alice, s1 = self.pair(user="alice-token", name="Alice Mac")
+        bob, s2 = self.pair(user="bob-token", name="Bob Mac")
+        self.assertTrue(self.primary(alice, s1)[1]["you"])
+        self.assertTrue(self.primary(bob, s2)[1]["you"])
+
+    def test_the_project_must_be_named(self):
+        studio, s1 = self.pair()
+        self.assertEqual(self.primary(studio, s1, project="")[0], 400)

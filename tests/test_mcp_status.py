@@ -259,7 +259,7 @@ class SessionComputerTests(unittest.TestCase):
         from orchestrator.web import server
         with patch.object(server.account, "load_machine", lambda: {"name": "Studio", "machine_id": "m1"}):
             c = server.session_computer([{"name": "local", "execution_mode": "local"}, {"name": "mini", "execution_mode": "ssh"}])
-        self.assertEqual(c, {"name": "Studio", "id": "m1", "workers": ["mini"]})
+        self.assertEqual({k: c[k] for k in ("name", "id", "workers", "primary")}, {"name": "Studio", "id": "m1", "workers": ["mini"], "primary": True})
         index = (APP.parent / "index.html").read_text(encoding="utf-8")
         self.assertIn('<button type="button" class="session-computer" id="session-computer" hidden></button>', index)
         app = APP.read_text(encoding="utf-8")
@@ -302,3 +302,45 @@ class MenusAndTapOutsideTests(unittest.TestCase):
         self.assertIn('document.addEventListener("pointerdown", outside, true);', messages)
         feedback = (APP.parent / "feedback.js").read_text(encoding="utf-8")
         self.assertIn("A tap outside it (on the dimmed page) closes it", feedback)
+
+
+class PrimaryOnThisComputerTests(unittest.TestCase):
+    def setUp(self):
+        from orchestrator.web import server
+        self.server = server
+        server._primary_cache.clear()
+
+    def test_a_computer_without_an_account_or_without_a_connection_carries_on_as_primary(self):
+        s = self.server
+        with tempfile.TemporaryDirectory() as tmp, patch.object(s.account, "load_machine", lambda: None):
+            self.assertEqual(s.primary_status(Path(tmp)), {"you": True, "enabled": False})
+        def down(*a, **k):
+            raise s.account.AccountError("Couldn't reach Orchestrator's servers")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(s.account, "load_machine", lambda: {"machine_id": "m_1", "machine_secret": "x"}), \
+                patch.object(s.account, "call", down):
+            status = s.primary_status(Path(tmp))
+            self.assertTrue(status["you"])
+            self.assertIn("unknown", status)
+
+    def test_another_computer_cant_start_work_but_can_run_errands(self):
+        s = self.server
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".orchestrator" / "jobs").mkdir(parents=True)
+            (root / ".orchestrator" / "jobs" / "job-1.json").write_text(json.dumps({"id": "job-1", "title": "T", "status": "planned"}))
+            handler = SimpleNamespace(server=SimpleNamespace(sessions=SimpleNamespace(running_job_ids=lambda: set()), _publishing_jobs=set()),
+                                      _require_owner=lambda what: None)
+            elsewhere = {"you": False, "enabled": True, "primary": {"name": "Studio"}}
+            with patch.object(s, "primary_status", lambda root, refresh=False: elsewhere):
+                with self.assertRaisesRegex(s.UIError, "Studio is the primary computer for this project"):
+                    s.UIHandler._launch_run(handler, "execute", {"job": "job-1"}, root)
+                handler.server.child_env = lambda terminal=False: {}
+                handler.server._repository_lock = __import__("threading").Lock()
+                handler.server.sessions.start = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("started"))
+                with self.assertRaisesRegex(RuntimeError, "started"):  # an errand isn't blocked
+                    s.UIHandler._launch_run(handler, "export_job", {"job": "job-1", "destination": "downloads"}, root)
+
+    def test_the_sidebar_offers_to_make_this_computer_primary(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('<span class="pill session-not-primary">Not primary</span>', app)
+        self.assertIn('api("computer/primary", { method: "POST", body: {} })', app)

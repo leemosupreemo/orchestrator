@@ -334,6 +334,49 @@ class ControlPlane:
 
     # -- the person, once paired
 
+    # -- the primary computer for each project: the one that starts its jobs and hands work to supporting computers.
+    # Only one at a time, so two computers never overwrite each other's code on the same worker.
+
+    def _primary_doc(self, uid: str, body: dict[str, Any]) -> tuple[str, str]:
+        project = _clean(body.get("project"), 200).lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._/:@ -]{0,199}", project):
+            raise ControlError("Say which project (its repository address or name).")
+        return f"{uid}_{hashlib.sha256(project.encode()).hexdigest()[:32]}", project
+
+    def _primary_view(self, record: dict[str, Any], asking: str) -> dict[str, Any]:
+        holder = self.store.get("machines", record["machine_id"]) or {}
+        return {"you": record["machine_id"] == asking,
+                "primary": {"machine_id": record["machine_id"], "name": holder.get("name", ""), "since": record.get("since", 0),
+                            "online": self.now() - (holder.get("last_seen") or 0) < ONLINE_WINDOW, "running": holder.get("running", 0)}}
+
+    def primary(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Which computer is primary for a project. The first computer to ask becomes it, and so does any computer asking
+        after the primary was removed from the account."""
+        machine_id, machine = self._machine_from_header(auth_header)
+        doc_id, project = self._primary_doc(machine["owner_uid"], body)
+        record = self.store.get("primaries", doc_id)
+        if record is None or self.store.get("machines", record["machine_id"]) is None:
+            record = {"owner_uid": machine["owner_uid"], "project": project, "label": _clean(body.get("label"), 120),
+                      "machine_id": machine_id, "since": self.now()}
+            self.store.set("primaries", doc_id, record)
+        return self._primary_view(record, machine_id)
+
+    def claim_primary(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Make the asking computer primary. Refused while the current primary is online with work running, so nothing it
+        started is left half done."""
+        machine_id, machine = self._machine_from_header(auth_header)
+        doc_id, project = self._primary_doc(machine["owner_uid"], body)
+        record = self.store.get("primaries", doc_id)
+        if record and record["machine_id"] != machine_id:
+            holder = self.store.get("machines", record["machine_id"])
+            if holder and self.now() - (holder.get("last_seen") or 0) < ONLINE_WINDOW and holder.get("running", 0) > 0:
+                raise ControlError(f"{holder['name']} is still running {holder['running']} job{'s' if holder['running'] != 1 else ''}. "
+                                   "Let them finish or stop them there, then make this computer primary.", 409)
+        record = {"owner_uid": machine["owner_uid"], "project": project, "label": _clean(body.get("label"), 120) or (record or {}).get("label", ""),
+                  "machine_id": machine_id, "since": self.now()}
+        self.store.set("primaries", doc_id, record)
+        return self._primary_view(record, machine_id)
+
     def _view(self, machine_id: str, machine: dict[str, Any]) -> dict[str, Any]:
         online = self.now() - (machine.get("last_seen") or 0) < ONLINE_WINDOW
         return {"id": machine_id, "name": machine["name"], "os": machine.get("os", ""), "version": machine.get("version", ""),
@@ -472,6 +515,8 @@ class ControlPlane:
                 ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
                 ("POST", "/machine/events"): lambda: self.machine_events(headers.get("authorization", ""), body),
                 ("POST", "/machine/sync"): lambda: self.sync_snapshot(headers.get("authorization", ""), body),
+                ("POST", "/machine/primary"): lambda: self.primary(headers.get("authorization", ""), body),
+                ("POST", "/machine/primary/claim"): lambda: self.claim_primary(headers.get("authorization", ""), body),
                 ("POST", "/enroll/redeem"): lambda: self.redeem_enrollment(body),
             }.get((method, route))
             if computer:
