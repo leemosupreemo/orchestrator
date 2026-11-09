@@ -8717,6 +8717,15 @@ pages.config = async (args = []) => {
         cleanup.push(() => view.removeEventListener("click", onClick));
         if (section === "ai") {
           $("#ai-free-setup")?.addEventListener("click", () => setUpFreeAi()); // the card with id="ai-free-setup" (configuration.js)
+          // Connect: install if needed, then the tool's own sign-in, in a run's terminal (scripts/ai_connect.py)
+          const onConnect = (event) => {
+            if (event.target.closest("[data-free-ai]")) { setUpFreeAi(); return; }
+            const button = event.target.closest("[data-ai-connect]");
+            if (!button || button.disabled) return;
+            runAction("ai_connect", { provider: button.dataset.aiConnect, title: `Connect ${button.dataset.aiName}` }, { skipConfirm: true });
+          };
+          view.addEventListener("click", onConnect);
+          cleanup.push(() => view.removeEventListener("click", onConnect));
           const onInstall = async (event) => {
             const button = event.target.closest("[data-ai-install]");
             if (!button || button.disabled) return;

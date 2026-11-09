@@ -373,7 +373,11 @@
         <summary><span class="ai-tool-title"><span class="ai-tool-name">${escapeHtml(p.name)}</span>${modelCount(p)}</span>${status(p)}${yolo(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span></summary>
         <div class="ai-tool-details stack">
           <p>${escapeHtml(p.what)}</p>
-          ${!p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><div><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button></div>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>` : !p.ready ? `<p class="muted">${escapeHtml(p.sign_in)}</p>` : `<p class="ai-ready-note">Ready to use on this computer.</p>`}
+          ${p.ready ? `<p class="ai-ready-note">Ready to use on this computer.</p>`
+            : p.id === "opencode" && owner ? `<p class="muted">Installs it, checks its free models work and turns them on. No account or terminal needed.</p><div><button type="button" class="btn small primary" data-free-ai>Set up free AI</button></div>`
+            : p.can_connect && owner ? `<p class="muted">${p.installed ? "Sign in" : "Installs it, then signs you in"} through your browser. No terminal needed.</p><div><button type="button" class="btn small primary" data-ai-connect="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Connect</button></div>`
+            : !p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><div><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button></div>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>`
+            : `<p class="muted">${escapeHtml(p.sign_in)}</p>`}
           ${keyOf(p) ? apiKeyRow(keyOf(p), state) : ""}
           <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a></p>
           ${modelTreeHtml(p.id, false, ai.models?.[p.id], newIds)}

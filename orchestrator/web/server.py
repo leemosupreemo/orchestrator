@@ -114,7 +114,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 # change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
 OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
-OWNER_ONLY_ACTIONS = {"console", "wizard", "config_menu", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
+OWNER_ONLY_ACTIONS = {"console", "wizard", "config_menu", "ai_connect", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 ALLOWED_EMAILS_CACHE_SECONDS = 60
@@ -3411,6 +3411,15 @@ def last_branch(root: Path) -> str:
     return branch if branch and branch in git(root, "branch", "--format=%(refname:short)").splitlines() else ""
 
 
+def build_ai_connect(params: dict[str, Any]) -> list[str]:
+    """Install an AI tool if needed and run its sign-in, in the run's terminal (scripts/ai_connect.py)."""
+    from orchestrator import ai_providers
+    provider = _choice(params, "provider", sorted(ai_providers.SIGN_IN_COMMANDS))
+    if not provider:
+        raise UIError("Choose an AI tool to connect.")
+    return orchestrator_argv("script", "ai_connect.py", "--provider", provider)
+
+
 def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
     branch = _text(params, "branch", required=True, limit=250)
     if branch not in git(root, "branch", "--format=%(refname:short)").splitlines():
@@ -4736,7 +4745,7 @@ def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
 # Terminal tools: the only runs someone is expected to type into. Everything else runs non-interactive, and the web
 # app never sends people into a terminal menu: each of these has an app page (the console stays as a deliberate,
 # clearly labelled escape hatch in the sidebar).
-TERMINAL_ACTIONS = {"console", "wizard", "config_menu"}
+TERMINAL_ACTIONS = {"console", "wizard", "config_menu", "ai_connect"}  # they take typing: the AI tools' sign-ins ask questions
 
 # Work that only the project's primary computer starts (as do runs on an existing job): two computers starting work on one
 # project would overwrite each other's code on shared supporting computers.
@@ -4747,6 +4756,7 @@ SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview"})
 
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
+    "ai_connect": Action("Connect an AI tool", lambda p, r: build_ai_connect(p), fields=["provider"]),
     "check": Action("Setup check", lambda p, r: orchestrator_argv("check")),
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),

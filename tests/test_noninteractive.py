@@ -82,7 +82,7 @@ class WebRunEnvironmentTests(unittest.TestCase):
                 self.assertNotIn("ORCHESTRATOR_NONINTERACTIVE", server.child_env(terminal=True))
             finally:
                 server.server_close()
-        self.assertEqual(ui.TERMINAL_ACTIONS, {"console", "wizard", "config_menu"})
+        self.assertEqual(ui.TERMINAL_ACTIONS, {"console", "wizard", "config_menu", "ai_connect"})
 
     def test_device_logs_setup_never_prompts_and_keeps_the_token_out_of_the_command_line(self):
         params = {"token": "sntryu_secret", "org": "acme", "api_base": "https://us.sentry.io"}

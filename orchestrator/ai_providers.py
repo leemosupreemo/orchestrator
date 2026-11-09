@@ -60,6 +60,16 @@ PROVIDERS: list[dict[str, str]] = [
 
 CLIS = [p["cli"] for p in PROVIDERS]
 
+# Each tool's own sign-in, run in Orchestrator's terminal by Connect (scripts/ai_connect.py): it opens the browser to approve.
+# OpenCode needs none (free models, see ai_setup.py); Ollama runs local models; Gemini CLI takes only an API key.
+SIGN_IN_COMMANDS: dict[str, list[str]] = {"claude": ["auth", "login"], "codex": ["login"], "pool": ["login"], "agy": []}
+# What to do in a tool's sign-in, when it asks something before the browser opens.
+SIGN_IN_HINTS = {"pool": "It asks how to use Poolside: \"Use Poolside Platform for free\" is already chosen, so press Enter, then approve in your browser."}
+# What an install command needs on the computer, by its first word, and how to say it when it's missing.
+INSTALLER_NEEDS = {"curl": ["curl", "bash"], "npm": ["npm"], "brew": ["brew"]}
+MISSING_NEEDS = {"npm": "Node.js (download the LTS version from nodejs.org)", "brew": "Homebrew (brew.sh)",
+                 "curl": "curl and bash, which every Mac has"}
+
 # Where the installers put their tools: OpenCode's in ~/.opencode/bin, Claude's, Poolside's and Antigravity's in ~/.local/bin,
 # Homebrew's in /opt/homebrew/bin or /usr/local/bin. A server started from the Dock or launchd has none of these on its PATH,
 # and an installer's edit to the shell profile only reaches new terminals, so tools are looked for (and run) with them added.
@@ -121,6 +131,7 @@ def with_status(installed: Callable[[str], bool], ready: Callable[[str], bool], 
         out.append({**provider, "cost_label": COST_LABELS[provider["cost"]], "installed": has_cli,
                     "ready": (has_cli and ready(provider["cli"])) or key_saved, "key_saved": key_saved,
                     "auto_approve": yolo_on(settings or {}, provider["cli"]),
+                    "can_connect": provider["id"] in SIGN_IN_COMMANDS,  # Connect installs it and runs its sign-in
                     "yolo_supported": provider["cli"] in YOLO_FLAGS})
     return {"providers": out, "any_ready": any(p["ready"] for p in out), "plugins": PLUGINS, "checked": CHECKED}
 

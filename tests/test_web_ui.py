@@ -312,6 +312,19 @@ class SignInTests(ServerTestCase):
         denied = [entry for entry in self.server.audit.recent() if entry["event"] == "denied"]
         self.assertEqual([entry["what"] for entry in denied], ["use interactive console", "change keys settings"])
 
+    def test_member_cannot_start_provider_sign_in_even_with_a_valid_provider(self):
+        token = self.sign_in(source="settings")
+        for provider in ("claude", "codex", "pool", "agy"):
+            with self.subTest(provider=provider):
+                res, data = self.as_user(token, "POST", "/api/runs",
+                    body={"action": "ai_connect", "params": {"provider": provider}},
+                    sources={"tester@example.com": "settings"})
+                self.assertEqual(res.status, 403)
+                self.assertIn("Only the owner", data["error"])
+        res, data = self.request("GET", "/api/runs")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["runs"], [])
+
     def test_member_cannot_install_an_ai_provider_or_probe_worker_setup(self):
         token = self.sign_in(source="settings")
         member = {"tester@example.com": "settings"}
@@ -1542,7 +1555,8 @@ process.stdout.write(JSON.stringify({title: page.title, sub: page.sub, html: pag
         html = result["html"]
         self.assertEqual(result["title"], "Manage AI tools")
         self.assertIn("Install and connect an AI tool", result["sub"])
-        self.assertIn('data-ai-install="opencode"', html)
+        self.assertIn('data-free-ai', html)
+        self.assertNotIn('data-ai-install="opencode"', html)
         installed = html[html.index('<h2>Installed</h2>'):html.index('<h2>Not installed</h2>')]
         not_installed = html[html.index('<h2>Not installed</h2>'):html.index('id="team-models"')]
         self.assertIn('data-provider="codex"', installed)
@@ -1578,7 +1592,8 @@ process.stdout.write(JSON.stringify({title: page.title, html: page.html}));
         self.assertIn("Ready to use on this computer", html)
         self.assertIn("Needs sign-in", html)
         self.assertIn("Not installed", html)
-        self.assertIn('data-ai-install="opencode"', html)
+        self.assertIn('data-free-ai', html)
+        self.assertNotIn('data-ai-install="opencode"', html)
         self.assertIn('id="ai-secondary-computers"', html)
         self.assertIn("Build Mac", html)
         self.assertNotIn("Run the install commands in Terminal", html)
@@ -2899,7 +2914,7 @@ class ActionTests(unittest.TestCase):
         sp.run(["git", "config", "branch.main.remote", "origin"], cwd=self.root, check=True)
         sp.run(["git", "config", "branch.main.merge", "refs/heads/main"], cwd=self.root, check=True)
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
-                  "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test", "framework": "xcbeautify"}
+                  "provider": "claude", "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test", "framework": "xcbeautify"}
         (self.root / ".orchestrator" / "epics.json").write_text(json.dumps({"epics": [
             {"id": "ep-test", "name": "Word score", "summary": "", "status": "approved", "feature": "word-score", "requirements": [], "stories": [], "depends_on": []}]}))
         (self.root / ".orchestrator" / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "planned", "paths": [], "depends_on": []}]}))
