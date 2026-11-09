@@ -5365,7 +5365,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 settings = read_settings(root)
                 req_model = _text(body, "model", limit=100) if body.get("model") else ""
                 chosen_model = req_model or _product_model(settings) or ""
-                self._start_proposal(root, current, prd_doc.draft_prompt(digest, current), lambda reply: prd_doc.parse_draft(reply, current), 270, model=chosen_model)
+                mode = _choice(body, "mode", list(prd_doc.UPDATE_MODES)) or ""  # updating filled-in requirements: what to change
+                notes = _text(body, "notes", limit=2000) if body.get("notes") else ""
+                self._start_proposal(root, current, prd_doc.draft_prompt(digest, current, mode, notes),
+                                     lambda reply: prd_doc.parse_draft(reply, current, keep_filled=mode == "missing"), 270, model=chosen_model)
             elif method == "POST" and parts == ["product", "import"]:
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
                     body = self._body()

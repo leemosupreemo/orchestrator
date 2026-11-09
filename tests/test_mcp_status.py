@@ -71,9 +71,13 @@ class McpStatusTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already exists"):
                 mcp_status.install("github", "claude", home=self.home)
 
-    def test_servers_with_their_own_setup_and_unknown_names_are_refused(self):
-        with self.assertRaisesRegex(ValueError, "setup step"):
-            mcp_status.install("rea", "claude", home=self.home)
+    def test_rea_installs_as_its_mcp_server_and_unknown_names_are_refused(self):
+        mcp_status.install("rea", "gemini", home=self.home)
+        self.assertEqual(json.loads((self.home / ".gemini/settings.json").read_text())["mcpServers"]["rea"],
+                         {"command": "npx", "args": ["-y", "rea-agents", "--mcp"]})  # `rea --mcp` serves REA over MCP
+        self.write(".claude.json", {"mcpServers": {"rea": {"command": "rea", "args": ["mcp"]}}})  # what REA's own setup may write
+        _, have = self.grid()
+        self.assertTrue(have["rea"]["gemini"] and have["rea"]["claude"])
         with self.assertRaises(ValueError):
             mcp_status.install("nope", "claude", home=self.home)
 
@@ -96,6 +100,11 @@ class ConnectionsPageTests(unittest.TestCase):
     def test_connect_jira_opens_the_jira_form(self):
         self.assertIn('href="#/connections?connect=jira">Connect Jira</a>', self.app)
 
+    def test_reverse_engineering_checks_rea_is_installed_and_offers_to_install_it(self):
+        self.assertIn('<div id="prd-rea-status" aria-live="polite">', self.app)
+        self.assertIn('api("mcp/install", { method: "POST", body: { server: "rea", tool: b.dataset.reaInstall } })', self.app)
+        self.assertIn('useIn: { href: "#/product?reverse=1", label: "Use on Product" }', self.app)  # the grid row links to it
+
     def test_trello_explains_the_api_key_instead_of_a_dead_button(self):
         self.assertNotIn("quickTrello.disabled", self.app)
         self.assertIn("Trello signs you in through an app, so it needs an API key first", self.app)
@@ -103,3 +112,73 @@ class ConnectionsPageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpdateRequirementsWithAiTests(unittest.TestCase):
+    """Once some requirements are written, "Draft with AI" becomes "Update with AI" and asks how to update them."""
+
+    CURRENT = "# Product\n\n## Pitch\n\nA notes app for nurses.\n\n## Who it's for\n\n\n## Core features\n\n- Quick notes\n"
+
+    def test_the_prompt_follows_the_chosen_update(self):
+        from orchestrator import prd
+        missing = prd.draft_prompt("digest", self.CURRENT, "missing", "")
+        self.assertIn("Fill in ONLY the sections that are empty or TBD", missing)
+        refresh = prd.draft_prompt("digest", self.CURRENT, "refresh", "we dropped Android")
+        self.assertIn("Bring it up to date with the project", refresh)
+        self.assertIn("we dropped Android", refresh)
+        self.assertIn("has no product requirements yet", prd.draft_prompt("digest", "", "", ""))
+
+    def test_filling_what_is_missing_keeps_filled_sections_exactly(self):
+        from orchestrator import prd
+        reply = json.dumps({"summary": "- ok", "markdown": "# Product\n\n## Pitch\n\nREWRITTEN\n\n## Who it's for\n\nNurses on shift.\n\n## Core features\n\n- Quick notes\n- Sync\n"})
+        kept = prd.split(prd.parse_draft(reply, self.CURRENT, keep_filled=True)["markdown"])
+        self.assertEqual(kept["pitch"].strip(), "A notes app for nurses.")  # filled: untouched
+        self.assertEqual(kept["who"].strip(), "Nurses on shift.")  # was empty: filled in
+        refreshed = prd.split(prd.parse_draft(reply, self.CURRENT)["markdown"])
+        self.assertEqual(refreshed["pitch"].strip(), "REWRITTEN")
+
+    def test_the_button_and_dialog(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('${prdFilled() ? "Update with AI" : "Draft with AI"}', app)
+        self.assertIn('<input type="radio" name="mode" value="missing"', app)
+        self.assertIn('...(mode ? { mode, notes } : {})', app)
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        self.assertIn('keep_filled=mode == "missing"', server)
+
+
+class YoloAllOnTheTitleRowTests(unittest.TestCase):
+    def test_the_switch_sits_on_the_jobs_title_row(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        header = app[app.index('<div class="card-h card-h-wrap home-jobs-h">'):][:700]
+        self.assertLess(header.index("<h2>Jobs"), header.index('class="yolo-switch home-yolo"'))
+        self.assertLess(header.index('class="yolo-switch home-yolo"'), header.index('home-jobs-filters'))
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".home-jobs-h > .home-yolo { order: 1; margin-left: auto;", css)  # phones: beside the title, right-aligned
+
+
+class MessagesAndStoppingTests(unittest.TestCase):
+    def test_messages_slide_in_and_out(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js = (static / "messages.js").read_text()
+        self.assertIn('if (fresh) el.classList.add("msg-new"); // after fill, which resets the classes', js)
+        self.assertIn('el.classList.add("msg-out");', js)
+        css = (static / "style.css").read_text()
+        self.assertIn("@keyframes msg-out", css)
+        self.assertIn("@media (prefers-reduced-motion: reduce) { .msg-new, .msg-out { animation: none; } }", css)
+
+    def test_stop_only_says_stopped_once_it_has(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('if (stopped) toast(hasJob ? "Job stopped" : "Run stopped");', app)
+        self.assertIn("It's still stopping. The page updates when it has.", app)
+
+    def test_live_run_cards_say_details_not_open_log(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertNotIn(">Open log<", app)
+        self.assertIn('href="#/runs/${encodeURIComponent(r.id)}">Details</a>', app)
+
+
+class DialogCloseSizeTests(unittest.TestCase):
+    def test_the_dialog_close_button_is_15_percent_larger(self):
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        rule = css[css.index(".dialog-close-btn {"):][:700]
+        self.assertIn("scale: 1.15;", rule)

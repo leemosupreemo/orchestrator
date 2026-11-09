@@ -24,7 +24,7 @@ SERVERS: dict[str, dict[str, Any]] = {
     "xcodediagnostics": {"names": ["xcodediagnostics"], "launch": ["npx", "-y", "xcodebuildmcp", "--diagnostics"]},
     "swiftlens": {"names": ["swiftlens"], "launch": ["npx", "-y", "swiftlens-mcp"]},
     "mcp-ssh-manager": {"names": ["ssh-manager"], "launch": ["npx", "-y", "mcp-ssh-manager"]},
-    "rea": {"names": ["rea-agents"], "launch": None},
+    "rea": {"names": ["rea-agents", "rea"], "launch": ["npx", "-y", "rea-agents", "--mcp"]},  # `rea --mcp` serves REA over MCP
 }
 
 TOOLS = [

@@ -969,6 +969,7 @@ dialog h2 {
   border: none;
   color: var(--muted);
   font-size: var(--type-body);
+  scale: 1.15; /* the ✕ and its target, 15% larger than other icon buttons */
   cursor: pointer;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius);
@@ -2393,8 +2394,14 @@ dialog h2 {
 .yolo-switch input:checked::after { transform: translateX(14px); }
 .yolo-switch input:checked + span { color: var(--ok); }
 /* Home: YOLO all sits apart from the job filters, at the far end of the row. */
-.home-yolo { margin-left: auto; padding-left: var(--space-3); border-left: 1px solid var(--border); white-space: nowrap; }
-@media (max-width: 760px) { .home-yolo { padding-left: 0; border-left: 0; } }
+/* Home's Jobs header: the title and YOLO all on one row, YOLO all at the far right; on desktop the filters sit between them. */
+.home-jobs-h > h2 { order: 0; }
+.home-jobs-h > .home-jobs-filters { order: 1; margin-left: auto; }
+.home-jobs-h > .home-yolo { order: 2; white-space: nowrap; padding-left: var(--space-3); border-left: 1px solid var(--border); }
+@media (max-width: 760px) {
+  .home-jobs-h > .home-yolo { order: 1; margin-left: auto; padding-left: 0; border-left: 0; }
+  .home-jobs-h > .home-jobs-filters { order: 2; flex-basis: 100%; margin-left: 0; }
+}
 .ai-tool-details .ai-key-row { padding: var(--space-3) 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .ai-tool-cost { color: var(--muted); font-size: var(--type-secondary); text-align: right; justify-self: end; }
 @media (max-width: 760px) {
@@ -3165,9 +3172,12 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .msg-action:hover { border-color: var(--kind); }
 .msg-close { flex: 0 0 auto; width: var(--control-xs); height: var(--control-xs); margin: 0; border: 0; border-radius: var(--r-md); background: transparent; color: var(--muted); font-size: var(--type-secondary); cursor: pointer; }
 .msg-close:hover { background: var(--panel-2); color: var(--text); }
-.msg-new { animation: msg-in .18s ease-out; }
-@keyframes msg-in { from { opacity: 0; transform: translateY(calc(-1 * var(--space-2))); } }
-@media (prefers-reduced-motion: reduce) { .msg-new { animation: none; } }
+/* Messages slide down into place and slide back up as they go. */
+.msg-new { animation: msg-in var(--motion-medium) ease-out; }
+.msg-out { animation: msg-out var(--motion-fast) ease-in forwards; pointer-events: none; }
+@keyframes msg-in { from { opacity: 0; transform: translateY(calc(-1 * var(--space-6))); } }
+@keyframes msg-out { to { opacity: 0; transform: translateY(calc(-1 * var(--space-6))); } }
+@media (prefers-reduced-motion: reduce) { .msg-new, .msg-out { animation: none; } }
 
 /* account (hosted app): your computers and adding one */
 .account-card { max-width: 640px; gap: var(--space-5); }

@@ -630,13 +630,28 @@ How to write it:
 Reply with ONLY JSON: {{"summary": "bulleted: key reverse-engineered capabilities recovered via REA MCP, and open questions/unknowns", "markdown": "the complete document"}}"""
 
 
-def draft_prompt(digest: str, current: str = "") -> str:
-    existing = (f"\nThe person has already written some of it; keep what they wrote and only add:\n{current}\n" if is_filled_doc(current) else "")
-    return f"""Someone is adding an existing project and has no product requirements yet. Work out what this product is from what is in the project, and draft a short requirements document for it.
+UPDATE_MODES = ("missing", "refresh")
+
+
+def draft_prompt(digest: str, current: str = "", mode: str = "", notes: str = "") -> str:
+    """Draft the requirements from the project, or update them: `mode` "missing" fills only empty sections, "refresh" also
+    brings filled ones up to date. `notes` is what the person asked for, in their words."""
+    filled = is_filled_doc(current)
+    if filled and mode == "refresh":
+        existing = (f"\nThe current document is below. Bring it up to date with the project: correct or extend sections the evidence shows are"
+                    f" out of date or incomplete, and fill empty ones. Keep the person's wording wherever it is still right:\n{current}\n")
+    elif filled:
+        existing = f"\nThe person has already written some of it. Fill in ONLY the sections that are empty or TBD; copy every filled section exactly as written:\n{current}\n"
+    else:
+        existing = ""
+    asked = f"\nWhat the person asked for, which comes first:\n{notes.strip()[:2000]}\n" if notes.strip() else ""
+    opening = ("Someone wants their product requirements updated from what is in their project."
+               if filled else "Someone is adding an existing project and has no product requirements yet.")
+    return f"""{opening} Work out what this product is from what is in the project, and draft a short requirements document for it.
 
 What is in the project:
 {digest or '(nothing readable was found)'}
-{existing}
+{existing}{asked}
 How to write it:
 - Describe what the product DOES TODAY and who it appears to be for, from the evidence above. Do not invent a vision, users or goals the project doesn't show.
 - Anything you are inferring rather than reading, say so ("Appears to be ..."). Anything the project doesn't tell you, write "TBD:" and the plain question the person can answer. Pitch and Core features should be mostly facts from the project.
@@ -650,11 +665,16 @@ How to write it:
 Reply with ONLY JSON: {{"summary": "bulleted and succinct: what was inferred, and any gaps or low-confidence guesses that were hard to figure out", "markdown": "the complete document"}}"""
 
 
-def parse_draft(reply: str, current: str = "") -> dict[str, str]:
-    """A drafted proposal. "Not this" is always the person's own: a draft can't invent guardrails that builders and reviewers would treat as law."""
+def parse_draft(reply: str, current: str = "", keep_filled: bool = False) -> dict[str, str]:
+    """A drafted proposal. "Not this" is always the person's own: a draft can't invent guardrails that builders and reviewers would treat as law.
+    With `keep_filled` (an update that only fills what's missing), every section the person had filled stays exactly as it was."""
     proposal = parse_proposal(reply)
-    mine = split(current or "").get("not", "")
-    proposal["markdown"] = replace_section(proposal["markdown"], "not", mine)
+    mine = split(current or "")
+    proposal["markdown"] = replace_section(proposal["markdown"], "not", mine.get("not", ""))
+    if keep_filled:
+        for section_id, body in mine.items():
+            if section_id != "not" and section_id in BY_ID and is_filled(body):
+                proposal["markdown"] = replace_section(proposal["markdown"], section_id, body)
     raw_summary = (proposal.get("summary") or "").strip()
     if raw_summary:
         lines = [line.strip() for line in raw_summary.splitlines() if line.strip()]

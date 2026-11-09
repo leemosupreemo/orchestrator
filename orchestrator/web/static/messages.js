@@ -151,24 +151,47 @@
       render();
     }
 
+    const leaving = () => container.querySelector(".msg-out");
+    function hideWhenEmpty() {
+      if (store.list().length || leaving()) return;
+      container.hidden = true;
+      if (typeof container.hidePopover === "function") { try { if (container.matches(":popover-open")) container.hidePopover(); } catch { /* older browser */ } }
+    }
+    // A message slides up and out before it's removed (no wait when motion is reduced: the animation is off).
+    function leave(el) {
+      el.classList.remove("msg-new");
+      el.classList.add("msg-out");
+      let gone = false;
+      const done = () => { if (gone) return; gone = true; el.remove(); hideWhenEmpty(); };
+      el.addEventListener("animationend", done, { once: true });
+      setTimeout(done, 300);
+    }
+
     function render() {
       const list = store.list();
       const ids = new Set(list.map((m) => m.id));
-      for (const [id, el] of nodes) if (!ids.has(id)) { el.remove(); nodes.delete(id); }
+      for (const [id, el] of nodes) if (!ids.has(id)) { nodes.delete(id); leave(el); }
       for (const m of list) {
         let el = nodes.get(m.id);
-        if (!el) { el = build(m); nodes.set(m.id, el); el.classList.add("msg-new"); }
+        const fresh = !el;
+        if (fresh) { el = build(m); nodes.set(m.id, el); }
         if (el.dataset.rev !== String(m.rev) || !el.classList.contains(`msg-${m.kind}`)) fill(el, m);
+        if (fresh) el.classList.add("msg-new"); // after fill, which resets the classes
         if (el.parentNode !== container) container.append(el);
       }
-      // Keep the DOM in queue order, oldest first.
-      list.forEach((m, i) => { const el = nodes.get(m.id); if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null); });
-      container.hidden = list.length === 0;
+      // Keep the DOM in queue order, oldest first (messages on their way out don't count).
+      list.forEach((m, i) => {
+        const el = nodes.get(m.id);
+        const staying = [...container.children].filter((c) => !c.classList.contains("msg-out"));
+        if (staying[i] !== el) container.insertBefore(el, staying[i] || null);
+      });
+      if (!list.length) { hideWhenEmpty(); return; }
+      container.hidden = false;
       // The container is a popover so it sits above an open dialog too; showing it again brings it to the front.
       if (typeof container.showPopover === "function") {
         try {
           if (container.matches(":popover-open")) container.hidePopover();
-          if (list.length) container.showPopover();
+          container.showPopover();
         } catch { /* an older browser: the fixed position and z-index still put it on top of the page */ }
       }
     }

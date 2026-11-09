@@ -938,17 +938,17 @@ async function stopJob(runId, stopBtn) {
 
   try {
     await api(`runs/${encodeURIComponent(runId)}/stop`, { method: "POST", body: {} });
-    const maxPolls = 60;
-    for (let i = 0; i < maxPolls; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+    // Wait until it has really stopped (an AI tool can take a while to wind down), and only then say so.
+    let stopped = false;
+    for (let i = 0; i < 240 && !stopped; i++) {
+      await new Promise((resolve) => setTimeout(resolve, i < 20 ? 300 : 1000));
       await refreshState();
       const currentRun = state.runs.find((r) => r.id === runId);
-      if (!currentRun || !currentRun.running) {
-        if (currentRun) currentRun.stopped = true;
-        break;
-      }
+      stopped = !currentRun || !currentRun.running;
+      if (stopped && currentRun) currentRun.stopped = true;
     }
-    toast(hasJob ? "Job stopped" : "Run stopped");
+    if (stopped) toast(hasJob ? "Job stopped" : "Run stopped");
+    else toast("It's still stopping. The page updates when it has.", "info");
   } catch (err) {
     toast(err.message, true);
   } finally {
@@ -2547,7 +2547,7 @@ function liveRunCard(r) {
       ${doing ? `<div class="live-run-doing">${esc(doing)}</div>` : r.last_line ? `<div class="last-line mono">${esc(r.last_line)}</div>` : ""}
     </a>
     <div class="row">
-      <a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Open log</a>
+      <a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Details</a>
       ${target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Job</a>` : ""}
       <button class="btn small danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? "Stopping…" : "Stop"}</button></div></div>`;
 }
@@ -2559,16 +2559,15 @@ function runItem(r) {
 }
 
 function statusLine(p) {
-  const running = state.runs.filter((r) => r.running).length;
   const branches = p.branches || [];
   const branchPicker = branches.length
     ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => branchOption(b, p.branch, p.elsewhere)).join("")}</select>`
     : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
-  // Only what needs a glance: work not yet committed, work running, or a missing machine or model. The language mix
+  // Only what needs a glance: work not yet committed, or a missing machine or model (running work has its own card). The language mix
   // is on the project's card under Projects.
   const stats = [
-    p.dirty_files ? `<a href="#/git?show=changes">${p.dirty_files} uncommitted</a>` : "", // straight to the files, not the top of Git setup
-    running ? `<a href="#/activity">${running} running</a>` : "",
+    // Says what it's measured against: files that differ from the last commit on the checked-out branch. Opens the files.
+    p.dirty_files ? `<a href="#/git?show=changes" title="Files that differ from the last commit on ${esc(p.branch || "this branch")}">${p.dirty_files} uncommitted${p.branch ? ` on ${esc(p.branch)}` : ""}</a>` : "",
     p.machine_count === 0 ? `<a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>`
       : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
   ].filter(Boolean);
@@ -3008,9 +3007,10 @@ pages.home = async (_, query) => {
       ${runningBanner}
 
       <section class="card" id="home-jobs">
-        <div class="card-h card-h-wrap">
+        <div class="card-h card-h-wrap home-jobs-h">
           <h2>Jobs <span class="count">${filteredJobs.length}</span></h2>
-          <div class="row">
+          ${inProgress.length && state.you?.role !== "member" ? `<label class="yolo-switch home-yolo" title="On: every in-progress job keeps building without stopping for review. Off: they stop for review again."><input type="checkbox" role="switch" id="yolo-all" data-yolo-count="${inProgress.length}"${inProgress.every((j) => j.yolo) ? " checked" : ""}><span>YOLO all (${inProgress.length})</span></label>` : ""}
+          <div class="row home-jobs-filters">
             <div class="filters">
               ${Object.entries(HOME_FILTERS).map(([key, [label, fn]]) => {
                 const count = sortedJobs.filter((j) => !isRunningNow(j) && fn(j)).length;
@@ -3018,7 +3018,6 @@ pages.home = async (_, query) => {
                 return `<a class="btn small ${key === filter ? 'on' : ''}" href="#/?filter=${key}">${label} (${count})</a>`;
               }).join("")}
             </div>
-            ${inProgress.length && state.you?.role !== "member" ? `<label class="yolo-switch home-yolo" title="On: every in-progress job keeps building without stopping for review. Off: they stop for review again."><input type="checkbox" role="switch" id="yolo-all" data-yolo-count="${inProgress.length}"${inProgress.every((j) => j.yolo) ? " checked" : ""}><span>YOLO all (${inProgress.length})</span></label>` : ""}
           </div>
         </div>
         ${filteredJobs.length ? `
@@ -5843,7 +5842,7 @@ pages.product = async (_, query) => {
   const render = () => `
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2>${prdStatusPill(p.sections || [])}</div>
         <div class="card-b stack">
-          <div class="row gap-12 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
+          <div class="row gap-12 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">${prdFilled() ? "Update with AI" : "Draft with AI"}</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
           <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div>
         </div></section>
       <div id="prd-panel"></div>
@@ -6015,7 +6014,20 @@ pages.product = async (_, query) => {
           } catch (e) { toast(e.message, true); }
           btn.disabled = false;
         }));
-        $("#prd-draft")?.addEventListener("click", () => draftPanel());
+        $("#prd-draft")?.addEventListener("click", async () => {
+          if (!prdFilled()) return draftPanel();
+          // Some of it is written: say what's there and what's missing, and ask how to update it.
+          const filled = p.sections.filter((x) => x.filled).map((x) => x.title), empty = p.sections.filter((x) => !x.filled).map((x) => x.title);
+          const values = await formDialog("Update with AI", `
+            <p class="muted">Filled in: ${esc(filled.join(", ") || "nothing yet")}.<br>Missing: ${esc(empty.join(", ") || "nothing")}.</p>
+            <fieldset class="stack"><legend class="sr-only">What to update</legend>
+              <label class="check"><input type="radio" name="mode" value="missing" ${empty.length ? "checked" : ""}><span><strong>Fill in what's missing</strong><small>Your filled sections stay exactly as they are.</small></span></label>
+              <label class="check"><input type="radio" name="mode" value="refresh" ${empty.length ? "" : "checked"}><span><strong>Update everything from the project</strong><small>Also corrects filled sections the code shows are out of date. You review every change before it's saved.</small></span></label>
+            </fieldset>
+            <label class="field"><span>Anything specific? <span class="muted">(optional)</span></span>
+              <textarea name="notes" rows="3" placeholder="e.g. we dropped the Android app; add the new export feature"></textarea></label>`, "Update");
+          if (values) draftPanel({ mode: values.mode || "missing", notes: (values.notes || "").trim() });
+        });
         view.querySelectorAll("[data-prd-edit]").forEach((btn) => btn.addEventListener("click", () => {
           const id = btn.dataset.prdEdit, s = p.sections.find((x) => x.id === id), box = view.querySelector(`[data-prd-body="${id}"]`);
           btn.hidden = true;
@@ -6408,14 +6420,33 @@ pages.product = async (_, query) => {
           <label class="field"><span>Target binary path, package name, or REA analysis notes</span>
             <textarea id="prd-reverse-target" rows="3" placeholder="e.g. /path/to/binary, package name, or paste REA decompilation notes…" aria-label="Target or notes for REA reverse engineering"></textarea>
           </label>
-          <div class="setup-hint">
-            <small class="muted">Uses the REA MCP server (<code>rea-agents</code>). To configure REA locally in your agent environment: <code>npx -y rea-agents setup</code></small>
-          </div>
+          <div id="prd-rea-status" aria-live="polite"><small class="muted">Checking which AI tools have REA…</small></div>
           <div class="row gap-12">
             <button type="button" class="btn primary" id="prd-reverse-go" disabled>Reverse engineer</button>
             <button type="button" class="btn ghost" id="prd-reverse-cancel">Cancel</button>
           </div>
         </div></section>`;
+        // REA has to be installed in the AI tool that does the work: say which have it, and install it where none do.
+        const showReaStatus = async () => {
+          const box = $("#prd-rea-status");
+          if (!box) return;
+          let mcp;
+          try { mcp = await api("mcp/status"); } catch { box.innerHTML = ""; return; }
+          const rea = mcp.servers.find((x) => x.id === "rea");
+          const have = mcp.tools.filter((t) => rea?.installed[t.id]);
+          const owner = state.you?.role !== "member";
+          box.innerHTML = have.length
+            ? `<small class="muted">REA is installed in ${have.map((t) => esc(t.name)).join(", ")}.</small>`
+            : `<div class="notice"><div class="stack"><strong>REA isn't installed in any AI tool yet</strong>
+                <span class="muted">Without it the AI can only go on the notes you give it. Install it in the tool that drafts your requirements.</span>
+                ${owner ? `<div class="row gap-8 wrap">${mcp.tools.map((t) => `<button type="button" class="btn small go" data-rea-install="${esc(t.id)}">Install in ${esc(t.name)}</button>`).join("")}</div>` : ""}</div></div>`;
+          box.querySelectorAll("[data-rea-install]").forEach((b) => b.addEventListener("click", async () => {
+            b.disabled = true; b.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Installing…`;
+            try { await api("mcp/install", { method: "POST", body: { server: "rea", tool: b.dataset.reaInstall } }); toast("REA installed. Restart that AI tool if it's open."); showReaStatus(); }
+            catch (e) { toast(e.message, true); b.disabled = false; b.textContent = "Install"; }
+          }));
+        };
+        showReaStatus();
         const input = $("#prd-reverse-input"), zone = $("#prd-reverse-drop"), goBtn = $("#prd-reverse-go"), textEl = $("#prd-reverse-target");
         let picked = null;
         const sync = () => {
@@ -6456,7 +6487,7 @@ pages.product = async (_, query) => {
       };
 
       // An existing project: read what is there (README, notes, manifests, layout, recent commits) and propose a first version.
-      const draftPanel = async () => {
+      const draftPanel = async ({ mode = "", notes = "" } = {}) => {
         let canceled = false, taskId = null;
         const abortCtrl = new AbortController();
         const run = prdRun = {};
@@ -6470,12 +6501,13 @@ pages.product = async (_, query) => {
           panel().innerHTML = "";
         };
         const modelLabel = p.available_models?.find((m) => m.id === p.model)?.label || p.model || "";
+        const verb = mode ? "updating" : "drafting";
         const busyText = modelLabel
-          ? `Reading your project and drafting with ${modelLabel}…`
-          : "Reading your project and drafting with AI…";
+          ? `Reading your project and ${verb} with ${modelLabel}…`
+          : `Reading your project and ${verb} with AI…`;
         busy(busyText, cancel);
         try {
-          const started = await api("product/draft", { method: "POST", body: { model: p.model || "" }, signal: abortCtrl.signal });
+          const started = await api("product/draft", { method: "POST", body: { model: p.model || "", ...(mode ? { mode, notes } : {}) }, signal: abortCtrl.signal });
           taskId = started?.task;
           if (canceled) {
             if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
@@ -7351,7 +7383,7 @@ pages.git = async (_, query) => {
     ${g.last_commit ? `<div class="card-caption git-commit-caption"><span>Last commit</span><span>${clamped(g.last_commit, 100)}</span></div>` : ""}
   </section>`;
   const changesCard = `<section class="card" id="git-changes">
-    <div class="card-h"><h2>Uncommitted changes <span class="count">${g.changes_total}</span></h2></div>
+    <div class="card-h"><h2>Uncommitted changes${g.branch ? ` on <span class="mono">${esc(g.branch)}</span>` : ""} <span class="count">${g.changes_total}</span></h2></div>
     ${(g.change_groups || []).map(group => `<section class="git-change-group">
       <h3>${esc(group.label)} <span class="count">${group.changes.length}</span></h3>
       <div class="diff-files">${group.changes.map(c => `<details class="diff-file" data-git-diff="${esc(c.path)}" data-kind="${esc(group.id)}">
@@ -8319,7 +8351,8 @@ const RECOMMENDED_MCPS = [
     name: "rea",
     badge: "Reverse engineering",
     blurb: "Reverse Engineer Anything (REA) MCP server for decompiling binaries, APKs, Electron apps, and reconstructing product specifications.",
-    cmd: "npx -y rea-agents setup",
+    cmd: "npx -y rea-agents --mcp",
+    useIn: { href: "#/product?reverse=1", label: "Use on Product" }, // drafts product requirements from what REA finds
   },
 ];
 
@@ -8333,7 +8366,7 @@ function mcpGridHtml(mcp, owner) {
   return `<div class="mcp-grid-wrap"><table class="mcp-grid">
     <thead><tr><th scope="col">Server</th>${mcp.tools.map((t) => `<th scope="col">${esc(t.name)}</th>`).join("")}</tr></thead>
     <tbody>${mcp.servers.map((srv) => { const m = info[srv.id] || {};
-      return `<tr><th scope="row"><span class="mcp-name">${m.icon || ""}${esc(m.name || srv.id)}</span><small class="muted">${esc(m.badge || "")}</small></th>${mcp.tools.map((t) => cell(srv, t)).join("")}</tr>`; }).join("")}</tbody>
+      return `<tr><th scope="row"><span class="mcp-name">${m.icon || ""}${esc(m.name || srv.id)}</span><small class="muted">${esc(m.badge || "")}${m.useIn ? ` · <a href="${esc(m.useIn.href)}">${esc(m.useIn.label)}</a>` : ""}</small></th>${mcp.tools.map((t) => cell(srv, t)).join("")}</tr>`; }).join("")}</tbody>
   </table></div>
   <p class="muted t-secondary">Install adds it for your user, in every project. Servers marked – have a setup step of their own; their command is on the card below.</p>`;
 }

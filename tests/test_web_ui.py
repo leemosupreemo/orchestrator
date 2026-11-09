@@ -1988,7 +1988,9 @@ process.stdout.write(JSON.stringify({
 
     def test_uncommitted_link_opens_the_changed_files(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('<a href="#/git?show=changes">${p.dirty_files} uncommitted</a>', app)
+        self.assertIn('${p.dirty_files} uncommitted${p.branch ? ` on ${esc(p.branch)}` : ""}</a>', app)  # says which branch it's measured against
+        self.assertIn('<a href="#/git?show=changes" title="Files that differ from the last commit on', app)
+        self.assertIn('Uncommitted changes${g.branch ? ` on <span class="mono">${esc(g.branch)}</span>` : ""}', app)
         git = app[app.index("pages.git = async (_, query)"):]
         git = git[:git.index("\npages.")]
         self.assertIn('id="git-changes"', git)
@@ -4771,7 +4773,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         # Product topbar buttons (Draft, Import) use color background and are centered; file link is larger
         self.assertNotIn('id="prd-view"', self.js)
         self.assertNotIn('>View .md<', self.js)
-        self.assertIn('<button class="btn primary" id="prd-draft">Draft with AI</button>', self.js)
+        self.assertIn('<button class="btn primary" id="prd-draft">${prdFilled() ? "Update with AI" : "Draft with AI"}</button>', self.js)
         self.assertIn('<button class="btn primary" id="prd-import">Import PRD</button>', self.js)
         self.assertIn('prd-file-link', self.js)
         self.assertIn('.prd-file-link', self.css)
@@ -5068,7 +5070,7 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_draft_with_ai_button_and_cancellation(self):
         # Button label is "Draft with AI" across all PRD entry points
         self.assertIn('>Draft with AI</a>', self.js)
-        self.assertIn('id="prd-draft">Draft with AI</button>', self.js)
+        self.assertIn('id="prd-draft">${prdFilled() ? "Update with AI" : "Draft with AI"}</button>', self.js)
         self.assertNotIn('id="prd-start-draft"', self.js)
         self.assertNotIn('>Draft PRD<', self.js)
         # Busy indicator says it can take a few minutes and provides a cancel/stop option
