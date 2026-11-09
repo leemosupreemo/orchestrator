@@ -287,7 +287,8 @@
     </div>`;
   }
 
-  function renderMachines(machines, {email = "", message = "", troubleshoot = null, now, macAppReleased = MAC_APP_RELEASED, idea, release = null} = {}) {
+  // `back`: the computer this page was opened from (Manage computers...), shown as a way back to it.
+  function renderMachines(machines, {email = "", message = "", troubleshoot = null, now, macAppReleased = MAC_APP_RELEASED, idea, release = null, back = ""} = {}) {
     const list = machines || [];
     if (idea === undefined) idea = list.length ? null : pendingIdea();
     const askIdea = !list.length && !idea;
@@ -331,6 +332,7 @@
     }).join("");
     const unmatchedTrouble = troubleshoot && !list.some((m) => troubleshoot.machine?.id === m.id);
     return `<div class="signin-wrap"><div class="signin-card account-card">
+      ${back ? `<div><button type="button" class="btn small ghost account-back" data-account-action="back-to-app">← Back to ${escapeHtml(back)}</button></div>` : ""}
       <div>
         <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
         <p class="muted account-sub">${list.length

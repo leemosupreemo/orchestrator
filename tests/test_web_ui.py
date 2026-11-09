@@ -699,12 +699,33 @@ class SignInPrivacyTests(unittest.TestCase):
         self.assertIn('<select id="computer-select" aria-label="Computer"></select>', html)
         self.assertLess(html.index('id="project-select"'), html.index('id="computer-select"'))
         fn = js[js.index("function renderComputerSelect"):][:3000]
-        for text in ("Account.active()", 'cpApi("machines")', "Manage computers…", "openAccount({ list: true })", "enterMachine(machine)", "(offline)"):
+        for text in ("Account.active()", 'cpApi("machines")', "Manage computers...", "openAccount({ list: true })", "enterMachine(machine)", "(offline)"):
             self.assertIn(text, fn)
         self.assertIn('renderComputerSelect($("#computer-select"))', js)
         # Manage computers… keeps the list up: only a list shown because nothing could be opened opens one on its own
         self.assertIn("showAccountScreen(machines, message, troubleshoot, { chosen: list })", js)
         self.assertIn("const pick = !chosen && ", js)
+
+    def test_the_computers_page_opened_from_the_app_has_a_way_back(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        script = """
+require(process.argv[1]); require(process.argv[2]);
+const machines = [{id: 'm1', name: 'Studio', online: true, reachable: true, api_version: 2}];
+process.stdout.write(JSON.stringify({
+  back: Account.renderMachines(machines, {email: 'a@x.com', back: '<Studio>'}),
+  plain: Account.renderMachines(machines, {email: 'a@x.com'}),
+}));"""
+        out = json.loads(subprocess.run(["node", "-e", script, str(static / "html.js"), str(static / "account.js")],
+                                        check=True, capture_output=True, text=True).stdout)
+        self.assertIn('data-account-action="back-to-app"', out["back"])
+        self.assertIn("← Back to &lt;Studio&gt;", out["back"])
+        self.assertLess(out["back"].index("back-to-app"), out["back"].index("Your computers"))  # at the top
+        self.assertNotIn("back-to-app", out["plain"])  # straight after sign-in there's nowhere to go back to
+        js = (static / "app.js").read_text()
+        self.assertIn('action === "back-to-app"', js)
+        self.assertIn("async function returnToApp()", js)
+        self.assertIn("back: chosen && connected ? backName", js)
+        self.assertIn('Manage computers...', js[js.index("function renderComputerSelect"):][:3000])
 
     def test_sign_in_is_a_plain_column_with_the_animation_above_the_options(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"

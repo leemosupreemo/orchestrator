@@ -1235,7 +1235,7 @@ async function refreshState() {
 }
 
 // The hosted app's Computer menu: which of your computers this is. It opens on its own (the one used last, else the first
-// that can be reached); choosing another switches to it and makes it the one opened next time. "Manage computers…" lists
+// that can be reached); choosing another switches to it and makes it the one opened next time. "Manage computers..." lists
 // them all. The list comes from the account, at most every 30 seconds.
 let accountMachines = null, accountMachinesAt = 0, accountMachinesLoading = false;
 function renderComputerSelect(select) {
@@ -1254,7 +1254,7 @@ function renderComputerSelect(select) {
   if (!machines.length) { wrap.hidden = true; return; }
   wrap.hidden = false;
   const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${esc(m.name)}${m.reachable ? "" : " (offline)"}</option>`).join("")
-    + `<option value="__manage__">Manage computers…</option>`;
+    + `<option value="__manage__" class="manage-projects-option">💻 Manage computers...</option>`;
   if (select.dataset.html !== html) { select.innerHTML = html; select.dataset.html = html; }
   if (current) select.value = current;
   select.onchange = () => {
@@ -1421,6 +1421,17 @@ async function afterProviderSignIn(user, name) {
   await unlockWith(res.token, `Signed in as ${user.email || name}`);
 }
 
+// Back from the computers page to the computer this session is still connected to: no new sign-in.
+async function returnToApp() {
+  stopAccountPoll();
+  view.onclick = view.onsubmit = null;
+  document.querySelector(".app")?.classList.remove("session-locked");
+  document.body.classList.remove("signin-gate");
+  endSigningIn();
+  await refreshState();
+  route();
+}
+
 async function unlockWith(token, message) {
   view.onclick = view.onsubmit = null; // the account screens' handlers
   if (token) localStorage.setItem("orchestrator_token", token);
@@ -1463,7 +1474,7 @@ async function openAccount({ list = false, message = "", troubleshoot = null } =
   showAccountScreen(machines, message, troubleshoot, { chosen: list });
 }
 
-// `chosen`: the list was asked for (Manage computers…), so it stays up; otherwise it's here because nothing could be
+// `chosen`: the list was asked for (Manage computers...), so it stays up; otherwise it's here because nothing could be
 // opened, and the first computer that becomes reachable opens on its own.
 function showAccountScreen(machines, message = "", troubleshoot = null, { chosen = false } = {}) {
   stopAccountPoll();
@@ -1478,10 +1489,14 @@ function showAccountScreen(machines, message = "", troubleshoot = null, { chosen
   document.querySelector(".app")?.classList.add("session-locked");
   const email = window.firebase?.auth?.().currentUser?.email || "";
   let macRelease = null;
+  // Opened from inside the app (Manage computers...) while still connected to a computer: a way back to it.
+  let connected = false;
+  try { connected = Boolean(getToken() && getBackendUrl()); } catch { /* storage blocked */ }
+  const backName = state.project?.computer?.name || "your project";
   const render = (list, msg, tb) => {
     if (view.contains(document.activeElement) && document.activeElement.matches("input")) return; // not while typing a code
     const expanded = new Set(Array.from(view.querySelectorAll("details[data-account-expansion][open]"), (el) => el.dataset.accountExpansion));
-    view.innerHTML = Account.renderMachines(list, { email, message: msg, troubleshoot: tb, release: macRelease });
+    view.innerHTML = Account.renderMachines(list, { email, message: msg, troubleshoot: tb, release: macRelease, back: chosen && connected ? backName : "" });
     view.querySelectorAll("details[data-account-expansion]").forEach((el) => { el.open = expanded.has(el.dataset.accountExpansion); });
   };
   render(machines, message, troubleshoot);
@@ -1541,7 +1556,9 @@ function showAccountScreen(machines, message = "", troubleshoot = null, { chosen
     const button = event.target.closest("[data-account-action]");
     if (!button || button.disabled) return;
     const action = button.dataset.accountAction;
-    if (action === "open") {
+    if (action === "back-to-app") {
+      returnToApp();
+    } else if (action === "open") {
       const machine = machines.find((m) => m.id === button.dataset.id);
       if (machine) enterMachine(machine);
     } else if (action === "remove") {
