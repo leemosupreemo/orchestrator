@@ -3257,7 +3257,7 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .account-machine-heading strong { overflow-wrap: anywhere; min-width: 0; }
 .account-machine-meta, .account-connection-error, .account-machine .account-update { margin: 0; font-size: var(--type-secondary); line-height: 1.5; }
 .account-connection-error { color: var(--warn); }
-.account-machine-actions { display: flex; align-items: flex-start; gap: var(--space-2); margin-top: var(--space-1); }
+.account-machine-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-2); margin-top: var(--space-1); min-width: 0; }
 .account-machine-more { position: relative; }
 .account-machine-more > summary { cursor: pointer; min-width: 80px; }
 .account-machine-more[open] > summary::before { position: static; inset: auto; z-index: auto; background: transparent; cursor: inherit; }
@@ -3274,8 +3274,12 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .account-foot { border-top: 1px solid var(--border); padding-top: var(--space-4); overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .account-machine { padding: var(--space-4); }
-  .account-machine-actions > .btn { flex: 1; }
-  .account-machine-menu { left: auto; right: 0; width: min(320px, calc(100vw - 96px)); }
+  /* The buttons wrap inside the card; More's menu opens across the whole row, so it fits wherever More lands */
+  .account-machine-actions { position: relative; }
+  .account-machine-actions > .btn, .account-machine-more { flex: 1 1 auto; }
+  .account-machine-more { position: static; }
+  .account-machine-more > summary { justify-content: center; }
+  .account-machine-menu { left: 0; right: 0; width: auto; }
 }
 .account-machine-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .account-status { font-size: var(--type-secondary); color: var(--muted); }

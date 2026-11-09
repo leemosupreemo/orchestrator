@@ -137,9 +137,11 @@
   }
 
   // Which computer to open without asking: the one used last, or the only one that can be opened.
+  // The computer to open without asking: the one used last when it's reachable, else the first reachable one (the account
+  // lists the most recently seen first). The sidebar's Computer menu changes it. Null only when none can be reached.
   function pickMachine(machines, rememberedId) {
     const reachable = (machines || []).filter((m) => m.reachable);
-    return reachable.find((m) => m.id === rememberedId) || (reachable.length === 1 ? reachable[0] : null);
+    return reachable.find((m) => m.id === rememberedId) || reachable[0] || null;
   }
 
   function ago(seconds, now = Date.now() / 1000) {
@@ -309,14 +311,12 @@
         ${failed ? `<p class="account-connection-error" role="alert">${m.online ? "Orchestrator is running, but this browser couldn’t reach its web connection." : "This browser couldn’t reach Orchestrator’s web connection."}</p>` : ""}
         ${progress && m.update_state !== "current" ? `<p class="muted account-update">${escapeHtml(progress)}</p>` : ""}
         <div class="account-machine-actions">
-          <button type="button" class="btn small ${(!failed && m.reachable) || !m.has_snapshot ? "primary" : "ghost"}" data-account-action="open" data-id="${escapeHtml(m.id)}">${failed || !m.reachable ? "Retry" : "Open"}</button>
-          ${m.has_snapshot ? `<button type="button" class="btn small ${failed || !m.reachable ? "primary" : "ghost"}" data-account-action="view-snapshot" data-id="${escapeHtml(m.id)}">View offline snapshot</button>` : ""}
+          <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>
           <details class="more account-machine-more" data-account-expansion="${escapeHtml(m.id)}:more">
             <summary class="btn small ghost" aria-label="More options for ${escapeHtml(m.name)}">More</summary>
             <div class="account-machine-menu">
               ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
               ${canUpdate ? `<button type="button" class="btn small go" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
-              ${m.has_snapshot ? `<button type="button" class="btn small ghost" data-account-action="view-snapshot" data-id="${escapeHtml(m.id)}">View offline snapshot</button>` : ""}
               <details class="account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
                 ${m.reachable && outdated(m.api_version) ? `<p class="muted">${code(`This computer runs an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`)}</p>` : ""}
                 ${renderTroubleshoot(help)}

@@ -1226,10 +1226,43 @@ async function refreshState() {
   const kindSlot = $("#project-kind");
   if (kindSlot) kindSlot.innerHTML = kindPill(state.project?.kind);
   renderSessionComputer($("#session-computer"));
+  renderComputerSelect($("#computer-select"));
   const pageTitle = $("#page-title")?.dataset.title;
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
 
   renderProjectSelect($("#project-select"));
+}
+
+// The hosted app's Computer menu: which of your computers this is. It opens on its own (the one used last, else the first
+// that can be reached); choosing another switches to it and makes it the one opened next time. "Manage computers…" lists
+// them all. The list comes from the account, at most every 30 seconds.
+let accountMachines = null, accountMachinesAt = 0, accountMachinesLoading = false;
+function renderComputerSelect(select) {
+  const wrap = $("#computer-switch");
+  if (!select || !wrap) return;
+  if (!Account.active() || document.body.classList.contains("signin-gate")) { wrap.hidden = true; return; }
+  if (!accountMachinesLoading && Date.now() - accountMachinesAt > 30000) {
+    accountMachinesLoading = true;
+    cpApi("machines").then(({ machines }) => { accountMachines = machines || []; accountMachinesAt = Date.now(); renderComputerSelect(select); })
+      .catch(() => { accountMachinesAt = Date.now(); })
+      .finally(() => { accountMachinesLoading = false; });
+  }
+  let current = null;
+  try { current = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
+  const machines = accountMachines || [];
+  if (!machines.length) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${esc(m.name)}${m.reachable ? "" : " (offline)"}</option>`).join("")
+    + `<option value="__manage__">Manage computers…</option>`;
+  if (select.dataset.html !== html) { select.innerHTML = html; select.dataset.html = html; }
+  if (current) select.value = current;
+  select.onchange = () => {
+    const chosen = select.value;
+    if (current) select.value = current; // until the other computer has opened
+    if (chosen === "__manage__") { openAccount({ list: true }); return; }
+    const machine = machines.find((m) => m.id === chosen);
+    if (machine && chosen !== current) enterMachine(machine);
+  };
 }
 
 // Which computer this session is on, and whether it's the project's primary: the one computer that starts its jobs (and
@@ -1239,6 +1272,7 @@ function renderSessionComputer(button) {
   if (!button || !c || document.body.classList.contains("signin-gate")) { if (button) button.hidden = true; return; }
   const workers = c.workers || [];
   const primary = c.primary !== false;
+  if (primary && Account.active()) { button.hidden = true; return; } // the Computer menu above says which one this is
   button.hidden = false;
   button.classList.toggle("is-secondary", !primary);
   button.innerHTML = `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
@@ -1424,10 +1458,12 @@ async function openAccount({ list = false, message = "", troubleshoot = null } =
   try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
   const pick = !list && !message && !troubleshoot && Account.pickMachine(machines, remembered);
   if (pick) return enterMachine(pick);
-  showAccountScreen(machines, message, troubleshoot);
+  showAccountScreen(machines, message, troubleshoot, { chosen: list });
 }
 
-function showAccountScreen(machines, message = "", troubleshoot = null) {
+// `chosen`: the list was asked for (Manage computers…), so it stays up; otherwise it's here because nothing could be
+// opened, and the first computer that becomes reachable opens on its own.
+function showAccountScreen(machines, message = "", troubleshoot = null, { chosen = false } = {}) {
   stopAccountPoll();
   const generation = ++accountScreenGeneration;
   signingIn = true;
@@ -1474,7 +1510,7 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
         render(fresh, message, troubleshoot);
         let remembered = null;
         try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
-        const pick = location.hash !== "#/computers" && !message && !troubleshoot && Account.pickMachine(fresh, remembered);
+        const pick = !chosen && location.hash !== "#/computers" && !message && !troubleshoot && Account.pickMachine(fresh, remembered);
         if (pick) return enterMachine(pick);
       }
     } catch { /* keep the last list */ }
@@ -1506,10 +1542,6 @@ function showAccountScreen(machines, message = "", troubleshoot = null) {
     if (action === "open") {
       const machine = machines.find((m) => m.id === button.dataset.id);
       if (machine) enterMachine(machine);
-    } else if (action === "view-snapshot") {
-      const machineId = button.dataset.id;
-      const machine = machines.find((m) => m.id === machineId);
-      showSnapshotScreen(machineId, machine);
     } else if (action === "remove") {
       if (!await formDialog(`Remove ${button.dataset.name}?`, `<p>It leaves your account. To reconnect, choose Connect this Mac in Orchestrator on that computer. Command-line users can run <code>orchestrator connect</code>.</p>`, "Remove", { danger: true })) return;
       button.disabled = true;
@@ -1756,6 +1788,11 @@ async function showSnapshotScreen(machineId, machine) {
 async function enterMachine(machine) {
   stopAccountPoll();
   signingIn = true;
+  if (!machine.reachable && machine.has_snapshot) { // offline: its last snapshot, saying so, instead of waiting to fail
+    try { localStorage.setItem(Account.MACHINE_KEY, machine.id); } catch { /* storage blocked */ }
+    toast(`${machine.name} is offline. Showing its last snapshot.`, "info");
+    return showSnapshotScreen(machine.id, machine);
+  }
   showSigningIn(`Opening ${machine.name}…`);
   try {
     let res;

@@ -693,6 +693,19 @@ class SignInPrivacyTests(unittest.TestCase):
         self.assertIn("your code and assets stay on your computer.", preview)
         self.assertIn(".signin-preview .signin-privacy", css)
 
+    def test_the_sidebar_picks_the_computer_and_manages_them(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js, html = (static / "app.js").read_text(), (static / "index.html").read_text()
+        self.assertIn('<select id="computer-select" aria-label="Computer"></select>', html)
+        self.assertLess(html.index('id="project-select"'), html.index('id="computer-select"'))
+        fn = js[js.index("function renderComputerSelect"):][:3000]
+        for text in ("Account.active()", 'cpApi("machines")', "Manage computers…", "openAccount({ list: true })", "enterMachine(machine)", "(offline)"):
+            self.assertIn(text, fn)
+        self.assertIn('renderComputerSelect($("#computer-select"))', js)
+        # Manage computers… keeps the list up: only a list shown because nothing could be opened opens one on its own
+        self.assertIn("showAccountScreen(machines, message, troubleshoot, { chosen: list })", js)
+        self.assertIn("const pick = !chosen && ", js)
+
     def test_sign_in_is_a_plain_column_with_the_animation_above_the_options(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
@@ -991,7 +1004,7 @@ const tooShort = A.pendingCode(storage, "#/connect?code=AB");
 process.stdout.write(JSON.stringify({fromLink, later, cleared, tooShort, formatted: A.formatCode("ABCD2345")}));""")
         self.assertEqual(result, {"fromLink": "ABCD2345", "later": "ABCD2345", "cleared": "", "tooShort": "", "formatted": "ABCD-2345"})
 
-    def test_pick_machine_opens_the_last_used_or_the_only_reachable_one(self):
+    def test_pick_machine_opens_the_last_used_else_the_first_reachable_one(self):
         result = self.run_account_script("""
 const A = globalThis.Account;
 const a = {id: "a", reachable: true}, b = {id: "b", reachable: true}, off = {id: "c", reachable: false};
@@ -1001,8 +1014,11 @@ process.stdout.write(JSON.stringify([
   A.pickMachine([a, off], null)?.id ?? null,
   A.pickMachine([off], "c")?.id ?? null,
   A.pickMachine([], null)?.id ?? null,
+  A.pickMachine([off, a, b], "c")?.id ?? null,
 ]));""")
-        self.assertEqual(result, ["b", None, "a", None, None])
+        # No chooser: the remembered computer if it's reachable, else the first reachable one (the account lists the most
+        # recently seen first); only when none is reachable is there nothing to open.
+        self.assertEqual(result, ["b", "a", "a", None, None, "a"])
 
     def test_machine_list_and_add_steps(self):
         result = self.run_account_script("""
@@ -1251,12 +1267,13 @@ process.stdout.write(JSON.stringify({
         self.assertLess(rendered.index('data-account-action="open"'), rendered.index("Projects ("))
         self.assertEqual(result["empty"], "")
 
-        # Machine list rendering with snapshot buttons
+        # One Open per computer: an offline one with a snapshot opens the snapshot, so there's no separate button for it
         mac_html = result["machines"]
-        self.assertIn('data-account-action="view-snapshot" data-id="m_offline"', mac_html)
-        self.assertIn('data-account-action="view-snapshot" data-id="m_online"', mac_html)
-        self.assertNotIn('data-account-action="view-snapshot" data-id="m_plain"', mac_html)
+        self.assertNotIn("view-snapshot", mac_html)
+        self.assertNotIn("View offline snapshot", mac_html)
+        self.assertEqual(mac_html.count('data-account-action="open"'), 3)
         self.assertIn("Snapshot cached", mac_html)
+        self.assertIn("if (!machine.reachable && machine.has_snapshot)", js := (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text())
 
         # App.js wiring checks
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()

@@ -62,7 +62,8 @@ process.stdout.write(JSON.stringify(Account.renderMachines(machines, {
         self.assertIn("SSH uses a separate connection", " ".join(failed["all_text"]))
         self.assertNotIn("Make sure Orchestrator is running", " ".join(failed["text"]))
         self.assertNotIn("Online", " ".join(failed["text"]))
-        self.assertIn("Retry", " ".join(failed["text"]))
+        self.assertIn("Open", " ".join(failed["text"]))  # one button, whatever its state: the status says what's wrong
+        self.assertNotIn("Retry", " ".join(failed["text"]))
         self.assertIn("Running", " ".join(healthy["text"]))
         self.assertNotIn("Connected", " ".join(healthy["text"]))
         self.assertIn("Open", " ".join(healthy["text"]))
