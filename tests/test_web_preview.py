@@ -119,13 +119,45 @@ class ProjectKindTests(unittest.TestCase):
     def test_the_label_shows_in_the_sidebar_picker_phone_header_and_project_cards(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         app = (static / "app.js").read_text()
-        self.assertIn('const KIND_LABELS = { web: "Web", desktop: "Desktop", mobile: "Mobile" };', app)
+        self.assertIn('const KIND_LABELS = { web: "Web app", desktop: "Desktop app", mobile: "Mobile app" };', app)
+        css = (static / "style.css").read_text()
+        # Centred on the line it sits in, not dropped to the lowercase letters' middle
+        self.assertIn(".project-switch > .label { display: flex; align-items: center;", css)
+        self.assertIn(".mobile-title { display: flex; align-items: center; justify-content: center;", css)
+        self.assertIn('<span class="mobile-title-name">', app)
         self.assertIn('${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}', app)  # project picker
         self.assertEqual(app.count("mobileTitle.innerHTML = "), 2)  # phone header, both places it's set
         self.assertIn('<div class="project-card-badges">\n          ${kindPill(p.kind)}', app)
         self.assertIn('<span id="project-kind"></span>', (static / "index.html").read_text())
         server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
         self.assertGreaterEqual(server.count('"kind": project_kind('), 5)  # active project, picker entries, project cards
+
+    def test_home_names_the_project_larger_and_switches_it_like_the_sidebar(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app, css = (static / "app.js").read_text(), (static / "style.css").read_text()
+        self.assertIn('titleHtml: homeProjectTitle(p)', app)
+        fn = app[app.index("function homeProjectTitle"):][:900]
+        self.assertIn('class="home-project-select"', fn)
+        self.assertIn('aria-label="Switch project"', fn)
+        self.assertIn('renderProjectSelect($(".home-project-select"))', app)
+        self.assertIn('e.target.matches("#project-select, .home-project-select")', app)
+        self.assertIn('body[data-page="home"] #page-title { font-size: var(--type-home); }', css)
+        self.assertIn('--type-home: 24px;', css)
+        # No page heading on Product, Activity or Tests: the sidebar and the tab already say where you are
+        self.assertIn('body[data-page="product"] #page-title, body[data-page="activity"] #page-title, body[data-page="tests"] #page-title { display: none; }', css)
+
+    def test_the_tests_page_counts_suites_in_their_card_and_says_how_to_measure_coverage(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        page = app[app.index("pages.tests = async"):][:9000]
+        self.assertNotIn('sub: `${withTests.length} suites', page)
+        self.assertIn('<h2>Suites <span class="count">${plural(withTests.length, "suite")} · ${plural(total, "test")}</span></h2>', page)
+        self.assertIn('Not measured yet. ${matchMedia("(pointer: coarse)").matches ? "Tap" : "Click"} Calculate to populate.', page)
+        self.assertIn('class="btn small${measured ? "" : " primary"}" id="recalc-coverage"', page)
+
+    def test_the_phone_tab_bar_grows_the_chosen_icon_smoothly(self):
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".tabbar a.active .icon { transform: scale(1.14); }", css)
+        self.assertIn(".tabbar .icon { transform-origin: 50% 60%; transition: transform var(--motion-medium)", css)  # off with reduced motion
 
 
 class QuietExportTests(unittest.TestCase):

@@ -35,6 +35,7 @@
   /* Type roles: every piece of text uses one of these sizes and weights (docs/web-ui-conventions.md). */
   --type-display: 28px;   /* sign-in and empty-state heroes */
   --type-page: 22px;      /* the page title */
+  --type-home: 24px;      /* Home's title, the project's name: the page title plus 10% */
   --type-section: 18px;   /* card titles */
   --type-body: 15px;      /* running text, field labels (medium), subsection titles (bold) */
   --type-secondary: 13px; /* page subtitle, row meta, hints, explanations, timestamps */
@@ -1179,6 +1180,10 @@ dialog h2 {
   }
   .tabbar a.active { color: var(--accent); }
   .tabbar .icon { width: 22px; height: 32px; } /* every icon gets the New button's height, so the labels line up */
+  /* The chosen tab's icon grows a little (with a soft overshoot) and the others ease back; a press dips it slightly */
+  .tabbar .icon { transform-origin: 50% 60%; transition: transform var(--motion-medium) cubic-bezier(.34, 1.4, .64, 1), color var(--motion-fast) ease; }
+  .tabbar a.active .icon { transform: scale(1.14); }
+  .tabbar a:active .icon { transform: scale(.94); transition-duration: var(--motion-fast); }
   .tabbar .badge { position: absolute; top: 0; left: calc(50% + 6px); margin: 0; min-width: 18px; font-size: var(--type-tag); }
   .tabbar-new .icon { width: 32px; height: 32px; padding: var(--space-1); border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink); stroke-width: 2.5; }
   .tabbar-new.active { color: var(--accent); }
@@ -3762,7 +3767,8 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 /* Phone header: menu and logo on the left, the current project's name centred */
 .mobile-header-start { display: flex; align-items: center; gap: var(--space-2); }
 .brand-home { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-lg); min-height: var(--control-lg); flex-shrink: 0; border-radius: var(--r-md); }
-.mobile-title { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--type-body); font-weight: var(--weight-bold); }
+.mobile-title { display: flex; align-items: center; justify-content: center; min-width: 0; font-size: var(--type-body); font-weight: var(--weight-bold); }
+.mobile-title-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* A task's ⋯ menu stays beside its title on phones instead of dropping to a row of its own */
 @media (max-width: 760px) {
@@ -4618,6 +4624,18 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 .kind-desktop { --kind: var(--job-quick); }
 .kind-mobile { --kind: var(--job-coverage); }
 .project-card-badges .kind-pill { margin-left: 0; }
+/* Centred on the line it sits in (vertical-align: middle drops a small pill to the lowercase letters' middle) */
+.project-switch > .label { display: flex; align-items: center; }
+/* Home's title is the project's name and a project switcher: the sidebar's list, opened from the name */
+body[data-page="home"] #page-title { font-size: var(--type-home); }
+/* Product, Activity and Tests need no title: the sidebar and the tab already say where you are */
+body[data-page="product"] #page-title, body[data-page="activity"] #page-title, body[data-page="tests"] #page-title { display: none; }
+.home-project-title { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; border-radius: var(--r-md); cursor: pointer; }
+.home-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-project-chevron { color: var(--muted); font-size: .7em; }
+.home-project-title:hover .home-project-chevron, .home-project-title:focus-within .home-project-chevron { color: var(--text); }
+.home-project-title:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.home-project-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: var(--type-body); }
 /* "i" info tips (infoTip in app.js): the explanation shows on hover, tap or focus */
 .info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-left: var(--space-1); padding: 0; vertical-align: middle;
   border: 1px solid var(--border); border-radius: 50%; background: var(--panel-2); color: var(--muted); font: italic var(--weight-bold) 11px/1 Georgia, serif; cursor: help; }

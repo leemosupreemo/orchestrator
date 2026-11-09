@@ -267,8 +267,8 @@ function ago(ts) {
 // A small "i" that explains a term: the text shows on hover, and on tap or keyboard focus (phones have no hover).
 const infoTip = (text) => `<button type="button" class="info-tip" aria-label="${esc(text)}" data-tip="${esc(text)}">i</button>`;
 // What kind of project this is, shown wherever a project is named: Web, Desktop or Mobile.
-const KIND_LABELS = { web: "Web", desktop: "Desktop", mobile: "Mobile" };
-const kindPill = (kind) => KIND_LABELS[kind] ? `<span class="kind-pill kind-${esc(kind)}" title="${esc(KIND_LABELS[kind])} project">${esc(KIND_LABELS[kind])}</span>` : "";
+const KIND_LABELS = { web: "Web app", desktop: "Desktop app", mobile: "Mobile app" };
+const kindPill = (kind) => KIND_LABELS[kind] ? `<span class="kind-pill kind-${esc(kind)}" title="A ${esc(KIND_LABELS[kind].toLowerCase())}">${esc(KIND_LABELS[kind])}</span>` : "";
 // How complete the product requirements are, from how many of their fields have something in them.
 const prdStatusPill = (sections) => {
   const filled = sections.filter((x) => x.filled).length;
@@ -1223,7 +1223,7 @@ async function refreshState() {
     if (from && to) { to.hidden = from.hidden; to.textContent = from.textContent; to.title = from.title; to.className = from.className; }
   }
   const mobileTitle = $("#mobile-title"); // the phone header names the project you're in
-  if (mobileTitle) mobileTitle.innerHTML = document.body.classList.contains("signin-gate") ? "Orchestrator" : `${esc(state.project?.name || "")}${kindPill(state.project?.kind)}`;
+  if (mobileTitle) mobileTitle.innerHTML = document.body.classList.contains("signin-gate") ? "Orchestrator" : `<span class="mobile-title-name">${esc(state.project?.name || "")}</span>${kindPill(state.project?.kind)}`;
   const kindSlot = $("#project-kind");
   if (kindSlot) kindSlot.innerHTML = kindPill(state.project?.kind);
   renderSessionComputer($("#session-computer"));
@@ -1232,6 +1232,7 @@ async function refreshState() {
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
 
   renderProjectSelect($("#project-select"));
+  renderProjectSelect($(".home-project-select"));
 }
 
 // The hosted app's Computer menu: which of your computers this is. It opens on its own (the one used last, else the first
@@ -1336,7 +1337,7 @@ function renderProjectSelect(select) {
 }
 
 document.addEventListener("change", async (e) => {
-  if (!e.target.matches("#project-select")) return;
+  if (!e.target.matches("#project-select, .home-project-select")) return;
   const val = e.target.value;
   if (val === "__manage__") {
     location.hash = "#/projects";
@@ -2532,7 +2533,7 @@ async function signOut() {
 function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
   document.body.classList.remove("signin-gate");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.innerHTML = `${esc(state.project?.name || "")}${kindPill(state.project?.kind)}`;
+  if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-title-name">${esc(state.project?.name || "")}</span>${kindPill(state.project?.kind)}`;
   document.body.dataset.page = current.page || "";
   const back = $("#back-link");
   if (back) { back.hidden = !current.parent; if (current.parent) back.setAttribute("href", current.parent); }
@@ -3118,6 +3119,13 @@ async function yoloAll(input, jobs) {
   }
 }
 
+// Home's title: the project's name, which opens the same project list as the sidebar's picker (filled in by
+// renderProjectSelect, handled by the same change listener). The menu is an invisible <select> over the name.
+function homeProjectTitle(p) {
+  return `<span class="home-project-title"><span class="home-project-name">${esc(p.name)}</span><span class="home-project-chevron" aria-hidden="true">▾</span>
+    <select class="home-project-select" aria-label="Switch project"></select></span>`;
+}
+
 pages.home = async (_, query) => {
   await loadSetup();
   if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
@@ -3155,7 +3163,8 @@ pages.home = async (_, query) => {
     : "";
 
   return {
-    title: p.name, // switching projects lives in the menu's project picker and on Projects
+    title: p.name,
+    titleHtml: homeProjectTitle(p), // the name is also a project switcher, like the sidebar's
     sub: statusLine(p),
     actions: `<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a>`,
     html: `
@@ -3207,6 +3216,7 @@ pages.home = async (_, query) => {
             <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div></details>
       </section>` : ""}`,
     after: () => {
+      renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
       const homeModelSelect = view.querySelector("#prd-home-model-select");
       if (homeModelSelect) {
         homeModelSelect.dataset.previous = homeModelSelect.value;
@@ -7491,7 +7501,6 @@ pages.tests = async (_, query) => {
   const showNextStep = Boolean(!hasTests || (recentCoverageRun && recentCoverageRun.exit_code !== 0) || cov?.last_error);
   return {
     title: "Tests",
-    sub: `${withTests.length} suites · ${total} tests`,
     actions: `<button class="btn primary test-run-all-btn" ${act("test")}>Run all tests</button><button type="button" class="btn test-expand-coverage-btn" id="expand-coverage">Expand coverage</button>`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
@@ -7505,13 +7514,13 @@ pages.tests = async (_, query) => {
         ${[...byArea].map(([area, rows]) => `<div class="tc-area"><div class="tc-area-h">${esc(area)} <span class="count">${rows.length}</span></div><div class="list">${testCaseRowsHtml(rows)}</div></div>`).join("") || `<div class="empty">No cases with that status.</div>`}</section>` : ""}
       <div id="next-step" class="mb-16"${showNextStep && coverageFailureRun ? "" : " hidden"}>${showNextStep && coverageFailureRun ? runStatus(coverageFailureRun) : ""}</div>
       <section class="card"><div class="card-h"><h2>Coverage${effectiveCov?.timestamp ? ` <span class="count">${esc(ago(Date.parse(effectiveCov.timestamp) / 1000))}</span>` : ""}</h2>
-        <button type="button" class="btn small" id="recalc-coverage" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Recalculate" : "Calculate"}</button></div>
+        <button type="button" class="btn small${measured ? "" : " primary"}" id="recalc-coverage" ${act("coverage")} title="Runs every test with coverage turned on, which may take time">${measured ? "Recalculate" : "Calculate"}</button></div>
         <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(effectiveCov.overall_coverage_pct)}%</span>
           <span class="muted">${effectiveCov.total_lines ? `of ${effectiveCov.total_lines.toLocaleString()} ` : ""}${esc(effectiveCov.metric || "lines")} covered${effectiveCov.tool ? `, measured with ${esc(effectiveCov.tool)}` : ""} · ${esc(effectiveCov.total_tests)} tests in ${esc(effectiveCov.total_suites)} suites</span></div>`
-          : `<p class="muted">Not measured yet.</p>`}</div></section>
+          : `<p class="muted">Not measured yet. ${matchMedia("(pointer: coarse)").matches ? "Tap" : "Click"} Calculate to populate.</p>`}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
-      <section class="card" id="test-suites"><div class="card-h"><h2>Suites</h2>
+      <section class="card" id="test-suites"><div class="card-h"><h2>Suites <span class="count">${plural(withTests.length, "suite")} · ${plural(total, "test")}</span></h2>
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
         ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
       ${state.project.mobile_app !== false && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><div class="card-h"><h2>Simulator visual check</h2></div>

@@ -522,7 +522,7 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
 
     def test_project_select_change_navigates_to_home(self):
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        start = app_js.index('matches("#project-select")')
+        start = app_js.index('matches("#project-select, .home-project-select")')
         end = app_js.index("showSigningIn", start)
         handler_code = app_js[start:end]
         self.assertIn('location.hash = "#/";', handler_code)
@@ -761,7 +761,7 @@ class ProjectTitleTests(unittest.TestCase):
         self.assertIn('<span class="mobile-title" id="mobile-title"></span>', header)
         self.assertIn('role="img" aria-label="Orchestrator"', html)  # brand mark kept in hamburger side menu
         self.assertNotIn("<span>Orchestrator</span>", html)
-        self.assertIn('mobileTitle.innerHTML = `${esc(state.project?.name || "")}${kindPill(state.project?.kind)}`', js)  # with its Web/Desktop/Mobile label
+        self.assertIn('mobileTitle.innerHTML = `<span class="mobile-title-name">${esc(state.project?.name || "")}</span>${kindPill(state.project?.kind)}`', js)  # with its Web/Desktop/Mobile label
         self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
         self.assertIn('body[data-page="home"] #page-title { display: none; }', css)  # not said twice on phones
 
