@@ -284,6 +284,18 @@ class PtySession:
     def _pump(self) -> None:
         while True:
             try:
+                ready, _, _ = select.select([self._fd], [], [], 1.0)
+            except InterruptedError:
+                continue
+            except (OSError, ValueError):
+                break
+            if not ready:
+                # The run's own process has ended and nothing more is coming. Something it started in a process group of its
+                # own (a model call) can hold the terminal open, so waiting for the terminal to close would wait forever.
+                if self._proc.poll() is not None:
+                    break
+                continue
+            try:
                 chunk = os.read(self._fd, 65536)
             except OSError as exc:
                 if exc.errno == errno.EINTR:
@@ -369,22 +381,48 @@ class PtySession:
         rows = max(5, min(int(rows), 200))
         fcntl.ioctl(self._fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
+    def _descendants(self) -> list[int]:
+        """Every process this run started, however deep, including ones that moved to a process group of their own."""
+        try:
+            table = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        children: dict[int, list[int]] = {}
+        for line in table.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                children.setdefault(int(parts[1]), []).append(int(parts[0]))
+        found, todo = [], [self._proc.pid]
+        while todo:
+            for child in children.get(todo.pop(), []):
+                if child not in found:
+                    found.append(child)
+                    todo.append(child)
+        return found
+
+    def _signal_all(self, sig: int, others: list[int]) -> None:
+        try:
+            os.killpg(self._proc.pid, sig)
+        except OSError:
+            pass
+        for pid in others:  # model calls run in their own group so they can be timed out: they're stopped by name
+            for kill in (lambda: os.killpg(pid, sig), lambda: os.kill(pid, sig)):
+                try:
+                    kill()
+                except OSError:
+                    pass
+
     def stop(self) -> None:
         if not self.running:
             return
         self.stopped = True
-        try:
-            os.killpg(self._proc.pid, signal.SIGTERM)
-        except OSError:
-            return
+        others = self._descendants()
+        self._signal_all(signal.SIGTERM, others)
 
         def escalate() -> None:
             time.sleep(3)
             if self.running:
-                try:
-                    os.killpg(self._proc.pid, signal.SIGKILL)
-                except OSError:
-                    pass
+                self._signal_all(signal.SIGKILL, others + [p for p in self._descendants() if p not in others])
 
         threading.Thread(target=escalate, daemon=True).start()
 
@@ -778,7 +816,7 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         return state("needs_you", "attention", "Design ready", "Approve the design to plan its implementation, or ask for changes.", "approve", "Approve design")
     if status == "planned":
         if job.get("type") == "feature-plan" and not job.get("approved"):
-            return state("needs_you", "attention", "Approve plan", "Approve the plan to start building its tasks.", "approve", "Approve plan")
+            return state("needs_you", "attention", "Pending approval", "Approve the plan to start building its tasks.", "approve", "Approve plan")
         return state("needs_you", "attention", "Planned", "Start building when you're happy with the plan.", "schedule", "Start")
     if status == "review-needed":
         base = job.get("base_branch")
@@ -1073,6 +1111,23 @@ def job_preview(root: Path, job: dict[str, Any], config: dict[str, Any] | None =
             "auto": bool(read_settings(root).get("auto_preview"))}
 
 
+def save_preview_shot(root: Path, job_id: str, image: str) -> str:
+    """Save a screenshot taken on the job page's preview (a data: URL) next to the job's other output, for the AI to look
+    at with the problem it shows. Returns its path in the project."""
+    found = re.fullmatch(r"data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)", image)
+    if not found:
+        raise UIError("That isn't a PNG or JPEG screenshot.")
+    try:
+        data = base64.b64decode(found.group(2), validate=True)
+    except ValueError as exc:
+        raise UIError("The screenshot couldn't be read.") from exc
+    folder = runtime_dir(root) / "output" / job_id / "preview-feedback"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(2)}.{'jpg' if found.group(1) == 'jpeg' else 'png'}"
+    path.write_bytes(data)
+    return str(path.relative_to(root))
+
+
 def web_previews(root: Path) -> list[dict[str, Any]]:
     """Published preview links, newest first."""
     folder = runtime_dir(root) / "output" / "previews"
@@ -1227,7 +1282,7 @@ def epics_overview(root: Path) -> dict[str, Any]:
         state = (job or {}).get("state") or {}
         epics.append({**epic, "feature_name": (features.get(epic.get("feature") or "") or {}).get("name") or "",
                       "job_info": {"id": job["id"], "label": state.get("label", ""), "group": state.get("group", ""), "tone": state.get("tone", ""),
-                                   "backlog": job.get("status") == "backlog", "plan_ready": state.get("label") == "Approve plan"} if job else None})
+                                   "backlog": job.get("status") == "backlog", "plan_ready": state.get("label") == "Pending approval"} if job else None})
     jira = saved_integrations(root).get("jira") or {}
     site = re.sub(r"^https?://", "", str(jira.get("site") or "")).strip("/")
     prd_text = prd_doc.Prd(root, runtime).read() or ""
@@ -6316,6 +6371,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(str(exc))
             write_json_file(job_path, job)
             self._json({"ok": True, "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)})})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "preview-shot":
+            resolve_job_path(root, parts[1])
+            self._json({"path": save_preview_shot(root, parts[1], str(self._body().get("image") or ""))})
         elif method in ("GET", "POST") and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "brief":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)

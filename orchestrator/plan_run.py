@@ -114,7 +114,7 @@ def decide(run: dict[str, Any], features: list[dict[str, Any]], jobs: list[dict[
     status = {fid: _status(by_id[fid], job_of[fid], starting.get(fid), alive.get(fid, True), now) for fid in members}
     busy = sum(s in ("working", "planning") for s in status.values())
     approve = [job_of[fid]["id"] for fid in members if can_start and run.get("auto_approve") and job_of[fid]
-               and status[fid] == "attention" and (job_of[fid].get("state") or {}).get("label") == "Approve plan"
+               and status[fid] == "attention" and (job_of[fid].get("state") or {}).get("label") == "Pending approval"
                and ((job_of[fid].get("state") or {}).get("next") or {}).get("action") == "approve"]
 
     def waits_on(fid: str) -> list[str]:

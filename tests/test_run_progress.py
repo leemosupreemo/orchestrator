@@ -435,3 +435,52 @@ assert.match(panel.html, /banner failed/);
 """
         result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class StoppingRunsTests(unittest.TestCase):
+    """A run that started a model call in a process group of its own (as llm.py does) still stops, and stops it."""
+
+    # The run starts a long "model call" in its own session that inherits the terminal, writes its pid, then waits.
+    SCRIPT = ("import subprocess, sys, time, pathlib\n"
+              "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)\n"
+              "pathlib.Path(sys.argv[1]).write_text(str(p.pid))\n"
+              "print('calling the model', flush=True)\n"
+              "time.sleep(60)\n")
+
+    def wait_until(self, check, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if check():
+                return True
+            time.sleep(0.1)
+        return False
+
+    def test_stop_ends_the_run_and_its_model_call(self):
+        import os
+        from orchestrator.web.server import PtySession
+
+        with tempfile.TemporaryDirectory() as root:
+            pid_file = Path(root) / "child.pid"
+            session = PtySession("stop-test", "execute", "Build", [sys.executable, "-c", self.SCRIPT, str(pid_file)], Path(root), {})
+            self.assertTrue(self.wait_until(pid_file.exists, 10))
+            child = int(pid_file.read_text())
+            session.stop()
+            self.assertTrue(self.wait_until(lambda: not session.running, 10), "the run kept showing as stopping")
+
+            def gone():
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+            self.assertTrue(self.wait_until(gone, 5), "the model call was left running")
+
+    def test_a_run_that_ends_by_itself_finishes_even_if_something_it_started_holds_the_terminal(self):
+        from orchestrator.web.server import PtySession
+
+        with tempfile.TemporaryDirectory() as root:
+            script = ("import subprocess, sys\n"
+                      "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'], start_new_session=True)\n"
+                      "print('done', flush=True)\n")
+            session = PtySession("exit-test", "execute", "Build", [sys.executable, "-c", script], Path(root), {})
+            self.assertTrue(self.wait_until(lambda: not session.running, 5), "the run looked busy after it ended")

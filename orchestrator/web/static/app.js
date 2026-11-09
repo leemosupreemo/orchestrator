@@ -2935,11 +2935,17 @@ async function yoloAll(input, jobs) {
   const label = input.nextElementSibling;
   const idle = label.textContent;
   if (on) {
-    const list = jobs.slice(0, 6).map((j) => `<li>${esc(j.title)} <span class="muted">· ${esc(j.state.label)}</span></li>`).join("");
-    const more = jobs.length > 6 ? `<li class="muted">and ${jobs.length - 6} more</li>` : "";
-    const ok = await formDialog(`Continue ${jobs.length === 1 ? "1 job" : `${jobs.length} jobs`} in YOLO mode?`,
-      `<p>They keep building without stopping for review or confirmations. Queued and paused jobs start again where they left off; a job that's already building is switched over.</p><ul>${list}${more}</ul>`,
-      "YOLO all", { danger: true });
+    // What happens the moment you confirm, job by job (the same split the server makes).
+    const building = (j) => j.active_run || (j.state.group === "working" && !j.state.next);
+    const starting = jobs.filter((j) => !building(j)), switching = jobs.filter(building);
+    const rows = (list, what) => list.slice(0, 6).map((j) => `<li><strong>${esc(j.title)}</strong> <span class="muted">· ${what}</span></li>`).join("")
+      + (list.length > 6 ? `<li class="muted">and ${list.length - 6} more</li>` : "");
+    const ok = await formDialog("Turn on YOLO for every job in progress?",
+      `<p>Right away:</p>
+      ${starting.length ? `<p><strong>${plural(starting.length, "job")} start${starting.length === 1 ? "s" : ""} building now</strong>, from where ${starting.length === 1 ? "it" : "they"} left off.</p><ul>${rows(starting, esc("starts now"))}</ul>` : ""}
+      ${switching.length ? `<p><strong>${plural(switching.length, "job")} already building</strong> ${switching.length === 1 ? "keeps" : "keep"} going and stop${switching.length === 1 ? "s" : ""} asking from the next step.</p><ul>${rows(switching, "no more stops")}</ul>` : ""}
+      <p class="muted t-secondary">In YOLO, jobs don't stop for review or confirmations. Turn the switch off to make them stop for review again.</p>`,
+      starting.length ? `Start ${plural(starting.length, "job")}` : "Turn on YOLO", { danger: true });
     if (!ok) { input.checked = false; return; }
   }
   input.disabled = true;
@@ -2953,6 +2959,10 @@ async function yoloAll(input, jobs) {
     } else {
       toast(r.turned_off.length ? `YOLO off for ${plural(r.turned_off.length, "job")}: they stop for review again.` : "YOLO was already off.");
     }
+    input.checked = on; // shown straight away; the page then redraws from the jobs themselves
+    label.textContent = idle;
+    input.disabled = false;
+    input.removeAttribute("aria-busy");
     await refreshState();
     route();
   } catch (err) {
@@ -3215,6 +3225,8 @@ const SIDE_RUNS = new Set(["export_job", "web_preview", "dev_preview"]);
 
 // A web project's job page shows its branch in a frame: live from a dev server on this computer while it runs, else the
 // published preview link. "Point out a problem" puts a pin on the frame and sends what you write to the AI as a fix.
+const PREVIEW_DEVICES = [["desktop", "Desktop"], ["tablet", "Tablet"], ["phone", "Phone"]];
+
 function jobPreviewCard(p, runs) {
   if (!p) return "";
   const live = p.live, hosted = p.hosted;
@@ -3233,12 +3245,18 @@ function jobPreviewCard(p, runs) {
       ${both ? `<div class="row gap-4 job-preview-tabs" role="group" aria-label="Which preview">
         <button type="button" class="btn small${liveFirst ? " on" : ""}" data-preview-tab="live" aria-pressed="${liveFirst}" data-url="${esc(live.url)}">Live</button>
         <button type="button" class="btn small${liveFirst ? "" : " on"}" data-preview-tab="link" aria-pressed="${!liveFirst}" data-url="${esc(hosted.url)}">Link</button></div>` : ""}
-      ${shown ? `<a class="btn small ghost" id="job-preview-open" href="${esc(shown.url)}" target="_blank" rel="noopener">Open ↗</a>` : ""}
+      ${shown ? `<div class="row gap-4 job-preview-devices" role="group" aria-label="Screen size">
+        ${PREVIEW_DEVICES.map(([key, label]) => `<button type="button" class="btn small" data-preview-device="${key}" aria-pressed="false">${label}</button>`).join("")}</div>
+      <a class="btn small ghost" id="job-preview-open" href="${esc(shown.url)}" target="_blank" rel="noopener">Open ↗</a>` : ""}
     </div>
     <div class="card-b stack gap-12">
-      ${shown ? `<div class="job-preview-frame" id="job-preview-frame">
+      ${shown ? `<div class="job-preview-frame" id="job-preview-frame" data-device="desktop">
         <iframe title="Preview of ${esc(p.branch)}" src="${esc(shown.url)}" loading="lazy" referrerpolicy="no-referrer"></iframe>
         <div class="job-preview-pins" id="job-preview-pins" hidden><span class="job-preview-hint">Click where the problem is</span></div>
+      </div>
+      <div class="job-preview-pickbar row gap-8 align-center wrap" id="job-preview-pickbar" hidden>
+        <span class="t-secondary" id="job-preview-picked" aria-live="polite"></span>
+        <button type="button" class="btn small go" id="job-preview-describe" disabled>Describe the change</button>
       </div>
       <p class="muted t-secondary" id="job-preview-caption">${liveFirst ? `Live from ${onThisComputer ? "this computer" : "the computer running Orchestrator (open this page there to see it)"}: changes show up as they're saved.` : `Link at ${esc(hosted.commit || "")}, ${esc(ago(hosted.at))}${p.hosted_current ? "" : ". The branch has newer commits: publish again to see them"}.`} If the frame stays blank, the site doesn't allow being shown inside another page: use Open ↗.</p>`
       : `<p class="muted t-secondary">See <strong class="mono">${esc(p.branch)}</strong> running: live on this computer as the AI works, or on a link to share.</p>`}
@@ -3304,18 +3322,100 @@ function wireJobPreview(view, id) {
     }
   });
 
-  // Point out a problem: a click on the frame (over it, since the page inside can't be read from here) marks the spot.
+  // Screen size: the frame narrows to a tablet's or a phone's width. Remembered on this browser.
+  const box = card.querySelector("#job-preview-frame");
+  const setDevice = (key) => {
+    if (!box) return;
+    box.dataset.device = key;
+    card.querySelectorAll("[data-preview-device]").forEach((b) => { const on = b.dataset.previewDevice === key; b.classList.toggle("on", on); b.setAttribute("aria-pressed", String(on)); });
+  };
+  let device = "desktop";
+  try { device = localStorage.getItem("orchestrator.previewDevice") || "desktop"; } catch { /* storage blocked */ }
+  setDevice(PREVIEW_DEVICES.some(([key]) => key === device) ? device : "desktop");
+  card.querySelectorAll("[data-preview-device]").forEach((b) => b.addEventListener("click", () => {
+    setDevice(b.dataset.previewDevice);
+    try { localStorage.setItem("orchestrator.previewDevice", b.dataset.previewDevice); } catch { /* storage blocked */ }
+  }));
+
+  // Point out a problem. On the live preview, the helper script added to the page (preview-helper.js) lets you pick
+  // elements: the AI is told exactly what you picked and gets a screenshot of it. On a published link the page can't be
+  // reached from here, so a pin on top of the frame marks the spot instead.
   const point = card.querySelector("#job-preview-point");
   const pins = card.querySelector("#job-preview-pins");
+  const pickbar = card.querySelector("#job-preview-pickbar");
+  const pickedLabel = card.querySelector("#job-preview-picked");
+  const describeBtn = card.querySelector("#job-preview-describe");
+  let helper = false, picking = false, picked = [], shotWaiting = null;
+  const tell = (message) => frame?.contentWindow?.postMessage({ source: "orchestrator", ...message }, "*");
+  const pickHint = "Click an element on the page. Hold ⌘ or Shift to pick more. Esc cancels.";
+  const stopPicking = () => {
+    picking = false;
+    picked = [];
+    tell({ type: "pick", on: false });
+    if (pickbar) pickbar.hidden = true;
+    if (point) { point.setAttribute("aria-pressed", "false"); point.textContent = "Point out a problem"; }
+  };
+  const onMessage = (e) => {
+    if (!card.isConnected) { window.removeEventListener("message", onMessage); return; }
+    if (!frame || e.source !== frame.contentWindow || e.data?.source !== "orchestrator-preview") return;
+    const { type } = e.data;
+    if (type === "ready") helper = true;
+    else if (type === "picked" && picking) {
+      picked = Array.isArray(e.data.elements) ? e.data.elements.slice(0, 20) : [];
+      pickedLabel.textContent = picked.length ? `${plural(picked.length, "element")} picked. ${picked.length === 1 ? "Hold ⌘ or Shift to pick more." : ""}` : pickHint;
+      describeBtn.disabled = !picked.length;
+    } else if (type === "cancel") stopPicking();
+    else if (type === "shot" && shotWaiting) { shotWaiting(e.data.image || null); shotWaiting = null; }
+  };
+  window.addEventListener("message", onMessage);
+  frame?.addEventListener("load", () => { helper = false; if (picking) stopPicking(); tell({ type: "hello" }); });
+
+  const sendFeedback = (text, feedback) => {
+    const busy = (state.runs || []).some((r) => r.running && (r.job === id) && !SIDE_RUNS.has(r.action));
+    if (busy) { // the AI is working on this job: the problem becomes a job of its own
+      location.hash = `#/new?type=quick&summary=${encodeURIComponent(text.slice(0, 80))}&spec=${encodeURIComponent(feedback)}`;
+      return;
+    }
+    runAction("debug", { job: id, feedback }, { skipConfirm: true });
+  };
+
   point?.addEventListener("click", () => {
-    const on = pins.hidden;
-    pins.hidden = !on;
-    point.setAttribute("aria-pressed", String(on));
-    point.textContent = on ? "Cancel" : "Point out a problem";
+    if (picking || !pins.hidden) { stopPicking(); pins.hidden = true; return; }
+    point.setAttribute("aria-pressed", "true");
+    point.textContent = "Cancel";
+    if (helper) {
+      picking = true;
+      picked = [];
+      pickedLabel.textContent = pickHint;
+      describeBtn.disabled = true;
+      pickbar.hidden = false;
+      tell({ type: "pick", on: true });
+    } else pins.hidden = false;
   });
+
+  describeBtn?.addEventListener("click", async () => {
+    describeBtn.disabled = true;
+    describeBtn.textContent = "Taking a screenshot…";
+    const image = await new Promise((resolve) => { shotWaiting = resolve; tell({ type: "shot" }); setTimeout(() => { if (shotWaiting === resolve) { shotWaiting = null; resolve(null); } }, 10000); });
+    let shotPath = "";
+    if (image) { try { ({ path: shotPath } = await api(`jobs/${encodeURIComponent(id)}/preview-shot`, { method: "POST", body: { image } })); } catch { /* sent without it */ } }
+    describeBtn.textContent = "Describe the change";
+    const chosen = picked.slice();
+    const describe = (el) => `<${el.tag}>${el.text ? ` "${el.text.slice(0, 60)}"` : ""}`;
+    const values = await formDialog("What should change?", `
+      ${image ? `<img class="job-preview-shot" src="${esc(image)}" alt="Screenshot of what you picked">` : ""}
+      <ul class="job-preview-chosen t-secondary">${chosen.map((el) => `<li><code>${esc(describe(el))}</code></li>`).join("")}</ul>
+      <label class="field"><span>What you see, and what it should do</span><textarea name="text" rows="4" required placeholder="Make this button larger and green"></textarea></label>`, "Send to the AI", { compact: true });
+    stopPicking();
+    if (!values?.text?.trim()) return;
+    const lines = chosen.map((el, i) => `${i + 1}. ${describe(el)}, selector \`${el.selector}\`${Object.keys(el.attrs || {}).length ? `, ${Object.entries(el.attrs).map(([k, v]) => `${k}="${v}"`).join(" ")}` : ""}, ${el.size} px, on ${el.page}`);
+    const feedback = `On the live preview of ${branch} (${(box?.dataset.device || "desktop")} width), the person picked ${plural(chosen.length, "element")}:\n${lines.join("\n")}\n${shotPath ? `Screenshot of them: ${shotPath}\n` : ""}What they want: ${values.text.trim()}`;
+    sendFeedback(values.text.trim(), feedback);
+  });
+
   pins?.addEventListener("click", async (e) => {
-    const box = pins.getBoundingClientRect();
-    const x = Math.round(((e.clientX - box.left) / box.width) * 100), y = Math.round(((e.clientY - box.top) / box.height) * 100);
+    const rect = pins.getBoundingClientRect();
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * 100), y = Math.round(((e.clientY - rect.top) / rect.height) * 100);
     const pin = document.createElement("span");
     pin.className = "job-preview-pin";
     pin.style.left = `${x}%`;
@@ -3324,16 +3424,12 @@ function wireJobPreview(view, id) {
     const values = await formDialog("What's wrong here?", `<p class="muted t-secondary">At the pin, ${x}% across and ${y}% down what the frame shows.</p>
       <label class="field"><span>What you see, and what it should do</span><textarea name="text" rows="4" required placeholder="The button overlaps the title on narrow screens"></textarea></label>`, "Send to the AI", { compact: true });
     pin.remove();
-    point.click();
+    pins.hidden = true;
+    stopPicking();
     if (!values?.text?.trim()) return;
     const where = card.querySelector(".on[data-preview-tab]")?.dataset.previewTab || (frame.src.startsWith("http://") ? "live" : "link");
-    const feedback = `On the ${where === "live" ? "live" : "published"} preview of ${branch} (${frame.src}), at about ${x}% across and ${y}% down the visible page (frame ${Math.round(box.width)}×${Math.round(box.height)} px): ${values.text.trim()}`;
-    const busy = (state.runs || []).some((r) => r.running && (r.job === id) && !SIDE_RUNS.has(r.action));
-    if (busy) { // the AI is working on this job: the problem becomes a job of its own
-      location.hash = `#/new?type=quick&summary=${encodeURIComponent(values.text.trim().slice(0, 80))}&spec=${encodeURIComponent(feedback)}`;
-      return;
-    }
-    runAction("debug", { job: id, feedback }, { skipConfirm: true });
+    const feedback = `On the ${where === "live" ? "live" : "published"} preview of ${branch} (${frame.src}, ${box?.dataset.device || "desktop"} width), at about ${x}% across and ${y}% down the visible page (frame ${Math.round(rect.width)}×${Math.round(rect.height)} px): ${values.text.trim()}`;
+    sendFeedback(values.text.trim(), feedback);
   });
 }
 
@@ -4101,8 +4197,12 @@ pages.new = async (_, query) => {
       case "bug": {
         const picker = await linkPickerHtml({ prefer: ["sentry", "unity", "jira"], label: "Link a Sentry error, build or ticket", emptyHint: "" });
         return { picker, html: `
-          ${field("What's going wrong?", `<textarea name="summary" required rows="3" maxlength="20000" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">${esc(v.summary)}</textarea>`,
-            "Have more than one bug? Paste them all here: a list, notes or an email. Orchestrator separates them into one job each, and you check the list before anything is created.")}
+          ${field("What's going wrong?", `<textarea name="summary" required rows="3" maxlength="20000" placeholder="e.g. Rejoining a lobby after backgrounding shows an empty seat">${esc(v.summary)}</textarea>`)}
+          <div class="row gap-8 align-center wrap nj-bug-list">
+            <input type="file" id="nj-bug-list" class="sr-only" accept=".txt,.md,.csv,.tsv,.eml,.log,.json,text/*">
+            <label class="btn small" for="nj-bug-list">Add a list of bugs…</label>
+            <small class="hint-text">Or paste several above. Each becomes its own job.</small>
+          </div>
           ${field(`Describe repro steps 1 line at a time.${opt("optional")}`, `<textarea name="repro" rows="3" placeholder="1. Join a lobby&#10;2. Background the app for 30 seconds&#10;3. Come back">${esc(v.repro)}</textarea>`, "One step per line. If you pasted several bugs above, put each one's steps with it instead.")}
           ${field(`What should happen instead?${opt("optional")}`, `<input type="text" name="expected" maxlength="2000" value="${esc(v.expected)}" placeholder="The seat is still mine">`)}
           ${logPicker()}${picker.html}` };
@@ -4301,6 +4401,7 @@ pages.new = async (_, query) => {
             <small class="hint-text">Jobs share the current branch by default. For parallel jobs touching the same files, separate branches and worktrees keep changes isolated.</small>
           </label>
           <label class="check"><input type="checkbox" name="no_dispatch"><span>Plan only<small>Stop after planning so you can review the plan first.</small></span></label>
+          <small class="hint-text" id="nj-mode-note" hidden>With both on, planning runs without stopping, then the job waits for you. Once you start it, it builds in YOLO.</small>
           <label class="check"><input type="checkbox" name="free"><span>Use free AI only</span></label>
         </div>
       </details>
@@ -4314,6 +4415,36 @@ pages.new = async (_, query) => {
         await render();
       }));
       await render();
+      // Several bugs from a file (a list, notes, an exported email or CSV): its text goes in the box and, when it holds more
+      // than one bug, straight on to separating them, so the next thing you see is the list to check. A file dropped on the
+      // box works the same way.
+      const takeBugList = async (file) => {
+        if (!file) return;
+        if (file.size > 2_000_000) { toast("That file is too big for a list of bugs. Try a text, Markdown, CSV or email file.", true); return; }
+        let text = "";
+        try { text = (await file.text()).replace(/\r\n/g, "\n").trim(); } catch { toast("Couldn't read that file.", true); return; }
+        if (!text || /\u0000/.test(text)) { toast("That file has no text to read. Try a text, Markdown, CSV or email file.", true); return; }
+        const box = form().elements.summary;
+        box.value = [box.value.trim(), text].filter(Boolean).join("\n\n").slice(0, 20000);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        if (looksLikeSeveralBugs(box.value)) form().requestSubmit();
+        else toast(`Added ${file.name}. Check it, then create the job.`, "info");
+      };
+      form().addEventListener("change", (e) => {
+        if (e.target.name === "yolo" || e.target.name === "no_dispatch") {
+          const note = $("#nj-mode-note");
+          if (note) note.hidden = !(form().elements.yolo?.checked && form().elements.no_dispatch?.checked);
+        }
+        if (e.target.id !== "nj-bug-list") return;
+        takeBugList(e.target.files?.[0]);
+        e.target.value = "";
+      });
+      form().addEventListener("dragover", (e) => { if (st.type === "bug" && e.target.name === "summary") e.preventDefault(); });
+      form().addEventListener("drop", (e) => {
+        if (st.type !== "bug" || e.target.name !== "summary" || !e.dataTransfer?.files?.length) return;
+        e.preventDefault();
+        takeBugList(e.dataTransfer.files[0]);
+      });
       form().addEventListener("submit", async (e) => {
         e.preventDefault();
         if (st.uploading) { toast("Wait for the upload to finish.", "warning"); return; }
@@ -5937,7 +6068,9 @@ pages.product = async (_, query) => {
     section: query?.get("section") || (start ? "epics" : "") };
   const sectionCard = (s) => {
     const designs = s.id === "look" ? [...s.body.matchAll(/\]\((designs\/[^)\s]+)\)/g)].map((m) => m[1]).filter((d) => DESIGN_IMAGE.test(d)) : [];
-    return `<section class="card mb-16" id="sec-${s.id}"><div class="card-h"><h2>${esc(s.title)}</h2>
+    // Filled sections are blue, ones still to write are yellow (with the words too, not only the colour).
+    return `<section class="card mb-16 prd-sec ${s.filled ? "is-filled" : "is-empty"}" id="sec-${s.id}"><div class="card-h"><h2>${esc(s.title)}</h2>
+        <span class="prd-sec-state">${s.filled ? "Filled in" : "To fill in"}</span>
         <button type="button" class="btn small" data-prd-edit="${s.id}">Edit</button></div>
       <div class="card-b stack" data-prd-body="${s.id}">
         <div class="muted">${esc(s.hint)}</div>

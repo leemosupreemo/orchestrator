@@ -71,7 +71,7 @@ class DecideTests(unittest.TestCase):
         self.assertIn("lobby", result["start"])  # unrelated work carries on
 
     def test_auto_approve_only_approves_plans_ready_for_approval(self):
-        jobs = [job("play", "needs_you", "Approve plan", "approve"), job("lobby", "needs_you", "Review suggestions", "approve")]
+        jobs = [job("play", "needs_you", "Pending approval", "approve"), job("lobby", "needs_you", "Review suggestions", "approve")]
         self.assertEqual(self.decide(jobs=jobs)["approve"], [])
         self.assertEqual(self.decide(run=run_with(auto_approve=True), jobs=jobs)["approve"], ["job-play"])
 
@@ -82,12 +82,12 @@ class DecideTests(unittest.TestCase):
 
     def test_a_view_starts_and_approves_nothing_but_shows_the_same_rows(self):
         run = run_with(auto_approve=True)
-        jobs = [job("lobby", "needs_you", "Approve plan", "approve")]
+        jobs = [job("lobby", "needs_you", "Pending approval", "approve")]
         view = self.decide(run=run, jobs=jobs, can_start=False)
         self.assertEqual((view["start"], view["approve"]), ([], []))
         self.assertEqual(self.rows(view)["play"]["state"], "ready")
         self.assertEqual(self.rows(view)["play"]["detail"], "Ready")
-        self.assertEqual(self.rows(view)["lobby"]["detail"], "Approve plan")
+        self.assertEqual(self.rows(view)["lobby"]["detail"], "Pending approval")
 
     def test_jobs_from_another_run_or_unrelated_do_not_count(self):
         result = self.decide(jobs=[job("play", "done", run="old"), {"id": "x", "feature": "play", "state": {"group": "done"}}])

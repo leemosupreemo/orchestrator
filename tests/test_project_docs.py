@@ -50,11 +50,11 @@ class FeatureDocTests(unittest.TestCase):
 
     def test_a_feature_page_lists_what_it_is_where_it_lives_its_jobs_and_how_it_is_measured(self):
         jobs = [{"id": "a", "title": "Rematch button", "state": {"label": "Done", "group": "done"}, "blurb": "Adds the button"},
-                {"id": "b", "title": "Remember settings", "state": {"label": "Approve plan", "group": "needs_you"}}]
+                {"id": "b", "title": "Remember settings", "state": {"label": "Pending approval", "group": "needs_you"}}]
         md = pd.feature_doc(self.FEATURE, jobs, {"matches": "Matches"})
         for needle in ("# Rematch", "**Status:** In progress", "**Builds on:** Matches", "**Waiting on:** Matches", "Play again with the same person",
                        "Friends who want a quick second game", "`app/rematch/`", "## Jobs (1 of 2 done)", "**Rematch button** (Done): Adds the button",
-                       "**Remember settings** (Approve plan)", "## How it is measured", "at least 30 %", "latest 22"):
+                       "**Remember settings** (Pending approval)", "## How it is measured", "at least 30 %", "latest 22"):
             self.assertIn(needle, md, needle)
 
     def test_a_feature_with_no_jobs_says_so(self):

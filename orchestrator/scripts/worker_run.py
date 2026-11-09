@@ -45,7 +45,7 @@ from common import (
     run_shell,
     slugify,
     update_issue_status,
-    write_json,
+    write_json as _write_json,
 )
 from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
@@ -56,6 +56,28 @@ from model_router import builder_for_task
 
 
 from typing import List, Optional, Tuple
+
+YOLO_KEYS = ("yolo", "is_yolo")  # the app's YOLO switch; the app writes both spellings
+
+
+def refresh_yolo(job: dict[str, Any], job_path: Path) -> bool:
+    """Pick up the YOLO switch from the job file: the app can turn it on or off while this worker runs (YOLO all)."""
+    try:
+        on_disk = read_json(job_path)
+    except Exception:
+        return bool(job.get("is_yolo"))
+    for key in YOLO_KEYS:
+        if key in on_disk:
+            job[key] = on_disk[key]
+    return bool(job.get("is_yolo") or job.get("yolo"))
+
+
+def write_json(path: Path, data: Any) -> None:
+    """Save as usual, except a job's YOLO switch: what the file says wins, so this worker's older copy of the job doesn't
+    undo a change made in the app while it ran."""
+    if isinstance(data, dict) and path.parent.name == "jobs" and path.is_file():
+        refresh_yolo(data, path)
+    _write_json(path, data)
 
 def is_process_running(pid: int) -> bool:
     try:
@@ -451,7 +473,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             pass
 
         # Clarification and an already completed task list need these before any builder call.
-        is_yolo = job.get("is_yolo", False)
+        is_yolo = refresh_yolo(job, job_path)
         task_output = {}
         # Capture state before builder
         pre_state = get_repo_state()
@@ -864,7 +886,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         print_status_report(job, True, True, pr_number=pr_number, pr_url=pr_url, distributed_status=distributed_status)
         
         # Determine if we should distribute
-        is_yolo = job.get("is_yolo", False)
+        is_yolo = refresh_yolo(job, job_path)
         tasks = job.get("plan", {}).get("tasks", [])
         completed = job.get("completed_task_indices", [])
         all_tasks_done = len(completed) >= len(tasks)

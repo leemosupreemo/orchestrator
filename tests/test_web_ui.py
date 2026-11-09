@@ -2856,6 +2856,7 @@ class JobStateTests(unittest.TestCase):
     def test_approvals(self):
         self.assertEqual(self.state(status="designing")["next"]["action"], "approve")
         self.assertEqual(self.state(status="planned", type="feature-plan")["next"]["label"], "Approve plan")
+        self.assertEqual(self.state(status="planned", type="feature-plan")["label"], "Pending approval")  # the status; the button says what to do
         self.assertEqual(self.state(status="planned", type="feature-plan", approved=True)["next"]["action"], "schedule")
         review = self.state(status="human-needed", verification={"status": "concerns", "comments": "Missing tests"})
         self.assertEqual((review["next"]["action"], review["label"]), ("approve", "Review suggestions"))
@@ -5772,9 +5773,8 @@ class SplitBugsFormTests(unittest.TestCase):
         app = self.APP.read_text()
         form = app[app.index('case "bug": {'):][:1800]
         self.assertIn('<textarea name="summary" required rows="3" maxlength="20000"', form)  # room to paste
-        self.assertIn("Have more than one bug? Paste them all here", form)
-        self.assertIn("separates them into one job each", form)
-        self.assertIn("check the list before anything is created", form)
+        self.assertIn("Add a list of bugs…", form)  # or add a file of them
+        self.assertIn("Or paste several above. Each becomes its own job.", form)
 
     def test_several_bugs_are_confirmed_then_each_becomes_its_own_job(self):
         app = self.APP.read_text()

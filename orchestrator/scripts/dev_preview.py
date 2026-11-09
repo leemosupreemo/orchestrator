@@ -3,29 +3,141 @@
 
 It runs where the branch is checked out (the project folder, or another worktree of it); otherwise it checks the branch out
 in a preview folder outside the project (so the project's tests and file watchers don't see it) and keeps it, so the next
-start is quick. Installing packages never writes a lockfile into the project. When the dev server
-prints its address, the address is saved in .orchestrator/output/dev-previews/ for the job page to show; it's removed again
-when the server stops.
+start is quick. Installing packages never writes a lockfile into the project.
+
+The job page reaches the dev server through a small proxy here, which adds preview-helper.js to each page so you can pick
+elements on it to point out a problem. Everything else, live reloading's connections included, passes through unchanged.
+The proxy's address is saved in .orchestrator/output/dev-previews/ for the job page to show; it's removed again when the
+server stops.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
+import select
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 from orchestrator.scripts.web_preview import channel_name, git
 
 ADDRESS = re.compile(r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+[^\s\x1b'\"]*")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+HELPER = Path(__file__).resolve().parents[1] / "web" / "static" / "preview-helper.js"
+HELPER_PATH = "/__orchestrator/preview-helper.js"
+HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "te", "trailer", "content-length"}
+
+
+def add_helper(html: bytes) -> bytes:
+    """The page with Orchestrator's helper script added, as early as possible so it's there before the app runs."""
+    tag = f'<script src="{HELPER_PATH}"></script>'.encode()
+    found = re.search(rb"<head[^>]*>", html, re.I)
+    if found:
+        return html[:found.end()] + tag + html[found.end():]
+    return tag + html
+
+
+def proxy_handler(host: str, port: int) -> type[BaseHTTPRequestHandler]:
+    class Proxy(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_: Any) -> None:
+            pass
+
+        def handle_one_request(self) -> None:  # every method goes to the same place
+            try:
+                self.raw_requestline = self.rfile.readline(65537)
+                if not self.raw_requestline or not self.parse_request():
+                    self.close_connection = True
+                    return
+                self.forward()
+            except (OSError, http.client.HTTPException):
+                self.close_connection = True
+
+        def forward(self) -> None:
+            if self.path == HELPER_PATH:
+                body = HELPER.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.headers.get("Upgrade"):
+                self.tunnel()
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else None
+            headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() != "accept-encoding"}
+            upstream = http.client.HTTPConnection(host, port, timeout=300)
+            upstream.request(self.command, self.path, body=body, headers=headers)
+            reply = upstream.getresponse()
+            html = "text/html" in (reply.getheader("Content-Type") or "") and not reply.getheader("Content-Encoding")
+            self.send_response(reply.status, reply.reason)
+            for name, value in reply.getheaders():
+                if name.lower() not in HOP_BY_HOP and not (html and name.lower() == "content-security-policy"):
+                    self.send_header(name, value)
+            if html:
+                data = add_helper(reply.read())
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            else:  # streamed as it comes (live reload uses long-lived responses)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                while chunk := reply.read1(65536) if self.command != "HEAD" else b"":
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            upstream.close()
+
+        def tunnel(self) -> None:
+            """A WebSocket (live reload): the request is passed on as it came, then bytes flow both ways untouched."""
+            upstream = socket.create_connection((host, port), timeout=30)
+            lines = [self.requestline] + [f"{k}: {v}" for k, v in self.headers.items()]
+            upstream.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+            upstream.settimeout(None)
+            client = self.connection
+            client.settimeout(None)
+            # Nothing is waiting unread: a WebSocket client sends nothing more until it has the server's answer.
+            self.close_connection = True
+            try:
+                while True:
+                    ready, _, _ = select.select([client, upstream], [], [], 600)
+                    if not ready:
+                        break
+                    for side in ready:
+                        data = side.recv(65536)
+                        if not data:
+                            return
+                        (upstream if side is client else client).sendall(data)
+            finally:
+                upstream.close()
+
+    return Proxy
+
+
+def start_proxy(target: str) -> str:
+    """Start the proxy in front of the dev server at `target`; returns the proxy's address."""
+    parts = urlsplit(target)
+    host = "127.0.0.1" if parts.hostname in ("localhost", "0.0.0.0", None) else parts.hostname.strip("[]")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), proxy_handler(host, parts.port or 80))
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True, name="preview-proxy").start()
+    return f"http://localhost:{server.server_address[1]}{parts.path or '/'}"
 
 
 def checked_out_in(root: Path, branch: str) -> Path | None:
@@ -143,9 +255,15 @@ def main(argv: list[str] | None = None) -> int:
                     port = re.search(r"port (\d+)", line)
                     found = f"http://localhost:{port.group(1)}/" if port else ""
                 if found:
+                    try:
+                        shown = start_proxy(found)
+                    except OSError as exc:  # the preview still works, just without picking elements
+                        print(f"(Couldn't start the preview helper: {exc}. Picking elements is off.)")
+                        shown = found
                     state.parent.mkdir(parents=True, exist_ok=True)
-                    state.write_text(json.dumps({"branch": args.branch, "url": found, "pid": os.getpid(), "at": time.time()}))
-                    print(f"✅ Live preview: {found}", flush=True)
+                    state.write_text(json.dumps({"branch": args.branch, "url": shown, "direct": found, "pid": os.getpid(),
+                                                 "at": time.time()}))
+                    print(f"✅ Live preview: {shown} (the dev server itself: {found})", flush=True)
         return child.wait()
     except KeyboardInterrupt:
         stop()

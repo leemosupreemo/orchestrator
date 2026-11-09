@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from orchestrator import mcp_status
+
+APP = Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js"
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -182,3 +185,70 @@ class DialogCloseSizeTests(unittest.TestCase):
         css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
         rule = css[css.index(".dialog-close-btn {"):][:700]
         self.assertIn("scale: 1.15;", rule)
+
+
+class YoloAllStaysOnTests(unittest.TestCase):
+    """YOLO all on a job that's already building: the worker picks the switch up and doesn't save over it."""
+
+    def setUp(self):
+        scripts = str(Path(__file__).resolve().parents[1] / "orchestrator" / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import worker_run
+        self.worker = worker_run
+
+    def test_the_worker_keeps_a_switch_made_in_the_app_while_it_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "jobs" / "job-1.json"
+            path.parent.mkdir()
+            job = {"id": "job-1", "status": "executing", "yolo": False, "is_yolo": False}
+            path.write_text(json.dumps(job))
+            path.write_text(json.dumps({**job, "yolo": True, "is_yolo": True}))  # YOLO all, from the app
+            job["status"] = "review-needed"
+            self.worker.write_json(path, job)  # the worker saves its older copy
+            saved = json.loads(path.read_text())
+            self.assertTrue(saved["yolo"] and saved["is_yolo"])
+            self.assertEqual(saved["status"], "review-needed")
+            self.assertTrue(job["is_yolo"])  # and it now builds on without stopping
+            self.assertTrue(self.worker.refresh_yolo({"is_yolo": False}, path))
+
+    def test_the_dialog_says_what_happens_now_and_the_switch_shows_on(self):
+        app = APP.read_text(encoding="utf-8")
+        fn = app[app.index("async function yoloAll("):app.index("pages.home = async")]
+        for text in ("Turn on YOLO for every job in progress?", "<p>Right away:</p>", "start${starting.length === 1 ? \"s\" : \"\"} building now",
+                     "already building", "input.checked = on;"):
+            self.assertIn(text, fn)
+
+
+class EasierBugListsTests(unittest.TestCase):
+    def test_a_file_of_bugs_goes_straight_to_separating_them(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertNotIn("Have more than one bug? Paste them all here", app)
+        self.assertIn("Add a list of bugs…", app)
+        self.assertIn("Or paste several above. Each becomes its own job.", app)
+        self.assertIn("if (looksLikeSeveralBugs(box.value)) form().requestSubmit();", app)
+
+    def test_plan_only_with_yolo_says_how_they_combine(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn("With both on, planning runs without stopping, then the job waits for you.", app)
+
+
+class DialogCloseAlignmentTests(unittest.TestCase):
+    def test_the_close_button_stays_beside_the_titles_first_line(self):
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        header = css[css.index(".dialog-header {"):css.index("dialog h2 {")]
+        self.assertIn("align-items: flex-start;", header)
+        title = css[css.index("dialog h2 {"):css.index(".dialog-close-btn {")]
+        self.assertIn("min-height: var(--control-md);", title)
+        close = css[css.index(".dialog-close-btn {"):css.index(".dialog-close-btn:focus:not(:focus-visible)")]
+        self.assertIn("flex-shrink: 0;", close)
+
+
+class RequirementsSectionColoursTests(unittest.TestCase):
+    def test_filled_sections_are_blue_and_ones_to_write_are_yellow(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('prd-sec ${s.filled ? "is-filled" : "is-empty"}', app)
+        self.assertIn('${s.filled ? "Filled in" : "To fill in"}', app)
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".prd-sec.is-filled > .card-h { background: var(--accent-soft); border-left: 4px solid var(--accent); }", css)
+        self.assertIn(".prd-sec.is-empty > .card-h { background: var(--warn-soft); border-left: 4px solid var(--warn); }", css)

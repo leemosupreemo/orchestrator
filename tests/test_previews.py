@@ -152,6 +152,89 @@ class JobPreviewTests(unittest.TestCase):
             self.assertIsNone(server.job_preview(self.root, {"branch": "job-1-branch"}))
 
 
+class PreviewProxyTests(unittest.TestCase):
+    """The live preview goes through a proxy that adds the element-picking helper to pages and passes the rest through."""
+
+    def setUp(self):
+        import socket
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class DevServer(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.headers.get("Upgrade") == "websocket":  # a live-reload socket: answer, then echo what comes
+                    self.wfile.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+                    self.wfile.flush()
+                    data = self.connection.recv(100)
+                    self.connection.sendall(b"echo:" + data)
+                    return
+                html = self.path == "/"
+                body = b"<html><head><title>t</title></head><body>hi</body></html>" if html else b"console.log(1)"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html" if html else "text/javascript")
+                self.send_header("Content-Security-Policy", "default-src 'none'")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), DevServer)
+        threading.Thread(target=self.upstream.serve_forever, daemon=True).start()
+        self.proxy = dev_preview.start_proxy(f"http://localhost:{self.upstream.server_address[1]}/")
+        self.port = int(self.proxy.rsplit(":", 1)[1].strip("/"))
+        self.socket = socket
+
+    def tearDown(self):
+        self.upstream.shutdown()
+
+    def get(self, path):
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as reply:
+            return reply.read(), dict(reply.headers)
+
+    def test_pages_get_the_helper_and_lose_a_policy_that_would_block_it(self):
+        body, headers = self.get("/")
+        self.assertIn(b'<head><script src="/__orchestrator/preview-helper.js"></script><title>', body)
+        self.assertNotIn("Content-Security-Policy", headers)
+        helper, _ = self.get("/__orchestrator/preview-helper.js")
+        self.assertIn(b"orchestrator-preview", helper)
+
+    def test_everything_else_passes_through_unchanged(self):
+        body, headers = self.get("/app.js")
+        self.assertEqual(body, b"console.log(1)")
+        self.assertEqual(headers.get("Content-Security-Policy"), "default-src 'none'")
+
+    def test_live_reload_sockets_are_passed_through(self):
+        conn = self.socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        conn.sendall(b"GET /hmr HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+        reply = conn.recv(200)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 101"))
+        conn.sendall(b"ping")
+        echoed = b""
+        while not echoed.endswith(b"ping"):
+            echoed += conn.recv(100)
+        self.assertIn(b"echo:ping", reply + echoed)
+        conn.close()
+
+    def test_a_page_without_a_head_still_gets_the_helper(self):
+        self.assertTrue(dev_preview.add_helper(b"<p>x</p>").startswith(b"<script src="))
+
+
+class PreviewShotTests(unittest.TestCase):
+    def test_a_screenshot_is_saved_with_the_jobs_output(self):
+        import base64
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = server.save_preview_shot(root, "job-1", "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8jpeg").decode())
+            self.assertTrue(path.startswith(".orchestrator/output/job-1/preview-feedback/") and path.endswith(".jpg"))
+            self.assertEqual((root / path).read_bytes(), b"\xff\xd8jpeg")
+            for bad in ("data:text/html;base64,PGI+", "https://example.com/x.png", "data:image/png;base64,***"):
+                with self.assertRaises(server.UIError):
+                    server.save_preview_shot(root, "job-1", bad)
+
+
 class AutoPreviewWatchTests(unittest.TestCase):
     def test_when_the_jobs_run_ends_ready_for_review_its_link_is_published(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(server.shutil, "which", lambda name: f"/usr/bin/{name}"):
@@ -189,6 +272,11 @@ class PreviewWiringTests(unittest.TestCase):
                      "Publish a link when a job is ready for review", 'action: "dev_preview"'):
             self.assertIn(text, app)
         self.assertIn('runAction("debug", { job: id, feedback }', app)  # an idle job gets a fix run with the pin's note
+        for text in ('[["desktop", "Desktop"], ["tablet", "Tablet"], ["phone", "Phone"]]', "Describe the change",
+                     "Hold ⌘ or Shift to pick more", "preview-shot", "Screenshot of them: "):
+            self.assertIn(text, app)
+        css = (ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn('.job-preview-frame[data-device="phone"] { max-width: 390px; }', css)
         self.assertIn("const SIDE_RUNS = new Set([\"export_job\", \"web_preview\", \"dev_preview\"]);", app)
 
 
