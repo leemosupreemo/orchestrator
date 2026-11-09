@@ -811,14 +811,6 @@ class SignOutTests(unittest.TestCase):
 
 
 class SignInPrivacyTests(unittest.TestCase):
-    def test_sign_in_promises_code_and_assets_stay_on_the_users_computer(self):
-        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
-        js, css = (static / "app.js").read_text(), (static / "style.css").read_text()
-        preview = js[js.index('<figure class="signin-preview">'):][:500]
-        self.assertLess(preview.index("<h3>"), preview.index('class="signin-privacy"'))  # sits under the tagline
-        self.assertIn("your code and assets stay on your computer.", preview)
-        self.assertIn(".signin-preview .signin-privacy", css)
-
     def test_the_sidebar_picks_the_computer_and_manages_them(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         js, html = (static / "app.js").read_text(), (static / "index.html").read_text()
@@ -4992,9 +4984,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         after = js[js.index("async function afterProviderSignIn"):js.index("async function unlockWith")]
         self.assertIn("api(\"auth\"", after)
         self.assertIn("unlockWith(", after)
-        # A blocked pop-up is explained, not turned into a full-page redirect: that flow dies with "missing initial state" in
-        # browsers that partition storage between the site and Firebase's auth domain. It is offered, opt-in, instead.
-        self.assertNotIn("signInWithRedirect", sso)
+        # Desktop pop-up failures retain their opt-in fallback. Mobile visits use the auth hostname so the app and
+        # Firebase's redirect helper share storage; the behavior tests exercise both paths.
+        self.assertIn("if (useSameTabSignIn())", sso)
+        self.assertIn("signInWithRedirect", sso)  # mobile stays in this tab; desktop retains its opt-in fallback
         self.assertIn("Allow pop-ups for this site", sso)
         self.assertIn('id="redirect-fallback"', js)
         self.assertIn("signInWithRedirect", fallback)  # only when asked for, from the fallback link

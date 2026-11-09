@@ -9,6 +9,18 @@ const FIREBASE_CONFIG = {
   appId: "1:1093947686212:web:95cd975ed0d626ec196b11",
 };
 
+function useSameTabSignIn() {
+  return /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent || "")
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1); // iPadOS can identify itself as a desktop Mac
+}
+
+// Firebase's redirect helper must share the app's origin on Safari. Keep the existing registered OAuth redirect URIs
+// by using the configured auth hostname for mobile Hosting visits, in this tab, with its computer and route intact.
+if (typeof window !== "undefined" && useSameTabSignIn()
+    && window.location.hostname === `${FIREBASE_CONFIG.projectId}.web.app`) {
+  window.location.replace(`https://${FIREBASE_CONFIG.authDomain}${window.location.pathname}${window.location.search}${window.location.hash}`);
+}
+
 if (typeof window !== "undefined" && window.firebase && !window.firebase.apps?.length) {
   try {
     window.firebase.initializeApp(FIREBASE_CONFIG);
@@ -2174,7 +2186,7 @@ function showSignInGate(message) {
     beInput.addEventListener("change", syncBackend);
   }
 
-  // One handler for every Firebase provider: pop up, trade the ID token for a session.
+  // One handler for every Firebase provider: same-tab redirects on mobile, pop-ups on desktop, then a session.
   const wireSso = (id, name, makeProvider, explain = {}) => {
     const btn = $(id);
     if (!btn) return;
@@ -2190,6 +2202,10 @@ function showSignInGate(message) {
       const originalHtml = btn.innerHTML;
       btn.innerHTML = `<span>Signing in with ${name}...</span>`;
       try {
+        if (useSameTabSignIn()) {
+          await firebase.auth().signInWithRedirect(makeProvider());
+          return; // getRedirectResult completes the sign-in when this tab returns
+        }
         let cred;
         try {
           cred = await firebase.auth().signInWithPopup(makeProvider());
