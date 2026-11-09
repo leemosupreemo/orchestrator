@@ -206,6 +206,12 @@
         dlg = document.createElement("dialog");
         dlg.id = "feedback-dialog";
         dlg.className = "feedback-dialog";
+        // A tap outside it (on the dimmed page) closes it, like every dialog in the app.
+        dlg.addEventListener("click", (e) => {
+          if (e.target !== dlg) return;
+          const r = dlg.getBoundingClientRect();
+          if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) close();
+        });
         document.body.appendChild(dlg);
       }
       dialogElem = dlg;

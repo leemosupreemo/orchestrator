@@ -252,3 +252,53 @@ class RequirementsSectionColoursTests(unittest.TestCase):
         css = (APP.parent / "style.css").read_text(encoding="utf-8")
         self.assertIn(".prd-sec.is-filled > .card-h { background: var(--accent-soft); border-left: 4px solid var(--accent); }", css)
         self.assertIn(".prd-sec.is-empty > .card-h { background: var(--warn-soft); border-left: 4px solid var(--warn); }", css)
+
+
+class SessionComputerTests(unittest.TestCase):
+    def test_the_sidebar_names_this_sessions_primary_computer_and_its_helpers(self):
+        from orchestrator.web import server
+        with patch.object(server.account, "load_machine", lambda: {"name": "Studio", "machine_id": "m1"}):
+            c = server.session_computer([{"name": "local", "execution_mode": "local"}, {"name": "mini", "execution_mode": "ssh"}])
+        self.assertEqual(c, {"name": "Studio", "id": "m1", "workers": ["mini"]})
+        index = (APP.parent / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<button type="button" class="session-computer" id="session-computer" hidden></button>', index)
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('<span class="pill session-primary">Primary</span>', app)
+        self.assertIn("renderSessionComputer($(\"#session-computer\"));", app)
+
+
+class SmallLayoutFixesTests(unittest.TestCase):
+    def test_the_analytics_provider_row_has_the_cards_padding(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('<div class="card-b row gap-12 wrap align-center analytics-provider-row">', app)
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".analytics-summary .analytics-provider-row { padding: 0 var(--space-4) var(--space-4); }", css)
+
+    def test_a_link_into_part_of_product_has_a_back(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('if (r.page === "product" && DEEP_LINK_KEYS.some((k) => r.query?.has(k))) return navStack.length > 1', app)
+
+
+class ConnectByHandIsAdvancedTests(unittest.TestCase):
+    def test_typing_a_token_by_hand_is_tucked_under_advanced(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertNotIn("Option B:", app[app.index("const figmaOptionA"):app.index("const dialogPromise")])
+        self.assertIn('const hasLogin = p.id === "figma" || p.id === "trello";', app)
+        self.assertIn('<details class="advanced conn-manual" id="conn-manual"><summary>Advanced: enter', app)
+        self.assertIn("okBtn.hidden = !manual.open", app)
+        self.assertIn('name="trello_login_key"', app)  # Trello's log-in needs only its API key, kept outside Advanced
+        self.assertIn("<strong>1. Create an API token</strong>", app)  # Jira: one flow, its fields stay visible
+
+
+class MenusAndTapOutsideTests(unittest.TestCase):
+    def test_menus_open_by_their_button_and_everything_closes_on_a_tap_outside(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn("function placeMenu(d) {", app)
+        self.assertIn('document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.more") && e.target.open) placeMenu(e.target); }, true);', app)
+        self.assertIn('document.querySelectorAll("details.more[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; });', app)
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        self.assertNotIn("bottom: calc(76px + env(safe-area-inset-bottom)); z-index: var(--z-menu); }", css)  # no bottom sheet on phones
+        messages = (APP.parent / "messages.js").read_text(encoding="utf-8")
+        self.assertIn('document.addEventListener("pointerdown", outside, true);', messages)
+        feedback = (APP.parent / "feedback.js").read_text(encoding="utf-8")
+        self.assertIn("A tap outside it (on the dimmed page) closes it", feedback)

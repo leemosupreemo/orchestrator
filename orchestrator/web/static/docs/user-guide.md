@@ -520,7 +520,7 @@ The **Packages** page (under *Build & ship*) lists the libraries and plugins thi
   and your features, searches the web where it can, and suggests packages the project doesn't have yet, each tied to the feature it helps. Each is one line with a
   link: **Accept** it or **Reject** it. A rejected package isn't suggested again. The sidebar shows how many are waiting. The first time a project is looked at it only
   notes the requirements it has, so existing projects aren't reviewed until they change. Turn the automatic review off with the checkbox on the page, or run one any
-  time with **Find packages with AI**. It uses Claude Code or the Gemini CLI for the search; with any other model it answers from what it knows, and the page says
+  time with **Recommend packages**. It uses Claude Code or the Gemini CLI for the search; with any other model it answers from what it knows, and the page says
   versions may be out of date.
 - **Accepted** packages are yours to manage: add your own with **Add package** (paste a link from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub, and the name and ecosystem are filled in), edit, reject or remove. These are notes about the
   project; they never change your code.

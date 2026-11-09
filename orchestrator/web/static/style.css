@@ -435,6 +435,8 @@ div.import-option:hover { border-color: var(--border); background: var(--panel);
 .more-menu .btn { min-height: var(--control-sm); font-weight: var(--weight-medium); }
 .more-menu hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-1) 0; }
 .more.left .more-menu { left: 0; right: auto; }
+/* Open, it's placed by the button that opened it (placeMenu) and sits above the page. */
+details.more[open] > .more-menu { z-index: var(--z-menu); }
 
 /* status */
 .pill {
@@ -1196,9 +1198,6 @@ dialog h2 {
   .job-hero { padding: var(--container-pad-y) var(--container-pad-x); gap: var(--space-3); }
   .job-hero-action { width: 100%; }
   .job-hero-action .btn { width: 100%; min-height: var(--control-lg); }
-  .more-menu { position: fixed; left: 12px; right: 12px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: var(--z-menu); }
-  /* On phones an open menu is a sheet: the page dims behind it, and tapping the dimmed page closes it. */
-  details.more[open] > summary::before { content: ""; position: fixed; inset: 0; z-index: calc(var(--z-menu) - 1); background: var(--backdrop); cursor: default; }
   .term-input { display: flex; }
   dialog {
     --dialog-padding: var(--space-4);
@@ -4710,3 +4709,13 @@ body.route-loading::before { content: ""; position: fixed; top: 0; left: 0; righ
 .prd-sec > .card-h .prd-sec-state { margin-left: auto; font-size: var(--type-tag); font-weight: var(--weight-bold); letter-spacing: .04em; }
 .prd-sec.is-filled .prd-sec-state { color: var(--accent); }
 .prd-sec.is-empty .prd-sec-state { color: var(--warn); }
+
+/* The sidebar's "which computer am I on": the primary for this session, and how many supporting computers it uses. */
+.session-computer { display: flex; align-items: center; gap: var(--space-2); margin: 0 var(--space-2); padding: var(--space-1) var(--space-2); min-height: var(--control-sm); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); color: var(--text); font: inherit; font-size: var(--type-secondary); cursor: pointer; text-align: left; }
+.session-computer:hover { background: var(--panel-2); }
+.session-computer .icon { width: 16px; height: 16px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; color: var(--muted); }
+.session-computer-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--weight-bold); }
+.session-primary { background: var(--accent-soft); color: var(--accent); }
+.session-workers { color: var(--muted); }
+/* Under the analytics stats: the provider's region and status, lined up with the stats above. */
+.analytics-summary .analytics-provider-row { padding: 0 var(--space-4) var(--space-4); }

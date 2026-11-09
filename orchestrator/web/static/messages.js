@@ -196,8 +196,17 @@
       }
     }
 
+    // A tap anywhere outside the messages puts them away (ones about something still going on, like a lost connection, stay).
+    const outside = (e) => {
+      if (container.contains(e.target)) return;
+      const going = store.list().filter((m) => !m.sticky);
+      if (!going.length) return;
+      going.forEach((m) => store.dismiss(m.id));
+      render();
+    };
+    document.addEventListener("pointerdown", outside, true);
     const timer = setInterval(() => { if (store.expire().length) render(); }, 500);
-    return { render, stop: () => clearInterval(timer) };
+    return { render, stop: () => { clearInterval(timer); document.removeEventListener("pointerdown", outside, true); } };
   }
 
   const api = { KINDS, MAX_VISIBLE, createStore, mount };

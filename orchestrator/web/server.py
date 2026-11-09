@@ -66,7 +66,7 @@ from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import releases
 from orchestrator import features as feature_store
-from orchestrator import bug_split, feature_map, kpi_suggest, mcp_status, packages as package_store, run_result, source_control
+from orchestrator import bug_split, feature_map, kpi_suggest, mcp_status, package_lookup, packages as package_store, run_result, source_control
 from orchestrator import epics as epic_store
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -2705,6 +2705,14 @@ def dismiss_models_notice() -> None:
     model_registry.dismiss_models_notice()
 
 
+def session_computer(machines: list[dict[str, Any]]) -> dict[str, Any]:
+    """The computer this session runs on: the primary for the project, which starts jobs and hands some to the supporting
+    computers listed in its machines.json."""
+    machine = account.load_machine() or {}
+    return {"name": machine.get("name") or account.default_name(), "id": machine.get("machine_id") or "",
+            "workers": [str(m.get("name") or "") for m in machines if m.get("execution_mode") not in (None, "local") and m.get("name")]}
+
+
 def project_state(root: Path) -> dict[str, Any]:
     config = _safe_read_json_file(runtime_dir(root) / "project.json")
     status = git(root, "status", "--porcelain", timeout=2.0)
@@ -2752,6 +2760,7 @@ def project_state(root: Path) -> dict[str, Any]:
             })
 
     return {
+        "computer": session_computer(machines),
         "machine_count": len(machines),
         "model_count": len({model for m in machines for model in m.get("models", [])}),
         "name": project_display_name(root),
@@ -6446,6 +6455,13 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
         elif method == "GET" and parts == ["packages"]:
             self._json(self._packages_view(root))
+        elif method == "GET" and parts == ["packages", "lookup"]:
+            # A pasted link, looked up where it lives (its registry, or the Git repository itself) to fill in the add form.
+            try:
+                found = package_lookup.lookup((query.get("url") or [""])[0][:500], [i["ecosystem"] for i in package_store.detect(root)])
+            except package_lookup.PackageLookupError as exc:
+                raise UIError(str(exc)) from exc
+            self._json(found)
         elif method == "POST" and parts == ["packages"]:
             body = self._body()
             op = _choice(body, "op", ["add", "update", "status", "remove", "auto"])

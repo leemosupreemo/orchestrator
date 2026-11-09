@@ -150,7 +150,7 @@ class ConnectionUIBehaviorTests(unittest.TestCase):
         self.assertIn("okBtn.disabled = !manualValid;", self.app_js)
         # Figma's quick button is disabled without a client id. Trello's stays clickable and explains the API key it needs.
         self.assertIn("quickFigma.disabled = !cid;", self.app_js)
-        self.assertIn('toast("Paste your Trello API key in the API key field first.", "warning");', self.app_js)
+        self.assertIn('toast("Paste your Trello API key first.", "warning");', self.app_js)
 
     def test_job_type_buttons_dimmed_by_about_25_percent_on_select(self):
         self.assertIn(".job-type-card:has(input:checked)::before {\n  opacity: 0.62;", self.style_css)

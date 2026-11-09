@@ -5667,11 +5667,11 @@ class PackagesApiTests(ServerTestCase):
     def test_the_page_lists_suggests_and_starts_jobs_instead_of_editing_manifests(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         page = app[app.index("pages.packages = async"):app.index("pages.measure = async")]
-        for needle in ('api("packages")', 'api("packages/review"', "Find packages with AI", "Researching…", "Add to project", ">Suggested<", ">Accepted<",
+        for needle in ('api("packages")', 'api("packages/review"', "Recommend packages", "Researching…", "Add to project", ">Suggested<", ">Accepted<",
                        ">In this project<", ">Rejected<", "couldn't search the web", 'data-pkg="dismiss"', ">Accept</button>", ">Reject</button>", "Show all ${installed.length}"):
             self.assertTrue(needle in page, needle)
         form = app[app.index("function packageFormBody("):app.index("pages.packages = async")]
-        for needle in ("Package link", "Paste a page from npm, PyPI, crates.io", "Work it out from the link", "optional with a link"):
+        for needle in ("Package link", "Paste a registry page or any Git repository", "Work it out from the link", "optional with a link"):
             self.assertTrue(needle in form, needle)  # a new package can be added from its link alone
         self.assertTrue('${adding ? "" : "required"}' in form)  # the name is only required when editing
         jobs = app[app.index("function packageJobHref("):app.index("function packageFormBody(")]

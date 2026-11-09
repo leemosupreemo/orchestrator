@@ -961,6 +961,30 @@ async function stopJob(runId, stopBtn) {
   }
 }
 
+// "More" menus open right by the button that opened them (below it, or above when there's no room), on every screen size,
+// and close on any tap outside them. pointerdown, not click: phones don't send a click for a tap on plain page.
+function placeMenu(d) {
+  const menu = d.querySelector(":scope > .more-menu"), button = d.querySelector(":scope > summary");
+  if (!menu || !button) return;
+  const margin = 12, gap = 6;
+  Object.assign(menu.style, { position: "fixed", right: "auto", bottom: "auto", maxHeight: "", left: "0px", top: "0px" });
+  const r = button.getBoundingClientRect();
+  const width = Math.min(menu.offsetWidth, innerWidth - 2 * margin);
+  const left = Math.max(margin, Math.min(d.classList.contains("left") ? r.left : r.right - width, innerWidth - margin - width));
+  const below = innerHeight - r.bottom - gap - margin, above = r.top - gap - margin, height = menu.scrollHeight;
+  const down = height <= below || below >= above;
+  const room = Math.max(120, down ? below : above);
+  Object.assign(menu.style, { left: `${left}px`, maxWidth: `${innerWidth - 2 * margin}px`, maxHeight: `${room}px`,
+    top: `${down ? r.bottom + gap : Math.max(margin, r.top - gap - Math.min(height, room))}px` });
+}
+document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.more") && e.target.open) placeMenu(e.target); }, true);
+const placeOpenMenus = () => document.querySelectorAll("details.more[open]").forEach(placeMenu);
+window.addEventListener("resize", placeOpenMenus);
+document.addEventListener("scroll", placeOpenMenus, true);
+document.addEventListener("pointerdown", (e) => {
+  document.querySelectorAll("details.more[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+}, true);
+
 document.addEventListener("click", (e) => {
   // Close any open "More" menu when clicking outside it or on one of its items.
   document.querySelectorAll("details.more[open]").forEach((d) => {
@@ -1201,10 +1225,29 @@ async function refreshState() {
   if (mobileTitle) mobileTitle.innerHTML = document.body.classList.contains("signin-gate") ? "Orchestrator" : `${esc(state.project?.name || "")}${kindPill(state.project?.kind)}`;
   const kindSlot = $("#project-kind");
   if (kindSlot) kindSlot.innerHTML = kindPill(state.project?.kind);
+  renderSessionComputer($("#session-computer"));
   const pageTitle = $("#page-title")?.dataset.title;
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
 
   renderProjectSelect($("#project-select"));
+}
+
+// Which computer this session is on: the primary, where jobs start (and are handed to supporting computers from).
+function renderSessionComputer(button) {
+  const c = state.project?.computer;
+  if (!button || !c || document.body.classList.contains("signin-gate")) { if (button) button.hidden = true; return; }
+  const workers = c.workers || [];
+  button.hidden = false;
+  button.innerHTML = `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+    <span class="session-computer-name">${esc(c.name)}</span><span class="pill session-primary">Primary</span>${workers.length ? `<span class="session-workers">+${workers.length}</span>` : ""}`;
+  const about = `This session is on ${c.name}, the primary computer: jobs you start here run from it${workers.length ? ` and are handed to ${workers.join(", ")}` : ""}.`;
+  button.title = about;
+  button.setAttribute("aria-label", `${about} ${Account.isHosted() ? "Switch computer." : ""}`.trim());
+  button.onclick = () => {
+    if (Account.isHosted()) { openAccount({ list: true }); return; }
+    formDialog(`Primary: ${c.name}`, `<p>${esc(about)}</p>
+      <p class="muted t-secondary">${workers.length ? `Supporting computers: ${esc(workers.join(", "))}.` : "No supporting computers are set up, so every job runs here."} Jobs, history and settings for this project live on this computer.</p>`, "OK", { compact: true, cancelLabel: "Close" });
+  };
 }
 
 function renderProjectSelect(select) {
@@ -5004,12 +5047,47 @@ function packageJobHref(kind, p, data) {
   return `#/new?type=quick&summary=${encodeURIComponent(text)}`;
 }
 
+// The add form looks a pasted link up where it lives (its registry, or the Git repository itself, the way Xcode finds a Swift
+// package) and fills in the name, ecosystem, latest version and what it's for. Fields the person typed are left alone.
+function wirePackageLookup(data) {
+  const body = $("#dialog-body");
+  const link = body?.querySelector("#pkg-link"), status = body?.querySelector("#pkg-link-status");
+  if (!link) return;
+  const idle = status.textContent;
+  const typed = new Set(); // fields the person changed themselves
+  body.addEventListener("input", (e) => { if (e.target.name && e.target !== link) typed.add(e.target.name); });
+  let timer = null, asked = "";
+  const look = async () => {
+    const url = link.value.trim();
+    if (!url || url === asked) { if (!url) status.textContent = idle; return; }
+    asked = url;
+    status.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Looking it up…`;
+    let found;
+    try { found = await api(`packages/lookup?url=${encodeURIComponent(url)}`); }
+    catch (e) { if (asked === url) status.textContent = e.message; return; }
+    if (asked !== url || !body.isConnected) return; // the link changed while it was looked up
+    const set = (name, value) => { const el = body.querySelector(`[name="${name}"]`); if (el && value && !typed.has(name)) el.value = value; };
+    set("name", found.name);
+    if (found.ecosystem && data.ecosystems[found.ecosystem]) set("ecosystem", found.ecosystem);
+    set("version", found.version);
+    set("purpose", found.purpose);
+    const eco = data.ecosystems[found.ecosystem]?.split(" (")[0] || "";
+    const also = (found.ecosystems || []).filter((x) => x !== found.ecosystem).map((x) => data.ecosystems[x]?.split(" (")[0] || x);
+    status.textContent = found.name
+      ? `Found ${found.name}${eco ? ` (${eco})` : ""}${found.version ? `, latest ${found.version}` : ""}${found.products ? `. Libraries: ${found.products}` : ""}${also.length ? `. Also available for ${also.join(", ")}` : ""}.${found.error ? ` ${found.error}` : ""}`
+      : found.error || "Couldn't tell what package that is. Fill in the name and ecosystem.";
+  };
+  link.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(look, 600); });
+  link.addEventListener("change", look);
+  if (link.value.trim()) look();
+}
+
 function packageFormBody(p = {}, data) {
   const adding = !p.id; // a new package can be added from its link alone
   const eco = (adding ? [["", "Work it out from the link"]] : []).concat(Object.entries(data.ecosystems)).map(([k, label]) => `<option value="${k}" ${k === (p.ecosystem || "") ? "selected" : ""}>${esc(label)}</option>`).join("");
   const feats = data.features.map((f) => `<option value="${esc(f.id)}" ${f.id === p.feature ? "selected" : ""}>${esc(f.name)}</option>`).join("");
-  return `${adding ? `<label class="field"><span>Package link</span><input type="url" name="url" maxlength="500" value="${esc(p.url || "")}" placeholder="https://www.npmjs.com/package/lodash" autocapitalize="off" spellcheck="false">
-      <small class="hint-text">Paste a page from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub and the name and ecosystem are filled in. Or leave it and type the name.</small></label>` : ""}
+  return `${adding ? `<label class="field"><span>Package link</span><input type="text" name="url" id="pkg-link" maxlength="500" value="${esc(p.url || "")}" placeholder="A registry page or a repository, e.g. https://github.com/pointfreeco/swift-snapshot-testing" autocapitalize="off" spellcheck="false" inputmode="url">
+      <small class="hint-text" id="pkg-link-status" aria-live="polite">Paste a registry page or any Git repository and the rest fills itself in. Or leave it and type the name.</small></label>` : ""}
     <label class="field"><span>Package name${adding ? ` <span class="muted">(optional with a link)</span>` : ""}</span><input type="text" name="name" ${adding ? "" : "required"} maxlength="100" value="${esc(p.name || "")}" placeholder="e.g. lodash, requests, pointfreeco/swift-snapshot-testing" autocapitalize="off" spellcheck="false"></label>
     <div class="row gap-12">
       <label class="field flex-1"><span>Ecosystem</span><select name="ecosystem">${eco}</select></label>
@@ -5051,7 +5129,7 @@ pages.packages = async () => {
   return {
     title: "Packages",
     sub: "The libraries and plugins this project uses, and ones worth adding.",
-    actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn primary" id="pkg-review">Find packages with AI</button>` : "",
+    actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn primary" id="pkg-review">Recommend packages</button>` : "",
     html: `
       <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
         <p>When your product requirements are set or change in a meaningful way (about a paragraph of new content, not a small tweak), Orchestrator looks for packages and tools that would help, searching the web where it can. Each one is listed below with a link: accept the ones you want, reject the rest. Nothing is installed until you add it.</p>
@@ -5078,7 +5156,9 @@ pages.packages = async () => {
         cleanup.push(() => clearInterval(timer));
       }
       $("#pkg-add")?.addEventListener("click", async () => {
-        const v = await formDialog("Add a package", packageFormBody({}, data), "Add");
+        const dialog = formDialog("Add a package", packageFormBody({}, data), "Add");
+        wirePackageLookup(data);
+        const v = await dialog;
         if (v) call({ op: "add", ...v }, "Added to the list");
       });
       view.querySelectorAll("[data-pkg]").forEach((btn) => btn.addEventListener("click", async () => {
@@ -5165,7 +5245,7 @@ pages.measure = async (_, query) => {
           <div class="stat"><div class="k">With a recorded result</div><div class="v">${measuredKpis.length}</div></div>
           <div class="stat"><div class="k">Analytics platform</div><div class="v">${data.provider ? esc(data.provider_name || data.provider) : "None connected"}</div></div>
         </div>
-        <div class="row gap-12 wrap mt-8">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}</div>
+        <div class="card-b row gap-12 wrap align-center analytics-provider-row">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}</div>
       </section>
       <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><a class="btn small" href="#/product?section=success">Edit in Product ↗</a></div>
         <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="muted">Optional project-wide outcomes and targets live in the Product requirements. Add them when you know what success should look like.</p>`}</div>
@@ -8824,7 +8904,7 @@ pages.connections = async (_, query) => {
           const latest = p.token_max_days ? new Date(Date.now() + p.token_max_days * 86400000).toISOString().slice(0, 10) : "";
           const figmaOptionA = p.id === "figma" ? `
             <div class="card stack mb-16 conn-auth-box">
-              <strong>Option A: Log in &amp; authorize with Figma (OAuth - Default)</strong>
+              <strong>Log in &amp; authorize with Figma</strong>
               <p class="muted">Authorize with 1 click in your browser using Figma OAuth:</p>
               ${!p.authorize_key ? `<label class="field"><span>Figma Client ID <span class="muted">(from figma.com/developers/apps)</span></span>
                 <input type="text" name="figma_client_id" placeholder="e.g. your_figma_oauth_client_id" value="">
@@ -8832,29 +8912,32 @@ pages.connections = async (_, query) => {
               <div><button type="button" class="btn small primary" id="figma-dialog-quick-btn">Log in &amp; authorize with Figma ↗</button></div>
               <small class="hint-text">Sign in with your Figma account (or Enterprise SSO) and approve read access.</small>
             </div>
-            <div class="conn-auth-divider mb-8"><strong>Option B: Enter personal access token manually (backup)</strong></div>` : "";
+` : "";
           const trelloOptionA = p.id === "trello" ? `
             <div class="card stack mb-16 conn-auth-box">
-              <strong>Option A: Log in &amp; authorize with Trello</strong>
+              <strong>Log in &amp; authorize with Trello</strong>
               ${p.authorize_key ? `<p class="muted">Sign in and approve in your browser.</p>`
-                : `<p class="muted">Trello signs you in through an app, so it needs an API key first: copy it from <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up Admin ↗</a> (make a Power-Up there if you have none), paste it in <strong>API key</strong> below, then log in. You won't need a token.</p>`}
+                : `<p class="muted">Trello signs you in through an app, so it needs an API key first: copy it from <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up Admin ↗</a> (make a Power-Up there if you have none), paste it here, then log in. You won't need a token.</p>
+              <label class="field"><span>API key</span><input type="text" name="trello_login_key" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="32 letters and numbers"></label>`}
               <div><button type="button" class="btn small primary" id="trello-dialog-quick-btn">Log in &amp; authorize with Trello ↗</button></div>
             </div>
-            <div class="conn-auth-divider mb-8"><strong>Option B: Enter key &amp; token manually (backup)</strong></div>` : "";
+` : "";
           const jiraOptionA = p.id === "jira" ? `
             <div class="card stack mb-16 conn-auth-box">
-              <strong>Option A: Log in with Atlassian</strong>
-              <p class="muted">Use your active Atlassian browser session to create an API token with 1 click:</p>
+              <strong>1. Create an API token</strong>
               <div><a class="btn small primary" href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">Log in to Atlassian &amp; create token ↗</a></div>
-              <small class="hint-text">Click "Create API token", copy it, and paste it into the API token field below.</small>
+              <small class="hint-text">Click "Create API token" and copy it.</small>
             </div>
-            <div class="conn-auth-divider mb-8"><strong>Option B: Enter credentials manually (backup)</strong></div>` : "";
+            <div class="conn-auth-divider mb-8"><strong>2. Fill in your site and paste the token</strong></div>` : "";
+          // Figma and Trello sign you in with a button; typing a token by hand is the fallback, tucked under Advanced.
+          const hasLogin = p.id === "figma" || p.id === "trello";
           const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : "";
           const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
             ${figmaOptionA}
             ${trelloOptionA}
             ${jiraOptionA}
             ${genericTokenLink}
+            ${hasLogin ? `<details class="advanced conn-manual" id="conn-manual"><summary>Advanced: enter ${p.id === "figma" ? "a personal access token" : "a key and token"} by hand</summary><div class="stack">` : ""}
             ${Object.keys(p.suggest || {}).length ? `<p class="muted">Filled in from the Sentry setup found in this project. Check it, then add a token.</p>` : ""}
             ${p.fields.map((f) => `
             <label class="field"><span>${esc(f.label)}</span>
@@ -8863,12 +8946,23 @@ pages.connections = async (_, query) => {
                 placeholder="${esc(p.connected && f.secret ? "saved: leave blank to keep" : f.placeholder)}">
               <small class="hint-text">${esc(f.help)}</small></label>`).join("")}
             ${p.token_max_days ? `<label class="field"><span>Token expires on</span><input type="date" name="expires" value="${esc(p.expiry?.on || latest)}" max="${latest}">
-              <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}`,
+              <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}
+            ${hasLogin ? `</div></details>` : ""}`,
             p.connected ? "Save" : "Connect");
           const okBtn = $("#dialog-ok");
           const dialogBody = $("#dialog-body");
           const quickFigma = $("#figma-dialog-quick-btn");
           const quickTrello = $("#trello-dialog-quick-btn");
+          const manual = $("#conn-manual");
+          // With a log-in button, Connect/Save is for the hand-entered token, so it shows only once that's open.
+          const showManualButton = () => { if (okBtn && manual) okBtn.hidden = !manual.open; };
+          if (manual) { showManualButton(); manual.addEventListener("toggle", showManualButton); }
+          // Enter in a log-in field logs in, rather than submitting the hidden hand-entered form.
+          dialogBody?.querySelectorAll("input[name='trello_login_key'], input[name='figma_client_id']").forEach((input) => input.addEventListener("keydown", (e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            (quickTrello || quickFigma)?.click();
+          }));
 
           const updateDialogConnectState = () => {
             let manualValid = true;
@@ -8913,10 +9007,10 @@ pages.connections = async (_, query) => {
           }
           if (quickTrello) {
             quickTrello.addEventListener("click", () => {
-              const keyInput = $("#dialog-body input[name='key']");
-              const k = (keyInput?.value || p.authorize_key || "").trim();
+              const keyInput = $("#dialog-body input[name='trello_login_key']") || $("#dialog-body input[name='key']");
+              const k = (keyInput?.value || $("#dialog-body input[name='key']")?.value || p.authorize_key || "").trim();
               if (!k) {
-                toast("Paste your Trello API key in the API key field first.", "warning");
+                toast("Paste your Trello API key first.", "warning");
                 keyInput?.focus();
                 return;
               }
@@ -11298,8 +11392,12 @@ function routeParent(r) {
   if (["connections", "projects"].includes(r.page)) return "#/config";
   if (r.page === "ux-review") return "#/checkup";
   if (["git", "help", "readiness", "checkup", "devlogs", "setup"].includes(r.page)) return "#/";
+  // A link into part of a top-level page ("Edit in Product" from Analytics, a section from Home) gets a Back to where it
+  // came from (the navigation stack is updated before this runs).
+  if (r.page === "product" && DEEP_LINK_KEYS.some((k) => r.query?.has(k))) return navStack.length > 1 ? navStack[navStack.length - 2] : "#/";
   return null;
 }
+const DEEP_LINK_KEYS = ["section", "reverse", "draft", "import", "history", "start", "suggest"];
 const navStack = [];
 function trackNavigation() {
   const here = location.hash || "#/";
