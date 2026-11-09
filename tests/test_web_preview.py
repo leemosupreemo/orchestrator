@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from orchestrator.scripts import web_preview
+from orchestrator.web import server as ui
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+class WebPreviewScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_branch_names_become_valid_channel_ids(self):
+        self.assertEqual(web_preview.channel_name("feature/Login_Page"), "feature-login-page")
+        self.assertEqual(web_preview.channel_name("///"), "preview")
+        self.assertLessEqual(len(web_preview.channel_name("a" * 100)), 36)
+
+    def test_it_reads_the_url_from_firebases_reply(self):
+        reply = 'i  hosting: deploying\n{"status": "success", "result": {"site": {"site": "site", "url": "https://site--b-x.web.app", "expireTime": "2026-11-16T00:00:00Z"}}}'
+        self.assertEqual(web_preview.preview_url(reply), ("https://site--b-x.web.app", "2026-11-16T00:00:00Z"))
+        with self.assertRaises(ValueError):
+            web_preview.preview_url('{"status": "error", "error": "Not signed in"}')
+
+    def test_it_builds_with_the_projects_own_build(self):
+        self.assertEqual(web_preview.build_commands(self.root, {}), [])  # plain static site: nothing to build
+        (self.root / "package.json").write_text(json.dumps({"scripts": {"build": "vite build"}}))
+        self.assertEqual(web_preview.build_commands(self.root, {}), [["npm", "install"], ["npm", "run", "build"]])
+        (self.root / "package-lock.json").write_text("{}")
+        self.assertEqual(web_preview.build_commands(self.root, {})[0], ["npm", "ci"])
+        self.assertEqual(web_preview.build_commands(self.root, {"preview_build_command": "make site"}), [["/bin/sh", "-c", "make site"]])
+
+    def test_firebase_project_comes_from_project_json_or_firebaserc(self):
+        self.assertEqual(web_preview.firebase_project(self.root, {}), "")
+        (self.root / ".firebaserc").write_text(json.dumps({"projects": {"default": "my-site"}}))
+        self.assertEqual(web_preview.firebase_project(self.root, {}), "my-site")
+        self.assertEqual(web_preview.firebase_project(self.root, {"firebase_project": "other"}), "other")
+
+
+class WebProjectDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_web_projects_are_told_apart_from_phone_apps(self):
+        self.assertFalse(ui.is_web_app(self.root, {}))
+        (self.root / "package.json").write_text("{}")
+        self.assertTrue(ui.is_web_app(self.root, {}))
+        (self.root / "App.xcodeproj").mkdir()  # a phone app with a package.json is still a phone app
+        self.assertFalse(ui.is_web_app(self.root, {}))
+
+    def test_gaps_say_what_to_set_up_and_clear_when_ready(self):
+        with patch.object(ui.shutil, "which", return_value=None):
+            gaps = ui.web_preview_gaps(self.root, {})
+        self.assertTrue(any("npm install -g firebase-tools" in g for g in gaps))
+        self.assertTrue(any("firebase init hosting" in g for g in gaps))
+        (self.root / "firebase.json").write_text(json.dumps({"hosting": {"public": "dist"}}))
+        (self.root / ".firebaserc").write_text(json.dumps({"projects": {"default": "my-site"}}))
+        with patch.object(ui.shutil, "which", return_value="/usr/local/bin/firebase"):
+            self.assertEqual(ui.web_preview_gaps(self.root, {}), [])
+
+    def test_the_action_takes_a_branch_and_confirms_first(self):
+        argv = ui.build_web_preview({"branch": "feature/x"}, self.root)
+        self.assertEqual(argv[-5:], ["web_preview.py", "--branch", "feature/x", "--root", str(self.root)])
+        with self.assertRaises(ui.UIError):
+            ui.build_web_preview({"branch": "--upload-pack=evil"}, self.root)
+        self.assertIn("anyone with the link", ui.ACTIONS["web_preview"].confirm)
+
+    def test_delivery_shows_a_preview_in_place_of_sending_to_devices(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('<h2>${web ? "Preview" : "Test Build"}</h2>', app)
+        self.assertIn("${web ? previewBlock : !testers.configured ?", app)
+        self.assertIn('runAction("web_preview", { branch: selected_branch })', app)
+        self.assertIn('act("web_preview", { branch: s.branch })', app)  # the job's Share menu too
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class ProjectKindTests(unittest.TestCase):
+    """Projects are labelled Web, Desktop or Mobile wherever they're named."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def xcode(self, sdk):
+        (self.root / "App.xcodeproj").mkdir(exist_ok=True)
+        (self.root / "App.xcodeproj" / "project.pbxproj").write_text(f"SDKROOT = {sdk};\n")
+
+    def test_apple_projects_follow_the_platform_they_build_for(self):
+        self.xcode("iphoneos")
+        self.assertEqual(ui.project_kind(self.root, {}), "mobile")
+        self.xcode("macosx")
+        self.assertEqual(ui.project_kind(self.root, {}), "desktop")
+
+    def test_package_json_tells_desktop_mobile_and_web_apart(self):
+        (self.root / "package.json").write_text(json.dumps({"devDependencies": {"electron": "^30"}}))
+        self.assertEqual(ui.project_kind(self.root, {}), "desktop")
+        (self.root / "package.json").write_text(json.dumps({"dependencies": {"react-native": "0.74"}}))
+        self.assertEqual(ui.project_kind(self.root, {}), "mobile")
+        (self.root / "package.json").write_text(json.dumps({"dependencies": {"react": "19"}}))
+        self.assertEqual(ui.project_kind(self.root, {}), "web")
+
+    def test_android_and_unknown_projects_and_the_override(self):
+        self.assertEqual(ui.project_kind(self.root, {}), "")  # nothing to go on: no label
+        (self.root / "android").mkdir()
+        self.assertEqual(ui.project_kind(self.root, {}), "mobile")
+        self.assertEqual(ui.project_kind(self.root, {"project_kind": "Desktop"}), "desktop")  # project.json wins
+
+    def test_the_label_shows_in_the_sidebar_picker_phone_header_and_project_cards(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app = (static / "app.js").read_text()
+        self.assertIn('const KIND_LABELS = { web: "Web", desktop: "Desktop", mobile: "Mobile" };', app)
+        self.assertIn('${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}', app)  # project picker
+        self.assertEqual(app.count("mobileTitle.innerHTML = "), 2)  # phone header, both places it's set
+        self.assertIn('<div class="project-card-badges">\n          ${kindPill(p.kind)}', app)
+        self.assertIn('<span id="project-kind"></span>', (static / "index.html").read_text())
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        self.assertGreaterEqual(server.count('"kind": project_kind('), 5)  # active project, picker entries, project cards
+
+
+class QuietExportTests(unittest.TestCase):
+    """Exporting a job's bundle is an errand, not work on the job: it runs in the background and the job stays idle."""
+
+    def test_export_runs_do_not_make_the_job_busy(self):
+        self.assertIn("export_job", ui.SIDE_ACTIONS)
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        self.assertIn("s.action not in SIDE_ACTIONS", server)
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('runs.find((r) => r.running && r.action !== "export_job")', app)
+        dialog = app[app.index("async export_job_bundle(params)"):app.index("async run_visual_check(params)")]
+        self.assertNotIn('runAction("export_job"', dialog)  # no run page
+        self.assertIn("toast(`Exported to ${where}`)", dialog)
+
+
+class FailedTestSummaryTests(unittest.TestCase):
+    """A failed test run says which tests failed, and why, in the summary on top."""
+
+    def test_names_and_reasons_come_from_common_runners(self):
+        from orchestrator import run_result
+        unittest_out = ["FAIL: test_adds (tests.t.MathTests.test_adds)", "Traceback (most recent call last):",
+                        "AssertionError: 1 != 2", "", "Ran 4 tests in 0.01s", "", "FAILED (failures=1)"]
+        self.assertEqual(run_result.tests(unittest_out, 1)["details"], ["test_adds: AssertionError: 1 != 2"])
+        pytest_out = ["FAILED tests/test_a.py::test_login - AssertionError: expected 200", "=== 1 failed, 3 passed in 0.12s ==="]
+        self.assertEqual(run_result.tests(pytest_out, 1)["details"], ["test_login: AssertionError: expected 200"])
+        xctest_out = ["/x/LoginTests.swift:12: error: -[AppTests.LoginTests testSignIn] : XCTAssertTrue failed - not signed in",
+                      "Test Case '-[AppTests.LoginTests testSignIn]' failed (0.010 seconds).",
+                      "Executed 10 tests, with 1 failure (0 unexpected) in 0.3 seconds"]
+        result = run_result.tests(xctest_out, 1)
+        self.assertEqual((result["headline"], result["details"]), ("1 of 10 tests failed", ["testSignIn: XCTAssertTrue failed - not signed in"]))
+
+    def test_the_summary_on_top_uses_them_once(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('detail: r.result?.details?.length ? r.result.details.join(" · ")', app)
+        self.assertIn("fromResult: Boolean(r.result?.details?.length),", app)
+        self.assertIn("!guidance?.fromResult", app)  # not repeated in the card below
+
+
+class JobNamedByTitleTests(unittest.TestCase):
+    """Run pages name a job by its title, not an ID like "job-1"."""
+
+    def test_runs_carry_the_job_title_and_the_page_shows_it(self):
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        self.assertIn('"job": self.job_id, "job_title": self.job_title,', server)
+        self.assertIn('session.job_title = job_title if job_id else ""', server)
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn("${esc((targetJob === r.job && r.job_title) || targetJob)}", app)
+        export = (PACKAGE_ROOT / "orchestrator" / "scripts" / "export_job.py").read_text()
+        self.assertIn('print_phase("exporting", subtext=job.get("title") or job.get("summary") or job_id)', export)
+
+
+class OneAddProjectButtonTests(unittest.TestCase):
+    """One "Add existing project": a folder already set up is added; one that isn't goes through setup."""
+
+    def test_add_routes_folders_that_are_not_set_up_to_setup(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertNotIn("Import existing project", app)
+        self.assertIn("!(await api(`projects/import-info?path=${encodeURIComponent(root)}`)).has_config", app)
+        self.assertEqual(app.count("if (await needsImport("), 2)  # discovered folders and a typed path
+        self.assertIn("location.hash = `#/import-project?path=${encodeURIComponent(result.importPath)}`", app)
+        setup = app[app.index('pages["import-project"] = async (_, query)'):]
+        self.assertIn('let path = query?.get("path") || "";', setup[:400])
+        self.assertIn('data-then="#/">Switch</button>', app)  # not "Switch & Open"
+
+
+class ProductRequirementsStatusTests(unittest.TestCase):
+    def test_the_card_says_how_complete_the_requirements_are(self):
+        import json as _json, subprocess as _sp
+        app = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js"
+        source = app.read_text()
+        self.assertIn("<h2>Product requirements</h2>${prdStatusPill(p.sections || [])}", source)
+        fn = source[source.index("const prdStatusPill"):source.index("const pill = (tone, label)")]
+        script = fn + """
+const s = (n, of) => Array.from({length: of}, (_, i) => ({filled: i < n}));
+console.log(JSON.stringify([prdStatusPill(s(0, 6)), prdStatusPill(s(3, 6)), prdStatusPill(s(6, 6)), prdStatusPill([])]));"""
+        out = _json.loads(_sp.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        for html, label in zip(out, ["Needs completion", "Partially completed", "Completed", "Needs completion"]):
+            self.assertIn(f">{label}</span>", html)

@@ -266,6 +266,16 @@ function ago(ts) {
 
 // A small "i" that explains a term: the text shows on hover, and on tap or keyboard focus (phones have no hover).
 const infoTip = (text) => `<button type="button" class="info-tip" aria-label="${esc(text)}" data-tip="${esc(text)}">i</button>`;
+// What kind of project this is, shown wherever a project is named: Web, Desktop or Mobile.
+const KIND_LABELS = { web: "Web", desktop: "Desktop", mobile: "Mobile" };
+const kindPill = (kind) => KIND_LABELS[kind] ? `<span class="kind-pill kind-${esc(kind)}" title="${esc(KIND_LABELS[kind])} project">${esc(KIND_LABELS[kind])}</span>` : "";
+// How complete the product requirements are, from how many of their fields have something in them.
+const prdStatusPill = (sections) => {
+  const filled = sections.filter((x) => x.filled).length;
+  const [tone, label] = !sections.length || !filled ? ["failed", "Needs completion"]
+    : filled === sections.length ? ["done", "Completed"] : ["attention", "Partially completed"];
+  return `<span class="pill ${tone}" title="${filled} of ${sections.length} sections filled in">${label}</span>`;
+};
 const pill = (tone, label) => `<span class="pill ${esc(tone)}">${esc(label)}</span>`;
 // A small turning ring that says "this is running right now" (a job building, or a run in progress).
 const runningMark = `<span class="run-spin" aria-hidden="true"></span>`;
@@ -463,7 +473,12 @@ function addProjectsDialog(trackedProjects) {
   const done = $("#dialog-ok");
   let changed = false;
   let switched = false;
+  let importPath = ""; // a folder that isn't set up for Orchestrator yet: it goes through the import steps instead
   let pendingAdds = 0;
+  // One way in: a folder already set up is added as it is; one that isn't is set up first (stack, config, starter docs).
+  const needsImport = async (root) => {
+    try { return !(await api(`projects/import-info?path=${encodeURIComponent(root)}`)).has_config; } catch { return false; }
+  };
 
   $("#dialog-title").textContent = "Add Existing Project";
   done.textContent = "Done";
@@ -568,6 +583,7 @@ function addProjectsDialog(trackedProjects) {
           root: discoveredButton.dataset.addProjectPath,
           name: discoveredButton.dataset.projectName || "",
         };
+        if (await needsImport(project.root)) { importPath = project.root; dlg.close("ok"); return; }
         const request = ProjectPicker.addRequest(project);
         await enqueueAdd(request);
         changed = true;
@@ -590,6 +606,7 @@ function addProjectsDialog(trackedProjects) {
     }
     const active = Boolean(values.active);
     manualButton.disabled = true;
+    if (await needsImport(root)) { manualButton.disabled = false; importPath = root; dlg.close("ok"); return; }
     try {
       await enqueueAdd({
         path: "projects/add",
@@ -646,7 +663,7 @@ function addProjectsDialog(trackedProjects) {
       cancel.textContent = "Cancel";
       cancel.disabled = false;
       done.disabled = false;
-      resolve({ changed, switched });
+      resolve({ changed, switched, importPath });
     }, { once: true });
   });
 }
@@ -851,7 +868,20 @@ const dialogs = {
         window.open(`/api/jobs/${encodeURIComponent(params.job)}/export-zip`, "_blank");
         toast("Download started", "info");
       } else {
-        await runAction("export_job", { job: params.job, destination: values.destination });
+        // Runs in the background: no run page, and the job doesn't show as busy. One message when it's done.
+        const where = { icloud: "iCloud Drive", gdrive: "Google Drive", downloads: "your Downloads folder", local: "the project's exports folder" }[values.destination] || "the chosen folder";
+        try {
+          const { run } = await api("runs", { method: "POST", body: { action: "export_job", params: { job: params.job, destination: values.destination }, ...terminalSize() } });
+          for (let i = 0; i < 300; i++) {
+            await new Promise((done) => setTimeout(done, 1000));
+            const r = (await api("runs")).runs?.find((x) => x.id === run.id);
+            if (r && !r.running) {
+              if (r.exit_code === 0) toast(`Exported to ${where}`);
+              else toast("The export didn't finish.", true, { label: "See details", run: () => { location.hash = `#/runs/${run.id}`; } });
+              return;
+            }
+          }
+        } catch (e) { toast(e.message, true); }
       }
     }
   },
@@ -1168,7 +1198,9 @@ async function refreshState() {
     if (from && to) { to.hidden = from.hidden; to.textContent = from.textContent; to.title = from.title; to.className = from.className; }
   }
   const mobileTitle = $("#mobile-title"); // the phone header names the project you're in
-  if (mobileTitle) mobileTitle.textContent = document.body.classList.contains("signin-gate") ? "Orchestrator" : (state.project?.name || "");
+  if (mobileTitle) mobileTitle.innerHTML = document.body.classList.contains("signin-gate") ? "Orchestrator" : `${esc(state.project?.name || "")}${kindPill(state.project?.kind)}`;
+  const kindSlot = $("#project-kind");
+  if (kindSlot) kindSlot.innerHTML = kindPill(state.project?.kind);
   const pageTitle = $("#page-title")?.dataset.title;
   document.title = Notifications.tabTitle(pageTitle ? `${pageTitle} · Orchestrator` : "Orchestrator", state.inbox_count || 0);
 
@@ -1186,6 +1218,7 @@ function renderProjectSelect(select) {
       source_type: p.source_type,
       source_label: p.source_label,
       github_repo: p.github_repo,
+      kind: p.kind,
     });
   }
 
@@ -1195,7 +1228,7 @@ function renderProjectSelect(select) {
     ["On this computer", options.filter(o => !o.source_type || o.source_type === "local")],
   ].filter(([, projects]) => projects.length);
   let html = groups.map(([label, projects]) => `<optgroup label="${esc(label)}">${projects.map(o =>
-    `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
+    `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
   ).join("")}</optgroup>`).join("");
   if (state.you?.role !== "member") html += `<option value="__manage__" class="manage-projects-option">📁 Manage all projects...</option>`;
   if (select.dataset.html !== html) {
@@ -2378,7 +2411,7 @@ async function signOut() {
 function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
   document.body.classList.remove("signin-gate");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.textContent = state.project?.name || "";
+  if (mobileTitle) mobileTitle.innerHTML = `${esc(state.project?.name || "")}${kindPill(state.project?.kind)}`;
   document.body.dataset.page = current.page || "";
   const back = $("#back-link");
   if (back) { back.hidden = !current.parent; if (current.parent) back.setAttribute("href", current.parent); }
@@ -3068,7 +3101,9 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     ]],
     ["Share", [
       idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)
-        && ["Send to testers…", act("deliver", j), `Builds ${s.branch} and sends it to your testers`],
+        && (state.project?.web_app
+          ? ["Publish preview link…", act("web_preview", { branch: s.branch }), `Publishes ${s.branch} on a shareable link for 7 days`]
+          : ["Send to testers…", act("deliver", j), `Builds ${s.branch} and sends it to your testers`]),
       ["Export…", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"],
       Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator") && !s.submitted_for_inclusion
         && ["Submit for Prize 🏆", `data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title || '')}"`, "Submit this improvement to the core team for permanent inclusion"],
@@ -3180,7 +3215,7 @@ pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
 
-  const activeRun = runs.find((r) => r.running);
+  const activeRun = runs.find((r) => r.running && r.action !== "export_job"); // an export isn't work on the job
   if (s.status === "backlog") return waitingEpicPage({ id, s, job, runs, docs, links });
   const summary = { ...s, active_run: !!activeRun };
 
@@ -4110,8 +4145,10 @@ pages.new = async (_, query) => {
     }
   };
 
+  // The heading names the kind of job when it says more than "New job": a Tests job is about test coverage.
+  const pageTitle = () => (st.type === "coverage" ? "New test coverage job" : "New job");
   return {
-    title: "New job",
+    title: pageTitle(),
     sub: "",
     html: `
     <form class="card card-b stack" id="new-job">
@@ -4142,7 +4179,12 @@ pages.new = async (_, query) => {
       <div class="row"><span class="spacer"></span><button class="btn primary big" type="submit">Create job</button></div>
     </form>`,
     after: async () => {
-      form().querySelectorAll("input[name=type]").forEach((r) => r.addEventListener("change", async () => { capture(); st.type = r.value; await render(); }));
+      form().querySelectorAll("input[name=type]").forEach((r) => r.addEventListener("change", async () => {
+        capture(); st.type = r.value;
+        const heading = $("#page-title");
+        if (heading) { heading.textContent = pageTitle(); heading.dataset.title = pageTitle(); }
+        await render();
+      }));
       await render();
       form().addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -4358,9 +4400,24 @@ pages.delivery = async (args, query) => {
     </div>
   </section>`;
 
+  // Web projects get a shareable preview link of the branch instead of a build sent to devices.
+  const web = d.web;
+  const previewBlock = !web ? "" : web.gaps.length ? `
+        <div class="notice"><div class="stack">
+          <strong>Not ready to publish previews</strong>
+          <ul class="muted">${web.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
+        </div></div>`
+    : `<div class="stack gap-12">
+          <p class="muted t-secondary">Publishes the latest commit on <strong class="mono">${esc(selected_branch)}</strong> to a link anyone can open. It lasts 7 days; publish again to refresh it.</p>
+          <div><button type="button" class="btn primary" id="web-preview-btn">${web.previews.some((x) => x.branch === selected_branch) ? "Publish again" : "Publish preview link"}</button></div>
+          ${(() => { const p = web.previews.find((x) => x.branch === selected_branch); return p ? `<div class="row gap-8 align-center wrap">
+            <a class="btn small go" href="${esc(p.url)}" target="_blank" rel="noopener">Open preview ↗</a><button type="button" class="btn small ghost" data-setup-copy="${esc(p.url)}">Copy link</button>
+            <span class="muted t-secondary">Latest: ${esc(p.commit || "")}, ${esc(ago(p.at))}</span></div>` : ""; })()}
+        </div>`;
+
   const branchCard = `<section class="card mb-16">
     <div class="card-h">
-      <h2>Test Build</h2>
+      <h2>${web ? "Preview" : "Test Build"}</h2>
       <div class="row gap-8 align-center">
         <span class="muted t-secondary">Branch:</span>
         <select id="delivery-branch-select" class="inline-select">
@@ -4369,11 +4426,11 @@ pages.delivery = async (args, query) => {
       </div>
     </div>
     <div class="card-b stack">
-      ${!testers.configured ? `
+      ${web ? previewBlock : !testers.configured ? `
         <div class="notice">
           <div class="stack">
-            <strong>Distribution is not set up yet.</strong>
-            <p class="muted">Configure Firebase App Distribution and code signing to build and install test versions on your devices.</p>
+            <strong>Not ready to send test builds</strong>
+            <ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
             <div><a class="btn small primary" href="#/config/firebase">Set up Firebase</a></div>
           </div>
         </div>
@@ -4456,14 +4513,18 @@ pages.delivery = async (args, query) => {
         <div class="meta"><span class="mono">${esc(r.branch)}</span> · ${esc(r.name)} · ${esc(when(r.created))}</div></a><div class="side"><span class="pill ${esc(r.tone)}">${esc(r.outcome.replace("_", " "))}</span>${r.can_rerun ? `<button type="button" class="btn small" data-rerun="${r.id}">Re-run failed</button>` : ""}</div></div>`).join("") || `<div class="empty">No pipeline runs yet.</div>`}</div>`
         : `<div class="empty">Pipeline status comes from GitHub Actions. Sign in with the GitHub CLI (<code>gh auth login</code>) and push this repository to GitHub to see it here.</div>`}</section>`;
 
-  const buildsCard = testers.builds && testers.builds.length ? `<section class="card"><div class="card-h"><h2>Recent tester builds</h2><span class="count">${testers.builds.length}</span></div>
+  const previewsCard = web?.previews.length ? `<section class="card"><div class="card-h"><h2>Recent previews</h2><span class="count">${web.previews.length}</span></div>
+      <div class="list">${web.previews.map((p) => `<div class="item"><div class="main-col"><div class="title"><span class="mono">${esc(p.branch)}</span> · ${esc(p.subject || p.commit || "")}</div>
+        <div class="meta">${esc(p.commit || "")} · published ${esc(ago(p.at))}${p.expires ? ` · expires ${esc(new Date(p.expires).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}` : ""}</div></div>
+        <div class="side"><a class="btn small ghost" href="${esc(p.url)}" target="_blank" rel="noopener">Open ↗</a></div></div>`).join("")}</div></section>` : "";
+  const buildsCard = web ? previewsCard : testers.builds && testers.builds.length ? `<section class="card"><div class="card-h"><h2>Recent tester builds</h2><span class="count">${testers.builds.length}</span></div>
       <div class="list">${testers.builds.map((b) => `<div class="item"><div class="main-col"><div class="title">${esc(b.version || "?")}${b.build ? ` (${esc(b.build)})` : ""}${b.title ? ` · ${esc(b.title)}` : ""}</div>
         <div class="meta">${esc(ago(b.delivered))} · <span class="mono">${esc(b.branch)}</span>${b.recipients ? ` · to ${esc(b.recipients)}` : ""}</div></div>
         ${b.job_id ? `<div class="side"><a class="btn small" href="#/jobs/${encodeURIComponent(b.job_id)}">Job</a></div>` : ""}</div>`).join("")}</div></section>` : "";
 
   return {
     title: "App delivery",
-    sub: "Launch test builds on devices and monitor pipelines.",
+    sub: web ? "Publish preview links and track releases." : "Launch test builds on devices and monitor pipelines.",
     html: `${branchCard}${releaseCard}${buildsCard}${pipelineCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
@@ -4472,6 +4533,8 @@ pages.delivery = async (args, query) => {
           location.hash = `#/delivery?branch=${encodeURIComponent(branchSelect.value)}`;
         });
       }
+
+      view.querySelector("#web-preview-btn")?.addEventListener("click", () => runAction("web_preview", { branch: selected_branch }));
 
       const form = view.querySelector("#delivery-build-form");
       if (form) {
@@ -5778,7 +5841,7 @@ pages.product = async (_, query) => {
       <div class="side"><button type="button" class="btn small ghost" data-prd-diff="${esc(v.id)}">See changes</button>${i === 0 ? "" : `<button type="button" class="btn small" data-prd-restore="${esc(v.id)}">Restore</button>`}</div></div>`).join("");
   const prdFilled = () => (p.sections || []).some((x) => x.filled);
   const render = () => `
-      <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2></div>
+      <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2>${prdStatusPill(p.sections || [])}</div>
         <div class="card-b stack">
           <div class="row gap-12 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">Draft with AI</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
           <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div>
@@ -6536,7 +6599,7 @@ function epicsSection(initial, { onPrdChanged }) {
     const j = ov.jira || {};
     if (!j.connected) return `<section class="card mb-16"><div class="card-h"><h2>Jira</h2></div><div class="card-b stack">
       <span class="muted">Connect Jira to create these epics there, or to bring epics you already have in Jira in as jobs.</span>
-      <div class="row"><a class="btn" href="#/connections?card=jira">Connect Jira</a></div></div></section>`;
+      <div class="row"><a class="btn" href="#/connections?connect=jira">Connect Jira</a></div></div></section>`;
     if (!owner) return `<section class="card mb-16"><div class="card-h"><h2>Jira</h2></div><div class="card-b"><span class="muted">Connected to ${esc(j.site)}. The owner of this computer sends and imports epics.</span></div></section>`;
     const body = !j.project
       ? `<form class="row gap-12 end wrap" id="epic-jira-project"><label class="field"><span>Jira project key</span><input name="project" placeholder="ABC" maxlength="10" autocomplete="off" required></label>
@@ -8260,7 +8323,22 @@ const RECOMMENDED_MCPS = [
   },
 ];
 
-function renderRecommendedInstalls() {
+// Which AI tools on this computer have each recommended MCP server: a tick where it's there, Install where it isn't.
+function mcpGridHtml(mcp, owner) {
+  if (!mcp?.tools?.length) return "";
+  const info = Object.fromEntries(RECOMMENDED_MCPS.map((m) => [m.id, m]));
+  const cell = (srv, t) => srv.installed[t.id]
+    ? `<td class="mcp-yes" title="${esc(t.name)} has ${esc(srv.id)}"><span aria-label="Installed">✓</span></td>`
+    : `<td>${srv.installable && owner ? `<button type="button" class="btn small go" data-mcp-install="${esc(srv.id)}" data-mcp-tool="${esc(t.id)}" aria-label="Install ${esc(srv.id)} in ${esc(t.name)}">Install</button>` : `<span class="muted" aria-label="Not installed">–</span>`}</td>`;
+  return `<div class="mcp-grid-wrap"><table class="mcp-grid">
+    <thead><tr><th scope="col">Server</th>${mcp.tools.map((t) => `<th scope="col">${esc(t.name)}</th>`).join("")}</tr></thead>
+    <tbody>${mcp.servers.map((srv) => { const m = info[srv.id] || {};
+      return `<tr><th scope="row"><span class="mcp-name">${m.icon || ""}${esc(m.name || srv.id)}</span><small class="muted">${esc(m.badge || "")}</small></th>${mcp.tools.map((t) => cell(srv, t)).join("")}</tr>`; }).join("")}</tbody>
+  </table></div>
+  <p class="muted t-secondary">Install adds it for your user, in every project. Servers marked – have a setup step of their own; their command is on the card below.</p>`;
+}
+
+function renderRecommendedInstalls(mcp = null, owner = true) {
   return `<div class="stack" id="recommended-installs" aria-label="Recommended installs">
     <section class="connections-section" id="connections-mobile" aria-labelledby="connections-mobile-title">
       <h2 class="connections-section-title" id="connections-mobile-title">Mobile portals</h2>
@@ -8304,8 +8382,9 @@ function renderRecommendedInstalls() {
         </div>
       </div>
 
+      ${mcpGridHtml(mcp, owner)}
       <div class="conn-grid">
-        ${RECOMMENDED_MCPS.map((m) => `
+        ${RECOMMENDED_MCPS.filter((m) => !mcp?.tools?.length || !mcp.servers.find((x) => x.id === m.id)?.installable).map((m) => `
           <section class="card conn-card" data-rec-mcp="${esc(m.id)}">
             <div class="card-b stack">
               <div class="row align-center">
@@ -8332,8 +8411,16 @@ pages.connections = async (_, query) => {
     return { title: "Connections", html: `<div class="notice">Connections aren't available yet. They're part of an update that hasn't reached your Orchestrator. Everything else works as usual. Check back soon.</div>` };
   }
   const owner = state.you?.role !== "member";
-  const hook = owner ? (await api("config").catch(() => null))?.webhook : null;
+  const config = owner ? await api("config").catch(() => null) : null;
+  const hook = config?.webhook;
+  // Status for the Alerts and Git cards, like the plugins': is anything set up, and where.
+  const alertsOn = Boolean(hook?.set) || Boolean(config?.email?.recipients?.length);
+  const alertsPill = !config ? "" : hook?.set && hook.paused ? pill("attention", "Paused") : alertsOn ? pill("done", "Connected") : pill("", "Not connected");
+  const pj = state.project || {};
+  const gitPill = pj.source_type === "github" ? pill("done", "GitHub") : pj.source_type === "git" ? pill("done", pj.source_label || "Connected")
+    : pill("", "This computer only");
   const analyticsData = await api("analytics").catch(() => null);
+  const mcpData = await api("mcp/status").catch(() => null);
   const pluginGroups = [
     { id: "design", name: "Design", providers: ["figma"] },
     { id: "planning", name: "Planning / tracking", providers: ["jira", "trello"] },
@@ -8384,8 +8471,8 @@ pages.connections = async (_, query) => {
         <h2 class="connections-section-title" id="connections-alerts-title">Alerts / notifications</h2>
         <div class="conn-grid">
           <section class="card conn-card"><div class="card-b stack">
-            <strong class="conn-name">Slack, email, this device and your Mac</strong>
-            <p class="muted">${hook?.set ? `Slack is connected${hook.paused ? " but paused" : ""}. ` : ""}Where updates reach you is set in one place.</p>
+            <div class="row"><strong class="conn-name">Slack, email, this device and your Mac</strong>${alertsPill}</div>
+            <p class="muted">${hook?.set ? `Slack is connected${hook.paused ? " but paused" : ""}. ` : ""}${config?.email?.recipients?.length ? `Email goes to ${plural(config.email.recipients.length, "address", "addresses")}. ` : ""}Where updates reach you is set in one place.</p>
             <div><a class="btn small primary" href="#/config/alerts">Open Alerts settings</a></div>
           </div></section>
         </div>
@@ -8393,7 +8480,7 @@ pages.connections = async (_, query) => {
       <section class="connections-section" id="connections-git" aria-labelledby="connections-git-title">
         <h2 class="connections-section-title" id="connections-git-title">Git</h2>
         <div class="conn-grid"><section class="card conn-card"><div class="card-b stack">
-          <strong class="conn-name">Repository &amp; branches</strong>
+          <div class="row"><strong class="conn-name">Repository &amp; branches</strong>${gitPill}</div>
           <p class="muted">Switch branches, sync commits, and review uncommitted changes.</p>
           ${state.project?.branch ? `<div class="mono conn-summary">Current branch: ${esc(state.project.branch)}</div>` : ""}
           <div><a class="btn small primary" href="#/git">Open Git setup</a></div>
@@ -8409,7 +8496,7 @@ pages.connections = async (_, query) => {
         </div>
       </section>`}</div>
       </section>
-      ${renderRecommendedInstalls()}
+      ${renderRecommendedInstalls(mcpData, owner)}
     </div>`,
     after: () => {
       ConfigurationPages.applyRole(state.you?.role || "owner", view);
@@ -8419,6 +8506,17 @@ pages.connections = async (_, query) => {
         view.querySelector(`#connections-${section}`)?.scrollIntoView({ block: "start" });
       }
       const onClick = async (ev) => {
+        const install = ev.target.closest("[data-mcp-install]");
+        if (install) {
+          const idle = install.innerHTML;
+          install.disabled = true; install.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Installing…`;
+          try {
+            await api("mcp/install", { method: "POST", body: { server: install.dataset.mcpInstall, tool: install.dataset.mcpTool } });
+            toast(`${install.dataset.mcpInstall} added`);
+            route();
+          } catch (e) { toast(e.message, true); install.disabled = false; install.innerHTML = idle; }
+          return;
+        }
         const connect = ev.target.closest("[data-conn-connect]"), disc = ev.target.closest("[data-conn-disconnect]");
         if (disc) {
           const p = list.find((x) => x.id === disc.dataset.connDisconnect);
@@ -8441,7 +8539,8 @@ pages.connections = async (_, query) => {
           const trelloOptionA = p.id === "trello" ? `
             <div class="card stack mb-16 conn-auth-box">
               <strong>Option A: Log in &amp; authorize with Trello</strong>
-              <p class="muted">Enter your API key below from <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up Admin ↗</a>, then click to sign in and approve in your browser with 1 click:</p>
+              ${p.authorize_key ? `<p class="muted">Sign in and approve in your browser.</p>`
+                : `<p class="muted">Trello signs you in through an app, so it needs an API key first: copy it from <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up Admin ↗</a> (make a Power-Up there if you have none), paste it in <strong>API key</strong> below, then log in. You won't need a token.</p>`}
               <div><button type="button" class="btn small primary" id="trello-dialog-quick-btn">Log in &amp; authorize with Trello ↗</button></div>
             </div>
             <div class="conn-auth-divider mb-8"><strong>Option B: Enter key &amp; token manually (backup)</strong></div>` : "";
@@ -8496,11 +8595,7 @@ pages.connections = async (_, query) => {
               const cid = (idInput?.value || p.authorize_key || "").trim();
               quickFigma.disabled = !cid;
             }
-            if (quickTrello) {
-              const keyInput = dialogBody?.querySelector("input[name='key']");
-              const k = (keyInput?.value || p.authorize_key || "").trim();
-              quickTrello.disabled = !k;
-            }
+            // The Trello button stays clickable: without a key it says what's missing and goes to the field.
           };
 
           updateDialogConnectState();
@@ -8524,7 +8619,7 @@ pages.connections = async (_, query) => {
               const keyInput = $("#dialog-body input[name='key']");
               const k = (keyInput?.value || p.authorize_key || "").trim();
               if (!k) {
-                toast("Enter your API key below first, then click Log in & authorize", true);
+                toast("Paste your Trello API key in the API key field first.", "warning");
                 keyInput?.focus();
                 return;
               }
@@ -9070,6 +9165,7 @@ pages.projects = async () => {
       <div class="project-card-header">
         <h4 class="project-card-title">${esc(p.name)}</h4>
         <div class="project-card-badges">
+          ${kindPill(p.kind)}
           ${p.active ? '<span class="pill-badge active-badge">Active</span>' : ""}
           ${renderSourceBadge(p)}
           ${p.configured ? "" : '<span class="pill-badge muted-badge" title="No .orchestrator/project.json yet">Not set up</span>'}
@@ -9089,7 +9185,7 @@ pages.projects = async () => {
         ${p.active ? `
           <a class="btn small" href="#/">Open</a>
         ` : `
-          <button class="btn small primary" type="button" data-switch-project="${esc(p.root)}" data-then="#/">Switch & Open</button>
+          <button class="btn small primary" type="button" data-switch-project="${esc(p.root)}" data-then="#/">Switch</button>
           ${state.you?.role !== "member" ? `<button class="btn small ghost" type="button" data-forget-project="${esc(p.root)}" title="Remove from list">Forget</button>` : ""}
         `}
       </div>
@@ -9102,7 +9198,6 @@ pages.projects = async () => {
     actions: state.you?.role !== "member" ? `
       <div class="projects-actions">
         <a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg><span>Start a new project</span></a>
-        <a class="btn" href="#/import-project"><svg class="icon"><use href="#i-folder"/></svg><span>Import existing project</span></a>
         <button class="btn" id="add-project-btn"><svg class="icon"><use href="#i-folder"/></svg><span>Add existing project</span></button>
       </div>` : "",
     html: `
@@ -9145,6 +9240,7 @@ pages.projects = async () => {
       if (addBtn) {
         addBtn.addEventListener("click", async () => {
           const result = await addProjectsDialog(pList);
+          if (result.importPath) { location.hash = `#/import-project?path=${encodeURIComponent(result.importPath)}`; return; }
           if (!result.changed) return;
           await refreshState();
           if (result.switched) location.hash = "#/";
@@ -9157,10 +9253,10 @@ pages.projects = async () => {
 
 // ---------------------------------------------------------------- import project page
 
-pages["import-project"] = async () => {
+pages["import-project"] = async (_, query) => {
   let info = null;
   let step = "enter-path";
-  let path = "";
+  let path = query?.get("path") || ""; // from Add existing project: a folder that isn't set up yet
 
   const detectStack = async (rootPath) => {
     if (!rootPath) return null;
@@ -9172,9 +9268,14 @@ pages["import-project"] = async () => {
     }
   };
 
+  if (path) {
+    info = await detectStack(path);
+    if (info) step = "confirm";
+  }
+
   const renderEnterPath = () => {
     return {
-      title: "Import an existing project",
+      title: "Set up an existing project",
       sub: "Point at a folder on this computer. Orchestrator detects the project type, writes configuration and starter grounding docs, and can draft a product brief from the code.",
       html: `
         <div class="card card-b stack">
@@ -9222,8 +9323,8 @@ pages["import-project"] = async () => {
     const draftChecked = $("#ip-draft-prd")?.checked ?? true;
 
     return {
-      title: "Import an existing project",
-      sub: `Importing: ${esc(info?.display_name || "Unknown stack")}`,
+      title: "Set up an existing project",
+      sub: `Setting up: ${esc(info?.display_name || "Unknown stack")}`,
       html: `
         <div class="card card-b stack">
           <div class="row gap-8"><span class="pill ${info?.uses_xcode ? "attention" : "done"}">${esc(info?.display_name || "?")}</span></div>
@@ -9667,11 +9768,15 @@ function runFailureGuidance(r) {
     const fixParams = {
       type: "bug",
       summary: "Fix failing tests",
-      spec: err ? `Fix failing tests encountered during test run:\n${err.slice(0, 1500)}` : "Diagnose test failures from the test runner output and make all test suites pass."
+      spec: r.result?.details?.length ? `Fix the failing tests:\n${r.result.details.map((d) => `- ${d}`).join("\n")}${err ? `\n\nRunner output:\n${err.slice(0, 1200)}` : ""}`
+        : err ? `Fix failing tests encountered during test run:\n${err.slice(0, 1500)}` : "Diagnose test failures from the test runner output and make all test suites pass."
     };
     return {
-      title: "Test suite execution failed",
-      detail: err ? `One or more tests in the suite failed: ${err.slice(0, 300)}. Let AI diagnose and fix them, or inspect test suites.` : "One or more tests in the suite failed. Let AI automatically diagnose the failure log and repair the tests, or inspect your test suites.",
+      fromResult: Boolean(r.result?.details?.length),
+      // Which tests failed and why, from the output, so the summary on top says it without opening the log.
+      title: r.result?.tone === "bad" && /tests? failed$/.test(r.result.headline || "") ? r.result.headline : "Test suite execution failed",
+      detail: r.result?.details?.length ? r.result.details.join(" · ")
+        : err ? `One or more tests in the suite failed: ${err.slice(0, 300)}.` : "One or more tests in the suite failed. The output below shows which.",
       action: `<button type="button" class="btn small primary" ${act("new_job", fixParams)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fix tests with AI</button>`,
       secondary: `<a class="btn small" href="#/tests?show=suites" data-show-suites>View test suites</a>`,
     };
@@ -9994,12 +10099,12 @@ function runStatus(r, vc = null) {
 
   const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;
   const jobItem = targetJob
-    ? `<div><dt>Job</dt><dd><a href="#/jobs/${encodeURIComponent(targetJob)}">${esc(targetJob)}</a></dd></div>`
+    ? `<div><dt>Job</dt><dd><a href="#/jobs/${encodeURIComponent(targetJob)}">${esc((targetJob === r.job && r.job_title) || targetJob)}</a></dd></div>` // its title, not an ID like "job-1"
     : "";
   const showAction = Boolean(actionName && (!headlineLabel || actionName.toLowerCase() !== headlineLabel.toLowerCase()) && (!p.label || actionName.toLowerCase() !== p.label.toLowerCase()));
   const actionItem = showAction ? `<div><dt>Action</dt><dd>${esc(actionName)}</dd></div>` : "";
   const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
-  const showFound = Boolean(found && (done || !guidance || found.details?.length)); // a failure with guidance and nothing more to add would only repeat it
+  const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
   const foundBlock = showFound ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
       <strong>${esc(found.headline)}</strong>${found.details?.length ? `<ul>${found.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}</div>` : "";
   const resultText = showFound ? "" : done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
@@ -10021,7 +10126,7 @@ function runStatus(r, vc = null) {
     : "";
   const slow = calls.find((c) => c.age >= 120);
   const slowHint = slow
-    ? `No answer from ${slow.model} yet (${ageText(slow.age)}). Reasoning models often take 5 to 10 minutes before they answer${slow.timeout ? `; after ${Math.round(slow.timeout / 60)} minutes it gives up and tries the next model` : ""}. The run is still going.`
+    ? `No answer from ${slow.model} yet (${ageText(slow.age)}). Reasoning models often take 5 to 10 minutes${slow.timeout ? `. It moves on to the next model after ${Math.round(slow.timeout / 60)} minutes with no output, or ${Math.round(slow.timeout * 3 / 60)} minutes in all` : ""}.`
     : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";

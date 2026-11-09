@@ -144,6 +144,39 @@ def worker_check(lines: list[str], code: int | None) -> dict[str, Any] | None:
 
 # ---- tests and coverage
 
+def failed_tests(lines: list[str], limit: int = 5) -> list[str]:
+    """The failed tests, as "name: short reason" where the output gives one (unittest, pytest, XCTest, Swift Testing, Jest)."""
+    out: dict[str, str] = {}
+    plain_lines = [plain(l) for l in lines]
+    for i, line in enumerate(plain_lines):
+        name = reason = ""
+        if m := re.match(r"^(?:FAIL|ERROR): (\w+) \(", line):  # unittest; the reason is the last line of its traceback
+            name = m.group(1)
+            for nxt in plain_lines[i + 1:i + 40]:
+                if nxt.startswith(("FAIL:", "ERROR:", "=====")) and nxt != line:
+                    if nxt.startswith("====="):
+                        continue
+                    break
+                if re.match(r"^\w*(?:Error|Exception)\b", nxt):
+                    reason = nxt
+                    break
+        elif m := re.match(r"^FAILED \S*::(\S+)(?: - (.*))?", line):  # pytest
+            name, reason = m.group(1), m.group(2) or ""
+        elif m := re.search(r"error: -\[\S+ (\w+)\] : (.*)", line):  # XCTest assertion
+            name, reason = m.group(1), m.group(2)
+        elif m := re.search(r"Test Case '-\[\S+ (\w+)\]' failed", line):  # XCTest summary line
+            name = m.group(1)
+        elif m := re.match(r"^[✘✖] Test (\S+?)(?:\(\))? (?:recorded an issue.*?: |failed)(.*)", line):  # Swift Testing
+            name, reason = m.group(1), m.group(2)
+        elif m := re.match(r"^● (.+? › .+)$", line):  # Jest
+            name = m.group(1)
+        elif m := re.match(r"^(?:FAIL|ERROR|❌)[:\s]+(.+)", line):  # anything else that says which test
+            name = m.group(1)
+        if name and (name not in out or (reason and not out[name])):
+            out[name] = reason.strip()
+    return [f"{n}: {r}"[:140] if r else n[:140] for n, r in list(out.items())[:limit]]
+
+
 def tests(lines: list[str], code: int | None) -> dict[str, Any] | None:
     text = "\n".join(lines)
     passed = failed = None
@@ -171,8 +204,7 @@ def tests(lines: list[str], code: int | None) -> dict[str, Any] | None:
         return None
     total = passed + failed
     if failed:
-        names = [re.sub(r"^(?:FAIL|ERROR)[:\s]+", "", plain(l)) for l in lines if re.match(r"^(?:FAIL|ERROR|✘|✖|❌)[:\s]", l)][:5]
-        return _result(f"{failed} of {_plural(total, 'test')} failed", names, "bad")
+        return _result(f"{failed} of {_plural(total, 'test')} failed", failed_tests(lines), "bad")
     return _result(f"{_plural(total, 'test')} passed" if total else "No tests ran", [], "ok" if total else "warn")
 
 

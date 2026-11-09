@@ -148,9 +148,9 @@ class ConnectionUIBehaviorTests(unittest.TestCase):
         # Modal dialog connect state validator disables submit until manual fields are valid
         self.assertIn("updateDialogConnectState", self.app_js)
         self.assertIn("okBtn.disabled = !manualValid;", self.app_js)
-        # Figma and Trello quick OAuth buttons in dialog are disabled without client id / key
+        # Figma's quick button is disabled without a client id. Trello's stays clickable and explains the API key it needs.
         self.assertIn("quickFigma.disabled = !cid;", self.app_js)
-        self.assertIn("quickTrello.disabled = !k;", self.app_js)
+        self.assertIn('toast("Paste your Trello API key in the API key field first.", "warning");', self.app_js)
 
     def test_job_type_buttons_dimmed_by_about_25_percent_on_select(self):
         self.assertIn(".job-type-card:has(input:checked)::before {\n  opacity: 0.62;", self.style_css)

@@ -703,7 +703,7 @@ class ProjectTitleTests(unittest.TestCase):
         self.assertNotIn("project-select-inline", js + css)
         status = js[js.index("function statusLine"):][:1600]
         self.assertIn('<span class="status-branch"><span class="label">Branch</span>', status)
-        header = js[js.index("function setHeader"):][:600]
+        header = js[js.index("function setHeader"):][:900]
         self.assertIn("heading.dataset.title = title", header)  # the tab title stays the name
         self.assertIn('$("#page-title")?.dataset.title', js)
 
@@ -714,7 +714,7 @@ class ProjectTitleTests(unittest.TestCase):
         self.assertIn('<span class="mobile-title" id="mobile-title"></span>', header)
         self.assertIn('role="img" aria-label="Orchestrator"', html)  # brand mark kept in hamburger side menu
         self.assertNotIn("<span>Orchestrator</span>", html)
-        self.assertIn('mobileTitle.textContent = state.project?.name', js)
+        self.assertIn('mobileTitle.innerHTML = `${esc(state.project?.name || "")}${kindPill(state.project?.kind)}`', js)  # with its Web/Desktop/Mobile label
         self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
         self.assertIn('body[data-page="home"] #page-title { display: none; }', css)  # not said twice on phones
 
@@ -4646,10 +4646,10 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("setupFetched = 0;", js)
         self.assertIn("if (res?.project) state.project = res.project;", js)
 
-        # Projects page cards have data-then="#/" and Switch & Open button for inactive projects
+        # Projects page cards have data-then="#/" and a Switch button for inactive projects
         projects = js[js.index('pages.projects = async'):js.index('pages.run = async')]
         self.assertIn('data-switch-project="${esc(p.root)}" data-then="#/"', projects)
-        self.assertIn("Switch & Open", projects)
+        self.assertIn('data-then="#/">Switch</button>', projects)
 
     def test_signing_in_shows_a_loading_screen_and_background_refreshes_leave_it_alone(self):
         js = self.js
@@ -5041,7 +5041,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         page = self.js[self.js.index("function epicsSection("):self.js.index("pages.devlogs = async")]
         for part in ('api("epics/breakdown"', 'api("epics/decide"', 'api("epics/jira")', 'api("epics/jira/send"', 'api("epics/jira/import"',
                      'api("epics/jira/project"', "FeaturePlan.renderSuggested", "FeaturePlan.renderApproved", "FeaturePlan.renderDeclined",
-                     "FeaturePlan.renderJiraImport", "dataset.needs", 'method: "DELETE"', "#/connections?card=jira"):
+                     "FeaturePlan.renderJiraImport", "dataset.needs", 'method: "DELETE"', "#/connections?connect=jira"):
             self.assertIn(part, page, part)
         self.assertIn("if (start && ov.prd_filled && !ov.epics.length) breakDown()", page)
         self.assertIn('api("epics/answers"', page)
@@ -7979,7 +7979,8 @@ class MenuParityTests(unittest.TestCase):
         self.assertIn('badge.hidden = !s || !remaining;', app := (self.STATIC / "app.js").read_text())
         app = (self.STATIC / "app.js").read_text()
         connections = app[app.index("pages.connections = async"):]
-        self.assertIn('const hook = owner ? (await api("config").catch(() => null))?.webhook : null;', connections)  # owners only
+        self.assertIn('const config = owner ? await api("config").catch(() => null) : null;', connections)  # owners only
+        self.assertIn("const hook = config?.webhook;", connections)
         self.assertIn("data-owner-only", (self.STATIC / "configuration.js").read_text().split("function chatCard")[1][:200])
 
 
@@ -8289,3 +8290,38 @@ assert(g8.secondary.includes("gh auth login --web"));
 
 
 
+
+
+class DistributionReadinessTests(unittest.TestCase):
+    """The Test Build card and the Tester build setup page show the same readiness, with what's missing."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_project_that_is_not_a_phone_app_says_so(self):
+        gaps = ui.distribution_gaps(self.root, {})
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("isn't a phone app", gaps[0])
+
+    def test_a_phone_app_lists_what_is_missing_and_is_ready_when_nothing_is(self):
+        (self.root / "App.xcodeproj").mkdir()
+        with patch.object(ui.shutil, "which", return_value=None):
+            gaps = ui.distribution_gaps(self.root, {})
+        self.assertTrue(any("npm install -g firebase-tools" in g for g in gaps))
+        self.assertTrue(any("orchestrator wizard" in g for g in gaps))
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts" / "distribute_ios.sh").write_text("#!/bin/sh\n")
+        with patch.object(ui.shutil, "which", return_value="/usr/local/bin/firebase"):
+            self.assertEqual(ui.distribution_gaps(self.root, {"firebase_distribution": True}), [])
+            # turned on in project.json but the script is gone: not ready
+            (self.root / "scripts" / "distribute_ios.sh").unlink()
+            self.assertEqual(len(ui.distribution_gaps(self.root, {"firebase_distribution": True})), 1)
+
+    def test_both_screens_show_the_gaps(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        self.assertIn("testers.gaps", (static / "app.js").read_text())
+        self.assertIn("fb.gaps.map(", (static / "configuration.js").read_text())
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        self.assertIn('firebase = {"configured": not gaps, "gaps": gaps,', server)
+        self.assertIn('"gaps": distribution_gaps(root, read_json_file(runtime_dir(root) / "project.json")),', server)

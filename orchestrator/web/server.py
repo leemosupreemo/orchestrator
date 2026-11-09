@@ -66,7 +66,7 @@ from orchestrator import analytics
 from orchestrator import delivery as delivery_view
 from orchestrator import releases
 from orchestrator import features as feature_store
-from orchestrator import bug_split, feature_map, kpi_suggest, packages as package_store, run_result, source_control
+from orchestrator import bug_split, feature_map, kpi_suggest, mcp_status, packages as package_store, run_result, source_control
 from orchestrator import epics as epic_store
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -246,6 +246,7 @@ class PtySession:
         self.argv = argv
         self.cwd = cwd
         self.job_id: str | None = None
+        self.job_title = ""  # what the run page names the job by: its title, not an ID like "job-1"
         self.result_job: str | None = None
         self.started = time.time()
         self.last_output = self.started
@@ -440,7 +441,7 @@ class PtySession:
             "command": " ".join(_display_argv(self.argv)), "started": self.started,
             "ended": self.ended, "running": self.running, "exit_code": self.exit_code,
             "stopped": self.stopped,
-            "job": self.job_id, "result_job": self.result_job,
+            "job": self.job_id, "job_title": self.job_title, "result_job": self.result_job,
             # Quiet for a while with a prompt-shaped last line: probably waiting on you.
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
             "last_line": self._last_line(), "error_summary": self._error_summary(), "idle": int(idle), "result": self.result,
@@ -534,8 +535,9 @@ class SessionManager:
         return [s.summary() for s in sorted(sessions, key=lambda s: s.started, reverse=True)]
 
     def running_job_ids(self) -> set[str]:
+        """Jobs with work going on. A side errand such as exporting a job's bundle doesn't make the job busy."""
         with self._lock:
-            return {s.job_id for s in self._sessions.values() if s.running and s.job_id}
+            return {s.job_id for s in self._sessions.values() if s.running and s.job_id and s.action not in SIDE_ACTIONS}
 
     def stop_all(self) -> None:
         with self._lock:
@@ -939,11 +941,102 @@ def gh_cached(root: Path, args: list[str]) -> str | None:
     return out
 
 
+def distribution_gaps(root: Path, config: dict[str, Any]) -> list[str]:
+    """What stops this project sending test builds, in plain words; empty when it is ready. The Test Build card and the
+    Tester build setup page both show this, so they never disagree."""
+    if not is_mobile_app(root, config):
+        return ["This project isn't a phone app, so there are no test builds to send."]
+    gaps = []
+    if shutil.which("firebase") is None:
+        gaps.append("Install the Firebase CLI: npm install -g firebase-tools")
+    script = config.get("distribution_script_path") or "scripts/distribute_ios.sh"
+    if not config.get("firebase_distribution") or not (root / script).is_file():
+        gaps.append("Turn on Firebase delivery: run orchestrator wizard on this computer. It adds the build script and signing settings.")
+    return gaps
+
+
+def is_web_app(root: Path, config: dict[str, Any]) -> bool:
+    """A website or web app (not a phone app): what App delivery previews on a link instead of sending to devices."""
+    if is_mobile_app(root, config):
+        return False
+    try:
+        hosting = bool(json.loads((root / "firebase.json").read_text(encoding="utf-8")).get("hosting"))
+    except (OSError, ValueError, AttributeError):
+        hosting = False
+    return hosting or (root / "package.json").is_file() or (root / "index.html").is_file()
+
+
+PROJECT_KINDS = ("web", "desktop", "mobile")
+
+
+def project_kind(root: Path, config: dict[str, Any]) -> str:
+    """"web", "desktop" or "mobile" (or "" when it can't tell), shown as the project's label. `project_kind` in
+    project.json wins; otherwise it's read from the project: the platform an Xcode project builds for, Android folders,
+    Electron/Tauri or React Native in package.json, Package.swift's platforms, then any website setup."""
+    chosen = str(config.get("project_kind") or "").lower()
+    if chosen in PROJECT_KINDS:
+        return chosen
+    try:
+        sdks: set[str] = set()
+        for pbx in list(root.glob("*.xcodeproj/project.pbxproj"))[:3]:
+            sdks |= set(re.findall(r"SDKROOT = (\w+);", pbx.read_text(encoding="utf-8", errors="ignore")))
+        if sdks & {"iphoneos", "appletvos", "watchos", "xros"}:
+            return "mobile"
+        if "macosx" in sdks:
+            return "desktop"
+        if (root / "android").is_dir() or (root / "app" / "src" / "main" / "AndroidManifest.xml").is_file() or (root / "ios").is_dir():
+            return "mobile"
+        if (root / "src-tauri").is_dir():
+            return "desktop"
+        try:
+            package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+            deps = {**(package.get("dependencies") or {}), **(package.get("devDependencies") or {})}
+        except (OSError, ValueError, AttributeError):
+            deps = {}
+        if "electron" in deps or "@tauri-apps/api" in deps:
+            return "desktop"
+        if "react-native" in deps or "expo" in deps:
+            return "mobile"
+        swift = (root / "Package.swift").read_text(encoding="utf-8", errors="ignore") if (root / "Package.swift").is_file() else ""
+        if ".iOS" in swift:
+            return "mobile"
+        if ".macOS" in swift:
+            return "desktop"
+    except OSError:
+        pass
+    if is_mobile_app(root, config):
+        return "mobile"
+    return "web" if is_web_app(root, config) else ""
+
+
+def web_preview_gaps(root: Path, config: dict[str, Any]) -> list[str]:
+    """What stops publishing a preview link, in plain words; empty when ready."""
+    from orchestrator.scripts.web_preview import firebase_project, has_hosting
+    gaps = []
+    if shutil.which("firebase") is None:
+        gaps.append("Install the Firebase CLI: npm install -g firebase-tools, then sign in with firebase login")
+    if not has_hosting(root) or not firebase_project(root, config):
+        gaps.append("Set up Firebase Hosting: run firebase init hosting in the project folder.")
+    return gaps
+
+
+def web_previews(root: Path) -> list[dict[str, Any]]:
+    """Published preview links, newest first."""
+    folder = runtime_dir(root) / "output" / "previews"
+    out = []
+    for path in folder.glob("*.json") if folder.is_dir() else []:
+        data = read_json_file(path)
+        if isinstance(data, dict) and data.get("url"):
+            out.append({k: data.get(k) for k in ("branch", "commit", "subject", "url", "expires", "at")})
+    return sorted(out, key=lambda p: p.get("at") or 0, reverse=True)
+
+
 def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     settings = read_settings(root)
     config = read_json_file(runtime_dir(root) / "project.json")
     jobs = list_jobs(root)
-    firebase = {"configured": bool(config.get("firebase_distribution")), "app_id_set": bool(settings.get("firebase_app_id")),
+    gaps = distribution_gaps(root, config)
+    firebase = {"configured": not gaps, "gaps": gaps, "app_id_set": bool(settings.get("firebase_app_id")),
                 "groups": [g.strip() for g in str(settings.get("firebase_tester_groups", "")).split(",") if g.strip()],
                 "invite_url": settings.get("firebase_invite_url", ""),
                 "cli_installed": shutil.which("firebase") is not None}
@@ -951,6 +1044,8 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     data = delivery_view.overview(lambda *a: git(root, *a), lambda argv: gh_cached(root, argv), runtime_dir(root),
                                   base_branch(root, settings), jobs, firebase, ci)
     data["web_url"] = repo_web_url(root)
+    if is_web_app(root, config):
+        data["web"] = {"gaps": web_preview_gaps(root, config), "previews": web_previews(root)}
 
     all_branches = [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200]
     current_git_branch = git(root, "branch", "--show-current") or base_branch(root, settings)
@@ -2527,6 +2622,7 @@ def project_state(root: Path) -> dict[str, Any]:
                 "source_label": root_source_label,
                 "github_repo": root_github_repo,
                 "languages": root_languages,
+                "kind": project_kind(root, config),
             })
         else:
             s_type = p.get("source_type")
@@ -2542,6 +2638,7 @@ def project_state(root: Path) -> dict[str, Any]:
                 "source_label": s_label or "Local",
                 "github_repo": g_repo,
                 "languages": [],
+                "kind": project_kind(p_r, _safe_read_json_file(runtime_dir(p_r) / "project.json", timeout=0.2)) if p_r and p_r.is_dir() else "",
             })
 
     return {
@@ -2557,6 +2654,8 @@ def project_state(root: Path) -> dict[str, Any]:
         "firebase_distribution": bool(config.get("firebase_distribution")),
         "remote_logs": bool(config.get("remote_logs")),
         "mobile_app": is_mobile_app(root, config),
+        "web_app": is_web_app(root, config),
+        "kind": project_kind(root, config),
         "configured": bool(config),
         "source_type": root_source_type,
         "source_label": root_source_label,
@@ -2644,6 +2743,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             "source_label": source_label,
             "github_repo": github_repo,
             "languages": p_languages,
+            "kind": project_kind(p_resolved, p_config or {}),
         })
 
 
@@ -2677,6 +2777,7 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
             "source_label": active_source_label,
             "github_repo": active_github_repo,
             "languages": active_languages,
+            "kind": project_kind(active_resolved, p_config or {}),
         })
     return results
 
@@ -3030,6 +3131,13 @@ def build_logs_pull(params: dict[str, Any], root: Path) -> list[str]:
 def build_logs_tail(params: dict[str, Any], root: Path) -> list[str]:
     session = _session_id(params)
     return orchestrator_argv("logs", "tail", *(["--session", session] if session else []))
+
+
+def build_web_preview(params: dict[str, Any], root: Path) -> list[str]:
+    branch = _text(params, "branch", required=True, limit=200)
+    if branch.startswith("-"):
+        raise UIError("That isn't a branch name.")
+    return orchestrator_argv("script", "web_preview.py", "--branch", branch, "--root", str(root))
 
 
 def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
@@ -3530,6 +3638,7 @@ def config_state(root: Path) -> dict[str, Any]:
             "service_account_path": settings.get("firebase_service_account_path", ""),
             "invite_url": settings.get("firebase_invite_url", ""),
             "cli_installed": shutil.which("firebase") is not None,
+            "gaps": distribution_gaps(root, read_json_file(runtime_dir(root) / "project.json")),
         },
         "xcode_cloud": {
             "configured": (root / "ci_scripts").is_dir() or (root / ".xcodecloud").exists(),
@@ -4354,6 +4463,9 @@ def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
 # clearly labelled escape hatch in the sidebar).
 TERMINAL_ACTIONS = {"console", "wizard", "config_menu"}
 
+# Runs that are about a job but aren't work on it: they don't show the job as Working.
+SIDE_ACTIONS = frozenset({"export_job"})
+
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
     "check": Action("Setup check", lambda p, r: orchestrator_argv("check")),
@@ -4385,6 +4497,8 @@ ACTIONS: dict[str, Action] = {
     "delete_job": Action("Delete job", build_delete_job, fields=["job", "keep_changes"]),
     "complete": Action("Mark complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "complete", _job_path(p, r)),
                        confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from the Archived filter on Home.", fields=["job"]),
+    "web_preview": Action("Publish preview link", build_web_preview, fields=["branch"],
+                          confirm="Builds this branch's latest commit and publishes it on a Firebase preview link that anyone with the link can open. It expires in 7 days."),
     "deliver": Action("Deliver to testers", lambda p, r: orchestrator_argv("script", "deliver_build.py", _job_path(p, r)),
                       confirm="Builds this job's branch and sends a real Firebase release to your testers.", fields=["job"]),
     "build": Action("Build", build_manual("build")),
@@ -6395,6 +6509,17 @@ class UIHandler(BaseHTTPRequestHandler):
             self._require_owner("publish a project")
             body = self._body()
             self._json({"step": publish_known_project(str(body.get("root") or ""), str(body.get("visibility") or "private"))})
+        elif method == "GET" and parts == ["mcp", "status"]:
+            self._json(mcp_status.status(project=root))
+        elif method == "POST" and parts == ["mcp", "install"]:
+            self._require_owner("add MCP servers to AI tools")
+            body = self._body()
+            try:
+                mcp_status.install(str(body.get("server") or ""), str(body.get("tool") or ""))
+            except ValueError as exc:
+                raise UIError(str(exc)) from exc
+            self._audit("mcp_installed", server=str(body.get("server")), tool=str(body.get("tool")))
+            self._json(mcp_status.status(project=root))
         elif method == "GET" and parts == ["integrations"]:
             settings = read_settings(root)
             saved = saved_integrations(root)
@@ -6771,6 +6896,7 @@ class UIHandler(BaseHTTPRequestHandler):
             self._require_owner(f"use {action.title.lower()}")
         argv = action.build(params, root)
         title = action.title
+        job_title = ""
         job_id = str(params.get("job") or "") or None
         if job_id and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
             raise UIError("This job already has a run in progress. Open it from Activity instead.", HTTPStatus.CONFLICT)
@@ -6790,6 +6916,7 @@ class UIHandler(BaseHTTPRequestHandler):
             session = self.server.sessions.start(key, title, argv, root, env,
                                                  runtime_dir(root) / "logs" / "ui", cols=cols, rows=rows)
             session.job_id = job_id
+            session.job_title = job_title if job_id else ""
         self._audit("run_started", action=key, job=job_id)
         return session
 

@@ -4545,6 +4545,26 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 .page-part { margin: var(--space-8) 0 var(--space-4); padding-top: var(--space-6); border-top: 1px solid var(--border); }
 .page-part h2 { margin: 0 0 var(--space-1); font-size: var(--type-section); }
 .page-part p { margin: 0; }
+/* Recommended MCP servers: which AI tool has which (Connections) */
+.mcp-grid-wrap { overflow-x: auto; margin-bottom: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); }
+.mcp-grid { width: 100%; border-collapse: collapse; font-size: var(--type-secondary); }
+.mcp-grid th, .mcp-grid td { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); text-align: center; white-space: nowrap; }
+.mcp-grid thead th { background: var(--panel-2); font-weight: var(--weight-bold); color: var(--muted); }
+.mcp-grid tbody th { text-align: left; font-weight: var(--weight-medium); }
+.mcp-grid tbody th small { display: block; font-weight: var(--weight-regular); }
+.mcp-grid .mcp-name { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--text); }
+.mcp-grid tr:last-child > * { border-bottom: 0; }
+.mcp-grid .mcp-yes { color: var(--ok); font-weight: var(--weight-bold); font-size: var(--type-body); }
+.mcp-grid tbody th, .mcp-grid thead th:first-child { position: sticky; left: 0; z-index: var(--z-raised); background: var(--panel); } /* the server stays in view while the tools scroll */
+.mcp-grid thead th:first-child { background: var(--panel-2); }
+/* Project kind (Web / Desktop / Mobile): a tinted label next to the project's name everywhere it's shown */
+.kind-pill { --kind: var(--accent); display: inline-flex; align-items: center; margin-left: var(--space-2); padding: 1px var(--space-2); border-radius: var(--r-pill);
+  border: 1px solid color-mix(in srgb, var(--kind) 35%, var(--border)); background: color-mix(in srgb, var(--kind) 12%, var(--panel)); color: var(--kind);
+  font-size: var(--type-tag); font-weight: var(--weight-bold); letter-spacing: .02em; text-transform: none; vertical-align: middle; white-space: nowrap; }
+.kind-web { --kind: var(--job-feature); }
+.kind-desktop { --kind: var(--job-quick); }
+.kind-mobile { --kind: var(--job-coverage); }
+.project-card-badges .kind-pill { margin-left: 0; }
 /* "i" info tips (infoTip in app.js): the explanation shows on hover, tap or focus */
 .info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-left: var(--space-1); padding: 0; vertical-align: middle;
   border: 1px solid var(--border); border-radius: 50%; background: var(--panel-2); color: var(--muted); font: italic var(--weight-bold) 11px/1 Georgia, serif; cursor: help; }

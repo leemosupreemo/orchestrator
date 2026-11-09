@@ -658,8 +658,8 @@
         <section class="card configuration-card">
           <div class="card-h"><h2>Firebase distribution settings</h2></div>
           <form class="card-b stack" id="config-firebase-form">
-            <div class="notice ${fb.cli_installed ? "good" : ""}">
-              ${fb.cli_installed ? "✓ Firebase CLI is installed on this system." : "⚠️ Firebase CLI is not installed. Run 'npm install -g firebase-tools' to enable tester releases."}
+            <div class="notice ${(fb.gaps || []).length ? "" : "good"}">
+              ${(fb.gaps || []).length ? `<strong>Not ready to send test builds</strong><ul>${fb.gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("")}</ul>` : "✓ Ready to send test builds."}
             </div>
             <label class="field"><span>Firebase App ID</span><input type="text" name="firebase_app_id" value="${escapeHtml(fb.app_id || "")}" placeholder="1:1234567890:ios:abcdef123456"><small>From Firebase Project Settings &gt; General &gt; Your apps.</small></label>
             <label class="field"><span>Tester Groups</span><input type="text" name="firebase_tester_groups" value="${escapeHtml(fb.tester_groups || "testers")}" placeholder="testers, qa-team"><small>Comma-separated tester group names configured in Firebase Console.</small></label>

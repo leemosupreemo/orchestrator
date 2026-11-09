@@ -79,7 +79,7 @@ class TestsAndCoverage(unittest.TestCase):
         self.assertEqual(rr.summarize("test", "Ran 12 tests in 0.5s\n\nOK\n", 0)["headline"], "12 tests passed")
         out = rr.summarize("test", "FAIL: test_a (x.Y)\nRan 12 tests in 0.5s\n\nFAILED (failures=2, errors=1)\n", 1)
         self.assertEqual((out["headline"], out["tone"]), ("3 of 12 tests failed", "bad"))
-        self.assertEqual(out["details"], ["test_a (x.Y)"])
+        self.assertEqual(out["details"], ["test_a"])  # the name, short; a reason follows when the output gives one
         self.assertEqual(rr.summarize("test", "==== 3 passed, 1 failed in 0.12s ====\n", 1)["headline"], "1 of 4 tests failed")
         self.assertEqual(rr.summarize("test_suite", "==== 5 passed in 0.12s ====\n", 0)["headline"], "5 tests passed")
         self.assertEqual(rr.summarize("test", "Test Suite 'All tests' passed.\n\t Executed 8 tests, with 0 failures (0 unexpected) in 1.2 (1.3) seconds\n", 0)["headline"], "8 tests passed")

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import uuid
@@ -439,6 +441,7 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
     stderr_chunks = []
     last_milestone = "Sending prompt"
 
+    # Its own process group, so stopping a call stops the model tool too, not just the shell that started it.
     process = subprocess.Popen(
         cmd,
         cwd=str(cwd or ROOT),
@@ -446,18 +449,28 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
         executable="/bin/bash",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         env=env,
-        bufsize=1, # Line buffered
+        start_new_session=True,
     )
+
+    def stop_call() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.kill()
 
     sel = selectors.DefaultSelector()
     sel.register(process.stdout, selectors.EVENT_READ)
     sel.register(process.stderr, selectors.EVENT_READ)
+    out_fd, err_fd = process.stdout.fileno(), process.stderr.fileno()
+    decoders = {fd: codecs.getincrementaldecoder("utf-8")(errors="replace") for fd in (out_fd, err_fd)}
+    partial = {out_fd: "", err_fd: ""}
 
     import time
     start_time = time.time()
     last_activity = start_time
+    last_heartbeat = start_time
+    exited_at = None
     is_dev_console = os.environ.get("AI_REQUEST_SOURCE") == "dev_console"
 
     # Initialize stylized progress indicator
@@ -468,43 +481,74 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
         thinking_label = "Thinking: Deep Reasoning model active"
     indicator = ProgressIndicator(label=thinking_label, hint="Ctrl-C to cancel")
     detector = LoopTroubleDetector(start_time=start_time)
+    stderr_noise = [
+        "Ripgrep is not available",
+        "MCP issues detected",
+        "Prompt with name",
+        "Tool with name",
+        "registered. Overwriting",
+        "DeprecationWarning",
+        "AssignCodingAgent",
+        "issue_to_fix_workflow",
+        "exec /bin/zsh",
+        "succeeded in 0ms",
+        "no such file or directory: /Users",
+        "sed -n",
+        "stat -f",
+        "find ai/output",
+        "tokens used",
+        "Received",
+        "chars in",
+        "codex",
+        "connectors are disabled",
+        "conversation \""
+    ]
+
+    def handle_line(line: str, from_stdout: bool) -> None:
+        nonlocal last_milestone
+        line_notices = detector.record_line(line, now=time.time())
+        if line_notices:
+            indicator.clear()
+            for notice in line_notices:
+                print(f"\n{notice}\n", flush=True)
+        if from_stdout:
+            stdout_chunks.append(line)
+            indicator.label = f"Generating ({len(stdout_chunks)} lines received)"
+            if len(stdout_chunks) % 15 == 0:
+                indicator.clear()
+                last_milestone = f"Received {len(stdout_chunks)} lines"
+                print(f"        [progress] received {len(stdout_chunks)} lines of response...", flush=True)
+            return
+        stderr_chunks.append(line)
+        s_line = line.strip()
+        if s_line and not any(n.lower() in s_line.lower() for n in stderr_noise):
+            indicator.clear()
+            print(f"        [stderr] {colorize_diff_line(s_line)}", flush=True)
+            indicator.label = "Thinking (Active stderr)"
+
+    def give_up(reason: str, limit: int) -> None:
+        indicator.clear()
+        stop_call()
+        full_stdout = "".join(stdout_chunks)
+        full_stderr = "".join(stderr_chunks)
+        append_log(f"llm-{model}", (
+            f"PROMPT:\n{prompt}\n\nMODEL: {model}\nCMD: {cmd}\nSESSION_ID: {actual_session_id}\nRETURN CODE: TIMEOUT\n\n"
+            f"STDOUT:\n{full_stdout}\n\nSTDERR:\n{full_stderr}\n"))
+        raise LLMTimeoutError(model=model, timeout=limit, duration=time.time() - start_time, input_chars=prompt_chars,
+                              output_chars=len(full_stdout), last_milestone=f"{reason} (Last: {last_milestone})")
+
+    # Two limits: `timeout` with no output at all, and a hard cap on the whole call (output such as tool chatter on stderr
+    # resets the first, so on its own a call could run forever).
+    idle_limit = timeout * 2 if is_dev_console else timeout
+    hard_limit = idle_limit * 3
 
     try:
         while True:
             now = time.time()
-            
-            # For dev_console, we are more lenient with idle timeouts as users are often watching
-            # and thinking models can have long pauses.
-            idle_limit = timeout * 2 if is_dev_console else timeout
-            
-            # Timeout only triggers if NO output has been received for the timeout duration
             if now - last_activity > idle_limit:
-                indicator.clear()
-                process.kill()
-                output_so_far = "".join(stdout_chunks)
-                
-                # Log even on timeout
-                full_stdout = "".join(stdout_chunks)
-                full_stderr = "".join(stderr_chunks)
-                full_log = (
-                    f"PROMPT:\n{prompt}\n\n"
-                    f"MODEL: {model}\n"
-                    f"CMD: {cmd}\n"
-                    f"SESSION_ID: {actual_session_id}\n"
-                    f"RETURN CODE: TIMEOUT\n\n"
-                    f"STDOUT:\n{full_stdout}\n\n"
-                    f"STDERR:\n{full_stderr}\n"
-                )
-                append_log(f"llm-{model}", full_log)
-                
-                raise LLMTimeoutError(
-                    model=model,
-                    timeout=idle_limit,
-                    duration=now - start_time,
-                    input_chars=prompt_chars,
-                    output_chars=len(output_so_far),
-                    last_milestone=f"Stalled for {int(now - last_activity)}s (Last: {last_milestone})"
-                )
+                give_up(f"Stalled for {int(now - last_activity)}s", idle_limit)
+            if now - start_time > hard_limit:
+                give_up(f"Still running after {int((now - start_time) // 60)}m", hard_limit)
 
             # Check time-based loop/stall warnings
             time_notices = detector.check_time_triggers(now=now, last_output_time=last_activity)
@@ -513,79 +557,41 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
                 for notice in time_notices:
                     print(f"\n{notice}\n", flush=True)
 
-            # Update stylized indicator
             indicator.render(last_activity_time=last_activity)
-            
-            # Print periodic warning if stuck
-            idle_sec = int(now - last_activity)
-            if idle_sec > 0 and idle_sec % 240 == 0:
-                print(f"\n      💡 NOTICE: {model} is thinking deeply ({idle_sec // 60}m so far).")
-                print(f"         Reasoning models can sometimes take 5-10 minutes for complex tasks.")
-                print(f"         Context: {prompt_chars} chars sent. Checking for progress...")
 
-            for key, _ in sel.select(timeout=0.1): # Frequent polling for smooth spinner
-                line = key.fileobj.readline()
-                if not line:
+            # A line in the log every minute, so a long call visibly isn't frozen.
+            if now - last_heartbeat >= 60:
+                last_heartbeat = now
+                indicator.clear()
+                print(f"        [waiting] {model}: {int((now - start_time) // 60)}m so far, last output {int(now - last_activity)}s ago"
+                      f" (gives up after {idle_limit // 60}m with no output, or {hard_limit // 60}m in all)", flush=True)
+
+            # Read whatever is there without waiting for a full line: a tool that writes half a line and pauses
+            # must not freeze this loop (and with it the timeouts above).
+            for key, _ in sel.select(timeout=0.1):
+                fd = key.fileobj.fileno()
+                try:
+                    data = os.read(fd, 65536)
+                except OSError:
+                    data = b""
+                if not data:
+                    sel.unregister(key.fileobj)
                     continue
-                
-                # Reset activity timer on ANY output (stdout or stderr)
                 last_activity = time.time()
-                
-                # Check line for loop / trouble indicators
-                line_notices = detector.record_line(line, now=now)
-                if line_notices:
-                    indicator.clear()
-                    for notice in line_notices:
-                        print(f"\n{notice}\n", flush=True)
-                
-                if key.fileobj is process.stdout:
-                    stdout_chunks.append(line)
-                    # When receiving output, we update the label to show progress
-                    indicator.label = f"Generating ({len(stdout_chunks)} lines received)"
-                    if len(stdout_chunks) % 15 == 0:
-                        indicator.clear()
-                        last_milestone = f"Received {len(stdout_chunks)} lines"
-                        print(f"        [progress] received {len(stdout_chunks)} lines of response...", flush=True)
-                else:
-                    stderr_chunks.append(line)
-                    # Filter out common noise
-                    s_line = line.strip()
-                    noise = [
-                        "Ripgrep is not available",
-                        "MCP issues detected",
-                        "Prompt with name",
-                        "Tool with name",
-                        "registered. Overwriting",
-                        "DeprecationWarning",
-                        "AssignCodingAgent",
-                        "issue_to_fix_workflow",
-                        "exec /bin/zsh",
-                        "succeeded in 0ms",
-                        "no such file or directory: /Users",
-                        "sed -n",
-                        "stat -f",
-                        "find ai/output",
-                        "tokens used",
-                        "Received",
-                        "chars in",
-                        "codex",
-                        "connectors are disabled",
-                        "conversation \""
-                    ]
-                    if not any(n.lower() in s_line.lower() for n in noise):
-                        indicator.clear()
-                        print(f"        [stderr] {colorize_diff_line(s_line)}", flush=True)
-                        indicator.label = "Thinking (Active stderr)"
+                text = partial[fd] + decoders[fd].decode(data)
+                *lines, partial[fd] = text.split("\n")
+                for line in lines:
+                    handle_line(line + "\n", fd == out_fd)
 
             if process.poll() is not None:
-                # Process finished, read remaining output
-                for line in process.stdout:
-                    stdout_chunks.append(line)
-                for line in process.stderr:
-                    stderr_chunks.append(line)
-                    indicator.clear()
-                    print(f"        [stderr] {colorize_diff_line(line.strip())}", flush=True)
-                break
+                exited_at = exited_at or time.time()
+                # Done once both streams are closed (or shortly after exit, if something it started still holds them).
+                if not sel.get_map() or time.time() - exited_at > 5:
+                    break
+        for fd in (out_fd, err_fd):
+            rest = partial[fd] + decoders[fd].decode(b"", final=True)
+            if rest:
+                handle_line(rest, fd == out_fd)
     finally:
         indicator.clear()
         sel.close()

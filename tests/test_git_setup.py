@@ -429,6 +429,7 @@ pages.git().then(async result => {
 const fs = require('fs');
 require(process.argv[2]);
 const esc = Html.escape;
+const KIND_LABELS = {web: 'Web', desktop: 'Desktop', mobile: 'Mobile'};
 const state = {you: {role: 'member'}, project: {root: '/github', recent: [
  {name: 'Hub', root: '/github', source_type: 'github'},
  {name: 'Lab', root: '/gitlab', source_type: 'git', source_label: 'GitLab'},

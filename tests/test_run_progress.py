@@ -317,7 +317,7 @@ for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', 
 const slow = runStatus({...run, progress: {label: 'Waiting for claude-opus-4-7', agents: 1, models: ['gpt-5.4', 'claude-opus-4-7'], active_models: ['claude-opus-4-7'],
   calls: [{model: 'claude-opus-4-7', age: 485, timeout: 1200}],
   failed: [{model: 'gpt-5.4', reason: "Not supported <here>"}, {model: 'o1', reason: "couldn't start (is it installed?)"}]}});
-for (const part of ['Waiting for claude-opus-4-7', 'claude-opus-4-7 (working for 8m)', '2 models couldn&#39;t run', 'Not supported &lt;here&gt;', 'No answer from claude-opus-4-7 yet (8m)', 'after 20 minutes it gives up', 'The run is still going']) assert(slow.includes(part) || slow.includes(part.replace('&#39;', "'")), part);
+for (const part of ['Waiting for claude-opus-4-7', 'claude-opus-4-7 (working for 8m)', '2 models couldn&#39;t run', 'Not supported &lt;here&gt;', 'No answer from claude-opus-4-7 yet (8m)', 'after 20 minutes with no output, or 60 minutes in all']) assert(slow.includes(part) || slow.includes(part.replace('&#39;', "'")), part);
 const fresh = runStatus({...run, progress: {label: 'Waiting for m', agents: 1, models: ['m'], active_models: ['m'], calls: [{model: 'm', age: 30, timeout: 600}], failed: []}});
 assert(fresh.includes('m (working for 30s)'));
 assert.doesNotMatch(fresh, /No answer from|Skipped models/);  // nothing to say until it has been quiet a while, or something was skipped
