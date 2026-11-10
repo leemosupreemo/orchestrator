@@ -5456,7 +5456,7 @@ const PKG_STATUS_ORDER = ["suggested", "planned", "dismissed"];
 // A job that changes a manifest goes through the usual job flow (planned, reviewed, tested), so these only fill in its instruction.
 function packageJobHref(kind, p, data) {
   const label = data.ecosystems[p.ecosystem] || p.ecosystem;
-  const manifest = (data.installed.find((i) => i.ecosystem === p.ecosystem) || {}).manifest;
+  const manifest = p.manifest || (data.installed.find((i) => i.ecosystem === p.ecosystem) || {}).manifest;
   const where = manifest ? ` (the manifest is ${manifest})` : "";
   const feature = data.features.find((f) => f.id === p.feature)?.name;
   const text = {
@@ -5469,6 +5469,14 @@ function packageJobHref(kind, p, data) {
       `Take it out of the manifest${where}, remove or replace the code that uses it, make sure nothing else depends on it, and run the tests. Don't touch other dependencies.`],
   }[kind].filter((line, i, all) => line !== "" || (all[i - 1] !== "" && i > 0)).join("\n");
   return `#/new?type=quick&summary=${encodeURIComponent(text)}`;
+}
+
+// The runner checks the selected manifest before offering a native update.
+function packageUpdateAction(item, data) {
+  if (item.update?.supported === false) {
+    return ["Plan update with AI…", `data-href="${esc(packageJobHref("update", item, data))}"`, item.update.reason];
+  }
+  return ["Update", `data-package-update="${attrJSON(item)}"`, "Updates this dependency with its package manager, then runs the project checks"];
 }
 
 // The add form looks a pasted link up where it lives (its registry, or the Git repository itself, the way Xcode finds a Swift
@@ -5545,8 +5553,8 @@ pages.packages = async () => {
   const dismissedRow = (p) => row(p, `<button type="button" class="btn small" data-pkg="restore" data-id="${esc(p.id)}">Restore</button>${menu(p)}`);
   const installedRow = (i, n) => `<div class="item package-row" ${n >= SHOWN ? "hidden" : ""} data-find="${esc(`${i.name} ${i.ecosystem} ${i.manifest}`.toLowerCase())}"><div class="main-col">
       <div class="title">${esc(i.name)} ${eco(i)}${i.version ? ` <span class="muted mono">${esc(i.version)}</span>` : ""}${i.kind === "dev" ? ` <span class="pill idle">dev</span>` : ""}</div>
-      <div class="meta mono">${esc(i.manifest)}</div></div>
-      <div class="side">${owner ? moreMenu([["Update", `data-package-update="${attrJSON(i)}"`, "Updates this dependency with its package manager, then runs the project checks"],
+      <div class="meta mono">${esc(i.manifest)}</div>${i.update?.supported === false ? `<div class="meta">${esc(i.update.reason)}</div>` : ""}</div>
+      <div class="side">${owner ? moreMenu([packageUpdateAction(i, data),
         ["Remove…", `data-href="${packageJobHref("remove", i, data)}"`, "Starts a job that removes it and the code that uses it", "danger"]], { compact: true }) : ""}</div></div>`;
   const reviewNote = review?.at && review.suggested !== undefined ? `<p class="muted">Last reviewed ${esc(ago(Date.parse(review.at) / 1000))} · ${review.searched ? "searched the web" : "couldn't search the web, so versions may be out of date"} · ${plural(review.suggested || 0, "suggestion")}.${review.notes ? ` ${esc(review.notes)}` : ""}</p>
       ${review.sources?.length ? `<details class="fold"><summary class="np-section-legend">Pages it used (${review.sources.length})</summary><ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul></details>` : ""}` : "";

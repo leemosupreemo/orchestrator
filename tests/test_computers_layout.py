@@ -77,4 +77,5 @@ process.stdout.write(JSON.stringify(Account.renderMachines(machines, {
     def test_update_help_does_not_claim_a_failed_connection_is_online(self):
         failed = self.render(api_version=1).cards[0]
         self.assertNotIn("Online", " ".join(failed["all_text"]))
-        self.assertIn("orchestrator update", " ".join(failed["all_text"]))
+        self.assertIn("pipx install --force", " ".join(failed["all_text"]))
+        self.assertIn("@web-ui", " ".join(failed["all_text"]))

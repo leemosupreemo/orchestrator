@@ -21,6 +21,10 @@ from orchestrator import packages
 class PackageUpdateError(ValueError):
     """The requested dependency cannot safely be updated directly."""
 
+    def __init__(self, message: str, *, manager: str | None = None):
+        super().__init__(message)
+        self.manager = manager
+
 
 @dataclass(frozen=True)
 class UpdatePlan:
@@ -36,7 +40,7 @@ PLAIN_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\Z')
 NPM_NAME = re.compile(r'(?:@[A-Za-z0-9][A-Za-z0-9_.-]*/)?[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\Z')
 GO_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._~/-]{0,299}\Z')
 UNSUPPORTED = {
-    'pip': 'Python updates require a pyproject.toml managed by uv with an existing uv.lock. Plain pip requirements and Poetry are not supported; no global Python environment was changed.',
+    'pip': 'Python updates require a uv or Poetry pyproject.toml with its lockfile, or simple pip requirements and an existing isolated local .venv. No global Python environment was changed.',
     'gradle': 'Gradle direct updates need a project-specific version catalog or dependency configuration and are not supported yet.',
     'unity': 'Unity direct updates require the Unity Package Manager and are not supported yet.',
 }
@@ -84,6 +88,8 @@ def _node_command(directory: Path, root: Path, name: str) -> tuple[str, ...]:
     manager = lock_manager or declared or 'npm'
     if manager == 'npm':
         return ('npm', 'update', '--global=false', '--save', name)
+    if manager == 'bun':
+        return ('bun', 'update', '--depth', '0', name)
     if manager == 'pnpm':
         return ('pnpm', 'update', name)
     if manager == 'yarn':
@@ -92,12 +98,83 @@ def _node_command(directory: Path, root: Path, name: str) -> tuple[str, ...]:
         if not version and (manager_dir / 'yarn.lock').is_file():
             modern = modern or '__metadata:' in (manager_dir / 'yarn.lock').read_text(errors='replace')
         if modern and (directory != manager_dir or _object(manager_dir / 'package.json').get('workspaces')):
-            raise PackageUpdateError('Modern Yarn workspace updates can affect other manifests and are not supported directly yet.')
+            raise PackageUpdateError('Modern Yarn workspace refreshes affect matching ranges across every workspace; a selected-workspace native update is not supported yet.', manager='yarn')
         return ('yarn', 'up', '-R', name) if modern else ('yarn', 'upgrade', name)
-    raise PackageUpdateError(f'Direct updates with {manager} are not supported yet. No fallback to a different package manager was attempted.')
+    raise PackageUpdateError(f'Direct updates with {manager} are not supported yet. No fallback to a different package manager was attempted.', manager=manager)
 
 
-def plan_update(root: Path, ecosystem: str, name: str, manifest: str) -> UpdatePlan:
+# Accept only plain constraints here: includes, markers, extras and URLs require
+# different pip semantics and must never be silently ignored.
+SIMPLE_REQUIREMENT = re.compile(
+    r'[A-Za-z0-9][A-Za-z0-9_.-]*(?:\s*(?:===|==|!=|~=|<=|>=|<|>)\s*[A-Za-z0-9*+!_.-]+'
+    r'(?:\s*,\s*(?:===|==|!=|~=|<=|>=|<|>)\s*[A-Za-z0-9*+!_.-]+)*)?\s*\Z'
+)
+
+
+def _local_venv(directory: Path) -> Path:
+    environment = directory / '.venv'
+    if environment.is_symlink():
+        raise PackageUpdateError('The project environment must be a local .venv directory, not a symlink.')
+    config = environment / 'pyvenv.cfg'
+    python = environment / 'bin' / 'python'
+    if not config.is_file() or not python.is_file():
+        raise PackageUpdateError('Create an isolated project-local .venv before updating with pip or Poetry; no global environment was changed.')
+    if config.is_symlink() or not python.parent.resolve().is_relative_to(environment.resolve()):
+        raise PackageUpdateError('The local .venv configuration and executable directory must not escape through a symlink.')
+    storage = [environment / part for part in ('lib', 'lib64', 'Lib', 'include', 'Include')]
+    for base in list(storage):
+        if base.is_dir():
+            storage.extend(base.glob('python*/site-packages'))
+            storage.append(base / 'site-packages')
+    if any(not target.resolve().is_relative_to(environment.resolve()) for target in storage):
+        raise PackageUpdateError('The local .venv installation directories must not escape through a symlink.')
+    if not re.search(r'^include-system-site-packages\s*=\s*false\s*$', config.read_text(), re.I | re.M):
+        raise PackageUpdateError('The local .venv must disable system site packages before updating.')
+    return environment
+
+
+def _python_command(path: Path, name: str) -> tuple[str, ...]:
+    directory = path.parent
+    if path.name == 'pyproject.toml':
+        uv = (directory / 'uv.lock').is_file()
+        poetry = (directory / 'poetry.lock').is_file()
+        if uv and poetry:
+            raise PackageUpdateError('Found multiple Python manager lockfiles. Keep the chosen manager lockfile before updating.')
+        if uv:
+            if (directory / '.venv').is_symlink():
+                raise PackageUpdateError('The uv project environment must be a local .venv directory, not a symlink.')
+            return ('uv', 'sync', '--upgrade-package', name)
+        if poetry:
+            try:
+                _local_venv(directory)
+            except PackageUpdateError as exc:
+                raise PackageUpdateError(str(exc), manager='poetry') from exc
+            return ('poetry', 'update', name)
+        raise PackageUpdateError(UNSUPPORTED['pip'])
+    for line in path.read_text().splitlines():
+        requirement = line.split('#', 1)[0].strip()
+        if requirement and not SIMPLE_REQUIREMENT.fullmatch(requirement):
+            raise PackageUpdateError('Direct pip updates support only simple requirements with version constraints; includes, options, extras, markers and URLs need the project package manager.')
+    environment = _local_venv(directory)
+    return (str(environment / 'bin' / 'python'), '-I', '-m', 'pip', '--isolated', '--require-virtualenv',
+            'install', '--upgrade', '--upgrade-strategy', 'only-if-needed', '--no-user',
+            '--prefix', str(environment), '--constraint', str(path), name)
+
+
+def update_capability(root: Path, ecosystem: str, name: str, manifest: str, *, detected: list[dict] | None = None) -> dict:
+    """Describe support; UI callers may reuse entries from packages.detect(root)."""
+    try:
+        plan = plan_update(root, ecosystem, name, manifest, detected=detected)
+    except (PackageUpdateError, OSError, ValueError) as exc:
+        return {'supported': False, 'manager': getattr(exc, 'manager', None) or ecosystem, 'reason': str(exc)}
+    manager = 'pip' if plan.argv[0].endswith('/.venv/bin/python') else plan.argv[0]
+    if manager == 'bundle':
+        manager = 'cocoapods' if ecosystem == 'cocoapods' else 'bundler'
+    return {'supported': True, 'manager': manager,
+            'reason': 'Updates this dependency within its declared constraints; required transitive lock entries may also change.'}
+
+
+def plan_update(root: Path, ecosystem: str, name: str, manifest: str, *, detected: list[dict] | None = None) -> UpdatePlan:
     """Validate the chosen manifest entry before returning a fixed native argv."""
     root = Path(root).resolve()
     if not all(isinstance(value, str) and value for value in (ecosystem, name, manifest)):
@@ -108,7 +185,8 @@ def plan_update(root: Path, ecosystem: str, name: str, manifest: str) -> UpdateP
     path = root / relative
     if not path.resolve().is_relative_to(root) or not path.is_file():
         raise PackageUpdateError('The dependency manifest must be a file inside this project.')
-    item = next((item for item in packages.detect(root)
+    entries = packages.detect(root) if detected is None else detected
+    item = next((item for item in entries
                  if item['ecosystem'] == ecosystem and item['name'] == name and item['manifest'] == manifest), None)
     if item is None:
         raise PackageUpdateError('That dependency is not declared in the selected project manifest. Refresh Packages and try again.')
@@ -149,11 +227,7 @@ def plan_update(root: Path, ecosystem: str, name: str, manifest: str) -> UpdateP
             raise PackageUpdateError('Go toolchain updates are not dependency updates.')
         argv = ('go', 'get', name + '@upgrade')
     elif ecosystem == 'pip':
-        if path.name != 'pyproject.toml' or not (cwd / 'uv.lock').is_file():
-            raise PackageUpdateError(UNSUPPORTED['pip'])
-        if (cwd / '.venv').is_symlink():
-            raise PackageUpdateError('The uv project environment must be a local .venv directory, not a symlink.')
-        argv = ('uv', 'sync', '--upgrade-package', name)
+        argv = _python_command(path, name)
     else:
         raise PackageUpdateError(f'Direct updates for {ecosystem} are not supported yet.')
     return UpdatePlan(argv, cwd, ecosystem, name, manifest)
@@ -173,6 +247,14 @@ def execute_update(root: Path, ecosystem: str, name: str, manifest: str, test_co
     env = dict(os.environ)
     if ecosystem == 'pip':
         env['UV_PROJECT_ENVIRONMENT'] = str(plan.cwd / '.venv')
+        env['PIP_CONFIG_FILE'] = os.devnull
+        for key in ('PYTHONHOME', 'PYTHONPATH', 'CONDA_PREFIX'):
+            env.pop(key, None)
+        if plan.argv[0] == 'poetry' or plan.argv[0].endswith('/.venv/bin/python'):
+            env['VIRTUAL_ENV'] = str(plan.cwd / '.venv')
+            env['PATH'] = str(plan.cwd / '.venv' / 'bin') + os.pathsep + env.get('PATH', '')
+            env['POETRY_VIRTUALENVS_CREATE'] = 'true'
+            env['POETRY_VIRTUALENVS_IN_PROJECT'] = 'true'
     if plan.argv[0] == 'bundle':
         bundle_root = next((parent for parent in _ancestors(plan.cwd, Path(root).resolve())
                             if (parent / 'Gemfile.lock').is_file()), plan.cwd)

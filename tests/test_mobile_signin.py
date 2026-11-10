@@ -67,5 +67,87 @@ vm.runInContext(source.slice(start,end)+'\nwireSso("#google-signin-btn","Google"
         self.assertIn('provider failed', out['errors'])
 
 
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class RedirectReturnTests(unittest.TestCase):
+    """Execute return handling and the real provider/session exchange, without a provider login."""
+
+    def run_return(self, outcome='success', pending=True, hosted=False, exchange_error=False):
+        script = r'''
+const fs=require('fs'),vm=require('vm');
+const [outcome,pending,hosted,exchangeError]=JSON.parse(process.argv[2]);
+const source=fs.readFileSync(process.argv[1],'utf8');
+const calls=[],errors=[];
+const user={uid:'demo-user',email:'demo@example.invalid',providerData:[{providerId:'google.com'}],
+ getIdToken:async()=>{calls.push(['id-token']);return 'isolated-fake-token';}};
+const auth={getRedirectResult:async()=>{
+ calls.push(['redirect-result']);
+ if(outcome==='empty')return {user:null};
+ if(outcome==='cancelled')throw {code:'auth/cancelled-popup-request'};
+ if(outcome==='storage')throw {code:'auth/internal-error',message:'Unable to process request due to missing initial state. Storage partitioning.'};
+ if(outcome==='network')throw {code:'auth/network-request-failed',message:'Connection lost'};
+ return {user};
+}};
+const storage=pending?{'firebase:pendingRedirect:demo':'true'}:{};
+storage.getItem=k=>storage[k];
+const context={window:{firebase:{auth:()=>auth},location:{hostname:'demo.firebaseapp.com'}},
+ sessionStorage:storage,console:{warn:()=>{}},
+ refreshState:async()=>{calls.push(['refresh']);},route:()=>calls.push(['route']),
+ showSignInGate:m=>errors.push(m),setLastLoginMethod:m=>calls.push(['method',m]),
+ Account:{active:()=>hosted},getBackendUrl:()=> 'http://127.0.0.1:8080',
+ openAccount:async()=>{calls.push(['account']);vm.runInContext('endSigningIn()',context);},
+ api:async(path,request)=>{calls.push(['exchange',path,request]);if(exchangeError)throw new Error('backend offline');return {token:'local-session'};},
+ unlockWith:async(token,message)=>{calls.push(['unlock',token,message]);vm.runInContext('endSigningIn()',context);}};
+vm.createContext(context);
+const providerStart=source.indexOf('async function afterProviderSignIn(');
+vm.runInContext(source.slice(providerStart,source.indexOf('// Back from the computers',providerStart)),context);
+const start=source.indexOf('// True from the moment');
+vm.runInContext(source.slice(start,source.indexOf('// ---------------------------------------------------------------- helpers',start)),context);
+setImmediate(()=>console.log(JSON.stringify({calls,errors,signingIn:vm.runInContext('signingIn',context)})));
+'''
+        result = subprocess.run(['node', '-e', script, str(APP), json.dumps([outcome, pending, hosted, exchange_error])],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_returned_provider_user_exchanges_id_token_then_unlocks_the_computer(self):
+        out = self.run_return()
+        self.assertEqual(out['calls'], [
+            ['redirect-result'], ['method', 'google'], ['id-token'],
+            ['exchange', 'auth', {'method': 'POST', 'body': {'id_token': 'isolated-fake-token'}}],
+            ['unlock', 'local-session', 'Signed in as demo@example.invalid'],
+        ])
+        self.assertFalse(out['signingIn'])
+        self.assertEqual(out['errors'], [])
+
+    def test_hosted_return_opens_account_without_sending_a_token_to_a_backend(self):
+        out = self.run_return(hosted=True)
+        self.assertEqual(out['calls'], [['redirect-result'], ['method', 'google'], ['account']])
+        self.assertFalse(out['signingIn'])
+
+    def test_empty_or_cancelled_return_resumes_navigation_only_when_pending(self):
+        for outcome in ('empty', 'cancelled'):
+            for pending in (True, False):
+                with self.subTest(outcome=outcome, pending=pending):
+                    out = self.run_return(outcome=outcome, pending=pending)
+                    self.assertEqual(out['calls'], [['redirect-result']] + ([['refresh'], ['route']] if pending else []))
+                    self.assertFalse(out['signingIn'])
+                    self.assertEqual(out['errors'], [])
+
+    def test_storage_partition_failure_is_actionable_and_clears_loading(self):
+        out = self.run_return(outcome='storage')
+        self.assertFalse(out['signingIn'])
+        self.assertEqual(out['calls'], [['redirect-result']])
+        self.assertIn('blocks the storage', out['errors'][0])
+
+    def test_network_or_backend_failure_clears_loading_and_does_not_unlock(self):
+        for kwargs, message in (({'outcome': 'network'}, 'Connection lost'),
+                                ({'exchange_error': True}, 'backend offline')):
+            with self.subTest(kwargs=kwargs):
+                out = self.run_return(**kwargs)
+                self.assertFalse(out['signingIn'])
+                self.assertFalse(any(call[0] == 'unlock' for call in out['calls']))
+                self.assertIn(message, out['errors'][0])
+
+
 if __name__ == '__main__':
     unittest.main()

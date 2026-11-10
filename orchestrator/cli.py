@@ -450,7 +450,7 @@ elif command -v orchestrator >/dev/null 2>&1; then
     exec orchestrator "$@"
 else
     echo "Error: 'orchestrator' command not found."
-    echo "Install via pipx: pipx install 'git+https://github.com/leemosupreemo/orchestrator.git'"
+    echo "Install via pipx: pipx install 'git+https://github.com/leemosupreemo/orchestrator.git@web-ui'"
     echo "Or run from source: PYTHONPATH=. python3 -m orchestrator"
     exit 1
 fi
@@ -2272,9 +2272,13 @@ def update_command(args: argparse.Namespace) -> int:
     if is_git:
         print_section("\n--- Local Update (Git Repository) ---", f"Location: {pkg_dir}")
         try:
-            subprocess.run(["git", "pull"], cwd=str(pkg_dir), check=False)
-            subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], cwd=str(pkg_dir), check=False)
-            print("\n✅ Local package updated successfully.")
+            if subprocess.run(["git", "pull", "--ff-only"], cwd=str(pkg_dir), check=False).returncode:
+                print("\n❌ Git pull failed. Resolve the error above; the installed package was not changed.")
+                return 1
+            if subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], cwd=str(pkg_dir), check=False).returncode:
+                print("\n❌ Package installation failed. Resolve the error above and retry the update.")
+                return 1
+            print("\n✅ Local package updated successfully. Restart `orchestrator ui` to use it.")
         except Exception as e:
             print(f"\n❌ Error during local update: {e}")
             return 1
@@ -2290,9 +2294,16 @@ def update_command(args: argparse.Namespace) -> int:
             return 1
         print("\n✅ Updated. Restart `orchestrator ui` to use it.")
     else:
-        print("\n\033[1;93mNote: Local source code not found in a Git repository.\033[0m")
-        print("If you installed via pipx, run: \033[97mpipx install --force " + account.INSTALL_SPEC + "\033[0m")
-        print("If you installed via pip, run:  \033[97mpip install --upgrade orchestrator\033[0m")
+        print_section("\n--- Update (pip) ---", account.INSTALL_SPEC)
+        argv = [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", account.INSTALL_SPEC]
+        try:
+            if subprocess.run(argv, check=False).returncode:
+                print("\n❌ The update didn't finish. Resolve the error above and retry.")
+                return 1
+        except OSError as exc:
+            print(f"\n❌ The update didn't finish: {exc}")
+            return 1
+        print("\n✅ Updated. Restart `orchestrator ui` to use it.")
 
     if getattr(args, "fleet", False):
         print_section("\n--- Fleet Update ---")

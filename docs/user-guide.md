@@ -19,14 +19,16 @@ To install by hand instead, the CLI install is:
 ```bash
 brew install pipx
 pipx ensurepath
-pipx install "git+https://github.com/leemosupreemo/orchestrator.git"
+pipx install "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"
 ```
 
 Upgrade later with:
 
 ```bash
-pipx upgrade orchestrator
+pipx install --force "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"
 ```
+
+Restart Orchestrator after the update, once its jobs finish. The hosted site currently uses the `web-ui` branch; installing the default branch does not provide the same features.
 
 For local development from this repository:
 
@@ -556,7 +558,7 @@ The **Packages** page (under *Build & ship*) lists the libraries and plugins thi
 - **Accepted** packages are yours to manage: add your own with **Add package** (paste a link from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub, and the name and ecosystem are filled in), edit, reject or remove. These are notes about the
   project; they never change your code.
 - **Update** on an installed package uses its native package manager, then runs the project's configured test command. It makes no AI call. If either step fails, **Fix with AI** opens a repair job with the failed command and error filled in. Changes are kept for review.
-- Direct updates support npm, pnpm, standalone Yarn, SwiftPM, Cargo, Go, uv-managed Python, CocoaPods, Bundler, Dart and Flutter. Updates respect declared constraints and may adjust necessary transitive lock entries. Modern Yarn workspaces, Gradle, Unity, bun and Python without a uv project are rejected with an explanation. A missing test command prevents changes until it is configured.
+- Direct updates support npm, pnpm, Bun, standalone Yarn, SwiftPM, Cargo, Go, uv, Poetry, simple pip requirements, CocoaPods, Bundler, Dart and Flutter. Poetry and pip require an existing isolated project-local `.venv`; pip requirements with includes, options, extras, markers or URLs need a planned update. Updates respect declared constraints and may adjust necessary transitive lock entries. Modern Yarn workspaces, Gradle and Unity show an explanation and **Plan update with AI** before any change. A missing test command prevents native updates until it is configured.
 - **Add to project** and **Remove** open a prefilled New job because they can require code changes. Once a job installs a package, it appears under **In this project**.
 
 ## Firebase Delivery

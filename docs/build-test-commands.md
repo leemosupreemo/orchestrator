@@ -28,6 +28,22 @@ python3 -m unittest discover -s tests
 
   Needs the `opencode` CLI signed in. `ORCHESTRATOR_E2E_MODEL` picks another free model; `ORCHESTRATOR_E2E_KEEP=1` keeps the project folder for inspection. The test fails if any model other than the one allowed is called.
 
+## Authentication integration
+
+```bash
+ORCHESTRATOR_E2E_AUTH_EMULATOR=1 python3 -m unittest tests.e2e.test_auth_emulator -v
+```
+
+Uses the frontend's pinned Firebase SDK and a temporary loopback Auth emulator with a demo project. Verifies reset request, issued code, password change, sign-in and single-use enforcement. Requires Node, npm and Firebase CLI; downloads the SDK to a temporary directory. Never sends real email or changes production users. Physical-device provider sign-in and real inbox delivery need separate live verification.
+
+## Native package manager integration
+
+```bash
+ORCHESTRATOR_E2E_NATIVE_PACKAGES=1 python3 -m unittest tests.e2e.test_native_package_updates -v
+```
+
+Downloads Bun and provisions Poetry into temporary tool directories. Exercises selected-package updates and configured checks in throwaway workspace/Python projects, verifies unrelated dependencies and manifests stay unchanged, and compares host/external environments. Requires network access; normal discovery skips these tests.
+
 ## Orchestrator config check
 
 ```bash

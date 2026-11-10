@@ -1276,7 +1276,8 @@ process.stdout.write(JSON.stringify({
   newer: A.outdated(A.REQUIRED_RUNNER_API + 1),
 }));""")
         self.assertIn("older Orchestrator (0.0.9)", result["old"])
-        self.assertIn("orchestrator update", result["old"])
+        self.assertIn("pipx install --force", result["old"])
+        self.assertIn("@web-ui", result["old"])
         self.assertIn("older Orchestrator", result["none"])  # a computer that never reported one is older than any that does
         self.assertNotIn("older Orchestrator", result["current"])
         self.assertFalse(result["newer"])

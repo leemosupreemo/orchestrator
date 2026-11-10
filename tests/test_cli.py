@@ -36,7 +36,7 @@ class CliTests(unittest.TestCase):
 
         def fake_run(argv, **kwargs):
             ran.append(list(argv))
-            return MagicMock(returncode=returncode)
+            return MagicMock(returncode=returncode[len(ran) - 1] if isinstance(returncode, list) else returncode)
 
         pkg = Path(tempfile.mkdtemp(prefix="orchestrator-pkg-"))
         if git_checkout:
@@ -67,7 +67,39 @@ class CliTests(unittest.TestCase):
     def test_update_pulls_a_git_checkout(self) -> None:
         code, ran, _ = self.run_update(pipx_install=False, git_checkout=True)
         self.assertEqual(code, 0)
-        self.assertEqual(ran[0], ["git", "pull"])
+        self.assertEqual(ran[0], ["git", "pull", "--ff-only"])
+
+    def test_git_update_stops_when_pull_fails(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, git_checkout=True, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(ran), 1)
+        self.assertNotIn("updated successfully", out)
+        self.assertIn("pull", out)
+
+    def test_git_update_reports_install_failure(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, git_checkout=True, returncode=[0, 1])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(ran), 2)
+        self.assertNotIn("updated successfully", out)
+
+    def test_git_update_preserves_branch_history_and_requires_restart(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, git_checkout=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran[0], ["git", "pull", "--ff-only"])
+        self.assertIn("Restart `orchestrator ui`", out)
+
+    def test_plain_pip_update_installs_the_matching_release_and_requires_restart(self) -> None:
+        from orchestrator import account
+        code, ran, out = self.run_update(pipx_install=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran, [[cli.sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", account.INSTALL_SPEC]])
+        self.assertIn("Restart `orchestrator ui`", out)
+
+    def test_plain_pip_update_failure_is_not_success(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(ran), 1)
+        self.assertIn("didn't finish", out)
 
     def test_pipx_installs_are_recognized_by_their_virtualenv(self) -> None:
         with patch.object(cli.sys, "prefix", "/Users/me/.local/pipx/venvs/orchestrator"):

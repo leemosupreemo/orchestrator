@@ -5929,6 +5929,9 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _packages_view(self, root: Path) -> dict[str, Any]:
         view = package_store.overview(root, runtime_dir(root))
+        from orchestrator.package_updates import update_capability
+        for item in view["installed"]:
+            item["update"] = update_capability(root, item["ecosystem"], item["name"], item["manifest"], detected=view["installed"])
         view["features"] = [{"id": f["id"], "name": f.get("name", f["id"])} for f in feature_store.load(runtime_dir(root))]
         # Worth a review: the requirements say something, and they've changed since the last one (or there hasn't been one).
         raw_prd = prd_doc.Prd(root, runtime_dir(root)).read() or ""

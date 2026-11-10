@@ -27,6 +27,126 @@ class PackageUpdateTests(unittest.TestCase):
         self.calls.append((argv, cwd, env))
         return 0
 
+
+    def local_venv(self, directory=''):
+        base = f'{directory}/' if directory else ''
+        self.write(base + '.venv/pyvenv.cfg', 'include-system-site-packages = false\n')
+        self.write(base + '.venv/bin/python', '')
+
+    def test_bun_updates_selected_workspace_with_ancestor_lock(self):
+        self.npm(packageManager='bun@1.3.0', workspaces=['apps/*'])
+        self.npm('apps/ui/package.json')
+        self.write('bun.lock', '{}')
+        plan = updates.plan_update(self.root, 'npm', 'react', 'apps/ui/package.json')
+        self.assertEqual(plan.argv, ('bun', 'update', '--depth', '0', 'react'))
+        self.assertEqual(plan.cwd, self.root / 'apps/ui')
+
+    def test_poetry_requires_and_uses_isolated_project_environment(self):
+        from unittest.mock import patch
+        self.write('pyproject.toml', '[tool.poetry.dependencies]\nrequests="^2"\n')
+        self.write('poetry.lock', '')
+        with self.assertRaisesRegex(updates.PackageUpdateError, 'local .venv'):
+            updates.plan_update(self.root, 'pip', 'requests', 'pyproject.toml')
+        self.local_venv()
+        with patch.dict('os.environ', {'VIRTUAL_ENV': '/external/env', 'CONDA_PREFIX': '/external/conda', 'POETRY_VIRTUALENVS_CREATE': 'false'}):
+            result = updates.execute_update(self.root, 'pip', 'requests', 'pyproject.toml', 'true', run=self.runner)
+        self.assertTrue(result['ok'])
+        self.assertEqual(self.calls[0][0], ['poetry', 'update', 'requests'])
+        env = self.calls[0][2]
+        self.assertEqual(env['VIRTUAL_ENV'], str(self.root / '.venv'))
+        self.assertEqual(env['POETRY_VIRTUALENVS_CREATE'], 'true')
+        self.assertEqual(env['POETRY_VIRTUALENVS_IN_PROJECT'], 'true')
+        self.assertNotIn('CONDA_PREFIX', env)
+
+    def test_pip_uses_local_interpreter_and_manifest_as_constraints(self):
+        self.write('requirements.txt', 'requests>=2,<3\nurllib3<3\n')
+        self.local_venv()
+        result = updates.execute_update(self.root, 'pip', 'requests', 'requirements.txt', 'true', run=self.runner)
+        self.assertTrue(result['ok'])
+        argv = self.calls[0][0]
+        self.assertEqual(argv, [str(self.root / '.venv/bin/python'), '-I', '-m', 'pip', '--isolated', '--require-virtualenv', 'install', '--upgrade', '--upgrade-strategy', 'only-if-needed', '--no-user', '--prefix', str(self.root / '.venv'), '--constraint', str(self.root / 'requirements.txt'), 'requests'])
+        self.assertEqual(self.calls[0][2]['PIP_CONFIG_FILE'], '/dev/null')
+
+    def test_pip_rejects_complex_constraints_and_shared_environments(self):
+        self.local_venv()
+        for extra in ['-r other.txt', 'urllib3[secure]<3', 'urllib3<3; python_version>"3"', 'urllib3 @ https://example.com/a.whl']:
+            self.write('requirements.txt', 'requests>=2\n' + extra + '\n')
+            with self.subTest(extra=extra), self.assertRaisesRegex(updates.PackageUpdateError, 'simple'):
+                updates.plan_update(self.root, 'pip', 'requests', 'requirements.txt')
+        self.write('requirements.txt', 'requests>=2\n')
+        self.write('.venv/pyvenv.cfg', 'include-system-site-packages = true\n')
+        with self.assertRaisesRegex(updates.PackageUpdateError, 'system'):
+            updates.plan_update(self.root, 'pip', 'requests', 'requirements.txt')
+
+    def test_python_rejects_symlinked_project_environment(self):
+        self.write('requirements.txt', 'requests>=2\n')
+        with tempfile.TemporaryDirectory() as outside:
+            (self.root / '.venv').symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(updates.PackageUpdateError, 'symlink'):
+                updates.plan_update(self.root, 'pip', 'requests', 'requirements.txt')
+
+    def test_python_conflicting_lock_managers_are_rejected(self):
+        self.write('pyproject.toml', '[project]\nname="app"\nversion="1"\ndependencies=["requests>=2"]\n')
+        self.write('poetry.lock', '')
+        self.write('uv.lock', '')
+        with self.assertRaisesRegex(updates.PackageUpdateError, 'multiple'):
+            updates.plan_update(self.root, 'pip', 'requests', 'pyproject.toml')
+
+    def test_python_rejects_environment_site_packages_escape(self):
+        self.write('requirements.txt', 'requests>=2\n')
+        self.local_venv()
+        with tempfile.TemporaryDirectory() as outside:
+            (self.root / '.venv/lib').symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(updates.PackageUpdateError, 'symlink'):
+                updates.plan_update(self.root, 'pip', 'requests', 'requirements.txt')
+
+    def test_python_rejects_environment_parent_directory_escape(self):
+        self.write('requirements.txt', 'requests>=2\n')
+        self.local_venv()
+        (self.root / '.venv/lib').mkdir()
+        with tempfile.TemporaryDirectory() as outside:
+            (Path(outside) / 'site-packages').mkdir()
+            (self.root / '.venv/lib/python3.13').symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(updates.PackageUpdateError, 'symlink'):
+                updates.plan_update(self.root, 'pip', 'requests', 'requirements.txt')
+
+    def test_capability_names_unsupported_native_manager(self):
+        self.npm(packageManager='yarn@4.5.0', workspaces=['apps/*'])
+        self.write('yarn.lock', '__metadata: {}')
+        capability = updates.update_capability(self.root, 'npm', 'react', 'package.json')
+        self.assertFalse(capability['supported'])
+        self.assertEqual(capability['manager'], 'yarn')
+        self.write('pyproject.toml', '[tool.poetry.dependencies]\nrequests="^2"\n')
+        self.write('poetry.lock', '')
+        capability = updates.update_capability(self.root, 'pip', 'requests', 'pyproject.toml')
+        self.assertFalse(capability['supported'])
+        self.assertEqual(capability['manager'], 'poetry')
+
+    def test_capability_reuses_previously_detected_entries_without_rescanning(self):
+        from unittest.mock import patch
+        self.npm()
+        detected = [{'ecosystem': 'npm', 'name': 'react', 'manifest': 'package.json'}]
+        with patch('orchestrator.package_updates.packages.detect', side_effect=AssertionError('unexpected rescan')):
+            capability = updates.update_capability(self.root, 'npm', 'react', 'package.json', detected=detected)
+            missing = updates.update_capability(self.root, 'npm', 'absent', 'package.json', detected=detected)
+        self.assertTrue(capability['supported'])
+        self.assertFalse(missing['supported'])
+        self.assertIn('not declared', missing['reason'])
+
+    def test_capability_reports_validated_support_and_boundaries(self):
+        self.npm(packageManager='bun@1.3.0')
+        capability = updates.update_capability(self.root, 'npm', 'react', 'package.json')
+        self.assertTrue(capability['supported'])
+        self.assertEqual(capability['manager'], 'bun')
+        self.write('build.gradle', 'implementation "org.example:lib:1.0"\n')
+        capability = updates.update_capability(self.root, 'gradle', 'org.example:lib', 'build.gradle')
+        self.assertFalse(capability['supported'])
+        self.assertEqual(capability['manager'], 'gradle')
+        self.assertIn('project-specific', capability['reason'])
+        missing = updates.update_capability(self.root, 'npm', 'missing', 'package.json')
+        self.assertFalse(missing['supported'])
+        self.assertIn('not declared', missing['reason'])
+
     def test_modern_yarn_workspace_update_cannot_change_other_manifests(self):
         self.npm(packageManager='yarn@4.5.0', workspaces=['apps/*'])
         self.npm('apps/a/package.json')
@@ -149,7 +269,7 @@ class PackageUpdateTests(unittest.TestCase):
     def test_plain_pip_and_unsupported_ecosystems_explain_boundary(self):
         self.write('requirements.txt', 'requests>=2\n')
         self.write('build.gradle', 'implementation "org.example:lib:1.0"\n')
-        for ecosystem, name, manifest, message in [('pip', 'requests', 'requirements.txt', 'uv'), ('gradle', 'org.example:lib', 'build.gradle', 'Gradle')]:
+        for ecosystem, name, manifest, message in [('pip', 'requests', 'requirements.txt', 'local .venv'), ('gradle', 'org.example:lib', 'build.gradle', 'Gradle')]:
             with self.subTest(ecosystem=ecosystem), self.assertRaisesRegex(updates.PackageUpdateError, message):
                 updates.plan_update(self.root, ecosystem, name, manifest)
 

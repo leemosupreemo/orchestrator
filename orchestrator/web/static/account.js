@@ -4,7 +4,7 @@
   "use strict";
 
   const HOSTED_ORIGINS = ["https://swift-orch-web-20260923.web.app", "https://swift-orch-web-20260923.firebaseapp.com"];
-  const INSTALL_COMMAND = 'pipx install "git+https://github.com/leemosupreemo/orchestrator.git"';
+  const INSTALL_COMMAND = 'pipx install "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"';
   // One step for Mac and Linux: installs what's missing, shows the code to confirm, and starts Orchestrator at login.
   const QUICK_INSTALL_COMMAND = `curl -fsSL ${HOSTED_ORIGINS[0]}/install.sh | sh`;
   // Add a Mac (over SSH) stays hidden until signed app releases are published: install-mac.sh and releases/macos.json
@@ -16,8 +16,8 @@
   const CODE_LENGTH = 8;
   // The oldest computer this page works well with: orchestrator/account.py's API_VERSION, which a computer reports in
   // its state and its heartbeat. Raise it in the same change that makes the page rely on something newer.
-  const REQUIRED_RUNNER_API = 2;
-  const UPDATE_HINT = "Update it: run `orchestrator update` on it.";
+  const REQUIRED_RUNNER_API = 3;
+  const UPDATE_HINT = 'When its jobs finish, run `pipx install --force "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"`, then restart Orchestrator.';
   const APP_UPDATE_HINT = "Choose Update to update it.";
   // What a Mac running the Orchestrator app reports about an update this page asked for.
   const UPDATE_PROGRESS = {

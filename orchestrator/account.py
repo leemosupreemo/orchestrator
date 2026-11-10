@@ -29,8 +29,8 @@ CONTROL_URL_ENV = "ORCHESTRATOR_CONTROL_URL"
 HEARTBEAT_SECONDS = 60
 # What this computer's server can do for the hosted app. Bumped when the hosted page starts relying on something older
 # computers lack; the page compares it with the one it needs (REQUIRED_RUNNER_API in account.js) and says to update.
-API_VERSION = 2
-INSTALL_SPEC = "git+https://github.com/leemosupreemo/orchestrator.git"  # what the install command on the hosted app installs
+API_VERSION = 3
+INSTALL_SPEC = "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"  # what the install command on the hosted app installs
 
 
 class AccountError(Exception):

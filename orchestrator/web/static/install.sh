@@ -8,7 +8,7 @@
 # Options: --no-service (don't start at login)   --dry-run (only print what it would do)
 set -eu
 
-REPO="${ORCHESTRATOR_REPO:-git+https://github.com/leemosupreemo/orchestrator.git}"
+REPO="${ORCHESTRATOR_REPO:-git+https://github.com/leemosupreemo/orchestrator.git@web-ui}"
 SERVICE=1
 DRY=0
 for arg in "$@"; do

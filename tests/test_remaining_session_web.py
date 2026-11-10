@@ -22,6 +22,15 @@ class DirectPackageActionTests(ServerTestCase):
             with self.subTest(name=name), self.assertRaises(server.UIError):
                 server.build_package_update({'ecosystem':'npm','name':name,'manifest':'package.json'},self.root)
 
+    def test_packages_explain_native_capability_before_starting_an_update(self):
+        (self.root/'build.gradle').write_text('dependencies {\n implementation "com.example:sample:1.0"\n}')
+        _, data=self.request('GET','/api/packages')
+        entries={i['ecosystem']:i for i in data['installed']}
+        self.assertTrue(entries['npm']['update']['supported'])
+        self.assertEqual(entries['npm']['update']['manager'],'npm')
+        self.assertFalse(entries['gradle']['update']['supported'])
+        self.assertIn('Gradle',entries['gradle']['update']['reason'])
+
     def test_members_cannot_start_package_manager_commands(self):
         from tests.test_web_ui import SignInTests
         token=SignInTests.sign_in(self,source='settings')
