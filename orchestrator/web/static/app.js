@@ -1122,17 +1122,19 @@ function checkRunnerVersion(runner) {
   notify("warning", `This computer runs an older Orchestrator${runner?.version ? ` (${runner.version})` : ""}, so some things may not work. ${Account.UPDATE_HINT.replace(/`/g, "")}`, { id: "runner-old", sticky: true });
 }
 
-async function refreshState() {
-  if (signingIn) return;
+async function refreshState({ opening = false, isCurrent = () => true } = {}) {
+  if (signingIn && !opening) return;
   const backend = getBackendUrl();
   const token = getToken();
   if (backend === null && !token) {
+    if (opening) throw new Error("Sign in again to open this computer.");
     if (!view.querySelector(".signin-card:not(.signing-in)")) {
       showSignInGate("Sign in with your access token to continue.");
     }
     return;
   }
   if (Account.active() && (!backend || !window.firebase?.auth?.().currentUser)) { // the hosted app, before a computer is chosen: just the sign-in screen
+    if (opening) throw new Error("Sign in again to open this computer.");
     if (window.firebase?.auth?.().currentUser) {
       openAccount().catch(() => { if (!view.querySelector(".signin-card:not(.signing-in)")) showSignInGate(); });
       return;
@@ -1143,7 +1145,8 @@ async function refreshState() {
     return;
   }
   try {
-    const newState = await api("state");
+    const newState = await api("state", opening ? { signal: AbortSignal.timeout(8000) } : undefined);
+    if (!isCurrent()) return;
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
     lastRuns = newState.runs;
     lastInbox = newState.inbox || [];
@@ -1172,6 +1175,7 @@ async function refreshState() {
     }
     document.querySelector(".app")?.classList.remove("session-locked");
   } catch (e) {
+    if (opening) throw e; // an opening succeeds only when live state has actually loaded
     if (e.status === 401) {
       consecutiveAuthFailures += 1;
       // Only lock the session if we don't have an active project loaded,
@@ -1455,15 +1459,19 @@ async function returnToApp() {
   route();
 }
 
-async function unlockWith(token, message) {
-  view.onclick = view.onsubmit = null; // the account screens' handlers
+async function unlockWith(token, message, { isCurrent = () => true } = {}) {
+  if (!isCurrent()) return;
   if (token) localStorage.setItem("orchestrator_token", token);
+  RESTORED_BRANCH.clear(); // signed in again: put the last used branch back
+  // Keep the current screen and its Back button until authentication AND live state work.
+  await refreshState({ opening: true, isCurrent });
+  if (!isCurrent()) return;
+  stopSnapshotPoll();
+  view.onclick = view.onsubmit = null; // the account screens' handlers
   toast(message);
   document.querySelector(".app")?.classList.remove("session-locked");
   document.body.classList.remove("signin-gate");
   endSigningIn();
-  RESTORED_BRANCH.clear(); // signed in again: put the last used branch back
-  await refreshState();
   route();
   let pushToken = null;
   try { pushToken = localStorage.getItem(PUSH_KEY); } catch { /* storage blocked */ }
@@ -1472,8 +1480,9 @@ async function unlockWith(token, message) {
 
 let accountPoll = null;
 let snapshotPoll = null;
+let snapshotScreenGeneration = 0;
 let accountScreenGeneration = 0;
-function stopSnapshotPoll() { if (snapshotPoll) { clearInterval(snapshotPoll); snapshotPoll = null; } }
+function stopSnapshotPoll() { snapshotScreenGeneration++; if (snapshotPoll) { clearInterval(snapshotPoll); snapshotPoll = null; } }
 function stopAccountPoll() { clearInterval(accountPoll); accountPoll = null; stopSnapshotPoll(); }
 
 // Your computers: open the one you used last (or the only one), otherwise list them. A code from a link is handled first.
@@ -1693,11 +1702,12 @@ function isWebConnectionFailure(error) {
     (!error.status && ["TypeError", "AbortError", "TimeoutError"].includes(error.name));
 }
 
-async function signInToMachine(machine, deadline = Date.now() + 16000) {
+async function signInToMachine(machine, deadline = Date.now() + 16000, { isCurrent = () => true } = {}) {
   const signal = () => AbortSignal.timeout(Math.max(1, Math.min(8000, deadline - Date.now())));
   const { endpoint, ticket } = await cpApi("machine/ticket", {
     method: "POST", body: { machine_id: machine.id }, signal: signal(),
   });
+  if (!isCurrent()) throw new Error("Opening cancelled.");
   localStorage.setItem("orchestrator_backend", endpoint);
   localStorage.setItem(ACCOUNT_BACKEND_KEY, endpoint);
   localStorage.setItem(Account.MACHINE_KEY, machine.id);
@@ -1726,30 +1736,30 @@ async function claimMachineRepair(machine) {
   return navigator.locks?.request ? navigator.locks.request(key, claim) : claim();
 }
 
-async function repairMachineConnection(machine, failure) {
-  if (!failure.webConnectionFailed || navigator.onLine === false) throw failure;
+async function repairMachineConnection(machine, failure, { quiet = false, isCurrent = () => true } = {}) {
+  if (!isCurrent() || !failure.webConnectionFailed || navigator.onLine === false) throw failure;
   // A previous restart may already have replaced the saved address. Try that before asking for another.
   const { machines } = await cpApi("machines", { signal: AbortSignal.timeout(8000) });
   let current = (machines || []).find((item) => item.id === machine.id);
   if (!current?.online || !current.endpoint) {
     for (let i = 0; i < 3; i++) {
       await new Promise((r) => setTimeout(r, 2000));
-      if (navigator.onLine === false) break;
+      if (!isCurrent() || navigator.onLine === false) break;
       const { machines: retry } = await cpApi("machines", { signal: AbortSignal.timeout(4000) }).catch(() => ({ machines: [] }));
       const found = (retry || []).find((item) => item.id === machine.id);
       if (found?.online && found.endpoint) { current = found; break; }
     }
   }
-  if (!current?.online || !current.endpoint) throw failure;
+  if (!isCurrent() || !current?.online || !current.endpoint) throw failure;
   if (current.endpoint !== failure.endpoint) {
-    try { return await signInToMachine(current); }
+    try { return await signInToMachine(current, undefined, { isCurrent }); }
     catch (error) {
       if (!error.webConnectionFailed) throw error;
       failure = error;
     }
   }
-  if (!await claimMachineRepair(machine) || navigator.onLine === false) throw failure;
-  showSigningIn(`Reconnecting to ${machine.name}… This may take a minute.`);
+  if (!isCurrent() || !await claimMachineRepair(machine) || !isCurrent() || navigator.onLine === false) throw failure;
+  if (!quiet) showSigningIn(`Reconnecting to ${machine.name}… This may take a minute.`);
   const deadline = Date.now() + 90000;
   await cpApi("machines/reset-tunnel", {
     method: "POST", body: { machine_id: machine.id }, signal: AbortSignal.timeout(8000),
@@ -1757,7 +1767,7 @@ async function repairMachineConnection(machine, failure) {
   let lastTried = `${current.endpoint}:${current.last_seen}`;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(3000, deadline - Date.now())));
-    if (navigator.onLine === false || Date.now() >= deadline) break;
+    if (!isCurrent() || navigator.onLine === false || Date.now() >= deadline) break;
     const { machines: updated } = await cpApi("machines", {
       signal: AbortSignal.timeout(Math.max(1, Math.min(8000, deadline - Date.now()))),
     });
@@ -1766,7 +1776,7 @@ async function repairMachineConnection(machine, failure) {
     const revision = `${next.endpoint}:${next.last_seen}`;
     if (!next.endpoint || revision === lastTried) continue;
     lastTried = revision;
-    try { return await signInToMachine(next, deadline); }
+    try { return await signInToMachine(next, deadline, { isCurrent }); }
     catch (error) {
       if (!error.webConnectionFailed) throw error;
       failure = error;
@@ -1779,7 +1789,7 @@ async function showSnapshotScreen(machineId, machine) {
   stopAccountPoll();
   signingIn = true;
   setHeader({ title: "", sub: "", actions: "" });
-  document.title = Notifications.tabTitle("Offline snapshot · Orchestrator", state.inbox_count || 0);
+  document.title = Notifications.tabTitle("Saved snapshot · Orchestrator", state.inbox_count || 0);
   document.body.classList.add("signin-gate");
   document.body.removeAttribute("data-page");
   document.querySelector(".app")?.classList.add("session-locked");
@@ -1794,17 +1804,33 @@ async function showSnapshotScreen(machineId, machine) {
     view.innerHTML = Account.renderSnapshot(snapshot);
     view.onsubmit = null;
     stopSnapshotPoll();
-    snapshotPoll = setInterval(async () => {
-      if (!document.querySelector(".account-card") || !signingIn) return stopSnapshotPoll();
+    const generation = snapshotScreenGeneration;
+    const isCurrent = () => generation === snapshotScreenGeneration;
+    let reconnecting = false, nextRetryAt = 0, retryDelay = 10000;
+    const reconnect = async (manual = false) => {
+      if (reconnecting || !isCurrent() || (!manual && Date.now() < nextRetryAt)) return;
+      reconnecting = true;
       try {
-        const { machines: fresh } = await cpApi("machines");
+        const { machines: fresh } = await cpApi("machines", { signal: AbortSignal.timeout(8000) });
         const current = (fresh || []).find((m) => m.id === machineId);
-        if (current && current.reachable) {
-          stopSnapshotPoll();
-          toast(`${current.name} is back online! Connecting…`, "info");
-          enterMachine(current);
-        }
-      } catch { /* control plane retry */ }
+        if (!isCurrent() || !current || (!manual && !current.reachable)) return;
+        let res;
+        try { res = await signInToMachine(current, undefined, { isCurrent }); }
+        catch (error) { res = await repairMachineConnection(current, error, { quiet: true, isCurrent }); }
+        if (!isCurrent()) return;
+        await unlockWith(res.token, `Opened ${current.name}`, { isCurrent });
+      } catch (error) {
+        // A fresh heartbeat says the Mac is running; it cannot prove the browser can reach its tunnel.
+        if (manual && isCurrent()) toast("Browser connection unavailable. Showing saved snapshot.", "info");
+      } finally {
+        nextRetryAt = Date.now() + retryDelay;
+        retryDelay = Math.min(retryDelay * 2, 60000);
+        reconnecting = false;
+      }
+    };
+    snapshotPoll = setInterval(() => {
+      if (!document.querySelector(".account-card") || !signingIn) return stopSnapshotPoll();
+      reconnect();
     }, 4000);
     view.onclick = async (event) => {
       const btn = event.target.closest("[data-account-action]");
@@ -1814,10 +1840,7 @@ async function showSnapshotScreen(machineId, machine) {
         stopSnapshotPoll();
         openAccount({ list: true });
       } else if (act === "open") {
-        stopSnapshotPoll();
-        const targetId = btn.dataset.id || machineId;
-        const targetMachine = machine || { id: targetId, name: snapshot.machine_name || "Computer" };
-        enterMachine(targetMachine);
+        await reconnect(true);
       }
     };
   } catch (err) {
@@ -1832,7 +1855,7 @@ async function enterMachine(machine) {
   signingIn = true;
   if (!machine.reachable && machine.has_snapshot) { // offline: its last snapshot, saying so, instead of waiting to fail
     try { localStorage.setItem(Account.MACHINE_KEY, machine.id); } catch { /* storage blocked */ }
-    toast(`${machine.name} is offline. Showing its last snapshot.`, "info");
+    toast(machine.online ? `Browser connection to ${machine.name} is unavailable. Showing saved snapshot.` : `${machine.name} is offline. Showing its last snapshot.`, "info");
     return showSnapshotScreen(machine.id, machine);
   }
   showSigningIn(`Opening ${machine.name}…`);
@@ -1849,7 +1872,7 @@ async function enterMachine(machine) {
     await unlockWith(res.token, `Opened ${machine.name}`);
   } catch (err) {
     if (machine.has_snapshot) {
-      toast(`${machine.name} is offline. Showing offline snapshot.`, "info");
+      toast(machine.online ? `Browser connection to ${machine.name} is unavailable. Showing saved snapshot.` : `${machine.name} is offline. Showing its last snapshot.`, "info");
       return showSnapshotScreen(machine.id, machine);
     }
     openAccount({ list: true, message: err.message,

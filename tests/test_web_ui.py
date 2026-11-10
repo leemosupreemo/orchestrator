@@ -1429,7 +1429,7 @@ process.stdout.write(JSON.stringify({
         # Snapshot rendering checks
         rendered = result["rendered"]
         self.assertIn("&lt;Leemos Mac&gt;", rendered)
-        self.assertIn("Offline snapshot", rendered)
+        self.assertIn("Saved snapshot", rendered)
         self.assertIn("macOS 15.1 · Orchestrator 0.2.0", rendered)
         self.assertIn("&lt;DemoApp&gt;", rendered)
         self.assertIn("/Users/dev/&lt;app&gt;", rendered)
@@ -4721,7 +4721,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("conn-banner", self.html + self.js)  # no separate banner: it is one of the overlay messages
         self.assertIn("pollFailures >= 2", self.js)
         self.assertIn("Can't reach Orchestrator. Check that it's running and that you're online.", self.js)
-        refresh = self.js[self.js.index("async function refreshState()"):][:3600]
+        refresh = self.js[self.js.index("async function refreshState("):self.js.index("// The hosted app's Computer menu")]
         self.assertIn('{ id: "connection", sticky: true }', refresh)  # stays until it is over
         self.assertIn('clearMessage("connection")', refresh)  # and goes when the server answers again
         self.assertIn('"Back online."', refresh)
@@ -4973,15 +4973,15 @@ class AccessibilityStaticTests(unittest.TestCase):
         js = self.js
         self.assertIn("function showSigningIn", js)
         self.assertIn(".signing-in", (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "style.css").read_text())
-        refresh = js[js.index("async function refreshState()"):][:200]
-        self.assertIn("if (signingIn) return;", refresh)  # the 5 s poll must not redraw the gate mid sign-in
+        refresh = js[js.index("async function refreshState("):][:200]
+        self.assertIn("if (signingIn && !opening) return;", refresh)  # the 5 s poll must not redraw the gate mid sign-in
         self.assertIn("if (signingIn) return;", js[js.index("async function route()"):][:200])
         sso = js[js.index("const wireSso"):js.index("$(\"#redirect-fallback\")")]  # the provider buttons
         fallback = js[js.index("$(\"#redirect-fallback\")"):js.index("wireSso(\"#google-signin-btn\"")]
         self.assertLess(sso.index("signingIn = true"), sso.index("signInWithPopup"))  # set before the provider window opens
         self.assertLess(sso.index("showSigningIn("), sso.index("afterProviderSignIn("))  # loading screen before the token exchange
         self.assertEqual(sso.count("endSigningIn()"), 1)  # on failure here; on success in unlockWith, so it can never spin forever
-        unlock = js[js.index("async function unlockWith"):][:400]
+        unlock = js[js.index("async function unlockWith"):js.index("let accountPoll =")]
         self.assertIn("endSigningIn()", unlock)
         after = js[js.index("async function afterProviderSignIn"):js.index("async function unlockWith")]
         self.assertIn("api(\"auth\"", after)
@@ -5296,7 +5296,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         tick_fn = js[js.index("async function tick()"):js.index("async function tick()") + 400]
         self.assertIn('view.querySelector(".signin-card:not(.signing-in)")', tick_fn)
         self.assertIn("view.contains(document.activeElement)", tick_fn)
-        refresh_fn = js[js.index("async function refreshState()"):js.index("async function refreshState()") + 400]
+        refresh_fn = js[js.index("async function refreshState("):js.index("async function refreshState(") + 600]
         self.assertIn('view.querySelector(".signin-card:not(.signing-in)")', refresh_fn)
         gate_fn = js[js.index("function showSignInGate"):js.index("function showSignInGate") + 400]
         self.assertIn('view.querySelector(".signin-card:not(.signing-in)")', gate_fn)
@@ -5460,7 +5460,7 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertIn(part, fn, part)
         self.assertIn("if (!first) Notifications.show", fn)  # a browser alert only for an update that happens while you are here
         self.assertNotIn("prdNoticeHtml", self.js)  # no separate banners on Home and the Product page any more
-        refresh = self.js[self.js.index("async function refreshState()"):][:3000]
+        refresh = self.js[self.js.index("async function refreshState("):][:3000]
         self.assertIn("showPrdUpdate(newState.product_notice)", refresh)
         home = self.js[self.js.index("function productStripHtml"):][:1500]
         self.assertNotIn("notice", home)
@@ -5470,7 +5470,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         for part in ('id: `models:${note.id}`', "sticky: true", "See models", '"#/config/ai"', 'api("models/dismiss"', "onDismiss: seen", "AI models updated"):
             self.assertIn(part, fn, part)
         self.assertIn("if (!first) Notifications.show", fn)  # a browser alert only for a change that happens while you are here
-        refresh = self.js[self.js.index("async function refreshState()"):][:3000]
+        refresh = self.js[self.js.index("async function refreshState("):][:3000]
         self.assertIn("showModelsUpdate(newState.models_notice)", refresh)
 
     def test_failing_tests_and_defects_offer_a_prefilled_bug_report(self):

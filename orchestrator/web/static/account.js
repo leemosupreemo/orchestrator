@@ -391,14 +391,14 @@
     return `<div class="signin-wrap"><div class="signin-card account-card">
       <div class="row between gap-8 mb-8">
         <button type="button" class="btn small ghost" data-account-action="back-machines">← All computers</button>
-        <span class="badge muted">Offline snapshot</span>
+        <span class="badge muted">Saved snapshot</span>
       </div>
       <div>
         <h2 class="account-title">${escapeHtml(name)}</h2>
         <p class="muted account-sub">Snapshot synced ${escapeHtml(synced)}${metaStr ? ` · ${escapeHtml(metaStr)}` : ""}</p>
       </div>
       <div class="notice">
-        This is a read-only snapshot synced from your Mac. To run new tasks or edit code, wake your computer and open Orchestrator.
+        This is a read-only snapshot synced from your Mac. To run new tasks or edit code, reconnect to Orchestrator on your computer.
       </div>
       <div class="row gap-12 mt-12 mb-16">
         <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
