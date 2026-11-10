@@ -7,6 +7,7 @@ the lines that say how it went. Nothing here runs anything; it only reads text, 
 from __future__ import annotations
 
 import os
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -376,7 +377,21 @@ def delivery_report(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
             "blocked": blocked, "recommendation": step}
 
 
+def package_update(lines: list[str], code: int | None) -> dict[str, Any] | None:
+    for line in reversed(lines):
+        if not line.startswith("ORCHESTRATOR_PACKAGE_UPDATE_RESULT="):
+            continue
+        try:
+            result = json.loads(line.split("=", 1)[1])
+            if isinstance(result, dict) and isinstance(result.get("message"), str):
+                return _result(result["message"], [], "ok" if result.get("ok") is True and code == 0 else "bad")
+        except ValueError:
+            pass
+    return None
+
+
 READERS: dict[str, Callable[[list[str], int | None], dict[str, Any] | None]] = {
+    "package_update": package_update,
     "sync_fleet": sync_fleet, "fleet_llm_check": fleet_llm_check, "worker_check": worker_check,
     "test": tests, "test_suite": tests, "test_plan": tests, "coverage": coverage, "visual_check": visual_check, "ux_pass": ux_pass,
 }

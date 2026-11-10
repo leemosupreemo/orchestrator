@@ -73,7 +73,7 @@ MISSING_NEEDS = {"npm": "Node.js (download the LTS version from nodejs.org)", "b
 # Where the installers put their tools: OpenCode's in ~/.opencode/bin, Claude's, Poolside's and Antigravity's in ~/.local/bin,
 # Homebrew's in /opt/homebrew/bin or /usr/local/bin. A server started from the Dock or launchd has none of these on its PATH,
 # and an installer's edit to the shell profile only reaches new terminals, so tools are looked for (and run) with them added.
-TOOL_DIRS = [Path.home() / ".opencode" / "bin", Path.home() / ".local" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+TOOL_DIRS = [Path(".opencode/bin"), Path(".local/bin"), Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
 
 
 def tool_path(base: str | None = None) -> str:
@@ -81,7 +81,7 @@ def tool_path(base: str | None = None) -> str:
     those folders: `orchestrator sandbox` uses it so only tools installed inside the sandbox count."""
     parts = [p for p in (os.environ.get("PATH", "") if base is None else base).split(os.pathsep) if p]
     override = os.environ.get("ORCHESTRATOR_TOOL_DIRS")
-    dirs = [d for d in override.split(os.pathsep) if d] if override is not None else [str(d) for d in TOOL_DIRS]
+    dirs = [d for d in override.split(os.pathsep) if d] if override is not None else [str(d if d.is_absolute() else Path.home() / d) for d in TOOL_DIRS]
     return os.pathsep.join(parts + [d for d in dirs if d not in parts])
 API_KEYS = [(p["key"], p["key_label"], p["env"]) for p in PROVIDERS if p.get("key")]  # (setting, label, environment variable)
 

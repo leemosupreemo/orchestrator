@@ -22,13 +22,13 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from common import ROOT
 from orchestrator.prd import (
+    Prd,
     can_draft,
     draft_prompt,
     parse_draft,
     project_digest,
     template,
 )
-from orchestrator.prd import PATH as PRD_RELPATH
 from llm import run_llm
 from model_router import get_prioritized_models
 
@@ -81,8 +81,9 @@ def main(argv: list[str] | None = None) -> int:
     digest = project_digest(root, commits)
     print(f"  Read {len(digest)} characters of project context.")
 
-    prd_path = root / PRD_RELPATH
-    current = prd_path.read_text(encoding="utf-8") if prd_path.exists() else template()
+    doc = Prd(root, root / ".orchestrator")
+    prd_path = doc.path
+    current = doc.read() or template()
 
     # Build the prompt and call the model
     prompt = draft_prompt(digest, current)
@@ -135,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     diff_lines = difflib.unified_diff(
         current.splitlines(keepends=True),
         proposal["markdown"].splitlines(keepends=True),
-        fromfile=str(prd_path.relative_to(root)) if prd_path.exists() else "(new file)",
+        fromfile=str(prd_path) if prd_path.exists() else "(new file)",
         tofile="proposed",
         n=2,
     )
@@ -164,9 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Discarded. No file was written.")
         return 0
 
-    prd_path.parent.mkdir(parents=True, exist_ok=True)
-    prd_path.write_text(proposal["markdown"], encoding="utf-8")
-    print(f"\n✅ Saved PRD to {prd_path.relative_to(root)}")
+    doc.write(proposal["markdown"], "draft", proposal.get("summary", "Drafted from code"))
+    print(f"\n✅ Saved PRD to {prd_path}")
     print("\nNext: break it down into epics with `orchestrator console`, or review it and create your first job.")
     return 0
 

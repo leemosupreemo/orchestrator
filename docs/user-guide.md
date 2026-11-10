@@ -289,6 +289,8 @@ orchestrator check-config
 
 ## Configure AI Providers
 
+On **Manage AI tools**, **Connect** shows a guided checklist for Claude, Codex, Poolside and Antigravity. It installs the tool if needed, prepares user-local Node.js/npm for Codex when missing, and shows the browser approval link and any code. Installer terms require your explicit agreement. **Sign-in details and advanced input** is available when a provider asks an additional question. Closing the dialog keeps the sign-in running under Running now.
+
 The orchestrator can use model provider CLIs or API keys. The setup check looks for common CLIs and environment keys:
 
 ```bash
@@ -553,8 +555,9 @@ The **Packages** page (under *Build & ship*) lists the libraries and plugins thi
   versions may be out of date.
 - **Accepted** packages are yours to manage: add your own with **Add package** (paste a link from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub, and the name and ecosystem are filled in), edit, reject or remove. These are notes about the
   project; they never change your code.
-- **Add to project**, and **Update** or **Remove** on an installed package, open the New job form with the instruction filled in. The change is made
-  by a job, so it is planned, reviewed and tested like any other. Once a job installs a package, it moves to **In this project** by itself.
+- **Update** on an installed package uses its native package manager, then runs the project's configured test command. It makes no AI call. If either step fails, **Fix with AI** opens a repair job with the failed command and error filled in. Changes are kept for review.
+- Direct updates support npm, pnpm, standalone Yarn, SwiftPM, Cargo, Go, uv-managed Python, CocoaPods, Bundler, Dart and Flutter. Updates respect declared constraints and may adjust necessary transitive lock entries. Modern Yarn workspaces, Gradle, Unity, bun and Python without a uv project are rejected with an explanation. A missing test command prevents changes until it is configured.
+- **Add to project** and **Remove** open a prefilled New job because they can require code changes. Once a job installs a package, it appears under **In this project**.
 
 ## Firebase Delivery
 

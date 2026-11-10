@@ -1,6 +1,6 @@
 # Product requirements (the PRD)
 
-Every project has one short document, `docs/product/prd.md`, that says what the product is. Every AI that plans, builds, reviews or checks work on the project reads it first, so it gets better answers than it can from the code alone. It is the person's document: they can write it, edit it, import it or have it drafted, and the app keeps it true as work finishes, tells them when it does, and lets them undo it.
+Every project has one short, shared document that says what the product is. The Product page and every branch/worktree use the same requirements, history, settings and attachments. The canonical copy lives under the main checkout's `.orchestrator/product/prd.md`; an existing `docs/product/prd.md` is imported once and kept as an untouched legacy copy. Every AI that plans, builds, reviews or checks work on the project reads it first, so it gets better answers than it can from the code alone. It is the person's document: they can write it, edit it, import it or have it drafted, and the app keeps it true as work finishes, tells them when it does, and lets them undo it.
 
 This page describes how it works for the person using it, then what happens underneath.
 
@@ -18,6 +18,8 @@ Six sections, in the person's own words wherever possible. **Every section is op
 | **Success measures** | Project-level outcomes and targets. Event names and an analytics provider are optional. | Yes |
 
 Each section starts with a line of italic guidance. Guidance and lines beginning `TBD:` don't count as content, so a section is "written" only when the person (or an accepted draft) has put something real in it.
+
+Model selection appears when you choose **Draft with AI**, **Update with AI** or **Reverse engineer**. Manual writing and importing do not ask for an AI model. Automatic AI maintenance has its own model setting, shown when it is enabled.
 
 ## The flow
 
@@ -65,7 +67,7 @@ Drafts and imports are always shown as a diff with **Accept and save** / **Disca
 
 ### Source documents
 
-When a PRD is imported, the original file is saved under `docs/product/source/` and listed in the PRD under a `## Source documents` heading. The six section summaries say what matters; the source holds the detail behind them. Every reader in the table below is told the source documents exist and where, so a planner or builder that needs the detail can read the file. The Product page lists them with a download link. Only the first 40,000 characters of an import are sent to the model to summarise; the saved file is always whole. Saving a section by hand, a draft or an update keeps the source list.
+When a PRD is imported, the original file is saved under the shared `.orchestrator/product/source/` folder and listed in the PRD under a `## Source documents` heading. The six section summaries say what matters; the source holds the detail behind them. Every reader in the table below is told the source documents exist and where, so a planner or builder that needs the detail can read the file. The Product page lists them with a download link. Only the first 40,000 characters of an import are sent to the model to summarise; the saved file is always whole. Saving a section by hand, a draft or an update keeps the source list.
 
 ### 2. Editing by hand
 

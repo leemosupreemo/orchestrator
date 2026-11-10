@@ -226,7 +226,8 @@ def detect_project_stack(root: Path) -> DetectedStack:
             pass
 
     # 8. Inferred from Product Requirements (new project created from idea)
-    for prd_path in (root / "docs" / "product" / "prd.md", root / "docs" / "prd.md"):
+    from orchestrator import prd
+    for prd_path in (prd.document_path(root), root / "docs" / "product" / "prd.md", root / "docs" / "prd.md"):
         if prd_path.exists():
             try:
                 prd_text = prd_path.read_text(encoding="utf-8", errors="ignore").lower()
@@ -238,7 +239,7 @@ def detect_project_stack(root: Path) -> DetectedStack:
                         build_command="swift build",
                         test_command="swift test",
                         uses_xcode=False,
-                        manifest_file=str(prd_path.relative_to(root)),
+                        manifest_file=prd.PATH if prd_path == prd.document_path(root) else str(prd_path.relative_to(root)),
                     )
                 if any(k in prd_text for k in ("python", "fastapi", "django", "flask")):
                     return DetectedStack(
@@ -248,7 +249,7 @@ def detect_project_stack(root: Path) -> DetectedStack:
                         build_command="python3 -m compileall -q .",
                         test_command="python3 -m unittest discover tests",
                         uses_xcode=False,
-                        manifest_file=str(prd_path.relative_to(root)),
+                        manifest_file=prd.PATH if prd_path == prd.document_path(root) else str(prd_path.relative_to(root)),
                     )
                 if any(k in prd_text for k in ("web app", "node", "typescript", "javascript", "react", "vue", "svelte")):
                     return DetectedStack(
@@ -258,7 +259,7 @@ def detect_project_stack(root: Path) -> DetectedStack:
                         build_command="npm run build",
                         test_command="npm test",
                         uses_xcode=False,
-                        manifest_file=str(prd_path.relative_to(root)),
+                        manifest_file=prd.PATH if prd_path == prd.document_path(root) else str(prd_path.relative_to(root)),
                     )
             except Exception:
                 pass

@@ -115,7 +115,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 # change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
 OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
-OWNER_ONLY_ACTIONS = {"console", "wizard", "config_menu", "ai_connect", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
+OWNER_ONLY_ACTIONS = {"console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 ALLOWED_EMAILS_CACHE_SECONDS = 60
@@ -513,6 +513,8 @@ class PtySession:
         """Finds the most specific error line from output when a run fails."""
         if self.running or self.exit_code == 0:
             return ""
+        if self.action == "package_update" and self.result:
+            return str(self.result.get("headline") or "")
         with self._cond:
             tail = bytes(self._buffer[-8000:])
         text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").replace("\r", "\n")
@@ -3302,7 +3304,11 @@ def save_upload(root: Path, name: str, data: bytes, folder: Path | None = None) 
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}-{clean}"
     target.write_bytes(data)
-    return {"path": str(target.relative_to(root)), "name": clean, "size": len(data), "kind": kind}
+    try:
+        relative = str(target.relative_to(root))
+    except ValueError:
+        relative = str(target)  # trusted shared Product asset folder may live in the main checkout
+    return {"path": relative, "name": clean, "size": len(data), "kind": kind}
 
 
 def build_debug(params: dict[str, Any], root: Path) -> list[str]:
@@ -3432,6 +3438,15 @@ def build_ai_connect(params: dict[str, Any]) -> list[str]:
     if not provider:
         raise UIError("Choose an AI tool to connect.")
     return orchestrator_argv("script", "ai_connect.py", "--provider", provider)
+
+
+def build_package_update(params: dict[str, Any], root: Path) -> list[str]:
+    ecosystem = _choice(params, "ecosystem", sorted(package_store.ECOSYSTEMS))
+    name = _text(params, "name", required=True, limit=300)
+    manifest = _text(params, "manifest", required=True, limit=500)
+    if not any(p["ecosystem"] == ecosystem and p["name"] == name and p["manifest"] == manifest for p in package_store.detect(root)):
+        raise UIError("Choose a dependency installed in this project's manifest.")
+    return orchestrator_argv("script", "update_package.py", "--ecosystem", ecosystem, "--name", name, "--manifest", manifest)
 
 
 def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
@@ -4339,7 +4354,10 @@ def _save_image(root: Path, subdir: Path, ctx: "integrations.Context") -> str | 
     subdir.mkdir(parents=True, exist_ok=True)
     target = subdir / ctx.image_name
     target.write_bytes(ctx.image)
-    return str(target.relative_to(root))
+    try:
+        return str(target.relative_to(root))
+    except ValueError:
+        return str(target)
 
 
 def context_for_new_job(root: Path, links: list[dict[str, str]]) -> tuple[str, list[dict[str, str]]]:
@@ -4771,6 +4789,7 @@ SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview"})
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
     "ai_connect": Action("Connect an AI tool", lambda p, r: build_ai_connect(p), fields=["provider"]),
+    "package_update": Action("Update a package", build_package_update, fields=["ecosystem", "name", "manifest"]),
     "check": Action("Setup check", lambda p, r: orchestrator_argv("check")),
     "check_config": Action("Config check", lambda p, r: orchestrator_argv("check-config")),
     "wizard": Action("Setup wizard", lambda p, r: orchestrator_argv("wizard")),
@@ -5200,7 +5219,7 @@ class UIServer(ThreadingHTTPServer):
         if root is None:
             return False
         rt = runtime_dir(root)
-        prd_path = root / prd_doc.PATH
+        prd_path = prd_doc.document_path(root)
         text = prd_doc.Prd(root, rt).read() or ""
         fingerprint = package_store.prd_fingerprint(text if prd_doc.is_filled_doc(text) else "")
         data = package_store.load(rt)
@@ -5573,7 +5592,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._json(resp)
             elif method == "GET" and len(parts) == 3 and parts[1] == "design":
                 name = parts[2]
-                folder = root / prd_doc.DESIGNS_DIR
+                folder = prd_doc.asset_folder(root, "designs")
                 target = folder / name
                 if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or not target.is_file():
                     raise UIError("That design isn't there.", HTTPStatus.NOT_FOUND)
@@ -5585,7 +5604,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, target.read_bytes(), inline or "application/octet-stream", headers)
             elif method == "GET" and len(parts) == 3 and parts[1] == "source":
                 name = parts[2]
-                target = root / prd_doc.SOURCES_DIR / name
+                target = prd_doc.asset_folder(root, "source") / name
                 if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or not target.is_file():
                     raise UIError("That document isn't there.", HTTPStatus.NOT_FOUND)
                 # Always a download, never shown in place: an imported file can never run in the app's origin.
@@ -5627,7 +5646,7 @@ class UIHandler(BaseHTTPRequestHandler):
                         raise integration_error(exc, root)
                     for ctx in contexts:
                         doc.add_reference(f"{PROVIDER_NAMES.get(ctx.item.provider, ctx.item.provider)}: {ctx.item.title}", ctx.item.url or ctx.item.ref)
-                        img = _save_image(root, root / prd_doc.DESIGNS_DIR, ctx)
+                        img = _save_image(root, prd_doc.asset_folder(root, "designs"), ctx)
                         if img:
                             doc.add_reference(f"{ctx.item.title} (image)", f"designs/{Path(img).name}")
                 else:
@@ -5638,7 +5657,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._json(doc.overview())
             elif method == "POST" and parts == ["product", "design"]:
                 data = self._read_upload()
-                saved = save_upload(root, (query.get("name") or [""])[0], data, folder=root / prd_doc.DESIGNS_DIR)
+                saved = save_upload(root, (query.get("name") or [""])[0], data, folder=prd_doc.asset_folder(root, "designs"))
                 if saved["kind"] == "log":
                     raise UIError("Add an image, PDF, Figma export or HTML file. Logs belong on a job.")
                 doc.add_reference(saved["name"], f"designs/{Path(saved['path']).name}")
@@ -5701,7 +5720,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 target = ""
                 name = "reverse_engineering_notes.txt"
                 raw = b""
-                chosen_model = ""
+                chosen_model = _text({"model": (query.get("model") or [""])[0]}, "model", limit=100)
                 if (self.headers.get("Content-Type") or "").startswith("application/json"):
                     body = self._body()
                     target = _text(body, "target", limit=10_000) if body.get("target") else ""
@@ -6211,7 +6230,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif parts in (["home-status"], ["home-status", "suggestions"]):
             rt = runtime_dir(root)
             try:
-                requirements = (root / prd_doc.PATH).read_text(encoding="utf-8")
+                requirements = prd_doc.read_text(root) or ""
             except OSError:
                 requirements = ""
             jobs = list_jobs(root)
@@ -6351,9 +6370,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError("Write the product requirements first (Product), so there's something to break down.")
             existing = feature_store.load(runtime_dir(root))
             # An attached source document holds the detail behind the short sections: it sets how much to break down, and is read.
-            source_text = "\n\n".join((read_limited(p) or "") for p in sorted((root / prd_doc.SOURCES_DIR).glob("*"))
+            source_text = "\n\n".join((read_limited(p) or "") for p in sorted(prd_doc.asset_folder(root, "source").glob("*"))
                                        if p.suffix.lower() in {".md", ".markdown", ".txt"} and p.is_file())[:30000] \
-                if (root / prd_doc.SOURCES_DIR).is_dir() else ""
+                if prd_doc.asset_folder(root, "source").is_dir() else ""
             level = feature_map.detail_level(prd_text, len(source_text))
             # What is already there, so work that is done isn't proposed again: recent commits, the source tree, and epics already decided.
             commits = git(root, "log", "--format=%s", "-n", "40").splitlines()

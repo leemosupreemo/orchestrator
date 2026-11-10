@@ -128,7 +128,8 @@ class HomeStatusApiTests(ServerTestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# Product requirements\n\n## Core features\n" + "A" * 6000 + " old requirement\n")
         _, first = self.request('GET', '/api/home-status')
-        path.write_text(path.read_text().replace('old requirement', 'new requirement'))
+        shared = prd.document_path(self.root)
+        shared.write_text(shared.read_text().replace('old requirement', 'new requirement'))
         _, second = self.request('GET', '/api/home-status')
         self.assertNotEqual(first['revision'], second['revision'])
 

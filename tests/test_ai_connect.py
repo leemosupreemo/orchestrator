@@ -3,6 +3,12 @@ can't run here), run its own sign-in in Orchestrator's terminal, then say plainl
 from __future__ import annotations
 
 import sys
+import os
+import io
+import json
+from contextlib import redirect_stdout
+from unittest.mock import patch
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -37,9 +43,13 @@ class FakeComputer:
     def ready(self, cli: str) -> bool:
         return self.signs_in and cli in self.installed
 
+    def prerequisites(self, provider: str) -> None:
+        self.tools.update({"node", "npm"})
+
     def connect(self, provider: str) -> int:
         return ai_connect.connect(provider, which=self.which, run=self.run, ready=self.ready, say=self.out.append,
-                                  after=lambda: self.out.append("(models refreshed)"))
+                                  after=lambda: self.out.append("(models refreshed)"),
+                                  ensure_prerequisites=self.prerequisites)
 
 
 class ConnectTests(unittest.TestCase):
@@ -65,18 +75,58 @@ class ConnectTests(unittest.TestCase):
         self.assertTrue(any("type y and press Enter" in line for line in fake.out))  # its installer asks to accept its terms
         self.assertTrue(any("already chosen, so press Enter" in line for line in fake.out))  # and its sign-in asks how first
 
-    def test_when_the_installer_needs_something_missing_the_other_one_is_used(self):
-        # Codex installs with npm; a new Mac has no Node, but with Homebrew there's the other way
+    def test_codex_uses_user_local_npm_even_when_homebrew_is_available(self):
+        # Preparing npm avoids a system-wide Homebrew install.
         fake = FakeComputer(installed=set(), tools={"bash", "curl", "brew"})
         self.assertEqual(fake.connect("codex"), 0)
-        self.assertEqual(fake.commands[0][-1], "brew install --cask codex")
+        self.assertEqual(fake.commands[0][-1], "npm install -g @openai/codex@latest")
         self.assertEqual(fake.commands[-1], ["/bin/codex", "login"])
 
-    def test_with_neither_it_says_what_to_install_in_plain_words(self):
+    def test_missing_node_is_installed_automatically(self):
         fake = FakeComputer(installed=set(), tools={"bash", "curl"})
-        self.assertEqual(fake.connect("codex"), 1)
-        self.assertEqual(fake.commands, [])
+        self.assertEqual(fake.connect("codex"), 0)
+        self.assertIn("npm install", fake.commands[0][-1])
         self.assertIn("Node.js", " ".join(fake.out))
+
+    def test_progress_reports_each_stage_in_order(self):
+        fake = FakeComputer(installed=set())
+        events = []
+        result = ai_connect.connect("codex", which=fake.which, run=fake.run, ready=fake.ready,
+                                    say=fake.out.append, after=lambda: None,
+                                    ensure_prerequisites=fake.prerequisites,
+                                    progress=lambda step, detail: events.append((step, detail)))
+        self.assertEqual(result, 0)
+        self.assertEqual([step for step, detail in events], ["check", "prerequisites", "install", "sign_in", "ready"])
+        self.assertTrue(all(detail for step, detail in events))
+
+    def test_prerequisite_failure_is_actionable_and_stops_install(self):
+        fake = FakeComputer(installed=set())
+        def fail(provider):
+            raise RuntimeError("Node.js download checksum did not match")
+        result = ai_connect.connect("codex", which=fake.which, run=fake.run, ready=fake.ready,
+                                    say=fake.out.append, after=lambda: None, ensure_prerequisites=fail)
+        self.assertEqual(result, 1)
+        self.assertFalse(fake.commands)
+        self.assertIn("checksum", " ".join(fake.out))
+
+    def test_failed_process_start_emits_structured_error(self):
+        fake = FakeComputer(installed={"codex"})
+        events = []
+        def broken(argv):
+            raise OSError("executable was removed")
+        result = ai_connect.connect("codex", which=fake.which, run=broken, ready=fake.ready,
+                                    say=fake.out.append, after=lambda: None,
+                                    progress=lambda step, detail: events.append((step, detail)))
+        self.assertEqual(result, 1)
+        self.assertEqual(events[-1][0], "error")
+        self.assertIn("removed", events[-1][1])
+
+    def test_native_installer_does_not_bootstrap_node(self):
+        fake = FakeComputer(installed=set())
+        def forbidden(provider):
+            self.fail("Native curl installers must not install Node")
+        self.assertEqual(ai_connect.connect("claude", which=fake.which, run=fake.run,
+            ready=fake.ready, say=fake.out.append, after=lambda: None, ensure_prerequisites=forbidden), 0)
 
     def test_a_sign_in_that_did_not_finish_says_so(self):
         fake = FakeComputer(installed={"codex"}, signs_in=False)
@@ -87,6 +137,57 @@ class ConnectTests(unittest.TestCase):
     def test_a_tool_without_a_sign_in_is_refused(self):
         with self.assertRaises(ValueError):
             FakeComputer(installed=set()).connect("gemini")
+
+
+class MainTests(unittest.TestCase):
+    def test_fresh_mac_install_keeps_npm_local_and_emits_machine_readable_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local_bin = Path(directory) / ".local/bin"
+            def executable(name):
+                local_bin.mkdir(parents=True, exist_ok=True)
+                path = local_bin / name
+                path.write_text("#!/bin/sh\nexit 0\n")
+                path.chmod(0o755)
+            def bootstrap():
+                executable("node")
+                executable("npm")
+            commands = []
+            def call(argv, *, env):
+                commands.append(argv)
+                self.assertEqual(env["npm_config_prefix"], str(Path(directory) / ".local"))
+                self.assertIn(str(local_bin), env["PATH"].split(os.pathsep))
+                if argv[0] == "bash":
+                    self.assertEqual(argv[1], "-c")
+                    executable("codex")
+                return 0
+            output = io.StringIO()
+            with patch.dict(os.environ, {"HOME": directory, "PATH": "/usr/bin:/bin",
+                            "ORCHESTRATOR_TOOL_DIRS": str(local_bin)}), \
+                    patch("orchestrator.tool_prerequisites.install_node", side_effect=bootstrap), \
+                    patch("orchestrator.scripts.ai_connect.subprocess.call", side_effect=call), \
+                    patch("orchestrator.setup_checklist._cli_ready", return_value=True), \
+                    patch("orchestrator.project_setup.refresh_ready_models"), redirect_stdout(output):
+                self.assertEqual(ai_connect.main(["--provider", "codex"]), 0)
+            events = [json.loads(line.removeprefix("@@ORCHESTRATOR_CONNECT@@"))
+                      for line in output.getvalue().splitlines() if line.startswith("@@ORCHESTRATOR_CONNECT@@")]
+            self.assertEqual([event["step"] for event in events],
+                             ["check", "prerequisites", "install", "sign_in", "ready"])
+            self.assertEqual(commands[-1], [str(local_bin / "codex"), "login"])
+
+
+class InteractiveSignInTests(unittest.TestCase):
+    def test_observed_readiness_finishes_only_the_owned_login_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "signed-in"
+            script = "from pathlib import Path; import time; Path(" + repr(str(marker)) + ").touch(); time.sleep(30)"
+            result = ai_connect.run_interactive_sign_in([sys.executable, "-c", script],
+                env=dict(os.environ), ready=lambda: marker.exists(), poll_interval=0.01)
+            self.assertEqual(result, 0)
+            self.assertTrue(marker.exists())
+
+    def test_sign_in_exit_without_readiness_keeps_its_failure(self):
+        self.assertEqual(ai_connect.run_interactive_sign_in([sys.executable, "-c", "raise SystemExit(7)"],
+            env=dict(os.environ), ready=lambda: False, poll_interval=0.01), 7)
 
 
 class WiringTests(unittest.TestCase):
@@ -105,7 +206,7 @@ class WiringTests(unittest.TestCase):
         self.assertIn('p.id === "opencode" && owner ?', (root / "configuration.js").read_text())
         self.assertIn('if (event.target.closest("[data-free-ai]")) { setUpFreeAi(); return; }', (root / "app.js").read_text())
         self.assertIn('data-ai-connect="${escapeHtml(p.id)}"', (root / "configuration.js").read_text())
-        self.assertIn('runAction("ai_connect", { provider: button.dataset.aiConnect', (root / "app.js").read_text())
+        self.assertIn('ToolConnect.open(button.dataset.aiConnect, button.dataset.aiName', (root / "app.js").read_text())
 
 
 if __name__ == "__main__":

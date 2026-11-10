@@ -13,6 +13,16 @@ from tests.test_config_validation import make_config
 
 
 class StackDetectionTests(unittest.TestCase):
+    def test_shared_requirements_take_precedence_over_legacy_branch_copy(self):
+        from orchestrator import prd
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / prd.PATH
+            legacy.parent.mkdir(parents=True)
+            legacy.write_text(prd.replace_section(prd.template(), "pitch", "An iOS app"))
+            prd.Prd(root, root / ".orchestrator").write(prd.replace_section(prd.template(), "pitch", "A Python service"))
+            self.assertEqual(detect_project_stack(root).language, "python")
+
     def test_detects_xcode_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

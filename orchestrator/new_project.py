@@ -232,7 +232,7 @@ def render_prd(a: dict[str, str]) -> str:
 
 def render_agents(name: str) -> str:
     return (f"# {name}: instructions for AI helpers\n\n"
-            f"Read `{prd.PATH}` first. It says what this product is, who it's for, what it must do, how it should look and feel, what it must not be, and how success is measured. "
+            f"Read `.orchestrator/{prd.SHARED_PATH}` first when it exists (in a linked worktree, use the main checkout's copy). `{prd.PATH}` is the legacy seed, used only until shared requirements exist. The shared document says what this product is, who it's for, what it must do, how it should look and feel, what it must not be, and how success is measured. "
             "It is a living document: it is kept up to date as jobs finish, and the person can edit it any time.\n\n"
             "Rules:\n- Prefer minimal, reviewable changes.\n- Build one working end-to-end slice at a time; keep the build and tests passing.\n"
             "- Don't build anything listed under \"Not this\".\n- If the document and the code disagree, ask before deciding which is right.\n\n")

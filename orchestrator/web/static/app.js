@@ -3336,25 +3336,6 @@ pages.home = async (_, query) => {
           poll();
         }).catch(() => {});
       }
-      const homeModelSelect = view.querySelector("#prd-home-model-select");
-      if (homeModelSelect) {
-        homeModelSelect.dataset.previous = homeModelSelect.value;
-        homeModelSelect.addEventListener("change", async (e) => {
-          const next = e.target.value;
-          if (next === "__manage_llms__") {
-            e.target.value = homeModelSelect.dataset.previous || product?.model || "claude-sonnet-4-6";
-            location.hash = "#/config/models";
-            return;
-          }
-          homeModelSelect.dataset.previous = next;
-          try {
-            await api("product/model", { method: "POST", body: { model: next } });
-            toast("Draft model updated");
-          } catch (err) {
-            toast(err.message, true);
-          }
-        });
-      }
       if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
       $("#yolo-all")?.addEventListener("change", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
@@ -4556,7 +4537,7 @@ const NJ_UPLOAD_LIMIT = 25 * 1024 * 1024;
 
 async function uploadFile(file, endpoint = "uploads", { signal } = {}) {
   const backend = getBackendUrl(), token = getToken();
-  const res = await fetch(`${backend ?? ""}/api/${endpoint}?name=${encodeURIComponent(file.name)}`, {
+  const res = await fetch(`${backend ?? ""}/api/${endpoint}${endpoint.includes("?") ? "&" : "?"}name=${encodeURIComponent(file.name)}`, {
     method: "POST", body: file, credentials: backend ? "omit" : "same-origin", signal,
     headers: { "Content-Type": "application/octet-stream", "X-Orchestrator-UI": "1", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   });
@@ -5565,7 +5546,7 @@ pages.packages = async () => {
   const installedRow = (i, n) => `<div class="item package-row" ${n >= SHOWN ? "hidden" : ""} data-find="${esc(`${i.name} ${i.ecosystem} ${i.manifest}`.toLowerCase())}"><div class="main-col">
       <div class="title">${esc(i.name)} ${eco(i)}${i.version ? ` <span class="muted mono">${esc(i.version)}</span>` : ""}${i.kind === "dev" ? ` <span class="pill idle">dev</span>` : ""}</div>
       <div class="meta mono">${esc(i.manifest)}</div></div>
-      <div class="side">${owner ? moreMenu([["Update…", `data-href="${packageJobHref("update", i, data)}"`, "Starts a job that updates it and fixes what breaks"],
+      <div class="side">${owner ? moreMenu([["Update", `data-package-update="${attrJSON(i)}"`, "Updates this dependency with its package manager, then runs the project checks"],
         ["Remove…", `data-href="${packageJobHref("remove", i, data)}"`, "Starts a job that removes it and the code that uses it", "danger"]], { compact: true }) : ""}</div></div>`;
   const reviewNote = review?.at && review.suggested !== undefined ? `<p class="muted">Last reviewed ${esc(ago(Date.parse(review.at) / 1000))} · ${review.searched ? "searched the web" : "couldn't search the web, so versions may be out of date"} · ${plural(review.suggested || 0, "suggestion")}.${review.notes ? ` ${esc(review.notes)}` : ""}</p>
       ${review.sources?.length ? `<details class="fold"><summary class="np-section-legend">Pages it used (${review.sources.length})</summary><ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul></details>` : ""}` : "";
@@ -5593,6 +5574,12 @@ pages.packages = async () => {
       ${dismissed.length ? `<section class="card"><details class="fold"><summary class="card-h"><h2>Rejected</h2><span class="count">${dismissed.length}</span></summary><div class="list">${dismissed.map(dismissedRow).join("")}</div></details></section>` : ""}`,
     after: () => {
       const call = async (body, ok) => { try { await api("packages", { method: "POST", body }); if (ok) toast(ok); route(); } catch (e) { toast(e.message, true); } };
+      view.querySelectorAll("[data-package-update]").forEach(button => button.addEventListener("click", async () => {
+        const item = JSON.parse(button.dataset.packageUpdate);
+        if (!state.actions?.package_update) { toast("Update Orchestrator on this computer to use direct package updates.", "warning"); return; }
+        const ok = await formDialog(`Update ${item.name}?`, `<p>Use this project's package manager to update <strong>${esc(item.name)}</strong> within its declared version constraints, then run the configured checks.</p><p class="muted">No AI is called for the update. If the update or checks fail, you can ask AI to repair it.</p>`, "Update package");
+        if (ok) runAction("package_update", {ecosystem: item.ecosystem, name: item.name, manifest: item.manifest, title: `Update ${item.name}`}, {skipConfirm: true});
+      }));
       $("#pkg-auto")?.addEventListener("change", (e) => call({ op: "auto", enabled: e.target.checked }, e.target.checked ? "Packages will be reviewed when the requirements change." : "Automatic reviews are off."));
       if (running) { // an automatic review is going: check back until it's done
         const timer = setInterval(() => { if (current.page === "packages") route(); else clearInterval(timer); }, 8000);
@@ -6551,26 +6538,19 @@ const prdPending = {
 const PRD_PENDING_KEEP_MS = 30 * 60 * 1000;
 let prdRun = null; // the draft or import the page on screen is following; starting or resuming another replaces it
 
+function prdModelField(p, id) {
+  const models = p.available_models?.length ? p.available_models : [{id: "", label: "Auto: choose an available model"}];
+  return `<label class="field"><span>AI model</span><select id="${esc(id)}" name="model" class="prd-model-select">${models.map(m => `<option value="${esc(m.id)}"${m.id === p.model ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}</select></label>`;
+}
+
 function productStripHtml(p) {
   const lead = p.sections.find((x) => x.id === "pitch" && x.filled) || p.sections.find((x) => x.filled);
-  const models = p.available_models || [];
-  const currentModel = p.model || "claude-sonnet-4-6";
-  const modelPicker = p.can_draft && models.length ? `
-    <div class="prd-model-picker">
-      <span class="muted">Model:</span>
-      <select id="prd-home-model-select" class="prd-model-select" aria-label="AI model for draft">
-        ${models.map((m) => `<option value="${esc(m.id)}"${m.id === currentModel ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}
-        <hr>
-        <option value="__manage_llms__">⚙️ Manage LLMs</option>
-      </select>
-    </div>` : "";
-
   // The heading and the pitch open the product requirements. Its buttons stay secondary: New job is Home's one primary.
   return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2></div>
     <div class="card-b stack">
       ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
         : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-12 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a><a class="btn small" href="#/product?reverse=1" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</a>${modelPicker}</div>`}
+           <div class="row gap-12 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a><a class="btn small" href="#/product?reverse=1" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</a></div>`}
     </div></section>`;
 }
 
@@ -6630,7 +6610,7 @@ pages.product = async (_, query) => {
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2>${prdStatusPill(p.sections || [])}</div>
         <div class="card-b stack">
           <div class="row gap-12 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">${prdFilled() ? "Update with AI" : "Draft with AI"}</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
-          <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · Every job reads this first.</div>
+          <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · ${p.shared ? "Shared across branches. " : ""}Every job reads this first.</div>
         </div></section>
       <div id="prd-panel"></div>
       ${p.sections.map(sectionCard).join("")}
@@ -6641,8 +6621,8 @@ pages.product = async (_, query) => {
       ${epics ? epics.html() : ""}
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
         <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
-        <div class="row gap-12 align-center wrap">
-          <span class="muted t-secondary">Model:</span>
+        <div class="row gap-12 align-center wrap" id="prd-auto-model"${p.auto_update ? "" : " hidden"}>
+          <span class="muted t-secondary">AI model for automatic updates:</span>
           <select id="prd-update-model-select" class="prd-model-select" aria-label="AI model for product requirements">
             ${(p.available_models || [
               { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Recommended)" },
@@ -6812,8 +6792,9 @@ pages.product = async (_, query) => {
               <label class="check"><input type="radio" name="mode" value="refresh" ${empty.length ? "" : "checked"}><span><strong>Update everything from the project</strong><small>Also corrects filled sections the code shows are out of date. You review every change before it's saved.</small></span></label>
             </fieldset>
             <label class="field"><span>Anything specific? <span class="muted">(optional)</span></span>
-              <textarea name="notes" rows="3" placeholder="e.g. we dropped the Android app; add the new export feature"></textarea></label>`, "Update");
-          if (values) draftPanel({ mode: values.mode || "missing", notes: (values.notes || "").trim() });
+              <textarea name="notes" rows="3" placeholder="e.g. we dropped the Android app; add the new export feature"></textarea></label>
+            ${prdModelField(p, "prd-draft-model")}`, "Update");
+          if (values) draftPanel({ mode: values.mode || "missing", notes: (values.notes || "").trim(), model: values.model || "" });
         });
         view.querySelectorAll("[data-prd-edit]").forEach((btn) => btn.addEventListener("click", () => {
           const id = btn.dataset.prdEdit, s = p.sections.find((x) => x.id === id), box = view.querySelector(`[data-prd-body="${id}"]`);
@@ -7159,7 +7140,7 @@ pages.product = async (_, query) => {
         });
       };
 
-      const reverseEngineerPrd = async ({ file, target }) => {
+      const reverseEngineerPrd = async ({ file, target, model = "" }) => {
         if (file && file.size > NJ_UPLOAD_LIMIT) { toast("That file is over 25 MB.", "warning"); return reversePanel(); }
         let canceled = false, taskId = null;
         const abortCtrl = new AbortController();
@@ -7177,8 +7158,8 @@ pages.product = async (_, query) => {
         busy(busyText, cancel);
         try {
           const started = file
-            ? await uploadFile(file, "product/reverse", { signal: abortCtrl.signal })
-            : await api("product/reverse", { method: "POST", body: { target, model: p.model || "" }, signal: abortCtrl.signal });
+            ? await uploadFile(file, `product/reverse?model=${encodeURIComponent(model)}`, { signal: abortCtrl.signal })
+            : await api("product/reverse", { method: "POST", body: { target, model }, signal: abortCtrl.signal });
           taskId = started?.task;
           if (canceled) {
             if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
@@ -7207,6 +7188,7 @@ pages.product = async (_, query) => {
           <label class="field"><span>Target binary path, package name, or REA analysis notes</span>
             <textarea id="prd-reverse-target" rows="3" placeholder="e.g. /path/to/binary, package name, or paste REA decompilation notes…" aria-label="Target or notes for REA reverse engineering"></textarea>
           </label>
+          ${prdModelField(p, "prd-reverse-model")}
           <div id="prd-rea-status" aria-live="polite"><small class="muted">Checking which AI tools have REA…</small></div>
           <div class="row gap-12">
             <button type="button" class="btn primary" id="prd-reverse-go" disabled>Reverse engineer</button>
@@ -7269,12 +7251,17 @@ pages.product = async (_, query) => {
         $("#prd-reverse-cancel").addEventListener("click", () => { panel().innerHTML = ""; });
         goBtn.addEventListener("click", () => {
           const target = textEl.value.trim();
-          reverseEngineerPrd({ file: picked, target });
+          reverseEngineerPrd({ file: picked, target, model: $("#prd-reverse-model")?.value || "" });
         });
       };
 
       // An existing project: read what is there (README, notes, manifests, layout, recent commits) and propose a first version.
-      const draftPanel = async ({ mode = "", notes = "" } = {}) => {
+      const draftPanel = async ({ mode = "", notes = "", model = null } = {}) => {
+        if (model === null) {
+          const choice = await formDialog("Draft product requirements", `<p>Read this project and draft requirements for you to review.</p>${prdModelField(p, "prd-draft-model")}`, "Draft with AI");
+          if (!choice) return;
+          model = choice.model || "";
+        }
         let canceled = false, taskId = null;
         const abortCtrl = new AbortController();
         const run = prdRun = {};
@@ -7287,14 +7274,14 @@ pages.product = async (_, query) => {
           toast("Draft cancelled", "cancel");
           panel().innerHTML = "";
         };
-        const modelLabel = p.available_models?.find((m) => m.id === p.model)?.label || p.model || "";
+        const modelLabel = p.available_models?.find((m) => m.id === model)?.label || model || "";
         const verb = mode ? "updating" : "drafting";
         const busyText = modelLabel
           ? `Reading your project and ${verb} with ${modelLabel}…`
           : `Reading your project and ${verb} with AI…`;
         busy(busyText, cancel);
         try {
-          const started = await api("product/draft", { method: "POST", body: { model: p.model || "", ...(mode ? { mode, notes } : {}) }, signal: abortCtrl.signal });
+          const started = await api("product/draft", { method: "POST", body: { model, ...(mode ? { mode, notes } : {}) }, signal: abortCtrl.signal });
           taskId = started?.task;
           if (canceled) {
             if (taskId) { try { await api(`product/task/${encodeURIComponent(taskId)}`, { method: "DELETE" }); } catch {} }
@@ -8766,7 +8753,9 @@ pages.config = async (args = []) => {
             if (event.target.closest("[data-free-ai]")) { setUpFreeAi(); return; }
             const button = event.target.closest("[data-ai-connect]");
             if (!button || button.disabled) return;
-            runAction("ai_connect", { provider: button.dataset.aiConnect, title: `Connect ${button.dataset.aiName}` }, { skipConfirm: true });
+            ToolConnect.open(button.dataset.aiConnect, button.dataset.aiName, {api, formDialog, onClose: () => {
+              refreshState().then(() => { if (current.page === "config") route(); });
+            }});
           };
           view.addEventListener("click", onConnect);
           cleanup.push(() => view.removeEventListener("click", onConnect));
@@ -10346,6 +10335,13 @@ function runDuration(started, ended) {
 }
 
 function runFailureGuidance(r) {
+  if (r.action === "package_update" && !r.running && !r.stopped && r.exit_code !== 0) {
+    const detail = r.error_summary || r.result?.headline || r.last_line || "The package manager or project checks failed.";
+    const summary = `Repair the failed package update: ${r.title || "dependency update"}`;
+    const spec = `A direct package-manager update failed. Diagnose the update and project checks, make the smallest repair, and rerun the checks.\nCommand: ${r.command || ""}\nFailure: ${detail}`;
+    const href = `#/new?${new URLSearchParams({type: "bug", summary, spec})}`;
+    return {title: "Package update needs a fix", detail: "The update or project checks failed. Changes are kept so you can inspect them or ask AI for a focused repair.", action: `<a class="btn small primary" href="${esc(href)}">Fix with AI</a>`, secondary: `<a class="btn small" href="#/git?show=changes">Review changes</a>`};
+  }
   let err = (r.error_summary || r.last_line || "").trim();
   if (/^\[exited(?: with code \d+)?\]$/i.test(err)) err = "";
   const lower = err.toLowerCase();

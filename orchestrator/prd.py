@@ -1,6 +1,6 @@
 """The product requirements doc: one short, living document that tells every AI what the product is.
 
-`docs/product/prd.md` has six optional sections, in the person's own words wherever possible:
+The shared runtime `product/prd.md` (seeded once from `docs/product/prd.md`) has six optional sections, in the person's own words wherever possible:
 
   Pitch            what it is, as if explained to a friend (and what it is built for)
   Who it's for     an ideal user, or the situations it is for; fine to not know yet
@@ -19,6 +19,11 @@ and a switch turns automatic updates off. Nothing here talks to a model itself; 
 from __future__ import annotations
 
 import difflib
+import fcntl
+import tempfile
+import threading
+from contextlib import contextmanager
+from functools import wraps
 import json
 import os
 import re
@@ -31,7 +36,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 
-PATH = "docs/product/prd.md"
+PATH = "docs/product/prd.md"  # tracked legacy seed, retained for compatibility
+SHARED_PATH = "product/prd.md"
 DESIGNS_DIR = "docs/product/designs"
 SOURCES_DIR = "docs/product/source"  # a detailed document the person imported: kept whole, beside the short summaries
 SOURCES_HEADING = "## Source documents"
@@ -203,9 +209,8 @@ AUDIENCES: dict[str, dict[str, Any]] = {
 def context_block(root: Path, audience: str = "planner") -> str:
     """The filled-in sections, trimmed, with the rule that fits who is reading them. Empty until something is written."""
     cfg = AUDIENCES.get(audience) or AUDIENCES["planner"]
-    try:
-        text = (Path(root) / PATH).read_text(encoding="utf-8")
-    except OSError:
+    text = read_text(root)
+    if text is None:
         return ""
     parts = split(text)
     blocks = []
@@ -216,15 +221,21 @@ def context_block(root: Path, audience: str = "planner") -> str:
         limit = cfg["limits"][s["id"]]
         if len(body) > limit:
             body = body[:limit].rstrip() + "\n...(trimmed)"
+        def absolute_asset(match):
+            target = Path(match.group(1))
+            if len(target.parts) != 2 or target.name in {".", ".."}:
+                return match.group(0)
+            return "](" + str(asset_folder(root, target.parts[0]) / target.name) + ")"
+        body = re.sub(r"\]\(((?:designs|source)/[^)\n]+)\)", absolute_asset, body)
         blocks.append(f"### {s['title']}\n{body}")
     if not blocks:
         return ""
     attached = ""
     if sources(text):
-        listing = "\n".join(f"- docs/product/{i['target']} ({i['label']})" for i in sources(text))
+        listing = "\n".join(f"- {asset_folder(root, 'source') / Path(i['target']).name} ({i['label']})" for i in sources(text))
         attached = ("\n\n### Full source documents\nThe sections above summarise these. Read the part that matters when a detail isn't settled above; "
                     f"if a source and a summary disagree, say so instead of guessing.\n{listing}")
-    return f"\n\n## Product context (source of truth, `{PATH}`)\n{cfg['rule']}\n\n" + "\n\n".join(blocks) + attached + "\n"
+    return f"\n\n## Product context (source of truth, `{document_path(root)}`)\n{cfg['rule']}\n\n" + "\n\n".join(blocks) + attached + "\n"
 
 
 # --------------------------------------------------------------------------- the document, its history and settings
@@ -234,26 +245,162 @@ def _now() -> float:
     return time.time()
 
 
+def shared_runtime(root: Path, runtime: Path | None = None) -> Path:
+    """Use the main checkout's runtime for standard linked-worktree storage."""
+    root = Path(root).resolve()
+    runtime = Path(runtime) if runtime is not None else root / ".orchestrator"
+    if runtime.resolve() != (root / ".orchestrator").resolve():
+        return runtime
+    try:
+        result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"],
+                                cwd=root, capture_output=True, text=True, timeout=5)
+        lines = result.stdout.strip().splitlines()
+        if result.returncode == 0 and len(lines) == 2 and Path(lines[1]).resolve() == root:
+            common = Path(lines[0])
+            if common.name == ".git":
+                return common.parent / ".orchestrator"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return runtime
+
+
+def document_path(root: Path) -> Path:
+    return shared_runtime(root) / SHARED_PATH
+
+
+def asset_folder(root: Path, kind: str) -> Path:
+    """Shared source/design folder; legacy assets are copied once without replacing shared files."""
+    return Prd(root, Path(root) / ".orchestrator").asset_folder(kind)
+
+
+def read_text(root: Path) -> str | None:
+    """Read the shared canonical document, migrating an existing tracked seed once."""
+    return Prd(root, Path(root) / ".orchestrator").read()
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._locked():
+            return method(self, *args, **kwargs)
+    return call
+
+
 class Prd:
     """One project's document plus its history, settings and the latest automatic-update notice."""
 
     def __init__(self, root: Path, runtime: Path):
         self.root = Path(root)
-        self.runtime = Path(runtime)
+        self.runtime = shared_runtime(self.root, runtime)
+        self._mutex = threading.RLock()
+        self._local = threading.local()
 
     # ---- files
     @property
     def path(self) -> Path:
-        return self.root / PATH
+        return self.runtime / SHARED_PATH
+
+    @contextmanager
+    def _locked(self):
+        with self._mutex:
+            if getattr(self._local, "locked", False):
+                yield
+                return
+            self.runtime.mkdir(parents=True, exist_ok=True)
+            with (self.runtime / "prd.lock").open("a") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                self._local.locked = True
+                try:
+                    yield
+                finally:
+                    self._local.locked = False
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def exists(self) -> bool:
-        return self.path.is_file()
+        return self.read() is not None
 
     def read(self) -> str | None:
         try:
-            return self.path.read_text(encoding="utf-8")
+            text = self.path.read_text(encoding="utf-8")
+            self._migrate_assets()
+            return text
+        except FileNotFoundError:
+            pass
         except OSError:
             return None
+        try:
+            legacy = (self.root / PATH).read_text(encoding="utf-8")
+        except OSError:
+            return None
+        try:
+            with self._locked():
+                if not self.path.exists():
+                    # Older linked worktrees may hold the only tracked history/settings.
+                    for name in ("prd.json", "prd-history.json"):
+                        target = self.runtime / name
+                        old = self.root / ".orchestrator" / name
+                        if not target.exists() and old.is_file():
+                            _atomic_write(target, old.read_text(encoding="utf-8"))
+                    _atomic_write(self.path, legacy)
+                    self._migrate_assets()
+                return self.path.read_text(encoding="utf-8")
+        except OSError:
+            # Read-only projects can still supply their original requirements.
+            return legacy
+
+    def _migrate_assets(self) -> None:
+        # The shared copy always wins over an older branch's files.
+        try:
+            with self._locked():
+                for kind in ("source", "designs"):
+                    folder = self.path.parent / kind
+                    for base in dict.fromkeys((self.root, self.runtime.parent)):
+                        legacy = base / "docs" / "product" / kind
+                        if not legacy.is_dir():
+                            continue
+                        for source in legacy.iterdir():
+                            if source.is_file() and not source.is_symlink():
+                                folder.mkdir(parents=True, exist_ok=True)
+                                target = folder / source.name
+                                if not target.exists():
+                                    fd, temporary = tempfile.mkstemp(prefix="." + source.name + "-", dir=folder)
+                                    os.close(fd)
+                                    try:
+                                        shutil.copyfile(source, temporary)
+                                        os.replace(temporary, target)
+                                    finally:
+                                        if os.path.exists(temporary):
+                                            os.unlink(temporary)
+        except OSError:
+            pass  # Legacy assets remain available in read-only projects.
+
+    def asset_folder(self, kind: str) -> Path:
+        if kind not in {"source", "designs"}:
+            raise PrdError("Unknown product asset folder.")
+        self._migrate_assets()
+        folder = self.path.parent / kind
+        if not folder.exists():
+            for base in dict.fromkeys((self.root, self.runtime.parent)):
+                legacy = base / "docs" / "product" / kind
+                if legacy.is_dir():
+                    return legacy
+        return folder
 
     def _state_file(self) -> Path:
         return self.runtime / "prd.json"
@@ -268,8 +415,7 @@ class Prd:
             return default
 
     def _save_json(self, path: Path, data: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _atomic_write(path, json.dumps(data, indent=2))
 
     # ---- settings and notice
     def state(self) -> dict[str, Any]:
@@ -279,6 +425,7 @@ class Prd:
     def auto_update(self) -> bool:
         return self.state().get("auto_update", True) is not False  # on unless switched off
 
+    @_serialized
     def set_auto_update(self, on: bool) -> None:
         s = self.state()
         s["auto_update"] = bool(on)
@@ -288,6 +435,7 @@ class Prd:
         """Whether the person has been offered a breakdown into epics (asked once, the first time the PRD is filled in)."""
         return self.state().get("breakdown_offered") is True
 
+    @_serialized
     def set_breakdown_offered(self, offered: bool = True) -> None:
         s = self.state()
         s["breakdown_offered"] = bool(offered)
@@ -297,12 +445,14 @@ class Prd:
         n = self.state().get("notice")
         return n if isinstance(n, dict) and not n.get("seen") else None
 
+    @_serialized
     def dismiss_notice(self) -> None:
         s = self.state()
         if isinstance(s.get("notice"), dict):
             s["notice"]["seen"] = True
             self._save_json(self._state_file(), s)
 
+    @_serialized
     def _set_notice(self, summary: str, job_id: str, title: str, version_id: str) -> None:
         s = self.state()
         s["notice"] = {"id": version_id, "at": _now(), "summary": summary, "job": job_id, "job_title": title, "seen": False}
@@ -331,6 +481,7 @@ class Prd:
         self._save_json(self._history_file(), {"versions": versions[-MAX_VERSIONS:]})
         return entry
 
+    @_serialized
     def write(self, text: str, source: str = "you", summary: str = "", job: str = "", record: bool = True) -> dict[str, Any] | None:
         """Saves the document. Returns the new version, or None when nothing changed."""
         if len(text) > MAX_DOC_CHARS:
@@ -340,23 +491,26 @@ class Prd:
         text = keep_sources(before, text)
         if before is not None and before == text:
             return None
-        if record and before is not None and not self._versions():
+        track_before = record and before is not None and not self._versions()
+        _atomic_write(self.path, text)
+        if track_before:
             self._record(before, "earlier", "The document before changes were tracked")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(text, encoding="utf-8")
         return self._record(text, source, summary, job) if record else None
 
+    @_serialized
     def set_section(self, section_id: str, body: str, source: str = "you", summary: str = "") -> dict[str, Any] | None:
         if section_id not in BY_ID:
             raise PrdError("Unknown section.")
         text = self.read() or template()
         return self.write(replace_section(text, section_id, body), source, summary or f"Edited {BY_ID[section_id]['title']}")
 
+    @_serialized
     def revert(self, version_id: str) -> dict[str, Any] | None:
         v = self.version(version_id)
         when = time.strftime("%b %d, %H:%M", time.localtime(v["at"]))
         return self.write(v["content"], "revert", f"Restored the version from {when}")
 
+    @_serialized
     def add_reference(self, label: str, target: str) -> None:
         """Adds a design, sketch or link as a bullet under Look and feel."""
         label = re.sub(r"[\[\]\n]", " ", label).strip()[:120] or "Reference"
@@ -370,10 +524,11 @@ class Prd:
     def sources(self) -> list[dict[str, str]]:
         return sources(self.read())
 
+    @_serialized
     def attach_source(self, name: str, data: bytes, text: str) -> list[dict[str, str]]:
         """Keep an imported document whole in the project, and return the entries to list it under "Source documents".
         Jobs read these when the short sections don't settle a detail. A Word or PDF file is kept as it came, plus its text."""
-        folder = self.root / SOURCES_DIR
+        folder = self.asset_folder("source")
         folder.mkdir(parents=True, exist_ok=True)
         clean = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(name or "").name).strip(".-") or "product-requirements.md"
         stem, ext = Path(clean).stem[:80] or "document", Path(clean).suffix.lower()
@@ -397,9 +552,10 @@ class Prd:
         text = self.read()
         return {"exists": text is not None, "text": text if text is not None else template(), "sections": sections_view(text),
                 "sources": sources(text), "auto_update": self.auto_update(), "breakdown_offered": self.breakdown_offered(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
-                "history": self.history()}
+                "history": self.history(), "shared": True, "shared_path": str(self.path)}
 
     # ---- an old project's documents become the PRD (the old files are left where they are)
+    @_serialized
     def migrate_legacy(self) -> bool:
         if self.exists():
             return False
@@ -819,7 +975,10 @@ def run_update(prd: Prd, job: dict[str, Any], llm: Callable[[str], str]) -> dict
         return {"status": "rejected", "error": f"The suggested update was not applied: {why}.", "summary": update["summary"]}
     if new == current:
         return {"status": "nochange"}
-    version = prd.write(new, "auto", update["summary"] or "Updated from a finished job", job=str(job.get("job_id") or ""))
-    if version:
-        prd._set_notice(update["summary"] or "Updated from a finished job", str(job.get("job_id") or ""), str(job.get("title") or ""), version["id"])
+    with prd._locked():
+        if prd.read() != current:
+            return {"status": "rejected", "error": "The requirements changed while the suggested update was being prepared. Try again."}
+        version = prd.write(new, "auto", update["summary"] or "Updated from a finished job", job=str(job.get("job_id") or ""))
+        if version:
+            prd._set_notice(update["summary"] or "Updated from a finished job", str(job.get("job_id") or ""), str(job.get("title") or ""), version["id"])
     return {"status": "updated", "summary": update["summary"]}

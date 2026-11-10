@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
 import zipfile
@@ -88,7 +90,7 @@ class SourceDocumentTests(unittest.TestCase):
     def test_an_imported_text_file_is_kept_whole_and_listed_under_source_documents(self):
         items = self.doc.attach_source("Big Spec.md", b"", "# The full spec\n\nEvery detail.")
         self.assertEqual(items, [{"label": "Big Spec.md", "target": "source/Big-Spec.md"}])
-        self.assertEqual((self.root / prd.SOURCES_DIR / "Big-Spec.md").read_text(), "# The full spec\n\nEvery detail.")
+        self.assertEqual((prd.asset_folder(self.root, "source") / "Big-Spec.md").read_text(), "# The full spec\n\nEvery detail.")
         text = prd.set_sources(prd.template(), items)
         self.assertEqual(prd.sources(text), items)
         self.assertEqual(prd.split(text)["pitch"], "")  # the five fields are untouched
@@ -96,18 +98,18 @@ class SourceDocumentTests(unittest.TestCase):
     def test_a_word_or_pdf_file_is_kept_as_it_came_with_its_text_beside_it(self):
         items = self.doc.attach_source("Spec.pdf", b"%PDF-binary", "Extracted words")
         self.assertEqual([i["target"] for i in items], ["source/Spec.pdf", "source/Spec.txt"])
-        self.assertEqual((self.root / prd.SOURCES_DIR / "Spec.pdf").read_bytes(), b"%PDF-binary")
-        self.assertEqual((self.root / prd.SOURCES_DIR / "Spec.txt").read_text(), "Extracted words")
+        self.assertEqual((prd.asset_folder(self.root, "source") / "Spec.pdf").read_bytes(), b"%PDF-binary")
+        self.assertEqual((prd.asset_folder(self.root, "source") / "Spec.txt").read_text(), "Extracted words")
 
     def test_a_second_file_with_the_same_name_does_not_overwrite_the_first(self):
         first = self.doc.attach_source("spec.md", b"", "one")
         second = self.doc.attach_source("spec.md", b"", "two")
         self.assertNotEqual(first[0]["target"], second[0]["target"])
-        self.assertEqual((self.root / prd.SOURCES_DIR / "spec.md").read_text(), "one")
+        self.assertEqual((prd.asset_folder(self.root, "source") / "spec.md").read_text(), "one")
 
     def test_a_path_in_the_name_cannot_leave_the_source_folder(self):
         items = self.doc.attach_source("../../etc/passwd.md", b"", "x")
-        self.assertTrue((self.root / prd.SOURCES_DIR / Path(items[0]["target"]).name).is_file())
+        self.assertTrue((prd.asset_folder(self.root, "source") / Path(items[0]["target"]).name).is_file())
         self.assertFalse((self.root / "etc").exists())
 
     def test_edits_that_rewrite_the_whole_document_keep_the_attachments(self):
@@ -122,7 +124,7 @@ class SourceDocumentTests(unittest.TestCase):
         items = self.doc.attach_source("spec.md", b"", "full")
         self.doc.write(prd.set_sources(prd.replace_section(prd.template(), "pitch", "A notes app"), items))
         block = prd.context_block(self.root, "builder")
-        self.assertIn("docs/product/source/spec.md", block)
+        self.assertIn(str(prd.asset_folder(self.root, "source") / "spec.md"), block)
         self.assertIn("A notes app", block)
 
     def test_the_import_prompt_asks_for_short_summaries_because_the_whole_file_is_kept(self):
@@ -256,6 +258,107 @@ class MigrationTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.assertFalse(p.migrate_legacy())
         self.assertFalse(p.exists())
+
+
+class SharedRequirementsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "main"
+        self.root.mkdir()
+        self.git("init", "-q")
+        self.git("config", "user.email", "test@example.com")
+        self.git("config", "user.name", "Test")
+        legacy = self.root / prd.PATH
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(FILLED)
+        self.git("add", ".")
+        self.git("commit", "-qm", "seed")
+        self.other = Path(self.tmp.name) / "worktree"
+        self.git("worktree", "add", "-qb", "other", str(self.other))
+        self.doc = prd.Prd(self.root, self.root / ".orchestrator")
+        self.other_doc = prd.Prd(self.other, self.other / ".orchestrator")
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True, text=True)
+
+    def test_edits_and_history_survive_worktree_and_branch_changes(self):
+        self.doc.set_section("pitch", "Shared current product")
+        self.assertIn("Shared current product", self.other_doc.read())
+        self.other_doc.set_section("features", "Shared feature")
+        self.git("checkout", "-qb", "another")
+        self.assertIn("Shared feature", self.doc.read())
+        self.assertEqual(self.doc.history(), self.other_doc.history())
+        self.other_doc.revert(self.doc.history()[-1]["id"])
+        self.assertEqual(self.doc.read(), FILLED)
+        self.assertEqual((self.other / prd.PATH).read_text(), FILLED)
+
+    def test_every_context_reader_uses_shared_content_over_stale_tracked_copy(self):
+        self.doc.set_section("pitch", "Shared current product")
+        for audience in prd.AUDIENCES:
+            self.assertIn("Shared current product", prd.context_block(self.other, audience))
+        self.assertIn("Shared current product", prd.read_text(self.other))
+
+    def test_concurrent_legacy_migration_never_overwrites_the_winner(self):
+        (self.other / prd.PATH).write_text(prd.replace_section(FILLED, "pitch", "Other old copy"))
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            texts = list(pool.map(lambda i: (self.doc if i % 2 else self.other_doc).read(), range(32)))
+        self.assertEqual(len(set(texts)), 1)
+        self.doc.set_section("pitch", "New shared content")
+        self.assertIn("New shared content", self.other_doc.read())
+        self.assertEqual((self.root / prd.PATH).read_text(), FILLED)
+
+    def test_concurrent_section_edits_keep_history_and_both_changes(self):
+        self.doc.read()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda pair: pair[0].set_section(*pair[1]), [
+                (self.doc, ("pitch", "Shared pitch")),
+                (self.other_doc, ("features", "Shared features")),
+            ]))
+        self.assertIn("Shared pitch", self.doc.read())
+        self.assertIn("Shared features", self.doc.read())
+        self.assertEqual(len(self.doc.history()), 3)
+
+    def test_existing_worktree_history_and_settings_are_preserved_when_migrated(self):
+        runtime = self.other / ".orchestrator"
+        runtime.mkdir()
+        (runtime / "prd.json").write_text('{"auto_update": false}')
+        version = {"id": "old", "content": FILLED, "source": "you", "at": 1, "summary": "Original"}
+        (runtime / "prd-history.json").write_text(json.dumps({"versions": [version]}))
+        self.other_doc.read()
+        self.assertFalse(self.doc.auto_update())
+        self.assertEqual(self.doc.history()[0]["id"], "old")
+        self.assertTrue((runtime / "prd-history.json").exists())
+
+    def test_legacy_assets_and_new_imports_are_shared_without_changing_originals(self):
+        original = self.other / prd.SOURCES_DIR / "spec.md"
+        original.parent.mkdir(parents=True)
+        original.write_text("Full legacy specification")
+        self.other_doc.read()
+        self.assertEqual((prd.asset_folder(self.root, "source") / "spec.md").read_text(), "Full legacy specification")
+        self.doc.attach_source("new.md", b"", "New shared specification")
+        self.assertEqual((prd.asset_folder(self.other, "source") / "new.md").read_text(), "New shared specification")
+        original.write_text("Stale branch replacement")
+        self.assertEqual((prd.asset_folder(self.other, "source") / "spec.md").read_text(), "Full legacy specification")
+
+    def test_a_failed_document_write_does_not_record_a_revision(self):
+        self.doc.read()
+        before = self.doc.history()
+        original = prd._atomic_write
+        def fail_document(path, text):
+            if path == self.doc.path:
+                raise OSError("Disk full")
+            return original(path, text)
+        with patch("orchestrator.prd._atomic_write", side_effect=fail_document):
+            with self.assertRaises(OSError):
+                self.doc.set_section("pitch", "Never saved")
+        self.assertEqual(self.doc.history(), before)
+        self.assertNotIn("Never saved", self.doc.read())
+
+    def test_read_only_runtime_can_still_read_legacy_without_migration(self):
+        with patch("orchestrator.prd._atomic_write", side_effect=PermissionError("read only")):
+            self.assertEqual(self.doc.read(), FILLED)
+        self.assertFalse(self.doc.path.exists())
 
 
 class ImportTests(unittest.TestCase):
@@ -430,6 +533,15 @@ class AutoUpdateTests(unittest.TestCase):
         text = self.prd.read()
         text = prd.replace_section(text, "features", changes.get("features", "- Rematch after any game"))
         return json.dumps({"changed": True, "summary": changes.get("summary", "Added rematch"), "markdown": text})
+
+    def test_a_parallel_edit_is_not_replaced_by_an_older_model_proposal(self):
+        reply = self.updated()
+        def model(prompt):
+            self.prd.set_section("pitch", "New edit while AI was working")
+            return reply
+        result = prd.run_update(self.prd, JOB, model)
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("New edit while AI was working", self.prd.read())
 
     def test_a_useful_change_is_applied_versioned_and_announced(self):
         out = prd.run_update(self.prd, JOB, self.llm(self.updated()))

@@ -1,0 +1,7 @@
+# Complete remaining session items
+
+Approved scope: direct package updates using the project's package manager and normal tests, offering AI repair only after failure; one shared Product requirements document across branches/worktrees with safe legacy migration; automatic user-local prerequisites for AI tool installation and a guided Connect dialog with live progress and sign-in controls; Product model selection only inside AI draft/update/reverse-engineer steps.
+
+Keep existing fallback paths and existing user content. Do not install tools globally or require administrator access when a user-local installation is possible. A dependency update may change only its chosen manifest/package/lock entries through the package manager; validate names against installed dependencies, never build shell commands from arbitrary user text. Shared requirements must remain visible to every planner/worker and must not be replaced by an old branch's copy. Guided sign-in must retain an advanced terminal fallback and must not silently accept license terms. Updating settings or requirements must not lose history.
+
+Sentry OAuth registration and sending a real password reset email are external account operations. Inspect configuration using existing authorized access; never invent credentials or send email without an explicit recipient/send request. Report any remaining account setup or live verification plainly.

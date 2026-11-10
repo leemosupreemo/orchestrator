@@ -154,6 +154,7 @@ def feature_doc(feature: dict[str, Any], jobs: list[dict[str, Any]], names: dict
 
 def project_files(root: Path) -> list[dict[str, Any]]:
     """README, AI-helper notes and the markdown under docs/, as they are in the repository."""
+    from orchestrator import prd
     root = Path(root)
     found: list[Path] = [root / n for n in ROOT_NOTES if (root / n).is_file()]
     docs = root / "docs"
@@ -167,7 +168,13 @@ def project_files(root: Path) -> list[dict[str, Any]]:
     for f in found[:MAX_PROJECT_FILES]:
         rel = f.relative_to(root).as_posix()
         parent = Path(rel).parent.as_posix()
-        out.append({"path": rel, "title": _file_title(f, rel), "size": f.stat().st_size, "group": "Project notes" if parent == "." else parent})
+        shared = prd.document_path(root) if rel == prd.PATH else f
+        shown = shared if shared.is_file() else f
+        out.append({"path": rel, "title": _file_title(shown, rel), "size": shown.stat().st_size, "group": "Project notes" if parent == "." else parent})
+    if not any(f["path"] == prd.PATH for f in out):
+        shared = prd.document_path(root)
+        if shared.is_file():
+            out.append({"path": prd.PATH, "title": "Product requirements", "size": shared.stat().st_size, "group": "docs/product"})
     return out
 
 
@@ -187,6 +194,11 @@ def read_project_file(root: Path, rel: str) -> str:
     allowed = {f["path"] for f in project_files(root)}
     if rel not in allowed:
         raise DocsError("That file isn't part of the project documentation.")
+    from orchestrator import prd
+    if rel == prd.PATH:
+        text = prd.read_text(root)
+        if text is not None:
+            return text[:MAX_FILE_CHARS]
     try:
         return (Path(root) / rel).read_text(encoding="utf-8", errors="replace")[:MAX_FILE_CHARS]
     except OSError:

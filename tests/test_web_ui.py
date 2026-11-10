@@ -945,22 +945,18 @@ class ProductStripTests(unittest.TestCase):
         self.assertIn('<a class="product-pitch" href="#/product"', strip)
         self.assertNotIn(">Open</a>", strip)  # no separate Open link
 
-    def test_product_strip_and_settings_include_model_dropdown(self):
+    def test_model_choices_are_inside_ai_steps_and_automatic_ai_settings(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('id="prd-home-model-select"', js)
+        self.assertIn('prdModelField(p, "prd-draft-model")', js)
+        self.assertIn('prdModelField(p, "prd-reverse-model")', js)
         self.assertIn('id="prd-update-model-select"', js)
-        self.assertIn('prd-model-picker', js)
         self.assertIn('api("product/model"', js)
-        self.assertNotIn('id="prd-start-draft"', js)
 
-    def test_product_strip_includes_manage_llms_option(self):
+    def test_manual_product_entry_does_not_show_model_controls(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         strip = js[js.index("function productStripHtml"):js.index("pages.product =")]
-        self.assertIn("<hr>", strip)
-        self.assertIn('<option value="__manage_llms__">⚙️ Manage LLMs</option>', strip)
-        home = js[js.index("pages.home ="):js.index("function jobHeaderActions(")]
-        self.assertIn('next === "__manage_llms__"', home)
-        self.assertIn('location.hash = "#/config/models"', home)
+        self.assertNotIn("<select", strip)
+        self.assertNotIn("__manage_llms__", strip)
 
 
 class UiShutdownTests(unittest.TestCase):
@@ -2916,7 +2912,11 @@ class ActionTests(unittest.TestCase):
                 # Earlier builders create spec files. Pull requires a clean working tree.
                 sp.run(["git", "add", "."], cwd=self.root, check=True)
                 sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "Specs"], cwd=self.root, check=True)
-            argv = action.build(dict(params, name="feature/x") if key == "git_new_branch" else params, self.root)
+            chosen = dict(params, name="feature/x") if key == "git_new_branch" else params
+            if key == "package_update":
+                (self.root / "package.json").write_text(json.dumps({"dependencies": {"left-pad": "^1.3.0"}}))
+                chosen = {"ecosystem": "npm", "name": "left-pad", "manifest": "package.json"}
+            argv = action.build(chosen, self.root)
             if key == "stash_checkout":
                 self.assertEqual(argv[:2], ["sh", "-c"], key)
             elif key.startswith("git_"):
@@ -5898,9 +5898,7 @@ class PackagesApiTests(ServerTestCase):
 
     def edit_prd(self, text):
         from orchestrator import prd as prd_doc
-        path = self.root / prd_doc.PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(prd_doc.replace_section(prd_doc.template("Word Duel"), "pitch", text))
+        prd_doc.Prd(self.root, ui.runtime_dir(self.root)).write(prd_doc.replace_section(prd_doc.template("Word Duel"), "pitch", text))
 
     ANSWER = json.dumps({"packages": [{"name": "socket.io", "ecosystem": "npm", "purpose": "Realtime", "why": "Live seats", "url": ""}], "notes": "ok", "sources": []})
 
@@ -5995,7 +5993,7 @@ class PackagesApiTests(ServerTestCase):
         self.server.packages_tick()
         (self.root / ".orchestrator" / "docs").mkdir(parents=True, exist_ok=True)
         from orchestrator import prd as prd_doc
-        (self.root / prd_doc.PATH).write_text(prd_doc.template("Word Duel"))
+        prd_doc.Prd(self.root, ui.runtime_dir(self.root)).write(prd_doc.template("Word Duel"))
         self.assertFalse(self.server.packages_tick())  # nothing written any more: nothing to review
 
     def test_the_page_lists_suggests_and_starts_jobs_instead_of_editing_manifests(self):
@@ -7010,7 +7008,7 @@ class ProductEndpointTests(ServerTestCase):
         res, data = self.post("/api/product", {"section": "pitch", "body": self.PITCH})
         self.assertEqual(res.status, 200)
         self.assertTrue(next(s for s in data["sections"] if s["id"] == "pitch")["filled"])
-        self.assertIn("A word game", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertIn("A word game", ui.prd_doc.read_text(self.root))
         self.assertEqual([(h["source"], h["summary"]) for h in data["history"]], [("you", "Edited Pitch")])
 
     def test_the_whole_document_can_be_saved_and_bad_input_is_refused(self):
@@ -7033,7 +7031,7 @@ class ProductEndpointTests(ServerTestCase):
         self.assertGreater(len(summary), 300)
         res, d = self.post("/api/product", {"text": text, "source": "draft", "summary": summary})
         self.assertEqual(res.status, 200)
-        self.assertIn("A word game", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertIn("A word game", ui.prd_doc.read_text(self.root))
         self.assertLessEqual(len(d["history"][0]["summary"]), 300)
 
     def test_saving_requires_the_ui_header(self):
@@ -7057,7 +7055,7 @@ class ProductEndpointTests(ServerTestCase):
         self.assertIn("+Second idea", v["diff"])
         res, restored = self.post("/api/product/revert", {"id": oldest["id"]})
         self.assertEqual(res.status, 200)
-        self.assertIn("First idea", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertIn("First idea", ui.prd_doc.read_text(self.root))
         self.assertEqual(restored["history"][0]["source"], "revert")
         self.assertEqual(len(restored["history"]), 3)  # nothing was lost
         self.assertEqual(self.post("/api/product/revert", {"id": "ghost"})[0].status, 400)
@@ -7075,7 +7073,7 @@ class ProductEndpointTests(ServerTestCase):
         _, data = self.request("GET", "/api/product")
         self.assertEqual((data["notice"]["id"], data["history"][0]["source"]), (state["product_notice"]["id"], "auto"))
         self.post("/api/product/revert", {"id": data["history"][1]["id"]})  # Undo
-        self.assertNotIn("Rematch", (self.root / "docs" / "product" / "prd.md").read_text())
+        self.assertNotIn("Rematch", ui.prd_doc.read_text(self.root))
         self.assertEqual(self.post("/api/product/dismiss", {})[1], {"ok": True})
         self.assertIsNone(self.request("GET", "/api/state")[1]["product_notice"])
 
@@ -7102,14 +7100,14 @@ class ProductEndpointTests(ServerTestCase):
         png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
         res, data = self.raw_post("/api/product/design?name=Home%20sketch.png", png)
         self.assertEqual(res.status, 200, data)
-        saved = [p.name for p in (self.root / "docs" / "product" / "designs").iterdir()]
+        saved = [p.name for p in ui.prd_doc.asset_folder(self.root, "designs").iterdir()]
         self.assertEqual(len(saved), 1)
         self.assertIn(f"designs/{saved[0]}", next(s for s in data["sections"] if s["id"] == "look")["body"])
         res, body = self.raw_get(f"/api/product/design/{saved[0]}")
         self.assertEqual((res.status, res.getheader("Content-Type"), body), (200, "image/png", png))
         # Anything that is not a plain image is a download, never shown in the app's own origin.
         res, _ = self.raw_post("/api/product/design?name=page.html", b"<script>alert(1)</script>")
-        html_name = next(p.name for p in (self.root / "docs" / "product" / "designs").iterdir() if p.suffix == ".html")
+        html_name = next(p.name for p in ui.prd_doc.asset_folder(self.root, "designs").iterdir() if p.suffix == ".html")
         res, body = self.raw_get(f"/api/product/design/{html_name}")
         self.assertEqual(res.getheader("Content-Type"), "application/octet-stream")
         self.assertIn("attachment", res.getheader("Content-Disposition"))
@@ -7162,7 +7160,7 @@ class ProductEndpointTests(ServerTestCase):
         self.assertIn("SHORT SUMMARY", prompts[0])
         self.assertEqual(task["result"]["attached"], ["Big Spec.md"])
         self.assertIn("(source/Big-Spec.md)", task["result"]["markdown"])
-        self.assertEqual((self.root / "docs/product/source/Big-Spec.md").read_text(), full)
+        self.assertEqual((ui.prd_doc.asset_folder(self.root, "source") / "Big-Spec.md").read_text(), full)
         # accepting the proposal saves the summary and the attachment together
         _, saved = self.post("/api/product", {"text": task["result"]["markdown"], "source": "import", "summary": "x"})
         self.assertEqual([i["target"] for i in saved["sources"]], ["source/Big-Spec.md"])
