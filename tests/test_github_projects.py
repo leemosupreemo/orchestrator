@@ -166,6 +166,12 @@ class EndpointTests(ServerTestCase):
         for bit in ('data-project-tab="github"', 'api("projects/github")', 'api("projects/clone"', "On this computer", "Clone &amp; add"):
             self.assertIn(bit, dialog)
 
+    def test_dropdown_includes_github_repos(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        dropdown = app[app.index("function renderProjectSelect"):app.index("document.addEventListener(\"change\"")]
+        self.assertIn("p.github_repos", dropdown)
+        self.assertIn("unDownloaded", dropdown)
+
 
 if __name__ == "__main__":
     unittest.main()

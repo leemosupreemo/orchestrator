@@ -3035,7 +3035,42 @@ def session_computer(machines: list[dict[str, Any]], root: Path | None = None) -
             "primary_online": (status.get("primary") or {}).get("online", False), "checked": status["enabled"] and "unknown" not in status}
 
 
+def auto_discover_local_projects() -> None:
+    """Quickly check common developer folders (~/Projects, ~/Developer) for git repositories
+    or orchestrator projects and add them to recent projects if not already tracked."""
+    try:
+        home = Path.home()
+        candidates = [home / "Projects", home / "Developer", home / "Documents", home / "Code", home / "src"]
+        known = {str(safe_resolve(Path(p["root"]).expanduser())): p
+                 for p in load_recent_projects(prune_missing=False).get("projects", []) if p.get("root")}
+        for base in candidates:
+            if not base.is_dir():
+                continue
+            try:
+                for entry in base.iterdir():
+                    if not entry.is_dir() or entry.name.startswith("."):
+                        continue
+                    if (entry / ".git").is_file():  # linked worktree: skip
+                        continue
+                    if (entry / ".git").is_dir() or (entry / DEFAULT_RUNTIME_DIRNAME / "project.json").is_file():
+                        entry_resolved = safe_resolve(entry)
+                        if str(entry_resolved) not in known:
+                            cfg = _safe_read_json_file(runtime_dir(entry_resolved) / "project.json", timeout=0.2)
+                            s_type, s_label, g_repo = detect_project_source(entry_resolved, cfg, git_timeout=0.5)
+                            name = entry.name
+                            if g_repo and g_repo.split("/")[1].lower() == entry.name.lower():
+                                name = g_repo.split("/")[1]
+                            remember_project(entry_resolved, name=name, active=False,
+                                             source_type=s_type, source_label=s_label, github_repo=g_repo)
+                            known[str(entry_resolved)] = {"name": name, "root": str(entry_resolved)}
+            except (PermissionError, OSError):
+                continue
+    except Exception:
+        pass
+
+
 def project_state(root: Path) -> dict[str, Any]:
+    auto_discover_local_projects()
     config = _safe_read_json_file(runtime_dir(root) / "project.json")
     status = git(root, "status", "--porcelain", timeout=2.0)
     recent = load_recent_projects().get("projects", [])
@@ -3104,6 +3139,7 @@ def project_state(root: Path) -> dict[str, Any]:
         "github_repo": root_github_repo,
         "languages": root_languages,
         "recent": recent_entries,
+        "github_repos": [r["repo"] for r in github_repos(use_cache=True).get("repos", [])] if (shutil.which("gh") or shutil.which("gh", path="/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", ""))) else [],
     }
 
 
@@ -3227,16 +3263,27 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
 GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 
 
-def github_repos(limit: int = 1000) -> dict[str, Any]:
+_GH_REPOS_CACHE: tuple[float, dict[str, Any]] = (0.0, {"repos": [], "error": ""})
+GH_REPOS_CACHE_TTL = 60.0
+
+
+def github_repos(limit: int = 1000, use_cache: bool = False) -> dict[str, Any]:
     """Every repository the signed-in GitHub account can open (its own, ones it collaborates on, and its organisations'),
     newest first, for Add Existing Project. A repository only on GitHub isn't on this computer yet, so the folder scan
     can't find it. `gh repo list` would only give the ones an account owns, so this asks GitHub's list of all of them."""
-    if not shutil.which("gh"):
+    global _GH_REPOS_CACHE
+    now = time.time()
+    gh_bin = shutil.which("gh")
+    if not gh_bin and os.environ.get("PATH") and "/opt/homebrew/bin" not in os.environ.get("PATH", ""):
+        gh_bin = shutil.which("gh", path="/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", ""))
+    if not gh_bin:
         return {"repos": [], "error": "Install the GitHub CLI (gh) and sign in to list your repositories."}
+    if use_cache and _GH_REPOS_CACHE[0] + GH_REPOS_CACHE_TTL > now and _GH_REPOS_CACHE[1].get("repos"):
+        return _GH_REPOS_CACHE[1]
     query = ("user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member")
     jq = "[.[] | {repo: .full_name, name: .name, description: (.description // \"\"), private: .private, archived: .archived, fork: .fork, updated: (.pushed_at // .updated_at // \"\")}]"
     try:
-        res = subprocess.run(["gh", "api", "--paginate", query, "--jq", jq], capture_output=True, text=True, timeout=60)
+        res = subprocess.run([gh_bin, "api", "--paginate", query, "--jq", jq], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return {"repos": [], "error": "GitHub took too long to answer. Try again."}
     if res.returncode != 0:
@@ -3253,7 +3300,10 @@ def github_repos(limit: int = 1000) -> dict[str, Any]:
             if isinstance(r, dict) and r.get("repo"):
                 r["description"] = str(r.get("description") or "")[:200]
                 repos.setdefault(r["repo"], r)
-    return {"repos": sorted(repos.values(), key=lambda r: r["updated"], reverse=True)[:limit], "error": ""}
+    result = {"repos": sorted(repos.values(), key=lambda r: r["updated"], reverse=True)[:limit], "error": ""}
+    if result["repos"]:
+        _GH_REPOS_CACHE = (now, result)
+    return result
 
 
 def clone_destination(repo_name: str) -> Path:
@@ -7691,10 +7741,22 @@ class UIHandler(BaseHTTPRequestHandler):
             raise UIError("Project root path is required")
         candidate = safe_resolve(Path(wanted).expanduser())
         if not candidate.is_dir():
-            fallback = Path.home() / "Projects" / Path(wanted).name
-            if fallback.is_dir():
-                candidate = safe_resolve(fallback)
-            else:
+            for base in (Path.home() / "Projects", Path.home() / "Developer", Path.home() / "Documents"):
+                for folder in (base / Path(wanted).name, base / Path(wanted).name.lower(), base / Path(wanted).name.replace("-", "").lower()):
+                    if folder.is_dir():
+                        candidate = safe_resolve(folder)
+                        break
+                if candidate.is_dir():
+                    break
+            if not candidate.is_dir():
+                # Case-insensitive match in ~/Projects
+                projects_dir = Path.home() / "Projects"
+                if projects_dir.is_dir():
+                    for entry in projects_dir.iterdir():
+                        if entry.name.lower() == Path(wanted).name.lower() and entry.is_dir():
+                            candidate = safe_resolve(entry)
+                            break
+            if not candidate.is_dir():
                 raise UIError("Directory not found")
         if not is_path_accessible(candidate):
             fallback = Path.home() / "Projects" / candidate.name
@@ -7704,7 +7766,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(f"Cannot access project directory '{candidate}'. Check folder permissions or iCloud Drive status.")
         known = {str(safe_resolve(Path(p["root"]).expanduser()))
                  for p in load_recent_projects().get("projects", []) if p.get("root")}
-        if str(candidate) not in known and not (runtime_dir(candidate) / "project.json").is_file():
+        if str(candidate) not in known and not (runtime_dir(candidate) / "project.json").is_file() and not (candidate / ".git").exists():
             raise UIError("Not a known orchestrator project")
         self.server.set_root(candidate)
         p_cfg = _safe_read_json_file(runtime_dir(candidate) / "project.json")

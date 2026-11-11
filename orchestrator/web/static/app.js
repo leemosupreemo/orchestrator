@@ -1453,13 +1453,33 @@ function renderProjectSelect(select) {
     });
   }
 
+  // Include full GitHub project list if available
+  if (Array.isArray(p.github_repos)) {
+    const knownRepos = new Set(options.map(o => String(o.github_repo || "").toLowerCase()).filter(Boolean));
+    const knownNames = new Set(options.map(o => String(o.name || "").toLowerCase()).filter(Boolean));
+    for (const repo of p.github_repos) {
+      const repoLower = repo.toLowerCase();
+      const repoName = repo.split("/")[1] || repo;
+      if (!knownRepos.has(repoLower) && !knownNames.has(repoName.toLowerCase())) {
+        options.push({
+          name: repoName,
+          root: `github:${repo}`,
+          source_type: "github",
+          source_label: "GitHub",
+          github_repo: repo,
+          unDownloaded: true,
+        });
+      }
+    }
+  }
+
   const groups = [
     ["GitHub", options.filter(o => o.source_type === "github")],
     ["Other Git hosts", options.filter(o => o.source_type === "git")],
     ["On this computer", options.filter(o => !o.source_type || o.source_type === "local")],
   ].filter(([, projects]) => projects.length);
   let html = groups.map(([label, projects]) => `<optgroup label="${esc(label)}">${projects.map(o =>
-    `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
+    `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${o.unDownloaded ? " · Download" : ""}${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
   ).join("")}</optgroup>`).join("");
   if (state.you?.role !== "member") html += `<option value="__manage__" class="manage-projects-option">📁 Manage all projects...</option>`;
   if (select.dataset.html !== html) {
@@ -1475,6 +1495,22 @@ document.addEventListener("change", async (e) => {
     location.hash = "#/projects";
     if (state.project) e.target.value = state.project.root;
     navigationDrawer?.close();
+    return;
+  }
+  if (val.startsWith("github:")) {
+    const repo = val.slice("github:".length);
+    toast(`Downloading ${repo}...`);
+    try {
+      const project = await waitForTask(await api("projects/clone", { method: "POST", body: { repo } }));
+      await api("projects/add", { method: "POST", body: { root: project.root, name: project.name || "", active: true } });
+      await refreshState();
+      toast(`Downloaded and switched to ${project.name || repo}`);
+      location.hash = "#/";
+      navigationDrawer?.close();
+    } catch (err) {
+      if (state.project) e.target.value = state.project.root;
+      toast(err.message, true);
+    }
     return;
   }
   try {
@@ -7155,7 +7191,7 @@ async function streamTask(started, opts = {}) {
           } else if (ev === "done") {
             return data.result;
           } else if (ev === "error") {
-            throw new Error(data.error || "Something went wrong.");
+            throw new Error(data.error || "The task couldn't finish. Try again.");
           }
         }
       }
