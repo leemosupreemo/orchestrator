@@ -71,6 +71,9 @@ class CodexLoginRunTests(unittest.TestCase):
         for model in ("gpt-6.1-sol", "o1", "gpt-4.5-preview"):
             self.assertIn("codex exec --model", llm.get_llm_command(model, "p.md") if llm.get_model(model) else "codex exec --model", model)
         self.assertIn("codex exec --model o1", llm.get_llm_command("o1", "p.md"))
+        # Ask AI and job chats run Codex in an empty scratch folder, which isn't a Git repository it trusts.
+        self.assertIn("--skip-git-repo-check", llm.get_llm_command("o1", "p.md"))
+        self.assertIn("--skip-git-repo-check", llm.get_llm_command("codex", "p.md"))
 
 
 class LLMRunSingleTests(unittest.TestCase):

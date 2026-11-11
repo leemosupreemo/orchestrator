@@ -277,12 +277,16 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
     # Use api_model_id if set (e.g. gpt-5.5-medium maps to gpt-5.5)
     cli_model_id = m_meta.api_model_id if m_meta and m_meta.api_model_id else model_id
 
+    # Codex refuses to run outside a Git repository it trusts. A question asked from Ask AI or a job's chat runs in an empty
+    # scratch folder on purpose (so the model can't change the project), so the check is skipped; inside a repository it
+    # changes nothing.
     if model_id == "codex":
-        cmd_base = "codex exec"
+        cmd_base = "codex exec --skip-git-repo-check"
     elif model_id.startswith(("gpt-5", "gpt-6")) or (m_meta and m_meta.family == "openai" and "codex" in m_meta.required_clis):
         cmd_base = f"codex exec --model {cli_model_id}"
         if m_meta and m_meta.reasoning_effort:
             cmd_base += f" -c model_reasoning_effort={m_meta.reasoning_effort}"
+        cmd_base += " --skip-git-repo-check"
     elif model_id.startswith("gemini-") or (m_meta and m_meta.family == "gemini"):
         provider_cli = preferred_cli("gemini")
         # Safe Agentic Planning: Allow read/search/docs servers for intelligence, 
