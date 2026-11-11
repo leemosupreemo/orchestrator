@@ -78,6 +78,20 @@ class Connections(unittest.TestCase):
         m.stop(wait=True)
         self.assertEqual(stopped, [process])
 
+    def test_cloudflare_verification_does_not_depend_on_stale_local_dns(self):
+        process = type('Process', (), {'poll': lambda s: None})()
+        stopped = []
+        # The Mac caches a negative answer for the new hostname while public DNS already resolves it.
+        m = cm.ConnectionManager(8765, 'secret', store=self.store,
+            cloudflare_start=lambda port: (process, 'https://new.trycloudflare.com'), cloudflare_stop=stopped.append,
+            probe=lambda *a, public_dns=False, **kw: public_dns)
+        with patch.object(m._stop, 'wait', return_value=False):
+            self.assertTrue(m.check_once())
+        self.assertEqual(m.endpoint, 'https://new.trycloudflare.com')
+        self.assertEqual(m.status()['state'], 'connected')
+        self.assertEqual(stopped, [])
+        m.stop(wait=True)
+
     def test_new_cloudflare_tunnel_readiness_wait_is_bounded_and_cancellable(self):
         for cancel in (False, True):
             with self.subTest(cancel=cancel):

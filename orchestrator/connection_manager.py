@@ -376,7 +376,8 @@ class ConnectionManager:
         self._ensure_running()
         self.prepare_endpoint(url)
         self._ensure_running()
-        verified = self.probe(url, self.secret, public_dns=provider == 'funnel')
+        # Public tunnels must resolve outside local split DNS and negative caches for newly announced URLs.
+        verified = self.probe(url, self.secret, public_dns=provider in ('funnel', 'cloudflare'))
         self._ensure_running()
         return verified
 
