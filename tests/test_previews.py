@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -54,11 +55,55 @@ class DevServerTests(unittest.TestCase):
         self.assertEqual(folder.name, "feature-x")
         self.assertNotEqual(folder, dev_preview.copy_folder(Path("/Users/me/other/site"), "feature-x"))
 
-    def test_a_site_without_a_build_is_served_as_files(self):
+    def test_a_site_without_a_build_is_served_from_the_folder_with_its_pages(self):
         with tempfile.TemporaryDirectory() as tmp:
-            setup, server = dev_preview.dev_commands(Path(tmp), {})
+            folder = Path(tmp)
+            (folder / "public").mkdir()
+            (folder / "public" / "index.html").write_text("<h1>Hi</h1>")
+            setup, server = dev_preview.dev_commands(folder, {})
             self.assertEqual(setup, [])
             self.assertIn("http.server", server)
+            self.assertEqual(server[server.index("--directory") + 1], str(folder / "public"))
+
+    def test_nothing_to_run_says_what_to_do_instead_of_listing_the_projects_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "app.py").write_text("print('hi')")
+            with self.assertRaisesRegex(ValueError, "already running"):
+                dev_preview.dev_commands(Path(tmp), {})
+
+    def test_a_django_app_runs_its_own_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "manage.py").write_text("")
+            server = dev_preview.dev_commands(Path(tmp), {})[1]
+            self.assertEqual(server[2:4], ["manage.py", "runserver"])
+            self.assertRegex(server[4], r"^127\.0\.0\.1:\d+$")
+
+    def test_orchestrators_own_code_runs_orchestrator_with_a_project_and_state_of_its_own(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "web-ui"
+            (folder / "orchestrator" / "web").mkdir(parents=True)
+            (folder / "orchestrator" / "web" / "server.py").write_text("")
+            (folder / "orchestrator" / "__main__.py").write_text("")
+            with patch.dict("os.environ", {"ORCHESTRATOR_USER_STATE_DIR": str(Path(tmp) / "state")}):
+                (Path(tmp) / "state").mkdir()
+                (Path(tmp) / "state" / "ui_token").write_text("tok123")
+                server = dev_preview.dev_commands(folder, {})[1]
+                env = dev_preview.dev_env(folder)
+            self.assertEqual(server[server.index("-m") + 1:server.index("-m") + 3], ["orchestrator", "ui"])
+            project = Path(server[server.index("--project") + 1])
+            self.assertTrue((project / ".orchestrator" / "project.json").is_file())  # a sample project, never a real one
+            self.assertNotIn(folder, project.parents)
+            self.assertEqual(server[server.index("--token") + 1], "tok123")  # the same sign-in cookie works for both
+            self.assertEqual(env["PYTHONPATH"], str(folder))  # the branch's own code
+            self.assertNotEqual(env["ORCHESTRATOR_USER_STATE_DIR"], str(Path(tmp) / "state"))
+
+    def test_an_app_already_running_is_shown_instead_of_starting_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(dev_preview, "start_proxy", return_value="http://localhost:9/"), \
+                 patch.object(dev_preview.threading.Event, "wait", return_value=True):
+                self.assertEqual(dev_preview.show_running_app(root, "main", "main", "https://example.com"), 1)  # not this computer
+                self.assertEqual(dev_preview.show_running_app(root, "main", "main", "http://localhost:3000"), 0)
 
     def test_a_package_without_a_dev_script_says_how_to_set_one(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -177,6 +222,14 @@ class PreviewProxyTests(unittest.TestCase):
                     data = self.connection.recv(100)
                     self.connection.sendall(b"echo:" + data)
                     return
+                if self.path == "/host":  # what the app was reached as
+                    body = (self.headers.get("Host") or "").encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 html = self.path == "/"
                 body = b"<html><head><title>t</title></head><body>hi</body></html>" if html else b"console.log(1)"
                 self.send_response(200)
@@ -226,6 +279,12 @@ class PreviewProxyTests(unittest.TestCase):
             echoed += conn.recv(100)
         self.assertIn(b"echo:ping", reply + echoed)
         conn.close()
+
+    def test_the_app_sees_its_own_address_and_the_link_keeps_its_query(self):
+        body, _ = self.get("/host")
+        self.assertEqual(body.decode(), f"127.0.0.1:{self.upstream.server_address[1]}")  # apps that check their Host accept it
+        shown = dev_preview.start_proxy(f"http://127.0.0.1:{self.upstream.server_address[1]}/?token=abc")
+        self.assertTrue(shown.endswith("/?token=abc"))  # a sign-in link still signs in
 
     def test_a_page_without_a_head_still_gets_the_helper(self):
         self.assertTrue(dev_preview.add_helper(b"<p>x</p>").startswith(b"<script src="))

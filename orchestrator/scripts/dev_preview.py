@@ -83,7 +83,8 @@ def proxy_handler(host: str, port: int) -> type[BaseHTTPRequestHandler]:
                 return
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else None
-            headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() != "accept-encoding"}
+            headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() not in ("accept-encoding", "host")}
+            headers["Host"] = f"{host}:{port}"  # as a reverse proxy does: apps that check who they're reached as see their own address
             upstream = http.client.HTTPConnection(host, port, timeout=300)
             upstream.request(self.command, self.path, body=body, headers=headers)
             reply = upstream.getresponse()
@@ -139,7 +140,7 @@ def start_proxy(target: str) -> str:
     server = ThreadingHTTPServer(("127.0.0.1", 0), proxy_handler(host, parts.port or 80))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True, name="preview-proxy").start()
-    return f"http://localhost:{server.server_address[1]}{parts.path or '/'}"
+    return f"http://localhost:{server.server_address[1]}{parts.path or '/'}{'?' + parts.query if parts.query else ''}"
 
 
 def checked_out_in(root: Path, branch: str) -> Path | None:
@@ -153,9 +154,54 @@ def checked_out_in(root: Path, branch: str) -> Path | None:
     return None
 
 
+# Folders a site's pages usually live in, when it has no build of its own: the first with an index.html is served.
+SITE_FOLDERS = (".", "public", "dist", "build", "site", "www", "static", "docs")
+NOT_FOUND = ("Couldn't tell how to run this web app: it has no package.json, Django manage.py or index.html. "
+             "Enter the address of the app if it's already running (Preview an app at…), or set preview_dev_command "
+             "in .orchestrator/project.json.")
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def is_orchestrator(folder: Path) -> bool:
+    """Orchestrator's own code (a branch of it being worked on): its web app is `orchestrator ui`."""
+    return (folder / "orchestrator" / "web" / "server.py").is_file() and (folder / "orchestrator" / "__main__.py").is_file()
+
+
+def preview_project(folder: Path) -> Path:
+    """A small project of its own for a previewed copy of Orchestrator to show, so it never runs anything in a real one."""
+    sample = folder.parent / f"{folder.name}-preview-project"
+    if not (sample / ".orchestrator" / "project.json").is_file():
+        (sample / ".orchestrator").mkdir(parents=True, exist_ok=True)
+        (sample / ".orchestrator" / "project.json").write_text(json.dumps(
+            {"name": "Preview", "project_kind": "web", "build_command": "true", "test_command": "true"}))
+        subprocess.run(["git", "init", "-q"], cwd=sample, capture_output=True)
+    return sample
+
+
+def dev_env(folder: Path) -> dict[str, str]:
+    """Extra environment for the dev server. A previewed Orchestrator runs this folder's code, with state of its own (one
+    Orchestrator per user otherwise, and it must not touch the real one's settings) and the same access token, so the
+    browser's sign-in cookie for this computer works for both."""
+    if not is_orchestrator(folder):
+        return {}
+    token = ""
+    try:
+        token = (Path(os.environ.get("ORCHESTRATOR_USER_STATE_DIR") or Path.home() / ".orchestrator") / "ui_token").read_text().strip()
+    except OSError:
+        pass
+    return {"PYTHONPATH": str(folder), "ORCHESTRATOR_USER_STATE_DIR": str(folder.parent / f"{folder.name}-preview-state"),
+            **({"ORCHESTRATOR_PREVIEW_TOKEN": token} if token else {})}
+
+
 def dev_commands(folder: Path, config: dict[str, Any]) -> tuple[list[list[str]], list[str]]:
     """(setup, server): installing packages when they're missing, then `preview_dev_command` from project.json, else the
-    package's dev or start script, else a plain file server for a site without a build."""
+    package's dev or start script, else Orchestrator's own app, a Django app, or a plain file server for a site without a
+    build. Nothing recognisable is an error that says what to do, never a listing of the project's files."""
     if config.get("preview_dev_command"):
         return [], ["/bin/sh", "-c", str(config["preview_dev_command"])]
     try:
@@ -163,7 +209,16 @@ def dev_commands(folder: Path, config: dict[str, Any]) -> tuple[list[list[str]],
     except (OSError, ValueError, AttributeError):
         scripts = None
     if scripts is None:
-        return [], [sys.executable, "-u", "-m", "http.server", "--bind", "127.0.0.1", "0"]
+        if is_orchestrator(folder):
+            token = dev_env(folder).get("ORCHESTRATOR_PREVIEW_TOKEN")
+            return [], [sys.executable, "-P", "-u", "-m", "orchestrator", "ui", "--no-open", "--port", str(free_port()),
+                        "--project", str(preview_project(folder)), *(["--token", token] if token else [])]
+        if (folder / "manage.py").is_file():
+            return [], [sys.executable, "-u", "manage.py", "runserver", f"127.0.0.1:{free_port()}"]
+        site = next((folder / d for d in SITE_FOLDERS if (folder / d / "index.html").is_file()), None)
+        if site is None:
+            raise ValueError(NOT_FOUND)
+        return [], [sys.executable, "-u", "-m", "http.server", "--bind", "127.0.0.1", "--directory", str(site), "0"]
     # The project's own package manager, from its lockfile; without one, npm is told not to write one.
     if (folder / "pnpm-lock.yaml").is_file():
         install, run = ["pnpm", "install", "--frozen-lockfile"], ["pnpm", "run"]
@@ -192,6 +247,36 @@ def address(line: str) -> str:
     return found.group(0).replace("0.0.0.0", "localhost").rstrip(".,)") if found else ""
 
 
+LOCAL_APP = re.compile(r"https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?(?:/[^\s]*)?", re.I)
+
+
+def show_running_app(root: Path, branch: str, slug: str, url: str) -> int:
+    """Preview an app that's already running on this computer (preview_url in project.json) instead of starting one: the
+    person runs it their own way, and the preview shows whatever it serves."""
+    if not LOCAL_APP.fullmatch(url):
+        print(f"❌ {url} isn't an address on this computer. Use one like http://localhost:3000.")
+        return 1
+    state = root / ".orchestrator" / "output" / "dev-previews" / f"{slug}.json"
+    try:
+        shown = start_proxy(url)
+    except OSError as exc:
+        print(f"(Couldn't start the preview helper: {exc}. Picking elements is off.)")
+        shown = url
+    stopped = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, lambda *_: stopped.set())
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"branch": branch, "url": shown, "direct": url, "pid": os.getpid(), "at": time.time()}))
+    print(f"Showing the app already running at {url}, as set in .orchestrator/project.json (preview_url).")
+    print(f"✅ Live preview: {shown} (the app itself: {url})", flush=True)
+    try:
+        while not stopped.wait(1):
+            pass
+        return 0
+    finally:
+        state.unlink(missing_ok=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--branch", required=True)
@@ -207,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     slug = channel_name(args.branch)
+    if config.get("preview_url"):
+        return show_running_app(root, args.branch, slug, str(config["preview_url"]))
     folder = checked_out_in(root, args.branch)
     if folder is None:
         folder = copy_folder(root, slug)
@@ -237,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     state = root / ".orchestrator" / "output" / "dev-previews" / f"{slug}.json"
     print(f"$ {' '.join(server)}", flush=True)
     child = subprocess.Popen(server, cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                             start_new_session=True, env={**os.environ, "BROWSER": "none", "FORCE_COLOR": "0"})
+                             start_new_session=True, env={**os.environ, "BROWSER": "none", "FORCE_COLOR": "0", **dev_env(folder)})
 
     def stop(*_: Any) -> None:
         try:

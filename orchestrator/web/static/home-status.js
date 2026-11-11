@@ -49,7 +49,7 @@
     const active = runs.filter((r) => r.running && r.action !== "dev_preview").length;
     const needsYou = jobs.filter((j) => j.state?.group === "needs_you" && !j.active_run).length;
     const pill = active ? `<span class="pill working">${active} run${active === 1 ? "" : "s"} in progress</span>`
-      : needsYou ? `<a class="pill attention" href="#/?filter=needs_you">${needsYou} job${needsYou === 1 ? " needs" : "s need"} you</a>` : "";
+      : needsYou ? `<a class="pill attention" href="#/?filter=needs_you&amp;jump=jobs" title="Show them">${needsYou} job${needsYou === 1 ? " needs" : "s need"} you</a>` : "";
     return `<section class="card home-project-status mb-16" id="home-project-status" aria-labelledby="home-project-status-title">
       <div class="card-h"><h2 id="home-project-status-title">Project status</h2>${pill}</div>
       <div class="card-b"><ul class="home-status-facts">

@@ -3641,6 +3641,14 @@ pages.home = async (_, query) => {
       renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
       wirePreview(view);
       if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
+      // "2 jobs need you" on the Project status card: down to the job list, filtered to them. The marker is dropped from the
+      // address once used, so Home refreshing itself doesn't scroll again (and tapping it again still works).
+      if (query?.get("jump") === "jobs") {
+        requestAnimationFrame(() => $("#home-jobs")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+        const kept = new URLSearchParams(query);
+        kept.delete("jump");
+        history.replaceState(null, "", `#/${kept.toString() ? `?${kept}` : ""}`);
+      }
       $("#yolo-all")?.addEventListener("change", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
@@ -3803,13 +3811,21 @@ const PREVIEW_STOPPED = new Set();
 
 // What the frame shows when there's no page to show, or the page can't be shown: starting, couldn't start, stopped
 // responding, or not running yet. Each says what happened and offers the next step.
-function previewOverlayHtml(kind, { branch = "", run = "", hosted = false, canStart = true } = {}) {
+// "Already running?": point the preview at an app on this computer instead of having it start one (preview_url).
+function previewUrlForm(current = "") {
+  return `<form class="preview-url-form" data-preview-url-form>
+    <label class="muted t-secondary" for="preview-url-input">Already running on this computer? Preview it at</label>
+    <div class="row gap-4"><input id="preview-url-input" type="url" name="url" value="${esc(current)}" placeholder="http://localhost:3000" inputmode="url" autocapitalize="off" spellcheck="false">
+    <button type="submit" class="btn small">${current ? "Change" : "Use"}</button>${current ? `<button type="button" class="btn small ghost" data-preview-url-clear>Start its own</button>` : ""}</div></form>`;
+}
+
+function previewOverlayHtml(kind, { branch = "", run = "", hosted = false, canStart = true, why = "", previewUrl = "" } = {}) {
   const log = run ? `<a class="btn small ghost" href="#/runs/${encodeURIComponent(run)}">Show log</a>` : "";
   const shared = hosted ? `<button type="button" class="btn small ghost" data-preview-do="dismiss">Show the shared link</button>` : "";
   const body = {
     starting: [`<span class="spinner inline-spinner" aria-hidden="true"></span>Starting live preview…`,
       "The first start installs packages and can take a few minutes.", `${log}${shared}`],
-    failed: ["Live preview couldn't start", `The dev server for ${esc(branch)} stopped before it was ready. The log says why.`,
+    failed: ["Live preview couldn't start", why ? esc(why) : `The dev server for ${esc(branch)} stopped before it was ready. The log says why.`,
       `<button type="button" class="btn small go" data-preview-do="start">Try again</button>${log}${shared}`],
     stalled: ["Live preview stopped responding", "The page didn't load. The dev server may have crashed or still be compiling.",
       `<button type="button" class="btn small go" data-preview-do="restart">Try again</button><button type="button" class="btn small ghost" data-preview-do="dismiss">Dismiss</button>`],
@@ -3817,7 +3833,8 @@ function previewOverlayHtml(kind, { branch = "", run = "", hosted = false, canSt
       canStart ? `<button type="button" class="btn small go" data-preview-do="start">Start live preview</button>` : ""],
   }[kind];
   if (!body) return "";
-  return `<div class="preview-overlay-box" role="status"><strong>${body[0]}</strong><p class="muted t-secondary">${body[1]}</p>${body[2] ? `<div class="row gap-8 wrap justify-center">${body[2]}</div>` : ""}</div>`;
+  const form = (kind === "failed" || kind === "idle") && canStart ? previewUrlForm(previewUrl) : "";
+  return `<div class="preview-overlay-box" role="status"><strong>${body[0]}</strong><p class="muted t-secondary">${body[1]}</p>${body[2] ? `<div class="row gap-8 wrap justify-center">${body[2]}</div>` : ""}${form}</div>`;
 }
 
 function previewCard(p, runs) {
@@ -3835,10 +3852,12 @@ function previewCard(p, runs) {
   const failedRun = !liveRun && !live ? PREVIEW_FAILED.get(p.branch) || "" : "";
   const starting = Boolean(liveRun && !live);
   const autostart = !live && !liveRun && !failedRun && onThisComputer && p.branch_exists;
+  // Why it failed, in the dev server's own words: "Couldn't tell how to run this web app…".
+  const why = failedRun ? String(runs.find((r) => r.id === failedRun)?.error_summary || "").replace(/^❌\s*/, "").split("\n").pop() : "";
   const overlay = starting ? previewOverlayHtml("starting", { run: liveRun.id, hosted: Boolean(hosted) })
-    : failedRun ? previewOverlayHtml("failed", { branch: p.branch, run: failedRun, hosted: Boolean(hosted) })
-    : !shown ? previewOverlayHtml("idle", { branch: p.branch, canStart: p.branch_exists }) : "";
-  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-autostart="${autostart ? "1" : ""}" data-starting="${starting ? esc(liveRun.id) : ""}">
+    : failedRun ? previewOverlayHtml("failed", { branch: p.branch, run: failedRun, hosted: Boolean(hosted), why, previewUrl: p.preview_url })
+    : !shown ? previewOverlayHtml("idle", { branch: p.branch, canStart: p.branch_exists, previewUrl: p.preview_url }) : "";
+  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-preview-url="${esc(p.preview_url || "")}" data-autostart="${autostart ? "1" : ""}" data-starting="${starting ? esc(liveRun.id) : ""}">
     <div class="card-h card-h-wrap">
       <h2>Preview <span class="muted t-secondary mono">${esc(p.branch)}</span></h2>
       ${both ? `<div class="row gap-4 job-preview-tabs" role="group" aria-label="Which preview">
@@ -3918,7 +3937,7 @@ function wirePreview(view) {
 
   const showOverlay = (kind, opts = {}) => {
     if (!overlay) return;
-    overlay.innerHTML = previewOverlayHtml(kind, { branch, hosted, ...opts });
+    overlay.innerHTML = previewOverlayHtml(kind, { branch, hosted, previewUrl: card.dataset.previewUrl || "", ...opts });
     overlay.hidden = !overlay.innerHTML;
   };
 
@@ -3982,7 +4001,26 @@ function wirePreview(view) {
     try { if (runId) await stopLive(runId); } catch (err) { toast(err.message, true); }
     startLive();
   };
+  // Point the preview at an app already running here (or back to starting its own), then start it again.
+  const setPreviewUrl = async (url) => {
+    try { await api("preview/url", { method: "POST", body: { url } }); }
+    catch (err) { toast(err.message, true); return; }
+    toast(url ? `The preview shows ${url}` : "The preview starts its own server again");
+    const runId = card.querySelector("#job-preview-stop")?.dataset.run || card.dataset.starting;
+    if (runId) { try { await stopLive(runId); } catch { /* it was already stopping */ } }
+    PREVIEW_FAILED.delete(branch);
+    card.dataset.previewUrl = url;
+    startLive();
+  };
+  card.addEventListener("submit", (e) => {
+    const form = e.target.closest("[data-preview-url-form]");
+    if (!form) return;
+    e.preventDefault();
+    const url = form.url.value.trim();
+    if (url) setPreviewUrl(url);
+  });
   card.addEventListener("click", (e) => {
+    if (e.target.closest("[data-preview-url-clear]")) { setPreviewUrl(""); return; }
     const what = e.target.closest("[data-preview-do]")?.dataset.previewDo;
     if (what === "start") startLive();
     else if (what === "restart") restartLive();

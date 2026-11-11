@@ -1148,6 +1148,7 @@ def project_preview(root: Path, config: dict[str, Any] | None = None) -> dict[st
     head = git(root, "rev-parse", "--short", branch)
     hosted = next((p for p in web_previews(root) if p.get("branch") == branch), None)
     return {"branch": branch, "branch_exists": bool(head), "gaps": web_preview_gaps(root, config), "hosted": hosted,
+            "preview_url": str(config.get("preview_url") or ""),  # an app already running here that the preview shows
             "hosted_current": bool(hosted and head and hosted.get("commit") == head),
             "live": next((p for p in live_previews(root) if p.get("branch") == branch), None),
             "auto": bool(read_settings(root).get("auto_preview"))}
@@ -7100,6 +7101,20 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"computer": session_computer(read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) or [], root),
                         "status": status})
         elif method == "GET" and parts == ["preview"]:
+            self._json({"preview": project_preview(root)})
+        elif method == "POST" and parts == ["preview", "url"]:
+            # Preview an app that's already running on this computer instead of starting one (dev_preview.show_running_app).
+            self._require_owner("change what the preview shows")
+            url = str(self._body().get("url") or "").strip().rstrip("/")
+            if url and not re.fullmatch(r"https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?(?:/[^\s]*)?", url, re.I):
+                raise UIError("Use an address on this computer, like http://localhost:3000.")
+            path = runtime_dir(root) / "project.json"
+            config = read_json_file(path)
+            if url:
+                config["preview_url"] = url
+            else:
+                config.pop("preview_url", None)
+            write_json_file(path, config)
             self._json({"preview": project_preview(root)})
         elif method == "POST" and parts == ["previews", "shot"]:
             self._json({"path": save_preview_shot(root, "", str(self._body().get("image") or ""))})

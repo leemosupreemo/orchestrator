@@ -179,7 +179,10 @@ class HomeStatusRenderTests(unittest.TestCase):
 
     def test_the_pill_says_what_needs_you_and_links_to_it(self):
         html = self.render({'jobs': [self.job('j1', 'A', 'planned', 1, 'Pending approval')], 'runs': []})
-        self.assertIn('<a class="pill attention" href="#/?filter=needs_you">1 job needs you</a>', html)
+        self.assertIn('<a class="pill attention" href="#/?filter=needs_you&amp;jump=jobs" title="Show them">1 job needs you</a>', html)
+        app = (STATIC / "app.js").read_text()
+        self.assertIn('if (query?.get("jump") === "jobs") {', app)  # Home scrolls down to the job list
+        self.assertIn('$("#home-jobs")?.scrollIntoView({ behavior: "smooth", block: "start" })', app)
 
     def test_commit_and_job_text_are_escaped(self):
         html = self.render({'git': {'last_commit': '<img src=x onerror=bad()>'},
