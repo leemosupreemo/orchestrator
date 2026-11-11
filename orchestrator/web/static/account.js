@@ -375,9 +375,11 @@
     }).join("");
     const unmatchedTrouble = troubleshoot && !list.some((m) => troubleshoot.machine?.id === m.id);
     return `<div class="signin-wrap"><div class="signin-card account-card">
-      ${back ? `<div><button type="button" class="btn small ghost account-back" data-account-action="back-to-app">← Back to ${escapeHtml(back)}</button></div>` : ""}
       <div>
-        <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
+        <div class="topbar-title-row account-title-row">
+          ${back ? `<button type="button" class="back-link account-back" data-account-action="back-to-app" aria-label="Back to ${escapeHtml(back)}" title="Back to ${escapeHtml(back)}"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>` : ""}
+          <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
+        </div>
         <p class="muted account-sub">${list.length
           ? "Your code stays on your computer."
           : askIdea ? "Keep it short, like an elevator pitch. It becomes the start of your product's plan, and you can change it any time."

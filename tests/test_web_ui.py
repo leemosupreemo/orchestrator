@@ -842,8 +842,9 @@ process.stdout.write(JSON.stringify({
         out = json.loads(subprocess.run(["node", "-e", script, str(static / "html.js"), str(static / "account.js")],
                                         check=True, capture_output=True, text=True).stdout)
         self.assertIn('data-account-action="back-to-app"', out["back"])
-        self.assertIn("← Back to &lt;Studio&gt;", out["back"])
-        self.assertLess(out["back"].index("back-to-app"), out["back"].index("Your computers"))  # at the top
+        self.assertIn('Back to &lt;Studio&gt;', out["back"])
+        self.assertIn('class="back-link account-back"', out["back"])
+        self.assertLess(out["back"].index("back-to-app"), out["back"].index("Your computers"))  # beside the title
         self.assertNotIn("back-to-app", out["plain"])  # straight after sign-in there's nowhere to go back to
         js = (static / "app.js").read_text()
         self.assertIn('action === "back-to-app"', js)

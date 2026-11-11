@@ -1646,8 +1646,15 @@ async function returnToApp() {
   document.querySelector(".app")?.classList.remove("session-locked");
   document.body.classList.remove("signin-gate");
   endSigningIn();
-  await refreshState();
-  route();
+  const target = (navStack.length > 1 && !navStack[navStack.length - 2].includes("computers") && !navStack[navStack.length - 2].includes("connect"))
+    ? navStack[navStack.length - 2]
+    : "#/";
+  if (location.hash !== target) {
+    location.hash = target;
+  } else {
+    route();
+  }
+  refreshState().catch(() => {});
 }
 
 async function unlockWith(token, message, { isCurrent = () => true } = {}) {
