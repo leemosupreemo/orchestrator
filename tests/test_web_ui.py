@@ -852,6 +852,15 @@ process.stdout.write(JSON.stringify({
         self.assertIn("back: chosen && connected ? backName", js)
         self.assertIn('Manage computers...', js[js.index("function renderComputerSelect"):][:3000])
 
+    def test_open_account_retries_when_registered_machine_is_not_yet_reachable(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        js = (static / "app.js").read_text()
+        fn = js[js.index("async function openAccount"):][:2500]
+        self.assertIn("Account.pickMachine(machines, remembered)", fn)
+        self.assertIn("for (let attempt = 0; attempt < 3; attempt++)", fn)
+        self.assertIn("accountMachines = machines", fn)
+        self.assertIn("showAccountScreen(machines, message, troubleshoot, { chosen: list })", fn)
+
     def test_freestyle_is_a_job_type_with_one_box_and_its_questions_read_as_a_conversation(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertIn('["freestyle", "Freestyle", "Say it your way"]', js)

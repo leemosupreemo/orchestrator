@@ -3249,9 +3249,11 @@ body[data-page="product"] .topbar-actions .btn:hover {
 @media (prefers-reduced-motion: reduce) { .msg-new, .msg-out { animation: none; } }
 
 /* account (hosted app): your computers and adding one */
-.account-card { max-width: 640px; gap: var(--space-5); }
+.account-card { max-width: 640px; padding: var(--container-pad-y) var(--container-pad-x); gap: var(--space-5); }
 .account-title { margin: 0; font-size: var(--type-section); font-weight: var(--weight-bold); }
-.account-sub { margin: var(--space-2) 0 0; }
+.account-title-row .account-title { font-size: var(--type-page); }
+.account-sub { margin: var(--space-2) 0 0; font-size: var(--type-secondary); }
+.account-connection-progress { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 .account-message { margin: var(--space-3) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
 .account-troubleshoot {
   margin: var(--space-3) 0 0;
@@ -3297,7 +3299,7 @@ body[data-page="product"] .topbar-actions .btn:hover {
 }
 .account-machines { display: flex; flex-direction: column; gap: var(--space-4); }
 .account-machine { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-3);
-  padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel-2); }
+  padding: var(--container-pad-y) var(--container-pad-x); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel-2); }
 .account-machine-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .account-machine-heading strong { overflow-wrap: anywhere; min-width: 0; }
 .account-machine-meta, .account-connection-error, .account-machine .account-update { margin: 0; font-size: var(--type-secondary); line-height: 1.5; }
@@ -3305,26 +3307,17 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .account-machine-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-2); margin-top: var(--space-1); min-width: 0; }
 .account-machine-more { position: relative; }
 .account-machine-more > summary { cursor: pointer; min-width: 80px; }
-.account-machine-more[open] > summary::before { position: static; inset: auto; z-index: auto; background: transparent; cursor: inherit; }
-.account-machine-menu { position: absolute; z-index: var(--z-menu); top: calc(100% + var(--space-2)); left: 0;
-  width: min(320px, calc(100vw - 120px)); display: flex; flex-direction: column; align-items: stretch; gap: var(--space-3);
-  padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); box-shadow: var(--shadow-2); }
-.account-machine-menu > .btn { justify-content: flex-start; }
-.account-machine-menu summary { cursor: pointer; font-size: var(--type-secondary); }
+.account-machine-menu { width: min(320px, calc(100vw - 2 * var(--space-3))); }
+.account-machine-menu summary { display: flex; align-items: center; cursor: pointer; font-size: var(--type-secondary); min-height: var(--control-sm); padding: var(--space-2) var(--space-4); }
 .account-machine-menu p, .account-machine-menu ul { margin: var(--space-3) 0 0; font-size: var(--type-secondary); line-height: 1.5; }
 .account-machine-menu ul { padding-left: var(--space-4); }
 .account-connection-help { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
-.account-machine-menu .account-remove { border-top: 1px solid var(--border); border-radius: 0; padding-top: var(--space-3); color: var(--bad); }
 .account-add { border-top: 1px solid var(--border); padding-top: var(--space-4); }
 .account-foot { border-top: 1px solid var(--border); padding-top: var(--space-4); overflow-wrap: anywhere; }
 @media (max-width: 480px) {
-  .account-machine { padding: var(--space-4); }
-  /* The buttons wrap inside the card; More's menu opens across the whole row, so it fits wherever More lands */
-  .account-machine-actions { position: relative; }
+  /* Buttons wrap inside the card; the shared menu handler keeps the menu in the viewport. */
   .account-machine-actions > .btn, .account-machine-more { flex: 1 1 auto; }
-  .account-machine-more { position: static; }
   .account-machine-more > summary { justify-content: center; }
-  .account-machine-menu { left: 0; right: 0; width: auto; }
 }
 .account-machine-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .account-status { font-size: var(--type-secondary); color: var(--muted); }
@@ -3335,7 +3328,11 @@ body[data-page="product"] .topbar-actions .btn:hover {
   border-radius: var(--r-md); white-space: pre-wrap; word-break: break-all; font-size: var(--type-secondary); user-select: all; }
 .account-code-form { margin-top: var(--space-2); flex-wrap: wrap; }
 .account-code-form input { flex: 1 1 140px; min-width: 0; text-transform: uppercase; letter-spacing: 0.08em; }
-.account-add summary { cursor: pointer; color: var(--muted); margin-bottom: var(--space-3); }
+.account-add > summary { display: flex; align-items: center; cursor: pointer; color: var(--muted); min-height: var(--control-sm); }
+.account-add[open] > summary { margin-bottom: var(--space-3); }
+@media (max-width: 760px) {
+  .account-add > summary, .account-machine-menu summary { min-height: var(--control-lg); }
+}
 .account-foot { margin: 0; font-size: var(--type-secondary); }
 .account-card code { white-space: nowrap; } /* keep `orchestrator ui --tunnel` on one line */
 .account-card code.account-address { white-space: normal; overflow-wrap: anywhere; } /* an address can be longer than the card */

@@ -1693,14 +1693,36 @@ async function openAccount({ list = false, message = "", troubleshoot = null } =
   let machines;
   try {
     ({ machines } = await cpApi("machines"));
+    accountMachines = machines || [];
+    accountMachinesAt = Date.now();
   } catch (err) {
     if (err.status === 401) { endSigningIn(); return showSignInGate("Your sign-in expired. Sign in again.", "warning"); }
     return showAccountScreen([], err.message, troubleshoot);
   }
   let remembered = null;
   try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
-  const pick = !list && !message && !troubleshoot && Account.pickMachine(machines, remembered);
+  let pick = !list && !message && !troubleshoot && Account.pickMachine(machines, remembered);
   if (pick) return enterMachine(pick);
+
+  // If opening automatically and a remembered/registered computer isn't reachable yet (e.g. heartbeat or tunnel starting up),
+  // briefly poll a few times before giving up to the computers screen.
+  if (!list && !message && !troubleshoot && ((machines || []).length > 0 || remembered)) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (!signingIn) return; // user navigated away or cancelled
+      try {
+        const fresh = await cpApi("machines");
+        machines = fresh.machines || [];
+        accountMachines = machines;
+        accountMachinesAt = Date.now();
+        pick = Account.pickMachine(machines, remembered);
+        if (pick) return enterMachine(pick);
+      } catch {
+        break;
+      }
+    }
+  }
+
   showAccountScreen(machines, message, troubleshoot, { chosen: list });
 }
 
@@ -1750,6 +1772,8 @@ function showAccountScreen(machines, message = "", troubleshoot = null, { chosen
     if (!document.querySelector(".account-card")) return stopAccountPoll();
     try {
       const { machines: fresh } = await cpApi("machines");
+      accountMachines = fresh || [];
+      accountMachinesAt = Date.now();
       const now = JSON.stringify(fresh);
       if (now !== last) {
         last = now;
@@ -2111,6 +2135,8 @@ async function relocateMachine() {
   lastRelocateTry = Date.now();
   try {
     const { machines } = await cpApi("machines");
+    accountMachines = machines || [];
+    accountMachinesAt = Date.now();
     const machine = (machines || []).find((m) => m.id === remembered) || Account.pickMachine(machines, remembered);
     if (!machine) {
       if (!state.project) openAccount({ list: true });

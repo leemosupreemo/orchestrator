@@ -358,7 +358,7 @@
           ${needsRepair ? `<button type="button" class="btn small ghost" data-account-action="setup-funnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}"${commandDisabled}>Set up stable connection</button>` : ""}
           <details class="more account-machine-more" data-account-expansion="${escapeHtml(m.id)}:more">
             <summary class="btn small ghost" aria-label="More options for ${escapeHtml(m.name)}">More</summary>
-            <div class="account-machine-menu">
+            <div class="more-menu account-machine-menu">
               ${managed ? (m.online && !needsRepair ? repairButton : "") : m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
               ${canUpdate ? `<button type="button" class="btn small go" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
               <details class="account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
@@ -367,7 +367,8 @@
               </details>
               ${fixes.length ? `<details class="account-readiness" data-account-expansion="${escapeHtml(m.id)}:readiness"><summary>To run unattended, ${fixes.length === 1 ? "one setting needs" : `${fixes.length} settings need`} changing</summary>
                 <ul>${fixes.map((fix) => `<li>${code(fix)}</li>`).join("")}</ul></details>` : ""}
-              <button type="button" class="btn small ghost account-remove" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove computer</button>
+              <hr>
+              <button type="button" class="btn small danger" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove computer</button>
             </div>
           </details>
         </div>
@@ -378,7 +379,7 @@
       <div>
         <div class="topbar-title-row account-title-row">
           ${back ? `<button type="button" class="back-link account-back" data-account-action="back-to-app" aria-label="Back to ${escapeHtml(back)}" title="Back to ${escapeHtml(back)}"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>` : ""}
-          <h2 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h2>
+          <h1 class="account-title">${list.length ? "Your computers" : askIdea ? "What do you want to build?" : "Set up where it runs"}</h1>
         </div>
         <p class="muted account-sub">${list.length
           ? "Your code stays on your computer."
