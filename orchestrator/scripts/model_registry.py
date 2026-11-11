@@ -951,16 +951,21 @@ def summarize_cli_error(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         return "unknown error"
+    # A CLI's warnings ("⚠ connectors are disabled…") and the "<model> failed (code 1):" heading say nothing about why.
+    said = [l for l in lines if not l.startswith(("⚠", "Warning", "WARNING")) and not re.match(r"^\S+ failed \(code -?\d+\):?$", l)] or lines
 
-    for line in lines:
+    for line in said:
         if line.lower().startswith("error:"):
             return line
-    for line in lines:
+    for line in said:
+        if re.search(r"invalid api key|api key|quota|rate limit|usage limit|not supported|not available|does not exist|unauthori[sz]ed|forbidden", line, re.I):
+            return line
+    for line in said:
         if "sign in" in line.lower() or "login" in line.lower():
             return line
     if "operation not permitted" in output.lower():
         return "CLI could not start (operation not permitted)"
-    return lines[0]
+    return said[0]
 
 def get_ssl_context() -> ssl.SSLContext:
     import ssl

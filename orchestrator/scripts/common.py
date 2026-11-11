@@ -84,8 +84,19 @@ except:
 for p in [CONFIG_DIR, JOBS_DIR, INBOX_DIR, ARCHIVE_DIR, LOGS_DIR, OUTPUT_DIR, STATE_DIR, MACHINE_STATE_DIR]:
     p.mkdir(parents=True, exist_ok=True)
 
+# Values a secrets file holds before anyone fills it in. Loaded, they'd override a real sign-in: an ANTHROPIC_API_KEY of
+# "your_anthropic_api_key_here" makes Claude refuse its claude.ai login with "Invalid API key".
+_PLACEHOLDER = re.compile(r"(?:your|my)[_-].*|.*[_-]here|change[_-]?me|replace[_-]?me.*|placeholder|todo|x{3,}|<[^>]*>|\.\.\.|null|none", re.I)
+
+
+def secret_value_usable(value: str) -> bool:
+    """False for an empty value, a placeholder, or one only a shell could work out ($(...), ${...}, $NAME, backticks)."""
+    return bool(value) and not _PLACEHOLDER.fullmatch(value) and not re.search(r"\$\(|\$\{|\$[A-Za-z_]|`", value)
+
+
 def load_secrets():
-    """Loads environment variables from .secrets/project-secrets.zsh or .env if present."""
+    """Loads environment variables from .secrets/project-secrets.zsh or .env if present. Placeholders and values that
+    need a shell to expand are left out (see secret_value_usable)."""
     secrets_paths = [
         ROOT / ".secrets" / "project-secrets.zsh",
         ORCHESTRATOR_RUNTIME_DIR / ".env",
@@ -103,7 +114,7 @@ def load_secrets():
                         k, v = line.split("=", 1)
                         k = k.strip()
                         v = v.strip().strip("'\"")
-                        if k and k not in os.environ:
+                        if k and k not in os.environ and secret_value_usable(v):
                             os.environ[k] = v
             except Exception:
                 pass

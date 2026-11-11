@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -64,26 +65,121 @@ def _order(tier: str, models: list[Any]) -> list[Any]:
     return sorted(models, key=lambda m: (int(m.tier), -float(m.cost_factor), m.id))
 
 
-def chat_tiers(models: Iterable[Any]) -> dict[str, dict[str, Any]]:
-    """For each tier: the model it uses, the ones it falls back to, and, when it has none, why."""
+# --------------------------------------------------------------------------- is it really there?
+# "Ready" means the tool is installed and signed in and its provider lists the model. That isn't the same as the model
+# answering: a plan may not include it, a quota may be used up, a provider may list models it then refuses. So each
+# model's last real result is kept, from a one-word test question (check_tiers) and from every real question: one that
+# failed recently is left out of its tier with the reason, and ones that answered come first.
+
+CHECK_FRESH = 6 * 3600      # how long a model that answered counts as checked
+FAIL_HOLD = 30 * 60         # how long one that failed is left out: a sign-in being renewed or a busy provider is often back soon
+RETRY_AFTER = 4.0           # a check that fails is asked once more before it counts, so a blip doesn't take a model away
+PROBE = "Reply with the single word OK."
+MAX_PROBES_PER_TIER = 4
+
+
+def checks_path() -> Path:
+    from orchestrator.project_config import user_state_dir
+    return user_state_dir() / "model_checks.json"  # the models are this computer's, whichever project asks
+
+
+def load_checks() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(checks_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+_CHECKS_LOCK = threading.Lock()  # the three tiers are checked at once: one read-change-write at a time
+
+
+def record_check(model: str, ok: bool, reason: str = "", now: float | None = None) -> None:
+    if not model:
+        return
+    with _CHECKS_LOCK:
+        data = load_checks()
+        data[model] = {"ok": bool(ok), "reason": "" if ok else (reason or "didn't answer")[:200], "at": now or time.time()}
+        path = checks_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".checks-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, path)
+
+
+def failure_reason(text: str) -> str:
+    """What went wrong with a model, in a few words, from its error."""
+    lowered = text.lower()
+    for words, reason in ((("invalid api key", "invalid x-api-key", "incorrect api key"), "its API key is rejected (check AI tools)"),
+                          (("quota", "rate limit", "usage limit", "429", "credits"), "out of quota for now"),
+                          (("not supported", "not available", "does not exist", "not found", "unknown model", "model_not_found", "isn't available"), "not offered to this sign-in"),
+                          (("auth", "login", "sign in", "401", "403", "api key", "unauthorized"), "not signed in, or no access"),
+                          (("timed out", "timeout", "took too long"), "didn't answer in time")):
+        if any(w in lowered for w in words):
+            return reason
+    return (text.strip().splitlines() or ["didn't answer"])[-1][:140]
+
+
+def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> dict[str, dict[str, Any]]:
+    """For each tier: the model it uses, the ones it falls back to, whether that model has been checked, the models left
+    out because they failed recently (and why), and, when it has none, why."""
+    checks = load_checks() if checks is None else checks
+    now = now or time.time()
+    failed = lambda m: (c := checks.get(m.id)) and not c.get("ok") and now - float(c.get("at") or 0) < FAIL_HOLD
+    answered = lambda m: (c := checks.get(m.id)) and c.get("ok") and now - float(c.get("at") or 0) < CHECK_FRESH
     groups: dict[str, list[Any]] = {t: [] for t in TIERS}
     for m in models:
         groups[classify(m)].append(m)
     out = {}
     for tier in TIERS:
         ordered = _order(tier, groups[tier])
+        skipped = [{"model": m.id, "reason": checks[m.id].get("reason") or "didn't answer"} for m in ordered if failed(m)]
+        ordered = sorted([m for m in ordered if not failed(m)], key=lambda m: not answered(m))  # stable: checked ones first
         ids = [m.id for m in ordered]
+        first = checks.get(ids[0]) if ids else None
         out[tier] = {
             "label": TIER_LABELS[tier], "hint": TIER_HINTS[tier],
             "model": ids[0] if ids else "", "models": ids[: 1 + MAX_FALLBACKS],
+            "candidates": ids[:MAX_PROBES_PER_TIER],
+            "checked": bool(ids) and bool(answered(ordered[0])), "checked_at": (first or {}).get("at") if ids and answered(ordered[0]) else None,
+            "skipped": skipped[:5],
             "available": bool(ids),
-            "reason": "" if ids else {
+            "reason": "" if ids else (
+                f"None of its models answered: {', '.join(f'{x['model']} ({x['reason']})' for x in skipped[:2])}." if skipped else {
                 "free": "No free model is set up. Install OpenCode or Ollama under AI tools.",
                 "balanced": "No mid-priced model is set up. Connect an AI tool such as Claude, Codex or Gemini under AI tools.",
                 "complex": "None of the strongest models is set up. Connect Claude or Codex under AI tools.",
-            }[tier],
+            }[tier]),
         }
     return out
+
+
+def needs_check(tiers: dict[str, dict[str, Any]]) -> bool:
+    """True when an available tier's model hasn't answered recently (so the page should check before relying on it)."""
+    return any(t["available"] and not t["checked"] for t in tiers.values())
+
+
+def check_tiers(models: list[Any], probe: Callable[[str], tuple[bool, str, str]], retry_after: float = RETRY_AFTER) -> dict[str, dict[str, Any]]:
+    """Ask each tier's models the one-word test question, best first, until one answers; record every result.
+    `probe(model)` returns (answered, reason, the model that actually answered). All three tiers are checked at once."""
+    from concurrent.futures import ThreadPoolExecutor
+    tiers = chat_tiers(models)
+
+    def one(tier: str) -> None:
+        for model in tiers[tier]["candidates"]:
+            ok, reason, used = probe(model)
+            if not ok:  # once more before it counts: a sign-in being renewed can refuse one call
+                time.sleep(retry_after)
+                ok, reason, used = probe(model)
+            if ok and used and used != model:  # it ran a stand-in: this one isn't what answers
+                ok, reason = False, f"answered by {used} instead"
+            record_check(model, ok, reason)
+            if ok:
+                return
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(one, [t for t in TIERS if tiers[t]["available"]]))
+    return chat_tiers(models)
 
 
 def ready_models(root: Path) -> list[Any]:
@@ -264,6 +360,8 @@ def ask(root: Path, question: str, tier: str, llm: LlmFn, tiers: dict[str, dict[
     reply = (reply or "").strip()
     if not reply:
         raise ChatError("The model returned an empty answer. Try again.")
+    if used:
+        record_check(used, True)  # a real answer is the best check there is
     thread = messages(root) + [{"role": "user", "text": question, "t": asked_at, "tier": tier},
                                {"role": "assistant", "text": reply, "t": time.time(), "tier": tier, "model": used or choice["model"]}]
     _save(root, thread)

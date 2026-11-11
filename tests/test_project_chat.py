@@ -35,7 +35,18 @@ CATALOG = [
 ]
 
 
-class TierTests(unittest.TestCase):
+class IsolatedState(unittest.TestCase):
+    """Model checks live in the user's state folder: each test gets its own."""
+
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self._env = patch.dict("os.environ", {"ORCHESTRATOR_USER_STATE_DIR": self._state.name})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.addCleanup(self._state.cleanup)
+
+
+class TierTests(IsolatedState):
     def test_each_model_lands_in_one_tier(self):
         tiers = pc.chat_tiers(CATALOG)
         self.assertEqual(set(tiers["free"]["models"]) | {"free-flash"}, {"ollama-big", "copilot", "free-flash"})
@@ -115,8 +126,9 @@ class ContextTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("git"), "git required")
-class AskTests(unittest.TestCase):
+class AskTests(IsolatedState):
     def setUp(self):
+        super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "snake"
         make_repo(self.root)
@@ -190,6 +202,80 @@ class AllowListTests(unittest.TestCase):
         self.assertEqual(seen["model"], "opus")
 
 
+class AvailabilityTests(IsolatedState):
+    """A model is offered only while it really answers: checks, real questions and failures all count."""
+
+    def test_a_model_that_failed_is_left_out_with_why_and_comes_back_later(self):
+        now = 1_000_000.0
+        pc.record_check("opus", False, "out of quota for now", now=now)
+        tiers = pc.chat_tiers(CATALOG, now=now + 60)
+        self.assertEqual(tiers["complex"]["model"], "fable")
+        self.assertEqual(tiers["complex"]["skipped"], [{"model": "opus", "reason": "out of quota for now"}])
+        self.assertEqual(pc.chat_tiers(CATALOG, now=now + pc.FAIL_HOLD + 1)["complex"]["model"], "opus")  # a quota comes back
+
+    def test_models_that_answered_come_first_and_count_as_checked(self):
+        now = 1_000_000.0
+        pc.record_check("pricey-pro", True, now=now)
+        tiers = pc.chat_tiers(CATALOG, now=now + 60)
+        self.assertEqual(tiers["balanced"]["model"], "pricey-pro")
+        self.assertTrue(tiers["balanced"]["checked"])
+        self.assertFalse(tiers["free"]["checked"])
+        self.assertTrue(pc.needs_check(tiers))
+        self.assertFalse(pc.chat_tiers(CATALOG, now=now + pc.CHECK_FRESH + 1)["balanced"]["checked"])  # checked a while ago: again
+
+    def test_a_tier_whose_models_all_failed_says_so(self):
+        pc.record_check("opus", False, "not signed in, or no access")
+        pc.record_check("fable", False, "out of quota for now")
+        tiers = pc.chat_tiers(CATALOG)
+        self.assertFalse(tiers["complex"]["available"])
+        self.assertIn("None of its models answered: opus (not signed in, or no access)", tiers["complex"]["reason"])
+
+    def test_checking_asks_each_tier_until_one_answers(self):
+        asked = []
+        answers = {"opus": (False, "out of quota for now", ""), "fable": (True, "", "fable"),
+                   "sonnet": (True, "", "gpt-6.1-sol"),  # a stand-in answered: sonnet itself didn't
+                   "pricey-pro": (True, "", "pricey-pro"), "copilot": (True, "", "copilot")}
+
+        def probe(model):
+            asked.append(model)
+            return answers.get(model, (False, "didn't answer", ""))
+        tiers = pc.check_tiers(CATALOG, probe, retry_after=0)
+        self.assertEqual(tiers["complex"]["model"], "fable")
+        self.assertEqual(asked.count("opus"), 2)  # a failure is asked once more before it counts
+        self.assertTrue(tiers["complex"]["checked"])
+        self.assertEqual(tiers["balanced"]["model"], "pricey-pro")
+        self.assertEqual(pc.load_checks()["sonnet"]["reason"], "answered by gpt-6.1-sol instead")
+        self.assertNotIn("ollama-big", asked)  # copilot answered first: the rest of Free wasn't asked
+        self.assertFalse(pc.needs_check(tiers))
+
+    def test_a_blip_does_not_take_a_model_away(self):
+        calls = []
+
+        def probe(model):
+            calls.append(model)
+            return (len([c for c in calls if c == model]) > 1, "Invalid API key", model)  # fails once, then answers
+        tiers = pc.check_tiers(CATALOG, probe, retry_after=0)
+        self.assertEqual(tiers["complex"]["model"], "opus")
+        self.assertTrue(pc.load_checks()["opus"]["ok"])
+
+    def test_failures_are_said_in_a_few_words(self):
+        self.assertEqual(pc.failure_reason("Error: You exceeded your current quota (429)"), "out of quota for now")
+        self.assertEqual(pc.failure_reason("The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."), "not offered to this sign-in")
+        self.assertEqual(pc.failure_reason("401 Unauthorized"), "not signed in, or no access")
+        self.assertEqual(pc.failure_reason("claude timed out after 90s"), "didn't answer in time")
+
+    def test_a_real_answer_counts_as_a_check_and_a_given_up_model_as_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "p"
+            make_repo(root)
+            pc.ask(root, "Hi", "free", lambda p, m: ("Hello", "copilot"), pc.chat_tiers(CATALOG))
+        self.assertTrue(pc.load_checks()["copilot"]["ok"])
+        ui.note_model_failures("⚠️  ollama-big failed (model not found). Attempting fallback...\n⚠️  free-flash timed out. Attempting fallback...")
+        checks = pc.load_checks()
+        self.assertEqual((checks["ollama-big"]["ok"], checks["ollama-big"]["reason"]), (False, "not offered to this sign-in"))
+        self.assertEqual(checks["free-flash"]["reason"], "didn't answer in time")
+
+
 class EndpointTests(ServerTestCase):
     def tiers(self):
         return patch.object(pc, "ready_models", return_value=CATALOG)
@@ -201,6 +287,22 @@ class EndpointTests(ServerTestCase):
         self.assertEqual(data["messages"], [])
         self.assertEqual(data["tiers"]["complex"]["model"], "opus")
         self.assertEqual(data["default"], "balanced")
+        self.assertTrue(data["needs_check"])  # nothing checked yet: the page checks before relying on it
+
+    def test_checking_runs_in_the_background_and_answers_with_the_tiers(self):
+        probed = []
+        fake = lambda server, root, model: probed.append(model) or (model != "opus", "out of quota for now" if model == "opus" else "", model)
+        with self.tiers(), patch.object(ui, "probe_model", fake):
+            res, data = self.request("POST", "/api/chat/check", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202)
+            for _ in range(100):
+                _, task = self.request("GET", f"/api/product/task/{data['task']}")
+                if task["status"] != "running":
+                    break
+                time.sleep(0.05)
+        self.assertEqual(task["status"], "done", task)
+        self.assertEqual(task["result"]["tiers"]["complex"]["model"], "fable")
+        self.assertIn("opus", probed)
 
     def test_a_question_runs_in_the_background_with_only_its_tiers_models(self):
         calls = []

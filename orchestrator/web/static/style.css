@@ -4876,6 +4876,10 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .ask-ai-tier:has(input:checked) .ask-ai-tier-name { color: var(--accent); }
 .ask-ai-tier:has(input:focus-visible) { outline: 2px solid var(--accent); }
 .ask-ai-tier.is-off { cursor: not-allowed; opacity: .55; }
+.ask-ai-tier-model { display: inline-flex; align-items: center; gap: 4px; }
+.ask-ai-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+.ask-ai-dot.is-ok { background: var(--ok); }
+.ask-ai-check { display: flex; align-items: center; gap: var(--space-1); font-size: var(--type-secondary); }
 .ask-ai-thread { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); padding-right: var(--space-1); }
 .ask-ai-thread .chat-msg { max-width: 92%; }
 .chat-md > :first-child { margin-top: 0; }

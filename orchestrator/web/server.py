@@ -2400,10 +2400,39 @@ def research_call(server: Any, root: Path, prompt: str, timeout: int = 240, prog
 
 def chat_call(server: Any, root: Path, prompt: str, models: list[str], timeout: int = 240,
               progress: "TaskProgress | None" = None) -> tuple[str, str]:
-    """One Ask AI turn using only `models`, in that order (see project_chat). Returns (answer, the model that answered)."""
-    head, reply = model_turn(server, root, prompt, ["--allow", ",".join(models)], timeout, progress)
+    """One Ask AI turn using only `models`, in that order (see project_chat). Returns (answer, the model that answered).
+    Every model that gave up on the way is noted, so the tiers stop offering one that doesn't answer."""
+    try:
+        head, reply = model_turn(server, root, prompt, ["--allow", ",".join(models)], timeout, progress)
+    except UIError as exc:
+        gave_up = note_model_failures(getattr(exc, "output", ""))
+        if not gave_up and models:
+            project_chat.record_check(models[0], False, project_chat.failure_reason(str(exc)))
+        raise
+    note_model_failures(head)
     used = next((line.split("<<<ORCHESTRATOR-MODEL>>>", 1)[1].strip() for line in head.splitlines() if "<<<ORCHESTRATOR-MODEL>>>" in line), "")
     return reply, used
+
+
+def note_model_failures(output: str) -> list[str]:
+    """The models a run says it gave up on ("⚠️ gpt-5.4 failed (...)" / "timed out"), recorded as not answering."""
+    names = []
+    for match in re.finditer(r"⚠️\s+(\S+) (?:failed \((.*)|timed out)", output or ""):
+        project_chat.record_check(match[1], False, project_chat.failure_reason(match[2] or "timed out"))
+        names.append(match[1])
+    return names
+
+
+def probe_model(server: Any, root: Path, model: str) -> tuple[bool, str, str]:
+    """Ask `model` alone the one-word test question. Returns (answered, why not, the model that actually answered)."""
+    try:
+        head, reply = model_turn(server, root, project_chat.PROBE, ["--allow", model], timeout=90)
+    except UIError as exc:
+        # The runner's own one-line summary ("⚠️ gemini-… failed (…)") says why better than the tool's last line of output.
+        said = re.search(r"⚠️\s+\S+ (?:failed \((.*)\)\. Attempting|(timed out))", getattr(exc, "output", "") or "")
+        return False, project_chat.failure_reason((said[1] or said[2]) if said else str(exc)), ""
+    used = next((line.split("<<<ORCHESTRATOR-MODEL>>>", 1)[1].strip() for line in head.splitlines() if "<<<ORCHESTRATOR-MODEL>>>" in line), "")
+    return (bool(reply.strip()), "" if reply.strip() else "answered with nothing", used)
 
 
 def model_turn(server: Any, root: Path, prompt: str, extra: list[str], timeout: int = 240,
@@ -2449,7 +2478,9 @@ def model_turn(server: Any, root: Path, prompt: str, extra: list[str], timeout: 
     stdout = "".join(out)
     marker = "<<<ORCHESTRATOR-REPLY>>>"
     if proc.returncode != 0 or marker not in stdout:
-        raise UIError(("".join(err).strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
+        failure = UIError(("".join(err).strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
+        failure.output = stdout  # which models were tried and why each gave up, for whoever keeps track of that
+        raise failure
     head, reply = stdout.split(marker, 1)
     return head, reply
 
@@ -6950,7 +6981,13 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["chat"]:
             # Ask AI on Home: the conversation, and which model each of Free, Balanced and Complex would use here.
             tiers = project_chat.chat_tiers(project_chat.ready_models(root))
-            self._json({"messages": project_chat.messages(root), "tiers": tiers, "default": project_chat.default_tier(tiers)})
+            self._json({"messages": project_chat.messages(root), "tiers": tiers, "default": project_chat.default_tier(tiers),
+                        "needs_check": project_chat.needs_check(tiers)})
+        elif method == "POST" and parts == ["chat", "check"]:
+            # Which models really answer: a one-word question to each tier's best model until one does (see project_chat).
+            models, server = project_chat.ready_models(root), self.server
+            work = lambda: {"tiers": project_chat.check_tiers(models, lambda m: probe_model(server, root, m))}
+            self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
         elif method == "POST" and parts == ["chat"]:
             body = self._body()
             tier = str(body.get("tier") or "")

@@ -2909,10 +2909,20 @@ const ASK_AI_TIER_KEY = "orchestrator_ask_ai_tier";
 let askAiRun = null; // the question being answered: { controller, task }
 
 function askAiTierButton(id, t, chosen) {
-  return `<label class="ask-ai-tier${t.available ? "" : " is-off"}" title="${esc(t.available ? t.hint : t.reason)}">
+  const skipped = (t.skipped || []).map((x) => `${x.model}: ${x.reason}`).join("\n");
+  const tip = [t.available ? t.hint : t.reason, t.available && !t.checked ? "Not checked yet." : "", skipped ? `Left out because they didn't answer:\n${skipped}` : ""].filter(Boolean).join("\n");
+  return `<label class="ask-ai-tier${t.available ? "" : " is-off"}" title="${esc(tip)}">
     <input type="radio" name="ask-ai-tier" value="${esc(id)}"${id === chosen ? " checked" : ""}${t.available ? "" : " disabled"}>
     <span class="ask-ai-tier-name">${esc(t.label)}</span>
-    <span class="ask-ai-tier-model">${esc(t.available ? t.model : "Not set up")}</span></label>`;
+    <span class="ask-ai-tier-model">${t.available ? `<span class="ask-ai-dot${t.checked ? " is-ok" : ""}" aria-hidden="true"></span>${esc(t.model)}` : (t.skipped?.length ? "Not answering" : "Not set up")}</span></label>`;
+}
+
+// Whether the models really answer: when they were last checked, and a way to check again.
+function askAiCheckLine(data, checking) {
+  if (checking) return `${runningMark}Checking which models answer…`;
+  const times = Object.values(data.tiers).filter((t) => t.checked && t.checked_at).map((t) => t.checked_at);
+  const when = times.length ? ago(Math.min(...times)) : "";
+  return `${when ? `Models checked ${esc(when)}` : "Models not checked yet"} · <button type="button" class="linklike" data-ask-ai-check>Check again</button>`;
 }
 
 function askAiMessage(m) {
@@ -2949,6 +2959,7 @@ async function openAskAi() {
         <button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button></div>
     </header>
     <fieldset class="ask-ai-tiers" aria-label="Kind of AI"><legend class="sr-only">Kind of AI</legend><span class="muted">Loading…</span></fieldset>
+    <div class="ask-ai-check muted" aria-live="polite"></div>
     <div class="ask-ai-thread" role="log" aria-live="polite"></div>
     <form class="ask-ai-form">
       <textarea name="message" rows="2" maxlength="4000" placeholder="Ask about the product, the code, its history…" aria-label="Your question"></textarea>
@@ -2978,18 +2989,39 @@ async function openAskAi() {
   }
   messages = data.messages || [];
   let saved = ""; try { saved = localStorage.getItem(ASK_AI_TIER_KEY) || ""; } catch { /* no storage: use the default */ }
-  const chosen = data.tiers[saved]?.available ? saved : data.default;
-  tiersBox.innerHTML = `<legend class="sr-only">Kind of AI</legend>${["free", "balanced", "complex"].map((id) => askAiTierButton(id, data.tiers[id], chosen)).join("")}`;
+  const checkBox = dlg.querySelector(".ask-ai-check");
+  const drawTiers = (checking = false) => {
+    const current = tiersBox.querySelector("input:checked")?.value || saved;
+    const chosen = data.tiers[current]?.available ? current : data.tiers[data.default]?.available ? data.default : ["balanced", "free", "complex"].find((t) => data.tiers[t].available);
+    tiersBox.innerHTML = `<legend class="sr-only">Kind of AI</legend>${["free", "balanced", "complex"].map((id) => askAiTierButton(id, data.tiers[id], chosen)).join("")}`;
+    checkBox.innerHTML = askAiCheckLine(data, checking);
+    input.disabled = send.disabled = !tiersBox.querySelector("input:checked");
+  };
+  // Check the models before relying on them: the first time, and when it's been a while (project_chat.CHECK_FRESH).
+  let checking = false;
+  const checkModels = async () => {
+    if (checking) return;
+    checking = true;
+    drawTiers(true);
+    try {
+      const started = await api("chat/check", { method: "POST", body: {} });
+      const result = await waitForTask(started, {});
+      data.tiers = result.tiers || data.tiers;
+    } catch (e) { if (e.status !== 404) toast(e.message, true); }
+    finally { checking = false; if (dlg.open) { drawTiers(); tierNote(); } }
+  };
+  checkBox.addEventListener("click", (e) => { if (e.target.closest("[data-ask-ai-check]")) checkModels(); });
+  drawTiers();
   const tierNote = () => {
     const id = tiersBox.querySelector("input:checked")?.value;
     status.textContent = id ? data.tiers[id].hint : "No AI is set up yet. Connect one under AI tools.";
   };
   tierNote();
+  if (data.needs_check) checkModels();
   tiersBox.addEventListener("change", () => {
     try { localStorage.setItem(ASK_AI_TIER_KEY, tiersBox.querySelector("input:checked")?.value || ""); } catch { /* remembered for this visit only */ }
     tierNote();
   });
-  if (!tiersBox.querySelector("input:checked")) input.disabled = send.disabled = true;
   draw();
 
   const ask = async (question) => {
@@ -3023,6 +3055,8 @@ async function openAskAi() {
       send.textContent = "Send";
       send.classList.replace("ghost", "primary");
       if (dlg.open) { draw(); input.focus(); }
+      // A model that just failed is left out from now on; one that answered is checked.
+      api("chat").then((fresh) => { if (dlg.open && fresh?.tiers) { data.tiers = fresh.tiers; drawTiers(); tierNote(); } }).catch(() => {});
     }
   };
 
