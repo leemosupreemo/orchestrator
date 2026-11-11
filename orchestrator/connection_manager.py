@@ -431,6 +431,18 @@ class ConnectionManager:
                                 self._cleanup()
                                 return False
                             verified = bool(url) and self._verify(url, provider)
+                            # Quick tunnels announce their URL before DNS and the edge connection are ready.
+                            # Keep this child alive through a bounded, cancellable readiness grace period.
+                            if process and url and not verified:
+                                for _ in range(5):
+                                    self._ensure_running()
+                                    if process.poll() is not None:
+                                        break
+                                    self._stop.wait(2)
+                                    self._ensure_running()
+                                    if self._verify(url, provider):
+                                        verified = True
+                                        break
                         elif provider == 'funnel':
                             url = self._funnel(setup=explicit_setup)
                             verified = bool(url) and self._verify(url, provider)

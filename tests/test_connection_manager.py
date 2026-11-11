@@ -64,6 +64,40 @@ class Connections(unittest.TestCase):
         self.assertEqual(stopped, [process])
         self.assertEqual(m.status()['state'], 'failed')
 
+    def test_new_cloudflare_tunnel_can_finish_starting_before_health_probe_passes(self):
+        process = type('Process', (), {'poll': lambda s: None})()
+        stopped, probes = [], []
+        m = cm.ConnectionManager(8765, 'secret', store=self.store,
+            cloudflare_start=lambda port: (process, 'https://starting.example'), cloudflare_stop=stopped.append,
+            probe=lambda *a, **kw: probes.append(a) or len(probes) > 1)
+        with patch.object(m._stop, 'wait', return_value=False):
+            self.assertTrue(m.check_once())
+        self.assertEqual(m.endpoint, 'https://starting.example')
+        self.assertEqual(m.status()['state'], 'connected')
+        self.assertEqual(stopped, [])
+        m.stop(wait=True)
+        self.assertEqual(stopped, [process])
+
+    def test_new_cloudflare_tunnel_readiness_wait_is_bounded_and_cancellable(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                process = type('Process', (), {'poll': lambda s: None})()
+                stopped, probes = [], []
+                m = cm.ConnectionManager(8765, 'secret', store=self.store,
+                    cloudflare_start=lambda port: (process, 'https://unavailable.example'), cloudflare_stop=stopped.append,
+                    probe=lambda *a, **kw: probes.append(a) or False)
+                def wait(timeout):
+                    if cancel:
+                        m._stop.set()
+                    return cancel
+                with patch.object(m._stop, 'wait', side_effect=wait):
+                    self.assertFalse(m.check_once())
+                self.assertEqual(stopped, [process])
+                self.assertLess(len(probes), 20)
+                self.assertEqual(m.endpoint, '')
+                if cancel:
+                    self.assertEqual(len(probes), 1)
+
     def test_unconfigured_funnel_is_not_attempted(self):
         m = self.manager()
         with patch.object(m, '_funnel', side_effect=AssertionError('unexpected setup')):
