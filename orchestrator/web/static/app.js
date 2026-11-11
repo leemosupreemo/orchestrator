@@ -3825,6 +3825,8 @@ function previewOverlayHtml(kind, { branch = "", run = "", hosted = false, canSt
   const body = {
     starting: [`<span class="spinner inline-spinner" aria-hidden="true"></span>Starting live preview…`,
       "The first start installs packages and can take a few minutes.", `${log}${shared}`],
+    remote: [`<span class="spinner inline-spinner" aria-hidden="true"></span>Opening the live preview on this device…`,
+      "It runs on your computer; this gives it a private link of its own. Takes a few seconds.", ""],
     failed: ["Live preview couldn't start", why ? esc(why) : `The dev server for ${esc(branch)} stopped before it was ready. The log says why.`,
       `<button type="button" class="btn small go" data-preview-do="start">Try again</button>${log}${shared}`],
     stalled: ["Live preview stopped responding", "The page didn't load. The dev server may have crashed or still be compiling.",
@@ -3837,48 +3839,39 @@ function previewOverlayHtml(kind, { branch = "", run = "", hosted = false, canSt
   return `<div class="preview-overlay-box" role="status"><strong>${body[0]}</strong><p class="muted t-secondary">${body[1]}</p>${body[2] ? `<div class="row gap-8 wrap justify-center">${body[2]}</div>` : ""}${form}</div>`;
 }
 
+// The Preview card on Home: your app as it is right now, from the project folder (uncommitted work included), visible only
+// to you. It starts by itself. On this computer it's the dev server's own address; anywhere else (a phone on the hosted app)
+// it's a private link of its own (preview/remote). Publishing a public link is one icon button away, in its own dialog.
 function previewCard(p, runs) {
   if (!p) return "";
   const live = p.live, hosted = p.hosted;
-  // The live preview's address is on the computer running Orchestrator: from another device (a phone on the hosted app) it
-  // points at that device instead, so the published link is shown first there.
   const onThisComputer = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
-  const liveFirst = live && (onThisComputer || !hosted);
-  const shown = liveFirst ? { kind: "live", url: live.url } : hosted ? { kind: "link", url: hosted.url } : null;
+  const remoteLive = Boolean(live) && !onThisComputer;
+  const liveUrl = live ? (remoteLive ? "about:blank" : live.url) : "";
   const liveRun = runs.find((r) => r.running && isPreviewRun(r));
   const publishing = runs.some((r) => r.running && r.action === "web_preview");
   const owner = state.you?.role !== "member";
-  const both = live && hosted;
   const failedRun = !liveRun && !live ? PREVIEW_FAILED.get(p.branch) || "" : "";
   const starting = Boolean(liveRun && !live);
-  const autostart = !live && !liveRun && !failedRun && onThisComputer && p.branch_exists;
+  const autostart = !live && !liveRun && !failedRun && p.branch_exists;
   // Why it failed, in the dev server's own words: "Couldn't tell how to run this web app…".
   const why = failedRun ? String(runs.find((r) => r.id === failedRun)?.error_summary || "").replace(/^❌\s*/, "").split("\n").pop() : "";
-  const overlay = starting ? previewOverlayHtml("starting", { run: liveRun.id, hosted: Boolean(hosted) })
-    : failedRun ? previewOverlayHtml("failed", { branch: p.branch, run: failedRun, hosted: Boolean(hosted), why, previewUrl: p.preview_url })
-    : !shown ? previewOverlayHtml("idle", { branch: p.branch, canStart: p.branch_exists, previewUrl: p.preview_url }) : "";
-  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-preview-url="${esc(p.preview_url || "")}" data-autostart="${autostart ? "1" : ""}" data-starting="${starting ? esc(liveRun.id) : ""}">
-    <div class="card-h card-h-wrap">
-      <h2>Preview <span class="muted t-secondary mono">${esc(p.branch)}</span></h2>
-      ${both ? `<div class="row gap-4 job-preview-tabs" role="group" aria-label="Which preview">
-        <button type="button" class="btn small${liveFirst ? " on" : ""}" data-preview-tab="live" aria-pressed="${liveFirst}" data-url="${esc(live.url)}">Live</button>
-        <button type="button" class="btn small${liveFirst ? "" : " on"}" data-preview-tab="link" aria-pressed="${!liveFirst}" data-url="${esc(hosted.url)}">Link</button></div>` : ""}
+  const overlay = starting ? previewOverlayHtml("starting", { run: liveRun.id })
+    : failedRun ? previewOverlayHtml("failed", { branch: p.branch, run: failedRun, why, previewUrl: p.preview_url })
+    : !live ? previewOverlayHtml(autostart ? "starting" : "idle", { branch: p.branch, canStart: p.branch_exists, previewUrl: p.preview_url }) : "";
+  const publishLabel = publishing ? "Publishing a public link…" : hosted ? "Public link: published" : "Publish a public link";
+  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-preview-url="${esc(p.preview_url || "")}" data-remote-live="${remoteLive ? "1" : ""}" data-autostart="${autostart ? "1" : ""}" data-starting="${starting ? esc(liveRun.id) : ""}">
+    <div class="card-h">
+      <h2>Preview</h2>
+      ${owner ? `<button type="button" class="preview-publish-btn${hosted ? " is-published" : ""}${publishing ? " is-busy" : ""}" id="job-preview-publish" aria-label="${esc(publishLabel)}" title="${esc(publishLabel)}"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg></button>` : ""}
     </div>
     <div class="card-b stack gap-12">
-      ${shown ? `<div class="preview-bar">
-        <button type="button" class="btn small ghost preview-refresh" id="preview-refresh" title="Reload the page${liveRun ? ". Shift-click restarts the dev server" : ""}" aria-label="Reload the page"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg></button>
-        <form class="preview-path" id="preview-path-form"><label class="sr-only" for="preview-path">Page</label>
-          <input id="preview-path" name="path" class="mono" value="/" autocomplete="off" spellcheck="false" placeholder="/ (type a path, Enter to go)"></form>
-        <div class="row gap-4 job-preview-devices" role="group" aria-label="Screen size">
-          ${PREVIEW_DEVICES.map(([key, label]) => `<button type="button" class="btn small" data-preview-device="${key}" aria-pressed="false">${label}</button>`).join("")}</div>
-        <a class="btn small ghost" id="job-preview-open" href="${esc(shown.url)}" target="_blank" rel="noopener">Open ↗</a>
-      </div>` : ""}
       <div class="job-preview-frame" id="job-preview-frame" data-device="desktop">
-        ${shown ? `<iframe title="Preview of ${esc(p.branch)}" src="${esc(shown.url)}" data-kind="${shown.kind}" loading="lazy" referrerpolicy="no-referrer"></iframe>
+        ${live ? `<iframe title="Preview of your app" src="${esc(liveUrl)}" data-kind="live" referrerpolicy="no-referrer"></iframe>
         <div class="job-preview-pins" id="job-preview-pins" hidden><span class="job-preview-hint">Click where the problem is</span></div>` : ""}
         <div class="preview-overlay" id="preview-overlay"${overlay ? "" : " hidden"}>${overlay}</div>
       </div>
-      ${shown ? `<div class="job-preview-problems stack gap-8" id="job-preview-problems" hidden>
+      ${live ? `<div class="job-preview-problems stack gap-8" id="job-preview-problems" hidden>
         <div class="row gap-8 align-center wrap">
           <strong class="job-preview-problems-count" id="job-preview-problems-count" aria-live="polite"></strong>
           <button type="button" class="btn small go" id="job-preview-fix">Fix with AI</button>
@@ -3894,24 +3887,39 @@ function previewCard(p, runs) {
         <div class="preview-chips" id="preview-chips" hidden></div>
         <label class="field"><span class="sr-only">Describe a change</span><textarea name="text" rows="2" required placeholder="Describe a change… (Enter sends, Shift+Enter for a new line)"></textarea></label>
         <div class="clarify-reply-actions">
-          <div class="row gap-8 align-center wrap">
-            <button type="button" class="btn small" id="job-preview-point" aria-pressed="false">Point out a problem</button>
-            <small class="hint-text">Becomes a new job, planned straight away. You stay here.</small>
-          </div>
+          <button type="button" class="btn small" id="job-preview-point" aria-pressed="false">Point out a problem</button>
           <button type="submit" class="btn go">Send</button>
         </div>
-      </form>
-      <p class="muted t-secondary" id="job-preview-caption">${liveFirst ? `Live from ${onThisComputer ? "this computer" : "the computer running Orchestrator (open this page there to see it)"}: changes show up as they're saved.` : `Link at ${esc(hosted.commit || "")}, ${esc(ago(hosted.at))}${p.hosted_current ? "" : ". The branch has newer commits: publish again to see them"}.`} If the frame stays blank, the site doesn't allow being shown inside another page: use Open ↗.</p>` : ""}
-      <div class="row gap-8 align-center wrap">
-        ${liveRun ? `<button type="button" class="btn small danger" id="job-preview-stop" data-run="${esc(liveRun.id)}">Stop live preview</button>`
-          : shown ? `<button type="button" class="btn small" data-preview-do="start"${p.branch_exists ? "" : " disabled"}>Start live preview</button>` : ""}
-        ${owner && !p.gaps.length ? `<button type="button" class="btn small" id="job-preview-publish"${publishing ? " disabled" : ""}>${publishing ? "Publishing…" : hosted ? (p.hosted_current ? "Publish link again" : "Update link") : "Publish link"}</button>` : ""}
-        ${hosted ? `<button type="button" class="btn small ghost" data-setup-copy="${esc(hosted.url)}">Copy link</button>` : ""}
-      </div>
-      ${onThisComputer ? `<label class="yolo-switch" title="Remembered on this browser."><input type="checkbox" role="switch" id="job-preview-autostart"${previewAutoStart() ? " checked" : ""}><span>Start the live preview when I open Home</span></label>` : ""}
-      ${p.gaps.length ? `<p class="muted t-secondary">To publish a link: ${p.gaps.map(esc).join(" ")}</p>` : owner ? `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its preview link without asking."><input type="checkbox" role="switch" id="job-preview-auto"${p.auto ? " checked" : ""}><span>Publish a link when a job is ready for review</span></label>` : ""}
+      </form>` : ""}
     </div>
   </section>`;
+}
+
+// Publishing a public link, in its own dialog: what's published (if anything), when it expires, publish or update it, and
+// the switch that publishes automatically when a job is ready for review. The card itself only shows your private preview.
+async function openPublishDialog(branch) {
+  let p;
+  try { p = (await api("preview")).preview; } catch (e) { toast(e.message, true); return; }
+  if (!p) return;
+  const hosted = p.hosted;
+  const publishing = state.runs.some((r) => r.running && r.action === "web_preview");
+  const expires = hosted?.expires ? new Date(hosted.expires).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+  const body = `<div class="publish-dialog stack gap-12">
+    <p class="muted">Publishing builds the latest <strong>commit</strong> on <span class="mono">${esc(branch)}</span> and puts it at a link anyone can open, for 7 days. Uncommitted work isn't included: commit it first.</p>
+    ${hosted ? `<div class="publish-link stack gap-4"><strong>Public link</strong>
+        <div class="row gap-8 align-center wrap"><a class="mono publish-url" href="${esc(hosted.url)}" target="_blank" rel="noopener">${esc(hosted.url)}</a>
+        <button type="button" class="btn small ghost" data-setup-copy="${esc(hosted.url)}">Copy</button></div>
+        <small class="muted">Published ${esc(ago(hosted.at))}${hosted.commit ? ` from ${esc(hosted.commit)}` : ""}${expires ? ` · expires ${esc(expires)}` : ""}.${p.hosted_current ? "" : " The branch has newer commits since."}</small></div>`
+      : `<p>Nothing is published yet.</p>`}
+    ${p.gaps.length ? `<div class="notice"><strong>Before you can publish:</strong><ul>${p.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul></div>`
+      : `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its link without asking."><input type="checkbox" role="switch" id="publish-auto"${p.auto ? " checked" : ""}><span>Publish automatically when a job is ready for review</span></label>`}
+  </div>`;
+  const label = publishing ? "Publishing…" : !hosted ? "Publish" : p.hosted_current ? "Publish again" : "Update link";
+  const done = formDialog("Public link", body, p.gaps.length ? "Close" : label, { cancelLabel: p.gaps.length ? "Cancel" : "Close" });
+  if (publishing || p.gaps.length) $("#dialog-ok").disabled = Boolean(publishing);
+  $("#publish-auto")?.addEventListener("change", setAutoPreview);
+  const answer = await done;
+  if (answer && !p.gaps.length && !publishing) runAction("web_preview", { branch, title: `Public link · ${branch}` });
 }
 
 async function setAutoPreview(e) {
@@ -3941,12 +3949,30 @@ function wirePreview(view) {
     overlay.hidden = !overlay.innerHTML;
   };
 
+  // Away from the computer: get the live preview's own link (a tunnel opened for it), then show it.
+  const showRemoteLive = async () => {
+    showOverlay("remote");
+    try {
+      const { url } = await api("preview/remote", { method: "POST", body: { branch } });
+      base = url;
+      const liveTab = card.querySelector('[data-preview-tab="live"]');
+      if (liveTab) liveTab.dataset.url = url;
+      if (!liveTab || liveTab.classList.contains("on")) { frame.src = url; if (openLink) openLink.href = url; }
+      overlay.hidden = true;
+    } catch (err) {
+      showOverlay("failed", { why: err.status === 404 ? "Seeing the live preview on another device needs a newer Orchestrator on your computer." : Errors.explain(err.message) });
+    }
+  };
+  if (card.dataset.remoteLive && frame) showRemoteLive();
+
   // Which page: the helper on the live preview reports where the app has navigated to; typing a path goes there.
   const go = (path) => {
     if (!frame || !base) return;
     let url;
     try { url = new URL(path || "/", base); } catch { toast("That isn't a page path.", true); return; }
     if (url.origin !== new URL(base).origin) { toast("Only pages of this preview can be shown here. Use Open ↗ for other sites.", "warning"); return; }
+    const key = new URL(base).searchParams.get("__pt"); // a link for another device carries its key on every page it opens
+    if (key && !url.searchParams.has("__pt")) url.searchParams.set("__pt", key);
     frame.src = url.href;
   };
   card.querySelector("#preview-path-form")?.addEventListener("submit", (e) => { e.preventDefault(); go(pathInput.value.trim()); });
@@ -3962,7 +3988,7 @@ function wirePreview(view) {
   card.querySelector("[data-setup-copy]")?.addEventListener("click", async (e) => {
     try { await navigator.clipboard.writeText(e.target.dataset.setupCopy); toast("Link copied"); } catch { toast("Couldn't copy the link", true); }
   });
-  card.querySelector("#job-preview-publish")?.addEventListener("click", () => runAction("web_preview", { branch, title: `Preview link · ${branch}` }));
+  card.querySelector("#job-preview-publish")?.addEventListener("click", () => openPublishDialog(branch));
   card.querySelector("#job-preview-auto")?.addEventListener("change", setAutoPreview);
 
   // Starting, stopping and restarting the dev server. While it starts, the frame says so; if it stops before it's ready,
@@ -4044,7 +4070,7 @@ function wirePreview(view) {
   });
   // A preview already running counts as started this visit, so stopping it (or it stopping) doesn't start another.
   if (card.querySelector("#job-preview-stop")) PREVIEW_AUTOSTARTED.add(branch);
-  if (card.dataset.autostart && previewAutoStart() && !PREVIEW_AUTOSTARTED.has(branch)) {
+  if (card.dataset.autostart && !PREVIEW_AUTOSTARTED.has(branch)) {
     PREVIEW_AUTOSTARTED.add(branch);
     startLive();
   }
@@ -4140,7 +4166,7 @@ function wirePreview(view) {
   frame.addEventListener("load", () => {
     helper = false; problems = []; showProblems(); if (picking) stopPicking(); tell({ type: "hello" });
     clearTimeout(stalledTimer);
-    if (frame.dataset.kind === "live" && !stalledShown) stalledTimer = setTimeout(() => {
+    if (frame.dataset.kind === "live" && !stalledShown && frame.src !== "about:blank") stalledTimer = setTimeout(() => {  // the placeholder before a private link arrives isn't the app
       if (!helper && card.isConnected && overlay.hidden) { stalledShown = true; showOverlay("stalled"); }
     }, 8000);
   });

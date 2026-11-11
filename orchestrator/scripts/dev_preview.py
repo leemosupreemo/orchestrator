@@ -28,8 +28,10 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
-from typing import Any
+from http.cookies import SimpleCookie
+import hmac
+from urllib.parse import parse_qsl, urlencode, urlsplit
+from typing import Any, Callable
 
 from orchestrator.scripts.web_preview import channel_name, git
 
@@ -51,12 +53,59 @@ def add_helper(html: bytes) -> bytes:
     return tag + html
 
 
-def proxy_handler(host: str, port: int) -> type[BaseHTTPRequestHandler]:
+KEY_PARAM = "__pt"
+LOCAL_NAMES = {"localhost", "127.0.0.1", "[::1]", "::1", ""}
+DENIED = (b"<!doctype html><meta charset=utf-8><title>Preview</title><p style='font:15px system-ui;margin:2em'>"
+          b"This live preview opens from Orchestrator. Open it from the Preview card on Home.</p>")
+
+
+def proxy_handler(host: str, port: int, remote_key: Callable[[], str] | None = None) -> type[BaseHTTPRequestHandler]:
+    """`remote_key` gives the key that requests arriving from outside this computer (through the preview's own tunnel, see
+    the server's preview/remote) must carry; with none, only this computer gets in."""
     class Proxy(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        set_key = False
 
         def log_message(self, *_: Any) -> None:
             pass
+
+        def allowed(self) -> bool:
+            """This computer always; from anywhere else: the link with its key (it then sets a cookie), that cookie, or a
+            request the preview's own page makes (its address is unguessable and given only to someone signed in)."""
+            self.set_key = False
+            name = (urlsplit("//" + (self.headers.get("Host") or "")).hostname or "").lower()
+            if name in LOCAL_NAMES:
+                return True
+            key = remote_key() if remote_key else ""
+            if not key:
+                return False
+            parts = urlsplit(self.path)
+            query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)]
+            if (KEY_PARAM, key) in query:
+                self.set_key = True
+                rest = urlencode([(k, v) for k, v in query if k != KEY_PARAM])
+                self.path = parts.path + (f"?{rest}" if rest else "")  # the app never sees the key
+                return True
+            cookies = SimpleCookie()
+            try:
+                cookies.load(self.headers.get("Cookie") or "")
+            except Exception:
+                pass
+            if cookies.get(KEY_PARAM) and hmac.compare_digest(cookies[KEY_PARAM].value, key):
+                return True
+            referer = urlsplit(self.headers.get("Referer") or "")
+            return referer.hostname is not None and referer.hostname.lower() == name
+
+        def deny(self) -> None:
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(DENIED)))
+            self.end_headers()
+            self.wfile.write(DENIED)
+
+        def send_key_cookie(self) -> None:
+            if self.set_key and remote_key:  # cross-site in a frame: Secure, SameSite=None, partitioned by the page showing it
+                self.send_header("Set-Cookie", f"{KEY_PARAM}={remote_key()}; Path=/; Secure; HttpOnly; SameSite=None; Partitioned")
 
         def handle_one_request(self) -> None:  # every method goes to the same place
             try:
@@ -69,6 +118,9 @@ def proxy_handler(host: str, port: int) -> type[BaseHTTPRequestHandler]:
                 self.close_connection = True
 
         def forward(self) -> None:
+            if not self.allowed():
+                self.deny()
+                return
             if self.path == HELPER_PATH:
                 body = HELPER.read_bytes()
                 self.send_response(200)
@@ -90,6 +142,7 @@ def proxy_handler(host: str, port: int) -> type[BaseHTTPRequestHandler]:
             reply = upstream.getresponse()
             html = "text/html" in (reply.getheader("Content-Type") or "") and not reply.getheader("Content-Encoding")
             self.send_response(reply.status, reply.reason)
+            self.send_key_cookie()
             for name, value in reply.getheaders():
                 if name.lower() not in HOP_BY_HOP and not (html and name.lower() in PAGE_ONLY):
                     self.send_header(name, value)
@@ -133,11 +186,36 @@ def proxy_handler(host: str, port: int) -> type[BaseHTTPRequestHandler]:
     return Proxy
 
 
-def start_proxy(target: str) -> str:
+def remote_file(state: Path) -> Path:
+    """Where the server keeps a preview's tunnel address and key, beside the preview's own file."""
+    return state.with_name(state.stem + ".remote.json")
+
+
+def remote_key_from(path: Path) -> Callable[[], str]:
+    """The key for requests from outside this computer, read from the file the server writes when it opens the preview's
+    tunnel (and removes when it closes it): no file, no way in from outside."""
+    cache: dict[str, Any] = {"mtime": None, "key": ""}
+
+    def key() -> str:
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            return ""
+        if mtime != cache["mtime"]:
+            try:
+                cache["key"] = str(json.loads(path.read_text()).get("secret") or "")
+            except (OSError, ValueError):
+                cache["key"] = ""
+            cache["mtime"] = mtime
+        return cache["key"]
+    return key
+
+
+def start_proxy(target: str, remote_key: Callable[[], str] | None = None) -> str:
     """Start the proxy in front of the dev server at `target`; returns the proxy's address."""
     parts = urlsplit(target)
     host = "127.0.0.1" if parts.hostname in ("localhost", "0.0.0.0", None) else parts.hostname.strip("[]")
-    server = ThreadingHTTPServer(("127.0.0.1", 0), proxy_handler(host, parts.port or 80))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), proxy_handler(host, parts.port or 80, remote_key))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True, name="preview-proxy").start()
     return f"http://localhost:{server.server_address[1]}{parts.path or '/'}{'?' + parts.query if parts.query else ''}"
@@ -258,7 +336,7 @@ def show_running_app(root: Path, branch: str, slug: str, url: str) -> int:
         return 1
     state = root / ".orchestrator" / "output" / "dev-previews" / f"{slug}.json"
     try:
-        shown = start_proxy(url)
+        shown = start_proxy(url, remote_key_from(remote_file(state)))
     except OSError as exc:
         print(f"(Couldn't start the preview helper: {exc}. Picking elements is off.)")
         shown = url
@@ -345,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
                     found = f"http://localhost:{port.group(1)}/" if port else ""
                 if found:
                     try:
-                        shown = start_proxy(found)
+                        shown = start_proxy(found, remote_key_from(remote_file(state)))
                     except OSError as exc:  # the preview still works, just without picking elements
                         print(f"(Couldn't start the preview helper: {exc}. Picking elements is off.)")
                         shown = found

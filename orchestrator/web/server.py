@@ -54,7 +54,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlparse, quote
+from urllib.parse import parse_qs, urlparse, urlsplit, quote
 import urllib.error
 import urllib.request
 
@@ -1128,6 +1128,8 @@ def live_previews(root: Path) -> list[dict[str, Any]]:
     folder = runtime_dir(root) / "output" / "dev-previews"
     out = []
     for path in folder.glob("*.json") if folder.is_dir() else []:
+        if path.name.endswith(".remote.json"):  # a preview's tunnel and key (RemotePreviews), not a preview
+            continue
         data = read_json_file(path)
         try:
             os.kill(int(data.get("pid") or 0), 0)
@@ -1136,6 +1138,109 @@ def live_previews(root: Path) -> list[dict[str, Any]]:
         if data.get("url") and data.get("branch"):
             out.append({k: data.get(k) for k in ("branch", "url", "at")})
     return out
+
+
+class RemotePreviews:
+    """The live preview, seen away from this computer (a phone on the hosted app). A dev server's address only works on
+    this computer, and an app's own files load from its root (/src/main.ts), so it can't sit under a path of Orchestrator's
+    tunnel: each preview opened from elsewhere gets a tunnel of its own, to the preview's proxy. The proxy lets through
+    the link with its key, then the preview page's own requests (dev_preview.proxy_handler); the address is random and
+    given only to someone signed in. Opened when asked for, closed when the preview stops or Orchestrator does."""
+
+    def __init__(self) -> None:
+        self._items: dict[tuple[str, str], dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _file(root: Path, slug: str) -> Path:
+        return runtime_dir(root) / "output" / "dev-previews" / f"{slug}.remote.json"
+
+    def open(self, root: Path, live: dict[str, Any], starter: Callable[[int], tuple[Any, str | None]] | None = None) -> str:
+        """The preview's address for another device, with its key: the same one while the preview runs."""
+        from orchestrator.scripts.web_preview import channel_name
+        slug = channel_name(str(live.get("branch") or ""))
+        parts = urlsplit(str(live.get("url") or ""))
+        if not parts.port:
+            raise UIError("The live preview isn't running.")
+        key = (str(root), slug)
+        with self._lock:
+            item = self._items.get(key)
+            if item and item["proc"].poll() is None and item["port"] == parts.port:
+                return item["link"]
+            if item:
+                self._stop(key)
+            proc, url = (starter or start_tunnel)(parts.port)
+            if not proc or not url:
+                if proc:
+                    proc.terminate()
+                raise UIError("Couldn't open the live preview for other devices: cloudflared didn't start a tunnel. "
+                              "Install it (brew install cloudflared) and try again.", HTTPStatus.SERVICE_UNAVAILABLE)
+            secret = secrets.token_urlsafe(24)
+            path = self._file(root, slug)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_json_file(path, {"url": url, "secret": secret, "tunnel_pid": proc.pid})
+            link = f"{url.rstrip('/')}{parts.path or '/'}?__pt={secret}"
+            self._items[key] = {"proc": proc, "port": parts.port, "link": link, "file": path}
+        self.wait_until_reachable(link)  # a new tunnel's address takes a few seconds to work everywhere
+        return link
+
+    @staticmethod
+    def wait_until_reachable(link: str, seconds: float = 30.0) -> bool:
+        """Until the link answers through the tunnel, so the page doesn't load it while it's still an error. It connects to
+        Cloudflare by the stable trycloudflare.com address and asks for the new name, instead of looking the new name up:
+        a lookup made before the name exists is remembered as "no such name" by the computer, and the preview wouldn't
+        load on it for a while afterwards."""
+        import ssl
+        parts = urlsplit(link)
+        name = parts.hostname or ""
+        path = parts.path + (f"?{parts.query}" if parts.query else "")
+        context = ssl.create_default_context()
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                address = socket.gethostbyname("trycloudflare.com" if name.endswith(".trycloudflare.com") else name)
+                with socket.create_connection((address, 443), timeout=5) as raw, context.wrap_socket(raw, server_hostname=name) as tls:
+                    tls.sendall(f"HEAD {path or '/'} HTTP/1.1\r\nHost: {name}\r\nConnection: close\r\n\r\n".encode())
+                    status = int(tls.recv(64).split(b" ", 2)[1])
+                if status < 500:
+                    return True
+            except (OSError, ValueError, IndexError):
+                pass
+            time.sleep(1)
+        return False
+
+    def _stop(self, key: tuple[str, str]) -> None:
+        item = self._items.pop(key, None)
+        if not item:
+            return
+        try:
+            item["proc"].terminate()
+            item["proc"].wait(timeout=5)
+        except Exception:
+            try:
+                item["proc"].kill()
+            except Exception:
+                pass
+        try:
+            item["file"].unlink()
+        except OSError:
+            pass
+
+    def reap(self, root: Path, live: list[dict[str, Any]]) -> None:
+        """Close the tunnels of previews that have stopped."""
+        from orchestrator.scripts.web_preview import channel_name
+        running = {channel_name(str(p.get("branch") or "")) for p in live}
+        with self._lock:
+            for key in [k for k in self._items if k[0] == str(root) and k[1] not in running]:
+                self._stop(key)
+
+    def close_all(self) -> None:
+        with self._lock:
+            for key in list(self._items):
+                self._stop(key)
+
+
+REMOTE_PREVIEWS = RemotePreviews()
 
 
 def project_preview(root: Path, config: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -5223,6 +5328,7 @@ class UIServer(ThreadingHTTPServer):
 
     def shutdown(self) -> None:
         self._stopping.set()
+        REMOTE_PREVIEWS.close_all()
         super().shutdown()
 
     @property
@@ -6144,7 +6250,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 "img-src 'self' data: blob: https://*.googleusercontent.com https://lh3.googleusercontent.com; "
                 "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.googleapis.com https://*.firebaseapp.com; "
                 "frame-src 'self' https://swift-orch-web-20260923.firebaseapp.com https://*.firebaseapp.com https://*.web.app "
-                "http://localhost:* http://127.0.0.1:*; "
+                "http://localhost:* http://127.0.0.1:* https://*.trycloudflare.com; "  # the live preview's own link, away from this computer
                 "frame-ancestors 'none'"
             ),
         })
@@ -7101,7 +7207,15 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"computer": session_computer(read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) or [], root),
                         "status": status})
         elif method == "GET" and parts == ["preview"]:
+            REMOTE_PREVIEWS.reap(root, live_previews(root))  # a preview that stopped takes its tunnel with it
             self._json({"preview": project_preview(root)})
+        elif method == "POST" and parts == ["preview", "remote"]:
+            # The live preview on another device: a tunnel of its own, opened now (RemotePreviews).
+            branch = str(self._body().get("branch") or "")
+            live = next((p for p in live_previews(root) if p.get("branch") == branch), None)
+            if not live:
+                raise UIError("The live preview isn't running. Start it first.", HTTPStatus.CONFLICT)
+            self._json({"url": REMOTE_PREVIEWS.open(root, live)})
         elif method == "POST" and parts == ["preview", "url"]:
             # Preview an app that's already running on this computer instead of starting one (dev_preview.show_running_app).
             self._require_owner("change what the preview shows")

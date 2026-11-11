@@ -339,16 +339,32 @@ class PreviewWiringTests(unittest.TestCase):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertIn("${previewCard(homePreview?.preview, state.runs)}", app)
         self.assertEqual(app.count("previewCard("), 2)  # defined once, shown only on Home: never on a job page
-        for text in ("Start live preview", "Stop live preview", "Point out a problem",
-                     "Publish a link when a job is ready for review", 'action: "dev_preview"'):
+        for text in ("Point out a problem", 'action: "dev_preview"', "Add to message", "Hold ⌘ or Shift to pick more",
+                     '"previews/shot"', "Screenshot of them: "):
             self.assertIn(text, app)
         self.assertIn('action: "new_job", params: { type: "quick", summary, branch_mode: "current" }', app)  # a new job, made without leaving Home
-        for text in ('[["desktop", "Desktop"], ["tablet", "Tablet"], ["phone", "Phone"]]', "Add to message",
-                     "Hold ⌘ or Shift to pick more", '"previews/shot"', "Screenshot of them: "):
-            self.assertIn(text, app)
-        css = (ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
-        self.assertIn('.job-preview-frame[data-device="phone"] { max-width: 390px; }', css)
         self.assertIn("const SIDE_RUNS = new Set([\"export_job\", \"web_preview\", \"dev_preview\"]);", app)
+
+    def test_the_card_is_just_your_app_with_publishing_one_icon_away(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        card = app[app.index("function previewCard("):app.index("async function openPublishDialog(")]
+        for gone in ("data-preview-tab", 'id="preview-path"', "data-preview-device", "Stop live preview", "job-preview-autostart",
+                     "job-preview-caption", "Copy link"):
+            self.assertNotIn(gone, card)  # the old toolbar, tabs, toggles and buttons
+        self.assertIn('class="preview-publish-btn', card)
+        self.assertIn('<use href="#i-globe"/>', card)
+        self.assertIn("const autostart = !live && !liveRun && !failedRun && p.branch_exists;", card)  # it starts by itself, anywhere
+        dialog = app[app.index("async function openPublishDialog("):][:3500]
+        for text in ("Uncommitted work isn't included", "Publish automatically when a job is ready for review", 'runAction("web_preview"',
+                     "Before you can publish:", "expires"):
+            self.assertIn(text, dialog)
+        self.assertIn('addEventListener("click", () => openPublishDialog(branch))', app)
+        self.assertIn('<symbol id="i-globe"', (ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())
+
+    def test_the_page_follows_the_app_in_the_preview(self):
+        helper = (ROOT / "orchestrator" / "web" / "static" / "preview-helper.js").read_text()
+        for text in ('type: "location"', '"pushState", "replaceState"', '"popstate"'):
+            self.assertIn(text, helper)
 
 
     def test_errors_on_the_live_preview_reach_the_job_page_and_can_be_sent_as_a_fix(self):
@@ -357,11 +373,6 @@ class PreviewWiringTests(unittest.TestCase):
             self.assertIn(text, helper)
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         for text in ('type === "problem"', "Fix with AI", "errors on the live preview of", "job-preview-problems"):
-            self.assertIn(text, app)
-
-    def test_opening_home_starts_the_live_preview_once(self):
-        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        for text in ("PREVIEW_AUTOSTARTED", "orchestrator.previewAutoStart", "Start the live preview when I open Home", "p.branch_exists"):
             self.assertIn(text, app)
 
     def test_the_live_preview_is_not_counted_as_work(self):
@@ -384,14 +395,6 @@ class PreviewWiringTests(unittest.TestCase):
                      "The preview isn't running", 'data-preview-do="restart"', "PREVIEW_FAILED"):
             self.assertIn(text, app)
 
-    def test_the_page_path_follows_the_app_and_can_be_typed(self):
-        helper = (ROOT / "orchestrator" / "web" / "static" / "preview-helper.js").read_text()
-        for text in ('type: "location"', '"pushState", "replaceState"', '"popstate"'):
-            self.assertIn(text, helper)
-        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        for text in ('id="preview-path"', 'type === "location"', 'id="preview-refresh"', "e.shiftKey"):
-            self.assertIn(text, app)
-
     def test_a_change_can_be_described_under_the_preview(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         for text in ('id="job-preview-ask"', "Describe a change", "Shift+Enter"):
@@ -400,3 +403,85 @@ class PreviewWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemotePreviewTests(unittest.TestCase):
+    """The live preview away from this computer: a tunnel of its own, and a proxy that asks for its key."""
+
+    def setUp(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class App(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = f"<html><head></head><body>{self.path}</body></html>".encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.app = ThreadingHTTPServer(("127.0.0.1", 0), App)
+        threading.Thread(target=self.app.serve_forever, daemon=True).start()
+        self.key = "secret-key-123"
+        self.proxy = dev_preview.start_proxy(f"http://localhost:{self.app.server_address[1]}/", lambda: self.key)
+        self.port = int(self.proxy.rsplit(":", 1)[1].strip("/"))
+
+    def tearDown(self):
+        self.app.shutdown()
+
+    def get(self, path, host, **headers):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", path, headers={"Host": host, **headers})
+        reply = conn.getresponse()
+        return reply.status, reply.read().decode(), dict(reply.getheaders())
+
+    def test_this_computer_needs_no_key(self):
+        self.assertEqual(self.get("/", f"localhost:{self.port}")[0], 200)
+
+    def test_from_elsewhere_only_the_key_its_cookie_or_the_page_itself_get_in(self):
+        tunnel = "rough-words-here.trycloudflare.com"
+        self.assertEqual(self.get("/", tunnel)[0], 403)
+        self.assertEqual(self.get("/?__pt=wrong", tunnel)[0], 403)
+        status, body, headers = self.get("/page?__pt=secret-key-123&x=1", tunnel)
+        self.assertEqual(status, 200)
+        self.assertIn("/page?x=1", body)  # the app never sees the key
+        self.assertIn("__pt=secret-key-123; Path=/; Secure; HttpOnly; SameSite=None; Partitioned", headers.get("Set-Cookie", ""))
+        self.assertEqual(self.get("/app.js", tunnel, Cookie="__pt=secret-key-123")[0], 200)
+        self.assertEqual(self.get("/app.js", tunnel, Referer=f"https://{tunnel}/page")[0], 200)  # the preview's own page
+        self.assertEqual(self.get("/app.js", tunnel, Referer="https://evil.example/")[0], 403)
+        self.key = ""  # the tunnel was closed: nobody from outside
+        self.assertEqual(self.get("/?__pt=secret-key-123", tunnel)[0], 403)
+
+    def test_the_server_opens_one_tunnel_per_preview_and_closes_it_when_the_preview_stops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = []
+
+            class Proc:
+                pid = 4242
+                ended = False
+                def poll(self): return 0 if self.ended else None
+                def terminate(self): self.ended = True
+                def wait(self, timeout=None): return 0
+                def kill(self): self.ended = True
+
+            def starter(port):
+                started.append(port)
+                return Proc(), "https://rough-words-here.trycloudflare.com"
+            previews = server.RemotePreviews()
+            live = {"branch": "main", "url": "http://localhost:51234/"}
+            with mock.patch.object(server.RemotePreviews, "wait_until_reachable", return_value=True):
+                link = previews.open(root, live, starter)
+                self.assertEqual(previews.open(root, live, starter), link)  # the same one while the preview runs
+            self.assertEqual(started, [51234])
+            self.assertTrue(link.startswith("https://rough-words-here.trycloudflare.com/?__pt="))
+            saved = json.loads((root / ".orchestrator" / "output" / "dev-previews" / "main.remote.json").read_text())
+            self.assertIn(saved["secret"], link)  # the proxy reads the key from here
+            self.assertEqual(server.live_previews(root), [])  # the key file is never mistaken for a preview
+            previews.reap(root, [])  # the preview stopped
+            self.assertFalse((root / ".orchestrator" / "output" / "dev-previews" / "main.remote.json").exists())

@@ -4938,3 +4938,12 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 @keyframes disclose-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 .run-step-output, .ask-ai-thread .chat-msg:last-child { animation: disclose-in .2s cubic-bezier(.2, .7, .2, 1); }
 @media (prefers-reduced-motion: reduce) { .run-step-output, .ask-ai-thread .chat-msg:last-child { animation: none; } }
+
+/* Preview card: one round icon button, top right, for the public link (a dot once something is published). */
+.preview-publish-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--control-md); height: var(--control-md); padding: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--panel); color: var(--text); box-shadow: var(--shadow); cursor: pointer; transition: transform var(--motion-fast) ease, box-shadow var(--motion-fast) ease, border-color var(--motion-fast) ease; }
+.preview-publish-btn .icon { width: 19px; height: 19px; }
+.preview-publish-btn:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: var(--shadow-2); }
+.preview-publish-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.preview-publish-btn.is-published::after { content: ""; position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); border: 2px solid var(--panel); }
+.preview-publish-btn.is-busy { color: var(--accent); }
+.publish-url { overflow-wrap: anywhere; }
