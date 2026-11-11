@@ -3254,6 +3254,12 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .account-title-row .account-title { font-size: var(--type-page); }
 .account-sub { margin: var(--space-2) 0 0; font-size: var(--type-secondary); }
 .account-connection-progress { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
+.account-list-more > summary { display: flex; justify-content: flex-start; }
+.account-list-more[open] > summary { margin-bottom: var(--space-3); }
+.account-snapshot-actions { display: flex; }
+@media (max-width: 760px) {
+  .account-snapshot-actions > .btn { width: 100%; min-height: var(--control-lg); }
+}
 .account-message { margin: var(--space-3) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
 .account-troubleshoot {
   margin: var(--space-3) 0 0;

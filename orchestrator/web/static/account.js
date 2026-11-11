@@ -361,11 +361,11 @@
             <div class="more-menu account-machine-menu">
               ${managed ? (m.online && !needsRepair ? repairButton : "") : m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
               ${canUpdate ? `<button type="button" class="btn small go" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
-              <details class="account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
+              <details class="fold account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
                 ${m.reachable && outdated(m.api_version) ? `<p class="muted">${code(`This computer runs an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`)}</p>` : ""}
                 ${renderTroubleshoot(help)}
               </details>
-              ${fixes.length ? `<details class="account-readiness" data-account-expansion="${escapeHtml(m.id)}:readiness"><summary>To run unattended, ${fixes.length === 1 ? "one setting needs" : `${fixes.length} settings need`} changing</summary>
+              ${fixes.length ? `<details class="fold account-readiness" data-account-expansion="${escapeHtml(m.id)}:readiness"><summary>To run unattended, ${fixes.length === 1 ? "one setting needs" : `${fixes.length} settings need`} changing</summary>
                 <ul>${fixes.map((fix) => `<li>${code(fix)}</li>`).join("")}</ul></details>` : ""}
               <hr>
               <button type="button" class="btn small danger" data-account-action="remove" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Remove computer</button>
@@ -388,8 +388,8 @@
         ${unmatchedTrouble ? renderTroubleshoot(troubleshoot) : (message && !troubleshoot ? `<p class="account-message" role="alert">${code(message)}</p>` : "")}
       </div>
       ${list.length ? `<div class="account-machines">${rows}</div>
-        <details class="account-add" data-account-expansion="add"><summary>Add computer</summary>${renderMacSetup(release)}</details>` : askIdea ? ideaStep() : ideaRecap + renderMacSetup(release)}
-      ${macAppReleased ? `<details class="account-add"><summary>Add a Mac nobody sits at</summary>${addMacSteps()}</details>` : ""}
+        <details class="fold account-add" data-account-expansion="add"><summary>Add computer</summary>${renderMacSetup(release)}</details>` : askIdea ? ideaStep() : ideaRecap + renderMacSetup(release)}
+      ${macAppReleased ? `<details class="fold account-add"><summary>Add a Mac nobody sits at</summary>${addMacSteps()}</details>` : ""}
       <p class="muted account-foot">Signed in as ${escapeHtml(email)} · <button type="button" class="linklike" data-account-action="sign-out">Sign out</button></p>
     </div></div>`;
   }
@@ -402,20 +402,23 @@
     const metaStr = [meta.os, meta.version && `Orchestrator ${meta.version}`].filter(Boolean).join(" · ");
     const projects = Array.isArray(snapshot.projects) ? snapshot.projects : [];
     const jobs = Array.isArray(snapshot.recent_jobs) ? snapshot.recent_jobs : [];
+    const renderList = (cards, label, empty) => cards.length
+      ? `${cards.slice(0, 5).join("")}${cards.length > 5 ? `<details class="fold account-list-more"><summary class="btn small ghost">Show all ${cards.length} ${label}</summary><div class="account-machines">${cards.slice(5).join("")}</div></details>` : ""}`
+      : `<p class="muted">${empty}</p>`;
 
-    const projectCards = projects.length ? projects.map((p) => {
+    const projectCards = projects.map((p) => {
       const latest = p.latest_job;
       return `<article class="account-machine">
         <div class="account-machine-heading">
           <strong>${escapeHtml(p.name)}</strong>
-          <span class="muted">${escapeHtml(String(p.jobs_count || 0))} job${p.jobs_count === 1 ? "" : "s"}</span>
+          <span class="muted t-secondary">${escapeHtml(String(p.jobs_count || 0))} job${p.jobs_count === 1 ? "" : "s"}</span>
         </div>
         <p class="muted mono t-secondary wrap-anywhere">${escapeHtml(p.root || "")}</p>
         ${latest ? `<p class="account-machine-meta">Latest: <strong>${escapeHtml(latest.title || latest.job_id)}</strong> <span class="badge ${latest.status === "completed" || latest.status === "done" ? "ok" : latest.status === "failed" ? "bad" : "muted"}">${escapeHtml(latest.status || "planned")}</span></p>` : ""}
       </article>`;
-    }).join("") : `<p class="muted">No recent projects found in this snapshot.</p>`;
+    });
 
-    const jobCards = jobs.length ? jobs.map((j) => {
+    const jobCards = jobs.map((j) => {
       const statusTone = j.status === "completed" || j.status === "done" ? "ok" : j.status === "failed" ? "bad" : "muted";
       const tasks = Array.isArray(j.tasks) ? j.tasks : [];
       return `<article class="account-machine">
@@ -425,41 +428,38 @@
         </div>
         <p class="muted account-machine-meta">${escapeHtml([j.project, j.type, j.updated_at || j.created_at].filter(Boolean).join(" · "))}</p>
         ${j.summary ? `<p class="t-secondary m-0">${escapeHtml(j.summary)}</p>` : ""}
-        ${tasks.length ? `<details class="more">
-          <summary class="muted t-secondary cursor-pointer">${tasks.length} task${tasks.length === 1 ? "" : "s"}</summary>
+        ${tasks.length ? `<details class="fold account-list-more">
+          <summary class="btn small ghost">${tasks.length} task${tasks.length === 1 ? "" : "s"}</summary>
           <ul class="indented-list mt-8 t-secondary">
             ${tasks.map((t) => `<li>${t.status === "done" || t.status === "completed" ? "✓" : "○"} ${escapeHtml(t.title || "Task")}</li>`).join("")}
           </ul>
         </details>` : ""}
       </article>`;
-    }).join("") : `<p class="muted">No recent jobs found in this snapshot.</p>`;
+    });
 
     return `<div class="signin-wrap"><div class="signin-card account-card">
-      <div class="row between gap-8 mb-8">
-        <button type="button" class="btn small ghost" data-account-action="back-machines">← All computers</button>
-        <span class="badge muted">Saved snapshot</span>
-      </div>
       <div>
-        <h2 class="account-title">${escapeHtml(name)}</h2>
+        <div class="topbar-title-row account-title-row">
+          <button type="button" class="back-link" data-account-action="back-machines" aria-label="Back to all computers" title="Back to all computers"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+          <h1 class="account-title">${escapeHtml(name)}</h1>
+        </div>
         <p class="muted account-sub">Snapshot synced ${escapeHtml(synced)}${metaStr ? ` · ${escapeHtml(metaStr)}` : ""}</p>
       </div>
-      <div class="notice">
-        This is a read-only snapshot synced from your Mac. To run new tasks or edit code, reconnect to Orchestrator on your computer.
+      <div class="notice stack">
+        <strong>Saved snapshot</strong>
+        <p>This is a read-only snapshot synced from your Mac. To run new tasks or edit code, reconnect to Orchestrator on your computer.</p>
+        <div class="account-snapshot-actions">
+          <button type="button" class="btn primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
+        </div>
       </div>
-      <div class="row gap-12 mt-12 mb-16">
-        <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
-        <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
-      </div>
-      <div class="stack">
-        <h3 class="t-subsection">Projects (${projects.length})</h3>
-        <div class="account-machines">${projectCards}</div>
-        <h3 class="t-subsection mt-8">Recent Jobs (${jobs.length})</h3>
-        <div class="account-machines">${jobCards}</div>
-      </div>
-      <div class="row gap-12 divider-top">
-        <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(snapshot.machine_id)}">Try live connection</button>
-        <button type="button" class="btn small ghost" data-account-action="back-machines">Back to computers</button>
-      </div>
+      <section class="stack" aria-labelledby="snapshot-projects-title">
+        <h2 id="snapshot-projects-title" class="t-section">Projects (${projects.length})</h2>
+        <div class="account-machines">${renderList(projectCards, "projects", "No recent projects found in this snapshot.")}</div>
+      </section>
+      <section class="stack" aria-labelledby="snapshot-jobs-title">
+        <h2 id="snapshot-jobs-title" class="t-section">Recent jobs (${jobs.length})</h2>
+        <div class="account-machines">${renderList(jobCards, "jobs", "No recent jobs found in this snapshot.")}</div>
+      </section>
     </div></div>`;
   }
 

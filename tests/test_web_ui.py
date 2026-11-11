@@ -1433,6 +1433,7 @@ const machines = [
 ];
 process.stdout.write(JSON.stringify({
   rendered: A.renderSnapshot(snapshot, {now: 160}),
+  many: A.renderSnapshot({...snapshot, projects: Array.from({length: 10}, (_, i) => ({name: `Project ${i + 1}`, jobs_count: 0}))}, {now: 160}),
   empty: A.renderSnapshot(null),
   machines: A.renderMachines(machines, {now: 160, email: "u@x.com"}),
 }));""")
@@ -1448,6 +1449,12 @@ process.stdout.write(JSON.stringify({
         self.assertIn("Write &lt;test&gt;", rendered)
         self.assertIn('data-account-action="back-machines"', rendered)
         self.assertIn('data-account-action="open" data-id="m_123"', rendered)
+        self.assertEqual(rendered.count('data-account-action="open"'), 1)
+        self.assertEqual(rendered.count('data-account-action="back-machines"'), 1)
+        self.assertIn('<h1 class="account-title">&lt;Leemos Mac&gt;</h1>', rendered)
+        self.assertIn("Show all 10 projects", result["many"])
+        for i in range(1, 11):
+            self.assertIn(f"Project {i}</", result["many"])
         self.assertLess(rendered.index('data-account-action="open"'), rendered.index("Projects ("))
         self.assertEqual(result["empty"], "")
 
