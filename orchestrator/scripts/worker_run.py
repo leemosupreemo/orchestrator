@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import os
 os.environ["AI_REQUEST_SOURCE"] = "orchestrator"
@@ -1119,7 +1120,48 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true", help="Resume from existing artifacts")
     args = parser.parse_args()
 
-    execute_job(Path(args.job_file), resume=args.resume)
+    job_path = Path(args.job_file)
+    with hold_project_folder(job_path):
+        execute_job(job_path, resume=args.resume)
+
+
+@contextlib.contextmanager
+def hold_project_folder(job_path: Path):
+    """Wait until no other job is working in this project folder, then keep it until this run ends (see folder_lock).
+    While it waits, the job says which job it's waiting for, so the page can show it."""
+    from orchestrator import folder_lock
+
+    def note(change) -> bool:
+        """Change the job file if it can be read (a missing or broken one is execute_job's to report)."""
+        try:
+            current = read_json(job_path)
+        except (OSError, ValueError):
+            return False
+        if change(current) is False:
+            return False
+        write_json(job_path, current)
+        return True
+
+    try:
+        job = read_json(job_path)
+    except (OSError, ValueError):
+        job = {}
+    title = job.get("title") or job.get("job_id") or job_path.stem
+
+    def waiting(ahead: dict) -> None:
+        name = ahead.get("title") or "another job"
+        print(f"\n⏳ Waiting for “{name}” to finish: one job works in the project folder at a time. This one starts on its own after that.")
+        note(lambda j: j.update(waiting_for={"job": ahead.get("job") or "", "title": name, "since": time.time()},
+                                worker_pid=os.getpid(), worker_host=socket.gethostname()))  # pid: a waiter that was stopped doesn't look queued
+
+    stop_waiting = lambda j: j.pop("waiting_for", None) is not None
+    try:
+        with folder_lock.hold(ROOT, job=job.get("job_id") or job_path.stem, title=title, on_wait=waiting):
+            if note(stop_waiting):
+                print("      - The project folder is free. Starting.")
+            yield
+    finally:
+        note(stop_waiting)  # stopped while waiting: it isn't waiting any more
 
 
 if __name__ == "__main__":

@@ -444,6 +444,35 @@ orchestrator script schedule_job.py .orchestrator/jobs/JOB.json
 
 Generated job files are written under `.orchestrator/jobs/`. Logs and review output are written under `.orchestrator/logs/` and `.orchestrator/output/`.
 
+## Running Several Jobs
+
+You can start as many jobs as you like. This section explains what happens when they would get in each other's way.
+
+### One job at a time in a project folder
+
+Each job builds on its own branch, but on any one computer all jobs share the project folder. Before a job starts, it checks out its branch in that folder. If two jobs ran at once, each would switch the branch under the other and throw away the other's unsaved work. So **one job works in a project folder at a time**, and the others wait their turn:
+
+- A job that has to wait shows **Waiting** on Home and on its page, with which job it's waiting for. Its log says the same: `Waiting for “Add login page” to finish`.
+- It starts on its own when the job ahead finishes, stops or fails. You don't need to start it again.
+- This covers every way of starting work: **Start**, **Run now**, **Resume**, **Run fix**, **YOLO all**, **Build the plan**, and the console. Jobs on different computers each have their own folder, so they run at the same time.
+- While a job is working, **Switch branch**, **New branch** and **Pull** on Home and the Git page are refused, with the name of the job that's working. Use them once it finishes.
+- The same job can't run twice at once. Starting it again says it already has a run in progress.
+
+If a job crashes, the folder is free again at once. The computer releases the lock when the job's process ends, however it ends.
+
+### Jobs that look like the same work
+
+Before a job is created, its description is compared with the jobs still open. If it looks like one of them, Orchestrator asks first and lists the matching jobs. *Add a login page* and *Login page with Google sign-in* match; *Fix the login bug* and *Add a login page* don't.
+
+- Open a listed job to carry on with it, or choose **Don't create**.
+- Choose **Create anyway** when it really is separate work.
+
+The check compares the meaningful words of the descriptions, so it won't catch the same work described in completely different words. Jobs created automatically (from a plan run or a defect found by tests) aren't asked about.
+
+### Jobs that change the same code
+
+Two different jobs can still need to change the same files. The **Features** page flags features that claim the same paths, and jobs in progress that change the same file. Each job's branch is merged on its own, so the second one to merge may have a merge conflict to resolve first.
+
 ## Visual Simulator Checks
 
 Visual checks require an app bundle and bundle identifier. Configure:
@@ -602,7 +631,7 @@ orchestrator ui                  # http://127.0.0.1:8765/?token=...
 orchestrator ui --project Thirteen --port 9000 --no-open
 ```
 
-- **Home** shows what **needs you**: a question from the planner, a plan to approve, failing tests to fix, or a PR ready to merge. Each item has the one button that moves it forward. Below that are jobs in progress and recently finished ones. **New job** is always one tap away, and less frequent actions (pull device logs, build, test, distribute the current branch, setup check, full console) sit under **More**.
+- **Home** is the project at a glance. See [Home](#home) below for each part.
 - **Jobs** filters by Needs you / In progress / Done. A job page states what it's waiting on, shows one primary action for its status (Start, Run now, Answer, Run fix, Merge & complete), and puts everything else under More. **Deliver to testers** builds *that job's* branch. **Merge & complete** merges the PR, deletes the AI branch and archives the job, the same as in the console.
 - **Device logs** lists recent app launches from the log store, with Pull and Follow buttons (see [Device Logs](#device-logs)).
 - **Analytics** shows this project's connected analytics platform, feature KPIs and manually logged results, plus project success measures from the PRD. Link a feature to a job to pass its KPIs into planning; a job report then names the event tests and their results. Orchestrator does not import KPI values from the analytics provider.
@@ -611,8 +640,93 @@ orchestrator ui --project Thirteen --port 9000 --no-open
 - **Git** shows the branch, what there is to push and pull, and uncommitted files, with Pull, Push (with confirmation), Switch branch and New branch. Home's branch name links here.
 - **Home → More** also has Setup check, Config check, Worker check and the Setup wizard.
 - **Activity** lists every command started from the UI. Runs started from a job are named after it and appear on that job's page. When a run finishes, it offers the next step, such as **Open job** after creating one.
+- **A run's page** keeps the box at the top that says what the run is doing now, or what to do next once it ends. Below it, **Timeline** shows the run as steps, such as *Preparing git branch*, each task of the plan, *Building project* and *Running tests*:
+  - each step shows how long it took and, for a task, which one it is ("2 of 3");
+  - the AI model calls made during a step are listed under it ("Asked claude-sonnet-4-6 · 48s"), including a model that timed out and was replaced;
+  - error lines in a step's output are counted beside it;
+  - open a step to see just its own output;
+  - a failed run opens the step it failed in.
+
+  **Terminal** shows the full output as it was printed. A run that asks something switches to the Terminal by itself, so you can answer it there.
 
 Pages refresh themselves every few seconds, but never while you're typing, have a menu open, or have a dialog up. Leaving a page closes any dialog that was open on it.
+
+### Home
+
+From the top:
+
+- **Top bar.** The project's name, which is also a project switcher. On the right are the **setup health** button and **New job**. The health button is a round button with a coloured light: green when everything required is set up, red when something required is missing, and half green, half amber when only optional items are left. Tap it for the checklist, with a button beside each item that isn't done. On a phone it sits at the right of the header bar, and New job is in the tab bar.
+- **Branch.** The branch picker, with the **Ask AI** chat button opposite it (see [Ask AI](#ask-ai)).
+- **Project status.** Three short lines:
+  - **Last commit:** its message and when it was made. Hover over it for the commit's hash and author.
+  - **Last job run:** the job that ran most recently, what state it's in now, and how long ago.
+  - **Last success:** the most recent job that built successfully (ready to review or merge, or finished). It's only shown when it isn't the same job as the last run.
+
+  When jobs are waiting on you, the card says how many, for example **2 jobs need you**. Tap that to see them. While runs are going, it says how many are in progress.
+- **Preview** (web projects). The app as it is on the current branch. See [Live preview](#live-preview).
+- **Jobs.** Everything not finished, filtered by **All**, **Needs you**, **In progress** and **Backlog**. Each row shows the one thing that moves it forward. Finished jobs are listed below, and archived ones under that.
+
+The sidebar's **Primary machine** dropdown switches between your computers. The one marked **Primary** starts this project's jobs. Another computer can look at the project, but it can't start work until it's made primary.
+
+### Ask AI
+
+The chat button on Home opens a conversation about the project. Ask anything: what the product is, what changed last week, what's left in the requirements, or why something was built the way it was. It can't change code or files. When something should change, it says what, and you start a job for it.
+
+Choose the kind of AI at the top of the panel. Each option shows the model it will use on this computer:
+
+| Option | Which models | Good for |
+|---|---|---|
+| **Free** | Models that cost nothing to run: local ones (Ollama), free hosted ones (OpenCode), or ones a subscription already includes | Quick questions. Answers may be simpler |
+| **Balanced** | Good paid models that aren't the most expensive, such as Claude Sonnet | Most questions |
+| **Complex** | The strongest models, such as Claude Opus | Hard questions. Costs the most |
+
+Only models that are ready on this computer count. An option with nothing set up is greyed out and says what to set up. Your choice is remembered. If the chosen option's model doesn't answer, up to two others **of the same kind** are tried. A Free question never ends up answered by a paid model: if no free model answers, you get an error, not a more expensive answer.
+
+Every question goes to the model with the project as it is right now, so whichever model answers knows the same things:
+
+- the product requirements and the documents attached to them;
+- the README, AGENTS.md and the files under `docs/`;
+- the current branch, recent commits, uncommitted changes and branches;
+- the jobs;
+- the conversation so far.
+
+Free models get a smaller share of all this, because they handle less text. The conversation is saved with the project, so it's there on any device. **Clear** removes it for everyone on the project, so it takes a second tap. While an answer is coming, it shows which model is working and for how long, and **Stop** cancels it.
+
+### Live preview
+
+For a web project, Home shows the app running from the branch that's checked out now. It starts by itself when you open Home, unless you stopped it. The frame says what's going on:
+
+- **Starting live preview:** the dev server is starting. **Show log** shows its output.
+- **Live preview couldn't start:** **Try again**, or **Show log** to see why.
+- **Live preview stopped responding:** **Try again** restarts the dev server, or **Dismiss**.
+- **The preview isn't running:** **Start live preview**.
+
+Above the frame:
+- **Refresh** reloads the page. Shift-click it to restart the dev server.
+- **The page path** follows the app as you click around. Type a path and press Enter to go there.
+- **Screen sizes:** desktop, tablet and phone.
+- **Open ↗** opens it in its own tab.
+- **Live** and **Link** switch between the dev server and a shared preview link.
+
+To report a problem, choose **Point out a problem**, then click the part of the page that's wrong and **Add to message**. It becomes a chip, with a small screenshot, above the text box. Remove a chip with ×. Describe what's wrong and **Send**. It becomes a new job, planned straight away, and you stay on Home. **Follow it** in the message opens the job. Problems the page detects by itself, such as errors in the browser console, are listed under the frame with **Fix with AI**.
+
+The live preview isn't a job: it isn't counted among running work or listed on Activity.
+
+### Adding an existing project
+
+**Add existing project**, on the Projects page, has three tabs:
+
+- **Discovered:** projects already on this computer. It looks up to three folders deep in `~/Developer`, `~/Projects`, `~/Documents`, `~/Code`, `~/src`, `~/Desktop` and your home folder. It finds Git repositories, Xcode and Swift projects, and folders already set up for Orchestrator. Several folders of one project, such as its worktrees, are listed by folder name, and a worktree says which checkout it belongs to. Projects you've already added aren't listed. Looking usually takes a few seconds. If it takes more than a minute it stops and offers **Try again**.
+- **GitHub:** the repositories your GitHub account and its organisations can open, newest first, private ones included. Ones already on this computer are marked **On this computer**. **Clone & add** downloads one into `~/Projects`, or `~/Developer` if you use that, and adds it. It never downloads over an existing folder. This needs the GitHub CLI (`gh`) signed in on the computer.
+- **Custom Path:** type the path of any folder.
+
+A project found in a folder that isn't set up for Orchestrator yet goes through the setup steps first.
+
+Something not listed? Check whether it's deeper than three folders, inside another Git repository, or in a folder macOS hasn't let Orchestrator see (Documents or Desktop). Add it under **Custom Path**.
+
+### Messages
+
+What the app has to tell you appears in the message bar at the top of the page: something you did worked, something failed, or a note. Errors are written in plain words with what to do next. Sign-in errors are reworded too: for example, "This sign-in method isn't turned on yet" instead of Firebase's own text. Each message has a close button, and hovering over one keeps it open.
 
 Every action runs the same CLI command you would type, inside a real terminal that is shown in the page. Prompts that need you (y/n, menus, pasted logs, passwords) appear there, and you answer them by typing into the terminal. On a phone, use the key bar under it (Enter, Esc, arrows, y/n/q, Ctrl-C, Ctrl-D). **Open full console** runs the regular `orchestrator console` in the browser for what has no page of its own: Ask AI about changes, reset & rerun, discard & revert, export context, model and API-key settings, the machine fleet, email recipients, Xcode Cloud and archived jobs. Each run's output is also saved to `.orchestrator/logs/ui/`.
 

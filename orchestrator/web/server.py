@@ -68,6 +68,9 @@ from orchestrator import releases
 from orchestrator import features as feature_store
 from orchestrator import bug_split, feature_map, kpi_suggest, mcp_status, package_lookup, packages as package_store, run_result, source_control
 from orchestrator import epics as epic_store
+from orchestrator import project_chat
+from orchestrator import folder_lock
+from orchestrator import job_overlap
 from orchestrator import plan_run
 from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
@@ -90,6 +93,8 @@ from orchestrator import job_chat
 from orchestrator import new_project
 from orchestrator.runtime_control import ActivityGate, BusyError, InstanceLease
 from orchestrator.web.run_progress import RunProgress
+from orchestrator.web import run_timeline
+from orchestrator.web.run_timeline import RunTimeline
 from orchestrator.setup_checklist import setup_checklist
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
@@ -136,9 +141,10 @@ CTTY_SHIM = ("import fcntl, os, sys, termios\n"
 
 
 class UIError(Exception):
-    def __init__(self, message: str, status: int = HTTPStatus.BAD_REQUEST):
+    def __init__(self, message: str, status: int = HTTPStatus.BAD_REQUEST, data: dict[str, Any] | None = None):
         super().__init__(message)
         self.status = status
+        self.data = data or {}  # more for the page than the message: say, the jobs a new one looks like
 
 
 # --------------------------------------------------------------------------- background tasks
@@ -257,6 +263,7 @@ class PtySession:
         self.result: dict[str, Any] | None = None  # what it found, read from the output once it ends
         self._buffer = bytearray()
         self._progress = RunProgress()
+        self._timeline = RunTimeline()  # the output as steps, for the run page's Timeline
         self._base = 0  # absolute offset of _buffer[0]
         self._cond = threading.Condition()
         self._transcript = transcript.open("ab") if transcript else None
@@ -338,6 +345,7 @@ class PtySession:
         with self._cond:
             self.exit_code = code
             self.ended = time.time()
+            self._timeline.finish(code)
             self._cond.notify_all()
 
     def _append(self, chunk: bytes) -> None:
@@ -345,6 +353,7 @@ class PtySession:
             self.last_output = time.time()
             self._buffer.extend(chunk)
             self._progress.feed(chunk)
+            self._timeline.feed(chunk)
             overflow = len(self._buffer) - MAX_BUFFER_BYTES
             if overflow > 0:
                 del self._buffer[:overflow]
@@ -362,6 +371,13 @@ class PtySession:
                 except OSError:
                     pass
                 self._append(f"\r\n[Run log could not be saved: {exc}. Output remains available while Orchestrator is open.]\r\n".encode())
+
+    def timeline(self, step: int | None = None) -> dict[str, Any]:
+        """The run as steps; with `step`, that step's own output lines."""
+        with self._cond:
+            if step is not None:
+                return {"step": step, "lines": self._timeline.lines(step)}
+            return self._timeline.view(running=self.running)
 
     def read(self, offset: int, timeout: float) -> tuple[int, bytes, bool]:
         """Returns (next_offset, data, finished), waiting up to `timeout` for data."""
@@ -573,6 +589,10 @@ class SessionManager:
             for old in sorted(finished, key=lambda s: s.started)[:max(0, len(self._sessions) - MAX_SESSIONS_KEPT)]:
                 self._sessions.pop(old.id, None)
         return session
+
+    def has(self, sid: str) -> bool:
+        with self._lock:
+            return sid in self._sessions
 
     def get(self, sid: str) -> PtySession:
         with self._lock:
@@ -789,6 +809,11 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         return {"group": group, "tone": tone, "label": label, "reason": reason,
                 "next": {"action": action, "label": action_label} if action else None}
 
+    waiting = job.get("waiting_for")
+    if isinstance(waiting, dict) and worker_alive(job) is not False:  # see folder_lock: one job works in a project folder at a time
+        return state("working", "working", "Waiting",
+                     f"Waiting for “{waiting.get('title') or 'another job'}” to finish. One job works in the project folder at a time; "
+                     "this one starts on its own after that.")
     verification = job.get("verification") or {}
     if status == "human-needed" and verification.get("status") in ("rejected", "concerns"):
         return state("needs_you", "attention", "Review suggestions",
@@ -1113,10 +1138,11 @@ def live_previews(root: Path) -> list[dict[str, Any]]:
     return out
 
 
-def job_preview(root: Path, job: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """A web project's previews of this job's branch, for the job page: the published link and the live one."""
+def project_preview(root: Path, config: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """A web project's previews of its current build (the branch checked out in the project folder), for Home: the
+    published link and the live one."""
     config = read_json_file(runtime_dir(root) / "project.json") if config is None else config
-    branch = str(job.get("branch") or job.get("branch_name") or "")
+    branch = git(root, "branch", "--show-current") or base_branch(root, read_settings(root))
     if not branch or not is_web_app(root, config):
         return None
     head = git(root, "rev-parse", "--short", branch)
@@ -1128,8 +1154,8 @@ def job_preview(root: Path, job: dict[str, Any], config: dict[str, Any] | None =
 
 
 def save_preview_shot(root: Path, job_id: str, image: str) -> str:
-    """Save a screenshot taken on the job page's preview (a data: URL) next to the job's other output, for the AI to look
-    at with the problem it shows. Returns its path in the project."""
+    """Save a screenshot taken on a preview (a data: URL) for the AI to look at with the problem it shows: with the job's
+    other output, or in output/preview-feedback when it's about the project's current build. Returns its path in the project."""
     found = re.fullmatch(r"data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)", image)
     if not found:
         raise UIError("That isn't a PNG or JPEG screenshot.")
@@ -1137,7 +1163,7 @@ def save_preview_shot(root: Path, job_id: str, image: str) -> str:
         data = base64.b64decode(found.group(2), validate=True)
     except ValueError as exc:
         raise UIError("The screenshot couldn't be read.") from exc
-    folder = runtime_dir(root) / "output" / job_id / "preview-feedback"
+    folder = runtime_dir(root) / "output" / job_id / "preview-feedback" if job_id else runtime_dir(root) / "output" / "preview-feedback"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(2)}.{'jpg' if found.group(1) == 'jpeg' else 'png'}"
     path.write_bytes(data)
@@ -1872,7 +1898,6 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "completed_tasks": completed,
         "next_task": next_task,
         "approach": job.get("approach") or job.get("execution_strategy") or "Standard workflow",
-        "preview": job_preview(root, job),
     }
 
 
@@ -2294,6 +2319,7 @@ def git_state(root: Path) -> dict[str, Any]:
         "upstream": upstream,
         "ahead": ahead, "behind": behind,
         "last_commit": git(root, "log", "-1", "--format=%h %s (%an, %cr)"),
+        "last_commit_at": git(root, "log", "-1", "--format=%cI"),  # when, for Home's Project status
         "changes": [{"status": l[:2].strip() or "?", "path": l[3:]} for l in status[:100]],
         "changes_total": len(status),
         "change_groups": git_change_groups(changes[:100]),
@@ -2368,10 +2394,25 @@ def _stop_group(proc: subprocess.Popen) -> None:
 def research_call(server: Any, root: Path, prompt: str, timeout: int = 240, progress: "TaskProgress | None" = None) -> tuple[str, bool]:
     """One model turn that may search the web (job_chat_run.py --web), in an empty scratch folder. Returns (answer, whether it searched).
     With `progress`, each step is reported as it happens, and a cancel stops the model."""
+    head, reply = model_turn(server, root, prompt, ["--web"], timeout, progress)
+    return reply, "<<<ORCHESTRATOR-WEB>>>on" in head
+
+
+def chat_call(server: Any, root: Path, prompt: str, models: list[str], timeout: int = 240,
+              progress: "TaskProgress | None" = None) -> tuple[str, str]:
+    """One Ask AI turn using only `models`, in that order (see project_chat). Returns (answer, the model that answered)."""
+    head, reply = model_turn(server, root, prompt, ["--allow", ",".join(models)], timeout, progress)
+    used = next((line.split("<<<ORCHESTRATOR-MODEL>>>", 1)[1].strip() for line in head.splitlines() if "<<<ORCHESTRATOR-MODEL>>>" in line), "")
+    return reply, used
+
+
+def model_turn(server: Any, root: Path, prompt: str, extra: list[str], timeout: int = 240,
+               progress: "TaskProgress | None" = None) -> tuple[str, str]:
+    """job_chat_run.py in an empty scratch folder, reporting its steps to `progress`. Returns (what it printed before the answer, the answer)."""
     out: list[str] = []
     err: list[str] = []
     with tempfile.TemporaryDirectory(prefix="orchestrator-model-") as scratch:
-        argv = orchestrator_argv("script", "job_chat_run.py", "--web", "--timeout", str(max(30, timeout - 15)), "--cwd", scratch)
+        argv = orchestrator_argv("script", "job_chat_run.py", *extra, "--timeout", str(max(30, timeout - 15)), "--cwd", scratch)
         env = {**server.child_env(), "PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root, env=env, text=True,
                                 start_new_session=True)
@@ -2410,7 +2451,7 @@ def research_call(server: Any, root: Path, prompt: str, timeout: int = 240, prog
     if proc.returncode != 0 or marker not in stdout:
         raise UIError(("".join(err).strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
     head, reply = stdout.split(marker, 1)
-    return reply, "<<<ORCHESTRATOR-WEB>>>on" in head
+    return head, reply
 
 
 def package_review_job(server: Any, root: Path, research: Callable[[Path, str], tuple[str, bool]]) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
@@ -2554,8 +2595,11 @@ def device_log_pulls(root: Path) -> list[dict[str, Any]]:
     return pulls
 
 
-def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, git_timeout: float = 2.0) -> tuple[str, str, str | None]:
-    """Prefer the inspected repository; cached metadata is only for unavailable folders."""
+def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, git_timeout: float = 2.0,
+                          guess_github: bool = True) -> tuple[str, str, str | None]:
+    """Prefer the inspected repository; cached metadata is only for unavailable folders.
+    `guess_github` asks GitHub whether a repository has the folder's name, a network call worth making only for a
+    project you track that this computer can't inspect, never for every folder a scan turns up."""
     from orchestrator.code_host import host_kind, parse_remote
     inspected = git(root, "rev-parse", "--is-inside-work-tree", timeout=git_timeout) == "true"
     remote = git(root, "remote", "get-url", "origin", timeout=git_timeout) if inspected else str((p_config or {}).get("git_remote") or "")
@@ -2574,6 +2618,8 @@ def detect_project_source(root: Path, p_config: dict[str, Any] | None = None, gi
     if isinstance(cached_repo, str) and "/" in cached_repo:
         return "github", "GitHub Tracked", cached_repo.strip()
     # Permission/TCC restrictions can prevent inspecting a previously tracked project.
+    if not guess_github:
+        return "local", "Local", None
     try:
         result = subprocess.run(["gh", "repo", "view", root.name, "--json", "nameWithOwner"],
                                 capture_output=True, text=True, timeout=1.5)
@@ -2998,7 +3044,69 @@ def all_projects_info(active_root: Path) -> list[dict[str, Any]]:
     return results
 
 
-def scan_for_projects(search_paths: list[Path] | None = None) -> list[dict[str, Any]]:
+GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+
+
+def github_repos(limit: int = 1000) -> dict[str, Any]:
+    """Every repository the signed-in GitHub account can open (its own, ones it collaborates on, and its organisations'),
+    newest first, for Add Existing Project. A repository only on GitHub isn't on this computer yet, so the folder scan
+    can't find it. `gh repo list` would only give the ones an account owns, so this asks GitHub's list of all of them."""
+    if not shutil.which("gh"):
+        return {"repos": [], "error": "Install the GitHub CLI (gh) and sign in to list your repositories."}
+    query = ("user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member")
+    jq = "[.[] | {repo: .full_name, name: .name, description: (.description // \"\"), private: .private, archived: .archived, fork: .fork, updated: (.pushed_at // .updated_at // \"\")}]"
+    try:
+        res = subprocess.run(["gh", "api", "--paginate", query, "--jq", jq], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return {"repos": [], "error": "GitHub took too long to answer. Try again."}
+    if res.returncode != 0:
+        text = (res.stderr or "").strip()
+        return {"repos": [], "error": "Sign in to GitHub with `gh auth login`, then try again."
+                if "auth" in text.lower() or "login" in text.lower() or "401" in text else (text.splitlines() or ["GitHub couldn't list your repositories."])[-1]}
+    repos: dict[str, dict[str, Any]] = {}
+    for page in res.stdout.splitlines():  # --paginate prints one array per page
+        try:
+            items = json.loads(page)
+        except ValueError:
+            continue
+        for r in items if isinstance(items, list) else []:
+            if isinstance(r, dict) and r.get("repo"):
+                r["description"] = str(r.get("description") or "")[:200]
+                repos.setdefault(r["repo"], r)
+    return {"repos": sorted(repos.values(), key=lambda r: r["updated"], reverse=True)[:limit], "error": ""}
+
+
+def clone_destination(repo_name: str) -> Path:
+    """Where a repository from GitHub goes: the usual projects folder, under its own name."""
+    home = Path.home()
+    base = next((home / d for d in ("Projects", "Developer", "Code", "src") if (home / d).is_dir()), home / "Projects")
+    return base / repo_name
+
+
+def clone_github_repo(repo: str) -> dict[str, Any]:
+    """Clone `owner/name` with the GitHub CLI (it uses the account's sign-in, so private repositories work too)."""
+    dest = clone_destination(repo.split("/", 1)[1])
+    if dest.exists():
+        raise UIError(f"There's already a folder at {dest}. Add it from Discovered or Custom Path instead.", HTTPStatus.CONFLICT)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        res = subprocess.run(["gh", "repo", "clone", repo, str(dest), "--", "--quiet"], capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise UIError("Downloading the repository took longer than 15 minutes, so it stopped.", HTTPStatus.GATEWAY_TIMEOUT)
+    if res.returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise UIError((res.stderr.strip().splitlines() or ["The repository couldn't be downloaded."])[-1])
+    return {"root": str(dest), "name": dest.name}
+
+
+SCAN_DEPTH = 3  # folders below each place looked in: ~/Projects/games/unity/daoc-mobile is found
+SCAN_DETAILS_BUDGET = 20.0  # seconds for the source and languages of everything found; whatever isn't done by then is listed without them
+
+
+def scan_for_projects(search_paths: list[Path] | None = None, details_budget: float | None = None) -> list[dict[str, Any]]:
+    """Codebases under the usual folders. Finding them is quick; asking Git and GitHub about each one is what takes time,
+    so that runs for all of them at once and stops at a time limit rather than one after another (34 projects took 22s)."""
     known = {str(safe_resolve(Path(p["root"]).expanduser()))
              for p in load_recent_projects().get("projects", []) if p.get("root")}
     if search_paths is None:
@@ -3014,7 +3122,7 @@ def scan_for_projects(search_paths: list[Path] | None = None) -> list[dict[str, 
         ]
         search_paths = [p for p in candidates if p.is_dir()]
 
-    discovered = []
+    found: list[tuple[Path, bool, bool]] = []
     seen = set(known)
     ignored_names = {
         ".git", "node_modules", "Pods", "DerivedData", "Library", ".Trash",
@@ -3035,7 +3143,7 @@ def scan_for_projects(search_paths: list[Path] | None = None) -> list[dict[str, 
 
                 try:
                     rel_parts = curr_path.relative_to(base).parts
-                    if len(rel_parts) > 2:
+                    if len(rel_parts) > SCAN_DEPTH:
                         dirs.clear()
                         continue
                 except ValueError:
@@ -3046,29 +3154,52 @@ def scan_for_projects(search_paths: list[Path] | None = None) -> list[dict[str, 
 
                 is_orchestrator = (curr_resolved / DEFAULT_RUNTIME_DIRNAME / "project.json").is_file()
                 has_xcode = any(curr_resolved.glob("*.xcodeproj")) or (curr_resolved / "Package.swift").is_file()
-                is_git = (curr_resolved / ".git").is_dir()
+                is_git = (curr_resolved / ".git").exists()  # a folder, or a file in a worktree or submodule
 
                 if is_orchestrator or has_xcode or (is_git and len(rel_parts) > 0):
                     seen.add(curr_str)
-                    name = project_display_name(curr_resolved) if is_orchestrator else curr_resolved.name
-                    p_cfg = read_json_file(runtime_dir(curr_resolved) / "project.json") if is_orchestrator else None
-                    s_type, s_label, s_repo = detect_project_source(curr_resolved, p_cfg)
-                    s_languages = get_project_languages(curr_resolved, s_repo if s_type == "github" else None)
-                    discovered.append({
-                        "name": name,
-                        "root": curr_str,
-                        "configured": is_orchestrator,
-                        "type": "orchestrator" if is_orchestrator else ("swift" if has_xcode else "git"),
-                        "tracked": curr_str in known,
-                        "source_type": s_type,
-                        "source_label": s_label,
-                        "github_repo": s_repo,
-                        "languages": s_languages,
-                    })
+                    found.append((curr_resolved, is_orchestrator, has_xcode))
                     dirs.clear()
         except (PermissionError, OSError):
             continue
 
+    def describe(item: tuple[Path, bool, bool]) -> dict[str, Any]:
+        path, is_orchestrator, has_xcode = item
+        p_cfg = read_json_file(runtime_dir(path) / "project.json") if is_orchestrator else None
+        s_type, s_label, s_repo = detect_project_source(path, p_cfg, git_timeout=1.0, guess_github=False)
+        return {"source_type": s_type, "source_label": s_label, "github_repo": s_repo,
+                "languages": get_project_languages(path, s_repo if s_type == "github" else None)}
+
+    from concurrent.futures import ThreadPoolExecutor, wait
+    pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="project-scan")
+    futures = [pool.submit(describe, item) for item in found]
+    wait(futures, timeout=SCAN_DETAILS_BUDGET if details_budget is None else details_budget)
+    pool.shutdown(wait=False, cancel_futures=True)
+
+    def worktree_of(path: Path) -> str:
+        """The main checkout's folder when `path` is a linked worktree (its .git is a file pointing into that checkout)."""
+        try:
+            text = (path / ".git").read_text(errors="replace") if (path / ".git").is_file() else ""
+        except OSError:
+            return ""
+        match = re.match(r"gitdir:\s*(.+?)/\.git/worktrees/[^/\s]+\s*$", text.strip())
+        return match.group(1) if match else ""
+
+    discovered = []
+    for (path, is_orchestrator, has_xcode), future in zip(found, futures):
+        details = {"source_type": "local", "source_label": "Local", "github_repo": None, "languages": []}
+        if future.done() and not future.cancelled() and future.exception() is None:
+            details = future.result()
+        discovered.append({
+            "name": project_display_name(path) if is_orchestrator else path.name,
+            "root": str(path),
+            "configured": is_orchestrator,
+            "type": "orchestrator" if is_orchestrator else ("swift" if has_xcode else "git"),
+            "tracked": str(path) in known,
+            "folder": path.name,
+            "worktree_of": worktree_of(path),
+            **details,
+        })
     return discovered
 
 
@@ -4785,6 +4916,8 @@ PRIMARY_ONLY_ACTIONS = frozenset({"new_job", "fix", "plan_epic"})
 
 # Runs that are about a job but aren't work on it: they don't show the job as Working.
 SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview"})
+# Git actions on the project folder itself, refused while a job holds the folder (see folder_lock).
+FOLDER_GIT_ACTIONS = frozenset({"git_checkout", "stash_checkout", "git_new_branch", "git_pull"})
 
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
@@ -5905,7 +6038,7 @@ class UIHandler(BaseHTTPRequestHandler):
         except BusyError as exc:
             self._error(HTTPStatus.CONFLICT, str(exc))
         except UIError as exc:
-            self._error(exc.status, str(exc))
+            self._json({**exc.data, "error": str(exc)}, exc.status)
         except (BrokenPipeError, ConnectionResetError) as exc:
             self.server.requests_log.record("dropped", "", method=method, path=url.path, error=type(exc).__name__,
                                             ms=round((time.monotonic() - self._started) * 1000), ip=self._client_ip())
@@ -6032,6 +6165,18 @@ class UIHandler(BaseHTTPRequestHandler):
             paths_input = body.get("paths")
             custom_paths = [Path(p).expanduser() for p in paths_input] if isinstance(paths_input, list) else None
             self._json({"discovered": scan_for_projects(custom_paths)})
+        elif method == "GET" and parts == ["projects", "github"]:
+            self._require_owner("list your GitHub repositories")
+            self._json(github_repos())
+        elif method == "POST" and parts == ["projects", "clone"]:
+            self._require_owner("download a repository to this computer")
+            repo = str(self._body().get("repo") or "").strip()
+            if not GITHUB_REPO.match(repo) or ".." in repo:
+                raise UIError("Choose a repository as owner/name.")
+            if clone_destination(repo.split("/", 1)[1]).exists():
+                raise UIError(f"There's already a folder at {clone_destination(repo.split('/', 1)[1])}. Add it from Discovered or Custom Path instead.",
+                              HTTPStatus.CONFLICT)
+            self._json({"task": self.server.tasks.start(lambda: clone_github_repo(repo))}, HTTPStatus.ACCEPTED)
         elif method == "POST" and parts == ["projects", "add"]:
             self._require_owner("add a project folder")
             body = self._body()
@@ -6614,9 +6759,6 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(str(exc))
             write_json_file(job_path, job)
             self._json({"ok": True, "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)})})
-        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "preview-shot":
-            resolve_job_path(root, parts[1])
-            self._json({"path": save_preview_shot(root, parts[1], str(self._body().get("image") or ""))})
         elif method in ("GET", "POST") and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "brief":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
@@ -6804,6 +6946,32 @@ class UIHandler(BaseHTTPRequestHandler):
             if reviewer: job["reviewer"] = reviewer
             write_json_file(job_path, job)
             self._json({"ok": True, "planner": job.get("planner"), "builder": job.get("builder"), "reviewer": job.get("reviewer")})
+        elif method == "GET" and parts == ["chat"]:
+            # Ask AI on Home: the conversation, and which model each of Free, Balanced and Complex would use here.
+            tiers = project_chat.chat_tiers(project_chat.ready_models(root))
+            self._json({"messages": project_chat.messages(root), "tiers": tiers, "default": project_chat.default_tier(tiers)})
+        elif method == "POST" and parts == ["chat"]:
+            body = self._body()
+            tier = str(body.get("tier") or "")
+            try:
+                question = project_chat.check_question(str(body.get("message") or ""))
+                tiers = project_chat.chat_tiers(project_chat.ready_models(root))
+                if tier not in project_chat.TIERS or not tiers[tier]["available"]:
+                    raise project_chat.ChatError((tiers.get(tier) or {}).get("reason") or "Choose Free, Balanced or Complex.")
+            except project_chat.ChatError as exc:
+                raise UIError(str(exc))
+            jobs, name, server = list_jobs(root), project_display_name(root), self.server
+
+            def work(progress: TaskProgress) -> dict[str, Any]:
+                llm = lambda prompt, models: chat_call(server, root, prompt, models, progress=progress)
+                try:
+                    return {"messages": project_chat.ask(root, question, tier, llm, tiers, jobs, name)}
+                except project_chat.ChatError as exc:
+                    raise UIError(str(exc))
+            self._json({"task": self.server.tasks.start(work, progress=True)}, HTTPStatus.ACCEPTED)
+        elif method == "POST" and parts == ["chat", "clear"]:
+            project_chat.clear(root)
+            self._json({"ok": True, "messages": []})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "chat":
             job_path = resolve_job_path(root, parts[1])
 
@@ -6893,6 +7061,10 @@ class UIHandler(BaseHTTPRequestHandler):
             self._audit("primary_claimed", project=project_key(root))
             self._json({"computer": session_computer(read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) or [], root),
                         "status": status})
+        elif method == "GET" and parts == ["preview"]:
+            self._json({"preview": project_preview(root)})
+        elif method == "POST" and parts == ["previews", "shot"]:
+            self._json({"path": save_preview_shot(root, "", str(self._body().get("image") or ""))})
         elif method == "POST" and parts == ["previews", "auto"]:
             self._require_owner("change automatic previews")
             settings = read_settings(root)
@@ -7228,7 +7400,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["runs"]:
             self._start_run(self._body(), root)
         elif len(parts) == 3 and parts[0] == "runs":
-            self._run_op(method, parts[1], parts[2], query)
+            self._run_op(method, parts[1], parts[2], query, root)
         else:
             self._error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -7297,13 +7469,23 @@ class UIHandler(BaseHTTPRequestHandler):
         remember_project(candidate, active=True, source_type=s_type, source_label=s_label, github_repo=g_repo)
         self._json({"project": project_state(candidate)})
 
-    def _launch_run(self, key: str, params: dict[str, Any], root: Path, cols: int = 110, rows: int = 32) -> PtySession:
+    def _launch_run(self, key: str, params: dict[str, Any], root: Path, cols: int = 110, rows: int = 32,
+                    ask_about_duplicates: bool = False) -> PtySession:
         """Start one action as a run. Raises UIError when it can't (unknown action, owner-only, the job is busy)."""
         action = ACTIONS.get(key)
         if not action:
             raise UIError(f"Unknown action '{key}'")
         if key in OWNER_ONLY_ACTIONS:
             self._require_owner(f"use {action.title.lower()}")
+        if key == "new_job" and not params.pop("allow_duplicate", False) and ask_about_duplicates:
+            # The same work twice: two branches changing the same code. Ask first (the page offers "create anyway").
+            if matches := job_overlap.similar_jobs(job_overlap.description_of(params), list_jobs(root)):
+                raise UIError(f"This looks like “{matches[0]['title']}”, which is still open.", HTTPStatus.CONFLICT,
+                              {"duplicates": matches})
+        if key in FOLDER_GIT_ACTIONS and (busy := folder_lock.holder(root)):
+            # A job is building in this folder on its own branch: switching or pulling here would pull it out from under it.
+            raise UIError(f"“{busy.get('title') or 'A job'}” is working in the project folder on its branch. "
+                          "Switch branches or pull once it finishes.", HTTPStatus.CONFLICT)
         argv = action.build(params, root)
         title = action.title
         job_title = ""
@@ -7380,7 +7562,7 @@ class UIHandler(BaseHTTPRequestHandler):
             cols, rows = int(body.get("cols") or 110), int(body.get("rows") or 32)
         except (TypeError, ValueError):
             raise UIError("cols/rows must be numbers")
-        session = self._launch_run(key, params, root, cols, rows)
+        session = self._launch_run(key, params, root, cols, rows, ask_about_duplicates=True)  # a person asked: they can answer
         if key in ("new_job", "fix", "plan_epic"):
             self._watch_for_created_job(session, root, params.get("_linked") if key == "new_job" else None,
                                         params.get("_attachments") if key == "new_job" else None,
@@ -7513,11 +7695,28 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             time.sleep(0.5)
 
-    def _run_op(self, method: str, sid: str, op: str, query: dict[str, list[str]]) -> None:
+    def _run_op(self, method: str, sid: str, op: str, query: dict[str, list[str]], root: Path | None = None) -> None:
+        try:
+            step = int((query.get("step") or [""])[0]) if (query.get("step") or [""])[0] else None
+        except ValueError:
+            raise UIError("step must be a number")
+        if method == "GET" and op == "timeline" and not self.server.sessions.has(sid):
+            # A run from before a restart: its timeline is read back from the saved log, without times.
+            self._require_owner("read earlier run logs")
+            root = root or self.server.root
+            saved = next((r for r in run_history(root, limit=500) if r["id"] == sid), None)
+            if not saved:
+                raise UIError("That run's log isn't here any more.", HTTPStatus.NOT_FOUND)
+            text = (runtime_dir(root) / saved["log"]).read_text(errors="replace")
+            timeline = run_timeline.from_log(text)
+            self._json({"step": step, "lines": timeline.lines(step)} if step is not None else timeline.view(running=False))
+            return
         session = self.server.sessions.get(sid)
         if session.action in OWNER_ONLY_ACTIONS:
             self._require_owner(f"access {ACTIONS[session.action].title.lower()} output")
-        if method == "GET" and op == "stream":
+        if method == "GET" and op == "timeline":
+            self._json(session.timeline(step))
+        elif method == "GET" and op == "stream":
             self._stream(session, int((query.get("offset") or ["0"])[0] or 0))
         elif method == "GET" and op == "output":
             # The same output as the stream, as one ordinary request: it answers when there is something new (or the wait

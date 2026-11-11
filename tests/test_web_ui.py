@@ -814,9 +814,9 @@ class SignInPrivacyTests(unittest.TestCase):
     def test_the_sidebar_picks_the_computer_and_manages_them(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         js, html = (static / "app.js").read_text(), (static / "index.html").read_text()
-        self.assertIn('<select id="computer-select" aria-label="Machines" hidden></select>', html)
+        self.assertIn('<select id="computer-select" aria-label="Primary machine" hidden></select>', html)
         box = html[html.index('id="machine-switch"'):][:400]
-        self.assertIn('<span class="label">Machines</span>', box)
+        self.assertIn('<span class="label">Primary machine</span>', box)
         self.assertIn('id="session-computer"', box)  # the chip lives in the same labelled group
         self.assertLess(html.index('id="machine-switch"'), html.index('id="search-btn"'))
         css = (static / "style.css").read_text()
@@ -2194,8 +2194,6 @@ process.stdout.write(JSON.stringify({
 
     def test_uncommitted_link_opens_the_changed_files(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        status = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "home-status.js").read_text()
-        self.assertIn('href="#/git?show=changes"', status)  # the card still opens the changed files
         self.assertIn('Uncommitted changes${g.branch ? ` on <span class="mono">${esc(g.branch)}</span>` : ""}', app)
         git = app[app.index("pages.git = async (_, query)"):]
         git = git[:git.index("\npages.")]
@@ -3579,6 +3577,35 @@ class RunApiTests(ServerTestCase):
         discovered = data["discovered"]
         self.assertTrue(any(p["root"] == str(ui.safe_resolve(other_dir)) for p in discovered))
 
+    def test_projects_scan_asks_about_projects_at_once_and_stops_at_a_time_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for n in range(6):
+                (base / f"p{n}" / ".git").mkdir(parents=True)
+            def slow(root, *_args, **kwargs):
+                self.assertFalse(kwargs.get("guess_github", True))  # a scan never asks GitHub to guess by folder name
+                time.sleep(0.4)
+                return "github", "GitHub Tracked", f"me/{root.name}"
+            with patch.object(ui, "detect_project_source", side_effect=slow), \
+                 patch.object(ui, "get_project_languages", return_value=[{"name": "Swift"}]):
+                started = time.monotonic()
+                found = ui.scan_for_projects([base])
+                self.assertLess(time.monotonic() - started, 1.5)  # six 0.4s lookups at once, not 2.4s in a row
+                self.assertEqual(len(found), 6)
+                self.assertTrue(all(p["source_type"] == "github" and p["languages"] for p in found))
+                started = time.monotonic()
+                found = ui.scan_for_projects([base], details_budget=0.05)
+                self.assertLess(time.monotonic() - started, 0.4)  # the time limit wins
+                self.assertEqual(len(found), 6)  # everything found is still listed, just without the details
+                self.assertTrue(all(p["source_type"] == "local" and p["languages"] == [] for p in found))
+
+    def test_the_scan_dialog_stops_waiting_and_offers_to_try_again(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        scan = js[js.index("const showScanResults"):][:1400]
+        self.assertIn('signal: AbortSignal.timeout(60000)', scan)
+        self.assertIn("data-project-scan-retry", scan)
+        self.assertIn('if (event.target.closest("[data-project-scan-retry]")) { showScanResults(); return; }', js)
+
     def test_scan_local_languages(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4844,12 +4871,25 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("dialogs.add_tests()", run_all)
         self.assertNotIn('location.hash = "#/new?type=coverage"', run_all)
 
-    def test_the_health_pill_lines_up_with_the_branch_dropdown(self):
+    def test_setup_health_is_a_round_icon_button_in_the_top_bar(self):
         css = (self.STATIC / "style.css").read_text()
-        self.assertIn(".home-health-inline { position: relative; flex: none; }", css)  # no margin nudging it off the dropdown's bottom edge
-        self.assertIn("align-items: flex-end", css[css.index(".home-status-line .status-main-row"):][:200])  # both sit on the same line
-        self.assertIn("min-height: var(--control-md)", css[css.index(".home-health-trigger {"):][:300])  # and are the same height as the dropdown
-        self.assertIn("min-height: var(--control-md)", css[css.index(".status-line .branch-select"):][:200])
+        app = (self.STATIC / "app.js").read_text()
+        html = (self.STATIC / "index.html").read_text()
+        line = app[app.index("function statusLine"):][:1600]
+        self.assertNotIn("homeHealthIndicator", line)  # no longer beside the branch picker
+        home = app[app.index("pages.home = "):]
+        self.assertIn('<div class="home-topbar-tools">${homeHealthIndicator(setupState)}<a class="btn primary home-new-job-btn"', home)  # top right, beside New job
+        self.assertIn("status: homeHealthIndicator(setupState),", home)  # and in the phone header bar
+        self.assertIn('id="mobile-header-end"', html)
+        trigger = app[app.index("function homeHealthIndicator"):][:2200]
+        self.assertIn('aria-label="System health: ${esc(status)}"><span class="home-health-light', trigger)
+        self.assertNotIn("<span>${esc(status)}</span>", trigger)  # icon only: the word is in the label and tooltip
+        rule = css[css.index(".home-health-trigger {"):][:500]
+        for bit in ("width: var(--control-md)", "height: var(--control-md)", "border-radius: 50%", "box-shadow: var(--shadow)", "cursor: pointer"):
+            self.assertIn(bit, rule)
+        self.assertIn(".home-health-trigger:hover {", css)  # it lifts, so it reads as something to tap
+        self.assertIn(".home-health-inline[open] > .home-health-trigger {", css)
+        self.assertIn(".topbar-actions:has(.home-topbar-tools) { display: none; }", css)  # phones show the header copy only
 
     def test_layout_rules_that_keep_every_page_on_one_system(self):
         css = (self.STATIC / "style.css").read_text()
@@ -6682,6 +6722,27 @@ class ErrorHintTests(unittest.TestCase):
 
     def test_empty_messages_get_a_fallback(self):
         self.assertEqual(self.explain(""), "Something went wrong. Try again.")
+
+    def test_firebase_errors_are_said_in_plain_words(self):
+        raw = ("Firebase: The given sign-in provider is disabled for this Firebase project. Enable it in the Firebase console, "
+               "under the sign-in method tab of the Auth section. (auth/operation-not-allowed).")
+        out = self.explain(raw)
+        self.assertTrue(out.startswith("This sign-in method isn't turned on yet."), out)
+        self.assertNotIn("Firebase:", out)
+        self.assertNotIn("auth/", out)
+        self.assertEqual(self.explain("Firebase: Error (auth/too-many-requests)."), "Too many attempts. Wait a few minutes and try again.")
+        # an unlisted code keeps Firebase's sentence without the prefix or the code, or names the code in words
+        self.assertEqual(self.explain("Firebase: Something new broke. (auth/brand-new)."), "Something new broke.")
+        self.assertEqual(self.explain("Firebase: Error (auth/brand-new)."), "Sign-in didn't work (brand new). Try again.")
+
+    def test_the_sign_in_screen_says_things_in_the_top_message_bar(self):
+        js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        gate = js[js.index("function showSignInGate"):js.index("function showSignInGate") + 1500]
+        self.assertIn("signInMessage(message, kind)", gate)
+        self.assertNotIn("signin-error", js)  # no second, inline place for sign-in errors
+        helper = js[js.index("function signInMessage"):js.index("function showSignInGate")]
+        self.assertIn('notify(kind, kind === "error" ? Errors.explain(message) : message, { id: "signin" })', helper)
+        self.assertIn('showSignInGate("You\'re signed out. Sign in again to continue.", "info")', js)  # prompts are notes, not errors
 
 
 class VisualCheckTests(ServerTestCase):

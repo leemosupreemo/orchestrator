@@ -1,47 +1,64 @@
 (function (root) {
   "use strict";
+  // Home's Project status card: the last commit, the last job run and, when it isn't that one, the last job run that
+  // succeeded. One short line each.
   const esc = (s) => root.Html.escape(String(s ?? ""));
-  const allowed = new Set(["feature", "bug", "design", "coverage", "freestyle"]);
 
-  function defaultSuggestions(product, jobs) {
-    const waiting = (jobs || []).find(j => j.state?.group === "needs_you");
-    return [waiting
-      ? { title: "Unblock the latest work", type: "freestyle", summary: `Review what is blocking ${waiting.title || "the paused job"}`, spec: `Read job ${waiting.id || ""} and explain the next decision or smallest fix. Avoid duplicating existing work.` }
-      : { title: "Plan the next requirement", type: "feature", summary: "Plan the next unfinished product requirement", spec: "Read the requirements and existing jobs. Pick a small unfinished requirement not covered by active work, and plan it first." },
-      { title: "Check the main user journey", type: "coverage", summary: "Test the main user journey against the product requirements", spec: "Read the product requirements and existing tests, then add meaningful coverage for uncovered success and failure paths." },
-      { title: "Review recent changes", type: "freestyle", summary: "Review recent changes for regressions and unfinished work", spec: "Inspect recent commits and current work. Identify concrete regressions or unfinished requirements without duplicating active jobs." }];
+  // Jobs that have run: planned, designed, queued or epic-only ones haven't yet.
+  const NOT_RUN = new Set(["planned", "designing", "backlog", "scheduled", "unknown", ""]);
+  // A run that succeeded: built and ready to review or merge, or finished.
+  const SUCCEEDED = new Set(["review-needed", "completed"]);
+
+  const stamp = (j) => Number(j.updated || j.created) || Date.parse(j.updated || j.created) / 1000 || 0;
+
+  function ago(seconds, now = Date.now() / 1000) {
+    const s = Math.max(0, now - seconds);
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
+    return new Date(seconds * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   }
 
-  function jobUrl(s) {
-    const query = new URLSearchParams({ type: allowed.has(s.type) ? s.type : "freestyle", summary: String(s.summary || s.title || "").slice(0, 300), spec: String(s.spec || "").slice(0, 4000) });
-    return `#/new?${query}`;
+  function when(iso) {
+    const t = Date.parse(iso || "");
+    if (!t) return "";
+    return new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
-  function render({ project: p = {}, git = {}, product = {}, jobs = [], runs = [], suggestions } = {}) {
-    const body = product?.sections?.find(s => s.filled && s.body?.trim())?.body || "";
-    const about = body.replace(/[#*_`>]/g, "").replace(/\s+/g, " ").trim().slice(0, 240)
-      || [({web: "Web app", desktop: "Desktop app", mobile: "Mobile app"})[p.kind], p.name].filter(Boolean).join(" · ") || "Describe this project on the Product page.";
-    const active = runs.filter(r => r.running && r.action !== "dev_preview");
-    const needsYou = jobs.filter(j => j.state?.group === "needs_you").length;
-    const unfinished = jobs.filter(j => j.state?.group !== "done");
-    const status = active.length ? `${active.length} run${active.length === 1 ? "" : "s"} in progress` : needsYou ? "Needs your attention" : !jobs.length ? "Ready for the first job" : unfinished.length ? "Work planned" : "Up to date";
-    const tone = active.length ? "working" : needsYou ? "attention" : "done";
-    const stamp = j => Number(j.updated || j.created) || Date.parse(j.updated || j.created) || 0;
-    const latest = [...jobs].sort((a,b) => stamp(b) - stamp(a))[0];
-    const work = active[0] ? `<a href="#/runs/${encodeURIComponent(active[0].id)}">${esc(active[0].summary || active[0].title || "Work in progress")}</a>`
-      : latest ? `<a href="#/jobs/${encodeURIComponent(latest.id)}">${esc(latest.title || "Latest job")}</a>${latest.state?.label ? ` · ${esc(latest.state.label)}` : ""}` : "No jobs yet";
-    const items = Array.isArray(suggestions) && suggestions.length === 3 ? suggestions : defaultSuggestions(product, jobs);
-    const dirty = Number(p.dirty_files) || 0;
+  // "abc123 Fix score (Ann, 4 hours ago)" → "Fix score · Nov 10, 3:42 PM", the hash and author in the tooltip.
+  function commitLine(raw, at = "") {
+    if (!raw) return "No commits yet";
+    const m = String(raw).match(/^(\S+) (.*?)(?: \((.+), ([^,]+)\))?$/);
+    if (!m) return esc(raw);
+    const [, hash, subject, author, relative] = m;
+    const tip = [hash, author].filter(Boolean).join(" by ");
+    const date = when(at) || relative || "";
+    return `<span title="${esc(tip)}">${esc(subject)}</span>${date ? ` <span class="muted">· ${esc(date)}</span>` : ""}`;
+  }
+
+  function jobLine(j, now) {
+    return `<a href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title || "Untitled job")}</a>`
+      + ` <span class="muted">· ${esc(j.state?.label || j.status || "")}${stamp(j) ? ` · ${esc(ago(stamp(j), now))}` : ""}</span>`;
+  }
+
+  function render({ git = {}, jobs = [], runs = [], now } = {}) {
+    const ran = jobs.filter((j) => !NOT_RUN.has(String(j.status || ""))).sort((a, b) => stamp(b) - stamp(a));
+    const lastRun = ran[0];
+    const lastGood = ran.find((j) => SUCCEEDED.has(String(j.status || "")));
+    const active = runs.filter((r) => r.running && r.action !== "dev_preview").length;
+    const needsYou = jobs.filter((j) => j.state?.group === "needs_you" && !j.active_run).length;
+    const pill = active ? `<span class="pill working">${active} run${active === 1 ? "" : "s"} in progress</span>`
+      : needsYou ? `<a class="pill attention" href="#/?filter=needs_you">${needsYou} job${needsYou === 1 ? " needs" : "s need"} you</a>` : "";
     return `<section class="card home-project-status mb-16" id="home-project-status" aria-labelledby="home-project-status-title">
-      <div class="card-h"><h2 id="home-project-status-title">Project status</h2><span class="pill ${tone}">${esc(status)}</span></div>
+      <div class="card-h"><h2 id="home-project-status-title">Project status</h2>${pill}</div>
       <div class="card-b"><ul class="home-status-facts">
-        <li><strong>About</strong><span>${esc(about)}</span></li>
-        <li><strong>Latest commit</strong><span>${git?.last_commit ? esc(git.last_commit) : "No commits yet"}</span></li>
-        <li><strong>Changes</strong><span>${dirty ? `<a href="#/git?show=changes">${dirty} uncommitted file${dirty === 1 ? "" : "s"}</a>${p.branch ? ` on ${esc(p.branch)}` : ""}` : "Working tree clean"}</span></li>
-        <li><strong>Latest work</strong><span>${work}</span></li>
-      </ul>
-      <div class="home-status-suggestions"><h3>Suggestions</h3><div class="home-suggestion-list">${items.map(s => `<a class="home-suggestion" href="${esc(jobUrl(s))}"><span>${esc(s.title)}</span><span aria-hidden="true">↗</span></a>`).join("")}</div></div></div>
+        <li><strong>Last commit</strong><span>${commitLine(git?.last_commit, git?.last_commit_at)}</span></li>
+        <li><strong>Last job run</strong><span>${lastRun ? jobLine(lastRun, now) : "No jobs have run yet"}</span></li>
+        ${lastGood && lastGood !== lastRun ? `<li><strong>Last success</strong><span>${jobLine(lastGood, now)}</span></li>` : ""}
+      </ul></div>
     </section>`;
   }
-  root.HomeStatus = {render, defaultSuggestions, jobUrl};
+
+  root.HomeStatus = { render, commitLine };
 })(typeof globalThis !== "undefined" ? globalThis : this);

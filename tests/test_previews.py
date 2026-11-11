@@ -132,13 +132,15 @@ class JobPreviewTests(unittest.TestCase):
         path.write_text(json.dumps({**json.loads(path.read_text()), "status": "executing"}))
         self.assertEqual(server.auto_preview_branch(self.root, "job-1"), "")
 
-    def test_the_job_page_gets_the_published_link_and_a_running_live_preview(self):
+    def test_home_gets_the_published_link_and_a_running_live_preview_of_the_current_build(self):
+        subprocess.run(["git", "checkout", "-q", "job-1-branch"], cwd=self.root, check=True)
         self.publish("0000000")
         live = self.root / ".orchestrator" / "output" / "dev-previews"
         live.mkdir(parents=True)
         (live / "job-1-branch.json").write_text(json.dumps({"branch": "job-1-branch", "url": "http://localhost:5173/", "pid": os.getpid()}))
         (live / "gone.json").write_text(json.dumps({"branch": "other", "url": "http://localhost:3000/", "pid": 999999}))
-        p = server.job_preview(self.root, {"branch": "job-1-branch"})
+        p = server.project_preview(self.root)
+        self.assertEqual(p["branch"], "job-1-branch")  # whatever is checked out in the project folder
         self.assertEqual(p["hosted"]["url"], "https://demo--job-1-branch-x.web.app")
         self.assertFalse(p["hosted_current"])
         self.assertEqual(p["live"]["url"], "http://localhost:5173/")
@@ -146,15 +148,14 @@ class JobPreviewTests(unittest.TestCase):
         self.assertEqual(p["gaps"], [])
         self.assertTrue(p["branch_exists"])
 
-    def test_a_branch_that_doesnt_exist_yet_cant_start_a_live_preview(self):
-        p = server.job_preview(self.root, {"branch": "not-made-yet"})
-        self.assertFalse(p["branch_exists"])
+    def test_the_current_build_is_the_checked_out_branch(self):
+        self.assertEqual(server.project_preview(self.root)["branch"], "main")
 
     def test_only_web_projects_get_a_preview(self):
         (self.root / ".orchestrator").mkdir(exist_ok=True)
         (self.root / ".orchestrator" / "project.json").write_text(json.dumps({"project_kind": "mobile", "mobile_app": True}))
         with mock.patch.object(server, "is_mobile_app", lambda root, config: True):
-            self.assertIsNone(server.job_preview(self.root, {"branch": "job-1-branch"}))
+            self.assertIsNone(server.project_preview(self.root))
 
 
 class PreviewProxyTests(unittest.TestCase):
@@ -238,6 +239,8 @@ class PreviewShotTests(unittest.TestCase):
             path = server.save_preview_shot(root, "job-1", "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8jpeg").decode())
             self.assertTrue(path.startswith(".orchestrator/output/job-1/preview-feedback/") and path.endswith(".jpg"))
             self.assertEqual((root / path).read_bytes(), b"\xff\xd8jpeg")
+            path = server.save_preview_shot(root, "", "data:image/png;base64," + base64.b64encode(b"png").decode())
+            self.assertTrue(path.startswith(".orchestrator/output/preview-feedback/") and path.endswith(".png"))  # from Home
             for bad in ("data:text/html;base64,PGI+", "https://example.com/x.png", "data:image/png;base64,***"):
                 with self.assertRaises(server.UIError):
                     server.save_preview_shot(root, "job-1", bad)
@@ -273,15 +276,16 @@ class PreviewWiringTests(unittest.TestCase):
         for origin in ("https://*.web.app", "https://*.firebaseapp.com", "http://localhost:*", "http://127.0.0.1:*"):
             self.assertIn(origin, csp)
 
-    def test_the_job_page_shows_the_preview_with_a_way_to_point_out_problems(self):
+    def test_home_shows_the_preview_with_a_way_to_point_out_problems(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn("${jobPreviewCard(data.preview, runs)}", app)
-        for text in ("Start live preview", "Stop live preview", "Point out a problem", "What's wrong here?",
+        self.assertIn("${previewCard(homePreview?.preview, state.runs)}", app)
+        self.assertEqual(app.count("previewCard("), 2)  # defined once, shown only on Home: never on a job page
+        for text in ("Start live preview", "Stop live preview", "Point out a problem",
                      "Publish a link when a job is ready for review", 'action: "dev_preview"'):
             self.assertIn(text, app)
-        self.assertIn('runAction("debug", { job: id, feedback }', app)  # an idle job gets a fix run with the pin's note
-        for text in ('[["desktop", "Desktop"], ["tablet", "Tablet"], ["phone", "Phone"]]', "Describe the change",
-                     "Hold ⌘ or Shift to pick more", "preview-shot", "Screenshot of them: "):
+        self.assertIn('action: "new_job", params: { type: "quick", summary, branch_mode: "current" }', app)  # a new job, made without leaving Home
+        for text in ('[["desktop", "Desktop"], ["tablet", "Tablet"], ["phone", "Phone"]]', "Add to message",
+                     "Hold ⌘ or Shift to pick more", '"previews/shot"', "Screenshot of them: "):
             self.assertIn(text, app)
         css = (ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
         self.assertIn('.job-preview-frame[data-device="phone"] { max-width: 390px; }', css)
@@ -296,20 +300,38 @@ class PreviewWiringTests(unittest.TestCase):
         for text in ('type === "problem"', "Fix with AI", "errors on the live preview of", "job-preview-problems"):
             self.assertIn(text, app)
 
-    def test_opening_a_web_job_starts_its_live_preview_once(self):
+    def test_opening_home_starts_the_live_preview_once(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        for text in ("PREVIEW_AUTOSTARTED", "orchestrator.previewAutoStart", "Start the live preview when I open a job", "p.branch_exists"):
+        for text in ("PREVIEW_AUTOSTARTED", "orchestrator.previewAutoStart", "Start the live preview when I open Home", "p.branch_exists"):
             self.assertIn(text, app)
 
-    def test_on_wide_screens_the_preview_sits_beside_the_job(self):
+    def test_the_live_preview_is_not_counted_as_work(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        for text in ("orchestrator.previewLayout", "job-preview-layout", "Side by side", "Stacked", 'class="job-layout${'):
+        self.assertIn('const isPreviewRun = (r) => r.action === "dev_preview";', app)
+        badge = app[app.index('const badge = $("#running-badge");') - 300:app.index('const badge = $("#running-badge");')]
+        self.assertIn("!isPreviewRun(r)", badge)  # the sidebar's running count
+        activity = app[app.index("pages.activity = async"):app.index("pages.file = async")]
+        self.assertEqual(activity.count("!isPreviewRun(r)"), 3)  # running, finished and earlier runs
+
+    def test_what_you_point_at_is_attached_to_the_message_as_chips(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for text in ('id="preview-chips"', "attached.push({", "What they pointed at:", "data-chip-remove"):
             self.assertIn(text, app)
-        body = app[app.index('<div class="job-body">'):app.index("<!-- Technical Details -->")]
-        self.assertNotIn("jobPreviewCard(", body)  # a grid item of its own, so it can move beside the job
-        css = (ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
-        for text in (".job-layout > .job-preview { grid-area: preview;", ".job-layout.split", '"top preview"'):
-            self.assertIn(text, css)
+        self.assertNotIn('formDialog("What should change?"', app)  # no dialog in the way
+
+    def test_the_frame_says_what_state_the_live_preview_is_in(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for text in ("Starting live preview…", "Live preview couldn't start", "Live preview stopped responding",
+                     "The preview isn't running", 'data-preview-do="restart"', "PREVIEW_FAILED"):
+            self.assertIn(text, app)
+
+    def test_the_page_path_follows_the_app_and_can_be_typed(self):
+        helper = (ROOT / "orchestrator" / "web" / "static" / "preview-helper.js").read_text()
+        for text in ('type: "location"', '"pushState", "replaceState"', '"popstate"'):
+            self.assertIn(text, helper)
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for text in ('id="preview-path"', 'type === "location"', 'id="preview-refresh"', "e.shiftKey"):
+            self.assertIn(text, app)
 
     def test_a_change_can_be_described_under_the_preview(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()

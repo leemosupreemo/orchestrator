@@ -147,34 +147,43 @@ class HomeStatusRenderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
-    def test_card_contains_project_facts_and_three_encoded_prefilled_links(self):
-        html = self.render({'project': {'name': 'Snake', 'dirty_files': 4, 'branch': 'main', 'kind': 'web'},
-                            'git': {'last_commit': 'abc123 Fix score'}, 'product': {'sections': [{'filled': True, 'body': 'A Nokia snake game'}]},
-                            'jobs': [{'id': 'j1', 'title': 'Add controls', 'updated': '2026-11-09', 'state': {'group': 'needs_you', 'label': 'Review'}}],
-                            'runs': [], 'suggestions': [{'title': 'Score & pause', 'type': 'feature', 'summary': 'Add score & pause', 'spec': 'Do not start yet.'}]*3})
-        from html.parser import HTMLParser
-        class Links(HTMLParser):
-            def __init__(self):
-                super().__init__(); self.urls=[]
-            def handle_starttag(self, tag, attrs):
-                href=dict(attrs).get('href','')
-                if tag=='a' and href.startswith('#/new?'): self.urls.append(href)
-        links=Links(); links.feed(html)
-        self.assertEqual(len(links.urls), 3)
-        from urllib.parse import parse_qs
-        self.assertEqual(parse_qs(links.urls[0].split('?',1)[1]), {'type':['feature'],'summary':['Add score & pause'],'spec':['Do not start yet.']})
-        for expected in ('A Nokia snake game','abc123 Fix score','4 uncommitted files','Add controls','Needs your attention'):
-            self.assertIn(expected, html)
+    NOW = 1_800_000_000  # a fixed "now" (seconds) so "2h ago" is predictable
 
-    def test_empty_project_has_useful_fallbacks_and_no_invented_commit(self):
-        html = self.render({'project': {'name': 'New project', 'dirty_files': 0}, 'jobs': [], 'runs': []})
+    def job(self, id, title, status, hours_ago, label=None, group="needs_you"):
+        return {'id': id, 'title': title, 'status': status, 'updated': self.NOW - hours_ago * 3600,
+                'state': {'group': group, 'label': label or status}}
+
+    def test_only_the_last_commit_and_job_runs_one_line_each(self):
+        html = self.render({'git': {'last_commit': 'abc123 Fix score (Ann, 4 hours ago)', 'last_commit_at': '2026-11-10T15:42:00-05:00'},
+                            'jobs': [self.job('j1', 'Add controls', 'failed', 2, 'Failed'),
+                                     self.job('j2', 'Add score', 'review-needed', 5, 'Ready to merge'),
+                                     self.job('j3', 'Not started', 'planned', 1, 'Planned')],
+                            'runs': [], 'now': self.NOW})
+        self.assertIn('<strong>Last commit</strong><span><span title="abc123 by Ann">Fix score</span> <span class="muted">· Nov 10', html)
+        self.assertIn('<strong>Last job run</strong><span><a href="#/jobs/j1">Add controls</a> <span class="muted">· Failed · 2h ago</span>', html)
+        self.assertIn('<strong>Last success</strong><span><a href="#/jobs/j2">Add score</a> <span class="muted">· Ready to merge · 5h ago</span>', html)
+        self.assertNotIn('Not started', html)  # a planned job hasn't run
+        for gone in ('About', 'Suggestions', 'home-suggestion', 'Changes', 'uncommitted'):
+            self.assertNotIn(gone, html)
+
+    def test_the_success_line_is_left_out_when_the_last_run_succeeded(self):
+        html = self.render({'jobs': [self.job('j2', 'Add score', 'completed', 1, 'Completed', 'done')], 'now': self.NOW})
+        self.assertIn('Last job run', html)
+        self.assertNotIn('Last success', html)
+
+    def test_empty_project_says_so_and_invents_nothing(self):
+        html = self.render({'jobs': [], 'runs': []})
         self.assertIn('No commits yet', html)
-        self.assertIn('Working tree clean', html)
-        self.assertEqual(html.count('href="#/new?'), 3)
+        self.assertIn('No jobs have run yet', html)
+        self.assertNotIn('Last success', html)
 
-    def test_project_and_model_html_are_escaped(self):
-        html = self.render({'project': {'name': '<script>bad()</script>'}, 'git': {'last_commit': '<img src=x onerror=bad()>'},
-                            'suggestions': [{'title': '<img src=x onerror=bad()>', 'type': 'feature', 'summary': 'x', 'spec': '<script>'}]*3})
+    def test_the_pill_says_what_needs_you_and_links_to_it(self):
+        html = self.render({'jobs': [self.job('j1', 'A', 'planned', 1, 'Pending approval')], 'runs': []})
+        self.assertIn('<a class="pill attention" href="#/?filter=needs_you">1 job needs you</a>', html)
+
+    def test_commit_and_job_text_are_escaped(self):
+        html = self.render({'git': {'last_commit': '<img src=x onerror=bad()>'},
+                            'jobs': [self.job('j1', '<script>bad()</script>', 'failed', 1)]})
         self.assertNotIn('<script>', html)
         self.assertNotIn('<img ', html)
         self.assertIn('&lt;', html)
@@ -191,7 +200,7 @@ const context={HomeStatus,URLSearchParams,esc:Html.escape,setupState:{complete:t
  state:{project:{root:'/sample',name:'Snake',branch:'main',branches:[],dirty_files:42,machine_count:1,model_count:1},runs:[],you:{role:'owner'}},pages:{},
  api:async path=>{if(path==='jobs')return {jobs:[]};if(path==='inbox')return {elsewhere:[]};if(path==='product')return {sections:[]};if(path==='jobs/archived')return {archived:[]};throw Error('older backend');},
  sortJobs:x=>x,homeProjectTitle:p=>p.name,homeHealthIndicator:()=>'',setupState:{complete:true},
- productStripHtml:()=>'<section id="product-strip"></section>',elsewhereLine:()=>'',HOME_JOBS_SHOWN:10};
+ productStripHtml:()=>'<section id="product-strip"></section>',previewCard:()=>'',elsewhereLine:()=>'',HOME_JOBS_SHOWN:10};
 vm.createContext(context);
 let start=source.indexOf('function statusLine('),end=source.indexOf('\n}\n',start)+3;
 vm.runInContext(source.slice(start,end),context);
@@ -203,10 +212,9 @@ vm.runInContext(source.slice(start,end),context);
         self.assertEqual(result.returncode, 0, result.stderr)
         page = json.loads(result.stdout)
         self.assertLess(page['html'].index('id="home-project-status"'), page['html'].index('id="product-strip"'))
-        self.assertIn('42 uncommitted files', page['html'])
         self.assertNotIn('uncommitted', page['sub'])
-        self.assertEqual(page['html'].count('href="#/new?'), 3)
-        self.assertIn('type=coverage', page['html'])
+        self.assertIn('No jobs have run yet', page['html'])
+        self.assertNotIn('href="#/new?', page['html'])  # no suggestions any more
 
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js required')

@@ -218,7 +218,7 @@ class OneAddProjectButtonTests(unittest.TestCase):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertNotIn("Import existing project", app)
         self.assertIn("!(await api(`projects/import-info?path=${encodeURIComponent(root)}`)).has_config", app)
-        self.assertEqual(app.count("if (await needsImport("), 2)  # discovered folders and a typed path
+        self.assertEqual(app.count("if (await needsImport("), 3)  # discovered folders, a typed path and a cloned GitHub repository
         self.assertIn("location.hash = `#/import-project?path=${encodeURIComponent(result.importPath)}`", app)
         setup = app[app.index('pages["import-project"] = async (_, query)'):]
         self.assertIn('let path = query?.get("path") || "";', setup[:400])

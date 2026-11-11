@@ -396,7 +396,7 @@
     const plugins = (ai.plugins || []).map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {
       title: "Manage AI tools",
-      sub: ai.any_ready ? "Choose which tools are available to your jobs." : "Install and connect an AI tool to plan, build, and review jobs.",
+      sub: ai.any_ready ? "" : "Install and connect an AI tool to plan, build, and review jobs.",
       html: `<div class="configuration-page">
         ${available && owner && !ai.any_ready ? `<section class="card configuration-card ai-free-card"><div class="card-b row between align-center gap-12 wrap">
           <div class="stack gap-4"><strong>Start with a free AI</strong>

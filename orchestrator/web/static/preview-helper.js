@@ -1,4 +1,4 @@
-// Added to a web project's live preview (by dev_preview.py's local proxy) so Orchestrator's job page can let you pick
+// Added to a web project's live preview (by dev_preview.py's local proxy) so Orchestrator's Home page can let you pick
 // elements on the page. It does nothing until the page around the preview asks: then hovering outlines an element, a click
 // picks it (hold ⌘, Ctrl or Shift to pick more), and the page is told what was picked and, when asked, sent a screenshot.
 (() => {
@@ -153,9 +153,22 @@
     }
   }
 
+  // Which page the app is on, for the page path above the frame: sent on load and whenever the app navigates.
+  let lastPath = "";
+  const sendLocation = (force) => {
+    const path = location.pathname + location.search + location.hash;
+    if (force || path !== lastPath) { lastPath = path; send({ type: "location", path }); }
+  };
+  for (const name of ["pushState", "replaceState"]) {
+    const original = history[name];
+    history[name] = function (...args) { const result = original.apply(this, args); sendLocation(); return result; };
+  }
+  window.addEventListener("popstate", () => sendLocation());
+  window.addEventListener("hashchange", () => sendLocation());
+
   window.addEventListener("message", async (e) => {
     if (e.source !== parentWindow || !e.data || e.data.source !== "orchestrator") return;
-    if (e.data.type === "hello") { send({ type: "ready" }); send({ type: "problems", problems }); }
+    if (e.data.type === "hello") { send({ type: "ready" }); send({ type: "problems", problems }); sendLocation(true); }
     else if (e.data.type === "clear") problems.length = 0;
     else if (e.data.type === "pick") {
       picking = Boolean(e.data.on);
@@ -165,4 +178,5 @@
     }
   });
   send({ type: "ready" });
+  sendLocation(true);
 })();

@@ -232,11 +232,35 @@ async function api(path, { method = "GET", body, signal } = {}) {
     ConnectionLog.add("http_error", { ...where, status: res.status, ms: Math.round(performance.now() - started) });
   }
   if (!res.ok) {
+    // A new job that looks like one still open (job_overlap.py): ask, then create it anyway or leave it. Here, so every
+    // way of creating a job (New job, Fix with AI, Point out a problem, Run tests…) asks the same question.
+    if (res.status === 409 && Array.isArray(data.duplicates) && path === "runs" && body?.action === "new_job") {
+      if (await confirmDuplicateJob(data.duplicates)) {
+        return api(path, { method, body: { ...body, params: { ...(body.params || {}), allow_duplicate: true } }, signal });
+      }
+      const skipped = new Error("Not created: it looks like a job you already have.");
+      skipped.name = "AbortError";
+      skipped.status = 409;
+      throw skipped;
+    }
     const err = new Error(data.error || `${res.status} ${res.statusText}`);
     err.status = res.status;
+    err.data = data;
     throw err;
   }
   return data;
+}
+
+// "Create anyway", or leave it (and open the existing job from its link). Jobs for the same work end up as two branches
+// changing the same code, so this asks rather than refuses: sometimes it really is a second piece of work.
+async function confirmDuplicateJob(matches) {
+  const list = matches.map((m) => `<li><a href="#/jobs/${encodeURIComponent(m.id)}">${esc(m.title)}</a>${m.state ? ` <span class="muted">· ${esc(m.state)}</span>` : ""}</li>`).join("");
+  const answer = await formDialog("This looks like a job you already have",
+    `<p>${matches.length === 1 ? "This job is" : "These jobs are"} still open and look${matches.length === 1 ? "s" : ""} like the same work:</p>
+     <ul class="duplicate-job-list">${list}</ul>
+     <p class="muted">Two jobs for the same work build on separate branches and change the same code. Open the existing job instead, or create this one anyway if it's different.</p>`,
+    "Create anyway", { cancelLabel: "Don't create" });
+  return answer !== null;
 }
 
 // Messages: one overlay for everything the app tells you (see messages.js). `toast` is the short form used everywhere:
@@ -503,6 +527,9 @@ function addProjectsDialog(trackedProjects) {
       <button type="button" class="dialog-tab-btn active" role="tab" id="tab-discovered" aria-selected="true" aria-controls="panel-discovered" data-project-tab="discovered">
         <svg class="icon"><use href="#i-search"/></svg>Discovered
       </button>
+      <button type="button" class="dialog-tab-btn" role="tab" id="tab-github" aria-selected="false" aria-controls="panel-github" data-project-tab="github">
+        <svg class="icon"><use href="#i-github"/></svg>GitHub
+      </button>
       <button type="button" class="dialog-tab-btn" role="tab" id="tab-custom" aria-selected="false" aria-controls="panel-custom" data-project-tab="custom">
         <svg class="icon"><use href="#i-folder"/></svg>Custom Path
       </button>
@@ -515,6 +542,14 @@ function addProjectsDialog(trackedProjects) {
       <div id="project-discovery-list" class="project-discovery-list" aria-live="polite">
         <div class="project-discovery-status"><span class="pill working"><span class="dot"></span>Scanning for projects...</span></div>
       </div>
+    </div>
+    <div id="panel-github" role="tabpanel" aria-labelledby="tab-github" class="dialog-tab-panel" hidden>
+      <div class="project-discovery-head">
+        <h3>Your GitHub repositories</h3>
+        <small class="muted">Repositories that aren't on this computer yet. Clone one to download it and add it.</small>
+      </div>
+      <input type="search" id="github-repo-filter" class="github-repo-filter" placeholder="Filter repositories" aria-label="Filter repositories" autocomplete="off" spellcheck="false" hidden>
+      <div id="github-repo-list" class="project-discovery-list" aria-live="polite"></div>
     </div>
     <div id="panel-custom" role="tabpanel" aria-labelledby="tab-custom" class="dialog-tab-panel stack" hidden>
       <label class="field"><span>Project Directory Path</span>
@@ -535,24 +570,17 @@ function addProjectsDialog(trackedProjects) {
   const list = $("#project-discovery-list");
   const form = $("#dialog-form");
   const manualButton = $("#manual-add-project");
-  const tabDiscoveredBtn = $("#tab-discovered");
-  const tabCustomBtn = $("#tab-custom");
-  const panelDiscovered = $("#panel-discovered");
-  const panelCustom = $("#panel-custom");
-
+  const tabs = ["discovered", "github", "custom"];
+  let githubLoaded = false;
   const switchTab = (tabName) => {
-    const isDiscovered = tabName === "discovered";
-    tabDiscoveredBtn.classList.toggle("active", isDiscovered);
-    tabDiscoveredBtn.setAttribute("aria-selected", String(isDiscovered));
-    panelDiscovered.hidden = !isDiscovered;
-
-    tabCustomBtn.classList.toggle("active", !isDiscovered);
-    tabCustomBtn.setAttribute("aria-selected", String(!isDiscovered));
-    panelCustom.hidden = isDiscovered;
-
-    if (!isDiscovered) {
-      panelCustom.querySelector('input[name="root"]')?.focus();
+    for (const name of tabs) {
+      const on = name === tabName;
+      $(`#tab-${name}`).classList.toggle("active", on);
+      $(`#tab-${name}`).setAttribute("aria-selected", String(on));
+      $(`#panel-${name}`).hidden = !on;
     }
+    if (tabName === "custom") $("#panel-custom").querySelector('input[name="root"]')?.focus();
+    if (tabName === "github" && !githubLoaded) { githubLoaded = true; showGithubRepos(); }
   };
 
   const sendAdd = ProjectPicker.createAddQueue((request) => api(request.path, request.options));
@@ -566,19 +594,95 @@ function addProjectsDialog(trackedProjects) {
       cancel.disabled = pendingAdds > 0;
     });
   };
-  const showScanResults = async () => {
+  // The scan answers within about 20 seconds (see scan_for_projects); past a minute something is wrong, so it stops
+  // and says so with a way to try again, instead of saying "Scanning…" for ever.
+  // GitHub: repositories the account can open that aren't on this computer yet (the folder scan can't see those).
+  let lastDiscovered = [];
+  let githubRepos = [];
+  const githubList = $("#github-repo-list");
+  const githubFilter = $("#github-repo-filter");
+  const here = () => new Set([...(trackedProjects || []), ...lastDiscovered].map((p) => String(p.github_repo || "").toLowerCase()).filter(Boolean));
+  const drawGithubRepos = () => {
+    const local = here();
+    const q = githubFilter.value.trim().toLowerCase();
+    const shown = githubRepos.filter((r) => !q || r.repo.toLowerCase().includes(q) || r.description.toLowerCase().includes(q));
+    githubList.innerHTML = shown.length ? shown.map((r) => `<div class="project-discovery-row">
+        <div class="project-discovery-info">
+          <div class="project-discovery-title">${esc(r.name)}</div>
+          <div class="project-discovery-path" title="${esc(r.description || r.repo)}">${esc(r.repo)}${r.description ? ` · ${esc(r.description)}` : ""}</div>
+        </div>
+        ${r.private ? `<span class="pill-badge">Private</span>` : ""}${r.archived ? `<span class="pill-badge">Archived</span>` : ""}
+        ${local.has(r.repo.toLowerCase()) ? `<span class="muted t-secondary">On this computer</span>`
+          : `<button type="button" class="btn small primary" data-clone-repo="${esc(r.repo)}">Clone &amp; add</button>`}
+      </div>`).join("")
+      : `<div class="project-discovery-status muted">${githubRepos.length ? "No repositories match." : "No repositories found on this GitHub account."}</div>`;
+  };
+  const showGithubRepos = async () => {
+    githubList.innerHTML = `<div class="project-discovery-status"><span class="pill working"><span class="dot"></span>Loading your repositories...</span></div>`;
     try {
-      const { discovered } = await api("projects/scan", { method: "POST", body: {} });
+      const data = await api("projects/github");
+      githubRepos = data.repos || [];
+      if (data.error && !githubRepos.length) {
+        githubList.innerHTML = `<div class="notice bad"><p>${esc(data.error)}</p><button type="button" class="btn small" data-github-retry>Try again</button></div>`;
+        return;
+      }
+      githubFilter.hidden = githubRepos.length < 8;
+      drawGithubRepos();
+    } catch (err) {
+      githubList.innerHTML = `<div class="notice bad"><p>${err.status === 404 ? "Listing GitHub repositories needs a newer Orchestrator on this computer. Update it, then try again."
+        : esc(Errors.explain(err.message))}</p><button type="button" class="btn small" data-github-retry>Try again</button></div>`;
+    }
+  };
+  githubFilter.addEventListener("input", drawGithubRepos);
+  const cloneRepo = async (button) => {
+    const repo = button.dataset.cloneRepo;
+    button.disabled = true;
+    button.textContent = "Downloading…";
+    pendingAdds += 1;
+    done.disabled = cancel.disabled = true;
+    try {
+      const project = await waitForTask(await api("projects/clone", { method: "POST", body: { repo } }));
+      lastDiscovered = [...lastDiscovered, { github_repo: repo }];
+      if (await needsImport(project.root)) { importPath = project.root; pendingAdds -= 1; dlg.close("ok"); return; }
+      await sendAdd(ProjectPicker.addRequest(project));
+      changed = true;
+      button.textContent = "Added";
+      button.classList.remove("primary");
+      toast(`${repo} downloaded to ${project.root} and added`);
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = "Clone & add";
+      toast(err.message, true);
+    } finally {
+      pendingAdds = Math.max(0, pendingAdds - 1);
+      done.disabled = cancel.disabled = pendingAdds > 0;
+    }
+  };
+
+  const showScanResults = async () => {
+    list.innerHTML = `<div class="project-discovery-status"><span class="pill working"><span class="dot"></span>Scanning for projects...</span></div>`;
+    try {
+      const { discovered } = await api("projects/scan", { method: "POST", body: {}, signal: AbortSignal.timeout(60000) });
+      lastDiscovered = discovered || [];
+      if (githubRepos.length) drawGithubRepos();
       const available = ProjectPicker.availableProjects(discovered, trackedProjects);
       list.innerHTML = available.length
         ? ProjectPicker.renderRows(available)
         : `<div class="project-discovery-status muted">No additional projects found.</div>`;
     } catch (err) {
-      list.innerHTML = `<div class="notice bad">Scan failed: ${esc(err.message)}</div>`;
+      const why = err.name === "TimeoutError" || err.name === "AbortError"
+        ? "Looking for projects took longer than a minute, so it stopped." : Errors.explain(err.message);
+      list.innerHTML = `<div class="notice bad"><p>Couldn't finish looking for projects. ${esc(why)}</p>
+        <p>You can try again, or add a folder by its path under Custom Path.</p>
+        <button type="button" class="btn small" data-project-scan-retry>Try again</button></div>`;
     }
   };
 
   const onClick = async (event) => {
+    if (event.target.closest("[data-project-scan-retry]")) { showScanResults(); return; }
+    if (event.target.closest("[data-github-retry]")) { showGithubRepos(); return; }
+    const cloneButton = event.target.closest("[data-clone-repo]");
+    if (cloneButton) { event.preventDefault(); cloneRepo(cloneButton); return; }
     const tabBtn = event.target.closest("[data-project-tab]");
     if (tabBtn) {
       switchTab(tabBtn.dataset.projectTab);
@@ -1129,7 +1233,7 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
   if (backend === null && !token) {
     if (opening) throw new Error("Sign in again to open this computer.");
     if (!view.querySelector(".signin-card:not(.signing-in)")) {
-      showSignInGate("Sign in with your access token to continue.");
+      showSignInGate("Sign in with your access token to continue.", "info");
     }
     return;
   }
@@ -1182,9 +1286,9 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
       // or if we have experienced multiple consecutive 401 failures to rule out transient blips
       if (!state.project || consecutiveAuthFailures >= 2) {
         if (Account.active() && window.firebase?.auth?.().currentUser) {
-          relocateMachine().catch(() => openAccount().catch(() => showSignInGate("Session expired. Please sign in again.")));
+          relocateMachine().catch(() => openAccount().catch(() => showSignInGate("Session expired. Please sign in again.", "warning")));
         } else {
-          showSignInGate("Session expired. Please sign in again.");
+          showSignInGate("Session expired. Please sign in again.", "warning");
         }
       }
       return;
@@ -1215,7 +1319,7 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
     }
     return;
   }
-  const running = state.runs.filter((r) => r.running);
+  const running = state.runs.filter((r) => r.running && !isPreviewRun(r));
   const waiting = running.filter((r) => r.waiting).length;
   const badge = $("#running-badge");
   if (badge) {
@@ -1496,7 +1600,7 @@ async function openAccount({ list = false, message = "", troubleshoot = null } =
   try {
     ({ machines } = await cpApi("machines"));
   } catch (err) {
-    if (err.status === 401) { endSigningIn(); return showSignInGate("Your sign-in expired. Sign in again."); }
+    if (err.status === 401) { endSigningIn(); return showSignInGate("Your sign-in expired. Sign in again.", "warning"); }
     return showAccountScreen([], err.message, troubleshoot);
   }
   let remembered = null;
@@ -1675,7 +1779,7 @@ async function showPairScreen(code) {
   try {
     preview = await cpApi("pair/preview", { method: "POST", body: { code } });
   } catch (err) {
-    if (err.status === 401) { endSigningIn(); return showSignInGate("Sign in to add your computer to your account."); }
+    if (err.status === 401) { endSigningIn(); return showSignInGate("Sign in to add your computer to your account.", "info"); }
     return done(err.message);
   }
   const email = window.firebase?.auth?.().currentUser?.email || "";
@@ -2029,13 +2133,18 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.providerSi
   } catch {}
 }
 
-function showSignInGate(message) {
+// What the sign-in screen has to say shows in the message bar at the top, like every other message: problems as errors
+// (in plain words, see errors.js), prompts such as "Sign in to continue" as notes. One at a time; a newer one replaces it.
+function signInMessage(message, kind = "error") {
+  if (!message) return;
+  notify(kind, kind === "error" ? Errors.explain(message) : message, { id: "signin" });
+}
+
+function showSignInGate(message, kind = "error") {
+  signInMessage(message, kind);
   const existingCard = view.querySelector(".signin-card:not(.signing-in)");
   if (existingCard) {
-    const msgEl = $("#signin-gate-message");
-    if (msgEl) {
-      msgEl.innerHTML = message ? `<p class="signin-error">${esc(message)}</p>` : "";
-    }
+    $("#signin-gate-message")?.replaceChildren(); // nothing is said inside the card any more
     return;
   }
   setHeader({ title: "", sub: "", actions: "" });
@@ -2059,7 +2168,7 @@ function showSignInGate(message) {
         <header class="signin-head">
           <span class="brand-mark signin-logo" role="img" aria-label="Orchestrator"></span>
           <h2 class="signin-title">Sign in</h2>
-          <div id="signin-gate-message">${message ? `<p class="signin-error">${esc(message)}</p>` : ""}</div>
+          <div id="signin-gate-message"></div>
         </header>
         <figure class="signin-preview">
           <h3>The app in your head. Made real.</h3>
@@ -2244,10 +2353,11 @@ function showSignInGate(message) {
       } catch (err) {
         endSigningIn();
         if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { btn.disabled = false; btn.innerHTML = originalHtml; return; }
-        const msg = explain[err.code] || (err.code === "auth/unauthorized-domain"
+        const msg = explain[err.code] || (err.code === "auth/operation-not-allowed"
+          ? `${name} sign-in isn't turned on yet. Use another way to sign in, or enable ${name} in the Firebase console under Authentication → Sign-in method.`
+          : err.code === "auth/unauthorized-domain"
           ? `${name} sign-in doesn't work at this address. Sign in on the Orchestrator site (${Account.HOSTED_ORIGINS[0]}), which opens this computer for you, or use the access token below.`
           : err.message);
-        if (err.code !== "auth/popup-blocked-explained") toast(msg, true); // the gate already says it
         showSignInGate(msg);
       }
     });
@@ -2272,13 +2382,12 @@ function showSignInGate(message) {
     p.addScope("email");
     p.addScope("name");
     return p;
-  }, { "auth/operation-not-allowed": "Apple Sign-In is not yet configured in your Firebase Console. Please add your Apple Developer keys in Firebase." });
+  }, { "auth/operation-not-allowed": "Apple sign-in isn't turned on yet. Use another way to sign in, or enable Apple in the Firebase console under Authentication → Sign-in method (it needs your Apple Developer keys)." });
   wireSso("#github-signin-btn", "GitHub", () => {
     const p = new firebase.auth.GithubAuthProvider();
     p.addScope("user:email"); // lets Firebase read your verified primary email, even if it's private on your profile
     return p;
   }, {
-    "auth/operation-not-allowed": "GitHub sign-in isn't turned on yet. Enable the GitHub provider in the Firebase console (Authentication → Sign-in method).",
     "auth/account-exists-with-different-credential": "This email already signs in with another provider (Google or Apple). Use that one instead.",
   });
 
@@ -2570,7 +2679,6 @@ function showSignInGate(message) {
           showUnregisteredSuggestion(email);
           return;
         }
-        toast(signInErr.message, true);
         showSignInGate(signInErr.message);
       }
     });
@@ -2601,7 +2709,6 @@ function showSignInGate(message) {
         route();
       } catch (err) {
         endSigningIn();
-        toast(err.message, true);
         showSignInGate(err.message || "Invalid access token");
       }
     });
@@ -2635,12 +2742,12 @@ async function signOut() {
   state = { project: null, runs: [], actions: {} };
   for (const badge of document.querySelectorAll("#running-badge, .tabbar .badge")) badge.hidden = true;
   toast("Signed out", "info");
-  showSignInGate("You're signed out. Sign in again to continue.");
+  showSignInGate("You're signed out. Sign in again to continue.", "info");
 }
 
 // `titleHtml` replaces the plain title with markup (Home's project switcher); `title` stays the page's name for the
 // browser tab and anything else that asks what page this is (#page-title's data-title).
-function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
+function setHeader({ title, titleHtml = "", sub = "", actions = "", status = "" }) {
   document.body.classList.remove("signin-gate");
   const mobileTitle = $("#mobile-title");
   if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-title-name">${esc(state.project?.name || "")}</span>${kindPill(state.project?.kind)}`;
@@ -2655,6 +2762,9 @@ function setHeader({ title, titleHtml = "", sub = "", actions = "" }) {
   subEl.innerHTML = sub;
   subEl.hidden = !sub;
   $("#topbar-actions").innerHTML = actions;
+  // A page's status control (Home's setup health) also sits at the right of the phone header, the very top of the screen.
+  const end = $("#mobile-header-end");
+  if (end) { end.innerHTML = status; end.toggleAttribute("aria-hidden", !status); }
   document.title = Notifications.tabTitle(`${title} · Orchestrator`, state.inbox_count || 0);
 }
 
@@ -2790,6 +2900,162 @@ function runItem(r) {
     <div class="side">${runPill(r)}</div></a>`;
 }
 
+// ---------------------------------------------------------------- Ask AI (Home)
+// A conversation about the whole project, opened from the chat button opposite the branch picker. Choose Free, Balanced or
+// Complex; the computer picks the model for that choice from the ones ready on it (project_chat.py) and never uses another
+// kind. Each question is sent with the project as it is now (requirements, attached documents, notes, Git history, jobs),
+// so whichever model answers knows the same things. The conversation is saved with the project.
+const ASK_AI_TIER_KEY = "orchestrator_ask_ai_tier";
+let askAiRun = null; // the question being answered: { controller, task }
+
+function askAiTierButton(id, t, chosen) {
+  return `<label class="ask-ai-tier${t.available ? "" : " is-off"}" title="${esc(t.available ? t.hint : t.reason)}">
+    <input type="radio" name="ask-ai-tier" value="${esc(id)}"${id === chosen ? " checked" : ""}${t.available ? "" : " disabled"}>
+    <span class="ask-ai-tier-name">${esc(t.label)}</span>
+    <span class="ask-ai-tier-model">${esc(t.available ? t.model : "Not set up")}</span></label>`;
+}
+
+function askAiMessage(m) {
+  if (m.role === "user") return `<div class="chat-msg user"><span class="chat-who">You</span><div class="chat-text">${esc(m.text)}</div></div>`;
+  const tier = { free: "Free", balanced: "Balanced", complex: "Complex" }[m.tier] || "";
+  return `<div class="chat-msg assistant"><span class="chat-who">AI${m.model ? ` · ${esc(m.model)}` : ""}${tier ? ` · ${tier}` : ""}</span><div class="md chat-md">${Markdown.render(m.text)}</div></div>`;
+}
+
+function askAiThread(dlg, messages) {
+  const log = dlg.querySelector(".ask-ai-thread");
+  log.innerHTML = messages.length ? messages.map(askAiMessage).join("")
+    : `<div class="ask-ai-empty"><strong>Ask anything about this project.</strong>
+        <p>It knows the product requirements, attached documents, project notes, Git history and jobs, whichever kind of AI you choose.</p>
+        <div class="ask-ai-starters">${["What is this product, in a few sentences?", "What changed in the last week?", "What's still unfinished in the requirements?"]
+          .map((q) => `<button type="button" class="btn small" data-ask-ai-starter>${esc(q)}</button>`).join("")}</div></div>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+async function openAskAi() {
+  let dlg = document.getElementById("ask-ai");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "ask-ai";
+    dlg.className = "ask-ai";
+    dlg.setAttribute("aria-labelledby", "ask-ai-title");
+    document.body.append(dlg);
+    dlg.addEventListener("close", () => askAiRun?.controller.abort());
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); }); // a click on the backdrop
+  }
+  dlg.innerHTML = `<div class="ask-ai-box">
+    <header class="ask-ai-head">
+      <div><h2 id="ask-ai-title">Ask AI</h2><p class="muted">About ${esc(state.project?.name || "this project")}</p></div>
+      <div class="ask-ai-head-actions"><button type="button" class="btn small ghost" data-ask-ai-clear hidden>Clear</button>
+        <button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button></div>
+    </header>
+    <fieldset class="ask-ai-tiers" aria-label="Kind of AI"><legend class="sr-only">Kind of AI</legend><span class="muted">Loading…</span></fieldset>
+    <div class="ask-ai-thread" role="log" aria-live="polite"></div>
+    <form class="ask-ai-form">
+      <textarea name="message" rows="2" maxlength="4000" placeholder="Ask about the product, the code, its history…" aria-label="Your question"></textarea>
+      <div class="clarify-reply-actions"><span class="muted ask-ai-status">Enter to send · Shift+Enter for a new line</span>
+        <button type="submit" class="btn primary">Send</button></div>
+    </form></div>`;
+  if (!dlg.open) dlg.showModal();
+  const form = dlg.querySelector(".ask-ai-form");
+  const input = form.message;
+  const send = form.querySelector('button[type="submit"]');
+  const status = dlg.querySelector(".ask-ai-status");
+  const tiersBox = dlg.querySelector(".ask-ai-tiers");
+  const clearBtn = dlg.querySelector("[data-ask-ai-clear]");
+  let messages = [];
+  const draw = () => { askAiThread(dlg, messages); clearBtn.hidden = !messages.length; };
+  input.focus();
+
+  let data;
+  try { data = await api("chat"); }
+  catch (e) {
+    tiersBox.innerHTML = "";
+    dlg.querySelector(".ask-ai-thread").innerHTML = `<div class="notice bad">${e.status === 404
+      ? "Ask AI needs a newer Orchestrator on this computer. Update it, restart it, then try again."
+      : esc(Errors.explain(e.message))}</div>`;
+    input.disabled = send.disabled = true;
+    return;
+  }
+  messages = data.messages || [];
+  let saved = ""; try { saved = localStorage.getItem(ASK_AI_TIER_KEY) || ""; } catch { /* no storage: use the default */ }
+  const chosen = data.tiers[saved]?.available ? saved : data.default;
+  tiersBox.innerHTML = `<legend class="sr-only">Kind of AI</legend>${["free", "balanced", "complex"].map((id) => askAiTierButton(id, data.tiers[id], chosen)).join("")}`;
+  const tierNote = () => {
+    const id = tiersBox.querySelector("input:checked")?.value;
+    status.textContent = id ? data.tiers[id].hint : "No AI is set up yet. Connect one under AI tools.";
+  };
+  tierNote();
+  tiersBox.addEventListener("change", () => {
+    try { localStorage.setItem(ASK_AI_TIER_KEY, tiersBox.querySelector("input:checked")?.value || ""); } catch { /* remembered for this visit only */ }
+    tierNote();
+  });
+  if (!tiersBox.querySelector("input:checked")) input.disabled = send.disabled = true;
+  draw();
+
+  const ask = async (question) => {
+    const tier = tiersBox.querySelector("input:checked")?.value;
+    if (!question || !tier || askAiRun) return;
+    const controller = new AbortController();
+    askAiRun = { controller };
+    messages = [...messages, { role: "user", text: question }];
+    draw();
+    const log = dlg.querySelector(".ask-ai-thread");
+    log.insertAdjacentHTML("beforeend", `<div class="chat-msg assistant is-pending"><span class="chat-who">AI</span>
+      <div class="chat-text"><span class="run-spin" aria-hidden="true"></span> <span class="ask-ai-stage">Asking ${esc(data.tiers[tier].model)}…</span></div></div>`);
+    log.scrollTop = log.scrollHeight;
+    input.value = "";
+    send.textContent = "Stop";
+    send.classList.replace("primary", "ghost");
+    try {
+      const started = await api("chat", { method: "POST", body: { message: question, tier } });
+      askAiRun.task = started.task;
+      const result = await waitForTask(started, { signal: controller.signal, onProgress: (r) => {
+        const stage = dlg.querySelector(".ask-ai-stage");
+        if (stage && r.stage) stage.textContent = `${r.detail || r.stage}${r.elapsed ? ` · ${clockTime(r.elapsed)}` : ""}`;
+      } });
+      messages = result.messages || messages;
+    } catch (e) {
+      messages = messages.slice(0, -1);
+      if (e.name !== "AbortError") { input.value = question; toast(e.message, true); }
+      else if (askAiRun?.task) api(`product/task/${encodeURIComponent(askAiRun.task)}/cancel`, { method: "POST", body: {} }).catch(() => {});
+    } finally {
+      askAiRun = null;
+      send.textContent = "Send";
+      send.classList.replace("ghost", "primary");
+      if (dlg.open) { draw(); input.focus(); }
+    }
+  };
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (askAiRun) { askAiRun.controller.abort(); return; } // Send is Stop while waiting
+    ask(input.value.trim());
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+  });
+  dlg.querySelector(".ask-ai-thread").addEventListener("click", (e) => {
+    const starter = e.target.closest("[data-ask-ai-starter]");
+    if (starter) ask(starter.textContent.trim());
+  });
+  dlg.querySelector("[data-ask-ai-close]").addEventListener("click", () => dlg.close());
+  // Clearing removes the conversation for everyone on the project, so it takes a second tap.
+  clearBtn.addEventListener("click", async () => {
+    if (!clearBtn.dataset.armed) {
+      clearBtn.dataset.armed = "1";
+      clearBtn.textContent = "Clear for everyone?";
+      setTimeout(() => { delete clearBtn.dataset.armed; clearBtn.textContent = "Clear"; }, 4000);
+      return;
+    }
+    try { await api("chat/clear", { method: "POST", body: {} }); messages = []; draw(); toast("Conversation cleared"); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.closest?.("[data-ask-ai]")) openAskAi();
+});
+
 function statusLine(p) {
   const branches = p.branches || [];
   const branchPicker = branches.length
@@ -2800,8 +3066,8 @@ function statusLine(p) {
     p.machine_count === 0 ? `<a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>`
       : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
   ].filter(Boolean);
-  // The health control sits opposite the branch picker. Detailed fixes stay in its compact disclosure.
-  return `<div class="status-line status-stack home-status-line"><div class="status-main-row"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>${homeHealthIndicator(setupState)}</div>
+  return `<div class="status-line status-stack home-status-line"><div class="status-main-row"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>
+    <button type="button" class="ask-ai-btn" data-ask-ai aria-label="Ask AI about this project" title="Ask AI about this project"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></button></div>
     ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</div>`;
 }
 
@@ -3101,7 +3367,7 @@ document.addEventListener("click", async (e) => {
 const HOME_JOBS_SHOWN = 10;
 
 function homeHealthIndicator(s) {
-  if (!s?.items) return `<details class="home-health-inline home-health-yellow"><summary class="home-health-trigger" title="System health: status unavailable"><span class="home-health-light" aria-hidden="true"></span><span>Status unavailable</span></summary><div class="home-health-popover"><strong>System health</strong><p>Setup checks could not be loaded. Reload Home to try again.</p></div></details>`;
+  if (!s?.items) return `<details class="home-health-inline home-health-yellow"><summary class="home-health-trigger" title="System health: status unavailable. Tap for details." aria-label="System health: status unavailable"><span class="home-health-light" aria-hidden="true"></span></summary><div class="home-health-popover"><strong>System health</strong><p>Setup checks could not be loaded. Reload Home to try again.</p></div></details>`;
   const required = s.items.filter(item => item.required);
   const missing = required.filter(item => !item.done);
   const optional = s.items.filter(item => !item.required);
@@ -3111,7 +3377,7 @@ function homeHealthIndicator(s) {
   const summary = missing.length ? `${missing.length} required item${missing.length === 1 ? "" : "s"} to fix`
     : optionalMissing.length ? `All ${s.required_total} required items are ready · ${optionalMissing.length} optional to review` : "All required setup is ready";
   return `<details class="home-health-inline home-health-${tone}">
-    <summary class="home-health-trigger" title="System health: ${esc(status)}${optionalMissing.length ? `; ${optionalMissing.length} optional items available` : ""}"><span class="home-health-light${!missing.length && optionalMissing.length ? " home-health-light-optional" : ""}" aria-hidden="true"></span><span>${esc(status)}</span></summary>
+    <summary class="home-health-trigger" title="System health: ${esc(status)}${optionalMissing.length ? `; ${optionalMissing.length} optional items available` : ""}. Tap for details." aria-label="System health: ${esc(status)}"><span class="home-health-light${!missing.length && optionalMissing.length ? " home-health-light-optional" : ""}" aria-hidden="true"></span></summary>
     <div class="home-health-popover"><div class="home-health-popover-head"><strong>System health</strong><span>${esc(summary)}</span></div>
       <div class="home-health-section"><h3>Required · ${required.length - missing.length}/${required.length} ready</h3>${required.length ? required.map(setupItem).join("") : `<p class="home-health-ready">No required setup items.</p>`}</div>
       ${optional.length ? `<div class="home-health-section home-health-optional"><h3>Optional · ${optional.length - optionalMissing.length}/${optional.length} ready</h3>${optional.map(setupItem).join("")}</div>` : ""}
@@ -3242,9 +3508,9 @@ pages.home = async (_, query) => {
   await loadSetup();
   if (!sameProject()) return {stale: true};
   if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
-  const [{ jobs }, waiting, product, archivedList, homeGit, homeSuggestions] = await Promise.all([
+  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview] = await Promise.all([
     api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
-    api("git").catch(() => ({})), api("home-status").catch(() => null),
+    api("git").catch(() => ({})), api("preview").catch(() => null),
   ]);
   if (!sameProject()) return {stale: true};
   const archivedJobs = archivedList?.archived || [];
@@ -3253,8 +3519,8 @@ pages.home = async (_, query) => {
   }
   if (!sameProject()) return {stale: true};
   // 1) Default ordered by most recent
-  const runningRuns = state.runs.filter((r) => r.running);
-  const isRunningNow = (j) => runningRuns.some((r) => r.action !== "dev_preview" && (r.job === j.id || r.result_job === j.id)); // shown in Running now, not again in the list (a live preview isn't work on it)
+  const runningRuns = state.runs.filter((r) => r.running && !isPreviewRun(r)); // a live preview shows in the Preview card
+  const isRunningNow = (j) => runningRuns.some((r) => r.job === j.id || r.result_job === j.id); // shown in Running now, not again in the list
   const sortedJobs = sortJobs(jobs);
 
   // Two sections: the work still going, and what's finished or put away. Old links with filter=done or filter=archived land on the second.
@@ -3283,10 +3549,14 @@ pages.home = async (_, query) => {
     title: p.name,
     titleHtml: homeProjectTitle(p), // the name is also a project switcher, like the sidebar's
     sub: statusLine(p),
-    actions: `<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a>`,
+    // Setup health is a round icon button at the top right, beside New job (on phones, in the header bar itself).
+    actions: `<div class="home-topbar-tools">${homeHealthIndicator(setupState)}<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a></div>`,
+    status: homeHealthIndicator(setupState),
     html: `
-      ${HomeStatus.render({project: p, git: homeGit, product, jobs, runs: state.runs, suggestions: homeSuggestions?.suggestions})}
+      ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
       ${product && !product.sections.some((x) => x.filled) ? productStripHtml(product) : ""}
+
+      ${previewCard(homePreview?.preview, state.runs)}
 
       ${runningBanner}
 
@@ -3335,30 +3605,7 @@ pages.home = async (_, query) => {
       </section>` : ""}`,
     after: () => {
       renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
-      // Keep the immediate facts and project-based suggestions visible while a cached AI answer is prepared.
-      let leftHome = false, suggestionTimer;
-      cleanup.push(() => { leftHome = true; clearTimeout(suggestionTimer); });
-      const stillHome = () => !leftHome && current.page === "home" && sameProject();
-      if (homeSuggestions?.stale && state.you?.role !== "member" && stillHome()) {
-        api("home-status/suggestions", {method: "POST", body: {}}).then(({task}) => {
-          if (!task || !stillHome()) return;
-          const poll = async () => {
-            if (!stillHome()) return;
-            try {
-              const result = await api(`product/task/${encodeURIComponent(task)}`);
-              if (!stillHome()) return;
-              if (result.status === "running") { suggestionTimer = setTimeout(poll, 2000); return; }
-              if (result.status !== "done") return;
-              const fresh = await api("home-status");
-              if (stillHome()) {
-                const card = $("#home-project-status");
-                if (card) card.outerHTML = HomeStatus.render({project: p, git: homeGit, product, jobs, runs: state.runs, suggestions: fresh.suggestions});
-              }
-            } catch { /* the project-based suggestions remain usable */ }
-          };
-          poll();
-        }).catch(() => {});
-      }
+      wirePreview(view);
       if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
       $("#yolo-all")?.addEventListener("change", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
@@ -3502,19 +3749,44 @@ function waitingEpicPage({ id, s, job, runs, docs, links }) {
 
 // Runs about a job that aren't work on it (exporting it, previewing it): they don't make the job look busy.
 const SIDE_RUNS = new Set(["export_job", "web_preview", "dev_preview"]);
+// The live preview is a dev server kept running for the Preview card, not work: it isn't counted as running or listed in Activity.
+const isPreviewRun = (r) => r.action === "dev_preview";
 
-// A web project's job page shows its branch in a frame: live from a dev server on this computer while it runs, else the
-// published preview link. "Point out a problem" puts a pin on the frame and sends what you write to the AI as a fix.
+// Home shows a web project's current build (the branch checked out in the project folder) in a frame: live from a dev
+// server on this computer while it runs, else the published preview link. "Point out a problem" puts a pin on the frame
+// and what you write becomes a new job for the AI.
 const PREVIEW_DEVICES = [["desktop", "Desktop"], ["tablet", "Tablet"], ["phone", "Phone"]];
-// Opening a web job starts its live preview (on the computer running Orchestrator, once the branch exists), unless this
-// browser turned that off. Each branch starts once per visit, so stopping a preview keeps it stopped.
+// Opening Home starts the live preview (on the computer running Orchestrator), unless this browser turned that off.
+// Each branch starts once per visit, so stopping a preview keeps it stopped.
 const PREVIEW_AUTOSTARTED = new Set();
 const previewAutoStart = () => { try { return localStorage.getItem("orchestrator.previewAutoStart") !== "off"; } catch { return true; } };
-// On wide screens the preview sits beside the job, like an app builder's chat and canvas; "Stacked" puts it back in line.
-const previewLayout = () => { try { return localStorage.getItem("orchestrator.previewLayout") === "stacked" ? "stacked" : "split"; } catch { return "split"; } };
 const PROBLEM_LABELS = { error: "Error", rejection: "Unhandled rejection", console: "console.error", resource: "Didn't load", request: "Request failed" };
 
-function jobPreviewCard(p, runs) {
+// A live preview that stopped before its dev server was ready, by branch: the frame says so (with its log) until you try again.
+const PREVIEW_FAILED = new Map();
+// Live previews you stopped (by run): their ending isn't a failure, even when the page saw them as still starting.
+const PREVIEW_STOPPED = new Set();
+
+// What the frame shows when there's no page to show, or the page can't be shown: starting, couldn't start, stopped
+// responding, or not running yet. Each says what happened and offers the next step.
+function previewOverlayHtml(kind, { branch = "", run = "", hosted = false, canStart = true } = {}) {
+  const log = run ? `<a class="btn small ghost" href="#/runs/${encodeURIComponent(run)}">Show log</a>` : "";
+  const shared = hosted ? `<button type="button" class="btn small ghost" data-preview-do="dismiss">Show the shared link</button>` : "";
+  const body = {
+    starting: [`<span class="spinner inline-spinner" aria-hidden="true"></span>Starting live preview…`,
+      "The first start installs packages and can take a few minutes.", `${log}${shared}`],
+    failed: ["Live preview couldn't start", `The dev server for ${esc(branch)} stopped before it was ready. The log says why.`,
+      `<button type="button" class="btn small go" data-preview-do="start">Try again</button>${log}${shared}`],
+    stalled: ["Live preview stopped responding", "The page didn't load. The dev server may have crashed or still be compiling.",
+      `<button type="button" class="btn small go" data-preview-do="restart">Try again</button><button type="button" class="btn small ghost" data-preview-do="dismiss">Dismiss</button>`],
+    idle: ["The preview isn't running", canStart ? `Start it to see ${esc(branch)} running on this computer, updating as files change.` : `${esc(branch)} doesn't exist yet.`,
+      canStart ? `<button type="button" class="btn small go" data-preview-do="start">Start live preview</button>` : ""],
+  }[kind];
+  if (!body) return "";
+  return `<div class="preview-overlay-box" role="status"><strong>${body[0]}</strong><p class="muted t-secondary">${body[1]}</p>${body[2] ? `<div class="row gap-8 wrap justify-center">${body[2]}</div>` : ""}</div>`;
+}
+
+function previewCard(p, runs) {
   if (!p) return "";
   const live = p.live, hosted = p.hosted;
   // The live preview's address is on the computer running Orchestrator: from another device (a phone on the hosted app) it
@@ -3522,28 +3794,38 @@ function jobPreviewCard(p, runs) {
   const onThisComputer = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
   const liveFirst = live && (onThisComputer || !hosted);
   const shown = liveFirst ? { kind: "live", url: live.url } : hosted ? { kind: "link", url: hosted.url } : null;
-  const liveRun = runs.find((r) => r.running && r.action === "dev_preview");
+  const liveRun = runs.find((r) => r.running && isPreviewRun(r));
   const publishing = runs.some((r) => r.running && r.action === "web_preview");
   const owner = state.you?.role !== "member";
   const both = live && hosted;
-  const autostart = !live && !liveRun && onThisComputer && p.branch_exists;
-  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-autostart="${autostart ? "1" : ""}">
+  const failedRun = !liveRun && !live ? PREVIEW_FAILED.get(p.branch) || "" : "";
+  const starting = Boolean(liveRun && !live);
+  const autostart = !live && !liveRun && !failedRun && onThisComputer && p.branch_exists;
+  const overlay = starting ? previewOverlayHtml("starting", { run: liveRun.id, hosted: Boolean(hosted) })
+    : failedRun ? previewOverlayHtml("failed", { branch: p.branch, run: failedRun, hosted: Boolean(hosted) })
+    : !shown ? previewOverlayHtml("idle", { branch: p.branch, canStart: p.branch_exists }) : "";
+  return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-autostart="${autostart ? "1" : ""}" data-starting="${starting ? esc(liveRun.id) : ""}">
     <div class="card-h card-h-wrap">
-      <h2>Preview</h2>
+      <h2>Preview <span class="muted t-secondary mono">${esc(p.branch)}</span></h2>
       ${both ? `<div class="row gap-4 job-preview-tabs" role="group" aria-label="Which preview">
         <button type="button" class="btn small${liveFirst ? " on" : ""}" data-preview-tab="live" aria-pressed="${liveFirst}" data-url="${esc(live.url)}">Live</button>
         <button type="button" class="btn small${liveFirst ? "" : " on"}" data-preview-tab="link" aria-pressed="${!liveFirst}" data-url="${esc(hosted.url)}">Link</button></div>` : ""}
-      ${shown ? `<div class="row gap-4 job-preview-devices" role="group" aria-label="Screen size">
-        ${PREVIEW_DEVICES.map(([key, label]) => `<button type="button" class="btn small" data-preview-device="${key}" aria-pressed="false">${label}</button>`).join("")}</div>
-      <button type="button" class="btn small ghost job-preview-layout" id="job-preview-layout" title="Show the preview beside the job or under it">${previewLayout() === "split" ? "Stacked" : "Side by side"}</button>
-      <a class="btn small ghost" id="job-preview-open" href="${esc(shown.url)}" target="_blank" rel="noopener">Open ↗</a>` : ""}
     </div>
     <div class="card-b stack gap-12">
-      ${shown ? `<div class="job-preview-frame" id="job-preview-frame" data-device="desktop">
-        <iframe title="Preview of ${esc(p.branch)}" src="${esc(shown.url)}" loading="lazy" referrerpolicy="no-referrer"></iframe>
-        <div class="job-preview-pins" id="job-preview-pins" hidden><span class="job-preview-hint">Click where the problem is</span></div>
+      ${shown ? `<div class="preview-bar">
+        <button type="button" class="btn small ghost preview-refresh" id="preview-refresh" title="Reload the page${liveRun ? ". Shift-click restarts the dev server" : ""}" aria-label="Reload the page"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+        <form class="preview-path" id="preview-path-form"><label class="sr-only" for="preview-path">Page</label>
+          <input id="preview-path" name="path" class="mono" value="/" autocomplete="off" spellcheck="false" placeholder="/ (type a path, Enter to go)"></form>
+        <div class="row gap-4 job-preview-devices" role="group" aria-label="Screen size">
+          ${PREVIEW_DEVICES.map(([key, label]) => `<button type="button" class="btn small" data-preview-device="${key}" aria-pressed="false">${label}</button>`).join("")}</div>
+        <a class="btn small ghost" id="job-preview-open" href="${esc(shown.url)}" target="_blank" rel="noopener">Open ↗</a>
+      </div>` : ""}
+      <div class="job-preview-frame" id="job-preview-frame" data-device="desktop">
+        ${shown ? `<iframe title="Preview of ${esc(p.branch)}" src="${esc(shown.url)}" data-kind="${shown.kind}" loading="lazy" referrerpolicy="no-referrer"></iframe>
+        <div class="job-preview-pins" id="job-preview-pins" hidden><span class="job-preview-hint">Click where the problem is</span></div>` : ""}
+        <div class="preview-overlay" id="preview-overlay"${overlay ? "" : " hidden"}>${overlay}</div>
       </div>
-      <div class="job-preview-problems stack gap-8" id="job-preview-problems" hidden>
+      ${shown ? `<div class="job-preview-problems stack gap-8" id="job-preview-problems" hidden>
         <div class="row gap-8 align-center wrap">
           <strong class="job-preview-problems-count" id="job-preview-problems-count" aria-live="polite"></strong>
           <button type="button" class="btn small go" id="job-preview-fix">Fix with AI</button>
@@ -3551,24 +3833,29 @@ function jobPreviewCard(p, runs) {
         </div>
         <details><summary class="t-secondary">Show them</summary><ul class="job-preview-problem-list mono t-secondary" id="job-preview-problem-list"></ul></details>
       </div>
-      <form class="job-preview-ask row gap-8" id="job-preview-ask">
-        <label class="field"><span class="sr-only">Describe a change</span><textarea name="text" rows="2" required placeholder="Describe a change… (Enter sends, Shift+Enter for a new line)"></textarea></label>
-        <button type="submit" class="btn go">Send</button>
-      </form>
       <div class="job-preview-pickbar row gap-8 align-center wrap" id="job-preview-pickbar" hidden>
         <span class="t-secondary" id="job-preview-picked" aria-live="polite"></span>
-        <button type="button" class="btn small go" id="job-preview-describe" disabled>Describe the change</button>
+        <button type="button" class="btn small go" id="job-preview-describe" disabled>Add to message</button>
       </div>
-      <p class="muted t-secondary" id="job-preview-caption">${liveFirst ? `Live from ${onThisComputer ? "this computer" : "the computer running Orchestrator (open this page there to see it)"}: changes show up as they're saved.` : `Link at ${esc(hosted.commit || "")}, ${esc(ago(hosted.at))}${p.hosted_current ? "" : ". The branch has newer commits: publish again to see them"}.`} If the frame stays blank, the site doesn't allow being shown inside another page: use Open ↗.</p>`
-      : `<p class="muted t-secondary">See <strong class="mono">${esc(p.branch)}</strong> running: live on this computer as the AI works, or on a link to share.</p>`}
+      <form class="job-preview-ask" id="job-preview-ask">
+        <div class="preview-chips" id="preview-chips" hidden></div>
+        <label class="field"><span class="sr-only">Describe a change</span><textarea name="text" rows="2" required placeholder="Describe a change… (Enter sends, Shift+Enter for a new line)"></textarea></label>
+        <div class="clarify-reply-actions">
+          <div class="row gap-8 align-center wrap">
+            <button type="button" class="btn small" id="job-preview-point" aria-pressed="false">Point out a problem</button>
+            <small class="hint-text">Becomes a new job, planned straight away. You stay here.</small>
+          </div>
+          <button type="submit" class="btn go">Send</button>
+        </div>
+      </form>
+      <p class="muted t-secondary" id="job-preview-caption">${liveFirst ? `Live from ${onThisComputer ? "this computer" : "the computer running Orchestrator (open this page there to see it)"}: changes show up as they're saved.` : `Link at ${esc(hosted.commit || "")}, ${esc(ago(hosted.at))}${p.hosted_current ? "" : ". The branch has newer commits: publish again to see them"}.`} If the frame stays blank, the site doesn't allow being shown inside another page: use Open ↗.</p>` : ""}
       <div class="row gap-8 align-center wrap">
         ${liveRun ? `<button type="button" class="btn small danger" id="job-preview-stop" data-run="${esc(liveRun.id)}">Stop live preview</button>`
-          : `<button type="button" class="btn small ${shown ? "" : "go"}" id="job-preview-live"${p.branch_exists ? "" : ` disabled title="${esc(p.branch)} is made when the AI starts building"`}>Start live preview</button>`}
-        ${owner && !p.gaps.length ? `<button type="button" class="btn small ${shown ? "" : "go"}" id="job-preview-publish"${publishing ? " disabled" : ""}>${publishing ? "Publishing…" : hosted ? (p.hosted_current ? "Publish link again" : "Update link") : "Publish link"}</button>` : ""}
+          : shown ? `<button type="button" class="btn small" data-preview-do="start"${p.branch_exists ? "" : " disabled"}>Start live preview</button>` : ""}
+        ${owner && !p.gaps.length ? `<button type="button" class="btn small" id="job-preview-publish"${publishing ? " disabled" : ""}>${publishing ? "Publishing…" : hosted ? (p.hosted_current ? "Publish link again" : "Update link") : "Publish link"}</button>` : ""}
         ${hosted ? `<button type="button" class="btn small ghost" data-setup-copy="${esc(hosted.url)}">Copy link</button>` : ""}
-        ${shown ? `<button type="button" class="btn small" id="job-preview-point" aria-pressed="false">Point out a problem</button>` : ""}
       </div>
-      ${onThisComputer ? `<label class="yolo-switch" title="Remembered on this browser."><input type="checkbox" role="switch" id="job-preview-autostart"${previewAutoStart() ? " checked" : ""}><span>Start the live preview when I open a job</span></label>` : ""}
+      ${onThisComputer ? `<label class="yolo-switch" title="Remembered on this browser."><input type="checkbox" role="switch" id="job-preview-autostart"${previewAutoStart() ? " checked" : ""}><span>Start the live preview when I open Home</span></label>` : ""}
       ${p.gaps.length ? `<p class="muted t-secondary">To publish a link: ${p.gaps.map(esc).join(" ")}</p>` : owner ? `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its preview link without asking."><input type="checkbox" role="switch" id="job-preview-auto"${p.auto ? " checked" : ""}><span>Publish a link when a job is ready for review</span></label>` : ""}
     </div>
   </section>`;
@@ -3581,61 +3868,116 @@ async function setAutoPreview(e) {
   } catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); }
 }
 
-function wireJobPreview(view, id) {
+function wirePreview(view) {
   const card = view.querySelector("#job-preview");
   if (!card) return;
   const branch = card.dataset.branch;
   const frame = card.querySelector("iframe");
+  const box = card.querySelector("#job-preview-frame");
+  const overlay = card.querySelector("#preview-overlay");
+  const openLink = card.querySelector("#job-preview-open");
+  const pathInput = card.querySelector("#preview-path");
+  const hosted = Boolean(card.querySelector('[data-setup-copy]'));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let base = frame?.src || "";
+  let stalledShown = false; // shown once per page visit, so Dismiss keeps it away
+
+  const showOverlay = (kind, opts = {}) => {
+    if (!overlay) return;
+    overlay.innerHTML = previewOverlayHtml(kind, { branch, hosted, ...opts });
+    overlay.hidden = !overlay.innerHTML;
+  };
+
+  // Which page: the helper on the live preview reports where the app has navigated to; typing a path goes there.
+  const go = (path) => {
+    if (!frame || !base) return;
+    let url;
+    try { url = new URL(path || "/", base); } catch { toast("That isn't a page path.", true); return; }
+    if (url.origin !== new URL(base).origin) { toast("Only pages of this preview can be shown here. Use Open ↗ for other sites.", "warning"); return; }
+    frame.src = url.href;
+  };
+  card.querySelector("#preview-path-form")?.addEventListener("submit", (e) => { e.preventDefault(); go(pathInput.value.trim()); });
+
   card.querySelectorAll("[data-preview-tab]").forEach((tab) => tab.addEventListener("click", () => {
     card.querySelectorAll("[data-preview-tab]").forEach((t) => { t.classList.toggle("on", t === tab); t.setAttribute("aria-pressed", String(t === tab)); });
-    frame.src = tab.dataset.url;
-    card.querySelector("#job-preview-open").href = tab.dataset.url;
+    base = tab.dataset.url;
+    frame.src = base;
+    frame.dataset.kind = tab.dataset.previewTab;
+    if (pathInput) pathInput.value = "/";
+    if (openLink) openLink.href = base;
   }));
   card.querySelector("[data-setup-copy]")?.addEventListener("click", async (e) => {
     try { await navigator.clipboard.writeText(e.target.dataset.setupCopy); toast("Link copied"); } catch { toast("Couldn't copy the link", true); }
   });
-  card.querySelector("#job-preview-publish")?.addEventListener("click", () => runAction("web_preview", { branch, job: id, title: `Preview link · ${branch}` }));
+  card.querySelector("#job-preview-publish")?.addEventListener("click", () => runAction("web_preview", { branch, title: `Preview link · ${branch}` }));
   card.querySelector("#job-preview-auto")?.addEventListener("change", setAutoPreview);
+
+  // Starting, stopping and restarting the dev server. While it starts, the frame says so; if it stops before it's ready,
+  // the frame says that too, with its log and Try again.
+  const waitForLive = async (runId) => {
+    for (let i = 0; i < 300 && card.isConnected; i++) {
+      await wait(1500);
+      let d;
+      try { d = await Promise.all([api("preview"), api("runs")]); } catch { continue; }
+      if (d[0].preview?.live) { PREVIEW_FAILED.delete(branch); route(); return; }
+      const mine = (d[1].runs || []).find((r) => r.id === runId);
+      if (mine && !mine.running) { if (!PREVIEW_STOPPED.has(runId)) PREVIEW_FAILED.set(branch, runId); route(); return; }
+    }
+  };
+  const startLive = async () => {
+    PREVIEW_FAILED.delete(branch);
+    showOverlay("starting");
+    let run;
+    try { ({ run } = await api("runs", { method: "POST", body: { action: "dev_preview", params: { branch }, ...terminalSize() } })); }
+    catch (err) { toast(err.message, true); route(); return; }
+    showOverlay("starting", { run: run.id });
+    waitForLive(run.id);
+  };
+  const stopLive = async (runId) => {
+    PREVIEW_STOPPED.add(runId);
+    await api(`runs/${encodeURIComponent(runId)}/stop`, { method: "POST", body: {} });
+    for (let i = 0; i < 20; i++) { // let it free its port before starting another
+      const { runs } = await api("runs").catch(() => ({ runs: [] }));
+      if (!runs.some((r) => r.id === runId && r.running)) return;
+      await wait(500);
+    }
+  };
+  const restartLive = async () => {
+    const runId = card.querySelector("#job-preview-stop")?.dataset.run;
+    showOverlay("starting");
+    try { if (runId) await stopLive(runId); } catch (err) { toast(err.message, true); }
+    startLive();
+  };
+  card.addEventListener("click", (e) => {
+    const what = e.target.closest("[data-preview-do]")?.dataset.previewDo;
+    if (what === "start") startLive();
+    else if (what === "restart") restartLive();
+    else if (what === "dismiss") { overlay.hidden = true; stalledShown = true; }
+  });
   card.querySelector("#job-preview-stop")?.addEventListener("click", async (e) => {
     e.target.disabled = true;
-    try { await api(`runs/${encodeURIComponent(e.target.dataset.run)}/stop`, { method: "POST", body: {} }); toast("Live preview stopped"); }
+    try { await stopLive(e.target.dataset.run); toast("Live preview stopped"); }
     catch (err) { toast(err.message, true); }
     route();
   });
-  card.querySelector("#job-preview-live")?.addEventListener("click", async (e) => {
-    const btn = e.target;
-    btn.disabled = true;
-    btn.textContent = "Starting…";
-    let run;
-    try { ({ run } = await api("runs", { method: "POST", body: { action: "dev_preview", params: { branch, job: id }, ...terminalSize() } })); }
-    catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = "Start live preview"; return; }
-    // Installing packages the first time can take a few minutes; the page shows the preview once the server prints its address.
-    for (let i = 0; i < 300 && card.isConnected; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      let d;
-      try { d = await api(`jobs/${encodeURIComponent(id)}`); } catch { continue; }
-      if (d.preview?.live) { route(); return; }
-      const mine = (d.runs || []).find((r) => r.id === run.id);
-      if (mine && !mine.running) {
-        toast("The live preview stopped before it started", true, { label: "Details", href: `#/runs/${run.id}` });
-        route();
-        return;
-      }
-    }
+  card.querySelector("#preview-refresh")?.addEventListener("click", (e) => {
+    if (e.shiftKey && card.querySelector("#job-preview-stop")) { restartLive(); return; }
+    go(pathInput?.value.trim() || "/");
   });
+  if (card.dataset.starting) waitForLive(card.dataset.starting);
 
   card.querySelector("#job-preview-autostart")?.addEventListener("change", (e) => {
     try { localStorage.setItem("orchestrator.previewAutoStart", e.target.checked ? "on" : "off"); } catch { /* storage blocked */ }
-    toast(e.target.checked ? "Opening a web job starts its live preview" : "Live previews start only when you ask");
+    toast(e.target.checked ? "Opening Home starts the live preview" : "Live previews start only when you ask");
   });
-  const liveStart = card.querySelector("#job-preview-live");
-  if (liveStart && !liveStart.disabled && card.dataset.autostart && previewAutoStart() && !PREVIEW_AUTOSTARTED.has(branch)) {
+  // A preview already running counts as started this visit, so stopping it (or it stopping) doesn't start another.
+  if (card.querySelector("#job-preview-stop")) PREVIEW_AUTOSTARTED.add(branch);
+  if (card.dataset.autostart && previewAutoStart() && !PREVIEW_AUTOSTARTED.has(branch)) {
     PREVIEW_AUTOSTARTED.add(branch);
-    liveStart.click();
+    startLive();
   }
 
   // Screen size: the frame narrows to a tablet's or a phone's width. Remembered on this browser.
-  const box = card.querySelector("#job-preview-frame");
   const setDevice = (key) => {
     if (!box) return;
     box.dataset.device = key;
@@ -3649,40 +3991,63 @@ function wireJobPreview(view, id) {
     try { localStorage.setItem("orchestrator.previewDevice", b.dataset.previewDevice); } catch { /* storage blocked */ }
   }));
 
-  // Point out a problem. On the live preview, the helper script added to the page (preview-helper.js) lets you pick
-  // elements: the AI is told exactly what you picked and gets a screenshot of it. On a published link the page can't be
-  // reached from here, so a pin on top of the frame marks the spot instead.
+  if (!frame) return;
+
+  // What you point at is attached to the message as a chip, like Lovable's: picked elements (with a screenshot) on the
+  // live preview, where the helper script can reach the page, or a pin on the published link, where it can't. You then
+  // say what should change, and Send makes it a job without leaving the page.
   const point = card.querySelector("#job-preview-point");
   const pins = card.querySelector("#job-preview-pins");
   const pickbar = card.querySelector("#job-preview-pickbar");
   const pickedLabel = card.querySelector("#job-preview-picked");
   const describeBtn = card.querySelector("#job-preview-describe");
-  let helper = false, picking = false, picked = [], shotWaiting = null;
+  const ask = card.querySelector("#job-preview-ask");
+  const chipsBox = card.querySelector("#preview-chips");
+  let helper = false, picking = false, picked = [], shotWaiting = null, attached = [], stalledTimer = null;
+  const renderChips = () => {
+    chipsBox.hidden = !attached.length;
+    chipsBox.innerHTML = attached.map((a, i) => `<span class="preview-chip">${a.image ? `<img src="${esc(a.image)}" alt="">` : ""}<span>${esc(a.label)}</span>
+      <button type="button" class="preview-chip-x" data-chip-remove="${i}" aria-label="Remove ${esc(a.label)}">×</button></span>`).join("");
+  };
+  chipsBox.addEventListener("click", (e) => {
+    const i = e.target.closest("[data-chip-remove]")?.dataset.chipRemove;
+    if (i !== undefined) { attached.splice(Number(i), 1); renderChips(); }
+  });
+
   // Problems the helper saw on the live page (errors, failed requests…), listed under the frame to send to the AI.
   let problems = [];
   const problemsBox = card.querySelector("#job-preview-problems");
   const showProblems = () => {
-    if (!problemsBox) return;
     problemsBox.hidden = !problems.length;
     const total = problems.reduce((n, x) => n + (x.count || 1), 0);
     card.querySelector("#job-preview-problems-count").textContent = `⚠ ${plural(problems.length, "problem")} on this page${total > problems.length ? ` (${total} times)` : ""}`;
     card.querySelector("#job-preview-problem-list").innerHTML = problems.map((x) =>
       `<li><strong>${esc(PROBLEM_LABELS[x.kind] || x.kind)}</strong>${x.count > 1 ? ` ×${x.count}` : ""}: ${esc(x.message)}</li>`).join("");
   };
-  const tell = (message) => frame?.contentWindow?.postMessage({ source: "orchestrator", ...message }, "*");
+  const tell = (message) => frame.contentWindow?.postMessage({ source: "orchestrator", ...message }, "*");
   const pickHint = "Click an element on the page. Hold ⌘ or Shift to pick more. Esc cancels.";
   const stopPicking = () => {
     picking = false;
     picked = [];
     tell({ type: "pick", on: false });
-    if (pickbar) pickbar.hidden = true;
-    if (point) { point.setAttribute("aria-pressed", "false"); point.textContent = "Point out a problem"; }
+    pickbar.hidden = true;
+    pins.hidden = true;
+    point.setAttribute("aria-pressed", "false");
+    point.textContent = "Point out a problem";
   };
   const onMessage = (e) => {
     if (!card.isConnected) { window.removeEventListener("message", onMessage); return; }
-    if (!frame || e.source !== frame.contentWindow || e.data?.source !== "orchestrator-preview") return;
+    if (e.source !== frame.contentWindow || e.data?.source !== "orchestrator-preview") return;
     const { type } = e.data;
-    if (type === "ready") helper = true;
+    if (type === "ready") {
+      helper = true;
+      clearTimeout(stalledTimer);
+      if (stalledShown && !overlay.hidden && overlay.querySelector('[data-preview-do="restart"]')) overlay.hidden = true;
+    }
+    else if (type === "location" && typeof e.data.path === "string") {
+      if (pathInput && document.activeElement !== pathInput) pathInput.value = e.data.path;
+      try { if (openLink) openLink.href = new URL(e.data.path, base).href; } catch { /* keep the old one */ }
+    }
     else if (type === "problems") { problems = Array.isArray(e.data.problems) ? e.data.problems.slice(-50) : []; showProblems(); }
     else if (type === "problem" && e.data.problem?.message) {
       const x = e.data.problem;
@@ -3698,47 +4063,55 @@ function wireJobPreview(view, id) {
     else if (type === "shot" && shotWaiting) { shotWaiting(e.data.image || null); shotWaiting = null; }
   };
   window.addEventListener("message", onMessage);
-  frame?.addEventListener("load", () => { helper = false; problems = []; showProblems(); if (picking) stopPicking(); tell({ type: "hello" }); });
+  // Every page of the live preview carries the helper, which says it's ready. A page that loads without it is the proxy's
+  // error page: the dev server stopped or crashed.
+  frame.addEventListener("load", () => {
+    helper = false; problems = []; showProblems(); if (picking) stopPicking(); tell({ type: "hello" });
+    clearTimeout(stalledTimer);
+    if (frame.dataset.kind === "live" && !stalledShown) stalledTimer = setTimeout(() => {
+      if (!helper && card.isConnected && overlay.hidden) { stalledShown = true; showOverlay("stalled"); }
+    }, 8000);
+  });
 
-  const sendFeedback = (text, feedback) => {
-    const busy = (state.runs || []).some((r) => r.running && (r.job === id) && !SIDE_RUNS.has(r.action));
-    if (busy) { // the AI is working on this job: the problem becomes a job of its own
-      location.hash = `#/new?type=quick&summary=${encodeURIComponent(text.slice(0, 80))}&spec=${encodeURIComponent(feedback)}`;
-      return;
-    }
-    runAction("debug", { job: id, feedback }, { skipConfirm: true });
+  const where = () => (frame.dataset.kind === "live" ? "live" : "published");
+  const context = () => `${where()} preview of ${branch} (${pathInput?.value || "/"} at ${box.dataset.device || "desktop"} width)`;
+  // A new quick job, made here: its first line is what the person asked, so that's its title.
+  const sendBtn = ask.querySelector('button[type="submit"]');
+  const createJob = async (summary) => {
+    sendBtn.disabled = true;
+    try {
+      const { run } = await api("runs", { method: "POST", body: { action: "new_job", params: { type: "quick", summary, branch_mode: "current" }, ...terminalSize() } });
+      toast("Sent. It's a new job now, being planned.", false, { label: "Follow it", href: `#/runs/${encodeURIComponent(run.id)}` });
+      refreshState().catch(() => {});
+      return true;
+    } catch (err) { toast(err.message, true); return false; }
+    finally { sendBtn.disabled = false; }
   };
 
-  card.querySelector("#job-preview-layout")?.addEventListener("click", () => {
-    try { localStorage.setItem("orchestrator.previewLayout", previewLayout() === "split" ? "stacked" : "split"); } catch { /* storage blocked */ }
-    route();
-  });
-  const ask = card.querySelector("#job-preview-ask");
-  ask?.text.addEventListener("keydown", (e) => {
+  ask.text.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask.requestSubmit(); }
   });
-  ask?.addEventListener("submit", (e) => {
+  ask.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = ask.text.value.trim();
     if (!text) return;
-    const where = card.querySelector(".on[data-preview-tab]")?.dataset.previewTab || (frame.src.startsWith("http://") ? "live" : "link");
-    ask.text.value = "";
-    sendFeedback(text, `Looking at the ${where === "live" ? "live" : "published"} preview of ${branch} (${frame.src}, ${box?.dataset.device || "desktop"} width): ${text}`);
+    const points = attached.length ? `\n\nWhat they pointed at:\n${attached.map((a, i) => `${i + 1}. ${a.detail}`).join("\n")}` : "";
+    if (await createJob(`${text}\n\nSeen on the ${context()}.${points}`)) {
+      ask.text.value = "";
+      attached = [];
+      renderChips();
+    }
   });
-  card.querySelector("#job-preview-clear")?.addEventListener("click", () => { problems = []; tell({ type: "clear" }); showProblems(); });
-  card.querySelector("#job-preview-fix")?.addEventListener("click", () => {
+  card.querySelector("#job-preview-clear").addEventListener("click", () => { problems = []; tell({ type: "clear" }); showProblems(); });
+  card.querySelector("#job-preview-fix").addEventListener("click", async () => {
     if (!problems.length) return;
     const lines = problems.map((x, i) => `${i + 1}. ${PROBLEM_LABELS[x.kind] || x.kind}${x.count > 1 ? ` (${x.count} times)` : ""} on ${x.page}: ${x.message}${x.stack ? `\n   ${x.stack.split("\n").slice(0, 6).join("\n   ")}` : ""}`);
-    const feedback = `These errors on the live preview of ${branch} (${box?.dataset.device || "desktop"} width) need fixing. Find the cause of each and fix it; don't just hide the message.\n${lines.join("\n")}`;
-    const summary = `Fix ${plural(problems.length, "error")} on the preview`;
-    problems = [];
-    tell({ type: "clear" });
-    showProblems();
-    sendFeedback(summary, feedback);
+    const summary = `Fix ${plural(problems.length, "error")} on the preview\n\nThese errors on the live preview of ${branch} (${box.dataset.device || "desktop"} width) need fixing. Find the cause of each and fix it; don't just hide the message.\n${lines.join("\n")}`;
+    if (await createJob(summary)) { problems = []; tell({ type: "clear" }); showProblems(); }
   });
 
-  point?.addEventListener("click", () => {
-    if (picking || !pins.hidden) { stopPicking(); pins.hidden = true; return; }
+  point.addEventListener("click", () => {
+    if (picking || !pins.hidden) { stopPicking(); return; }
     point.setAttribute("aria-pressed", "true");
     point.textContent = "Cancel";
     if (helper) {
@@ -3751,43 +4124,32 @@ function wireJobPreview(view, id) {
     } else pins.hidden = false;
   });
 
-  describeBtn?.addEventListener("click", async () => {
+  describeBtn.addEventListener("click", async () => {
     describeBtn.disabled = true;
     describeBtn.textContent = "Taking a screenshot…";
     const image = await new Promise((resolve) => { shotWaiting = resolve; tell({ type: "shot" }); setTimeout(() => { if (shotWaiting === resolve) { shotWaiting = null; resolve(null); } }, 10000); });
     let shotPath = "";
-    if (image) { try { ({ path: shotPath } = await api(`jobs/${encodeURIComponent(id)}/preview-shot`, { method: "POST", body: { image } })); } catch { /* sent without it */ } }
-    describeBtn.textContent = "Describe the change";
+    if (image) { try { ({ path: shotPath } = await api("previews/shot", { method: "POST", body: { image } })); } catch { /* sent without it */ } }
+    describeBtn.textContent = "Add to message";
     const chosen = picked.slice();
-    const describe = (el) => `<${el.tag}>${el.text ? ` "${el.text.slice(0, 60)}"` : ""}`;
-    const values = await formDialog("What should change?", `
-      ${image ? `<img class="job-preview-shot" src="${esc(image)}" alt="Screenshot of what you picked">` : ""}
-      <ul class="job-preview-chosen t-secondary">${chosen.map((el) => `<li><code>${esc(describe(el))}</code></li>`).join("")}</ul>
-      <label class="field"><span>What you see, and what it should do</span><textarea name="text" rows="4" required placeholder="Make this button larger and green"></textarea></label>`, "Send to the AI", { compact: true });
     stopPicking();
-    if (!values?.text?.trim()) return;
-    const lines = chosen.map((el, i) => `${i + 1}. ${describe(el)}, selector \`${el.selector}\`${Object.keys(el.attrs || {}).length ? `, ${Object.entries(el.attrs).map(([k, v]) => `${k}="${v}"`).join(" ")}` : ""}, ${el.size} px, on ${el.page}`);
-    const feedback = `On the live preview of ${branch} (${(box?.dataset.device || "desktop")} width), the person picked ${plural(chosen.length, "element")}:\n${lines.join("\n")}\n${shotPath ? `Screenshot of them: ${shotPath}\n` : ""}What they want: ${values.text.trim()}`;
-    sendFeedback(values.text.trim(), feedback);
+    if (!chosen.length) return;
+    const describe = (el) => `<${el.tag}>${el.text ? ` "${el.text.slice(0, 60)}"` : ""}`;
+    const lines = chosen.map((el) => `${describe(el)}, selector \`${el.selector}\`${Object.keys(el.attrs || {}).length ? `, ${Object.entries(el.attrs).map(([k, v]) => `${k}="${v}"`).join(" ")}` : ""}, ${el.size} px, on ${el.page}`);
+    attached.push({ label: chosen.length === 1 ? describe(chosen[0]) : plural(chosen.length, "element"), image,
+      detail: `${lines.join("; ")}${shotPath ? `. Screenshot of them: ${shotPath}` : ""}` });
+    renderChips();
+    ask.text.focus();
   });
 
-  pins?.addEventListener("click", async (e) => {
+  pins.addEventListener("click", (e) => {
     const rect = pins.getBoundingClientRect();
     const x = Math.round(((e.clientX - rect.left) / rect.width) * 100), y = Math.round(((e.clientY - rect.top) / rect.height) * 100);
-    const pin = document.createElement("span");
-    pin.className = "job-preview-pin";
-    pin.style.left = `${x}%`;
-    pin.style.top = `${y}%`;
-    pins.append(pin);
-    const values = await formDialog("What's wrong here?", `<p class="muted t-secondary">At the pin, ${x}% across and ${y}% down what the frame shows.</p>
-      <label class="field"><span>What you see, and what it should do</span><textarea name="text" rows="4" required placeholder="The button overlaps the title on narrow screens"></textarea></label>`, "Send to the AI", { compact: true });
-    pin.remove();
-    pins.hidden = true;
     stopPicking();
-    if (!values?.text?.trim()) return;
-    const where = card.querySelector(".on[data-preview-tab]")?.dataset.previewTab || (frame.src.startsWith("http://") ? "live" : "link");
-    const feedback = `On the ${where === "live" ? "live" : "published"} preview of ${branch} (${frame.src}, ${box?.dataset.device || "desktop"} width), at about ${x}% across and ${y}% down the visible page (frame ${Math.round(rect.width)}×${Math.round(rect.height)} px): ${values.text.trim()}`;
-    sendFeedback(values.text.trim(), feedback);
+    attached.push({ label: `Spot ${x}% across, ${y}% down`,
+      detail: `the spot about ${x}% across and ${y}% down the visible page (frame ${Math.round(rect.width)}×${Math.round(rect.height)} px)` });
+    renderChips();
+    ask.text.focus();
   });
 }
 
@@ -4160,8 +4522,8 @@ pages.job = async ([id]) => {
       ? `<a class="ticket-chip" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(`${t.source}: ${t.title}`)}">${esc(t.ref || t.title)} ↗</a>`
       : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`}`).join("")}${isAutoImprove ? `<span class="sep">·</span><span class="prize-pill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Orchestrator Improvement</span>` : ""}${s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="sep">·</span><span class="accent">✓ Submitted for inclusion</span>` : ""}</span>`,
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
-    html: `<div class="job-layout${data.preview && (data.preview.live || data.preview.hosted) && previewLayout() === "split" ? " split" : ""}"><div class="job-top">
-      ${runs.filter((r) => r.running && r.action !== "dev_preview").map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
+    html: `<div class="job-layout"><div class="job-top">
+      ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
 
       ${isAutoImprove ? `
         <div class="banner info improve-banner mb-16 row align-center justify-between">
@@ -4214,9 +4576,11 @@ pages.job = async ([id]) => {
         <div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p class="question">${esc(s.question)}</p></div>
         <form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
           <label class="field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
-          <button type="submit" class="btn primary">Send</button>
-        </form>
-        <small class="hint-text">The plan is redone with your answer. You approve it before anything is built.</small></div></section>`
+          <div class="clarify-reply-actions">
+            <small class="hint-text">The plan is redone with your answer. You approve it before anything is built.</small>
+            <button type="submit" class="btn primary">Send</button>
+          </div>
+        </form></div></section>`
         : (job.clarification_history || []).length ? `<section class="card mb-16"><details class="fold"><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
           <div class="card-b stack">${clarificationThread(job.clarification_history)}</div></details></section>` : ""}
 
@@ -4230,8 +4594,6 @@ pages.job = async ([id]) => {
       </div>
 
       ${jobContextRail(s, data.context)}
-
-      ${jobPreviewCard(data.preview, runs)}
 
       <div class="job-body">
       <section class="card mb-16">
@@ -4405,7 +4767,6 @@ pages.job = async ([id]) => {
     after: () => {
       hydrateAuthImages(); // the UX and design check's screenshots
       wireImagePreviews(view);
-      wireJobPreview(view, id);
       const reply = view.querySelector("#clarify-reply");
       reply?.answer.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); reply.requestSubmit(); } });
       reply?.addEventListener("submit", (e) => {
@@ -9973,10 +10334,10 @@ function answersSlug(draft) {
 }
 
 pages.activity = async () => {
-  const running = state.runs.filter((r) => r.running);
-  const finished = state.runs.filter((r) => !r.running);
+  const running = state.runs.filter((r) => r.running && !isPreviewRun(r));
+  const finished = state.runs.filter((r) => !r.running && !isPreviewRun(r));
   // Runs from before Orchestrator last started are read back from their saved logs (owners only: logs are private).
-  const earlier = state.you?.role === "member" ? [] : ((await api("runs/history").catch(() => null))?.runs || []);
+  const earlier = state.you?.role === "member" ? [] : ((await api("runs/history").catch(() => null))?.runs || []).filter((r) => !isPreviewRun(r));
   const earlierRow = (r) => `<a class="item" href="#/runs/${encodeURIComponent(r.id)}">
     <div class="main-col"><div class="title">${esc(r.title)}</div><div class="meta">${esc(ago(r.started))}</div></div><div class="side"><span class="muted">Log</span></div></a>`;
   return {
@@ -11403,6 +11764,108 @@ async function finishRunStatus(run) {
   $("#term-input").hidden = true;
 }
 
+// ---------------------------------------------------------------- run timeline
+// A run's output as steps (run_timeline.py): a plain title each, how long it took, the model calls made during it, and its
+// own output to open. The terminal is still there, one tab over, for typing into a run that asks something.
+const RUN_STEP_ICONS = { plan: "i-sparkle", git: "i-branch", test: "i-flask", build: "i-hammer", review: "i-eye", model: "i-sparkle", code: "i-code", run: "i-terminal" };
+const secondsText = (s) => s == null ? "" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+
+function runStepEvent(e) {
+  if (e.status === "failed") return `<div class="run-step-event is-failed">${esc(e.model)} ${e.reason === "timed out" ? "timed out" : `failed${e.reason ? `: ${esc(e.reason)}` : ""}`}, so another model was tried</div>`;
+  return `<div class="run-step-event">${e.status === "running" ? `Asking ${esc(e.model)}` : `Asked ${esc(e.model)}`}${e.seconds != null ? ` · ${secondsText(e.seconds)}` : ""}</div>`;
+}
+
+function runStepHtml(step, open, lines) {
+  const running = step.status === "running";
+  const icon = RUN_STEP_ICONS[step.kind] || "i-terminal";
+  return `<li class="run-step is-${esc(step.status)}${open ? " is-open" : ""}" data-step="${step.id}">
+    <span class="run-step-icon" aria-hidden="true">${step.status === "failed" ? `<svg class="icon"><use href="#i-alert"/></svg>` : `<svg class="icon"><use href="#${icon}"/></svg>`}</span>
+    <div class="run-step-main">
+      <button type="button" class="run-step-head" data-step-toggle="${step.id}" aria-expanded="${open}"${step.lines ? "" : " disabled"}>
+        <span class="run-step-title">${esc(step.title)}${step.of ? ` <span class="run-step-of">${esc(step.of)}</span>` : ""}</span>
+        <span class="run-step-meta">${step.errors ? `<span class="run-step-errors">${plural(step.errors, "error")}</span>` : ""}${running ? runningMark : ""}${step.seconds != null ? `<span>${secondsText(step.seconds)}</span>` : ""}${step.lines ? `<svg class="icon run-step-chevron" aria-hidden="true"><use href="#i-chevron"/></svg>` : ""}</span>
+      </button>
+      ${step.events.map(runStepEvent).join("")}
+      ${running && step.last && !open ? `<div class="run-step-last">${esc(step.last)}</div>` : ""}
+      ${open ? `<pre class="run-step-output">${lines == null ? "Loading…" : esc(lines.join("\n")) || "No output."}</pre>` : ""}
+    </div>
+  </li>`;
+}
+
+// Follows the run: the steps every couple of seconds while it runs, and an open step's output with them.
+function wireRunTimeline(id, { saved = false } = {}) {
+  const box = $("#run-timeline");
+  if (!box) return;
+  const open = new Set();
+  const outputs = new Map();
+  let data = null, stopped = false, timer = null, autoOpened = false;
+  const draw = () => {
+    if (!data) return;
+    const steps = data.steps || [];
+    const total = steps.reduce((sum, s) => sum + (s.seconds || 0), 0);
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    box.innerHTML = steps.length ? `<div class="run-timeline-meta">${data.running ? `${runningMark}Running` : "Ran"}${total ? ` for ${secondsText(total)}` : ""} · ${plural(steps.length, "step")}</div>
+      <ol class="run-steps">${steps.map((s) => runStepHtml(s, open.has(s.id), outputs.get(s.id))).join("")}</ol>`
+      : `<div class="empty">${data.running ? "Starting…" : "This run printed nothing."}</div>`;
+    if (data.running && nearBottom) box.scrollTop = box.scrollHeight;
+  };
+  const loadLines = async (stepId) => {
+    try { outputs.set(stepId, (await api(`runs/${encodeURIComponent(id)}/timeline?step=${stepId}`)).lines || []); }
+    catch { outputs.set(stepId, []); }
+  };
+  const refresh = async () => {
+    if (stopped) return;
+    try { data = await api(`runs/${encodeURIComponent(id)}/timeline`); }
+    catch (e) {
+      if (!data) box.innerHTML = `<div class="notice">${e.status === 404 ? "The step-by-step view needs a newer Orchestrator on this computer. The Terminal tab has the full output." : esc(Errors.explain(e.message))}</div>`;
+      return;
+    }
+    if (!autoOpened && !data.running) { // a failed run opens the step it failed in
+      autoOpened = true;
+      const failed = (data.steps || []).find((s) => s.status === "failed");
+      if (failed?.lines) { open.add(failed.id); await loadLines(failed.id); }
+    }
+    const live = (data.steps || []).filter((s) => open.has(s.id) && (s.status === "running" || !outputs.has(s.id)));
+    await Promise.all(live.map((s) => loadLines(s.id)));
+    draw();
+    if (data.running && !saved) timer = setTimeout(refresh, 2000);
+  };
+  box.addEventListener("click", async (e) => {
+    const head = e.target.closest("[data-step-toggle]");
+    if (!head) return;
+    const stepId = Number(head.dataset.stepToggle);
+    if (open.has(stepId)) open.delete(stepId);
+    else { open.add(stepId); draw(); await loadLines(stepId); }
+    draw();
+  });
+  cleanup.push(() => { stopped = true; clearTimeout(timer); });
+  refresh();
+}
+
+// Timeline or Terminal. A run that's asking something goes to the Terminal, where it can be answered.
+function wireRunTabs(id) {
+  const tabs = $("#run-tabs");
+  if (!tabs) return;
+  const show = (name) => {
+    tabs.querySelectorAll("[data-run-tab]").forEach((b) => { const on = b.dataset.runTab === name; b.classList.toggle("on", on); b.setAttribute("aria-selected", String(on)); });
+    $("#run-timeline").hidden = name !== "timeline";
+    $("#term-wrap").hidden = name !== "terminal";
+    try { localStorage.setItem("orchestrator_run_tab", name); } catch { /* this visit only */ }
+  };
+  tabs.addEventListener("click", (e) => { const b = e.target.closest("[data-run-tab]"); if (b) show(b.dataset.runTab); });
+  let saved = "timeline";
+  try { saved = localStorage.getItem("orchestrator_run_tab") || "timeline"; } catch { /* default */ }
+  show(saved === "terminal" ? "terminal" : "timeline");
+  let askedBefore = false;
+  const watch = setInterval(() => {
+    const r = state.runs.find((x) => x.id === id);
+    if (r?.waiting && !askedBefore) { askedBefore = true; show("terminal"); toast("This run is asking something. Answer it in the terminal.", "info"); }
+    if (!r?.waiting) askedBefore = false;
+    if (r && !r.running) clearInterval(watch);
+  }, 1500);
+  cleanup.push(() => clearInterval(watch));
+}
+
 pages.run = async ([id]) => {
   let run = state.runs.find((r) => r.id === id);
   if (!run) { await refreshState(); run = state.runs.find((r) => r.id === id); } // opened before the list caught up
@@ -11451,7 +11914,12 @@ pages.run = async ([id]) => {
     ...runHeader(run),
     html: `
       <div id="next-step">${runStatus(run, vc)}</div>
-      <div class="term-wrap" id="term-wrap">
+      <div class="run-tabs" id="run-tabs" role="tablist" aria-label="How to show the run">
+        <button type="button" class="on" role="tab" aria-selected="true" data-run-tab="timeline"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-checklist"/></svg>Timeline</button>
+        <button type="button" role="tab" aria-selected="false" data-run-tab="terminal"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-terminal"/></svg>Terminal</button>
+      </div>
+      <section class="run-timeline" id="run-timeline" aria-label="Steps" aria-live="polite"></section>
+      <div class="term-wrap" id="term-wrap" hidden>
         <div class="term" id="term"></div>
         <div class="keybar" id="keybar" aria-label="Terminal keys" ${run.running ? "" : "hidden"}>${KEYS.map(([label], i) => `<button class="btn small" data-key="${i}">${esc(label)}</button>`).join("")}</div>
         <form class="term-input" id="term-input" ${run.running ? "" : "hidden"}>
@@ -11460,6 +11928,8 @@ pages.run = async ([id]) => {
         </form>
       </div>`,
     after: () => {
+      wireRunTabs(id);
+      wireRunTimeline(id, { saved: Boolean(run.is_saved) });
       if (run.is_saved && run.saved_log_text) {
         attachSavedTerminal(run.saved_log_text, run.exit_code !== 0);
         wireRunGuidance($("#next-step"));
@@ -12001,7 +12471,7 @@ async function route() {
   if (r.page === "connect" || r.page === "computers") { // the hosted app's account screens
     if (!Account.active()) { location.hash = "#/"; return; }
     if (r.page === "connect") Account.pendingCode();
-    if (!window.firebase?.auth?.().currentUser) return showSignInGate(r.page === "connect" ? "Sign in to add your computer to your account." : "");
+    if (!window.firebase?.auth?.().currentUser) return showSignInGate(r.page === "connect" ? "Sign in to add your computer to your account." : "", "info");
     return openAccount({ list: r.page === "computers" });
   }
   trackNavigation();
