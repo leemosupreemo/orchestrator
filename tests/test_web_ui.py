@@ -1130,6 +1130,23 @@ class TunnelKeeperTests(unittest.TestCase):
 
 
 class AccountUiTests(unittest.TestCase):
+    def test_offline_managed_computers_do_not_show_stale_connection_progress(self):
+        result = self.run_account_script("""
+const A = globalThis.Account;
+const base = {id: 'mac', name: 'Mac', api_version: 4, online: false, reachable: false,
+  last_seen: 100, updatable: true};
+process.stdout.write(JSON.stringify([false, true].flatMap(pending =>
+  ['checking', 'repairing', 'connected', 'needs_setup', 'failed', ''].map(state =>
+    A.renderMachines([{...base, connection_command_pending: pending, connection: {state, detail: 'Stale connection detail',
+      setup_url: 'https://login.tailscale.com/f/funnel?node=abc'}}], {now: 7300})))));
+""")
+        for rendered in result:
+            self.assertRegex(rendered, r'class="account-status [^"]*"[^>]*>Offline</span>')
+            self.assertIn('last seen 2 h ago', rendered.lower())
+            self.assertIn('Wake this Mac', rendered)
+            for stale in ('>Checking<', '>Repairing<', '>Connected<', 'Stale connection detail', 'Enable Funnel', 'Repair requested'):
+                self.assertNotIn(stale, rendered)
+
     def test_mac_setup_requires_a_complete_https_release_and_preserves_pairing(self):
         result = self.run_account_script("""
 const A = globalThis.Account;

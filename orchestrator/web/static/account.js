@@ -287,8 +287,16 @@
     return labels[machine.connection?.state] || "";
   }
 
-  function renderConnectionProgress(machine) {
+  function renderConnectionProgress(machine, now) {
     if ((machine.api_version || 0) < 4) return "";
+    // Connection progress is the last heartbeat's report, not a live check. Once that heartbeat
+    // expires, old setup links and checking/repairing details must not imply work is still happening.
+    if (!machine.online) return `<div class="account-connection-progress">
+      <p class="muted account-machine-meta">${machine.last_seen ? `Last seen ${ago(machine.last_seen, now)}.` : "This computer hasn't reported yet."}</p>
+      <p class="muted account-machine-meta">${machine.updatable
+        ? "Wake this Mac and open Orchestrator from Applications. Keep it running to use it from here."
+        : "Start <code>orchestrator ui --tunnel</code> on this computer and keep it running."}</p>
+    </div>`;
     const connection = machine.connection || {};
     const setupURL = safeFunnelSetupURL(connection.setup_url);
     const detail = typeof connection.detail === "string" ? connection.detail.slice(0, 400) : "";
@@ -330,7 +338,7 @@
     const rows = list.map((m) => {
       const managed = (m.api_version || 0) >= 4;
       const failed = troubleshoot?.machine?.id === m.id;
-      const status = managed ? (m.connection_command_pending ? "Repair requested"
+      const status = managed ? (!m.online ? "Offline" : m.connection_command_pending ? "Repair requested"
         : failed && !["checking", "repairing", "needs_setup"].includes(m.connection?.state) ? "Connection unavailable"
         : connectionStatus(m) || (m.reachable ? "Connected" : "Checking"))
         : failed ? "Web connection unavailable" : m.reachable ? "Running" : m.online ? "Connecting" : "Offline";
@@ -349,7 +357,7 @@
           <span class="account-status ${tone}" title="${failed ? "This browser could not reach Orchestrator’s web connection. Other connections, such as SSH, may still work." : "Reported by this computer. Open checks the connection from your browser."}">${status}</span>
         </div>
         <p class="muted account-machine-meta">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command", m.has_snapshot && m.snapshot_synced_at && `Snapshot cached ${ago(m.snapshot_synced_at, now)}`].filter(Boolean).join(" · "))}</p>
-        ${renderConnectionProgress(m)}
+        ${renderConnectionProgress(m, now)}
         ${failed ? `<p class="account-connection-error" role="alert">${m.online ? "Orchestrator is running, but this browser couldn’t reach its web connection." : "This browser couldn’t reach Orchestrator’s web connection."}</p>` : ""}
         ${progress && m.update_state !== "current" ? `<p class="muted account-update">${escapeHtml(progress)}</p>` : ""}
         <div class="account-machine-actions">
