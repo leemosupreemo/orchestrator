@@ -117,6 +117,38 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("no project", str(caught.exception))
         self.assertFalse((self.home / "LaunchAgents").exists())  # nothing half-installed
 
+    def test_service_falls_back_when_active_project_has_no_configuration(self):
+        self.state.mkdir(parents=True)
+        (self.state / 'projects.json').write_text(json.dumps({'version': 1, 'active': 'Unconfigured', 'projects': [
+            {'name': 'Demo', 'root': str(self.project)},
+        ]}))
+        with patch.object(service, 'active_project_root', return_value=self.home / 'unconfigured'):
+            self.assertEqual(service.service_project(self.spec().workdir), self.project.resolve())
+
+    def test_background_ui_can_start_after_active_project_configuration_is_removed(self):
+        from orchestrator.web import server
+        workdir = self.spec().workdir
+        workdir.mkdir(parents=True)
+        with patch.object(Path, 'cwd', return_value=workdir), \
+             patch.object(server, 'find_project_root', return_value=self.home / 'unconfigured'), \
+             patch.object(server, '_serve', return_value=0) as serve:
+            self.assertEqual(server.main(['--no-open']), 0)
+        self.assertEqual(serve.call_args.args[1], self.project)
+
+    def test_background_ui_does_not_replace_an_explicit_project(self):
+        from orchestrator.web import server
+        workdir = self.spec().workdir
+        workdir.mkdir(parents=True)
+        (workdir.parent / 'projects.json').write_text(json.dumps({'version': 1, 'active': 'Demo', 'projects': [
+            {'name': 'Demo', 'root': str(self.project)},
+        ]}))
+        missing = self.home / 'unconfigured'
+        with patch.object(Path, 'cwd', return_value=workdir), \
+             patch.dict(os.environ, {'ORCHESTRATOR_PROJECT_ROOT': str(missing)}), \
+             patch.object(server, '_serve') as serve:
+            self.assertEqual(server.main(['--no-open']), 1)
+        serve.assert_not_called()
+
     def test_a_failing_launchctl_is_reported(self):
         run = FakeRun({"launchctl bootstrap": CompletedProcess([], 5, "", "Bootstrap failed: 5: Input/output error")})
         with patch("time.sleep"), self.assertRaises(service.ServiceError) as caught:

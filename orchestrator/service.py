@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from orchestrator.project_config import DEFAULT_RUNTIME_DIRNAME, active_project_root, find_project_root, safe_resolve, user_state_dir
+from orchestrator.project_config import DEFAULT_RUNTIME_DIRNAME, active_project_root, find_project_root, load_recent_projects, safe_resolve, user_state_dir
 
 LABEL = "com.orchestrator.ui"
 UNIT = "orchestrator-ui.service"
@@ -68,7 +68,15 @@ def service_project(workdir: Path) -> Path | None:
     root = find_project_root(workdir)
     if root == safe_resolve(workdir):
         root = active_project_root()
-    return root if root and (root / DEFAULT_RUNTIME_DIRNAME / "project.json").is_file() else None
+    if root and (root / DEFAULT_RUNTIME_DIRNAME / "project.json").is_file():
+        return root
+    # Discovery can remember a folder before it has been configured. That must not leave
+    # the machine's background server in a restart loop when another configured project exists.
+    for project in load_recent_projects().get("projects", []):
+        candidate = safe_resolve(Path(project["root"]).expanduser())
+        if (candidate / DEFAULT_RUNTIME_DIRNAME / "project.json").is_file():
+            return candidate
+    return None
 
 
 # -- the files

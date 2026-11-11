@@ -8664,6 +8664,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root = find_project_root()
+    if (not (runtime_dir(root) / "project.json").is_file()
+            and not os.environ.get("ORCHESTRATOR_PROJECT_ROOT")
+            and Path.cwd() == user_state_dir() / "service"):
+        from orchestrator.service import service_project
+        root = service_project(Path.cwd()) or root
     if not (runtime_dir(root) / "project.json").is_file():
         print(f"No orchestrator project at {root}. Run 'orchestrator wizard' there first, "
               "or pass --project to 'orchestrator ui'.")
