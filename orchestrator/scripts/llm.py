@@ -157,7 +157,7 @@ JSON_REMINDER = (
 )
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False, on_chunk: Callable[[str | None], None] | None = None) -> tuple[str, str, str]:
     """`raw` returns the whole answer. Otherwise only its JSON part comes back, which cuts prose and links from a conversational answer."""
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
@@ -196,7 +196,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     for current_model in attempts:
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
+            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
@@ -207,28 +207,37 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     # Ask the SAME model once to restate it as plain JSON before moving on to another model;
                     # with only one model allowed (a free-only setup) there is no other to move on to.
                     print(f"⚠️  {current_model} produced invalid JSON. Asking it to restate the answer as plain JSON...")
+                    if on_chunk:
+                        on_chunk(None)
                     try:
-                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images, **protection)
+                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection)
                         json.loads(extract_json_block(raw_output), strict=False)
                     except json.JSONDecodeError as exc2:
                         print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
                         last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc2}")
+                        if on_chunk:
+                            on_chunk(None)
                         continue
             
             # Return the full raw output so callers can see research/thoughts
             return raw_output, current_model, actual_session_id
         except LLMTimeoutError as exc:
-            # ... (timeout logging)
+            if on_chunk:
+                on_chunk(None)
             print(f"⚠️  {current_model} timed out. Attempting fallback...")
             last_error = exc
             continue
         except RuntimeError as exc:
+            if on_chunk:
+                on_chunk(None)
             err_str = str(exc)
             summary = summarize_cli_error(err_str)
             print(f"⚠️  {current_model} failed ({summary}). Attempting fallback...")
             last_error = exc
             continue
         except Exception as exc:
+            if on_chunk:
+                on_chunk(None)
             print(f"⚠️  {current_model} failed ({exc}). Attempting fallback...")
             last_error = exc
             continue
@@ -417,7 +426,7 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
-def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False) -> str:
+def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False, on_chunk: Callable[[str], None] | None = None) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
         prompt = f"[SOURCE: {source}]\n\n{prompt}"
@@ -582,7 +591,10 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
                     sel.unregister(key.fileobj)
                     continue
                 last_activity = time.time()
-                text = partial[fd] + decoders[fd].decode(data)
+                decoded = decoders[fd].decode(data)
+                if fd == out_fd and on_chunk and decoded:
+                    on_chunk(decoded)
+                text = partial[fd] + decoded
                 *lines, partial[fd] = text.split("\n")
                 for line in lines:
                     handle_line(line + "\n", fd == out_fd)
@@ -593,7 +605,10 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
                 if not sel.get_map() or time.time() - exited_at > 5:
                     break
         for fd in (out_fd, err_fd):
-            rest = partial[fd] + decoders[fd].decode(b"", final=True)
+            final_decoded = decoders[fd].decode(b"", final=True)
+            if fd == out_fd and on_chunk and final_decoded:
+                on_chunk(final_decoded)
+            rest = partial[fd] + final_decoded
             if rest:
                 handle_line(rest, fd == out_fd)
     finally:

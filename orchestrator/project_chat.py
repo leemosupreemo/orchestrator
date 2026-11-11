@@ -138,6 +138,7 @@ def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None =
         ordered = sorted([m for m in ordered if not failed(m)], key=lambda m: not answered(m))  # stable: checked ones first
         ids = [m.id for m in ordered]
         first = checks.get(ids[0]) if ids else None
+        skipped_summary = ", ".join(f"{x['model']} ({x['reason']})" for x in skipped[:2])
         out[tier] = {
             "label": TIER_LABELS[tier], "hint": TIER_HINTS[tier],
             "model": ids[0] if ids else "", "models": ids[: 1 + MAX_FALLBACKS],
@@ -146,7 +147,7 @@ def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None =
             "skipped": skipped[:5],
             "available": bool(ids),
             "reason": "" if ids else (
-                f"None of its models answered: {', '.join(f'{x['model']} ({x['reason']})' for x in skipped[:2])}." if skipped else {
+                f"None of its models answered: {skipped_summary}." if skipped else {
                 "free": "No free model is set up. Install OpenCode or Ollama under AI tools.",
                 "balanced": "No mid-priced model is set up. Connect an AI tool such as Claude, Codex or Gemini under AI tools.",
                 "complex": "None of the strongest models is set up. Connect Claude or Codex under AI tools.",

@@ -161,6 +161,7 @@ class BackgroundTasks:
         self.gate = gate or ActivityGate()
         self._items: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self.condition = threading.Condition(self._lock)
 
     def start(self, work: Callable[..., Any], commit: Callable[[Any], Any] | None = None, *, progress: bool = False) -> str:
         """Run `work` in the background. `commit` (if given) saves its result, and is skipped when the person cancelled meanwhile;
@@ -170,7 +171,7 @@ class BackgroundTasks:
         item: dict[str, Any] = {"status": "running", "at": time.time()}
         if progress:
             item["stage"] = "Starting"
-        reporter = TaskProgress(item, self._lock)
+        reporter = TaskProgress(item, self._lock, self.condition)
         with self._lock:
             for old in [k for k, v in self._items.items() if v["status"] != "running" and time.time() - v["at"] > self.KEEP_SECONDS]:
                 del self._items[old]
@@ -191,6 +192,8 @@ class BackgroundTasks:
                     if item.get("status") != "canceled":
                         item.update(status="error", error=str(exc)[:300] or "Something went wrong.", code=500)
             finally:
+                with self.condition:
+                    self.condition.notify_all()
                 release()
 
         threading.Thread(target=run, daemon=True).start()
@@ -203,7 +206,13 @@ class BackgroundTasks:
                 return False
             if item.get("status") == "running":
                 item.update(status="canceled", error="Draft cancelled.")
+            with self.condition:
+                self.condition.notify_all()
             return True
+
+    def get_raw(self, task_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            return self._items.get(task_id)
 
     def get(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -213,19 +222,40 @@ class BackgroundTasks:
             view = {k: v for k, v in item.items() if k != "at"}
         if "stage" in view:  # tasks that report progress also say how long they've been going
             view["elapsed"] = int(time.time() - item["at"])
+        if "stream" in view:
+            view["stream"] = item["stream"]
         return view
 
 
 class TaskProgress:
     """What a background task tells the page while it runs: a short stage, an optional detail, and whether the person cancelled."""
 
-    def __init__(self, item: dict[str, Any], lock: threading.Lock) -> None:
-        self._item, self._lock = item, lock
+    def __init__(self, item: dict[str, Any], lock: threading.Lock, condition: threading.Condition | None = None) -> None:
+        self._item, self._lock, self._condition = item, lock, condition
 
     def update(self, stage: str, detail: str = "") -> None:
         with self._lock:
             if self._item.get("status") == "running":
                 self._item.update(stage=stage, detail=detail)
+        if self._condition:
+            with self._condition:
+                self._condition.notify_all()
+
+    def append_chunk(self, chunk: str) -> None:
+        with self._lock:
+            if self._item.get("status") == "running":
+                self._item["stream"] = self._item.get("stream", "") + chunk
+        if self._condition:
+            with self._condition:
+                self._condition.notify_all()
+
+    def reset_stream(self) -> None:
+        with self._lock:
+            if self._item.get("status") == "running":
+                self._item["stream"] = ""
+        if self._condition:
+            with self._condition:
+                self._condition.notify_all()
 
     def last(self) -> str:
         with self._lock:
@@ -2547,13 +2577,26 @@ def model_turn(server: Any, root: Path, prompt: str, extra: list[str], timeout: 
     out: list[str] = []
     err: list[str] = []
     with tempfile.TemporaryDirectory(prefix="orchestrator-model-") as scratch:
-        argv = orchestrator_argv("script", "job_chat_run.py", *extra, "--timeout", str(max(30, timeout - 15)), "--cwd", scratch)
+        argv = orchestrator_argv("script", "job_chat_run.py", *extra, *(["--stream"] if progress else []), "--timeout", str(max(30, timeout - 15)), "--cwd", scratch)
         env = {**server.child_env(), "PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root, env=env, text=True,
                                 start_new_session=True)
 
         def read_out() -> None:
             for line in proc.stdout:
+                if line.startswith("<<<ORCHESTRATOR-CHUNK>>>"):
+                    b64 = line[len("<<<ORCHESTRATOR-CHUNK>>>"):].strip()
+                    try:
+                        chunk = base64.b64decode(b64).decode("utf-8", "replace")
+                        if progress:
+                            progress.append_chunk(chunk)
+                    except Exception:
+                        pass
+                    continue
+                if line.startswith("<<<ORCHESTRATOR-RESET>>>"):
+                    if progress:
+                        progress.reset_stream()
+                    continue
                 out.append(line)
                 if progress and (stage := research_stage(line)):
                     progress.update(*stage)
@@ -5291,13 +5334,14 @@ class UIServer(ThreadingHTTPServer):
         self._publishing_jobs: set[tuple[str, str]] = set()
         self._plan_lock = threading.Lock()   # one plan-run decision at a time (background loop and page requests)
         self._plan_sessions: dict[str, Any] = {}  # feature id -> the planning run started for it
+        self.connection_manager: Any = None
         self.on_reset_tunnel: Callable[[], bool] | None = None
         self.trigger_heartbeat: Callable[[], None] | None = None
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_home_status_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat"):
+                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_home_status_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat", "connection_manager"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -5387,14 +5431,21 @@ class UIServer(ThreadingHTTPServer):
             if machine is None:
                 return False
             try:
-                reply = account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")))
+                manager = self.connection_manager
+                connection = {"connection": manager.status(), "connection_ack": manager.ack_id} if manager else {}
+                reply = account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")), **connection)
+                command = reply.get("connection_command") if isinstance(reply, dict) else None
+                if manager and account.valid_connection_command(command):
+                    manager.request(command["id"], command["action"], expires=command["expires"])
                 if time.time() - last_sync[0] >= 300:
                     try:
                         account.sync_snapshot(machine, root=self.root)
                         last_sync[0] = time.time()
                     except Exception:
                         pass
-                if isinstance(reply, dict) and reply.get("reset_tunnel") and self.on_reset_tunnel:
+                if isinstance(reply, dict) and reply.get("reset_tunnel") and manager:
+                    manager.request("legacy-" + secrets.token_hex(12), "repair")
+                elif isinstance(reply, dict) and reply.get("reset_tunnel") and self.on_reset_tunnel:
                     if self.on_reset_tunnel():
                         try:
                             account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")))
@@ -5939,6 +5990,8 @@ class UIHandler(BaseHTTPRequestHandler):
                 if task is None:
                     raise UIError("That request is no longer around. Start it again.", HTTPStatus.NOT_FOUND)
                 self._json(task)
+            elif method == "GET" and len(parts) == 4 and parts[1] == "task" and parts[3] == "stream":
+                self._stream_task(parts[2], query)
             elif ((method == "DELETE" and len(parts) == 3 and parts[1] == "task") or
                   (method == "POST" and len(parts) == 4 and parts[1] == "task" and parts[3] in ("cancel", "stop"))):
                 task = self.server.tasks.get(parts[2])
@@ -6119,6 +6172,14 @@ class UIHandler(BaseHTTPRequestHandler):
             if not self.server.accepting_requests:
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Remote access is turned off.")
                 return
+            if method == "GET" and url.path == "/api/connection-health":
+                nonces = query.get("nonce") or []
+                if len(nonces) != 1 or not re.fullmatch(r"[0-9a-f]{32}", nonces[0]):
+                    raise UIError("A single 32-character hexadecimal nonce is required.")
+                nonce = nonces[0]
+                proof = hmac.new(self.server.token.encode(), ("connection-health:" + nonce).encode(), hashlib.sha256).hexdigest()
+                self._json({"nonce": nonce, "proof": proof})
+                return
             if url.path == "/desktop/open":
                 if not self.server.desktop_listener or method != "GET":
                     self._error(HTTPStatus.NOT_FOUND, "Not found")
@@ -6282,8 +6343,23 @@ class UIHandler(BaseHTTPRequestHandler):
                                     for k, a in ACTIONS.items()},
                         # The caller's own credential (so a cookie sign-in can also authorize event streams), never the server's.
                         "token": self._principal["token"],
-                        "runner": {"version": account.package_version(), "api_version": account.API_VERSION},
+                        "runner": {"version": account.package_version(), "api_version": account.API_VERSION,
+                                   "capabilities": dict(account.CAPABILITIES)},
+                        "connection": self.server.connection_manager.status() if self.server.connection_manager else None,
                         "you": {"kind": self._principal["kind"], "email": self._principal.get("email"), "role": self._principal["role"]}})
+        elif parts == ["connection"] and method in ("GET", "POST"):
+            self._require_owner("manage this computer's connection")
+            manager = self.server.connection_manager
+            if manager is None:
+                raise UIError("Restart Orchestrator with managed remote access to repair this connection.", HTTPStatus.CONFLICT)
+            if method == "POST":
+                action = self._body().get("action", "repair")
+                if action not in ("repair", "setup_funnel"):
+                    raise UIError("Choose repair or setup_funnel.")
+                manager.request(secrets.token_hex(16), action)
+                self._json({"ok": True, "connection": manager.status()}, HTTPStatus.ACCEPTED)
+            else:
+                self._json({"connection": manager.status()})
         elif method == "POST" and parts == ["auth", "logout"]:
             if self._principal["kind"] == "sign_in":
                 self.server.sign_ins.revoke_token(self._principal["token"])
@@ -8193,6 +8269,76 @@ class UIHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b": keepalive\n\n")
             self.wfile.flush()
 
+    def _stream_task(self, task_id: str, query: dict[str, list[str]]) -> None:
+        """Server-sent events for a background task: chunks of LLM reply, stages, and completion."""
+        raw_task = self.server.tasks.get_raw(task_id)
+        if raw_task is None:
+            self._error(HTTPStatus.NOT_FOUND, "That request is no longer around. Start it again.")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self._cors_headers()
+        self.end_headers()
+        self.close_connection = True
+
+        cond = self.server.tasks.condition
+        offset = 0
+        try:
+            offset = int((query.get("offset") or [0])[0])
+        except (ValueError, TypeError):
+            offset = 0
+
+        last_keepalive = time.monotonic()
+        while True:
+            if not self.server.accepting_requests:
+                return
+            with cond:
+                status = raw_task.get("status")
+                stream = raw_task.get("stream", "")
+                stage = raw_task.get("stage", "")
+                detail = raw_task.get("detail", "")
+                result = raw_task.get("result")
+                error = raw_task.get("error")
+
+                if len(stream) > offset:
+                    chunk = stream[offset:]
+                    offset = len(stream)
+                    payload = json.dumps({"status": status, "chunk": chunk, "offset": offset, "stage": stage, "detail": detail})
+                    try:
+                        self.wfile.write(f"event: chunk\ndata: {payload}\n\n".encode())
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        return
+
+                if status == "done":
+                    payload = json.dumps({"status": "done", "result": result, "stream": stream})
+                    try:
+                        self.wfile.write(f"event: done\ndata: {payload}\n\n".encode())
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                    return
+                elif status in ("error", "canceled"):
+                    payload = json.dumps({"status": status, "error": error or "Task cancelled"})
+                    try:
+                        self.wfile.write(f"event: error\ndata: {payload}\n\n".encode())
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                    return
+
+                cond.wait(timeout=5)
+
+            if time.monotonic() - last_keepalive > 15:
+                last_keepalive = time.monotonic()
+                try:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+
 
 # --------------------------------------------------------------------------- entry point
 
@@ -8244,7 +8390,10 @@ def _drain(proc: subprocess.Popen) -> None:
     threading.Thread(target=pump, daemon=True, name="cloudflared-output").start()
 
 
-def start_tunnel(port: int, token: str | None = None, discovery_timeout: float = 15.0) -> tuple[subprocess.Popen | None, str | None]:
+def start_tunnel(port: int, token: str | None = None, discovery_timeout: float = 15.0,
+                 cancel_event: threading.Event | None = None) -> tuple[subprocess.Popen | None, str | None]:
+    """Start cloudflared and wait for its address. `cancel_event` (the server shutting down) stops the wait: the
+    cloudflared started for it is stopped too, so a cancelled start leaves nothing running."""
     cloudflared = shutil.which("cloudflared")
     if not cloudflared:
         return None, None
@@ -8299,6 +8448,14 @@ def start_tunnel(port: int, token: str | None = None, discovery_timeout: float =
     threading.Thread(target=discover_and_drain, daemon=True, name="cloudflared-output").start()
     deadline = time.monotonic() + discovery_timeout
     while time.monotonic() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            return None, None
         try:
             return proc, found.get(timeout=min(.1, max(0, deadline - time.monotonic())))
         except queue.Empty:
@@ -8398,6 +8555,38 @@ class TunnelKeeper:
             self._end_process()
 
 
+def start_managed_connection(server: UIServer, public_url: str = "", tunnel_token: str | None = None):
+    """Attach machine-owned remote access; provider repairs never touch running jobs."""
+    from orchestrator.connection_manager import ConnectionManager, ConnectionStore
+    store = ConnectionStore()
+    if tunnel_token:
+        store.configure("cloudflare", public_url, token=tunnel_token)
+    effective_token = tunnel_token or store.data.get("providers", {}).get("cloudflare", {}).get("token")
+    def prepare(address: str) -> None:
+        parsed = urlparse(address)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("A public HTTPS origin is required")
+        if server.allowed_hosts is not None:
+            server.allowed_hosts.update((parsed.netloc, parsed.hostname))
+    def changed() -> None:
+        manager = server.connection_manager
+        if manager and manager.endpoint:
+            PUBLIC_URL["url"] = HOSTED_APP_URL + "/" if account.load_machine() else manager.endpoint + "/"
+        if server.trigger_heartbeat:
+            server.trigger_heartbeat()
+    def launch(port: int):
+        process, found = start_tunnel(port, token=effective_token, cancel_event=server._stopping) if effective_token else start_tunnel(port, cancel_event=server._stopping)
+        configured = store.data.get("providers", {}).get("cloudflare", {}).get("url", "")
+        return process, configured or (public_url if tunnel_token else "") or found
+    manager = ConnectionManager(port=server.server_address[1], secret=server.token,
+                                cloudflare_start=launch, notify=changed, prepare_endpoint=prepare,
+                                initial_url="" if tunnel_token else public_url, store=store)
+    server.connection_manager = manager
+    server.on_reset_tunnel = lambda: manager.request("legacy-" + secrets.token_hex(12), "repair")
+    manager.start()
+    return manager
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orchestrator ui", description="Local web interface for the orchestrator.")
     parser.add_argument("--host", default="127.0.0.1",
@@ -8405,6 +8594,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
     parser.add_argument("--token", default=None, help="Fixed access token for this session")
+    parser.add_argument("--managed-connection", action="store_true", help="Manage this computer’s public connection and repairs")
     parser.add_argument("--tunnel", action="store_true", help="Start a Cloudflare tunnel for remote access from phone")
     parser.add_argument("--tunnel-token", default=None, help="Cloudflare Named Tunnel token for a permanent stable domain")
     parser.add_argument("--public-url", default=None, help="Stable public or tunnel URL for remote access")
@@ -8490,6 +8680,8 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     reach = {"url": ""}  # the origin browsers reach this computer at, reported to the account; changes if a quick tunnel restarts
 
     def reachable_url() -> str:
+        if server.connection_manager:
+            return server.connection_manager.endpoint
         return reach["url"].rstrip("/") if reach["url"].startswith("https://") else ""
 
     paired = account.load_machine() is not None
@@ -8508,21 +8700,9 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
             return
         print(f"  \033[92m✓ {label}:\033[0m   {address}/?token={server.token}", flush=True)
 
-    if tunnel_token or getattr(args, "tunnel", False):
-        print("  Starting Cloudflare Named Tunnel (stable persistent token)..." if tunnel_token
-              else "  Starting Cloudflare tunnel for remote/phone access...")
-        keeper = TunnelKeeper(args.port, token=tunnel_token, fixed_url=public_url or "",
-                              on_url=lambda address: announce("Tunnel restarted at", address))
-        server.on_reset_tunnel = getattr(keeper, "recycle", None)
-        address = keeper.start()
-        if address:
-            announce("Stable Tunnel URL" if tunnel_token else "Tunnel URL", address)
-        elif tunnel_token:
-            print(f"  \033[92m✓ Cloudflare Named Tunnel started.\033[0m Specify --public-url to display your phone link.")
-        else:
-            print("  \033[93mWarning: Could not establish Cloudflare tunnel (cloudflared missing or timed out). Trying again in the background.\033[0m")
-    elif public_url:
-        announce("Stable Remote URL", public_url)
+    if args.managed_connection or tunnel_token or getattr(args, "tunnel", False) or public_url:
+        keeper = start_managed_connection(server, public_url=public_url or "", tunnel_token=tunnel_token)
+        print("  Checking managed remote access. Connection repair and setup are available under Your computers.", flush=True)
     machine = account.load_machine()
     if machine:
         if reachable_url():
@@ -8534,7 +8714,6 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
         server.start_heartbeat(reachable_url)
     else:
         print("  Tip: run `orchestrator connect` to sign in to this computer from anywhere with Google.")
-    print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
     if not args.no_open:
         open_browser(url)
 
@@ -8547,6 +8726,7 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
         if signal.getsignal(sig) is not signal.SIG_IGN:
             signal.signal(sig, stop)
     try:
+        print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
         server.start_notifier()
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

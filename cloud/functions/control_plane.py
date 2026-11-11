@@ -19,6 +19,7 @@ Firebase Auth. Routes (all JSON, under /cp on the hosted app):
   POST /cp/push/test       signed-in user                            -> {sent}
   POST /cp/enroll/create   signed-in user                            -> {token, expires_in}
   POST /cp/machines/update signed-in user {machine_id}               -> {ok}   (the next heartbeat reply asks it to update)
+  POST /cp/machines/repair-connection signed-in owner {machine_id, action} -> {ok, connection_command} (API 4+)
   POST /cp/enroll/redeem   computer       {token, name, os, version} -> {machine_id, machine_secret, owner_email}
 
 Enrollment is pairing for a computer nobody is sitting at: the owner makes a one-time token in the hosted app and runs
@@ -38,9 +39,13 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 import time
+import threading
+
+import update_recovery
 from typing import Any, Callable, Protocol
 
 PAIRING_TTL = 600         # seconds a pairing code stays valid
@@ -51,6 +56,11 @@ READINESS_CHECKS = ("auto_login", "sleep", "power_restart", "xcode_license", "lo
 READINESS_STATES = {"ok", "off", "on", "not_accepted", "needs_approval", "not_installed", "unknown"}
 UPDATE_STATES = {"requested", "checking", "waiting_for_work", "updating", "current", "failed", "unavailable"}
 TICKET_TTL = 120          # seconds a sign-in ticket stays valid
+CONNECTION_COMMAND_TTL = 900
+CONNECTION_COMMAND_COOLDOWN = 60
+CONNECTION_STATES = {"checking", "repairing", "needs_setup", "connected", "failed"}
+CONNECTION_PROVIDERS = {"cloudflare", "funnel", "external"}
+CONNECTION_ACTIONS = {"repair", "setup_funnel"}
 ONLINE_WINDOW = 180       # a computer is online if it reported within this many seconds
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
 CODE_LENGTH = 8
@@ -68,6 +78,7 @@ class ControlError(Exception):
 
 
 class Store(Protocol):
+    def mutate(self, collection: str, doc_id: str, transform: Callable) -> Any: ...
     def get(self, collection: str, doc_id: str) -> dict[str, Any] | None: ...
     def set(self, collection: str, doc_id: str, data: dict[str, Any]) -> None: ...
     def update(self, collection: str, doc_id: str, fields: dict[str, Any]) -> None: ...
@@ -86,6 +97,15 @@ class MemoryStore:
 
     def __init__(self) -> None:
         self.data: dict[str, dict[str, dict[str, Any]]] = {}
+        self._mutation_lock = threading.RLock()
+
+    def mutate(self, collection, doc_id, transform):
+        """Atomically transform a document and return the callback result."""
+        with self._mutation_lock:
+            document, result = transform(self.get(collection, doc_id))
+            if document is not None:
+                self.set(collection, doc_id, document)
+            return result
 
     def get(self, collection, doc_id):
         doc = self.data.get(collection, {}).get(doc_id)
@@ -134,6 +154,34 @@ def _endpoint(value: Any) -> str:
     if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d{1,5})?", url):
         raise ControlError("The address must be an https:// origin with no path.")
     return url
+
+
+def _connection_status(value: Any, now: float) -> dict[str, Any] | None:
+    """Keep only the public connection contract, never stringify private runner objects."""
+    if not isinstance(value, dict) or not isinstance(value.get("state"), str) or value["state"] not in CONNECTION_STATES:
+        return None
+    result: dict[str, Any] = {"state": value["state"]}
+    provider = value.get("provider")
+    if isinstance(provider, str) and provider in CONNECTION_PROVIDERS:
+        result["provider"] = provider
+    detail = value.get("detail")
+    if isinstance(detail, str) and detail:
+        result["detail"] = _clean(detail, 400)
+    endpoint = value.get("endpoint")
+    if isinstance(endpoint, str) and endpoint:
+        try:
+            result["endpoint"] = _endpoint(endpoint)
+        except ControlError:
+            pass
+    checked = value.get("checked_at")
+    if type(checked) in (int, float) and 0 <= checked <= now + 300 and math.isfinite(checked):
+        result["checked_at"] = checked
+    url = value.get("setup_url")
+    # Exact scheme, authority, path and single node parameter. No credentials, extra queries or fragments.
+    if isinstance(url, str) and len(url) <= 500 and re.fullmatch(
+            r"https://login\.tailscale\.com/f/funnel\?node=[A-Za-z0-9_-]{1,200}", url):
+        result["setup_url"] = url
+    return result
 
 
 class ControlPlane:
@@ -277,7 +325,9 @@ class ControlPlane:
             api_version = 0
         fields: dict[str, Any] = {"last_seen": self.now(), "endpoint": _endpoint(body.get("endpoint")),
                                   "running": running, "busy": running > 0, "offline_notified": False,
-                                  "api_version": api_version, "updatable": body.get("packaged") is True}
+                                  "api_version": api_version, "updatable": body.get("packaged") is True,
+                                  "update_control": 1 if body.get("packaged") is True and type(body.get("update_control")) is int and body["update_control"] == 1 else 0,
+                                  "capabilities": self._capabilities(body.get("capabilities"))}
         for key, limit in (("version", 40), ("name", 80), ("os", 40)):
             if body.get(key):
                 fields[key] = _clean(body[key], limit)
@@ -290,15 +340,69 @@ class ControlPlane:
         elif "update_state" in body:
             reported = body["update_state"]
             fields["update_state"] = reported if reported in UPDATE_STATES - {"requested"} else ""
+        connection = _connection_status(body.get("connection"), self.now())
+        if connection is not None:
+            fields["connection"] = connection
+        command = self._pending_connection_command(machine)
+        ack = body.get("connection_ack")
+        if command and isinstance(ack, str) and len(ack) <= 64 and ack.isascii() and hmac.compare_digest(ack, command["id"]):
+            command = None
+        if machine.get("connection_command") and command is None:
+            fields["connection_command"] = None
         reset_tunnel_requested = bool(machine.get("reset_tunnel_requested"))
+        if reset_tunnel_requested and api_version >= 4:
+            # A reset queued by an older frontend before this runner upgraded uses the new manager.
+            if command is None:
+                command = self._new_connection_command("repair")
+                fields["connection_command"] = command
+                fields["connection_command_requested_at"] = self.now()
+            reset_tunnel_requested = False
+            fields["reset_tunnel_requested"] = False
         if reset_tunnel_requested:
             fields["reset_tunnel_requested"] = False
         self.store.update("machines", machine_id, fields)
-        return {"ok": True, "owner_email": machine["owner_email"], "update_requested": update_requested,
-                "reset_tunnel": reset_tunnel_requested}
+        reply = {"ok": True, "owner_email": machine["owner_email"], "update_requested": update_requested,
+                 "reset_tunnel": reset_tunnel_requested}
+        if command is not None and api_version >= 4:
+            reply["connection_command"] = command
+        operation = self._update_operation(machine_id, ack=body.get("update_ack"), delivery=True)
+        if operation is not None:
+            reply["update_operation"] = operation
+        return reply
+
+    def _new_connection_command(self, action: str) -> dict[str, Any]:
+        now = self.now()
+        return {"id": secrets.token_urlsafe(24), "action": action, "created": now,
+                "expires": now + CONNECTION_COMMAND_TTL}
+
+    def _pending_connection_command(self, machine: dict[str, Any]) -> dict[str, Any] | None:
+        command = machine.get("connection_command")
+        if isinstance(command, dict) and command.get("expires", 0) > self.now():
+            return command
+        return None
+
+    def request_connection_repair(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        if machine.get("api_version", 0) < 4:
+            raise ControlError("Update Orchestrator on this computer to repair its connection from the web.", 409)
+        action = body.get("action")
+        if not isinstance(action, str) or action not in CONNECTION_ACTIONS:
+            raise ControlError("Choose repair or setup_funnel.")
+        pending = self._pending_connection_command(machine)
+        if pending is not None:
+            return {"ok": True, "connection_command": pending}
+        requested_at = machine.get("connection_command_requested_at")
+        if requested_at is not None and self.now() - requested_at < CONNECTION_COMMAND_COOLDOWN:
+            raise ControlError("Connection repair was just requested. Wait a minute before trying again.", 429)
+        command = self._new_connection_command(action)
+        self.store.update("machines", machine_id, {"connection_command": command,
+                                                  "connection_command_requested_at": self.now()})
+        return {"ok": True, "connection_command": command}
 
     def request_reset_tunnel(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         machine_id, machine = self._owned(user, body.get("machine_id"))
+        if machine.get("api_version", 0) >= 4:
+            return self.request_connection_repair(user, {"machine_id": machine_id, "action": "repair"})
         self.store.update("machines", machine_id, {"reset_tunnel_requested": True})
         return {"ok": True}
 
@@ -308,6 +412,52 @@ class ControlPlane:
             raise ControlError(f"{machine['name']} wasn't set up with the Orchestrator app; update it there with `orchestrator update`.", 409)
         self.store.update("machines", machine_id, {"update_requested": True, "update_state": "requested"})
         return {"ok": True}
+
+    @staticmethod
+    def _capabilities(value: Any) -> dict[str, bool]:
+        if not isinstance(value, dict):
+            return {}
+        return {key: value[key] for key in ("preview_remote",) if type(value.get(key)) is bool}
+
+    def _update_operation(self, machine_id: str, ack: Any = None, delivery: bool = False):
+        def transform(operation):
+            operation = update_recovery.expire(operation, self.now())
+            if operation and operation["state"] in update_recovery.TERMINAL and ack == operation["id"]:
+                operation = {**operation, "acknowledged": True}
+            shown = None if delivery and operation and operation.get("acknowledged") else update_recovery.public(operation)
+            return operation, shown
+        return self.store.mutate("machine_updates", machine_id, transform)
+
+    def request_update_recovery(self, user: dict[str, Any], body: dict[str, Any]):
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        if not machine.get("updatable") or machine.get("update_control") != 1:
+            raise ControlError("Upgrade the signed Orchestrator Mac app once to enable cancellable updates.", 409)
+        operation_id = secrets.token_urlsafe(24)
+        def transform(operation):
+            operation = update_recovery.start(operation, self.now(), operation_id)
+            return operation, update_recovery.public(operation)
+        operation = self.store.mutate("machine_updates", machine_id, transform)
+        return {"ok": True, "update_operation": operation}
+
+    def cancel_update(self, user: dict[str, Any], body: dict[str, Any]):
+        machine_id, _ = self._owned(user, body.get("machine_id"))
+        def transform(operation):
+            operation, accepted = update_recovery.cancel(operation, body.get("operation_id"), self.now())
+            return operation, (accepted, update_recovery.public(operation))
+        accepted, operation = self.store.mutate("machine_updates", machine_id, transform)
+        if not accepted:
+            raise ControlError("Installation has started or that update is no longer active.", 409)
+        return {"ok": True, "update_operation": operation}
+
+    def update_progress(self, auth_header: str, body: dict[str, Any]):
+        machine_id, _ = self._machine_from_header(auth_header)
+        state = body.get("state")
+        if not isinstance(state, str) or state not in update_recovery.STATES:
+            raise ControlError("Unknown update state.")
+        def transform(operation):
+            operation, accepted = update_recovery.progress(operation, body.get("operation_id"), state, self.now())
+            return operation, {"accepted": accepted, "update_operation": update_recovery.public(operation)}
+        return self.store.mutate("machine_updates", machine_id, transform)
 
     def leave(self, auth_header: str) -> dict[str, Any]:
         machine_id, _ = self._machine_from_header(auth_header)
@@ -379,14 +529,21 @@ class ControlPlane:
 
     def _view(self, machine_id: str, machine: dict[str, Any]) -> dict[str, Any]:
         online = self.now() - (machine.get("last_seen") or 0) < ONLINE_WINDOW
+        connection = _connection_status(machine.get("connection"), self.now())
         return {"id": machine_id, "name": machine["name"], "os": machine.get("os", ""), "version": machine.get("version", ""),
                 "api_version": machine.get("api_version", 0),
                 "endpoint": machine.get("endpoint", ""), "last_seen": machine.get("last_seen") or 0, "online": online,
-                "reachable": online and bool(machine.get("endpoint")),
+                "reachable": online and bool(machine.get("endpoint")) and
+                             (connection or {}).get("state") not in {"failed", "needs_setup"},
+                "connection": connection or {},
+                "connection_command_pending": self._pending_connection_command(machine) is not None,
                 "has_snapshot": bool(machine.get("has_snapshot")),
                 "snapshot_synced_at": machine.get("snapshot_synced_at"),
                 "added_with_command": self.now() - (machine.get("enrolled") or -ADDED_MARK_SECONDS) < ADDED_MARK_SECONDS,
                 "updatable": bool(machine.get("updatable")), "update_state": machine.get("update_state", ""),
+                "update_control": machine.get("update_control", 0),
+                "capabilities": self._capabilities(machine.get("capabilities")),
+                "update_operation": self._update_operation(machine_id),
                 "readiness": machine.get("readiness") or {}}
 
     def _owned(self, user: dict[str, Any], machine_id: Any) -> tuple[str, dict[str, Any]]:
@@ -410,6 +567,7 @@ class ControlPlane:
         self.store.delete("machine_secrets", machine_id)
         self.store.delete("machines", machine_id)
         self.store.delete("machine_snapshots", machine_id)
+        self.store.delete("machine_updates", machine_id)
 
     def get_snapshot(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         machine_id, machine = self._owned(user, body.get("machine_id"))
@@ -511,6 +669,7 @@ class ControlPlane:
                 ("POST", "/pair/start"): lambda: (self._rate_limit("pair-start", _client_address(headers), PAIR_START_LIMIT),
                                                   self.start_pairing(body))[1],
                 ("POST", "/pair/poll"): lambda: self.poll_pairing(body),
+                ("POST", "/machine/update-progress"): lambda: self.update_progress(headers.get("authorization", ""), body),
                 ("POST", "/machine/heartbeat"): lambda: self.heartbeat(headers.get("authorization", ""), body),
                 ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
                 ("POST", "/machine/events"): lambda: self.machine_events(headers.get("authorization", ""), body),
@@ -533,7 +692,10 @@ class ControlPlane:
                 ("POST", "/push/test"): self.test_push,
                 ("POST", "/enroll/create"): self.create_enrollment,
                 ("POST", "/machines/update"): self.request_update,
+                ("POST", "/machines/update-recovery"): self.request_update_recovery,
+                ("POST", "/machines/cancel-update"): self.cancel_update,
                 ("POST", "/machines/reset-tunnel"): self.request_reset_tunnel,
+                ("POST", "/machines/repair-connection"): self.request_connection_repair,
             }.get((method, route))
             if person is None:
                 raise ControlError("Not found", 404)

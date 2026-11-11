@@ -75,6 +75,7 @@ const attrJSON = (o) => esc(JSON.stringify(o));
 let state = { project: null, runs: [], actions: {} };
 let cleanup = [];
 let current = { page: null, args: [], query: null, rendered: "" };
+let previewRecovery = null;
 
 const DEFAULT_REMOTE_BACKEND = "";
 
@@ -1280,6 +1281,7 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
     document.querySelector(".app")?.classList.remove("session-locked");
   } catch (e) {
     if (opening) throw e; // an opening succeeds only when live state has actually loaded
+    if (previewRecovery?.active) return; // the update modal owns reconnection to this exact computer
     if (e.status === 401) {
       consecutiveAuthFailures += 1;
       // Only lock the session if we don't have an active project loaded,
@@ -1526,6 +1528,55 @@ async function cpApi(path, { method = "GET", body, signal } = {}) {
   return data;
 }
 
+function previewRecoveryContext() {
+  let machineId = "";
+  try { machineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
+  return {machineId, project: state.project?.root || "", owner: state.you?.role !== "member" && Account.active()};
+}
+
+function getPreviewRecovery() {
+  if (previewRecovery) return previewRecovery;
+  const dialog = $("#preview-update-dialog");
+  previewRecovery = PreviewUpdateRecovery.create({
+    request: cpApi, context: previewRecoveryContext,
+    storage: {getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value)},
+    reconnect: async (machine, isCurrent) => {
+      const result = await signInToMachine(machine, Date.now() + 16000, {isCurrent});
+      if (!isCurrent()) throw new Error("The selected computer changed.");
+      localStorage.setItem("orchestrator_token", result.token);
+      await refreshState({opening: true, isCurrent});
+    },
+    probe: async () => (await api("state")).runner?.capabilities?.preview_remote === true,
+    render: progress => {
+      if (progress.state === "current") { if (dialog.open) dialog.close(); return; }
+      dialog.innerHTML = `<div class="dialog-header"><h2 id="preview-update-title">${progress.done ? "Preview update" : `Updating Orchestrator on ${esc(progress.name)}`}</h2></div>
+        <div class="stack gap-12" role="status" aria-live="polite">
+          <p>Preview needs a newer version. Your running jobs will finish first.</p>
+          <p>${!progress.done ? `<span class="spinner inline-spinner" aria-hidden="true"></span> ` : ""}${esc(progress.message)}</p>
+        </div><div class="dialog-actions">${progress.done
+          ? `${progress.canRetry ? `<button type="button" class="btn" data-preview-update-retry>Try update again</button>` : ""}<a class="btn" href="#/computers" data-preview-update-close>Computers</a><button type="button" class="btn primary" data-preview-update-close>Close</button>`
+          : `<button type="button" class="btn" data-preview-update-cancel${progress.canCancel ? "" : " disabled"}>${progress.state === "cancelling" ? "Cancelling…" : "Cancel update"}</button>`}</div>`;
+      if (!dialog.open) dialog.showModal();
+    },
+  });
+  dialog.addEventListener("cancel", event => {
+    event.preventDefault();
+    if (dialog.querySelector("[data-preview-update-close]")) dialog.close();
+    else if (!dialog.querySelector("[data-preview-update-cancel]")?.disabled) void previewRecovery.cancel();
+  });
+  dialog.addEventListener("click", event => {
+    if (event.target.closest("[data-preview-update-close]")) dialog.close();
+    if (event.target.closest("[data-preview-update-cancel]")) void previewRecovery.cancel();
+    if (event.target.closest("[data-preview-update-retry]")) {
+      dialog.close();
+      void previewRecovery.recover({status: 404, message: "Not found"}, state.runner, {force: true}).then(() => {
+        if (current.page === "preview") route();
+      });
+    }
+  });
+  return previewRecovery;
+}
+
 // After Google (or another provider): on the hosted app, find your computers; elsewhere, sign in to this server directly.
 async function afterProviderSignIn(user, name) {
   const provider = (name || "").toLowerCase().includes("google") ? "google"
@@ -1704,6 +1755,17 @@ function showAccountScreen(machines, message = "", troubleshoot = null, { chosen
         await cpApi("machines/remove", { method: "POST", body: { machine_id: button.dataset.id } });
         toast(`Removed ${button.dataset.name}`);
         openAccount({ list: true });
+      } catch (err) { toast(err.message, true); button.disabled = false; }
+    } else if (action === "repair-connection" || action === "setup-funnel") {
+      button.disabled = true;
+      try {
+        await cpApi("machines/repair-connection", { method: "POST", body: {
+          machine_id: button.dataset.id, action: action === "setup-funnel" ? "setup_funnel" : "repair",
+        } });
+        machines = machines.map((machine) => machine.id === button.dataset.id
+          ? {...machine, connection_command_pending: true} : machine);
+        render(machines, message, troubleshoot);
+        toast(`Connection repair requested for ${button.dataset.name}.`);
       } catch (err) { toast(err.message, true); button.disabled = false; }
     } else if (action === "reset-tunnel") {
       button.disabled = true;
@@ -1999,7 +2061,7 @@ async function reconnectQuietly(machine) {
   await refreshState();
 }
 async function relocateMachine() {
-  if (relocating || signingIn || !Account.active() || Date.now() - lastRelocateTry < 10000) return;
+  if (previewRecovery?.active || relocating || signingIn || !Account.active() || Date.now() - lastRelocateTry < 10000) return;
   let remembered = null;
   try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { return; }
   relocating = true;
@@ -3041,10 +3103,32 @@ async function openAskAi() {
     try {
       const started = await api("chat", { method: "POST", body: { message: question, tier } });
       askAiRun.task = started.task;
-      const result = await waitForTask(started, { signal: controller.signal, onProgress: (r) => {
-        const stage = dlg.querySelector(".ask-ai-stage");
-        if (stage && r.stage) stage.textContent = `${r.detail || r.stage}${r.elapsed ? ` · ${clockTime(r.elapsed)}` : ""}`;
-      } });
+      let streamText = "";
+      const pendingMsg = log.querySelector(".chat-msg.assistant.is-pending");
+      const tierLabel = { free: "Free", balanced: "Balanced", complex: "Complex" }[tier] || "";
+      const onChunk = (chunk, isFull = false) => {
+        streamText = isFull ? chunk : streamText + chunk;
+        if (!pendingMsg || !streamText) return;
+        pendingMsg.classList.remove("is-pending");
+        const who = pendingMsg.querySelector(".chat-who");
+        if (who) who.innerHTML = `AI${data.tiers[tier]?.model ? ` · ${esc(data.tiers[tier].model)}` : ""}${tierLabel ? ` · ${esc(tierLabel)}` : ""}`;
+        const body = pendingMsg.querySelector(".chat-text, .chat-md");
+        if (body) {
+          body.className = "md chat-md";
+          body.innerHTML = Markdown.render(streamText);
+        }
+        log.scrollTop = log.scrollHeight;
+      };
+      const result = await streamTask(started, {
+        signal: controller.signal,
+        onChunk,
+        onProgress: (r) => {
+          if (!streamText) {
+            const stage = dlg.querySelector(".ask-ai-stage");
+            if (stage && r.stage) stage.textContent = `${r.detail || r.stage}${r.elapsed ? ` · ${clockTime(r.elapsed)}` : ""}`;
+          }
+        }
+      });
       messages = result.messages || messages;
     } catch (e) {
       messages = messages.slice(0, -1);
@@ -3090,7 +3174,7 @@ document.addEventListener("click", (e) => {
   if (e.target.closest?.("[data-ask-ai]")) openAskAi();
 });
 
-function statusLine(p) {
+function statusLine(p, hasPreview = false) {
   const branches = p.branches || [];
   const branchPicker = branches.length
     ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => branchOption(b, p.branch, p.elsewhere)).join("")}</select>`
@@ -3101,7 +3185,7 @@ function statusLine(p) {
       : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
   ].filter(Boolean);
   return `<div class="status-line status-stack home-status-line"><div class="status-main-row"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>
-    <button type="button" class="ask-ai-btn" data-ask-ai aria-label="Ask AI about this project" title="Ask AI about this project"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></button></div>
+    <div class="row gap-8 align-center">${hasPreview ? `<a class="btn" href="#/preview">Preview</a>` : ""}<button type="button" class="ask-ai-btn" data-ask-ai aria-label="Ask AI about this project" title="Ask AI about this project"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></button></div></div>
     ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</div>`;
 }
 
@@ -3166,7 +3250,7 @@ document.addEventListener("change", (e) => {
 // re-rendered by the poll when their output changes.
 
 const pages = {};
-const LIVE = new Set(["home", "job", "activity", "git", "ux-review"]);
+const LIVE = new Set(["home", "preview", "job", "activity", "git", "ux-review"]);
 
 async function createReleaseTag() {
   try {
@@ -3582,15 +3666,13 @@ pages.home = async (_, query) => {
   return {
     title: p.name,
     titleHtml: homeProjectTitle(p), // the name is also a project switcher, like the sidebar's
-    sub: statusLine(p),
+    sub: statusLine(p, Boolean(homePreview?.preview)),
     // Setup health is a round icon button at the top right, beside New job (on phones, in the header bar itself).
     actions: `<div class="home-topbar-tools">${homeHealthIndicator(setupState)}<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a></div>`,
     status: homeHealthIndicator(setupState),
     html: `
       ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
       ${product && !product.sections.some((x) => x.filled) ? productStripHtml(product) : ""}
-
-      ${previewCard(homePreview?.preview, state.runs)}
 
       ${runningBanner}
 
@@ -3639,7 +3721,6 @@ pages.home = async (_, query) => {
       </section>` : ""}`,
     after: () => {
       renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
-      wirePreview(view);
       if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
       // "2 jobs need you" on the Project status card: down to the job list, filtered to them. The marker is dropped from the
       // address once used, so Home refreshing itself doesn't scroll again (and tapping it again still works).
@@ -3839,9 +3920,25 @@ function previewOverlayHtml(kind, { branch = "", run = "", hosted = false, canSt
   return `<div class="preview-overlay-box" role="status"><strong>${body[0]}</strong><p class="muted t-secondary">${body[1]}</p>${body[2] ? `<div class="row gap-8 wrap justify-center">${body[2]}</div>` : ""}${form}</div>`;
 }
 
-// The Preview card on Home: your app as it is right now, from the project folder (uncommitted work included), visible only
+// The full-screen Preview page: your app as it is right now, from the project folder (uncommitted work included), visible only
 // to you. It starts by itself. On this computer it's the dev server's own address; anywhere else (a phone on the hosted app)
 // it's a private link of its own (preview/remote). Publishing a public link is one icon button away, in its own dialog.
+pages.preview = async () => {
+  const projectRoot = state.project?.root, backend = getBackendUrl();
+  const { preview } = await api("preview");
+  if (state.project?.root !== projectRoot || getBackendUrl() !== backend) return { stale: true };
+  return {
+    title: "Preview",
+    html: preview ? previewCard(preview, state.runs) : `<section class="card"><div class="card-h"><h2>Preview unavailable</h2><a class="btn" href="#/">Close preview</a></div><div class="card-b">This project doesn't have a web preview.</div></section>`,
+    after: () => {
+      wirePreview(view);
+      if (Account.active()) void getPreviewRecovery().resume().then(recovered => {
+        if (recovered && current.page === "preview") route();
+      });
+    },
+  };
+};
+
 function previewCard(p, runs) {
   if (!p) return "";
   const live = p.live, hosted = p.hosted;
@@ -3863,11 +3960,12 @@ function previewCard(p, runs) {
   return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-preview-url="${esc(p.preview_url || "")}" data-remote-live="${remoteLive ? "1" : ""}" data-autostart="${autostart ? "1" : ""}" data-starting="${starting ? esc(liveRun.id) : ""}">
     <div class="card-h">
       <h2>Preview</h2>
+      <a class="btn small ghost preview-close" href="#/" aria-label="Close preview">Close</a>
       ${owner ? `<button type="button" class="preview-publish-btn${hosted ? " is-published" : ""}${publishing ? " is-busy" : ""}" id="job-preview-publish" aria-label="${esc(publishLabel)}" title="${esc(publishLabel)}"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg></button>` : ""}
     </div>
     <div class="card-b stack gap-12">
       <div class="job-preview-frame" id="job-preview-frame" data-device="desktop">
-        ${live ? `<iframe title="Preview of your app" src="${esc(liveUrl)}" data-kind="live" referrerpolicy="no-referrer"></iframe>
+        ${live ? `<iframe title="Preview of your app" src="${esc(liveUrl)}" data-kind="live" referrerpolicy="same-origin"></iframe>
         <div class="job-preview-pins" id="job-preview-pins" hidden><span class="job-preview-hint">Click where the problem is</span></div>` : ""}
         <div class="preview-overlay" id="preview-overlay"${overlay ? "" : " hidden"}>${overlay}</div>
       </div>
@@ -3933,6 +4031,9 @@ function wirePreview(view) {
   const card = view.querySelector("#job-preview");
   if (!card) return;
   const branch = card.dataset.branch;
+  const openedFor = {root: state.project?.root, backend: getBackendUrl(), machineId: previewRecoveryContext().machineId};
+  const samePreview = () => card.isConnected && state.project?.root === openedFor.root &&
+    getBackendUrl() === openedFor.backend && previewRecoveryContext().machineId === openedFor.machineId;
   const frame = card.querySelector("iframe");
   const box = card.querySelector("#job-preview-frame");
   const overlay = card.querySelector("#preview-overlay");
@@ -3954,13 +4055,21 @@ function wirePreview(view) {
     showOverlay("remote");
     try {
       const { url } = await api("preview/remote", { method: "POST", body: { branch } });
+      if (!samePreview()) return;
       base = url;
       const liveTab = card.querySelector('[data-preview-tab="live"]');
       if (liveTab) liveTab.dataset.url = url;
       if (!liveTab || liveTab.classList.contains("on")) { frame.src = url; if (openLink) openLink.href = url; }
       overlay.hidden = true;
     } catch (err) {
-      showOverlay("failed", { why: err.status === 404 ? "Seeing the live preview on another device needs a newer Orchestrator on your computer." : Errors.explain(err.message) });
+      if (!samePreview()) return;
+      const legacyRunner = err.status === 404 && err.message === "Not found" && !state.runner?.capabilities;
+      if ((PreviewUpdateRecovery.missing(err, state.runner) || legacyRunner) && Account.active()) {
+        const recovered = await getPreviewRecovery().recover(err, state.runner);
+        if (!card.isConnected) return;
+        if (recovered) { route(); return; }
+        showOverlay("failed", {why: "This preview needs a compatible Orchestrator on your computer. Check Computers for update instructions."});
+      } else showOverlay("failed", { why: Errors.explain(err.message) });
     }
   };
   if (card.dataset.remoteLive && frame) showRemoteLive();
@@ -4161,6 +4270,7 @@ function wirePreview(view) {
     else if (type === "shot" && shotWaiting) { shotWaiting(e.data.image || null); shotWaiting = null; }
   };
   window.addEventListener("message", onMessage);
+  cleanup.push(() => { window.removeEventListener("message", onMessage); clearTimeout(stalledTimer); });
   // Every page of the live preview carries the helper, which says it's ready. A page that loads without it is the proxy's
   // error page: the dev server stopped or crashed.
   frame.addEventListener("load", () => {
@@ -6995,7 +7105,7 @@ async function waitForTask(started, opts) {
   let misses = 0;
   for (;;) {
     if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, opts?.pollInterval || 1500));
     if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     let r;
     try { r = await api(`product/task/${encodeURIComponent(task)}`, { signal: opts?.signal }); misses = 0; }
@@ -7004,12 +7114,57 @@ async function waitForTask(started, opts) {
       if (e.status === 404 || ++misses >= 4) throw e;
       continue;
     } // a dropped connection is retried a few times
+    if (r.stream !== undefined) opts?.onChunk?.(r.stream, true);
     if (r.status === "running") opts?.onProgress?.(r);
     if (r.status === "done") return r.result;
     if (r.status === "canceled" || r.status === "cancelled") throw new DOMException("Aborted", "AbortError");
     if (r.status === "error") throw new Error(r.error);
     if (Date.now() - began > 7 * 60 * 1000) throw new Error("This is taking much longer than expected. Try again.");
   }
+}
+
+async function streamTask(started, opts = {}) {
+  const { task } = started;
+  const backend = getBackendUrl();
+  const token = getToken();
+  const url = `${backend ?? ""}/api/product/task/${encodeURIComponent(task)}/stream`;
+  const headers = token ? { "Authorization": `Bearer ${token}` } : {};
+
+  try {
+    const res = await fetch(url, { headers, signal: opts.signal });
+    if (res.ok && res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const block of parts) {
+          const evMatch = block.match(/^event:\s*(\w+)/m);
+          const dataMatch = block.match(/^data:\s*(.+)$/m);
+          if (!dataMatch) continue;
+          const ev = evMatch ? evMatch[1] : "chunk";
+          let data;
+          try { data = JSON.parse(dataMatch[1]); } catch { continue; }
+          if (ev === "chunk") {
+            if (data.chunk) opts.onChunk?.(data.chunk, false);
+            if (data.stage) opts.onProgress?.(data);
+          } else if (ev === "done") {
+            return data.result;
+          } else if (ev === "error") {
+            throw new Error(data.error || "Something went wrong.");
+          }
+        }
+      }
+    }
+  } catch (err) {
+    if (opts.signal?.aborted || err.name === "AbortError") throw err;
+  }
+  // Fall back to polling if stream endpoint was interrupted or unavailable
+  return waitForTask(started, { ...opts, pollInterval: 500 });
 }
 
 // A draft or an import runs on the computer, not in the page. Remember which one is running for this project, so coming back
@@ -12638,7 +12793,7 @@ async function tick() {
     }
     return;
   }
-  if (!LIVE.has(current.page) || $("#dialog").open || document.querySelector("details.more[open]")) return;
+  if (!LIVE.has(current.page) || $("#dialog").open || $("#preview-update-dialog")?.open || document.querySelector("details.more[open]")) return;
   if (current.page !== "ux-review" && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   const page = current.page, args = current.args.join();
   try {

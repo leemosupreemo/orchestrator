@@ -18,6 +18,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from orchestrator import account, mac_readiness
+from orchestrator.connection_manager import ConnectionManager, ConnectionStore
 from orchestrator.desktop_diagnostics import CHECK_NAMES, diagnostics_snapshot
 from orchestrator.desktop_migration import inspect_legacy, migrate_legacy
 from orchestrator.desktop_protocol import MAX_MESSAGE, ProtocolError, peer_uid, validate_request
@@ -26,6 +27,7 @@ from orchestrator.project_setup import _atomic_json
 from orchestrator.runtime_control import BusyError, InstanceLease
 from orchestrator.web.bootstrap import project_ready
 from orchestrator.web.server import UIServer, start_tunnel
+from orchestrator.update_recovery import TERMINAL, UpdateRecovery
 
 
 def _stop_tunnel(proc):
@@ -50,8 +52,11 @@ class AgentDependencies:
     pair_start: Callable = account.start_pairing
     pair_poll: Callable = account.poll_pairing
     heartbeat: Callable = account.heartbeat
+    update_progress: Callable = account.report_update
     tunnel_start: Callable = start_tunnel
     tunnel_stop: Callable = _stop_tunnel
+    connection_factory: Callable = ConnectionManager
+    public_probe: Callable | None = None
     legacy_inspect: Callable = inspect_legacy
     legacy_migrate: Callable = migrate_legacy
     open_app: Callable = _open_app
@@ -107,8 +112,7 @@ class DesktopAgent:
         self._pair_cancel = threading.Event()
         self._pairing = {"state": "not_connected"}
         self._pair_thread = None
-        self._remote_thread = None
-        self._tunnel_proc = None
+        self._connection_manager = None
         self._endpoint = ""
         self._remote_state = "connecting"
         self._remote_generation = 0
@@ -121,6 +125,7 @@ class DesktopAgent:
         self._legacy_at = 0.0
         self._update_request = False   # the hosted app asked this Mac to update; the menu app carries it out
         self._update_state = ""         # what the menu app last reported, sent with the heartbeat
+        self._recovery = UpdateRecovery(state_dir / "update-operation.json", self._report_recovery)
         self._status_at = 0.0           # when a client (normally the menu app) last asked for status
         self._open_app_at = 0.0
         self._readiness = {}
@@ -202,7 +207,7 @@ class DesktopAgent:
                     path.unlink()
                 if not servers:
                     control.server_close()
-            for worker in (self._pair_thread, self._remote_thread, self._beat_thread, self._readiness_thread):
+            for worker in (self._pair_thread, self._beat_thread, self._readiness_thread):
                 if worker:
                     worker.join(20)
             lease.close()
@@ -220,11 +225,19 @@ class DesktopAgent:
             return {"agent": "running" if self.local else "starting", "setup": "needs_project" if not root else "ready" if machine else "needs_pairing",
                     "local_interface": "ready" if self.local else "starting", "local_origin": self.local.base_url.rstrip("/") if self.local else "",
                     "remote_access": "off" if not self.remote_enabled else "waiting_for_legacy" if legacy_running else self._remote_state,
+                    "connection": self._connection_manager.status() if self._connection_manager else None,
                     "remote_enabled": self.remote_enabled, "legacy": self._legacy["state"], "manual_server": self._legacy["manual_server"],
                     "activity": {"runs": runs, "tasks": max(0, active - runs)},
                     "project": {"name": root.name, "root": str(root)} if root else None, "pairing": pairing,
                     "runner": {"version": account.package_version(), "api_version": account.API_VERSION}, "update": self._update,
-                    "update_request": self._update_request, "readiness": dict(self._readiness)}
+                    "update_request": self._update_request, "update_operation": self._recovery.snapshot(),
+                    "readiness": dict(self._readiness)}
+
+    def _report_recovery(self, operation_id, state):
+        machine = account.load_machine()
+        if not machine:
+            return {"accepted": False}
+        return self.dependencies.update_progress(machine, operation_id, state)
 
     def handle(self, command: str, params: dict) -> dict:
         validate_request(json.dumps({"version": 1, "request_id": "internal", "command": command, "params": params}).encode())
@@ -232,6 +245,12 @@ class DesktopAgent:
             self._status_at = time.monotonic()
             return self.status()
         if command == "update_progress":
+            if params.get("operation_id"):
+                accepted = self._recovery.report(params["operation_id"], params["state"])
+                self._beat_at = 0
+                return {"accepted": accepted}
+            if (self._recovery.snapshot() or {}).get("state") not in TERMINAL | {None}:
+                return {"accepted": False}
             with self._lock:
                 self._update_state = params["state"]
                 self._update_request = False
@@ -250,7 +269,17 @@ class DesktopAgent:
             self._check_legacy()
             return {**result, "manual_server": self._legacy["manual_server"]}
         if command in ("prepare_update", "stop_if_idle"):
+            operation_id = params.get("operation_id")
+            recovery = self._recovery.snapshot()
+            if command == "prepare_update" and recovery and recovery["state"] not in TERMINAL:
+                if operation_id != recovery["id"] or recovery["action"] == "cancel":
+                    return {"accepted": False, "reason": "The update was cancelled or belongs to another request."}
+            elif operation_id:
+                return {"accepted": False, "reason": "That update request is no longer active."}
             accepted = self.local.gate.prepare("update" if command == "prepare_update" else "stop")
+            if accepted and operation_id and not self._recovery.report(operation_id, "updating"):
+                self.local.gate.cancel()
+                return {"accepted": False, "reason": "The update could not claim installation. It may have been cancelled."}
             if accepted:
                 if command == "stop_if_idle":
                     self.stop_event.set()
@@ -284,9 +313,11 @@ class DesktopAgent:
             return {"accepted": True}
         if command == "remote_access":
             with self.local.gate.admit(), self._lock:
+                changed = self.remote_enabled != params["enabled"]
                 self.remote_enabled = params["enabled"]
                 _atomic_json(self.state_dir / "desktop.json", {"remote_enabled": self.remote_enabled})
-                self._remote_generation += 1
+                if changed:
+                    self._remote_generation += 1
                 if not self.remote_enabled:
                     self._stop_remote()
                 else:
@@ -334,37 +365,61 @@ class DesktopAgent:
             release()
 
     def _stop_remote(self):
+        if self.local:
+            self.local.connection_manager = None
         if self.remote:
             self.remote.accepting_requests = False
-        proc, self._tunnel_proc = self._tunnel_proc, None
+            self.remote.connection_manager = None
+        manager, self._connection_manager = self._connection_manager, None
+        if manager:
+            manager.stop()
         self._endpoint = ""
         self._remote_state = "off" if not self.remote_enabled else "connecting"
-        self.dependencies.tunnel_stop(proc)
 
     def _start_remote(self, generation):
-        proc = None
-        try:
-            proc, endpoint = self.dependencies.tunnel_start(self.remote.server_address[1])
-            parsed = urlsplit(endpoint or "")
+        def changed():
             with self._lock:
-                if generation != self._remote_generation or not self.remote_enabled or not project_ready(self.local.root) or not account.load_machine() or self.stop_event.is_set():
-                    self.dependencies.tunnel_stop(proc)
+                if generation != self._remote_generation or not self._connection_manager:
                     return
-                self._endpoint = endpoint if parsed.scheme == "https" and parsed.netloc and not parsed.username else ""
-                self._remote_state = "connected" if self._endpoint and proc and proc.poll() is None else "unavailable"
-                if self._remote_state == "connected":
-                    self._tunnel_proc = proc
-                else:
-                    self.dependencies.tunnel_stop(proc)
-                    self._tunnel_proc = None
-                    self._endpoint = ""
-                self.remote.accepting_requests = self._remote_state == "connected"
-                self._retry_at = time.monotonic() + 10
+                manager = self._connection_manager
+                status = manager.status()
+                connected = status.get("state") == "connected"
+                self._endpoint = manager.endpoint if connected else ""
+                self._remote_state = "unavailable" if status.get("state") == "failed" else status.get("state", "checking")
                 self._beat_at = 0
-        except Exception:
-            self.dependencies.tunnel_stop(proc)
-            self._retry_at = time.monotonic() + 30
-            self._last_error = "tunnel_failed"
+
+        def prepare(endpoint):
+            parsed = urlsplit(endpoint)
+            with self._lock:
+                if generation != self._remote_generation:
+                    return
+                if self.remote.allowed_hosts is not None:
+                    self.remote.allowed_hosts.update(filter(None, (parsed.netloc, parsed.hostname)))
+
+        store = ConnectionStore()
+
+        def start_cloudflare(port):
+            configured = store.data.get("providers", {}).get("cloudflare", {})
+            token = configured.get("token")
+            if token:
+                proc, endpoint = self.dependencies.tunnel_start(port, token=token)
+                return proc, endpoint or configured.get("url", "")
+            return self.dependencies.tunnel_start(port)
+
+        options = {"cloudflare_stop": self.dependencies.tunnel_stop, "store": store}
+        if self.dependencies.public_probe is not None:
+            options["probe"] = self.dependencies.public_probe
+        manager = self.dependencies.connection_factory(
+            port=self.remote.server_address[1], secret=self.remote.token,
+            cloudflare_start=start_cloudflare, notify=changed,
+            prepare_endpoint=prepare, **options)
+        self._connection_manager = manager
+        self.remote.connection_manager = manager
+        self.local.connection_manager = manager
+        # The health challenge and authenticated runner must be reachable while a provider is checked.
+        self.remote.accepting_requests = True
+        self._remote_state = "checking"
+        manager.start()
 
     def _check_legacy(self):
         try:
@@ -400,25 +455,23 @@ class DesktopAgent:
                 self.local.selected_root = self.local.root
                 self.local.root = None
                 self._remote_generation += 1
+            eligible = self.remote_enabled and self.local.root and machine and not legacy_running
+            if not eligible:
+                if self._connection_manager:
+                    self._remote_generation += 1
+                    self._stop_remote()
+            elif not self._connection_manager and time.monotonic() >= self._retry_at:
+                try:
+                    self._start_remote(self._remote_generation)
+                except (OSError, ValueError, RuntimeError):
+                    self._stop_remote()
+                    self._remote_state = "unavailable"
+                    self._last_error = "connection_failed"
+                    self._retry_at = time.monotonic() + 30
             if self._reset_tunnel_requested:
                 self._reset_tunnel_requested = False
-                if self.remote_enabled and self.local.root and machine and not legacy_running:
-                    # Invalidate an in-flight launch as well as the current tunnel. Local work keeps running.
-                    self._remote_generation += 1
-                    self._stop_remote()
-                    self._retry_at = 0
-            if not self.remote_enabled or not self.local.root or not machine or legacy_running:
-                if self._tunnel_proc or self._endpoint:
-                    self._remote_generation += 1
-                    self._stop_remote()
-            elif (not self._remote_thread or not self._remote_thread.is_alive()) and time.monotonic() >= self._retry_at:
-                if self._tunnel_proc and self._tunnel_proc.poll() is None:
-                    self._retry_at = time.monotonic() + 10
-                else:
-                    self._stop_remote()
-                    self._remote_state = "connecting"
-                    self._remote_thread = threading.Thread(target=self._start_remote, args=(self._remote_generation,), daemon=True)
-                    self._remote_thread.start()
+                if eligible and self._connection_manager:
+                    self._connection_manager.request("legacy-reset-" + str(time.monotonic_ns()), "repair")
             if machine and not legacy_running and time.monotonic() >= self._beat_at and (not self._beat_thread or not self._beat_thread.is_alive()):
                 self._beat_at = time.monotonic() + account.HEARTBEAT_SECONDS
                 endpoint = self._endpoint if self.remote_enabled else ""
@@ -427,17 +480,34 @@ class DesktopAgent:
                 self._beat_thread.start()
             # An update was asked for but no menu app has checked in for a minute (someone quit it): start it hidden.
             now = time.monotonic()
-            if self._update_request and now - self._status_at > 60 and now >= self._open_app_at:
+            recovery = self._recovery.snapshot()
+            recovery_pending = recovery and recovery["state"] not in TERMINAL | {"updating"}
+            if (self._update_request or recovery_pending) and now - self._status_at > 60 and now >= self._open_app_at:
                 self._open_app_at = now + 300
                 threading.Thread(target=self._start_menu, daemon=True).start()
 
     def _heartbeat(self, machine, endpoint, runs, update_state, readiness):
         try:
+            self._recovery.retry_pending()
+            with self._lock:
+                manager = self._connection_manager
+                connection = manager.status() if manager else None
+                connection_ack = manager.ack_id if manager else None
+                endpoint = self._endpoint if self.remote_enabled and connection and connection.get("state") == "connected" else ""
             reply = self.dependencies.heartbeat(machine, endpoint, running=runs, update_state=update_state or None,
-                                                readiness=readiness or None)
+                                                readiness=readiness or None, connection=connection,
+                                                connection_ack=connection_ack, update_control=1, update_ack=self._recovery.ack())
         except Exception:
             self._last_error = "heartbeat_failed"
             return
+        command = reply.get("connection_command") if isinstance(reply, dict) else None
+        if isinstance(reply, dict) and reply.get("update_operation"):
+            self._recovery.accept(reply["update_operation"])
+        if account.valid_connection_command(command):
+            with self._lock:
+                if self.remote_enabled and self._connection_manager:
+                    if self._connection_manager.request(command["id"], command["action"], expires=command["expires"]):
+                        self._beat_at = 0
         if isinstance(reply, dict) and reply.get("reset_tunnel") is True:
             with self._lock:
                 self._reset_tunnel_requested = True

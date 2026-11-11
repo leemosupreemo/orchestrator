@@ -59,7 +59,7 @@ class ServiceTests(unittest.TestCase):
         spec = self.spec()
         plist = plistlib.loads(service.render_launchd(spec))
         self.assertEqual(plist["Label"], "com.orchestrator.ui")
-        self.assertEqual(plist["ProgramArguments"], [sys.executable, "-m", "orchestrator", "ui", "--no-open", "--tunnel"])
+        self.assertEqual(plist["ProgramArguments"], [sys.executable, "-m", "orchestrator", "ui", "--no-open", "--managed-connection"])
         self.assertEqual(plist["EnvironmentVariables"]["PATH"], "/opt/homebrew/bin:/usr/bin")  # so cloudflared, gh, claude… are found
         self.assertTrue(plist["RunAtLoad"])
         self.assertTrue(plist["KeepAlive"])
@@ -74,7 +74,7 @@ class ServiceTests(unittest.TestCase):
     def test_the_systemd_unit_quotes_paths_and_restarts(self):
         unit = service.render_systemd(service.Spec(python="/opt/my python/bin/python3", workdir=Path("/home/me/.orchestrator/service"),
                                                    log=Path("/home/me/.orchestrator/logs/service.log"), path="/usr/bin:/bin"))
-        self.assertIn('ExecStart="/opt/my python/bin/python3" "-m" "orchestrator" "ui" "--no-open" "--tunnel"', unit)
+        self.assertIn('ExecStart="/opt/my python/bin/python3" "-m" "orchestrator" "ui" "--no-open" "--managed-connection"', unit)
         self.assertIn('Environment="PATH=/usr/bin:/bin"', unit)
         self.assertIn("Restart=always", unit)
         self.assertIn("WantedBy=default.target", unit)
@@ -89,6 +89,19 @@ class ServiceTests(unittest.TestCase):
                                      ["launchctl", "bootstrap", domain, str(path)]])
         self.assertTrue(any(self.project.name in n for n in notes))
         self.assertEqual(oct((self.state.resolve() / "logs" / "service.log").stat().st_mode & 0o777), "0o600")  # holds the access address
+
+    def test_reinstall_adopts_existing_explicit_public_url(self):
+        from orchestrator.connection_manager import ConnectionStore
+        path = service.definition_path('Darwin')
+        path.parent.mkdir(parents=True)
+        path.write_bytes(plistlib.dumps({'ProgramArguments': ['/python', '-m', 'orchestrator', 'ui', '--public-url', 'https://machine.tail123.ts.net']}))
+        service.install(self.spec(), system='Darwin', run=FakeRun())
+        store = ConnectionStore()
+        self.assertEqual(store.data['selected'], 'funnel')
+        self.assertEqual(store.data['providers']['funnel']['url'], 'https://machine.tail123.ts.net')
+        self.assertIn('--managed-connection', plistlib.loads(path.read_bytes())['ProgramArguments'])
+        service.install(self.spec(), system='Darwin', run=FakeRun())
+        self.assertEqual(ConnectionStore().data['selected'], 'funnel')
 
     def test_install_on_linux_enables_the_unit(self):
         run = FakeRun()
@@ -106,9 +119,50 @@ class ServiceTests(unittest.TestCase):
 
     def test_a_failing_launchctl_is_reported(self):
         run = FakeRun({"launchctl bootstrap": CompletedProcess([], 5, "", "Bootstrap failed: 5: Input/output error")})
-        with self.assertRaises(service.ServiceError) as caught:
+        with patch("time.sleep"), self.assertRaises(service.ServiceError) as caught:
             service.install(self.spec(), system="Darwin", run=run)
         self.assertIn("Input/output error", str(caught.exception))
+
+    def test_existing_named_cloudflare_token_is_adopted_privately(self):
+        from orchestrator.connection_manager import ConnectionStore
+        for flags in (['--tunnel-token','secret-token'],['--tunnel-token=secret-token']):
+            path=service.definition_path('Darwin'); path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(plistlib.dumps({'ProgramArguments':['python','-m','orchestrator','ui','--tunnel']+flags}))
+            service.install(self.spec(),system='Darwin',run=FakeRun())
+            store=ConnectionStore()
+            self.assertEqual(store.data['providers']['cloudflare']['token'],'secret-token')
+            self.assertNotIn('secret-token',path.read_text())
+            self.assertEqual(store.path.stat().st_mode & 0o777,0o600)
+
+    def test_failed_provider_adoption_preserves_installed_definition(self):
+        from orchestrator.connection_manager import ConnectionStore
+        path=service.definition_path('Darwin'); path.parent.mkdir(parents=True)
+        original=plistlib.dumps({'ProgramArguments':['python','--public-url','https://runner.example']})
+        path.write_bytes(original)
+        with patch.object(ConnectionStore,'adopt',side_effect=OSError('cannot persist')), self.assertRaises(OSError):
+            service.install(self.spec(),system='Darwin',run=FakeRun())
+        self.assertEqual(path.read_bytes(),original)
+
+    def test_launchd_bootstrap_retries_only_transient_teardown_failure(self):
+        class TeardownRun(FakeRun):
+            def __call__(self, argv, **kwargs):
+                result=super().__call__(argv, **kwargs)
+                if argv[1] == 'bootstrap' and sum(call[1] == 'bootstrap' for call in self.calls) == 1:
+                    return CompletedProcess(argv, 5, '', 'Input/output error')
+                return result
+        run=TeardownRun()
+        with patch('time.sleep') as sleep:
+            service.install(self.spec(), system='Darwin', run=run)
+        self.assertEqual(sum(call[1] == 'bootstrap' for call in run.calls), 2)
+        sleep.assert_called_once_with(1)
+
+    def test_launchd_bootstrap_retry_is_bounded_and_other_errors_are_immediate(self):
+        for code, attempts in ((5,3),(7,1)):
+            run=FakeRun({'launchctl bootstrap': CompletedProcess([],code,'','bootstrap failure')})
+            with patch('time.sleep') as sleep, self.assertRaises(service.ServiceError):
+                service.install(self.spec(), system='Darwin', run=run)
+            self.assertEqual(sum(call[1] == 'bootstrap' for call in run.calls), attempts)
+            self.assertEqual(sleep.call_count, attempts-1)
 
     def test_other_systems_are_told_plainly(self):
         with self.assertRaises(service.ServiceError) as caught:

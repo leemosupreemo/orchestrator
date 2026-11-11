@@ -16,20 +16,24 @@
   const CODE_LENGTH = 8;
   // The oldest computer this page works well with: orchestrator/account.py's API_VERSION, which a computer reports in
   // its state and its heartbeat. Raise it in the same change that makes the page rely on something newer.
-  const REQUIRED_RUNNER_API = 3;
+  const REQUIRED_RUNNER_API = 4;
   const UPDATE_HINT = 'When its jobs finish, run `pipx install --force "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"`, then restart Orchestrator.';
   const APP_UPDATE_HINT = "Choose Update to update it.";
   // What a Mac running the Orchestrator app reports about an update this page asked for.
   const UPDATE_PROGRESS = {
     requested: "Update requested. It starts within a minute.",
     checking: "Looking for an update…",
+    downloading: "Downloading the update…",
     waiting_for_work: "An update is ready. It installs when the current work finishes.",
     updating: "Updating…",
     current: "Up to date.",
     failed: "The last update didn't finish. Try again, or open Diagnostics on it.",
     unavailable: "This Mac can't update itself yet: its app has no update feed.",
+    cancelling: "Cancelling the update; waiting for this computer to confirm…",
+    cancelled: "Update cancelled.",
+    expired: "The update request expired.",
   };
-  const UPDATE_BUSY = ["requested", "checking", "waiting_for_work", "updating"];
+  const UPDATE_BUSY = ["requested", "checking", "downloading", "waiting_for_work", "updating", "cancelling"];
   // A Mac that should run unattended (a Mac mini in a closet) reports these; orchestrator/mac_readiness.py has the same.
   const READINESS_FIXES = {
     "auto_login:off": "Turn on automatic login for this user (System Settings › Users & Groups). FileVault must be off.",
@@ -271,10 +275,38 @@
     try { return new URL(url).host; } catch { return url || ""; }
   }
 
+  function safeFunnelSetupURL(value) {
+    return typeof value === "string" && value.length <= 500 &&
+      /^https:\/\/login\.tailscale\.com\/f\/funnel\?node=[A-Za-z0-9_-]{1,200}$/.test(value) ? value : "";
+  }
+
+  function connectionStatus(machine) {
+    if (machine.connection_command_pending) return "Repair requested";
+    const labels = {checking: "Checking", repairing: "Repairing", needs_setup: "Needs setup",
+      connected: "Connected", failed: "Connection unavailable"};
+    return labels[machine.connection?.state] || "";
+  }
+
+  function renderConnectionProgress(machine) {
+    if ((machine.api_version || 0) < 4) return "";
+    const connection = machine.connection || {};
+    const setupURL = safeFunnelSetupURL(connection.setup_url);
+    const detail = typeof connection.detail === "string" ? connection.detail.slice(0, 400) : "";
+    return `<div class="account-connection-progress">
+      <p class="muted account-machine-meta">${machine.online ? "Computer online" : "Offline"}${connection.provider && ["cloudflare", "funnel", "external"].includes(connection.provider) ? ` · ${escapeHtml(connection.provider === "funnel" ? "Tailscale Funnel" : connection.provider === "cloudflare" ? "Cloudflare" : "External connection")}` : ""}</p>
+      ${detail ? `<p class="muted">${escapeHtml(detail)}</p>` : ""}
+      ${connection.state === "needs_setup" ? setupURL
+        ? `<p class="muted">The Tailscale account owner needs to enable Funnel once. Keep this page open; Orchestrator finishes automatically when it is enabled.</p>
+           <a class="btn small primary" href="${escapeHtml(setupURL)}" target="_blank" rel="noopener noreferrer">Enable Funnel ↗</a>`
+        : `<p class="muted">Install <a href="https://tailscale.com/download" target="_blank" rel="noopener noreferrer">Tailscale</a> on this computer and sign in, then choose Set up stable connection to retry. Orchestrator will show the account owner’s enable link here if needed.</p>` : ""}
+    </div>`;
+  }
+
   function renderTroubleshoot(t) {
     if (!t) return "";
     const endpoint = t.endpoint || t.machine?.endpoint || "";
     const desktopApp = t.machine?.updatable === true;
+    if ((t.machine?.api_version || 0) >= 4) return `<div class="account-connection-help"><p>Choose Fix connection to check and repair remote access while Orchestrator keeps running. Set up stable connection uses Tailscale Funnel.</p><p class="muted">Keep the computer awake and connected to the internet.</p></div>`;
     return `<div class="account-connection-help">
       <p>${t.error && t.machine?.online ? "SSH uses a separate connection and may still work. Try Reconnect to renew the web connection." : desktopApp ? "Open Orchestrator on your Mac and turn on Remote access." : "Run <code>orchestrator ui --tunnel</code> on this computer."}</p>
       <ul>
@@ -296,11 +328,19 @@
         <button type="button" class="linklike" data-account-action="idea-change">Change</button></p>
         <p class="muted">Next, set up the computer it runs on. Orchestrator runs on your own computer: your code, model subscriptions and connected apps stay there.</p>` : "";
     const rows = list.map((m) => {
+      const managed = (m.api_version || 0) >= 4;
       const failed = troubleshoot?.machine?.id === m.id;
-      const status = failed ? "Web connection unavailable" : m.reachable ? "Running" : m.online ? "Connecting" : "Offline";
+      const status = managed ? (m.connection_command_pending ? "Repair requested"
+        : failed && !["checking", "repairing", "needs_setup"].includes(m.connection?.state) ? "Connection unavailable"
+        : connectionStatus(m) || (m.reachable ? "Connected" : "Checking"))
+        : failed ? "Web connection unavailable" : m.reachable ? "Running" : m.online ? "Connecting" : "Offline";
+      const needsRepair = managed && m.online && (failed || !m.reachable || ["failed", "needs_setup"].includes(m.connection?.state));
+      const commandDisabled = m.connection_command_pending ? " disabled" : "";
+      const repairButton = `<button type="button" class="btn small ghost" data-account-action="repair-connection" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}"${commandDisabled}>Fix connection</button>`;
       const tone = failed ? "warn" : "muted";
-      const progress = UPDATE_PROGRESS[m.update_state] || "";
-      const canUpdate = m.updatable && m.online && !UPDATE_BUSY.includes(m.update_state);
+      const updateState = m.update_operation?.state || m.update_state;
+      const progress = UPDATE_PROGRESS[updateState] || "";
+      const canUpdate = m.updatable && m.online && !UPDATE_BUSY.includes(updateState);
       const fixes = readinessFixes(m.readiness);
       const help = failed ? troubleshoot : {machine: m, endpoint: m.endpoint};
       return `<article class="account-machine">
@@ -309,14 +349,17 @@
           <span class="account-status ${tone}" title="${failed ? "This browser could not reach Orchestrator’s web connection. Other connections, such as SSH, may still work." : "Reported by this computer. Open checks the connection from your browser."}">${status}</span>
         </div>
         <p class="muted account-machine-meta">${escapeHtml([m.os, m.version && `Orchestrator ${m.version}`, m.added_with_command && "Added with a command", m.has_snapshot && m.snapshot_synced_at && `Snapshot cached ${ago(m.snapshot_synced_at, now)}`].filter(Boolean).join(" · "))}</p>
+        ${renderConnectionProgress(m)}
         ${failed ? `<p class="account-connection-error" role="alert">${m.online ? "Orchestrator is running, but this browser couldn’t reach its web connection." : "This browser couldn’t reach Orchestrator’s web connection."}</p>` : ""}
         ${progress && m.update_state !== "current" ? `<p class="muted account-update">${escapeHtml(progress)}</p>` : ""}
         <div class="account-machine-actions">
           <button type="button" class="btn small primary" data-account-action="open" data-id="${escapeHtml(m.id)}">Open</button>
+          ${needsRepair ? repairButton : ""}
+          ${needsRepair ? `<button type="button" class="btn small ghost" data-account-action="setup-funnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}"${commandDisabled}>Set up stable connection</button>` : ""}
           <details class="more account-machine-more" data-account-expansion="${escapeHtml(m.id)}:more">
             <summary class="btn small ghost" aria-label="More options for ${escapeHtml(m.name)}">More</summary>
             <div class="account-machine-menu">
-              ${m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
+              ${managed ? (m.online && !needsRepair ? repairButton : "") : m.online ? `<button type="button" class="btn small ghost" data-account-action="reset-tunnel" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Reconnect</button>` : ""}
               ${canUpdate ? `<button type="button" class="btn small go" data-account-action="update" data-id="${escapeHtml(m.id)}" data-name="${escapeHtml(m.name)}">Update Orchestrator</button>` : ""}
               <details class="account-help" data-account-expansion="${escapeHtml(m.id)}:help"><summary>Connection help</summary>
                 ${m.reachable && outdated(m.api_version) ? `<p class="muted">${code(`This computer runs an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`)}</p>` : ""}
@@ -440,6 +483,7 @@
     HOSTED_ORIGINS, INSTALL_COMMAND, QUICK_INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
     enrollCommand, renderEnroll, outdated, macRelease, renderMacSetup,
     isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
+    safeFunnelSetupURL, connectionStatus, renderConnectionProgress,
     renderMachines, renderPair, renderSnapshot, providerSignInWorks, pendingIdea, saveIdea, clearIdea, ideaRoute,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

@@ -41,7 +41,7 @@ HELPER = Path(__file__).resolve().parents[1] / "web" / "static" / "preview-helpe
 HELPER_PATH = "/__orchestrator/preview-helper.js"
 HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "te", "trailer", "content-length"}
 # Dropped from pages only: either would stop the job page showing the preview in its frame or adding the helper to it.
-PAGE_ONLY = {"content-security-policy", "x-frame-options"}
+PAGE_ONLY = {"content-security-policy", "x-frame-options", "referrer-policy"}
 
 
 def add_helper(html: bytes) -> bytes:
@@ -59,7 +59,8 @@ DENIED = (b"<!doctype html><meta charset=utf-8><title>Preview</title><p style='f
           b"This live preview opens from Orchestrator. Open it from the Preview card on Home.</p>")
 
 
-def proxy_handler(host: str, port: int, remote_key: Callable[[], str] | None = None) -> type[BaseHTTPRequestHandler]:
+def proxy_handler(host: str, port: int, remote_key: Callable[[], str] | None = None,
+                  token: str = "") -> type[BaseHTTPRequestHandler]:
     """`remote_key` gives the key that requests arriving from outside this computer (through the preview's own tunnel, see
     the server's preview/remote) must carry; with none, only this computer gets in."""
     class Proxy(BaseHTTPRequestHandler):
@@ -133,12 +134,20 @@ def proxy_handler(host: str, port: int, remote_key: Callable[[], str] | None = N
             if self.headers.get("Upgrade"):
                 self.tunnel()
                 return
+            path = self.path
+            if token:
+                parts = urlsplit(path)
+                if parts.path in ("", "/", "/index.html") and ("token", token) in parse_qsl(parts.query, keep_blank_values=True):
+                    rest = urlencode([(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "token"])
+                    path = (parts.path or "/") + (f"?{rest}" if rest else "")
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else None
             headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() not in ("accept-encoding", "host")}
+            if token and not any(k.lower() == "authorization" for k in headers):
+                headers["Authorization"] = f"Bearer {token}"
             headers["Host"] = f"{host}:{port}"  # as a reverse proxy does: apps that check who they're reached as see their own address
             upstream = http.client.HTTPConnection(host, port, timeout=300)
-            upstream.request(self.command, self.path, body=body, headers=headers)
+            upstream.request(self.command, path, body=body, headers=headers)
             reply = upstream.getresponse()
             html = "text/html" in (reply.getheader("Content-Type") or "") and not reply.getheader("Content-Encoding")
             self.send_response(reply.status, reply.reason)
@@ -147,6 +156,7 @@ def proxy_handler(host: str, port: int, remote_key: Callable[[], str] | None = N
                 if name.lower() not in HOP_BY_HOP and not (html and name.lower() in PAGE_ONLY):
                     self.send_header(name, value)
             if html:
+                self.send_header("Referrer-Policy", "same-origin")
                 data = add_helper(reply.read())
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -211,12 +221,18 @@ def remote_key_from(path: Path) -> Callable[[], str]:
     return key
 
 
+class ProxyServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # A page load opens a burst of connections for scripts and styles; socketserver's default backlog of 5 resets the extras.
+    request_queue_size = 128
+
+
 def start_proxy(target: str, remote_key: Callable[[], str] | None = None) -> str:
     """Start the proxy in front of the dev server at `target`; returns the proxy's address."""
     parts = urlsplit(target)
     host = "127.0.0.1" if parts.hostname in ("localhost", "0.0.0.0", None) else parts.hostname.strip("[]")
-    server = ThreadingHTTPServer(("127.0.0.1", 0), proxy_handler(host, parts.port or 80, remote_key))
-    server.daemon_threads = True
+    token = dict(parse_qsl(parts.query)).get("token") or ""
+    server = ProxyServer(("127.0.0.1", 0), proxy_handler(host, parts.port or 80, remote_key, token))
     threading.Thread(target=server.serve_forever, daemon=True, name="preview-proxy").start()
     return f"http://localhost:{server.server_address[1]}{parts.path or '/'}{'?' + parts.query if parts.query else ''}"
 
@@ -328,6 +344,15 @@ def address(line: str) -> str:
 LOCAL_APP = re.compile(r"https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?(?:/[^\s]*)?", re.I)
 
 
+def remove_state(state: Path) -> None:
+    """Remove the preview file only if this process wrote it, so a second start that exits early never hides a running preview."""
+    try:
+        if json.loads(state.read_text()).get("pid") == os.getpid():
+            state.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
 def show_running_app(root: Path, branch: str, slug: str, url: str) -> int:
     """Preview an app that's already running on this computer (preview_url in project.json) instead of starting one: the
     person runs it their own way, and the preview shows whatever it serves."""
@@ -352,7 +377,7 @@ def show_running_app(root: Path, branch: str, slug: str, url: str) -> int:
             pass
         return 0
     finally:
-        state.unlink(missing_ok=True)
+        remove_state(state)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -437,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     finally:
         stop()
-        state.unlink(missing_ok=True)
+        remove_state(state)
 
 
 if __name__ == "__main__":

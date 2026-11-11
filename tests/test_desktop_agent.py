@@ -27,8 +27,13 @@ class DesktopAgentTests(unittest.TestCase):
         self.reported = []
         self.readiness_sent = []
         self.opened = []
+        self.connections_sent = []
+        self.acks_sent = []
 
-        def beat(machine, endpoint, running=0, update_state=None, readiness=None):
+        def beat(machine, endpoint, running=0, update_state=None, readiness=None, connection=None, connection_ack=None,
+                 update_control=0, update_ack=None):
+            self.connections_sent.append(connection)
+            self.acks_sent.append(connection_ack)
             self.beats.append(endpoint)
             self.readiness_sent.append(readiness)
             self.reported.append(update_state)
@@ -43,7 +48,7 @@ class DesktopAgentTests(unittest.TestCase):
             pair_start=lambda name=None: {"name": name or "Mac", "code": "12345678", "poll_secret": "private-poll", "expires_in": 600},
             pair_poll=lambda pairing: {"status": "pending"}, heartbeat=beat, open_app=lambda: self.opened.append(True),
             readiness=lambda control_dir: {"auto_login": "off", "sleep": "ok", "bogus": "ok", "power_restart": "<x>"},
-            tunnel_start=start, tunnel_stop=lambda proc: None, legacy_inspect=lambda state_dir: dict(self.legacy),
+            public_probe=lambda endpoint, secret, **kwargs: True, tunnel_start=start, tunnel_stop=lambda proc: None, legacy_inspect=lambda state_dir: dict(self.legacy),
             legacy_migrate=lambda state_dir, consent: self.migrations.append(consent) or {"migrated": consent, "state": "none"})
         self.agent = DesktopAgent(self.base / "state", self.base / "ctl", {}, self.dependencies)
         self.thread = None
@@ -83,6 +88,126 @@ class DesktopAgentTests(unittest.TestCase):
         apply_project_setup(root, {"build_command": "true", "test_command": "true", "models": ["codex"]})
         account.save_machine({"machine_id": "one", "machine_secret": "private-machine", "owner_email": "owner@example.com"})
         return root
+
+    def test_live_tunnel_without_public_proof_is_not_reported_connected(self):
+        from unittest.mock import Mock
+        proc = Mock()
+        proc.poll.return_value = None
+        self.dependencies.tunnel_start = lambda port: (proc, "https://unreachable.trycloudflare.com")
+        self.dependencies.public_probe = lambda endpoint, secret, **kwargs: False
+        self.project()
+        self.start()
+        self.wait(lambda: any(self.connections_sent))
+        self.assertNotIn("https://unreachable.trycloudflare.com", self.beats)
+        self.assertNotEqual(self.request("status")["result"]["remote_access"], "connected")
+
+    def test_repair_command_is_acknowledged_without_stopping_local_work(self):
+        from unittest.mock import Mock
+        launches = []
+        def connect(port):
+            launches.append(port)
+            proc = Mock()
+            proc.poll.return_value = None
+            return proc, f"https://verified-{len(launches)}.trycloudflare.com"
+        self.dependencies.tunnel_start = connect
+        self.dependencies.public_probe = lambda endpoint, secret, **kwargs: True
+        self.project()
+        self.start()
+        self.wait(lambda: "https://verified-1.trycloudflare.com" in self.beats)
+        done = threading.Event()
+        task = self.agent.local.tasks.start(lambda: done.wait(5))
+        try:
+            self.reply = {"connection_command": {"id": "repair-1", "action": "repair", "created": time.time() - 1, "expires": time.time() + 60}}
+            self.agent._heartbeat(account.load_machine(), self.agent._endpoint, 0, "", {})
+            self.wait(lambda: "repair-1" in self.acks_sent)
+            self.wait(lambda: "https://verified-2.trycloudflare.com" in self.beats)
+            self.assertEqual(self.agent.local.tasks.get(task)["status"], "running")
+            self.assertEqual(set(launches), {self.agent.remote.server_address[1]})
+        finally:
+            done.set()
+
+    def test_expired_incoming_repair_is_not_acknowledged_or_started(self):
+        self.project()
+        self.start()
+        self.wait(lambda: self.agent._connection_manager is not None)
+        self.reply = {"connection_command": {"id": "expired-repair", "action": "repair",
+                                             "created": time.time() - 120, "expires": time.time() - 60}}
+        self.agent._heartbeat(account.load_machine(), "", 0, "", {})
+        self.assertNotEqual(self.agent._connection_manager.ack_id, "expired-repair")
+
+    def test_named_cloudflare_restarts_with_private_token_and_saved_url(self):
+        from unittest.mock import Mock
+        from orchestrator.connection_manager import ConnectionStore
+        store = ConnectionStore()
+        store.data.update(selected="cloudflare", providers={"cloudflare": {
+            "enabled": True, "url": "https://named.example.com", "token": "private-named-token"}})
+        store.save()
+        proc = Mock()
+        proc.poll.return_value = None
+        started = []
+        def connect(port, token=None):
+            started.append((port, token))
+            return proc, None
+        self.dependencies.tunnel_start = connect
+        self.dependencies.public_probe = lambda endpoint, secret, **kwargs: bool(started)
+        self.project()
+        self.start()
+        self.wait(lambda: "https://named.example.com" in self.beats)
+        self.assertEqual(started, [(self.agent.remote.server_address[1], "private-named-token")])
+        self.assertNotIn("private-named-token", json.dumps(self.connections_sent))
+        self.assertNotIn("private-named-token", json.dumps(self.request("status")))
+
+    def test_local_connection_progress_uses_active_manager_and_clears_when_off(self):
+        self.project()
+        self.start()
+        self.wait(lambda: self.agent._connection_manager is not None)
+        self.assertIs(self.agent.local.connection_manager, self.agent._connection_manager)
+        self.request("remote_access", {"enabled": False})
+        self.assertIsNone(self.agent.local.connection_manager)
+        self.assertIsNone(self.agent.remote.connection_manager)
+
+    def test_public_probe_uses_remote_listener_secret_and_allowed_host(self):
+        from unittest.mock import Mock
+        proc = Mock()
+        proc.poll.return_value = None
+        self.dependencies.tunnel_start = lambda port: (proc, "https://verified.trycloudflare.com")
+        checked = []
+        def probe(endpoint, secret, **kwargs):
+            checked.append((secret, self.agent.remote.allowed_hosts is None or "verified.trycloudflare.com" in self.agent.remote.allowed_hosts))
+            return True
+        self.dependencies.public_probe = probe
+        self.project()
+        self.start()
+        self.wait(lambda: "https://verified.trycloudflare.com" in self.beats)
+        self.assertTrue(checked)
+        self.assertTrue(all(secret == self.agent.remote.token and allowed for secret, allowed in checked))
+
+    def test_repeated_remote_enable_keeps_connection_updates_live(self):
+        from unittest.mock import Mock
+        proc = Mock()
+        proc.poll.return_value = None
+        started = threading.Event()
+        def connect(port):
+            started.set()
+            self.gate.wait(3)
+            return proc, "https://enabled.trycloudflare.com"
+        self.dependencies.tunnel_start = connect
+        self.project()
+        self.start()
+        self.wait(started.is_set)
+        self.request("remote_access", {"enabled": True})
+        self.gate.set()
+        self.wait(lambda: "https://enabled.trycloudflare.com" in self.beats)
+
+    def test_connection_store_failure_keeps_local_agent_available(self):
+        def denied(**kwargs):
+            raise OSError("connection store unavailable")
+        self.dependencies.connection_factory = denied
+        self.project()
+        self.start()
+        self.wait(lambda: self.beats)
+        self.assertEqual(self.request("status")["result"]["local_interface"], "ready")
+        self.assertTrue(self.thread.is_alive())
 
     def test_local_ready_before_slow_tunnel(self):
         self.project()
@@ -163,6 +288,45 @@ class DesktopAgentTests(unittest.TestCase):
         self.wait(lambda: self.opened)
         time.sleep(.3)
         self.assertEqual(self.opened, [True])
+
+    def test_recovery_operation_requires_matching_progress_and_survives_restart(self):
+        now = time.time()
+        operation = dict(id='x' * 24, state='requested', action='update', created=now, expires=now + 1800)
+        self.reply = {'ok': True, 'update_operation': operation}
+        reports = []
+        def report(machine, operation_id, state):
+            reports.append((operation_id, state))
+            return {'accepted': True, 'update_operation': {**operation, 'state': state}}
+        self.dependencies.update_progress = report
+        self.project()
+        self.start()
+        self.wait(lambda: self.request('status')['result'].get('update_operation'))
+        self.assertFalse(self.request('update_progress', {'state': 'checking', 'operation_id': 'z' * 24})['result']['accepted'])
+        self.assertFalse(self.request('update_progress', {'state': 'current'})['result']['accepted'])
+        self.assertTrue(self.request('update_progress', {'state': 'checking', 'operation_id': operation['id']})['result']['accepted'])
+        self.assertEqual(reports, [(operation['id'], 'checking')])
+        restored = DesktopAgent(self.base / 'state', self.base / 'other', {}, self.dependencies)
+        self.assertEqual(restored.status()['update_operation']['id'], operation['id'])
+
+    def test_rejected_remote_install_claim_releases_work_gate(self):
+        self.project()
+        self.start()
+        now = time.time()
+        self.agent._recovery.accept(dict(id='x' * 24, state='requested', action='update', created=now, expires=now + 1800))
+        self.dependencies.update_progress = lambda *args: {'accepted': False}
+        result = self.request('prepare_update', {'operation_id': 'x' * 24})['result']
+        self.assertFalse(result['accepted'])
+        self.assertEqual(self.agent.local.gate.snapshot()['preparing'], '')
+
+    def test_cancel_operation_does_not_accept_late_install_or_start_other_work(self):
+        self.project()
+        self.start()
+        now = time.time()
+        operation = dict(id='x' * 24, state='cancelling', action='cancel', created=now, expires=now + 1800)
+        self.agent._recovery.accept(operation)
+        result = self.request('prepare_update', {'operation_id': operation['id']})['result']
+        self.assertFalse(result['accepted'])
+        self.assertEqual(self.request('status')['result']['update_operation']['action'], 'cancel')
 
     def test_readiness_is_checked_cleaned_and_reported(self):
         self.project()
@@ -258,7 +422,7 @@ class DesktopAgentTests(unittest.TestCase):
         self.start()
         self.wait(lambda: proc in stopped)
         self.assertIn(proc, stopped)
-        self.assertIsNone(self.agent._tunnel_proc)
+        self.assertFalse(self.agent._endpoint)
         self.assertEqual(self.request("status")["result"]["remote_access"], "unavailable")
 
     def test_tunnel_reset_renews_address_without_stopping_local_work(self):
@@ -298,7 +462,7 @@ class DesktopAgentTests(unittest.TestCase):
         self.agent._heartbeat(account.load_machine(), "", 0, "", {})
         time.sleep(.3)
         self.assertEqual(self.request("status")["result"]["remote_access"], "off")
-        self.assertIsNone(self.agent._tunnel_proc)
+        self.assertIsNone(self.agent._connection_manager)
 
     def test_project_removed_while_tunnel_connects_cannot_enable_remote(self):
         from unittest.mock import Mock
@@ -318,6 +482,6 @@ class DesktopAgentTests(unittest.TestCase):
         (root / ".orchestrator/project.json").unlink()
         self.wait(lambda: self.agent.local.root is None)
         self.gate.set()
-        self.wait(lambda: not self.agent._remote_thread.is_alive())
+        self.wait(lambda: proc in stopped)
         self.assertFalse(self.agent.remote.accepting_requests)
         self.assertIn(proc, stopped)

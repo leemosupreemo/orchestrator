@@ -93,4 +93,57 @@ import XCTest
         XCTAssertFalse(scheduler.enabled)
         XCTAssertEqual(fixture.saved, [false])
     }
+    func testCancellationWhilePrepareIsSuspendedNeverInstallsOldDownload() async {
+        var resume: CheckedContinuation<Void, Never>?
+        var installed = false
+        let scheduler = UpdateScheduler(enabled: false, save: { _ in }, prepare: {
+            await withCheckedContinuation { resume = $0 }
+        })
+        scheduler.request()
+        scheduler.updateDownloaded { installed = true }
+        let observation = Task { await scheduler.observe(.idle) }
+        while resume == nil { await Task.yield() }
+        scheduler.cancel()
+        resume?.resume()
+        let result = await observation.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(installed)
+    }
+
+    func testOldPreparationCannotConsumeReplacementDownload() async {
+        var resume: CheckedContinuation<Void, Never>?
+        var installations: [String] = []
+        var first = true
+        let scheduler = UpdateScheduler(enabled: false, save: { _ in }, prepare: {
+            if first { first = false; await withCheckedContinuation { resume = $0 } }
+        })
+        scheduler.request()
+        scheduler.updateDownloaded { installations.append("old") }
+        let observation = Task { await scheduler.observe(.idle) }
+        while resume == nil { await Task.yield() }
+        scheduler.cancel()
+        scheduler.request()
+        scheduler.updateDownloaded { installations.append("new") }
+        resume?.resume()
+        let stale = await observation.value
+        XCTAssertFalse(stale)
+        XCTAssertTrue(scheduler.waiting)
+        let replacement = await scheduler.observe(.idle)
+        XCTAssertTrue(replacement)
+        XCTAssertEqual(installations, ["new"])
+    }
+    func testRemoteReadyCancellationDisarmsInstallerAndSchedulerTogether() async {
+        let session = RemoteUpdateSession(id: "operation")
+        let scheduler = UpdateScheduler(enabled: false, save: { _ in }, prepare: {})
+        var choices: [String] = []
+        session.ready(install: { choices.append("install") }, cancel: { choices.append("skip") })
+        scheduler.request(); scheduler.updateDownloaded { session.install() }
+        let unknown = await scheduler.observe(.unknown)
+        XCTAssertFalse(unknown)
+        session.cancel(); scheduler.cancel()
+        let idle = await scheduler.observe(.idle)
+        XCTAssertFalse(idle)
+        XCTAssertEqual(choices, ["skip"])
+    }
+
 }

@@ -22,6 +22,7 @@ const context = {
   setTimeout: (callback, ms) => { now += ms; queueMicrotask(callback); },
   Account: {MACHINE_KEY: 'machine', pendingIdea: () => null, active: () => true}, ACCOUNT_BACKEND_KEY: 'backend_account',
   stopAccountPoll() {}, showSigningIn() {}, signingIn: false, pollFailures: 2,
+  previewRecovery: {active: scenario === 'preview-update'},
   state: {project: {name: 'Project'}}, getBackendUrl: () => machine.endpoint, getToken: () => 'existing',
   ConnectionLog: {add() {}},
   unlockWith: async token => { unlocked = token; },
@@ -72,7 +73,7 @@ vm.runInContext(source.slice(source.indexOf('// Open one computer:'), source.ind
     resetsWhileLocked = resets;
     releaseRepairLock?.();
     await opening;
-  } else if (scenario === 'relocate') await context.relocateMachine();
+  } else if (scenario === 'relocate' || scenario === 'preview-update') await context.relocateMachine();
   else if (scenario.startsWith('quiet')) {
     vm.runInContext(`outageStartedAt = ${scenario === 'quiet-expired' ? now - 60000 : now - 5000}`, context);
     await context.relocateMachine();
@@ -88,6 +89,11 @@ vm.runInContext(source.slice(source.indexOf('// Open one computer:'), source.ind
 
 
 class ConnectionRecoveryTests(unittest.TestCase):
+    def test_preview_update_owns_reconnection_without_background_failover(self):
+        result = self.run_flow('preview-update')
+        self.assertEqual((result['resets'], result['authCalls'], result['unlocked']), (0, 0, ''))
+        self.assertIsNone(result['failure'])
+
     def run_flow(self, scenario):
         app = Path(__file__).resolve().parents[1] / 'orchestrator/web/static/app.js'
         result = subprocess.run(['node', '-e', SCRIPT, str(app), scenario],

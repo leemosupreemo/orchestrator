@@ -332,6 +332,30 @@ class EndpointTests(ServerTestCase):
         self.assertEqual(res.status, 400)
         self.assertIn("No free model", data["error"])
 
+    def test_task_streaming_emits_chunks_and_done(self):
+        def fake(server, root, prompt, models, timeout=240, progress=None):
+            if progress:
+                progress.append_chunk("Snake ")
+                time.sleep(0.01)
+                progress.append_chunk("game.")
+            return "Snake game.", models[0]
+
+        with self.tiers(), patch.object(ui, "chat_call", fake):
+            res, data = self.request("POST", "/api/chat", body={"message": "What is this?", "tier": "complex"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202)
+            task_id = data["task"]
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
+            conn.request("GET", f"/api/product/task/{task_id}/stream", headers={"Authorization": f"Bearer {self.server.token}"})
+            reply = conn.getresponse()
+            self.assertEqual(reply.status, 200)
+            self.assertEqual(reply.getheader("Content-Type"), "text/event-stream")
+            content = reply.read().decode("utf-8")
+            self.assertIn("event: chunk", content)
+            self.assertIn("Snake ", content)
+            self.assertIn("event: done", content)
+            conn.close()
+
 
 class PageTests(unittest.TestCase):
     STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"

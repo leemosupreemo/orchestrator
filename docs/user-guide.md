@@ -694,23 +694,22 @@ Free models get a smaller share of all this, because they handle less text. The 
 
 ### Live preview
 
-For a web project, Home shows the app running from the branch that's checked out now. It starts by itself when you open Home, unless you stopped it. The frame says what's going on:
+For a web project, choose **Preview** beside the chat icon in the upper right of Home. The preview opens in its own full-screen view and shows the app running from the branch that's checked out now, including unsaved work. It starts by itself when you open it. Choose **Close** or use your browser's Back button to return. The frame says what's going on:
 
 - **Starting live preview:** the dev server is starting. **Show log** shows its output.
 - **Live preview couldn't start:** **Try again**, or **Show log** to see why.
 - **Live preview stopped responding:** **Try again** restarts the dev server, or **Dismiss**.
 - **The preview isn't running:** **Start live preview**.
 
-Above the frame:
-- **Refresh** reloads the page. Shift-click it to restart the dev server.
-- **The page path** follows the app as you click around. Type a path and press Enter to go there.
-- **Screen sizes:** desktop, tablet and phone.
-- **Open ↗** opens it in its own tab.
-- **Live** and **Link** switch between the dev server and a shared preview link.
+The globe icon above the frame opens **Public link**, where you can publish or update a shared link, copy its address, see its expiry date, and choose whether to publish automatically when a job is ready for review. A public link uses the last commit; uncommitted work stays in your private live preview.
 
-To report a problem, choose **Point out a problem**, then click the part of the page that's wrong and **Add to message**. It becomes a chip, with a small screenshot, above the text box. Remove a chip with ×. Describe what's wrong and **Send**. It becomes a new job, planned straight away, and you stay on Home. **Follow it** in the message opens the job. Problems the page detects by itself, such as errors in the browser console, are listed under the frame with **Fix with AI**.
+To report a problem, choose **Point out a problem**, then click the part of the page that's wrong and **Add to message**. It becomes a chip, with a small screenshot, above the text box. Remove a chip with ×. Describe what's wrong and **Send**. It becomes a new job, planned straight away, and you stay in the preview. **Follow it** in the message opens the job. Problems the page detects by itself, such as errors in the browser console, are listed under the frame with **Fix with AI**.
 
 The live preview isn't a job: it isn't counted among running work or listed on Activity.
+
+If Preview needs a newer Orchestrator, a supported Mac app can update automatically. A modal shows the computer's reported progress, waits for running jobs, and reconnects before trying Preview again. **Cancel update** cancels the request on the computer; the modal stays on **Cancelling…** until the computer confirms. During final installation, cancellation is disabled so the app can finish safely.
+
+Older CLI installations and Mac apps without the cancellable updater need a one-time upgrade first. The modal directs you to **Computers** rather than claiming an update has started. A failed, cancelled, or unavailable update does not start over by itself; **Try update again** explicitly starts another attempt when supported.
 
 ### Adding an existing project
 

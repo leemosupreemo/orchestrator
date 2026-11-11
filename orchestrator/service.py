@@ -10,8 +10,10 @@ from __future__ import annotations
 import os
 import plistlib
 import platform
+import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -38,7 +40,7 @@ class Spec:
 
     @property
     def command(self) -> list[str]:
-        return [self.python, "-m", "orchestrator", "ui", "--no-open", "--tunnel"]
+        return [self.python, "-m", "orchestrator", "ui", "--no-open", "--managed-connection"]
 
     @property
     def argv(self) -> list[str]:
@@ -121,8 +123,12 @@ WantedBy=default.target
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
-def _run(run: Runner, *argv: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = run(list(argv), capture_output=True, text=True)
+def _run(run: Runner, *argv: str, check: bool = True, bootstrap_retries: int = 0) -> subprocess.CompletedProcess:
+    for attempt in range(bootstrap_retries + 1):
+        result = run(list(argv), capture_output=True, text=True)
+        if result.returncode != 5 or attempt == bootstrap_retries:
+            break
+        time.sleep(1)
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         raise ServiceError(f"`{' '.join(argv)}` failed: {detail[-1] if detail else f'exit {result.returncode}'}")
@@ -144,6 +150,33 @@ def _check_system(system: str) -> None:
 
 # -- install, uninstall, status
 
+def adopt_service_url(path: Path, system: str) -> str:
+    """Migrate an installed explicit public origin before replacing its definition."""
+    from orchestrator.connection_manager import ConnectionStore, endpoint_url
+    adopted = ""
+    token = None
+    try:
+        if system == "Darwin":
+            argv = plistlib.loads(path.read_bytes()).get("ProgramArguments", [])
+        else:
+            line = next(line for line in path.read_text().splitlines() if line.startswith("ExecStart="))
+            argv = shlex.split(line.split("=", 1)[1])
+        for index, arg in enumerate(argv):
+            value = arg.split("=", 1)[1] if arg.startswith("--public-url=") else (argv[index + 1] if arg == "--public-url" and index + 1 < len(argv) else "")
+            if endpoint_url(value):
+                adopted = value
+            credential = arg.split("=", 1)[1] if arg.startswith("--tunnel-token=") else (argv[index + 1] if arg == "--tunnel-token" and index + 1 < len(argv) else None)
+            if credential:
+                token = credential
+    except (OSError, ValueError, TypeError, StopIteration, plistlib.InvalidFileException):
+        pass
+    if token is not None:
+        ConnectionStore().configure("cloudflare", adopted, token=token)
+    elif adopted:
+        ConnectionStore().adopt(adopted)
+    return adopted
+
+
 def install(spec: Spec, system: str | None = None, run: Runner = subprocess.run) -> list[str]:
     """Write the service definition and start it. Returns lines to show the person."""
     system = system or platform.system()
@@ -157,12 +190,13 @@ def install(spec: Spec, system: str | None = None, run: Runner = subprocess.run)
         raise ServiceError("There's no project for it to open. Run `orchestrator wizard` (or `orchestrator use <project>`) first, "
                            "then install the service.")
     path = definition_path(system)
+    adopt_service_url(path, system)
     path.parent.mkdir(parents=True, exist_ok=True)
     notes = [f"Opens {project.name} ({project}) at login; the last project you used from the web app carries over."]
     if system == "Darwin":
         path.write_bytes(render_launchd(spec))
         _run(run, "launchctl", "bootout", f"{_domain()}/{LABEL}", check=False)  # replace one that's already loaded
-        _run(run, "launchctl", "bootstrap", _domain(), str(path))
+        _run(run, "launchctl", "bootstrap", _domain(), str(path), bootstrap_retries=2)
     else:
         path.write_text(render_systemd(spec))
         _run(run, "systemctl", "--user", "daemon-reload")

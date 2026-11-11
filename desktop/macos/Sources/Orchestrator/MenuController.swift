@@ -10,11 +10,21 @@ import Darwin
         guard let self else { return }
         try self.launchAgent()
     }))
-    lazy var updateCoordinator = UpdateCoordinator(adapter: .live(client: client, services: services))
+    lazy var updateCoordinator = UpdateCoordinator(adapter: .live(client: client, services: services, operationID: { [weak self] in self?.updater.operationID }))
     lazy var scheduler = UpdateScheduler(
         enabled: UserDefaults.standard.object(forKey: "Orchestrator.desktop.autoUpdate") as? Bool ?? true,
         save: { UserDefaults.standard.set($0, forKey: "Orchestrator.desktop.autoUpdate") },
-        prepare: { [weak self] in try await self?.updateCoordinator.prepareInstallation() })
+        prepare: { [weak self] in
+            guard let self else { throw AgentError(code: "unavailable", message: "The updater is unavailable.") }
+            do { try await self.updateCoordinator.prepareInstallation() }
+            catch {
+                if self.updateCoordinator.state == .failed, let id = self.updater.operationID {
+                    _ = self.updater.cancelUpdate(operationID: id)
+                    self.reportUpdate("failed", operationID: id)
+                }
+                throw error
+            }
+        })
     lazy var updater: SparkleAdapter = {
         let value = SparkleAdapter(coordinator: updateCoordinator, scheduler: scheduler)
         value.displayError = { [weak self] message in
@@ -22,7 +32,8 @@ import Darwin
             self.state.operation = message
             if !self.handlingUpdateRequest { self.showSettings() }  // nobody may be watching a requested update
         }
-        value.requestFinished = { [weak self] result in self?.reportUpdate(result); self?.handlingUpdateRequest = false }
+        value.operationProgress = { [weak self] id, progress in self?.reportUpdate(progress, operationID: id) }
+        value.requestFinished = { [weak self] result in self?.reportUpdate(result); self?.updateRequests.finishManual() }
         return value
     }()
     let opener = BrowserOpener(open: { NSWorkspace.shared.open($0) })
@@ -35,8 +46,21 @@ import Darwin
     private var openedPairing: String?
     private var refreshPending = false
     private var recordedRegistration = ""
-    private var handlingUpdateRequest = false
-    private var reportedUpdate = ""
+    private let updateRequests = UpdateRequestLifecycle()
+    private var handlingUpdateRequest: Bool { updateRequests.handling }
+    private lazy var updateReports = UpdateProgressReporter { [weak self] progress, operationID in
+        guard let self else { return false }
+        var params: [String: JSONValue] = ["state": .string(progress)]
+        if let operationID { params["operation_id"] = .string(operationID) }
+        let accepted = try await self.state.command("update_progress", params: params)["accepted"]?.bool == true
+        if accepted, let operationID, UpdateRequestLifecycle.terminalStates.contains(progress) {
+            try self.updateCoordinator.acknowledgeRecovery(operationID: operationID)
+        }
+        return accepted
+    }
+    private var startupReconciled = false
+    private var startupRecoveryFinished = false
+    private var startupRecovered = false
     /// Set by `orchestrator enroll` over SSH: register login items and start the agent without showing a window.
     private let registerBackground = CommandLine.arguments.contains("--register-background")
     private var registerName: Notification.Name { Notification.Name(activationName.rawValue + ".register") }
@@ -77,13 +101,15 @@ import Darwin
         rebuildMenu()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in Task { @MainActor in await self?.refresh() } }
         Task {
+            var updated = false
             do {
-                let updated = try await updateCoordinator.recoverAfterRelaunch()
+                updated = try await updateCoordinator.recoverAfterRelaunch()
                 updater.start()
-                if updated { reportUpdate("current") }
                 if registerBackground { await registerInBackground() }
                 else { try await lifecycle.ensureRunning() }
             } catch { state.error = error.localizedDescription }
+            startupRecovered = updated
+            startupRecoveryFinished = true
             await refresh()
             if state.status?["setup"]?.string != "ready" && !registerBackground { showWelcome() }
             if CommandLine.arguments.contains("--smoke-menu") {
@@ -121,18 +147,48 @@ import Darwin
         } catch { throw AgentError(code: "start_failed", message: "Could not start the bundled agent. Open Diagnostics.") }
     }
     func refresh() async {
-        guard !refreshPending else { return }
+        guard startupRecoveryFinished, !refreshPending else { return }
         refreshPending = true
         defer { refreshPending = false }
         await state.refresh()
-        recordRegistration()
-        await scheduler.observe(state.activity)
-        if state.status?["update_request"]?.bool == true, !handlingUpdateRequest {
-            handlingUpdateRequest = true; reportedUpdate = ""
-            if updater.requestUpdate() { reportUpdate("checking") }
-            else { reportUpdate("unavailable"); handlingUpdateRequest = false }
+        if !startupReconciled {
+            guard state.status != nil else { return } // Retry launch reconciliation after a disconnected agent returns.
+            if let report = UpdateRequestLifecycle.startupReport(operation: state.status?["update_operation"], recovered: startupRecovered,
+                                                                 recoveredOperationID: updateCoordinator.recoveredOperationID) {
+                if let id = report.operationID { updateRequests.observeTerminal(id: id, state: report.state) }
+                reportUpdate(report.state, operationID: report.operationID)
+            }
+            startupReconciled = true
+            await updateReports.flush()
         }
-        if handlingUpdateRequest, scheduler.waiting, state.activity == .busy { reportUpdate("waiting_for_work") }
+        recordRegistration()
+        // Deliver cancellation before observing idle: only the agent's atomic claim may win installation.
+        if let operation = state.status?["update_operation"], let id = operation["id"]?.string {
+            let progress = operation["state"]?.string ?? ""
+            if UpdateRequestLifecycle.terminalStates.contains(progress) {
+                if progress != "current" { _ = updater.cancelUpdate(operationID: id) }
+                updateRequests.observeTerminal(id: id, state: progress)
+            } else if operation["action"]?.string == "cancel", progress != "updating" {
+                if updater.cancelUpdate(operationID: id) {
+                    updateRequests.observeTerminal(id: id, state: "cancelled")
+                    reportUpdate("cancelled", operationID: id)
+                }
+            } else if operation["action"]?.string == "update", updateRequests.handledOperationID != id,
+                      ["requested", "checking", "downloading", "waiting_for_work"].contains(progress) {
+                updateRequests.beginRemote(id)
+                if updater.requestUpdate(operationID: id) { reportUpdate("checking", operationID: id) }
+                else { reportUpdate("unavailable", operationID: id); updateRequests.observeTerminal(id: id, state: "unavailable") }
+            }
+        }
+        await scheduler.observe(state.activity)
+        let operationState = state.status?["update_operation"]?["state"]?.string
+        let remoteFinished = operationState == nil || ["current", "cancelled", "failed", "unavailable", "expired"].contains(operationState ?? "")
+        if remoteFinished, state.status?["update_request"]?.bool == true, !handlingUpdateRequest {
+            updateRequests.beginManual()
+            if updater.requestUpdate() { reportUpdate("checking") }
+            else { reportUpdate("unavailable"); updateRequests.finishManual() }
+        }
+        if handlingUpdateRequest, scheduler.waiting, state.activity == .busy { reportUpdate("waiting_for_work", operationID: updater.operationID) }
         if services.pending, state.canStop {
             do { try await services.reconcile() }
             catch { state.error = error.localizedDescription }
@@ -141,6 +197,7 @@ import Darwin
             do { try opener.openPairing(url, trustedOrigin: hostedOrigin); openedPairing = url }
             catch { state.error = error.localizedDescription }
         }
+        await updateReports.flush()
         rebuildMenu()
     }
     func menuWillOpen(_ menu: NSMenu) { Task { await refresh() } }
@@ -250,10 +307,9 @@ import Darwin
     @objc func showDiagnostics() { window("diagnostics", title: "Orchestrator Diagnostics", view: DiagnosticsView(state: state)) }
     @objc func checkUpdates() { updater.check() }
     /// Tells the hosted app, through the agent's next heartbeat, how an update it asked for is going.
-    func reportUpdate(_ progress: String) {
-        guard progress != reportedUpdate else { return }
-        reportedUpdate = progress
-        Task { _ = try? await state.command("update_progress", params: ["state": .string(progress)]) }
+    func reportUpdate(_ progress: String, operationID: String? = nil) {
+        updateReports.enqueue(progress, operationID: operationID)
+        Task { await updateReports.flush() }
     }
     func setAutomaticUpdates(_ enabled: Bool) { scheduler.setEnabled(enabled); updater.applyAutomatic() }
     @objc func openWorkspace() { openBrowser("#/") }

@@ -10,6 +10,8 @@ import base64
 import hashlib
 import hmac
 import json
+import math
+import re
 import os
 import platform
 import socket
@@ -29,7 +31,8 @@ CONTROL_URL_ENV = "ORCHESTRATOR_CONTROL_URL"
 HEARTBEAT_SECONDS = 60
 # What this computer's server can do for the hosted app. Bumped when the hosted page starts relying on something older
 # computers lack; the page compares it with the one it needs (REQUIRED_RUNNER_API in account.js) and says to update.
-API_VERSION = 3
+API_VERSION = 4
+CAPABILITIES = {"preview_remote": True}
 INSTALL_SPEC = "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"  # what the install command on the hosted app installs
 
 
@@ -166,23 +169,50 @@ def connect(name: str | None = None, out: Callable[[str], None] = print, sleep: 
     raise AccountError("The pairing code expired. Run `orchestrator connect` again.", 410)
 
 
+def valid_connection_command(command: Any, now: float | None = None) -> bool:
+    """A delayed heartbeat cannot execute expired or unbounded provider actions."""
+    if not isinstance(command, dict) or command.get("action") not in ("repair", "setup_funnel"):
+        return False
+    command_id = command.get("id")
+    if not isinstance(command_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", command_id):
+        return False
+    created, expires = command.get("created"), command.get("expires")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+           for value in (created, expires)):
+        return False
+    now = time.time() if now is None else now
+    return 0 <= created <= now + 30 and now < expires and 0 < expires - created <= 900
+
+
 def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0, update_state: str | None = None,
-              readiness: dict[str, str] | None = None) -> dict[str, Any]:
+              readiness: dict[str, str] | None = None, connection: dict[str, Any] | None = None,
+              connection_ack: str | None = None, update_control: int = 0, update_ack: str | None = None) -> dict[str, Any]:
     """Tell the control plane this computer is up, where browsers reach it, and how many runs are going (so it can say
     so if the computer disappears mid-run). The app also reports its update progress, and the reply may ask it to update.
     Forgets the pairing if the account removed it."""
     body = {"endpoint": endpoint, "version": package_version(), "os": os_label(), "api_version": API_VERSION,
-            "running": running, "packaged": bool(os.environ.get("ORCHESTRATOR_PACKAGED_APP"))}
+            "running": running, "packaged": bool(os.environ.get("ORCHESTRATOR_PACKAGED_APP")),
+            "capabilities": dict(CAPABILITIES),
+            "update_control": 1 if update_control == 1 and os.environ.get("ORCHESTRATOR_PACKAGED_APP") else 0}
+    if update_ack:
+        body["update_ack"] = update_ack
     if update_state:
         body["update_state"] = update_state
     if readiness:
         body["readiness"] = readiness
+    body["connection"] = connection if connection is not None else {}
+    if connection_ack:
+        body["connection_ack"] = connection_ack
     try:
         return call("machine/heartbeat", body, machine=machine)
     except AccountError as exc:
         if exc.status == 410:
             forget_machine()
         raise
+
+
+def report_update(machine: dict[str, Any], operation_id: str, state: str) -> dict[str, Any]:
+    return call("machine/update-progress", {"operation_id": operation_id, "state": state}, machine=machine)
 
 
 def send_events(machine: dict[str, Any], events: list[dict[str, Any]], project: str) -> None:

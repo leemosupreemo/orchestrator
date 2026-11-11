@@ -972,7 +972,7 @@ class FakeKeeper:
     def start(self): return "https://fake.trycloudflare.com"
     def stop(self): Path(sys.argv[2]).write_text("stopped")
 
-server.TunnelKeeper = FakeKeeper
+server.start_managed_connection = lambda *args, **kwargs: FakeKeeper()
 server.find_project_root = lambda *a, **k: Path(sys.argv[1])
 raise SystemExit(server.main(["--no-open", "--tunnel", "--port", "0"]))
 """

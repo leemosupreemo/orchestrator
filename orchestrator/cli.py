@@ -2592,6 +2592,7 @@ def _main(argv: list[str] | None = None) -> int:
     ui_parser.add_argument("--port", type=int, default=8765)
     ui_parser.add_argument("--no-open", action="store_true", help="Don't open a browser")
     ui_parser.add_argument("--token", help="Fixed access token for the web interface")
+    ui_parser.add_argument("--managed-connection", action="store_true", help="Manage and repair this computer’s public connection")
     ui_parser.add_argument("--tunnel", action="store_true", help="Start a Cloudflare tunnel for remote access from phone")
     ui_parser.add_argument("--tunnel-token", help="Cloudflare Named Tunnel token for a permanent stable domain")
     ui_parser.add_argument("--public-url", help="Stable public or tunnel URL for remote access")
@@ -2734,6 +2735,7 @@ def _main(argv: list[str] | None = None) -> int:
             ["--host", args.host, "--port", str(args.port)]
             + (["--no-open"] if args.no_open else [])
             + (["--token", args.token] if getattr(args, "token", None) else [])
+            + (["--managed-connection"] if getattr(args, "managed_connection", False) else [])
             + (["--tunnel"] if getattr(args, "tunnel", False) else [])
             + (["--tunnel-token", args.tunnel_token] if getattr(args, "tunnel_token", None) else [])
             + (["--public-url", args.public_url] if getattr(args, "public_url", None) else [])

@@ -2,44 +2,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 from firebase_admin import auth, exceptions, firestore, initialize_app, messaging
 from firebase_functions import https_fn, options, scheduler_fn
 
 from control_plane import ControlError, ControlPlane
+from firestore_store import FirestoreStore
 
 initialize_app()
-
-
-class FirestoreStore:
-    def __init__(self) -> None:
-        self.db = firestore.client()
-
-    def get(self, collection: str, doc_id: str) -> dict[str, Any] | None:
-        snap = self.db.collection(collection).document(doc_id).get()
-        return snap.to_dict() if snap.exists else None
-
-    def set(self, collection: str, doc_id: str, data: dict[str, Any]) -> None:
-        self.db.collection(collection).document(doc_id).set(_with_expiry(data))
-
-    def update(self, collection: str, doc_id: str, fields: dict[str, Any]) -> None:
-        self.db.collection(collection).document(doc_id).update(_with_expiry(fields))
-
-    def delete(self, collection: str, doc_id: str) -> None:
-        self.db.collection(collection).document(doc_id).delete()
-
-    def where(self, collection: str, field: str, value: Any) -> list[tuple[str, dict[str, Any]]]:
-        query = self.db.collection(collection).where(filter=firestore.FieldFilter(field, "==", value))
-        return [(snap.id, snap.to_dict()) for snap in query.stream()]
-
-
-def _with_expiry(data: dict[str, Any]) -> dict[str, Any]:
-    """Firestore's TTL policy needs a timestamp field; `expire_at` mirrors the numeric `expires` so stale pairings are swept."""
-    if "expires" in data:
-        return {**data, "expire_at": datetime.fromtimestamp(data["expires"], tz=timezone.utc)}
-    return data
 
 
 class FcmPusher:
@@ -69,7 +40,7 @@ _plane: ControlPlane | None = None
 def _get_plane() -> ControlPlane:
     global _plane
     if _plane is None:
-        _plane = ControlPlane(FirestoreStore(), pusher=FcmPusher())
+        _plane = ControlPlane(FirestoreStore(firestore.client()), pusher=FcmPusher())
     return _plane
 
 

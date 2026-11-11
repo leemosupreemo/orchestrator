@@ -259,6 +259,8 @@ class PreviewProxyTests(unittest.TestCase):
         self.assertIn(b'<head><script src="/__orchestrator/preview-helper.js"></script><title>', body)
         self.assertNotIn("Content-Security-Policy", headers)
         self.assertNotIn("X-Frame-Options", headers)  # it would leave the job page's frame blank
+        self.assertEqual(headers.get("Referrer-Policy"), "same-origin")
+        self.assertGreaterEqual(dev_preview.ProxyServer.request_queue_size, 128)
         helper, _ = self.get("/__orchestrator/preview-helper.js")
         self.assertIn(b"orchestrator-preview", helper)
 
@@ -335,10 +337,13 @@ class PreviewWiringTests(unittest.TestCase):
         for origin in ("https://*.web.app", "https://*.firebaseapp.com", "http://localhost:*", "http://127.0.0.1:*"):
             self.assertIn(origin, csp)
 
-    def test_home_shows_the_preview_with_a_way_to_point_out_problems(self):
+    def test_preview_has_its_own_page_with_a_way_to_point_out_problems(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn("${previewCard(homePreview?.preview, state.runs)}", app)
-        self.assertEqual(app.count("previewCard("), 2)  # defined once, shown only on Home: never on a job page
+        home = app[app.index("pages.home = async"):app.index("function jobHeaderActions(")]
+        self.assertNotIn("${previewCard(", home)
+        self.assertIn('href="#/preview"', app)
+        self.assertIn("pages.preview = async", app)
+        self.assertEqual(app.count("previewCard("), 2)  # defined once, shown only on its own page
         for text in ("Point out a problem", 'action: "dev_preview"', "Add to message", "Hold ⌘ or Shift to pick more",
                      '"previews/shot"', "Screenshot of them: "):
             self.assertIn(text, app)

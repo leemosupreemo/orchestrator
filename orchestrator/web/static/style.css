@@ -4788,6 +4788,15 @@ body.route-loading::before { content: ""; position: fixed; top: 0; left: 0; righ
 .job-preview-chosen { margin: 0 0 var(--space-3); padding-left: var(--space-5); }
 .job-preview-frame { position: relative; height: min(70vh, 720px); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--panel); }
 .job-preview-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+/* Preview is a page of its own; the app uses all remaining window space. */
+body[data-page="preview"] .app { display: block; min-height: 100dvh; }
+body[data-page="preview"] :is(.sidebar, .mobile-header, .tabbar, .topbar, .setup-fab, .setup-panel) { display: none; }
+body[data-page="preview"] .main { padding: 0; }
+body[data-page="preview"] .view { height: 100dvh; overflow-y: auto; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+body[data-page="preview"] .job-preview { display: flex; flex-direction: column; flex: 1; margin: 0; border: 0; border-radius: 0; }
+body[data-page="preview"] .job-preview > .card-b { display: flex; flex-direction: column; flex: 1; }
+body[data-page="preview"] .job-preview .job-preview-frame { flex: 1; height: auto; min-height: 40dvh; border-radius: 0; }
+.preview-close { margin-left: auto; }
 .job-preview-pins { position: absolute; inset: 0; z-index: var(--z-inner); cursor: crosshair; background: color-mix(in srgb, var(--accent) 6%, transparent); outline: 2px dashed var(--accent); outline-offset: -2px; }
 .job-preview-hint { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); padding: var(--space-1) var(--space-3); border-radius: var(--r-pill); background: var(--accent); color: #fff; font-size: var(--type-secondary); pointer-events: none; }
 .job-preview-pin { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--bad); border: 3px solid #fff; box-shadow: var(--shadow); }

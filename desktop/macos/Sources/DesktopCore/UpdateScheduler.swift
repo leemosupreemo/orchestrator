@@ -17,23 +17,26 @@ import Combine
     private var idleSince: Date?
     private var install: (() -> Void)?
     private var installing = false
+    private var generation = 0
     public init(enabled: Bool, now: @escaping () -> Date = Date.init, save: @escaping (Bool) -> Void, prepare: @escaping () async throws -> Void) {
         self.enabled = enabled; self.now = now; self.save = save; self.prepare = prepare
     }
     public func setEnabled(_ value: Bool) { enabled = value; save(value) }
     /// Sparkle downloaded an update and handed over the block that installs it and relaunches the app.
-    public func updateDownloaded(install: @escaping () -> Void) { self.install = install; waiting = true }
+    public func updateDownloaded(install: @escaping () -> Void) { generation += 1; self.install = install; waiting = true }
     /// Install as soon as no work is running, without the idle wait.
     public func request() { requested = true }
-    public func cancel() { install = nil; waiting = false; requested = false }
+    public func cancel() { generation += 1; install = nil; waiting = false; requested = false }
     /// Called on every status refresh. Returns true when installation was handed to Sparkle.
     @discardableResult public func observe(_ activity: Activity) async -> Bool {
         if activity == .idle { idleSince = idleSince ?? now() } else { idleSince = nil }
         guard let install, !installing, enabled || requested, activity == .idle, let idleSince else { return false }
         guard requested || now().timeIntervalSince(idleSince) >= Self.idleRequired else { return false }
+        let observedGeneration = generation
         installing = true
         defer { installing = false }
         do { try await prepare() } catch { self.idleSince = nil; return false }
+        guard generation == observedGeneration else { return false }
         self.install = nil; waiting = false; requested = false
         install()
         return true

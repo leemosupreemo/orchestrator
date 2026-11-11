@@ -9,6 +9,7 @@ Complex) and an answer from another kind, say a paid one for a free question, wo
 from __future__ import annotations
 
 import argparse
+import base64
 import sys
 from pathlib import Path
 
@@ -19,6 +20,8 @@ MARKER = "<<<ORCHESTRATOR-REPLY>>>"
 WEB_MARKER = "<<<ORCHESTRATOR-WEB>>>"
 STAGE_MARKER = "<<<ORCHESTRATOR-STAGE>>>"  # a progress line for the page, before the reply
 MODEL_MARKER = "<<<ORCHESTRATOR-MODEL>>>"  # the model that answered (printed before the reply)
+CHUNK_MARKER = "<<<ORCHESTRATOR-CHUNK>>>"  # real-time chunk of reply for streaming
+RESET_MARKER = "<<<ORCHESTRATOR-RESET>>>"  # signal to reset stream on fallback
 MAX_FALLBACKS = 2  # on/off: did the model get to search the web (printed before the reply)
 
 
@@ -29,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--web", action="store_true", help="let the model search the web, using one that can (Claude Code or the Gemini CLI)")
     parser.add_argument("--allow", default="", help="comma-separated models: try only these, in this order")
     parser.add_argument("--cwd", default="", help="folder the model works in (an empty scratch folder, so an agentic model can't change the project)")
+    parser.add_argument("--stream", action="store_true", help="stream chunks of reply as they arrive")
     args = parser.parse_args(argv)
     prompt = sys.stdin.read()
     allow = [m.strip() for m in args.allow.split(",") if m.strip()]
@@ -48,9 +52,18 @@ def main(argv: list[str] | None = None) -> int:
         print("That model isn't one of the ones this question may use.", file=sys.stderr)
         return 1
     print(f"{STAGE_MARKER}{model}{' with web search' if web else ''}", flush=True)
+
+    def chunk_handler(chunk: str | None) -> None:
+        if chunk is None:
+            print(RESET_MARKER, flush=True)
+        else:
+            b64 = base64.b64encode(chunk.encode("utf-8")).decode("ascii")
+            print(f"{CHUNK_MARKER}{b64}", flush=True)
+
     try:
         text, model_used, _session = run_llm(model, prompt, cwd=Path(args.cwd) if args.cwd else None, timeout=args.timeout, role="reviewer", web=web,
-                                              allowed_models=[model, *fallbacks], raw=True)
+                                              allowed_models=[model, *fallbacks], raw=True,
+                                              on_chunk=chunk_handler if args.stream else None)
     except Exception as exc:  # surfaced to the UI as the error message
         print(f"{exc}", file=sys.stderr)
         return 1

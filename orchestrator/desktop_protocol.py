@@ -12,10 +12,10 @@ MAX_MESSAGE = 65536
 COMMAND_PARAMS = {
     "status": (), "pair_start": ("name",), "pair_cancel": (), "browser_grant": ("route",),
     "remote_access": ("enabled",), "diagnostics": (), "stop_if_idle": (),
-    "prepare_update": (), "cancel_update": (), "legacy_status": (), "legacy_migrate": ("consent",),
-    "update_progress": ("state",),
+    "prepare_update": ("operation_id",), "cancel_update": (), "legacy_status": (), "legacy_migrate": ("consent",),
+    "update_progress": ("state", "operation_id"),
 }
-UPDATE_PROGRESS = {"checking", "waiting_for_work", "updating", "current", "failed", "unavailable"}
+UPDATE_PROGRESS = {"checking", "downloading", "waiting_for_work", "updating", "current", "failed", "unavailable", "cancelled"}
 
 
 class ProtocolError(ValueError):
@@ -58,6 +58,10 @@ def validate_request(raw: bytes) -> dict:
         raise ProtocolError("Remote access needs a boolean preference.")
     if command == "update_progress" and params.get("state") not in UPDATE_PROGRESS:
         raise ProtocolError("Unknown update progress.")
+    if "operation_id" in params:
+        value = params["operation_id"]
+        if not isinstance(value, str) or not 16 <= len(value) <= 64 or not value.isascii() or not all(c.isalnum() or c in "_-" for c in value):
+            raise ProtocolError("Invalid update operation ID.")
     if command == "legacy_migrate" and type(params.get("consent")) is not bool:
         raise ProtocolError("Moving an older service needs an explicit yes or no.")
     if "name" in params and (not isinstance(params["name"], str) or len(params["name"]) > 100):
