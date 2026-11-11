@@ -126,6 +126,18 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(found["Thirteen"]["worktree_of"], "")
         self.assertEqual(found["Thirteen-handshake"]["folder"], "Thirteen-handshake")
 
+    def test_repositories_inside_a_project_are_not_listed_even_when_reached_twice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            outer = home / "Projects" / "DAoC-Mobile"
+            (outer / ".git").mkdir(parents=True)
+            (outer / "OpenDAoC-Core" / ".git").mkdir(parents=True)  # a repository kept inside the project
+            with patch.object(ui, "detect_project_source", return_value=("local", "Local", None)), \
+                 patch.object(ui, "get_project_languages", return_value=[]), \
+                 patch.object(ui, "load_recent_projects", return_value={"projects": []}):
+                found = [Path(p["root"]).name for p in ui.scan_for_projects([home / "Projects", home])]  # home reaches it again
+        self.assertEqual(found, ["DAoC-Mobile"])
+
     def test_rows_with_the_same_name_are_told_apart_by_folder(self):
         script = r"""
 require(process.argv[1]); require(process.argv[2]);

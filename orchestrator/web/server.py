@@ -3150,6 +3150,7 @@ def scan_for_projects(search_paths: list[Path] | None = None, details_budget: fl
                     continue
 
                 if curr_str in seen:
+                    dirs.clear()  # a project found already (from another folder looked in, or one you track): not its inside too
                     continue
 
                 is_orchestrator = (curr_resolved / DEFAULT_RUNTIME_DIRNAME / "project.json").is_file()
