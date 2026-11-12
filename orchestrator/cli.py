@@ -2219,15 +2219,19 @@ def suggest_tests_command(args: argparse.Namespace) -> int:
         print("Nothing to suggest: the test setup looks complete for what was found.")
         return 0
     if found["test_command"]:
-        print(f"Main test command ({found['test_command']['why']}):\n  {found['test_command']['command']}\n"
-              "  accept with: orchestrator suggest-tests --accept test_command\n")
+        m = found["test_command"]
+        print(f"Runs after every job: your automated tests ({m['framework']}, {m['tests']}+ tests)\n  {m['what']}\n  command: {m['command']}\n"
+              "  add it with: orchestrator suggest-tests --accept test_command\n")
     if found["commands"]:
-        print("Extra test commands (all start in the manual tier, so no job runs them):")
+        print("Checks you can run yourself (nothing here runs on its own):")
         for c in found["commands"]:
-            flag = f"   ! {c['warning']}; check it points at a test server, not your live one" if c["risky"] else ""
-            needs = f"  needs: {', '.join(c['requires'])}" if c["requires"] else ""
-            print(f"  {c['id']}: {c['command']}{needs}{flag}")
-        print("  accept with: orchestrator suggest-tests --accept <name> ...   (or --accept all for the ones not marked !)\n")
+            mark = "NEEDS CARE" if c["risky"] else "recommended"
+            needs = ", needs Docker" if c["requires"] else ""
+            print(f"  {c['id']}  [{c['kind_label']}{needs}; {mark}]")
+            print(f"      {('Its own description: ' + c['description']) if c['description'] else c['what']}")
+            if c["risky"]:
+                print(f"      ! {c['warning']}. Only add it if it points at a practice server, not your real one.")
+        print("  add some with: orchestrator suggest-tests --accept <name> ...   (or --accept all for every recommended one)\n")
     for note in found["notes"]:
         print(f"Note: {note}")
     return 0

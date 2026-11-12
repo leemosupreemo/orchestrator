@@ -14,6 +14,7 @@ anything) and proposes:
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 from pathlib import Path
@@ -31,8 +32,23 @@ SCRIPT_NAME = re.compile(r"^(test|check|verify|smoke|validate)[-_.a-z0-9]*\.(py|
 TEST_PACKAGE = re.compile(r'Include="(Microsoft\.NET\.Test\.Sdk|xunit[A-Za-z.]*|NUnit[A-Za-z.0-9]*|MSTest[A-Za-z.]*)"', re.I)
 COMPOSE_FILE = re.compile(r"^(docker-)?compose([.-][\w.-]+)?\.ya?ml$", re.I)
 CONTAINER_NAME = re.compile(r"^\s+container_name:\s*[\"']?([\w.-]+)", re.M)
-# A script that does one of these may be talking to a server that is already running, which a job must not touch.
-TALKS_TO_SERVER = re.compile(r"(127\.0\.0\.1|localhost|--port|\bsocket\.|http://|baseline|--live|\blive\b)", re.I)
+# A script that names an address AND opens a connection, or is called "live", may talk to a server that is already
+# running, which a job must not touch. A word like "baseline" or "live" in a comment is not enough.
+ADDRESS = re.compile(r"(127\.0\.0\.1|localhost|--port|\bhttps?://|\bport\s*=)", re.I)
+NETWORK = re.compile(r"(\bsocket\b|requests\.|urllib|http\.client|urlopen|httpx|aiohttp|websocket|HttpClient|\bcurl\b|\.connect\()", re.I)
+LIVE_NAME = re.compile(r"live", re.I)
+TEST_METHOD = re.compile(r"\[(Fact|Theory|Test|TestMethod|TestCase)\b")
+FRAMEWORKS = (("xunit", "xUnit"), ("nunit", "NUnit"), ("mstest", "MSTest"))
+# What each kind of script is, in words for someone who doesn't write tests.
+KINDS = {
+    "server": ("Live server test", "Connects to a game server that is already running. It is an integration test: "
+               "it checks that the real pieces work together, and it can change data on that server."),
+    "docker": ("Docker server test", "Needs Docker running. It is an integration test: it starts or talks to a copy of "
+               "your server and checks the pieces work together."),
+    "data": ("Data check", "Looks over your project's files and data for mistakes, such as missing or inconsistent "
+             "entries. It is not a test of the code itself."),
+    "script": ("Script check", "A script from your project that checks something. Run it to see what it reports."),
+}
 TALKS_TO_DOCKER = re.compile(r"\bdocker\b", re.I)
 RUNNERS = {".py": "python3", ".sh": "bash", ".js": "node", ".mjs": "node"}
 
@@ -86,6 +102,54 @@ def compose_files(root: Path) -> list[dict[str, Any]]:
     return found
 
 
+def describe(path: Path, text: str) -> str:
+    """What a script says about itself: its docstring (Python) or its leading comment, first lines, short."""
+    lines: list[str] = []
+    if path.suffix.lower() == ".py":
+        try:
+            doc = ast.get_docstring(ast.parse(text))
+        except (SyntaxError, ValueError):
+            doc = None
+        lines = (doc or "").strip().splitlines()[:2]
+    else:
+        for line in text.splitlines()[:12]:
+            stripped = line.strip()
+            if stripped.startswith("#!") or not stripped:
+                continue
+            if stripped[:1] == "#" or stripped[:2] == "//":
+                lines.append(stripped.lstrip("#/ ").strip())
+            else:
+                break
+            if len(lines) == 2:
+                break
+    return " ".join(x for x in lines if x)[:200]
+
+
+def dotnet_summary(root: Path, projects: list[str]) -> dict[str, Any]:
+    """Which test library the projects use and roughly how many tests they hold."""
+    libraries: list[str] = []
+    tests = 0
+    for rel in projects:
+        try:
+            header = (root / rel).read_text(encoding="utf-8", errors="ignore")[:20_000].lower()
+        except OSError:
+            continue
+        libraries += [label for key, label in FRAMEWORKS if key in header and label not in libraries]
+        counted = 0
+        for path in _files((root / rel).parent):
+            if path.suffix == ".cs" and counted < 2000:
+                try:
+                    tests += len(TEST_METHOD.findall(path.read_text(encoding="utf-8", errors="ignore")))
+                except OSError:
+                    pass
+                counted += 1
+    return {"libraries": libraries, "tests": tests}
+
+
+def humanize(stem: str) -> str:
+    return re.sub(r"[-_.]+", " ", stem).strip().capitalize()
+
+
 def _name_for(path: Path, taken: set[str]) -> str:
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", re.sub(r"^(test|check|verify|smoke|validate)[-_.]*", r"\1-", path.stem)).strip("-") or "check"
     name, n = base, 2
@@ -109,15 +173,16 @@ def script_candidates(root: Path, configured: set[str]) -> list[dict[str, Any]]:
             text = path.read_text(encoding="utf-8", errors="ignore")[:100_000]
         except OSError:
             continue
-        reasons = []
-        if TALKS_TO_SERVER.search(text):
-            reasons.append("it looks like it connects to a server that may already be running")
         docker = bool(TALKS_TO_DOCKER.search(text))
-        requires = ["docker"] if docker else []
-        out.append({"id": _name_for(path, taken), "command": f"{RUNNERS[path.suffix.lower()]} {rel.as_posix()}",
-                    "source": rel.as_posix(), "tier": "manual", "requires": requires, "risky": bool(reasons),
+        risky = bool(LIVE_NAME.search(path.stem)) or bool(ADDRESS.search(text) and NETWORK.search(text))
+        stem = path.stem.lower()
+        kind = "server" if risky else "docker" if docker else "data" if re.match(r"(check|validate|verify)", stem) else "script"
+        label, what = KINDS[kind]
+        out.append({"id": _name_for(path, taken), "title": humanize(path.stem), "command": f"{RUNNERS[path.suffix.lower()]} {rel.as_posix()}",
+                    "source": rel.as_posix(), "tier": "manual", "requires": ["docker"] if docker else [], "risky": risky,
+                    "kind": kind, "kind_label": label, "what": what, "description": describe(path, text),
                     "why": f"{rel.as_posix()} is named like a test or check" + (" and uses Docker" if docker else ""),
-                    "warning": reasons[0] if reasons else ""})
+                    "warning": "it looks like it connects to a server that may already be running" if risky else ""})
         if len(out) >= MAX_CANDIDATES:
             break
     return out
@@ -137,8 +202,15 @@ def suggest(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     if not str(config.get("test_command") or "").strip():
         command = dotnet_test_command(root)
         if command:
-            main = {"id": "test_command", "command": command,
-                    "why": f"{len(dotnet_test_projects(root))} .NET test project(s) found, with no main test command set"}
+            projects = dotnet_test_projects(root)
+            info = dotnet_summary(root, projects[:MAX_PROJECTS])
+            library = " / ".join(info["libraries"]) or ".NET"
+            main = {"id": "test_command", "command": command, "projects": projects[:MAX_PROJECTS], "tests": info["tests"],
+                    "framework": library,
+                    "why": f"{len(projects)} .NET test project(s) found, with no main test command set",
+                    "what": f"Automated tests written with {library}. Tests like these call your code directly and check "
+                            "the result, so they are usually unit tests: quick, and they need nothing else running. "
+                            "This runs after every job, so a job can't be finished with broken tests."}
     have = {c.get("name") for c in config.get("test_commands") or [] if isinstance(c, dict)}
     commands = [c for c in script_candidates(root, configured) if c["id"] not in have]
     notes = []

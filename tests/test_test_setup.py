@@ -91,6 +91,43 @@ class DetectionTests(unittest.TestCase):
             self.assertIn("no Unity Test Framework", notes)
 
 
+class ExplanationTests(unittest.TestCase):
+    def test_a_word_in_a_comment_is_not_a_server_but_an_address_with_a_connection_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "tools/check_a.py", "# reads the baseline file; this is live data\nprint(1)\n")
+            write(root, "tools/check_b.py", 'import socket\ns = socket.create_connection(("127.0.0.1", 10300))\n')
+            write(root, "tools/check_live_thing.py", "print(1)\n")  # named live
+            by_id = {c["id"]: c for c in test_setup.script_candidates(root, set())}
+            self.assertFalse(by_id["check-a"]["risky"])
+            self.assertTrue(by_id["check-b"]["risky"])
+            self.assertTrue(by_id["check-live_thing"]["risky"])
+            self.assertEqual(by_id["check-a"]["kind"], "data")
+            self.assertEqual(by_id["check-b"]["kind"], "server")
+            self.assertIn("integration test", by_id["check-b"]["what"])
+
+    def test_a_scripts_own_description_is_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "tools/check_a.py", '"""Checks every zone file has a name.\n\nMore detail."""\nprint(1)\n')
+            write(root, "tools/check_b.sh", "#!/bin/bash\n# Verifies the build output exists.\n# Second line.\necho hi\n")
+            write(root, "tools/check_c.py", "print(1)\n")
+            by_id = {c["id"]: c for c in test_setup.script_candidates(root, set())}
+            self.assertEqual(by_id["check-a"]["description"], "Checks every zone file has a name.")  # first paragraph
+            self.assertEqual(by_id["check-b"]["description"], "Verifies the build output exists. Second line.")
+            self.assertEqual(by_id["check-c"]["description"], "")
+            self.assertEqual(by_id["check-a"]["title"], "Check a")
+
+    def test_the_main_suggestion_names_the_framework_and_counts_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "tests/A.Tests/A.Tests.csproj", XUNIT)
+            write(root, "tests/A.Tests/T.cs", "[Fact] void A(){}\n[Theory] void B(){}\n[Fact] void C(){}\n")
+            main = test_setup.suggest(root, {})["test_command"]
+            self.assertEqual((main["framework"], main["tests"], main["projects"]), ("xUnit", 3, ["tests/A.Tests/A.Tests.csproj"]))
+            self.assertIn("unit tests", main["what"])
+
+
 class ApplyTests(unittest.TestCase):
     def test_all_takes_the_main_command_and_safe_commands_but_never_a_risky_one(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,8 +189,10 @@ class CliTests(unittest.TestCase):
             root = self.project(tmp)
             code, out = self.run_cli(root, ["suggest-tests"])
             self.assertEqual(code, 0)
-            self.assertIn("test-server: python3 tools/test-server.py  needs: docker", out)
+            self.assertIn("test-server  [Docker server test, needs Docker; recommended]", out)
+            self.assertIn("NEEDS CARE", out.split("test-live", 1)[1])
             self.assertIn("! it looks like it connects to a server", out.split("test-live", 1)[1])
+            self.assertIn("xUnit", out)
             self.assertEqual(self.run_cli(root, ["suggest-tests", "--accept", "nope"])[0], 1)
 
     def test_a_project_with_nothing_to_suggest_says_so(self):

@@ -8537,21 +8537,47 @@ function suiteLastRun(r) {
   return `Ran ${esc(ago(r.at))}${r.all ? " (all tests)" : ""}, ${how}`;
 }
 
-// What Orchestrator found for testing that isn't set up yet: a main command, scripts and Docker checks, to accept in one click.
+// What Orchestrator found for testing that isn't set up yet, explained for someone who doesn't write tests.
+const testSetupDismissKey = () => `orch.testSetupHidden:${state.project?.root || ""}`;
+const testSetupHidden = () => { try { return localStorage.getItem(testSetupDismissKey()) === "1"; } catch { return false; } };
+
 function testSetupHtml(found) {
-  if (!found || state.you?.role === "member" || !(found.test_command || found.commands?.length || found.notes?.length)) return "";
-  const row = (id, title, command, extra, checked) => `<label class="setup-suggestion"><input type="checkbox" name="accept" value="${esc(id)}"${checked ? " checked" : ""}>
-      <span><strong>${esc(title)}</strong>${extra}<br><code class="mono t-secondary">${esc(command)}</code></span></label>`;
-  const rows = [
-    found.test_command ? row("test_command", "Main test command", found.test_command.command, ` <span class="muted t-secondary">${esc(found.test_command.why)}. Runs after every job.</span>`, true) : "",
-    ...(found.commands || []).map((c) => row(c.id, c.id, c.command,
-      ` <span class="pill">By hand</span>${c.requires.length ? ` <span class="pill">needs ${esc(c.requires.join(", "))}</span>` : ""}${c.risky ? ` <span class="pill warn">check first</span><br><span class="muted t-secondary">${esc(c.warning)}. Make sure it points at a test server, not your live one.</span>` : ""}`, !c.risky)),
-  ].join("");
+  if (!found || state.you?.role === "member" || !(found.test_command || found.commands?.length)) return "";
+  if (testSetupHidden()) return `<p class="muted t-secondary mb-16">Test setup suggestions are hidden. <button type="button" class="btn small ghost" id="test-setup-show">Show them</button></p>`;
+  const item = (id, checked, title, pills, body, command) => `<label class="setup-suggestion"><input type="checkbox" name="accept" value="${esc(id)}"${checked ? " checked" : ""}>
+      <span class="stack gap-4"><span><strong>${esc(title)}</strong> ${pills}</span>${body}
+      <details class="setup-command"><summary class="muted t-secondary">Show the command</summary><code class="mono t-secondary">${esc(command)}</code></details></span></label>`;
+  const safe = (found.commands || []).filter((c) => !c.risky);
+  const careful = (found.commands || []).filter((c) => c.risky);
+  const main = found.test_command;
+  const mainHtml = main ? `<div class="setup-group"><h3>Runs automatically after every job</h3>
+      <p class="muted t-secondary">This is how Orchestrator knows a change didn't break something. If it fails, the job is sent back to be fixed before you review it.</p>
+      ${item("test_command", true, "Your project's automated tests",
+        `<span class="pill ok">Recommended</span> <span class="pill">${esc(main.framework)}</span>${main.tests ? ` <span class="pill">${main.tests}+ tests</span>` : ""}`,
+        `<span class="muted">${esc(main.what)}</span>`, main.command)}</div>` : "";
+  const safeHtml = safe.length ? `<div class="setup-group"><h3>Checks you can run yourself</h3>
+      <p class="muted t-secondary">Nothing here runs on its own. When you want one, press <strong>Run</strong> next to it on this page. Ticked ones are safe to add.</p>
+      ${safe.map((c) => item(c.id, true, c.title,
+        `<span class="pill ok">Recommended</span> <span class="pill" title="${esc(c.what)}">${esc(c.kind_label)}</span>${c.requires.length ? ` <span class="pill" title="Needs Docker Desktop running. Until it is, this shows as blocked, which is harmless.">needs Docker</span>` : ""}`,
+        `<span class="muted">${c.description ? `Its own description: “${esc(c.description)}”` : esc(c.what)}</span>`, c.command)).join("")}</div>` : "";
+  const carefulHtml = careful.length ? `<div class="setup-group"><h3>Needs care <span class="muted">(left off)</span></h3>
+      <p class="muted t-secondary">These connect to a game server that may already be running. Running one can change data on that server. If you're not sure, leave them off.</p>
+      ${careful.map((c) => item(c.id, false, c.title,
+        `<span class="pill warn">Leave off unless sure</span> <span class="pill" title="${esc(c.what)}">${esc(c.kind_label)}</span>`,
+        `<span class="muted">${c.description ? `Its own description: “${esc(c.description)}” ` : ""}Only add it if you know it points at a practice server, not your real one.</span>`, c.command)).join("")}</div>` : "";
   const notes = (found.notes || []).map((n) => `<p class="muted t-secondary">${esc(n)}</p>`).join("");
-  return `<section class="card mb-16" id="test-setup"><div class="card-h"><h2>Suggested test setup</h2></div>
+  return `<section class="card mb-16" id="test-setup"><div class="card-h"><h2>Set up testing for this project</h2></div>
     <form id="test-setup-form" class="card-b stack gap-12">
-      <p class="muted">Found by looking through your project. Nothing runs until you accept it, and extra commands start as <strong>By hand</strong>, so no job runs them.</p>
-      ${rows ? `<div class="stack gap-8">${rows}</div><div class="row gap-8"><button type="submit" class="btn primary">Use selected</button></div>` : ""}${notes}
+      <p>Tests are automatic checks that catch mistakes early. Orchestrator looked through your project and found the pieces below. <strong>Not sure? Leave the ticks as they are and press “Add what's ticked” at the bottom.</strong> The recommended choices are safe, and you can change everything later under Extra test commands.</p>
+      <details class="setup-legend"><summary>What do these words mean?</summary>
+        <dl class="stack gap-8 muted">
+          <div><dt><strong>Unit test</strong></dt><dd>A small check that one piece of your code gives the right answer. Quick, and needs nothing else running.</dd></div>
+          <div><dt><strong>Integration test</strong></dt><dd>A check that the real pieces work together, such as your app talking to a server. Slower, and often needs a server or Docker running.</dd></div>
+          <div><dt><strong>Data check</strong></dt><dd>A script that looks over your files and data for mistakes. It isn't a test of the code itself.</dd></div>
+          <div><dt><strong>Docker</strong></dt><dd>A program that runs a private copy of a server on your computer, so tests can try things without touching the real one.</dd></div>
+        </dl></details>
+      ${mainHtml}${safeHtml}${carefulHtml}${notes}
+      <div class="row gap-8"><button type="submit" class="btn primary">Add what's ticked</button><button type="button" class="btn ghost" id="test-setup-hide">Not now</button></div>
     </form></section>`;
 }
 
@@ -8802,6 +8828,8 @@ pages.tests = async (_, query) => {
       const toSuites = () => $("#test-suites")?.scrollIntoView({ block: "start" });
       if (query.get("show") === "suites") toSuites();
       $("#next-step")?.addEventListener("click", (e) => { if (e.target.closest("[data-show-suites]")) { e.preventDefault(); toSuites(); } }); // the card can be filled in later
+      $("#test-setup-hide")?.addEventListener("click", () => { try { localStorage.setItem(testSetupDismissKey(), "1"); } catch {} route(); });
+      $("#test-setup-show")?.addEventListener("click", () => { try { localStorage.removeItem(testSetupDismissKey()); } catch {} route(); });
       $("#test-setup-form")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const accept = [...e.target.querySelectorAll('input[name="accept"]:checked')].map((i) => i.value);

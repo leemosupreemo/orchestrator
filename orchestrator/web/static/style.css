@@ -4989,3 +4989,9 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .setup-suggestion { display: flex; gap: var(--space-3); align-items: flex-start; cursor: pointer; }
 .setup-suggestion input { margin-top: 4px; flex: none; }
 .setup-suggestion code { overflow-wrap: anywhere; }
+.setup-group { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line, rgba(128,128,128,.2)); }
+.setup-group h3 { margin: 0; font-size: var(--type-body); }
+.setup-legend summary { cursor: pointer; color: var(--accent); }
+.setup-legend dl { margin: var(--space-3) 0 0; } .setup-legend dd { margin: 0; }
+.setup-command summary { cursor: pointer; }
+.setup-command code { display: block; margin-top: var(--space-2); overflow-wrap: anywhere; }
