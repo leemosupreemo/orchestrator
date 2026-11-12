@@ -788,6 +788,12 @@ option.manage-projects-option {
   color: var(--text) !important;
   font-weight: var(--weight-medium);
 }
+select option.branch-recent,
+option.branch-recent {
+  background-color: var(--accent-soft) !important;
+  color: var(--text) !important;
+  font-weight: var(--weight-medium);
+}
 textarea { min-height: 110px; resize: vertical; }
 input:focus, textarea:focus, select:focus, .btn:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button:focus:not(:focus-visible), .btn:focus:not(:focus-visible), .import-option:focus:not(:focus-visible), summary:focus:not(:focus-visible) { outline: none; }
@@ -891,8 +897,12 @@ details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow:
 .clarify-you { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); }
 .clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .clarify-reply { display: flex; flex-direction: column; gap: var(--space-2); }
-.clarify-reply .field { margin: 0; }
-.clarify-reply textarea { min-height: 72px; }
+.clarify-input-row { display: flex; align-items: flex-end; gap: var(--space-2); width: 100%; }
+.clarify-input-row .field, .clarify-field { flex: 1 1 auto; margin: 0; min-width: 0; }
+.clarify-reply textarea { min-height: 52px; resize: vertical; box-sizing: border-box; }
+.clarify-buttons { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; margin-bottom: 2px; }
+.clarify-btn { display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--control-md); height: var(--control-md); min-height: var(--control-md); padding: 0; border-radius: var(--r-md); }
+.clarify-btn .icon { width: 18px; height: 18px; }
 .clarify-reply-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .clarify-reply-actions .btn { flex: 0 0 auto; }
 
@@ -3021,6 +3031,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; 
 #pd-text { font-family: var(--mono); font-size: var(--type-secondary); width: 100%; }
 
 /* Signing in */
+.signin-wrap:has(.signing-in) { padding-bottom: var(--space-4); }
 .signin-card.signing-in { align-items: center; text-align: center; gap: var(--space-3); }
 .signin-card.signing-in h2 { margin: 0; font-size: var(--type-section); }
 .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
@@ -3803,6 +3814,12 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 .brand-home { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-lg); min-height: var(--control-lg); flex-shrink: 0; border-radius: var(--r-md); }
 .mobile-title { display: flex; align-items: center; justify-content: center; min-width: 0; font-size: var(--type-body); font-weight: var(--weight-bold); }
 .mobile-title-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The name is also a project switcher, like the sidebar's: an invisible <select> over the name opens the project list */
+.project-title-switch { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; min-height: var(--control-md); padding: 0 var(--space-2); border-radius: var(--r-md); cursor: pointer; }
+.project-title-chevron { flex: none; color: var(--muted); font-size: .8em; }
+.project-title-switch:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.project-title-switch:focus-within .project-title-chevron { color: var(--text); }
+.mobile-project-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: var(--type-body); }
 
 /* A task's ⋯ menu stays beside its title on phones instead of dropping to a row of its own */
 @media (max-width: 760px) {
@@ -4593,7 +4610,7 @@ body[data-page="home"] #page-sub { grid-column: 1 / -1; grid-row: 2; width: 100%
 .home-health-icon .icon { width: var(--space-5); height: var(--space-5); }
 .home-health-yellow .home-health-icon { color: var(--warn); }
 .home-health-red .home-health-icon { color: var(--bad); }
-.home-health-icon-optional::after { content: ""; position: absolute; top: 0; right: calc(-1 * var(--space-0)); width: var(--space-1-5); height: var(--space-1-5); border: 2px solid var(--panel); border-radius: var(--r-pill); background: var(--warn); }
+.home-health-icon-optional .icon > path:first-child { stroke: url(#home-health-half); }
 .home-health-popover { position: fixed; z-index: var(--z-menu); top: auto; right: auto; left: 0; width: min(26rem, calc(100vw - 2 * var(--space-4))); max-height: min(70vh, 34rem); max-height: min(70vh, 34rem, calc(100dvh - 2 * var(--space-4))); overflow: auto; overscroll-behavior: contain; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); color: var(--text); }
 .home-health-popover-head { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--container-pad-x); background: var(--panel-2); }
 .home-health-popover-head strong { font-size: var(--type-body); }
@@ -4961,3 +4978,14 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .preview-publish-btn.is-published::after { content: ""; position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); border: 2px solid var(--panel); }
 .preview-publish-btn.is-busy { color: var(--accent); }
 .publish-url { overflow-wrap: anywhere; }
+
+/* Delivery target form: fields for the other platforms are hidden, not removed. */
+#delivery-target-form [hidden] { display: none !important; }
+/* Extra test commands: side-by-side numeric fields in the editor. */
+#dialog-body .row > .field.grow { flex: 1 1 0; }
+#extra-commands .item .title .pill { margin-left: var(--space-1); }
+
+/* Suggested test setup: one tick-box row per suggestion. */
+.setup-suggestion { display: flex; gap: var(--space-3); align-items: flex-start; cursor: pointer; }
+.setup-suggestion input { margin-top: 4px; flex: none; }
+.setup-suggestion code { overflow-wrap: anywhere; }

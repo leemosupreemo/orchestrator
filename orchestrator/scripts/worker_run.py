@@ -784,14 +784,20 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         all_tasks_done = len(completed) >= len(tasks)
 
         distributed_status = "Not Triggered"
-        if PROJECT_CONFIG.firebase_distribution and is_ios and (not is_yolo or all_tasks_done):
+        # iOS delivers only for jobs that touched iOS files; Android and web projects deliver every verified job.
+        delivers_here = is_ios or getattr(PROJECT_CONFIG, "delivery_platform", "ios") in ("android", "web")
+        if PROJECT_CONFIG.firebase_distribution and delivers_here and (not is_yolo or all_tasks_done):
             print("\n🚀 Automated build delivery triggered after verification...")
             try:
                 res = subprocess.run([sys.executable, str(SCRIPTS_DIR / "deliver_build.py"), str(job_path)], cwd=str(ROOT))
                 if res.returncode == 0:
                     formatted_time = now_iso().replace("T", " ")[:19]
-                    method = PROJECT_CONFIG.delivery_method or "ad-hoc"
-                    distributed_status = f"SUCCESS via Firebase App Distribution ({method}) at {formatted_time}"
+                    platform = getattr(PROJECT_CONFIG, "delivery_platform", "ios")
+                    if platform in ("android", "web"):
+                        distributed_status = f"SUCCESS via Firebase ({platform}) at {formatted_time}"
+                    else:
+                        method = PROJECT_CONFIG.delivery_method or "ad-hoc"
+                        distributed_status = f"SUCCESS via Firebase App Distribution ({method}) at {formatted_time}"
                 else:
                     distributed_status = f"FAILED (exit code {res.returncode})"
             except Exception as e:

@@ -36,9 +36,15 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
     if not config.test_command and (not config.uses_xcode or not config.test_target):
         errors.append("Configure test_target or test_command." if config.uses_xcode
                       else "Configure test_command for a non-Xcode project.")
-    if config.firebase_distribution:
-        if config.delivery_provider and config.delivery_provider != "firebase":
-            errors.append("Only delivery_provider='firebase' is currently supported.")
+    from orchestrator import test_commands
+    errors += test_commands.from_config(config)[1]
+    from orchestrator import delivery_adapters
+    platform = delivery_adapters.platform_of(config)
+    if config.firebase_distribution and config.delivery_provider and config.delivery_provider != "firebase":
+        errors.append("Only delivery_provider='firebase' is currently supported.")
+    if platform not in delivery_adapters.PLATFORMS or (config.firebase_distribution and platform != "ios"):
+        errors += delivery_adapters.validate_platform(config)  # android / web: the adapter's own checks
+    elif config.firebase_distribution:
         if not config.distribution_script_path:
             errors.append("firebase_distribution requires distribution_script_path. Run 'orchestrator wizard' to set this up.")
         elif not (config.root / config.distribution_script_path).exists():

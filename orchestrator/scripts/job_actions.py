@@ -329,6 +329,12 @@ def add_framework(key: str) -> int:
     return subprocess.run(["swift", "package", "resolve"], cwd=str(ROOT)).returncode
 
 
+def _extra_test_commands(config: Any) -> list[dict[str, Any]]:
+    """`test_commands` for the Tests page: settings, what is missing right now, and the latest result of each."""
+    from orchestrator import test_commands
+    return test_commands.view(config, test_commands.latest_results(config.runtime_dir))
+
+
 def test_inventory() -> dict[str, Any]:
     from dev_console import ROOT, PROJECT_CONFIG, discover_test_suites, get_coverage_data
     from orchestrator.coverage import count_source_lines
@@ -358,6 +364,7 @@ def test_inventory() -> dict[str, Any]:
         "plans": [p.stem for p in plans],
         "coverage": cov,
         "frameworks": frameworks_inventory(),
+        "commands": _extra_test_commands(PROJECT_CONFIG),
     }
 
 

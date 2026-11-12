@@ -62,11 +62,12 @@ def run_smoke_delivery():
     else:
         print("   \033[1;92m✅ Distribution configuration is valid.\033[0m\n", flush=True)
 
-    unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
-    if unlocked:
-        print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
-    else:
-        print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
+    if getattr(PROJECT_CONFIG, "delivery_platform", "ios") not in ("android", "web"):  # signing is an Apple thing
+        unlocked, keychain_msg = ensure_keychain_unlocked(prompt_if_missing=True)
+        if unlocked:
+            print(f"   \033[1;92m✓ Keychain status: {keychain_msg}\033[0m", flush=True)
+        else:
+            print(f"   \033[1;93m⚠️ Keychain status: {keychain_msg}\033[0m", flush=True)
 
     # 1. Setup metadata
     test_id = f"quick-delivery-{timestamp()}"

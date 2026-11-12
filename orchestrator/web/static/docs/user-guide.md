@@ -254,6 +254,47 @@ Swift Package example:
 }
 ```
 
+### More than one test command
+
+`test_command` is the main test run. When a project's tests live in several places (a game's protocol library, its server and its client), add the others as `test_commands`. They run after `test_command` passes, in the order listed:
+
+```json
+{
+  "test_command": "dotnet test tests/Protocol.Tests -c Release --nologo",
+  "test_commands": [
+    { "name": "mutation", "command": "python3 tools/check-test-mutations.py", "timeout": 600 },
+    { "name": "server", "command": "python3 tools/test-profile-server.py --skip-baseline",
+      "tier": "manual", "requires": ["docker", "container:my-server", "path:.local/staging"] }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Required and unique (letters, digits, `.`, `_`, `-`). Names the log, `test_<name>.log`, in the job's output folder. |
+| `command` | Required. Runs in a shell. |
+| `cwd` | Folder to run in, inside the project. Default: the project folder. |
+| `timeout` | Seconds before the command is stopped, with everything it started. Default: 1800. |
+| `retries` | Extra attempts after a failure, 0 to 5. A command that passes on a retry is reported as flaky. Default: 0. |
+| `tier` | `per-job` (default) runs with every job. `nightly` and `manual` never run with a job; they are for people and schedules. |
+| `requires` | What must be there: `docker` (the daemon answers), `container:<name>` (a running Docker container), `command:<name>` (on PATH), `path:<file or folder>` or `env:<NAME>`. |
+| `results` | A TRX or JUnit XML file, or a glob of them inside the project (`TestResults/*.trx`), read for the test counts. Without it, counts come from `dotnet test` output when the command prints it. Point it at a folder the command clears, since every match counts. |
+
+A command whose `requires` aren't met is **blocked**, not failed: the result says what is missing (for example "Docker isn't running") and the job carries on. A failed or timed-out command fails the job's tests, and its output goes to `test.log` for the fix step. Every command reports; one failure doesn't skip the rest. `test_commands.json` in the job's output folder lists each result.
+
+In the web app, the **Tests** page lists them under **Extra test commands**: each shows when it runs, what is missing right now (such as Docker not running), and its latest result with test counts. **Run** starts one by hand, **Check again** looks at Docker and files again, and **Add command** and **Edit** change `test_commands` for you. The **App delivery** page has **Where builds go** for the Android and web options below.
+
+**Suggested test setup.** When a project is added, Orchestrator looks through it (it never runs anything) for tests it can use: .NET test projects anywhere in the repository (a Unity client with its protocol tests next to it), and scripts in `tools/`, `scripts/` or `ci/` named like tests or checks (`test-*`, `check-*`, `verify-*`). The **Tests** page shows them under **Suggested test setup** with the main command and safe scripts ticked. **Use selected** saves them, or use `orchestrator suggest-tests` and `orchestrator suggest-tests --accept all`. `orchestrator check-config` also points at the tests it found when no test command is set.
+
+- Found .NET tests become the main test command, which runs after every job.
+- Scripts only ever become **By hand** commands, and any that use Docker get `docker` as a requirement.
+- A script that looks like it connects to a server (it mentions localhost, a port or "live") is marked **check first**, is not ticked, and is never included in `--accept all`. Make sure it points at a test server before you accept it.
+- Skipped: Unity's `Assets` folder, build output, and other repositories cloned inside yours.
+
+Run the ones that don't run with a job by hand with `orchestrator run-tests` (the `manual` tier), `orchestrator run-tests --tier nightly`, or by name: `orchestrator run-tests server`. Logs go to `output/manual-tests/<time>/`. The exit code is 0 when everything passed, 1 when something failed or timed out, and 2 when nothing could run (blocked, unknown name, or none configured).
+
+`backend_test_command` is the same thing for a single command, named `backend`. Never point a `test_commands` entry at a live server or a shared database: a job may run it at any time.
+
 Run validation after edits:
 
 ```bash
@@ -547,6 +588,28 @@ Firebase delivery is opt-in:
 `check-config` fails early if Firebase delivery is enabled but the distribution script or plist path is missing.
 
 The delivery workflow archives and signs the iOS app, uploads the IPA to Firebase App Distribution, and releases it to configured tester emails or groups. If no recipients are configured, Orchestrator uses the `internal-testers` group. Each successful delivery writes a receipt under `.orchestrator/output/delivery/` with the app version, build number, IPA path, recipients, and SHA-256 checksum.
+
+### Android and web projects
+
+You can set this up on the **App delivery** page, under **Where builds go**, or in `project.json`.
+
+`delivery_platform` picks where a finished build goes: `ios` (the default, described above), `android` or `web`. The Android and web options need the `firebase` command installed and signed in (`npm install -g firebase-tools`, then `firebase login`, or set `FIREBASE_TOKEN`). Neither needs a distribution script or a plist.
+
+```json
+{
+  "firebase_distribution": true,
+  "delivery_platform": "android",
+  "delivery_build_command": "./gradlew assembleDebug",
+  "delivery_artifact": "app/build/outputs/apk/debug/*.apk",
+  "firebase_app_id": "1:1234567890:android:abc123",
+  "firebase_groups": "internal-testers"
+}
+```
+
+- **Android** runs `delivery_build_command` (optional), takes the newest `.apk` or `.aab` that matches `delivery_artifact` and was written by that build, and uploads it to App Distribution with `firebase_app_id`. Find the app ID in the Firebase console under Project settings. Recipients are `firebase_groups` and `firebase_testers`, as for iOS. A Unity project can use the same fields, with a command that runs its batch-mode Android build.
+- **Web** runs `delivery_build_command` (optional), then deploys a Firebase Hosting preview channel named after the job, which expires after 7 days. The receipt and the console show the preview URL. It needs a `firebase.json` in the project; set `firebase_project_id` or `firebase_hosting_target` when the project has more than one.
+- Both write a receipt under `.orchestrator/output/delivery/`, like iOS, and `check-config` reports what is missing. Verified jobs deliver automatically, the same as iOS jobs that change iOS files. Delivery is confirmed only when Firebase exits cleanly; the log, `distribution_<job>.log`, leaves out release notes and tester emails.
+- Not covered: Steam, desktop installers, TestFlight and Google Play. Firebase has no desktop option.
 
 In the console, use **Quick Build & Distribution** to deliver the current branch. The live delivery test under **Firebase App Distro** also publishes a real release; it is not a dry run. A delivery job targeting another branch stops and asks you to switch explicitly so local changes are never discarded.
 

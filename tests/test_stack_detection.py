@@ -130,6 +130,71 @@ class StackDetectionTests(unittest.TestCase):
             (root / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.0.1f1\n")
             self.assertEqual(detect_project_stack(root).language, "generic")
 
+    def _unity_in(self, folder: Path, manifest: str | None = None):
+        (folder / "ProjectSettings").mkdir(parents=True)
+        (folder / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.6f1\n")
+        (folder / "Assets").mkdir()
+        if manifest is not None:
+            (folder / "Packages").mkdir()
+            (folder / "Packages" / "manifest.json").write_text(manifest)
+
+    def test_detects_a_unity_client_one_folder_down_over_a_tooling_package_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text('{"dependencies": {"puppeteer": "^25"}}')
+            self._unity_in(root / "GameClient", '{"dependencies": {"com.unity.test-framework": "1.4.5"}}')
+            stack = detect_project_stack(root)
+            self.assertEqual((stack.language, stack.framework, stack.project_dir), ("csharp", "unity", "GameClient"))
+            self.assertEqual(stack.display_name, "Unity 6000.6.6f1")
+            self.assertEqual(stack.manifest_file, "GameClient/ProjectSettings/ProjectVersion.txt")
+            self.assertIn("-projectPath GameClient -quit", stack.build_command)
+            self.assertIn("Unity/Hub/Editor/6000.6.6f1/", stack.build_command)
+            self.assertIn("-projectPath GameClient -runTests -testPlatform EditMode -testResults GameClient/Temp/unity-editmode-results.xml", stack.test_command)
+
+    def test_a_root_native_stack_still_beats_a_nested_unity_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text("[package]\nname = \"server\"\n")
+            self._unity_in(root / "Client")
+            self.assertEqual(detect_project_stack(root).framework, "cargo")
+
+    def test_a_unity_project_without_the_test_framework_gets_no_default_test_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._unity_in(root / "Client", '{"dependencies": {"com.unity.modules.physics": "1.0.0"}}')
+            stack = detect_project_stack(root)
+            self.assertEqual(stack.framework, "unity")
+            self.assertIsNone(stack.test_command)  # -runTests would run nothing
+            self.assertIn("-quit", stack.build_command)
+            # but a test assembly is enough
+            (root / "Client" / "Assets" / "Tests.asmdef").write_text('{"references": ["UnityEngine.TestRunner"]}')
+            self.assertIn("-runTests", detect_project_stack(root).test_command)
+
+    def test_xunit_suites_run_with_dotnet_test_narrowed_to_their_classes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tests = root / "tests" / "Proto.Tests"
+            tests.mkdir(parents=True)
+            (tests / "Proto.Tests.csproj").write_text("<Project/>")
+            (tests / "DomainTests.cs").write_text(
+                "// every class here is a fixture\n"
+                "public class ConTests {\n  [Fact]\n  public void Con() {}\n"
+                "  [Theory]\n  [InlineData(1)]\n  public void Many(int n) {}\n}\n"
+                "public class ZoneTests {\n  [Fact(Skip = \"later\")]\n  public void Zone() {}\n}\n")
+            unity_dir = root / "Client" / "Assets" / "Tests"
+            unity_dir.mkdir(parents=True)
+            (unity_dir / "ScoreTests.cs").write_text("public class ScoreTests {\n  [Test]\n  public void A() {}\n}\n")
+            suites = {s["rel_path"].name: s for s in dev_console.discover_test_suites(root)}
+            domain = suites["DomainTests.cs"]
+            self.assertEqual((domain["framework"], domain["classes"], domain["test_count"]), ("dotnet", ["ConTests", "ZoneTests"], 3))
+            self.assertEqual(suites["ScoreTests.cs"]["framework"], "unity")
+            config = make_config(root, xcode_project=None, scheme=None, test_target="", build_command="make", test_command="make test")
+            self.assertEqual(
+                dev_console.test_command_for_suite(domain, config),
+                "dotnet test tests/Proto.Tests --nologo --filter 'FullyQualifiedName~ConTests|FullyQualifiedName~ZoneTests'")
+            with self.assertRaises(ValueError):  # a Unity suite still needs a Unity command
+                dev_console.test_command_for_suite(suites["ScoreTests.cs"], config)
+
     def test_unity_suites_are_found_and_run_on_the_right_platform(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

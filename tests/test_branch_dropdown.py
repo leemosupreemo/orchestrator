@@ -126,22 +126,34 @@ class BranchDownloadTests(unittest.TestCase):
         self.git('config', '--add', 'remote.origin.fetch', '^refs/heads/feature/*')
         self.assertEqual(ui.git_state(self.root)['download_branches'], [])
 
+    def test_choices_include_recent_branch_with_latest_commit(self):
+        state = ui.git_state(self.root)
+        self.assertEqual(state['recent_branch'], 'main')
+
+        self.git('checkout', '-q', '-b', 'feature/recent')
+        (self.root / 'file2.txt').write_text('recent\n')
+        self.git('add', 'file2.txt')
+        self.git('commit', '-qm', 'newer commit')
+
+        state = ui.git_state(self.root)
+        self.assertEqual(state['recent_branch'], 'feature/recent')
+
 
 class GroupedBranchMarkupTests(unittest.TestCase):
-    def render(self, branches, current, downloads, elsewhere=None, last=None):
+    def render(self, branches, current, downloads, elsewhere=None, last=None, recent=None):
         static = Path(__file__).resolve().parents[1] / 'orchestrator/web/static'
         script = r"""
 const fs = require('fs'), vm = require('vm');
 const source = fs.readFileSync(process.argv[1], 'utf8');
 const input = JSON.parse(process.argv[3]);
-const context = {state: {project: {last_branch: input.last}}};
+const context = {state: {project: {last_branch: input.last, recent_branch: input.recent}}};
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), context);
 context.esc = context.Html.escape;
 vm.runInContext(source.slice(source.indexOf('function branchOptions('), source.indexOf('// The branch you last chose')), context);
 process.stdout.write(context.branchOptions(input.branches, input.current, input.elsewhere, input.downloads));
 """
-        values = {'branches': branches, 'current': current, 'downloads': downloads, 'elsewhere': elsewhere or {}, 'last': last}
+        values = {'branches': branches, 'current': current, 'downloads': downloads, 'elsewhere': elsewhere or {}, 'last': last, 'recent': recent}
         return subprocess.run(['node', '-e', script, str(static / 'app.js'), str(static / 'html.js'), json.dumps(values)],
                               check=True, capture_output=True, text=True).stdout
 
@@ -175,3 +187,16 @@ process.stdout.write(context.branchOptions(input.branches, input.current, input.
         self.assertIn('selected', parsed.options[0][1])
         self.assertIn('local&branch (last used) (in another folder)', parsed.text)
         self.assertNotIn('<new>', rendered)
+
+    def test_branch_with_most_recent_commit_has_subtle_highlight_and_subtext(self):
+        rendered = self.render(['main', 'feature/recent'], 'main', [], recent='feature/recent')
+        self.assertIn('class="branch-recent"', rendered)
+        self.assertIn('feature/recent (most recent commit)', rendered)
+        self.assertNotIn('main (most recent commit)', rendered)
+
+    def test_download_branch_with_most_recent_commit_has_subtle_highlight_and_subtext(self):
+        rendered = self.render(['main'], 'main', [
+            {'name': 'feature/download', 'ref': 'origin/feature/download', 'remote': 'origin'},
+        ], recent='remote:origin/feature/download')
+        self.assertIn('class="branch-recent"', rendered)
+        self.assertIn('feature/download (origin) (most recent commit)', rendered)

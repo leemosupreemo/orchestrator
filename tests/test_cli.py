@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -646,6 +647,56 @@ class CliTests(unittest.TestCase):
             self.assertEqual(doc_items["Architecture"], "ok")
             self.assertEqual(doc_items["Coding Standards"], "ok")
             self.assertEqual(doc_items["AI Workflow"], "ok")
+
+class RunTestsCommandTests(unittest.TestCase):
+    """`orchestrator run-tests`: extra test commands by hand, with real (harmless) shell commands."""
+
+    def run_cli(self, entries, argv, **config):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = SimpleNamespace(root=root, runtime_dir=root / "runtime", test_commands=entries,
+                                   backend_test_command=config.get("backend"))
+            out = io.StringIO()
+            with patch("orchestrator.cli.load_project_config", return_value=fake), redirect_stdout(out):
+                code = cli.main(["run-tests", *argv])
+            logs = sorted((root / "runtime" / "output" / "manual-tests").glob("*/test_*.log"))
+            return code, out.getvalue(), [log.name for log in logs]
+
+    def test_runs_the_manual_tier_by_default_and_writes_logs(self) -> None:
+        entries = [{"name": "ok", "command": "echo fine", "tier": "manual"},
+                   {"name": "job", "command": "exit 1"}]  # per-job: not part of a manual run
+        code, out, logs = self.run_cli(entries, [])
+        self.assertEqual(code, 0)
+        self.assertIn("ok: passed", out)
+        self.assertNotIn("job:", out)
+        self.assertEqual(logs, ["test_ok.log"])
+
+    def test_a_failure_exits_1_and_other_commands_still_run(self) -> None:
+        entries = [{"name": "bad", "command": "exit 3", "tier": "manual"},
+                   {"name": "good", "command": "true", "tier": "manual"}]
+        code, out, _ = self.run_cli(entries, [])
+        self.assertEqual(code, 1)
+        self.assertIn("bad: FAILED (exit 3)", out)
+        self.assertIn("good: passed", out)
+
+    def test_names_run_whatever_their_tier(self) -> None:
+        entries = [{"name": "job", "command": "true"}, {"name": "other", "command": "exit 1"}]
+        code, out, logs = self.run_cli(entries, ["job"])
+        self.assertEqual((code, logs), (0, ["test_job.log"]))
+
+    def test_a_blocked_command_exits_2_and_says_why(self) -> None:
+        entries = [{"name": "srv", "command": "true", "tier": "manual", "requires": ["env:NO_SUCH_VARIABLE_FOR_TEST"]}]
+        code, out, _ = self.run_cli(entries, [])
+        self.assertEqual(code, 2)
+        self.assertIn("blocked: NO_SUCH_VARIABLE_FOR_TEST isn't set", out)
+
+    def test_nothing_to_run_and_unknown_names_exit_2(self) -> None:
+        code, out, _ = self.run_cli([], [])
+        self.assertEqual(code, 2)
+        self.assertIn("No test commands to run", out)
+        code, out, _ = self.run_cli([{"name": "a", "command": "true"}], ["nope"])
+        self.assertEqual(code, 2)
+        self.assertIn("No test command named nope. Configured: a", out)
 
 
 if __name__ == "__main__":

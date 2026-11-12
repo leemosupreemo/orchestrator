@@ -22,6 +22,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from common import ROOT, read_json, write_json, format_markdown_for_terminal, ProgressIndicator, print_header, ensure_keychain_unlocked
 from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator import delivery_adapters, test_commands
 
 
 def distribution_script_options(script_path: Path) -> set[str]:
@@ -121,6 +122,59 @@ def send_final_notification(job: dict[str, Any], title: str, branch: str, succes
     except Exception as e:
         print(f"   \033[91m⚠️ Notification system failed: {e}\033[0m", flush=True)
 
+def _run_for_adapter(argv: list[str], cwd: Path, timeout: int) -> tuple[int, str]:
+    """Run a command for a delivery adapter: output captured, the whole process group stopped on timeout."""
+    import shlex
+    code, output, timed_out = test_commands.execute(shlex.join(argv), cwd, timeout)
+    return code, output + (f"\nStopped after {timeout}s." if timed_out else "")
+
+
+def deliver_with_adapter(job: dict[str, Any], adapter: "delivery_adapters.Adapter") -> None:
+    """Android and web delivery (see delivery_adapters.py). Exits 0 only when Firebase confirmed the delivery."""
+    from datetime import datetime
+    branch, title, job_id = job.get("branch"), job.get("title"), job.get("job_id")
+    print(f"   \033[1;36m• Delivering via:\033[0m  \033[1;97m{adapter.label}\033[0m", flush=True)
+    errors = PROJECT_CONFIG.validate_distribution_config()
+    if errors:
+        print("\n\033[1;91m!!! Error: Distribution configuration is incomplete:\033[0m", flush=True)
+        for err in errors:
+            print(f"      - {err}", flush=True)
+        print(f"\n\033[93mFix these in {PROJECT_CONFIG.runtime_dir / 'project.json'}\033[0m", flush=True)
+        sys.exit(1)
+    current = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
+    if current != branch:
+        print(f"\n\033[1;91m!!! Error: Delivery job targets branch '{branch}', but the working tree is on '{current}'.\033[0m", flush=True)
+        print("Switch branches explicitly after saving or committing local changes, then retry.", flush=True)
+        sys.exit(1)
+    built_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    heading = "Quick delivery" if job.get("delivery_kind") == "quick" else f"AI Job: {job_id}"
+    notes = f"{heading}\nTitle: {title or 'Build delivery'}\nBranch: {branch}\nBuilt: {built_at}\n"
+    receipt, log = delivery_adapters.deliver(PROJECT_CONFIG, job, notes, run=_run_for_adapter, now=time.time)
+    log_dir = PROJECT_CONFIG.runtime_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    dist_log = log_dir / f"distribution_{job_id}.log"
+    dist_log.write_text(log, encoding="utf-8")
+    if not receipt:
+        print(f"\n❌ Couldn't confirm the build reached testers. Log: {dist_log}", flush=True)
+        print("\n".join("      " + line for line in log.strip().splitlines()[-12:]), flush=True)
+        send_final_notification(job, title, branch, False)
+        sys.exit(1)
+    receipt.update({"job_id": job_id, "title": title, "branch": branch, "built_at": built_at})
+    receipt_dir = PROJECT_CONFIG.runtime_dir / "output" / "delivery"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    write_json(receipt_dir / f"{job_id}.json", receipt)
+    print(f"\n✅ Build delivered ({adapter.label}).", flush=True)
+    if receipt.get("preview_url"):
+        print(f"      Preview: {receipt['preview_url']}", flush=True)
+    else:
+        print(f"      Recipients: {receipt.get('groups') or receipt.get('testers')}", flush=True)
+        print(f"      File: {receipt.get('artifact')}", flush=True)
+    print(f"      Receipt: {receipt_dir / (str(job_id) + '.json')}", flush=True)
+    send_final_notification(job, title, branch, True)
+    print("\n✨ ALL DONE.", flush=True)
+    sys.exit(0)
+
+
 def deliver_build(job_path: Path):
     job = read_json(job_path)
     
@@ -135,6 +189,10 @@ def deliver_build(job_path: Path):
     print_header(f"DELIVERING BUILD TO DEVICE: {job_id}")
     print(f"   \033[1;36m• Target Branch:\033[0m \033[1;97m{branch}\033[0m", flush=True)
     print(f"   \033[1;36m• Feature/Bug:\033[0m   \033[97m{title}\033[0m", flush=True)
+
+    adapter = delivery_adapters.adapter_for(PROJECT_CONFIG)
+    if adapter.platform != "ios":
+        deliver_with_adapter(job, adapter)  # exits; the keychain and Xcode steps below are iOS only
     
     # 0. Pre-flight check: Ensure signing configuration is present
     dist_errors = PROJECT_CONFIG.validate_distribution_config()

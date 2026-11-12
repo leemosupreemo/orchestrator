@@ -297,10 +297,19 @@ class ProjectConfig:
     signing_style: str | None = None
     firebase_testers: str | None = None
     firebase_groups: str | None = None
+    # Where finished builds go: "ios" (default, the distribution script), "android" or "web"; see delivery_adapters.py.
+    delivery_platform: str = "ios"
+    delivery_build_command: str | None = None
+    delivery_artifact: str | None = None
+    firebase_app_id: str | None = None
+    firebase_project_id: str | None = None
+    firebase_hosting_target: str | None = None
     # Central runtime-log store the app ships to; see scripts/cloud_logs.py.
     remote_logs: dict[str, Any] = field(default_factory=dict)
     # "github", "git" or "auto" (the default: GitHub when origin is on github.com). See orchestrator/code_host.py.
     code_host: str = "auto"
+    # Extra test commands run after test_command passes; see orchestrator/test_commands.py.
+    test_commands: list[Any] = field(default_factory=list)
 
     @property
     def code_host_mode(self) -> str:
@@ -324,7 +333,7 @@ class ProjectConfig:
             self.xcode_project or self.xcode_workspace
             or any("xcodebuild" in command for command in
                    (self.build_command or "", self.test_command or ""))
-            or self.firebase_distribution or self.visual_app_path
+            or (self.firebase_distribution and (self.delivery_platform or "ios") == "ios") or self.visual_app_path
         )
 
     @property
@@ -332,7 +341,11 @@ class ProjectConfig:
         return self.runtime_dir / "config"
 
     def validate_distribution_config(self) -> list[str]:
-        """Returns a list of missing required fields for iOS distribution."""
+        """Returns a list of missing required fields for distribution (iOS signing, or the Android/web adapter's)."""
+        platform = (self.delivery_platform or "ios").strip().lower()
+        if platform != "ios":
+            from orchestrator import delivery_adapters
+            return delivery_adapters.validate_platform(self)
         errors = []
         if not self.development_team:
             errors.append("Apple Development Team ID (development_team) is not set.")
@@ -483,8 +496,15 @@ def load_project_config(root: Path | None = None) -> ProjectConfig:
         signing_style=data.get("signing_style", "automatic"),
         firebase_testers=data.get("firebase_testers"),
         firebase_groups=data.get("firebase_groups"),
+        delivery_platform=str(data.get("delivery_platform") or "ios").strip().lower(),
+        delivery_build_command=data.get("delivery_build_command"),
+        delivery_artifact=data.get("delivery_artifact"),
+        firebase_app_id=data.get("firebase_app_id"),
+        firebase_project_id=data.get("firebase_project_id"),
+        firebase_hosting_target=data.get("firebase_hosting_target"),
         remote_logs=data.get("remote_logs") or {},
         code_host=str(data.get("code_host") or "auto"),
+        test_commands=data.get("test_commands") or [],
     )
 
 

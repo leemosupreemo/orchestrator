@@ -167,7 +167,7 @@ class ProjectKindTests(unittest.TestCase):
         self.assertIn(".mobile-title { display: flex; align-items: center; justify-content: center;", css)
         self.assertIn('<span class="mobile-title-name">', app)
         self.assertIn('${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}', app)  # project picker
-        self.assertEqual(app.count("mobileTitle.innerHTML = "), 3)  # phone header also names a project while it downloads
+        self.assertEqual(app.count("setMobileProjectTitle("), 4)  # phone header also names a project while it downloads (3 callers + definition)
         self.assertIn('<div class="project-card-badges">\n          ${kindPill(p.kind)}', app)
         self.assertIn('<span id="project-kind"></span>', (static / "index.html").read_text())
         server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
@@ -181,11 +181,20 @@ class ProjectKindTests(unittest.TestCase):
         self.assertIn('class="home-project-select"', fn)
         self.assertIn('aria-label="Switch project"', fn)
         self.assertIn('renderProjectSelect($(".home-project-select"))', app)
-        self.assertIn('e.target.matches("#project-select, .home-project-select")', app)
+        self.assertIn('e.target.matches("#project-select, .home-project-select, .mobile-project-select")', app)
         self.assertIn('body[data-page="home"] #page-title { font-size: var(--type-home); }', css)
         self.assertIn('--type-home: 24px;', css)
         # No page heading on Product, Activity or Tests: the sidebar and the tab already say where you are
         self.assertIn('body[data-page="product"] #page-title, body[data-page="activity"] #page-title, body[data-page="tests"] #page-title { display: none; }', css)
+
+    def test_the_phone_header_name_switches_projects_like_the_sidebar(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app, css = (static / "app.js").read_text(), (static / "style.css").read_text()
+        fn = app[app.index("function setMobileProjectTitle"):][:700]
+        self.assertIn('class="mobile-project-select"', fn)
+        self.assertIn('aria-label="Switch project"', fn)
+        self.assertIn('renderProjectSelect($(".mobile-project-select"))', fn)
+        self.assertIn(".mobile-project-select { position: absolute; inset: 0;", css)
 
     def test_the_tests_page_counts_suites_in_their_card_and_says_how_to_measure_coverage(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()

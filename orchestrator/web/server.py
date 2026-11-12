@@ -1054,6 +1054,17 @@ def gh_cached(root: Path, args: list[str]) -> str | None:
 def distribution_gaps(root: Path, config: dict[str, Any]) -> list[str]:
     """What stops this project sending test builds, in plain words; empty when it is ready. The Test Build card and the
     Tester build setup page both show this, so they never disagree."""
+    platform = str(config.get("delivery_platform") or "ios").strip().lower()
+    if platform in ("android", "web"):  # Firebase through the adapter: no phone-app, plist or build-script requirement
+        from orchestrator import delivery_adapters
+        from types import SimpleNamespace
+        fields = {k: config.get(k) for k in delivery_adapters.TARGET_KEYS}
+        gaps = delivery_adapters.validate_platform(SimpleNamespace(root=root, **fields))
+        if shutil.which("firebase") is None:
+            gaps.append("Install the Firebase CLI: npm install -g firebase-tools, then firebase login")
+        if not config.get("firebase_distribution"):
+            gaps.append("Turn on automatic delivery in Where builds go, or send builds by hand.")
+        return gaps
     if not is_mobile_app(root, config):
         return ["This project isn't a phone app, so there are no test builds to send."]
     gaps = []
@@ -1370,6 +1381,8 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     data = delivery_view.overview(lambda *a: git(root, *a), lambda argv: gh_cached(root, argv), runtime_dir(root),
                                   base_branch(root, settings), jobs, firebase, ci)
     data["web_url"] = repo_web_url(root)
+    from orchestrator import delivery_adapters
+    data["target"] = delivery_adapters.target_view(config)
     if is_web_app(root, config):
         data["web"] = {"gaps": web_preview_gaps(root, config), "previews": web_previews(root),
                        "auto": bool(settings.get("auto_preview"))}
@@ -2002,6 +2015,43 @@ def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     project["ui_review"] = raw
     write_json_file(path, project)
     return ui_review_settings(root)
+
+
+def update_project_json(root: Path, changes: dict[str, Any]) -> None:
+    """Merge keys into project.json; a None value removes the key."""
+    path = runtime_dir(root) / "project.json"
+    project = read_json_file(path)
+    for key, value in changes.items():
+        if value is None:
+            project.pop(key, None)
+        else:
+            project[key] = value
+    write_json_file(path, project)
+
+
+def save_test_command(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Add, change or remove one `test_commands` entry (body: `entry` fields and `original` name, or `remove` name)."""
+    from orchestrator import test_commands
+    path = runtime_dir(root) / "project.json"
+    raw = read_json_file(path).get("test_commands")
+    if body.get("remove"):
+        items = test_commands.without_entry(raw, _text(body, "remove", required=True, limit=80))
+    else:
+        entry = test_commands.entry_from_form(body)
+        items, errors = test_commands.with_entry(raw, entry, _text(body, "original", limit=80) or None, root)
+        if errors:
+            raise UIError(" ".join(errors))
+    update_project_json(root, {"test_commands": items or None})
+    return {"saved": True, "count": len(items)}
+
+
+def save_delivery_target(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    from orchestrator import delivery_adapters
+    changes, errors = delivery_adapters.target_update(root, body)
+    if errors:
+        raise UIError(" ".join(errors))
+    update_project_json(root, changes)
+    return {"saved": True, "target": delivery_adapters.target_view(read_json_file(runtime_dir(root) / "project.json"))}
 
 
 def job_stub(root: Path, job_id: Any) -> dict[str, Any] | None:
@@ -3865,8 +3915,10 @@ def branch_choices(root: Path) -> dict[str, Any]:
     remotes = sorted(git(root, "remote").splitlines(), key=len, reverse=True)
     fetch_specs = {r: git(root, "config", "--get-all", f"remote.{r}.fetch").splitlines() for r in remotes}
     downloads = []
-    for line in git(root, "for-each-ref", "--format=%(refname)%09%(symref)", "refs/remotes/").splitlines():
-        ref, _, symbolic = line.partition("\t")
+    download_commits = {}
+    for line in git(root, "for-each-ref", "--format=%(refname)%09%(symref)%09%(committerdate:raw)", "refs/remotes/").splitlines():
+        ref, _, rest = line.partition("\t")
+        symbolic, _, raw = rest.partition("\t")
         if symbolic or not ref.startswith("refs/remotes/"):
             continue
         short_ref = ref.removeprefix("refs/remotes/")
@@ -3894,8 +3946,36 @@ def branch_choices(root: Path) -> dict[str, Any]:
         name = source.removeprefix("refs/heads/")
         if name and name != "HEAD" and name not in installed:
             downloads.append({"name": name, "ref": short_ref, "remote": remote})
+            if raw:
+                try:
+                    download_commits["remote:" + short_ref] = int(raw.split()[0])
+                except ValueError:
+                    pass
     downloads.sort(key=lambda b: (b["name"].casefold(), b["ref"]))
-    return {"branches": branches[:200], "download_branches": downloads[:200]}
+
+    local_commits = {}
+    for line in git(root, "for-each-ref", "--format=%(refname:short)%09%(committerdate:raw)", "refs/heads/").splitlines():
+        name, _, raw = line.partition("\t")
+        if name and raw:
+            try:
+                local_commits[name] = int(raw.split()[0])
+            except ValueError:
+                pass
+
+    recent_branch = None
+    all_candidates = []
+    for b in branches:
+        if b in local_commits:
+            all_candidates.append((local_commits[b], b))
+    for d in downloads:
+        d_key = "remote:" + d["ref"]
+        if d_key in download_commits:
+            all_candidates.append((download_commits[d_key], d_key))
+    if all_candidates:
+        all_candidates.sort(key=lambda item: item[0], reverse=True)
+        recent_branch = all_candidates[0][1]
+
+    return {"branches": branches[:200], "download_branches": downloads[:200], "recent_branch": recent_branch}
 
 
 def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
@@ -5270,6 +5350,7 @@ ACTIONS: dict[str, Action] = {
     "approve": Action("Approve", lambda p, r: orchestrator_argv("script", "job_actions.py", "approve", _job_path(p, r)), fields=["job"]),
     "revise": Action("Revise plan", build_revise, fields=["job", "change", "where", "done_when"]),
     "test_suite": Action("Run test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-suite", _name(p, "name")), fields=["name"]),
+    "test_command": Action("Run test command", lambda p, r: orchestrator_argv("run-tests", "--", _name(p, "name")), fields=["name"]),
     "test_plan": Action("Run test plan", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-plan", _name(p, "name")), fields=["name"]),
     "coverage": Action("Measure coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "coverage")),
     "git_pull": Action("Pull", build_git_pull),
@@ -7718,6 +7799,10 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["tests"]:
             data = dict(self._tests(root, refresh=bool(query.get("refresh"))))
             data["suites"] = with_last_runs(root, data.get("suites") or [])  # outside the cache: these change with every run
+            if data.get("commands"):
+                from orchestrator import test_commands
+                latest = test_commands.latest_results(runtime_dir(root))
+                data["commands"] = [{**c, "last": latest.get(c["name"])} for c in data["commands"]]
             self._json(data)
         elif method == "GET" and parts == ["devlogs"]:
             self._json({"pulls": device_log_pulls(root), "sessions": self._device_sessions(root)})
@@ -7762,6 +7847,33 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
                 return
             self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+        elif method == "GET" and parts == ["test-setup"]:
+            from orchestrator import test_setup
+            found = test_setup.suggest(root, read_json_file(runtime_dir(root) / "project.json"))
+            self._json({k: found[k] for k in ("test_command", "commands", "notes")})
+        elif method == "POST" and parts == ["test-setup", "apply"]:
+            self._require_owner("change the project's test setup")
+            from orchestrator import test_setup
+            accept = [str(x) for x in (self._body().get("accept") or []) if isinstance(x, str)][:50]
+            changes, problems = test_setup.apply(root, read_json_file(runtime_dir(root) / "project.json"), accept)
+            if problems:
+                raise UIError(" ".join(problems))
+            if changes:
+                update_project_json(root, changes)
+                self.server.tests_cache = None
+                self._audit("test_setup_applied", root=str(root), changed=sorted(changes))
+            self._json({"saved": bool(changes), "changed": sorted(changes)})
+        elif method == "POST" and parts == ["test-commands"]:
+            self._require_owner("change the project's test commands")
+            result = save_test_command(root, self._body())
+            self.server.tests_cache = None  # the Tests page lists these
+            self._audit("test_commands_changed", root=str(root))
+            self._json(result)
+        elif method == "POST" and parts == ["delivery", "target"]:
+            self._require_owner("change where builds are delivered")
+            result = save_delivery_target(root, self._body())
+            self._audit("delivery_target_changed", root=str(root), platform=result["target"]["delivery_platform"])
+            self._json(result)
         elif method == "POST" and parts == ["ui-review"]:
             self._require_owner("change which screens are reviewed")
             self._json(save_ui_review(root, self._body()))
@@ -8440,11 +8552,14 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("X-Accel-Buffering", "no")
         self.send_header("Connection", "close")
         self._cors_headers()
         self.end_headers()
         self.close_connection = True
+        self.wfile.write(b": connected\n\n")
+        self.wfile.flush()
 
         cond = self.server.tasks.condition
         offset = 0

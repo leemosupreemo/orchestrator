@@ -350,6 +350,8 @@ class EndpointTests(ServerTestCase):
             reply = conn.getresponse()
             self.assertEqual(reply.status, 200)
             self.assertEqual(reply.getheader("Content-Type"), "text/event-stream")
+            self.assertEqual(reply.getheader("X-Accel-Buffering"), "no")
+            self.assertIn("no-transform", reply.getheader("Cache-Control"))
             content = reply.read().decode("utf-8")
             self.assertIn("event: chunk", content)
             self.assertIn("Snake ", content)
@@ -368,8 +370,11 @@ class PageTests(unittest.TestCase):
         panel = app[app.index("async function openAskAi"):][:9000]
         self.assertIn('name="ask-ai-tier"', app[app.index("function askAiTierButton"):][:600])
         for bit in ('api("chat")', "waitForTask(started", "Ask AI needs a newer Orchestrator on this computer",
-                    "ASK_AI_TIER_KEY", 'send.textContent = "Stop"'):
+                    "ASK_AI_TIER_KEY", 'send.textContent = "Stop"', "streamTask(started"):
             self.assertIn(bit, panel)
+        stream_code = app[app.index("async function streamTask"):][:1200]
+        self.assertIn("if (backend)", stream_code)
+        self.assertIn("pollInterval: 250", stream_code)
 
 
 if __name__ == "__main__":

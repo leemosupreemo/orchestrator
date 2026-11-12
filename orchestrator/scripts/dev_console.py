@@ -2046,6 +2046,14 @@ def extract_suite_name(content: str, file_stem: str) -> str:
     # 5. Fallback
     return file_stem
 
+def dotnet_project_dir(root: Path, rel_path: Path) -> Path | None:
+    """The folder with the .csproj that builds a C# file, if one lies between the file and the repo root."""
+    return next((f for f in (root / rel_path).parents if f.is_relative_to(root) and any(f.glob("*.csproj"))), None)
+
+
+_CS_CLASS = re.compile(r'^[ \t]*(?:\[[^\]\n]*\][ \t]*)*(?:(?:public|internal|sealed|static|abstract|partial)\s+)*class\s+([A-Za-z_]\w*)', re.MULTILINE)
+
+
 def discover_test_suites(root: Path, test_target: str | None = None) -> list[dict[str, Any]]:
     """Discovers all test suite files across the workspace for Swift, Python, Rust, Go, and JS/TS,
     extracts test case counts, and parses suite names."""
@@ -2213,24 +2221,29 @@ def discover_test_suites(root: Path, test_target: str | None = None) -> list[dic
                 "language": "kotlin" if file_path.suffix == ".kt" else "java",
             })
 
-        # 6. C# (Unity Test Framework / NUnit)
+        # 6. C# (Unity Test Framework / NUnit, and xUnit's [Fact] / [Theory] for plain dotnet test projects)
         elif file_path.suffix == ".cs":
             test_funcs = re.findall(
-                r'\[(?:Test|UnityTest|TestCase)\b[^\]]*\]\s*(?:\[[^\]]*\]\s*)*'
+                r'\[(?:Test|UnityTest|TestCase|Fact|Theory)\b[^\]]*\]\s*(?:\[[^\]]*\]\s*)*'
                 r'(?:(?:public|private|internal|protected|static|async|override)\s+)*[\w<>\[\].]+\s+([A-Za-z_]\w*)\s*\(',
                 raw_content)
             if not test_funcs:
                 continue
-            class_match = re.search(r'\bclass\s+([A-Za-z_]\w*)', raw_content)
+            classes = _CS_CLASS.findall(raw_content)
             seen_paths.add(file_path)
             suites.append({
                 "path": file_path,
                 "rel_path": rel_path,
-                "name": class_match.group(1) if class_match else file_path.stem,
+                "name": classes[0] if classes else file_path.stem,
+                "classes": classes,
                 "file_stem": file_path.stem,
                 "test_count": len(set(test_funcs)),
                 "test_funcs": list(dict.fromkeys(test_funcs)),
                 "language": "csharp",
+                # Unity's runner only handles tests inside a Unity project; a C# project of its own (xUnit, NUnit) runs with dotnet test
+                "framework": ("unity" if {"Assets", "Packages"} & set(rel_path.parts)
+                              else "dotnet" if dotnet_project_dir(root, rel_path)
+                              else "unity" if re.search(r'\bUnity(?:Engine|Editor|Test)\b', raw_content) else "dotnet"),
             })
 
         # 7. JavaScript / TypeScript
@@ -2288,6 +2301,14 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
         rel_dir = rel_path.parent
         package = "." if str(rel_dir) == "." else f"./{rel_dir}"
         return f"go test {shlex.quote(package)}"
+    if language == "csharp" and suite.get("framework") == "dotnet":
+        # xUnit / NUnit outside Unity: run the project that holds this file, narrowed to the classes in it
+        root = Path(getattr(project_config, "root", ".") or ".")
+        project = dotnet_project_dir(root, rel_path)
+        if project:
+            names = suite.get("classes") or [suite["name"]]
+            query = "|".join(f"FullyQualifiedName~{name}" for name in names)
+            return f"dotnet test {shlex.quote(str(project.relative_to(root)))} --nologo --filter {shlex.quote(query)}"
     if language == "csharp":
         # Unity runs one platform at a time: Runtime/PlayMode folders are PlayMode tests, the rest EditMode
         parts = {part.lower() for part in rel_path.parts}

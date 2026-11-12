@@ -20,6 +20,7 @@ if str(PACKAGE_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT.parent))
 
 from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator.test_results import parse_dotnet_output
 
 # Runs started from the web app have a pseudo-terminal (so output streams with colours and progress), which makes
 # sys.stdin.isatty() true. Nobody is at that terminal, though: the web app sets this, and every question must then go
@@ -441,6 +442,13 @@ def parse_test_output(test_output_text: str) -> dict[str, Any]:
     if spm_match:
         total = int(spm_match.group(1))
         failed = int(spm_match.group(2))
+
+    # 1b. dotnet test: 'Failed!  - Failed: 2, Passed: 387, Skipped: 0, Total: 389' (one line per test project)
+    if total == 0:
+        dotnet = parse_dotnet_output(test_output_text)
+        if dotnet:
+            total, failed = dotnet["total_run"], dotnet["failed_count"]
+            failing_tests.extend(dotnet["failing_tests"])
 
     # 2. Python unittest / pytest format: 'Ran 55 tests in 1.845s'
     unit_match = re.search(r"Ran (\d+) tests?", test_output_text)

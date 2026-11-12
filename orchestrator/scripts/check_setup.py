@@ -281,7 +281,13 @@ def _check():
     # 1. Check Essential Files
     print_header("2. Project Config")
     
-    if PROJECT_CONFIG.firebase_distribution:
+    delivery_platform = getattr(PROJECT_CONFIG, "delivery_platform", "ios")
+    non_ios_delivery = delivery_platform in ("android", "web")
+    if PROJECT_CONFIG.firebase_distribution and non_ios_delivery:
+        have_cli = shutil.which("firebase") is not None
+        print_result(have_cli, f"Firebase CLI ({delivery_platform} delivery)", "OK" if have_cli else "MISSING",
+                     "npm install -g firebase-tools, then firebase login")
+    elif PROJECT_CONFIG.firebase_distribution:
         app_dir = ROOT / PROJECT_CONFIG.project_name
         gs_path = app_dir / "GoogleService-Info.plist"
         if gs_path.exists():
@@ -331,7 +337,7 @@ def _check():
             print(f"     \033[1;91m⚠️  Error checking Xcode: {e}\033[0m")
 
     # iOS Code Signing & Distribution check
-    if PROJECT_CONFIG.firebase_distribution:
+    if PROJECT_CONFIG.firebase_distribution and not non_ios_delivery:
         print_header("2b. iOS Code Signing & Distribution")
         
         has_team = bool(PROJECT_CONFIG.development_team)

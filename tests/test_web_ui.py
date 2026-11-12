@@ -648,7 +648,7 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
 
     def test_project_select_change_navigates_to_home(self):
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        start = app_js.index('matches("#project-select, .home-project-select")')
+        start = app_js.index('matches("#project-select, .home-project-select, .mobile-project-select")')
         end = app_js.index("showSigningIn", start)
         handler_code = app_js[start:end]
         self.assertIn('location.hash = "#/";', handler_code)
@@ -863,6 +863,8 @@ process.stdout.write(JSON.stringify({
 
     def test_freestyle_is_a_job_type_with_one_box_and_its_questions_read_as_a_conversation(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
         self.assertIn('["freestyle", "Freestyle", "Say it your way"]', js)
         fields = js[js.index('case "freestyle":'):][:1500]
         self.assertIn('name="summary" required', fields)
@@ -870,6 +872,14 @@ process.stdout.write(JSON.stringify({
         job = js[js.index("pages.job = async"):]
         self.assertIn("clarificationThread(job.clarification_history)", job)
         self.assertIn("function clarificationThread", js)
+        self.assertIn('class="clarify-input-row"', job)
+        self.assertIn('aria-label="Send"', job)
+        self.assertIn('href="#i-send"', job)
+        self.assertIn('aria-label="Start"', job)
+        self.assertIn('href="#i-play"', job)
+        self.assertIn('id="i-send"', html)
+        self.assertIn('.clarify-input-row { display: flex;', css)
+        self.assertIn('.clarify-btn', css)
 
     def test_device_logs_has_no_subtitle_and_its_connect_button_lines_up_with_the_text(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -927,7 +937,7 @@ class ProjectTitleTests(unittest.TestCase):
         self.assertIn('<span class="mobile-title" id="mobile-title"></span>', header)
         self.assertIn('role="img" aria-label="Orchestrator"', html)  # brand mark kept in hamburger side menu
         self.assertNotIn("<span>Orchestrator</span>", html)
-        self.assertIn('mobileTitle.innerHTML = `<span class="mobile-title-name">${esc(state.project?.name || "")}</span>${kindPill(state.project?.kind)}`', js)  # with its Web/Desktop/Mobile label
+        self.assertIn('<span class="mobile-title-name">${esc(name || "")}</span>${kindPill(kind)}', js)  # with its Web/Desktop/Mobile label
         self.assertIn("grid-template-columns: 1fr minmax(0, auto) 1fr;", css)  # truly centred
         self.assertIn('body[data-page="home"] #page-title { display: none; }', css)  # not said twice on phones
 
@@ -4925,6 +4935,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(".home-health-trigger:hover {", css)  # it lifts, so it reads as something to tap
         self.assertIn(".home-health-inline[open] > .home-health-trigger {", css)
         self.assertIn(".topbar-actions:has(.home-topbar-tools) { display: none; }", css)  # phones show the header copy only
+        self.assertIn('id="home-health-half"', html)  # split gradient for optional checks
+        self.assertIn('stop-color="var(--ok)"', html)
+        self.assertIn('stop-color="var(--warn)"', html)
+        self.assertIn('stroke="url(#home-health-half)"', trigger)
+        self.assertNotIn(".home-health-icon-optional::after", css)
 
     def test_layout_rules_that_keep_every_page_on_one_system(self):
         css = (self.STATIC / "style.css").read_text()
@@ -5070,6 +5085,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("signInWithRedirect", fallback)  # only when asked for, from the fallback link
         self.assertIn("initial state", js[js.index("Redirect sign-in notice"):][:600])  # and that error, if it reaches the app, is explained
         self.assertIn("pendingRedirect", js)  # coming back from a redirect shows loading, not the options
+        self.assertIn("orchestrator_pending_signin", js)  # preserves in-flight redirect flag across page reloads
+        self.assertIn('loadingSkeleton("home")', js[js.index("function showSigningIn"):js.index("function showSigningIn") + 800])
         self.assertIn("showSigningIn(\"Unlocking…\")", js)  # the token form too
 
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):

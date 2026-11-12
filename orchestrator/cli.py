@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 import shutil
@@ -2080,8 +2081,8 @@ def init_project(args: argparse.Namespace) -> int:
     if args.with_helper_script:
         write_helper_script(root, args.force)
 
-    if stack.framework == "unity" and not (root / "Packages" / "com.leemosupreemo.orchestrator").exists():
-        print("Unity project: run `orchestrator unity-plugin install` to add the Editor plugin.")
+    if stack.framework == "unity" and not (root / (stack.project_dir or ".") / "Packages" / "com.leemosupreemo.orchestrator").exists():
+        print(f"Unity project: run `orchestrator unity-plugin install{' ' + stack.project_dir if stack.project_dir else ''}` to add the Editor plugin.")
     print("Run: orchestrator check")
     remember_project(root, config["project_name"], active=True)
     return 0
@@ -2106,6 +2107,8 @@ def run_import(args: argparse.Namespace) -> int:
         print(f"  Build command: {stack.build_command}")
     if stack.test_command:
         print(f"  Test command : {stack.test_command}")
+    else:
+        print("  Test command : none found yet")
 
     # ---------------------------------------------------------------
     # 2. Create configuration (reuses init_project)
@@ -2166,9 +2169,100 @@ def validate_config_command() -> int:
         print("Configuration errors:")
         for error in errors:
             print(f"  - {error}")
+        if any(e.startswith("Configure test_command") for e in errors):
+            _print_test_setup_hint(config)
         return 1
     print("Configuration OK")
     return 0
+
+
+def _project_json_dict(config: Any) -> dict[str, Any]:
+    try:
+        data = json.loads((config.runtime_dir / "project.json").read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _print_test_setup_hint(config: Any) -> None:
+    from orchestrator import test_setup
+    found = test_setup.suggest(config.root, _project_json_dict(config))
+    if found["test_command"]:
+        print(f"\n  Found tests: {found['test_command']['command']}")
+        print("  Use it with: orchestrator suggest-tests --accept test_command")
+    else:
+        print("\n  No test command was found in the project. Set test_command in .orchestrator/project.json,")
+        print("  or start a job from the Tests page to have AI write the first tests.")
+
+
+def suggest_tests_command(args: argparse.Namespace) -> int:
+    """Show the test setup Orchestrator found for this project, or save the parts you accept."""
+    from orchestrator import test_setup
+    config = load_project_config()
+    path = config.runtime_dir / "project.json"
+    raw = _project_json_dict(config)
+    if args.accept:
+        changes, problems = test_setup.apply(config.root, raw, args.accept)
+        for problem in problems:
+            print(f"  - {problem}")
+        if problems:
+            return 1
+        if not changes:
+            print("Nothing to change.")
+            return 0
+        path.write_text(json.dumps({**raw, **changes}, indent=2) + "\n", encoding="utf-8")
+        print("Saved to .orchestrator/project.json: " + ", ".join(sorted(changes)))
+        print("Run orchestrator check-config to confirm.")
+        return 0
+    found = test_setup.suggest(config.root, raw)
+    if not (test_setup.has_suggestions(found) or found["notes"]):
+        print("Nothing to suggest: the test setup looks complete for what was found.")
+        return 0
+    if found["test_command"]:
+        print(f"Main test command ({found['test_command']['why']}):\n  {found['test_command']['command']}\n"
+              "  accept with: orchestrator suggest-tests --accept test_command\n")
+    if found["commands"]:
+        print("Extra test commands (all start in the manual tier, so no job runs them):")
+        for c in found["commands"]:
+            flag = f"   ! {c['warning']}; check it points at a test server, not your live one" if c["risky"] else ""
+            needs = f"  needs: {', '.join(c['requires'])}" if c["requires"] else ""
+            print(f"  {c['id']}: {c['command']}{needs}{flag}")
+        print("  accept with: orchestrator suggest-tests --accept <name> ...   (or --accept all for the ones not marked !)\n")
+    for note in found["notes"]:
+        print(f"Note: {note}")
+    return 0
+
+
+def run_tests_command(args: argparse.Namespace) -> int:
+    """Run the project's extra test commands by hand: the ones named, or a whole tier (`manual` by default).
+    Exit code: 0 all passed, 1 something failed or timed out, 2 nothing could run (blocked or none configured)."""
+    from datetime import datetime
+
+    from orchestrator import test_commands
+
+    config = load_project_config()
+    commands, errors = test_commands.from_config(config)
+    for error in errors:
+        print(f"  - Warning: {error}")
+    known = {c.name for c in commands}
+    unknown = [n for n in args.names if n not in known]
+    if unknown:
+        print(f"No test command named {', '.join(unknown)}. Configured: {', '.join(sorted(known)) or 'none'}.")
+        return 2
+    chosen = [c for c in commands if c.name in args.names] if args.names else [c for c in commands if c.tier == args.tier]
+    if not chosen:
+        print(f"No test commands to run (tier {args.tier}). Add them under test_commands in .orchestrator/project.json.")
+        return 2
+    out_dir = config.runtime_dir / "output" / "manual-tests" / datetime.now().strftime("%Y%m%d-%H%M%S")
+    for c in chosen:
+        print(f"Running {c.name} ({c.tier}): {c.command}")
+    # Named commands run whatever their tier, so every chosen one is treated as part of this run.
+    results = test_commands.run_all([replace(c, tier="run") for c in chosen], config.root, out_dir, tier="run")
+    print(test_commands.summary(results))
+    print(f"Logs: {out_dir}")
+    if not test_commands.passed(results):
+        return 1
+    return 0 if any(r["status"] == "passed" for r in results) else 2
 
 
 def run_script(script_name: str, script_args: list[str]) -> int:
@@ -2555,6 +2649,17 @@ def _main(argv: list[str] | None = None) -> int:
     check_parser.add_argument("--project", help="Recent project name or project root path")
     check_config_parser = subparsers.add_parser("check-config")
     check_config_parser.add_argument("--project", help="Recent project name or project root path")
+    suggest_parser = subparsers.add_parser(
+        "suggest-tests", help="Show the test setup found for this project (tests, scripts, Docker) and save what you accept")
+    suggest_parser.add_argument("--accept", nargs="+", metavar="ID",
+                                help="test_command, command names, or all (the main command and every command not marked risky)")
+    suggest_parser.add_argument("--project", help="Recent project name or project root path")
+    run_tests_parser = subparsers.add_parser(
+        "run-tests", help="Run extra test commands by hand (test_commands in project.json): named ones, or a tier")
+    run_tests_parser.add_argument("names", nargs="*", help="Command names to run, whatever their tier")
+    run_tests_parser.add_argument("--tier", choices=["per-job", "nightly", "manual"], default="manual",
+                                  help="Tier to run when no names are given (default: manual)")
+    run_tests_parser.add_argument("--project", help="Recent project name or project root path")
     worker_check = subparsers.add_parser("worker-check")
     worker_check.add_argument("--machine")
     worker_check.add_argument("--project", help="Recent project name or project root path")
@@ -2701,6 +2806,14 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         return validate_config_command()
+    if args.command == "suggest-tests":
+        if args.project and apply_project_env(args.project):
+            return 1
+        return suggest_tests_command(args)
+    if args.command == "run-tests":
+        if args.project and apply_project_env(args.project):
+            return 1
+        return run_tests_command(args)
     if args.command == "worker-check":
         if args.project and apply_project_env(args.project):
             return 1

@@ -8,6 +8,7 @@ import shlex
 from pathlib import Path
 
 from common import (
+    PROJECT_CONFIG,
     DOCS_DIR, 
     OUTPUT_DIR, 
     PROMPTS_DIR,
@@ -135,7 +136,40 @@ def uses_configured_test_tool(command: str, base_command: str) -> bool:
     return bool(command_parts and base_parts and command_parts[0] == base_parts[0])
 
 
+NO_TESTS_NEEDED = {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"}
+
+
 def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
+    """Build and run the project's tests: the main `test_command`, then the extra `test_commands` once it passes."""
+    build_ok, test_ok = run_main_build_and_tests(job, summary_file)
+    if not (build_ok and test_ok):
+        return build_ok, test_ok
+    if (job.get("test_command_override") or "").strip().lower() in NO_TESTS_NEEDED:
+        return build_ok, test_ok  # the job said no tests apply; extra suites are no exception
+    return build_ok, run_extra_test_commands(job)
+
+
+def run_extra_test_commands(job: dict) -> bool:
+    """Run the per-job `test_commands` (and `backend_test_command`). Blocked ones are reported and don't fail the job."""
+    from orchestrator import test_commands
+    commands, errors = test_commands.from_config(PROJECT_CONFIG)
+    for error in errors:
+        print(f"      - Warning: {error}")
+    if not any(c.tier == "per-job" for c in commands):
+        return True
+    out_dir = OUTPUT_DIR / job["job_id"]
+    print_phase("testing", subtext="extra test commands")
+    results = test_commands.run_all(commands, ROOT, out_dir)
+    print("      - Extra test commands:\n" + test_commands.summary(results))
+    if test_commands.passed(results):
+        return True
+    report = test_commands.failure_report(results)
+    write_text(out_dir / "test.log", report)  # what the fix step and the failure views read
+    write_text(out_dir / f"test_analysis_{nice_timestamp()}.md", analyze_failure("test", report))
+    return False
+
+
+def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
     out_dir = OUTPUT_DIR / job["job_id"]
     out_dir.mkdir(parents=True, exist_ok=True)
     
@@ -154,7 +188,7 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
     if override:
         o = override.strip().lower()
         # Robust N/A check
-        is_na = o in {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"}
+        is_na = o in NO_TESTS_NEEDED
         
         if is_na:
             test_cmd = None

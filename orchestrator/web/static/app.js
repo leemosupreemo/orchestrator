@@ -35,10 +35,20 @@ let signingIn = false;
 let blockedProvider = null; // set when the browser blocks the sign-in window, so full-page sign-in can be offered (it fails in some browsers)
 let authResolved = false;
 let authUser = null;
-try { signingIn = Object.keys(sessionStorage).some((k) => k.startsWith("firebase:pendingRedirect") && sessionStorage.getItem(k) === "true"); } catch { /* storage blocked: nothing to resume */ }
+try {
+  const pendingAt = Number(sessionStorage.getItem("orchestrator_pending_signin_at") || 0);
+  const isFresh = pendingAt && (Date.now() - pendingAt < 120000);
+  signingIn = (isFresh && sessionStorage.getItem("orchestrator_pending_signin") === "true")
+    || Object.keys(sessionStorage).some((k) => k.startsWith("firebase:pendingRedirect"))
+    || Object.keys(localStorage).some((k) => k.startsWith("firebase:pendingRedirect"));
+} catch { /* storage blocked: nothing to resume */ }
 
 function endSigningIn(resume = false) {
   signingIn = false;
+  try {
+    sessionStorage.removeItem("orchestrator_pending_signin");
+    sessionStorage.removeItem("orchestrator_pending_signin_at");
+  } catch {}
   if (resume) refreshState().then(route);
 }
 
@@ -47,6 +57,7 @@ if (typeof window !== "undefined" && window.firebase?.auth) {
     window.firebase.auth().getRedirectResult().then(async (cred) => {
       if (!(cred && cred.user)) { if (signingIn) endSigningIn(true); return; } // no redirect was pending after all
       try {
+        showSigningIn("Signed in with your account. Connecting…");
         await afterProviderSignIn(cred.user, "your account");
       } catch (err) {
         endSigningIn();
@@ -1215,6 +1226,10 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
   const token = getToken();
   if (backend === null && !token) {
     if (opening) throw new Error("Sign in again to open this computer.");
+    if (signingIn) {
+      showSigningIn();
+      return;
+    }
     if (!view.querySelector(".signin-card:not(.signing-in)")) {
       showSignInGate("Sign in with your access token to continue.", "info");
     }
@@ -1224,6 +1239,10 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
     if (opening) throw new Error("Sign in again to open this computer.");
     if (window.firebase?.auth?.().currentUser) {
       openAccount().catch(() => { if (!view.querySelector(".signin-card:not(.signing-in)")) showSignInGate(); });
+      return;
+    }
+    if (signingIn) {
+      showSigningIn();
       return;
     }
     if (!view.querySelector(".signin-card:not(.signing-in)")) {
@@ -1327,7 +1346,10 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
     if (from && to) { to.hidden = from.hidden; to.textContent = from.textContent; to.title = from.title; to.className = from.className; }
   }
   const mobileTitle = $("#mobile-title"); // the phone header names the project you're in
-  if (mobileTitle) mobileTitle.innerHTML = document.body.classList.contains("signin-gate") ? "Orchestrator" : `<span class="mobile-title-name">${esc(state.project?.name || "")}</span>${kindPill(state.project?.kind)}`;
+  if (mobileTitle) {
+    if (document.body.classList.contains("signin-gate")) mobileTitle.textContent = "Orchestrator";
+    else setMobileProjectTitle(state.project?.name, state.project?.kind);
+  }
   const kindSlot = $("#project-kind");
   if (kindSlot) kindSlot.innerHTML = kindPill(state.project?.kind);
   renderSessionComputer($("#session-computer"));
@@ -1337,6 +1359,7 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
 
   renderProjectSelect($("#project-select"));
   renderProjectSelect($(".home-project-select"));
+  renderProjectSelect($(".mobile-project-select"));
 }
 
 // The hosted app's Computer menu: which of your computers this is. It opens on its own (the one used last, else the first
@@ -1436,6 +1459,7 @@ const projectDownloads = ProjectPicker.createDownloads({
     if (started) { navigationDrawer?.close(); location.hash = "#/"; }
     if (started || op.phase !== "downloading") {
       renderProjectSelect($("#project-select"));
+      renderProjectSelect($(".mobile-project-select"));
       await route();
     } else if (current.page === "home") {
       const status = ProjectPicker.downloadStatus(op);
@@ -1514,13 +1538,23 @@ function renderProjectSelect(select) {
     select.dataset.html = html;
   }
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle && !document.body.classList.contains("signin-gate")) {
-    mobileTitle.innerHTML = `<span class="mobile-title-name">${esc(download?.name || p.name)}</span>${download ? "" : kindPill(p.kind)}`;
+  // Not when this call is filling the phone title's own select: setMobileProjectTitle calls back into here, and would loop.
+  if (mobileTitle && !select.classList.contains("mobile-project-select") && !document.body.classList.contains("signin-gate")) {
+    setMobileProjectTitle(download?.name || p.name, download ? "" : p.kind);
   }
 }
 
+// The phone header's title: the project's name, which opens the same project list as the sidebar's picker (like Home's title).
+function setMobileProjectTitle(name, kind) {
+  const mobileTitle = $("#mobile-title");
+  if (!mobileTitle) return;
+  mobileTitle.innerHTML = `<span class="project-title-switch"><span class="mobile-title-name">${esc(name || "")}</span>${kindPill(kind)}<span class="project-title-chevron" aria-hidden="true">▾</span>
+    <select class="mobile-project-select" aria-label="Switch project"></select></span>`;
+  renderProjectSelect($(".mobile-project-select"));
+}
+
 document.addEventListener("change", async (e) => {
-  if (!e.target.matches("#project-select, .home-project-select")) return;
+  if (!e.target.matches("#project-select, .home-project-select, .mobile-project-select")) return;
   const val = e.target.value;
   if (val === "__manage__") {
     projectDownloads.leave();
@@ -1569,7 +1603,8 @@ function showSigningIn(label = "Signing you in…") {
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
       <div class="spinner" aria-hidden="true"></div>
       <h2>${esc(label)}</h2>
-      <p class="muted">Connecting to your computer and loading your projects.</p></div></div>`;
+      <p class="muted">Connecting to your computer and loading your projects.</p></div></div>
+    ${loadingSkeleton("home")}`;
 }
 
 // ---------------------------------------------------------------- account (hosted app)
@@ -2206,7 +2241,7 @@ if (typeof window !== "undefined" && window.firebase?.auth && Account.active()) 
           openAccount().catch(() => {});
         }
       } else {
-        if (!state.project) {
+        if (!state.project && !signingIn) {
           showSignInGate();
         }
       }
@@ -2487,10 +2522,15 @@ function showSignInGate(message, kind = "error") {
       setLastLoginMethod(name.toLowerCase());
       btn.disabled = true;
       signingIn = true; // the gate stays as it is while the provider's window is open
+      try {
+        sessionStorage.setItem("orchestrator_pending_signin", "true");
+        sessionStorage.setItem("orchestrator_pending_signin_at", Date.now().toString());
+      } catch {}
       const originalHtml = btn.innerHTML;
       btn.innerHTML = `<span>Signing in with ${name}...</span>`;
       try {
         if (useSameTabSignIn()) {
+          showSigningIn(`Opening ${name}…`);
           await firebase.auth().signInWithRedirect(makeProvider());
           return; // getRedirectResult completes the sign-in when this tab returns
         }
@@ -2523,6 +2563,10 @@ function showSignInGate(message, kind = "error") {
     const { name, makeProvider } = blockedProvider;
     blockedProvider = null;
     signingIn = true;
+    try {
+      sessionStorage.setItem("orchestrator_pending_signin", "true");
+      sessionStorage.setItem("orchestrator_pending_signin_at", Date.now().toString());
+    } catch {}
     showSigningIn(`Opening ${name}…`);
     try { await firebase.auth().signInWithRedirect(makeProvider()); }
     catch (err) { endSigningIn(); showSignInGate(err.message); }
@@ -2906,7 +2950,7 @@ async function signOut() {
 function setHeader({ title, titleHtml = "", sub = "", actions = "", status = "" }) {
   document.body.classList.remove("signin-gate");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-title-name">${esc(state.project?.name || "")}</span>${kindPill(state.project?.kind)}`;
+  if (mobileTitle) setMobileProjectTitle(state.project?.name, state.project?.kind);
   document.body.dataset.page = current.page || "";
   const back = $("#back-link");
   if (back) { back.hidden = !current.parent; if (current.parent) back.setAttribute("href", current.parent); }
@@ -3272,7 +3316,7 @@ function statusLine(p, hasPreview = false) {
   const branches = p.branches || [];
   const downloads = p.download_branches || [];
   const branchPicker = branches.length || downloads.length
-    ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${branchOptions(branches, p.branch, p.elsewhere, downloads)}</select>`
+    ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${branchOptions(branches, p.branch, p.elsewhere, downloads, p.recent_branch, p.last_branch)}</select>`
     : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
   // Branch and setup controls stay here; project facts and uncommitted files live in the status card below.
   const stats = [
@@ -3284,15 +3328,19 @@ function statusLine(p, hasPreview = false) {
     ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</div>`;
 }
 
-function branchOptions(branches, current, elsewhere = {}, downloads = []) {
+function branchOptions(branches, current, elsewhere = {}, downloads = [], recent = state.project?.recent_branch, last = state.project?.last_branch) {
   return (!branches.includes(current) ? `<option value="" selected disabled>${esc(current || "no branch")}</option>` : "")
-    + (branches.length ? `<optgroup label="Installed locally">${branches.map(b => branchOption(b, current, elsewhere)).join("")}</optgroup>` : "")
-    + (downloads.length ? `<optgroup label="Download">${downloads.map(b => `<option value="${esc("remote:" + b.ref)}">${esc(b.name)} (${esc(b.remote)})</option>`).join("")}</optgroup>` : "");
+    + (branches.length ? `<optgroup label="Installed locally">${branches.map(b => branchOption(b, current, elsewhere, last, recent)).join("")}</optgroup>` : "")
+    + (downloads.length ? `<optgroup label="Download">${downloads.map(b => {
+        const isRecent = recent === ("remote:" + b.ref) || recent === b.name;
+        return `<option value="${esc("remote:" + b.ref)}"${isRecent ? ' class="branch-recent"' : ""}>${esc(b.name)} (${esc(b.remote)})${isRecent ? " (most recent commit)" : ""}</option>`;
+      }).join("")}</optgroup>` : "");
 }
 
 // A branch checked out in another worktree folder is labelled: git won't switch to it here. So is the one last chosen here.
-function branchOption(b, current, elsewhere = {}, last = state.project?.last_branch) {
-  return `<option value="${esc(b)}" ${b === current ? "selected" : ""}>${esc(b)}${last === b ? " (last used)" : ""}${elsewhere?.[b] ? " (in another folder)" : ""}</option>`;
+function branchOption(b, current, elsewhere = {}, last = state.project?.last_branch, recent = state.project?.recent_branch) {
+  const isRecent = recent === b;
+  return `<option value="${esc(b)}" ${b === current ? "selected" : ""}${isRecent ? ' class="branch-recent"' : ""}>${esc(b)}${isRecent ? " (most recent commit)" : ""}${last === b ? " (last used)" : ""}${elsewhere?.[b] ? " (in another folder)" : ""}</option>`;
 }
 
 // The branch you last chose for a project goes back on when you open the app, sign in, or come back after a while (a job
@@ -3588,7 +3636,7 @@ document.addEventListener("click", async (e) => {
 const HOME_JOBS_SHOWN = 10;
 
 function homeHealthIndicator(s) {
-  const icon = (ready, optional = false) => `<span class="home-health-icon${optional ? " home-health-icon-optional" : ""}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z"/><path d="${ready ? "m9 12 2 2 4-4" : "M12 8v5m0 4h.01"}"/></svg></span>`;
+  const icon = (ready, optional = false) => `<span class="home-health-icon${optional ? " home-health-icon-optional" : ""}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path${optional ? ` stroke="url(#home-health-half)"` : ""} d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z"/><path d="${ready ? "m9 12 2 2 4-4" : "M12 8v5m0 4h.01"}"/></svg></span>`;
   if (!s?.items) return `<details class="home-health-inline home-health-yellow"><summary class="home-health-trigger" title="System health: status unavailable. Tap for details." aria-label="System health: status unavailable">${icon(false)}</summary><div class="home-health-popover"><strong>System health</strong><p>Setup checks could not be loaded. Reload Home to try again.</p></div></details>`;
   const required = s.items.filter(item => item.required);
   const missing = required.filter(item => !item.done);
@@ -4893,11 +4941,14 @@ pages.job = async ([id]) => {
         ${clarificationThread(job.clarification_history)}
         <div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p class="question">${esc(s.question)}</p></div>
         <form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
-          <label class="field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
-          <div class="clarify-reply-actions">
-            <small class="hint-text">The plan is redone with your answer. You approve it before anything is built.</small>
-            <button type="submit" class="btn primary">Send</button>
+          <div class="clarify-input-row">
+            <label class="field clarify-field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
+            <div class="clarify-buttons">
+              <button type="submit" class="btn primary clarify-btn clarify-send-btn" aria-label="Send" title="Send"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
+              <button type="button" class="btn primary clarify-btn clarify-start-btn" data-clarify-start aria-label="Start" title="Start"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
+            </div>
           </div>
+          <small class="hint-text">The plan is redone with your answer. You approve it before anything is built.</small>
         </form></div></section>`
         : (job.clarification_history || []).length ? `<section class="card mb-16"><details class="fold"><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
           <div class="card-b stack">${clarificationThread(job.clarification_history)}</div></details></section>` : ""}
@@ -5091,6 +5142,17 @@ pages.job = async ([id]) => {
         e.preventDefault();
         const text = reply.answer.value.trim();
         if (text) runAction("answer", { job: reply.dataset.job, answer: text });
+      });
+      reply?.querySelector("[data-clarify-start]")?.addEventListener("click", () => {
+        const text = reply.answer.value.trim();
+        if (next && next.action && next.action !== "answer") {
+          runAction(next.action, { job: reply.dataset.job });
+        } else {
+          runAction("answer", {
+            job: reply.dataset.job,
+            answer: text ? `${text}\n\nStart now.` : "Start now with your best assumptions.",
+          });
+        }
       });
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const bodyHtml = `
@@ -5844,6 +5906,40 @@ pages.delivery = async (args, query) => {
           ${state.you?.role !== "member" ? `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its preview link without asking."><input type="checkbox" role="switch" id="web-preview-auto"${web.auto ? " checked" : ""}><span>Publish a link when a job is ready for review</span></label>` : ""}
         </div>`;
 
+  // Where finished builds go: iOS (the wizard's signing setup), Android (Firebase App Distribution) or a web preview.
+  const target = d.target || { delivery_platform: "ios" };
+  const platform = target.delivery_platform;
+  const canEditTarget = state.you?.role !== "member";
+  const platformNames = { ios: "iPhone and iPad (Firebase App Distribution, signed with Apple)", android: "Android (Firebase App Distribution)", web: "Web preview (Firebase Hosting)" };
+  const targetCard = `<section class="card mb-16" id="delivery-target"><div class="card-h"><h2>Where builds go</h2>
+    <span class="pill">${esc({ ios: "iOS", android: "Android", web: "Web" }[platform] || platform)}</span></div>
+    <form id="delivery-target-form" class="card-b stack gap-12">
+      <label class="field"><span>Build type</span><select name="delivery_platform" id="delivery-platform"${canEditTarget ? "" : " disabled"}>
+        ${Object.entries(platformNames).map(([k, v]) => `<option value="${k}"${k === platform ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+      <p class="muted t-secondary" data-for="ios">Uses the signing and distribution settings from the setup wizard. Nothing else to set here.</p>
+      <div class="stack gap-12" data-for="android web">
+        <label class="field"><span>Build command <span class="muted">(optional)</span></span><input type="text" name="delivery_build_command" class="mono" value="${esc(target.delivery_build_command)}" placeholder="./gradlew assembleDebug"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Runs first, in the project folder. Leave it empty if you build the file yourself.</small></label>
+      </div>
+      <div class="stack gap-12" data-for="android">
+        <label class="field"><span>File to send</span><input type="text" name="delivery_artifact" class="mono" value="${esc(target.delivery_artifact)}" placeholder="app/build/outputs/apk/debug/*.apk"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">An .apk or .aab inside the project; a pattern picks the newest match.</small></label>
+        <label class="field"><span>Firebase app ID</span><input type="text" name="firebase_app_id" class="mono" value="${esc(target.firebase_app_id)}" placeholder="1:1234567890:android:abc123"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Firebase console, Project settings, Your apps.</small></label>
+      </div>
+      <div class="stack gap-12" data-for="web">
+        <label class="field"><span>Hosting site <span class="muted">(optional)</span></span><input type="text" name="firebase_hosting_target" value="${esc(target.firebase_hosting_target)}" placeholder="app"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Only when firebase.json has more than one site. A preview link lasts 7 days.</small></label>
+      </div>
+      <div class="stack gap-12" data-for="android web">
+        <label class="field"><span>Firebase project <span class="muted">(optional)</span></span><input type="text" name="firebase_project_id" value="${esc(target.firebase_project_id)}" placeholder="my-project"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Defaults to the project chosen by <code>firebase use</code>.</small></label>
+        <label class="yolo-switch"><input type="checkbox" role="switch" name="automatic"${target.automatic ? " checked" : ""}${canEditTarget ? "" : " disabled"}><span>Deliver automatically when a job's tests pass</span></label>
+        <p class="muted t-secondary">Needs the Firebase CLI installed and signed in: <code>npm install -g firebase-tools</code>, then <code>firebase login</code>.</p>
+      </div>
+      ${canEditTarget ? `<div><button type="submit" class="btn primary">Save</button></div>` : ""}
+    </form></section>`;
+
   const branchCard = `<section class="card mb-16">
     <div class="card-h">
       <h2>${web ? "Preview" : "Test Build"}</h2>
@@ -5860,7 +5956,7 @@ pages.delivery = async (args, query) => {
           <div class="stack">
             <strong>Not ready to send test builds</strong>
             <ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
-            <div><a class="btn small primary" href="#/config/firebase">Set up Firebase</a></div>
+            <div>${platform === "ios" ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="#delivery-target" data-scroll-target>Set up delivery</a>`}</div>
           </div>
         </div>
       ` : `
@@ -5954,7 +6050,7 @@ pages.delivery = async (args, query) => {
   return {
     title: "App delivery",
     sub: web ? "Publish preview links and track releases." : "Launch test builds on devices and monitor pipelines.",
-    html: `${branchCard}${releaseCard}${buildsCard}${pipelineCard}`,
+    html: `${branchCard}${targetCard}${releaseCard}${buildsCard}${pipelineCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
       if (branchSelect) {
@@ -6000,6 +6096,30 @@ pages.delivery = async (args, query) => {
           }, { skipConfirm: false });
         });
       }
+
+      const targetForm = view.querySelector("#delivery-target-form");
+      if (targetForm) {
+        const showFields = () => {
+          const chosen = targetForm.elements.delivery_platform.value;
+          targetForm.querySelectorAll("[data-for]").forEach((el) => { el.hidden = !el.dataset.for.split(" ").includes(chosen); });
+        };
+        targetForm.elements.delivery_platform.addEventListener("change", showFields);
+        showFields();
+        targetForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const body = Object.fromEntries(new FormData(targetForm).entries());
+          body.automatic = targetForm.elements.automatic.checked;
+          try {
+            await api("delivery/target", { method: "POST", body });
+            toast("Saved where builds go");
+            route();
+          } catch (err) { toast(err.message, true); }
+        });
+      }
+      view.querySelector("[data-scroll-target]")?.addEventListener("click", (e) => {
+        e.preventDefault();
+        view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
+      });
 
       const newGroupBtn = view.querySelector("#delivery-new-group-btn");
       if (newGroupBtn) {
@@ -7213,10 +7333,14 @@ async function waitForTask(started, opts) {
   const { task } = started;
   const began = Date.now();
   let misses = 0;
+  let first = true;
   for (;;) {
     if (opts?.signal?.aborted || opts?.isCurrent && !opts.isCurrent()) throw new DOMException("Aborted", "AbortError");
-    await new Promise((r) => setTimeout(r, opts?.pollInterval || 1500));
-    if (opts?.signal?.aborted || opts?.isCurrent && !opts.isCurrent()) throw new DOMException("Aborted", "AbortError");
+    if (!first) {
+      await new Promise((r) => setTimeout(r, opts?.pollInterval || 1500));
+      if (opts?.signal?.aborted || opts?.isCurrent && !opts.isCurrent()) throw new DOMException("Aborted", "AbortError");
+    }
+    first = false;
     let r;
     try { r = await api(`product/task/${encodeURIComponent(task)}`, { signal: opts?.signal }); misses = 0; }
     catch (e) {
@@ -7236,12 +7360,17 @@ async function waitForTask(started, opts) {
 async function streamTask(started, opts = {}) {
   const { task } = started;
   const backend = getBackendUrl();
+  // On this computer an open event stream is quickest. Through a tunnel (backend set),
+  // proxies and tunnels hold the stream back until it ends, so follow with fast polling instead.
+  if (backend) {
+    return waitForTask(started, { ...opts, pollInterval: 250 });
+  }
   const token = getToken();
   const url = `${backend ?? ""}/api/product/task/${encodeURIComponent(task)}/stream`;
   const headers = token ? { "Authorization": `Bearer ${token}` } : {};
 
   try {
-    const res = await fetch(url, { headers, signal: opts.signal });
+    const res = await fetch(url, { headers, credentials: backend ? "omit" : "same-origin", signal: opts.signal });
     if (res.ok && res.body) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -7274,7 +7403,7 @@ async function streamTask(started, opts = {}) {
     if (opts.signal?.aborted || err.name === "AbortError") throw err;
   }
   // Fall back to polling if stream endpoint was interrupted or unavailable
-  return waitForTask(started, { ...opts, pollInterval: 500 });
+  return waitForTask(started, { ...opts, pollInterval: 250 });
 }
 
 // A draft or an import runs on the computer, not in the page. Remember which one is running for this project, so coming back
@@ -8408,6 +8537,75 @@ function suiteLastRun(r) {
   return `Ran ${esc(ago(r.at))}${r.all ? " (all tests)" : ""}, ${how}`;
 }
 
+// What Orchestrator found for testing that isn't set up yet: a main command, scripts and Docker checks, to accept in one click.
+function testSetupHtml(found) {
+  if (!found || state.you?.role === "member" || !(found.test_command || found.commands?.length || found.notes?.length)) return "";
+  const row = (id, title, command, extra, checked) => `<label class="setup-suggestion"><input type="checkbox" name="accept" value="${esc(id)}"${checked ? " checked" : ""}>
+      <span><strong>${esc(title)}</strong>${extra}<br><code class="mono t-secondary">${esc(command)}</code></span></label>`;
+  const rows = [
+    found.test_command ? row("test_command", "Main test command", found.test_command.command, ` <span class="muted t-secondary">${esc(found.test_command.why)}. Runs after every job.</span>`, true) : "",
+    ...(found.commands || []).map((c) => row(c.id, c.id, c.command,
+      ` <span class="pill">By hand</span>${c.requires.length ? ` <span class="pill">needs ${esc(c.requires.join(", "))}</span>` : ""}${c.risky ? ` <span class="pill warn">check first</span><br><span class="muted t-secondary">${esc(c.warning)}. Make sure it points at a test server, not your live one.</span>` : ""}`, !c.risky)),
+  ].join("");
+  const notes = (found.notes || []).map((n) => `<p class="muted t-secondary">${esc(n)}</p>`).join("");
+  return `<section class="card mb-16" id="test-setup"><div class="card-h"><h2>Suggested test setup</h2></div>
+    <form id="test-setup-form" class="card-b stack gap-12">
+      <p class="muted">Found by looking through your project. Nothing runs until you accept it, and extra commands start as <strong>By hand</strong>, so no job runs them.</p>
+      ${rows ? `<div class="stack gap-8">${rows}</div><div class="row gap-8"><button type="submit" class="btn primary">Use selected</button></div>` : ""}${notes}
+    </form></section>`;
+}
+
+// Extra test commands (`test_commands` in project.json): what each is, what is missing right now, and how it last went.
+const TEST_COMMAND_TIERS = { "per-job": "Every job", nightly: "Nightly", manual: "By hand" };
+
+function testCommandStatus(c) {
+  const last = c.last;
+  const counts = last?.tests ? `${plural(last.tests.total_run, "test")}${last.tests.failed_count ? `, ${last.tests.failed_count} failed` : ""}` : "";
+  const when = last?.at ? ago(last.at) : "";
+  if (c.unmet?.length) return { tone: "warn", label: "Blocked", detail: c.unmet.join("; ") };
+  if (!last) return { tone: "", label: "Not run yet", detail: c.tier === "per-job" ? "Runs after the main tests pass on each job." : "Run it by hand when you need it." };
+  const detail = [counts, last.status === "timeout" ? last.reason : last.seconds != null ? `${last.seconds}s` : "", when, last.flaky ? "passed only on a retry" : ""].filter(Boolean).join(" · ");
+  if (last.status === "passed") return { tone: "ok", label: last.flaky ? "Flaky" : "Passed", detail };
+  if (last.status === "blocked") return { tone: "warn", label: "Blocked", detail: last.reason || detail };
+  return { tone: "bad", label: last.status === "timeout" ? "Timed out" : "Failed", detail };
+}
+
+function extraCommandsHtml(commands) {
+  const owner = state.you?.role !== "member";
+  const rows = commands.map((c) => {
+    const status = testCommandStatus(c);
+    return `<div class="item" data-command="${esc(c.name)}"><div class="main-col">
+        <div class="title">${esc(c.name)} <span class="pill">${esc(TEST_COMMAND_TIERS[c.tier] || c.tier)}</span> <span class="pill ${status.tone}">${esc(status.label)}</span></div>
+        <div class="muted mono t-secondary">${esc(c.command)}</div>
+        <div class="muted t-secondary">${esc(status.detail)}</div></div>
+      <div class="side">
+        <button type="button" class="btn small" ${act("test_command", { name: c.name })} ${c.unmet?.length ? 'disabled title="Fix what is missing, then choose Check again."' : ""}>Run</button>
+        ${owner && c.editable ? `<button type="button" class="btn small ghost" data-command-edit="${esc(c.name)}">Edit</button>` : ""}</div></div>`;
+  }).join("");
+  return `<section class="card" id="extra-commands"><div class="card-h"><h2>Extra test commands <span class="count">${commands.length}</span></h2>
+      <div class="row gap-8"><button type="button" class="btn small ghost" id="commands-recheck" title="Look again at Docker, files and tools these need">Check again</button>
+      ${owner ? `<button type="button" class="btn small" id="command-add">Add command</button>` : ""}</div></div>
+    ${commands.length ? `<div class="list">${rows}</div>`
+      : `<div class="card-b stack"><p class="muted">Other checks to run besides the main test command, such as a server test that needs Docker, with a time limit and what each needs. Commands that run every job start after the main tests pass; the rest you run by hand.</p></div>`}</section>`;
+}
+
+async function editTestCommand(existing) {
+  const c = existing || { name: "", command: "", tier: "per-job", timeout: 1800, retries: 0, cwd: ".", requires: [], results: "" };
+  const values = await formDialog(existing ? `Edit ${c.name}` : "Add test command", `
+    <label class="field"><span>Name</span><input type="text" name="name" value="${esc(c.name)}" placeholder="server" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*"></label>
+    <label class="field"><span>Command</span><input type="text" name="command" class="mono" value="${esc(c.command)}" placeholder="python3 tools/test-server.py" required></label>
+    <label class="field"><span>When to run</span><select name="tier">${Object.entries(TEST_COMMAND_TIERS).map(([k, v]) => `<option value="${k}"${k === c.tier ? " selected" : ""}>${esc(v)}${k === "per-job" ? " (after the main tests pass)" : k === "manual" ? " (Run button or orchestrator run-tests)" : ""}</option>`).join("")}</select></label>
+    <div class="row gap-12"><label class="field grow"><span>Time limit (seconds)</span><input type="number" name="timeout" min="1" value="${esc(c.timeout)}"></label>
+      <label class="field grow"><span>Retries</span><input type="number" name="retries" min="0" max="5" value="${esc(c.retries)}"></label></div>
+    <label class="field"><span>Needs <span class="muted">(one per line)</span></span><textarea name="requires" rows="3" placeholder="docker&#10;container:my-server&#10;path:.local/data&#10;env:API_TOKEN&#10;command:dotnet">${esc((c.requires || []).join("\n"))}</textarea>
+      <small class="muted">If something is missing the command shows as blocked and the job carries on.</small></label>
+    <label class="field"><span>Folder <span class="muted">(inside the project)</span></span><input type="text" name="cwd" value="${esc(c.cwd || ".")}"></label>
+    <label class="field"><span>Results file <span class="muted">(optional, TRX or JUnit XML, or a pattern like TestResults/*.trx)</span></span><input type="text" name="results" value="${esc(c.results || "")}"></label>
+    ${existing ? `<div><button type="button" class="btn small danger" id="command-remove">Remove this command</button></div>` : ""}
+  `, existing ? "Save" : "Add");
+  return values;
+}
+
 function suiteGroupsHtml(suites, { open = false } = {}) {
   if (!suites.length) {
     return `<div class="empty stack gap-8">
@@ -8448,7 +8646,7 @@ function coverageJobParams(data, caseView, values = {}) {
 
 pages.tests = async (_, query) => {
   view.innerHTML = `<div class="empty">Finding tests…</div>`;
-  const [data, caseView] = await Promise.all([api(`tests${query.get("refresh") ? "?refresh=1" : ""}`), api("test-cases").catch(() => ({ cases: [], summary: null }))]);
+  const [data, caseView, testSetup] = await Promise.all([api(`tests${query.get("refresh") ? "?refresh=1" : ""}`), api("test-cases").catch(() => ({ cases: [], summary: null })), api("test-setup").catch(() => null)]);
   const caseFilter = TC_STATUS[query.get("cases")] ? query.get("cases") : "all";
   const shownCases = caseView.cases.filter((c) => caseFilter === "all" || c.status === caseFilter);
   const byArea = new Map();
@@ -8519,6 +8717,8 @@ pages.tests = async (_, query) => {
           : `<p class="muted">Not measured yet. ${matchMedia("(pointer: coarse)").matches ? "Tap" : "Click"} Calculate to populate.</p>`}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
+      ${testSetupHtml(testSetup)}
+      ${extraCommandsHtml(data.commands || [])}
       <section class="card" id="test-suites"><div class="card-h"><h2>Suites <span class="count">${plural(withTests.length, "suite")} · ${plural(total, "test")}</span></h2>
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
         ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
@@ -8602,6 +8802,37 @@ pages.tests = async (_, query) => {
       const toSuites = () => $("#test-suites")?.scrollIntoView({ block: "start" });
       if (query.get("show") === "suites") toSuites();
       $("#next-step")?.addEventListener("click", (e) => { if (e.target.closest("[data-show-suites]")) { e.preventDefault(); toSuites(); } }); // the card can be filled in later
+      $("#test-setup-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const accept = [...e.target.querySelectorAll('input[name="accept"]:checked')].map((i) => i.value);
+        if (!accept.length) { toast("Tick what you want to use.", true); return; }
+        try { await api("test-setup/apply", { method: "POST", body: { accept } }); toast("Saved your test setup"); route(); } catch (err) { toast(err.message, true); }
+      });
+      const commands = data.commands || [];
+      const saveCommand = async (body, done) => {
+        try { await api("test-commands", { method: "POST", body }); toast(done); route(); } catch (err) { toast(err.message, true); }
+      };
+      $("#command-add")?.addEventListener("click", async () => {
+        const values = await editTestCommand(null);
+        if (values) await saveCommand(values, `Added ${values.name}`);
+      });
+      $("#commands-recheck")?.addEventListener("click", async (e) => {
+        e.target.disabled = true;
+        try { await api("tests?refresh=1"); route(); } catch (err) { toast(err.message, true); e.target.disabled = false; }
+      });
+      $("#extra-commands")?.addEventListener("click", async (e) => {
+        const name = e.target.closest("[data-command-edit]")?.dataset.commandEdit;
+        if (!name) return;
+        const existing = commands.find((c) => c.name === name);
+        const dlg = $("#dialog");
+        let removing = false;
+        const onRemove = (ev) => { if (ev.target.closest("#command-remove")) { removing = true; dlg.returnValue = "ok"; dlg.close(); } };
+        dlg.addEventListener("click", onRemove);
+        const values = await editTestCommand(existing);
+        dlg.removeEventListener("click", onRemove);
+        if (removing) return saveCommand({ remove: name }, `Removed ${name}`);
+        if (values) await saveCommand({ ...values, original: name }, `Saved ${name}`);
+      });
       $("#suite-filter").addEventListener("submit", (e) => {
         e.preventDefault();
         location.hash = `#/tests?q=${encodeURIComponent(new FormData(e.target).get("q"))}`;
@@ -8897,7 +9128,7 @@ pages.git = async (_, query) => {
       <div class="git-branch-field">
         <label class="field" for="git-branch-select"><span>Current branch</span></label>
         <div class="git-branch-controls"><select id="git-branch-select" name="branch" class="mono" ${!(g.branches.length || g.download_branches?.length) ? "disabled" : ""}>
-          ${branchOptions(g.branches, g.branch, g.elsewhere, g.download_branches || [])}
+          ${branchOptions(g.branches, g.branch, g.elsewhere, g.download_branches || [], g.recent_branch, state.project?.last_branch)}
         </select><button type="button" class="btn small ghost" ${act("git_new_branch")} ${!g.is_repo ? "disabled" : ""}>New branch…</button></div>
       </div>
       ${g.has_commits && g.branch && (g.can_fetch || g.remote_branches?.length) ? `<div class="git-branch-field"><span class="git-field-label">Tracking branch</span><div class="git-tracking-value"><span class="mono">${esc(g.upstream || "Not set")}</span>
