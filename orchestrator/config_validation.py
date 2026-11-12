@@ -38,6 +38,16 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
                       else "Configure test_command for a non-Xcode project.")
     from orchestrator import test_commands
     errors += test_commands.from_config(config)[1]
+    from orchestrator import platforms as platform_view
+    try:
+        raw_project = json.loads((config.runtime_dir / "project.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw_project = {}
+    errors += platform_view.parse(raw_project.get("platforms"), config.root)[1]
+    for key in ("build_timeout", "test_timeout"):
+        value = getattr(config, key, None)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            errors.append(f"{key} must be a whole number of seconds (0 means no limit).")
     from orchestrator import delivery_adapters
     platform = delivery_adapters.platform_of(config)
     if config.firebase_distribution and config.delivery_provider and config.delivery_provider != "firebase":

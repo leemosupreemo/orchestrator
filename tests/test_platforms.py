@@ -74,6 +74,47 @@ class DetectTests(unittest.TestCase):
                              [("Game client", "client", ["GameUnity"], False), ("Odd", "other", ["x"], False)])
 
 
+class ParseTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        write(self.root, "GameUnity/a.cs", "x")
+        write(self.root, "Server/b.cs", "x")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_valid_list_is_cleaned(self):
+        clean, errors = pf.parse([{"name": " Game client ", "kind": "client", "paths": ["GameUnity/", " Server "]},
+                                  {"name": "Rest", "paths": ["."]}], self.root)
+        self.assertEqual(errors, [])
+        self.assertEqual(clean, [{"name": "Game client", "kind": "client", "paths": ["GameUnity", "Server"]},
+                                 {"name": "Rest", "kind": "other", "paths": ["."]}])
+
+    def test_every_problem_is_reported_and_bad_entries_are_dropped(self):
+        clean, errors = pf.parse([
+            {"name": "", "paths": ["GameUnity"]}, {"name": "A", "kind": "nonsense", "paths": ["GameUnity"]},
+            {"name": "B", "paths": []}, {"name": "C", "paths": ["../outside"]}, {"name": "D", "paths": ["/etc"]},
+            {"name": "E", "paths": ["nope"]}, {"name": "ok", "paths": ["Server"]}, {"name": "OK", "paths": ["Server"]},
+            {"name": "x" * 61, "paths": ["Server"]}, "text"], self.root)
+        self.assertEqual([c["name"] for c in clean], ["ok"])
+        text = " ".join(errors)
+        for part in ("needs a name", "kind must be one of", "needs at least one folder", "must be a folder inside the project",
+                     "doesn't exist in the project", "name is used twice", "longer than 60", "must be an object"):
+            self.assertIn(part, text)
+
+    def test_two_platforms_cannot_claim_the_same_folder_but_a_subfolder_is_fine(self):
+        write(self.root, "Server/inner/c.cs", "x")
+        clean, errors = pf.parse([{"name": "A", "paths": ["Server"]}, {"name": "B", "paths": ["Server"]},
+                                  {"name": "C", "paths": ["Server/inner"]}], self.root)
+        self.assertEqual([c["name"] for c in clean], ["A", "C"])
+        self.assertEqual(errors, ['platform "B": "Server" already belongs to "A".'])
+
+    def test_nothing_and_non_lists(self):
+        self.assertEqual(pf.parse(None, self.root), ([], []))
+        self.assertEqual(pf.parse("x", self.root)[1], ["platforms must be a list."])
+
+
 class AnalyzeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -116,6 +157,16 @@ class AnalyzeTests(unittest.TestCase):
         self.assertIn("not line coverage", self.result["note"])
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(pf.analyze(Path(empty), {})["platforms"], [])
+
+    def test_a_python_import_matches_a_module_however_short_its_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "lib/calc.py", "def add(a, b):\n    return a + b\n")
+            write(root, "lib/util.py", "def go():\n    return 1\n")
+            write(root, "tests/test_calc.py", "import unittest\nfrom lib.calc import add\n")
+            shared = pf.analyze(root, {})["platforms"][0]
+            self.assertEqual([g["path"] for g in shared["gaps"]], ["lib/util.py"])  # calc is imported, util is not
+            self.assertEqual(shared["tested_files"], 1)
 
     def test_config_files_are_not_source(self):
         with tempfile.TemporaryDirectory() as tmp:

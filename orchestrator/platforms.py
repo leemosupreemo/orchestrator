@@ -38,6 +38,7 @@ TYPE_NAME = {
 }
 TYPE_NAME[".tsx"] = TYPE_NAME[".ts"]
 WORD = re.compile(r"[A-Za-z_]\w{3,}")
+PY_IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w., ]+))", re.M)
 MIN_NAME = 5
 MAX_FILES_PER_NAME = 3  # a name shared by more files than this (Zone, Item, Manager...) says nothing about any one of them
 MAX_FILES = 20_000
@@ -80,6 +81,59 @@ def _separate_repo_role(folder: Path) -> tuple[str, str]:
 
 def _is_unity(folder: Path) -> bool:
     return (folder / "ProjectSettings" / "ProjectVersion.txt").is_file() and (folder / "Assets").is_dir()
+
+
+def parse(raw: Any, root: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """The platforms in a `platforms` value (project.json or the editor), and what is wrong with it. Each needs a unique
+    name, a kind, and one or more folders or files that exist inside the project."""
+    if raw in (None, []):
+        return [], []
+    if not isinstance(raw, list):
+        return [], ["platforms must be a list."]
+    clean: list[dict[str, Any]] = []
+    errors: list[str] = []
+    names: set[str] = set()
+    owners: dict[str, str] = {}  # folder -> the platform that has it
+    for index, item in enumerate(raw, 1):
+        label = f"platforms[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be an object.")
+            continue
+        name = str(item.get("name") or "").strip()
+        label = f'platform "{name}"' if name else label
+        problems = []
+        if not name:
+            problems.append("needs a name")
+        elif len(name) > 60:
+            problems.append("name is longer than 60 characters")
+        elif name.lower() in names:
+            problems.append("name is used twice")
+        kind = item.get("kind") or "other"
+        if kind not in KIND_LABEL:
+            problems.append(f"kind must be one of {', '.join(KIND_LABEL)}")
+        paths = item.get("paths")
+        if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p.strip() for p in paths):
+            problems.append("needs at least one folder")
+            paths = []
+        cleaned = []
+        for path in paths:
+            path = path.strip().strip("/") or "."
+            parts = Path(path).parts
+            if Path(path).is_absolute() or ".." in parts:
+                problems.append(f'"{path}" must be a folder inside the project')
+            elif path != "." and not (root / path).exists():
+                problems.append(f'"{path}" doesn\'t exist in the project')
+            elif path in owners:
+                problems.append(f'"{path}" already belongs to "{owners[path]}"')
+            else:
+                cleaned.append(path)
+        if problems:
+            errors += [f"{label}: {problem}." for problem in problems]
+            continue
+        names.add(name.lower())
+        owners.update({path: name for path in cleaned})
+        clean.append({"name": name, "kind": kind, "paths": cleaned})
+    return clean, errors
 
 
 def detect(root: Path, config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -200,13 +254,20 @@ def analyze(root: Path, config: dict[str, Any], suites: list[dict[str, Any]] | N
                 continue
             if rel in suite_files or _is_test_path(rel):
                 tokens = set(WORD.findall(text))
+                if ext == ".py":  # an import names a module exactly, however short its name is
+                    for match in PY_IMPORT.finditer(text):
+                        for dotted in (match.group(1) or match.group(2)).replace(" ", "").split(","):
+                            tokens.update(part for part in dotted.split(".") if len(part) >= 2)
                 test_tokens |= tokens
                 test_files[rel] = tokens
                 continue
             if set(p.lower() for p in rel.split("/")[:-1]) & THIRD_PARTY or CONFIG_FILE.search(name):
                 continue  # third-party code and tool configuration are not what the project's tests are for
             names = {Path(name).stem} | set(TYPE_NAME.get(ext, re.compile("$^")).findall(text))
-            sources.append({"path": rel, "ext": ext, "lines": _lines(text), "names": {n for n in names if len(n) >= MIN_NAME}})
+            keep = {n for n in names if len(n) >= MIN_NAME}
+            if ext == ".py" and len(Path(name).stem) >= 2:
+                keep.add(Path(name).stem)  # a Python module is imported by its file name
+            sources.append({"path": rel, "ext": ext, "lines": _lines(text), "names": keep})
     rows = [{**p, "files": 0, "lines": 0, "tested_files": 0, "tested_lines": 0, "tests": 0, "gaps": [], "languages": {}} for p in platforms]
     by_name: dict[str, list[int]] = {}
     for i, source in enumerate(sources):

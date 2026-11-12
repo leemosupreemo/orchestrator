@@ -48,6 +48,8 @@ KINDS = {
     "data": ("Data check", "Looks over your project's files and data for mistakes, such as missing or inconsistent "
              "entries. It is not a test of the code itself."),
     "script": ("Script check", "A script from your project that checks something. Run it to see what it reports."),
+    "unity": ("Unity batch check", "Runs a check inside the Unity Editor without opening it. It is slow to start, it can change project "
+              "files, and the project can't be open in the editor at the same time."),
 }
 TALKS_TO_DOCKER = re.compile(r"\bdocker\b", re.I)
 RUNNERS = {".py": "python3", ".sh": "bash", ".js": "node", ".mjs": "node"}
@@ -150,6 +152,87 @@ def humanize(stem: str) -> str:
     return re.sub(r"[-_.]+", " ", stem).strip().capitalize()
 
 
+UNITY_METHOD = re.compile(r"public\s+static\s+void\s+(\w+)\s*\(\s*\)")
+UNITY_CHECK_NAME = re.compile(r"^(Validate|Verify|Check|Audit|Run|RunBatch|Test|Smoke)")
+UNITY_CHANGES_PROJECT = re.compile(r"^(Build|Import|Rebuild|Generate|Create|Capture|Bake|Export|Convert|Fix|Setup)")
+UNITY_CHECK_CLASS = re.compile(r"(Verif|Valid|Check|Audit|Review|Test|Smoke)", re.I)
+MAX_UNITY_CHECKS = 6
+
+
+def _comment_above(text: str, position: int) -> str:
+    """The `///` or `//` comment lines just above a method, as one short sentence."""
+    lines = text[:position].rstrip().splitlines()[-6:]
+    found: list[str] = []
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped.startswith("//"):
+            found.append(re.sub(r"</?\w+[^>]*>", "", stripped.lstrip("/ ").strip()))
+        elif stripped.startswith("[") or not stripped:
+            continue
+        else:
+            break
+    return " ".join(x for x in reversed(found) if x)[:200]
+
+
+def unity_checks(root: Path, configured_text: str = "") -> list[dict[str, Any]]:
+    """Batch-mode checks in a Unity project's Editor scripts: static no-argument methods that exit the editor themselves
+    (`EditorApplication.Exit`) and are named like a check. Methods that build or import things aren't offered."""
+    from orchestrator.stack_detection import detect_project_stack, unity_command
+    stack = detect_project_stack(root)
+    if stack.framework != "unity":
+        return []
+    unity = root / (stack.project_dir or ".")
+    assets = unity / "Assets"
+    found: list[dict[str, Any]] = []
+    seen_files = 0
+    for folder, dirs, files in os.walk(assets):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        if "Editor" not in Path(folder).relative_to(assets).parts:
+            continue
+        for name in sorted(files):
+            seen_files += 1
+            if not name.endswith(".cs") or seen_files > MAX_FILES:
+                continue
+            path = Path(folder) / name
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if "EditorApplication.Exit" not in text:
+                continue
+            namespace = re.search(r"^\s*namespace\s+([\w.]+)", text, re.M)
+            for match in UNITY_METHOD.finditer(text):
+                method = match.group(1)
+                following = text[match.end():match.end() + 4000]
+                next_method = UNITY_METHOD.search(following)
+                body = following[:next_method.start()] if next_method else following
+                owners = re.findall(r"\bclass\s+(\w+)", text[:match.start()])
+                owner = owners[-1] if owners else None
+                if not owner or "EditorApplication.Exit" not in body or UNITY_CHANGES_PROJECT.match(method):
+                    continue
+                if not (UNITY_CHECK_NAME.match(method) and (UNITY_CHECK_CLASS.search(owner) or method.startswith(("Validate", "Verify", "Check")))):
+                    continue
+                qualified = f"{namespace.group(1)}.{owner}.{method}" if namespace else f"{owner}.{method}"
+                if qualified in configured_text:
+                    continue
+                rel_dir = stack.project_dir or "."
+                found.append({"qualified": qualified, "owner": owner, "method": method, "source": path.relative_to(root).as_posix(),
+                              "description": _comment_above(text, match.start()),
+                              "command": unity_command(root, "-executeMethod", qualified, project_dir=rel_dir)})
+    return found[:MAX_UNITY_CHECKS]
+
+
+def _unity_candidates(root: Path, configured_text: str, taken: set[str]) -> list[dict[str, Any]]:
+    out = []
+    label, what = KINDS["unity"]
+    for item in unity_checks(root, configured_text):
+        out.append({"id": _name_for(Path(f"unity-{item['owner']}-{item['method']}.cs"), taken), "title": f"{humanize(item['owner'])}: {humanize(item['method'])}",
+                    "command": item["command"], "source": item["source"], "tier": "manual", "requires": [], "risky": True,
+                    "kind": "unity", "kind_label": label, "what": what, "description": item["description"],
+                    "why": f"{item['source']} runs a check in the Unity Editor", "warning": "it runs inside the Unity Editor, which can change project files, and the project must not be open in the editor"})
+    return out
+
+
 def _name_for(path: Path, taken: set[str]) -> str:
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", re.sub(r"^(test|check|verify|smoke|validate)[-_.]*", r"\1-", path.stem)).strip("-") or "check"
     name, n = base, 2
@@ -213,6 +296,8 @@ def suggest(root: Path, config: dict[str, Any]) -> dict[str, Any]:
                             "This runs after every job, so a job can't be finished with broken tests."}
     have = {c.get("name") for c in config.get("test_commands") or [] if isinstance(c, dict)}
     commands = [c for c in script_candidates(root, configured) if c["id"] not in have]
+    configured_text = " ".join([str(config.get("test_command") or ""), *[str(c.get("command", "")) for c in config.get("test_commands") or [] if isinstance(c, dict)]])
+    commands += [c for c in _unity_candidates(root, configured_text, {c["id"] for c in commands} | have) if c["id"] not in have]
     notes = []
     compose = compose_files(root)
     if compose and not any("docker" in c["requires"] for c in commands) and not any(

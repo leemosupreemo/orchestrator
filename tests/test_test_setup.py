@@ -128,6 +128,67 @@ class ExplanationTests(unittest.TestCase):
             self.assertIn("unit tests", main["what"])
 
 
+class UnityChecksTests(unittest.TestCase):
+    def project(self, root: Path) -> None:
+        write(root, "Client/ProjectSettings/ProjectVersion.txt", "m_EditorVersion: 6000.0.30f1\n")
+        write(root, "Client/Packages/manifest.json", "{}")
+        write(root, "Client/Assets/Editor/PostureVerification.cs", """namespace Game.EditorTools
+{
+    public class PostureVerification
+    {
+        /// <summary>Checks every posture's timing against the spec.</summary>
+        public static void RunBatch()
+        {
+            var ok = Verify();
+            UnityEditor.EditorApplication.Exit(ok ? 0 : 1);
+        }
+        public static void Validate() { /* a menu item: it doesn't exit the editor */ }
+    }
+}
+""")
+        write(root, "Client/Assets/Editor/CityImport.cs", """public class CityImportMenu
+{
+    public static void BuildCityOfCamelot() { Build(); UnityEditor.EditorApplication.Exit(0); }
+    public static void ImportAll() { UnityEditor.EditorApplication.Exit(0); }
+}
+""")
+        write(root, "Client/Assets/Scripts/Runtime.cs", "public class RuntimeCheck { public static void Run() { UnityEditor.EditorApplication.Exit(0); } }")  # not an Editor folder
+
+    def test_batch_checks_are_found_builders_and_menu_items_are_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.project(root)
+            found = test_setup.unity_checks(root)
+            self.assertEqual([c["qualified"] for c in found], ["Game.EditorTools.PostureVerification.RunBatch"])
+            self.assertEqual(found[0]["description"], "Checks every posture's timing against the spec.")
+            self.assertIn("-executeMethod Game.EditorTools.PostureVerification.RunBatch", found[0]["command"])
+            self.assertIn("-projectPath Client", found[0]["command"])
+            self.assertIn("6000.0.30f1", found[0]["command"])
+
+    def test_they_are_suggested_by_hand_flagged_as_needing_care_and_left_out_of_accept_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.project(root)
+            commands = {c["id"]: c for c in test_setup.suggest(root, {})["commands"]}
+            unity = next(c for k, c in commands.items() if k.startswith("unity-"))
+            self.assertEqual((unity["tier"], unity["risky"], unity["kind"], unity["kind_label"]), ("manual", True, "unity", "Unity batch check"))
+            self.assertIn("project must not be open", unity["warning"])
+            changes, problems = test_setup.apply(root, {}, ["all"])
+            self.assertEqual(problems, [])
+            self.assertFalse(any("executeMethod" in c["command"] for c in changes.get("test_commands", [])))
+            named, _ = test_setup.apply(root, {}, [unity["id"]])
+            self.assertTrue(named["test_commands"][0]["command"].startswith('"${UNITY_PATH:-'))
+
+    def test_a_check_already_configured_is_not_offered_again_and_other_projects_have_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.project(root)
+            configured = {"test_commands": [{"name": "posture", "command": "unity -executeMethod Game.EditorTools.PostureVerification.RunBatch"}]}
+            self.assertEqual([c for c in test_setup.suggest(root, configured)["commands"] if c["kind"] == "unity"], [])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(test_setup.unity_checks(Path(tmp)), [])
+
+
 class ApplyTests(unittest.TestCase):
     def test_all_takes_the_main_command_and_safe_commands_but_never_a_risky_one(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -23,6 +23,7 @@ from common import (
     get_fallback_simulator_destinations,
     command_with_destination,
     extract_destination_from_command,
+    timeout_note,
 )
 from llm import run_llm
 from model_router import ModelRole
@@ -74,6 +75,30 @@ def capture_system_logs(out_path: Path):
     except Exception as e:
         print(f"      - Warning: Failed to capture system logs: {e}")
     return False
+
+DEFAULT_BUILD_TIMEOUT = 90 * 60
+DEFAULT_TEST_TIMEOUT = 60 * 60
+
+
+def command_timeout(kind: str) -> int | None:
+    """Seconds the main `build` or `test` command may run: `build_timeout` / `test_timeout` in project.json, else a default
+    long enough for a big Unity import or an Xcode build. 0 turns the limit off. Without one, a hung run blocks a job forever."""
+    value = getattr(PROJECT_CONFIG, f"{kind}_timeout", None)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value or None
+    return DEFAULT_BUILD_TIMEOUT if kind == "build" else DEFAULT_TEST_TIMEOUT
+
+
+def timeout_report(kind: str, command: str, seconds: int, output: str) -> str:
+    """What to tell the fix step (and you) when a build or test run was stopped. Not sent to an AI to analyze: a hang
+    has no error to read, and a second look would only wait again."""
+    what = "build" if kind == "build" else "tests"
+    return (f"# The {what} didn't finish\n\n{timeout_note(seconds)}\n\nCommand: `{command}`\n\n"
+            f"This usually means something is waiting and never answering: a test that connects to a server or Docker that isn't "
+            f"running, a Unity or Xcode process stuck on a dialog or a lock (is the project open in an editor?), or a loop. "
+            f"If it is just slow, raise `{kind}_timeout` (seconds, 0 for no limit) in .orchestrator/project.json.\n\n"
+            f"## Last output\n\n```\n{chr(10).join(output.splitlines()[-60:])}\n```\n")
+
 
 def analyze_failure(kind: str, output: str) -> str:
     prompt = (PROMPTS_DIR / "build_checker.md").read_text(encoding="utf-8")
@@ -222,10 +247,18 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
         build_ok = False
         for attempt in range(max_retries + 1):
             print(f"      - Running build: {build_cmd} (Attempt {attempt + 1})")
-            build_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=False)
+            build_limit = command_timeout("build")
+            build_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=False, timeout=build_limit)
+
+            if getattr(build_result, "timed_out", False):  # don't run a hung build a second time to capture its output
+                report = timeout_report("build", build_cmd, build_limit, "")
+                write_text(out_dir / "build.log", report)
+                write_text(out_dir / f"build_analysis_{ts}.md", report)
+                print(f"      - Build STOPPED: {timeout_note(build_limit)}")
+                return False, False
 
             if build_result.returncode != 0:
-                cap_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True)
+                cap_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True, timeout=build_limit)
                 full_output = cap_result.stdout + "\n" + cap_result.stderr
 
                 # If destination mismatch, attempt automated fallback retry
@@ -235,7 +268,7 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
                         if candidate == curr_dest: continue
                         print(f"\n\033[1;93m⚠️  Simulator destination rejected during build ({curr_dest}). Retrying with: {candidate}...\033[0m")
                         retry_cmd = command_with_destination(build_cmd, candidate)
-                        retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=False)
+                        retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=False, timeout=build_limit)
                         if retry_res.returncode == 0:
                             build_cmd = retry_cmd
                             build_ok = True
@@ -278,8 +311,16 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
     test_ok = False
     for attempt in range(max_retries + 1):
         print(f"      - Running tests: {final_test_cmd} (Attempt {attempt + 1})")
-        test_result = run_shell(final_test_cmd, cwd=ROOT, check=False, capture=True)
+        test_limit = command_timeout("test")
+        test_result = run_shell(final_test_cmd, cwd=ROOT, check=False, capture=True, timeout=test_limit)
         full_test_output = test_result.stdout + "\n\nSTDERR:\n" + test_result.stderr
+        if getattr(test_result, "timed_out", False):
+            report = timeout_report("test", final_test_cmd, test_limit, test_result.stdout)
+            write_text(out_dir / f"test_{ts}.log", full_test_output)
+            write_text(out_dir / "test.log", report + "\n\n" + full_test_output)
+            write_text(out_dir / f"test_analysis_{ts}.md", report)
+            print(f"      - Tests STOPPED: {timeout_note(test_limit)}")
+            return build_ok, False
         
         # If destination mismatch, attempt automated fallback retry
         if test_result.returncode != 0 and "xcodebuild" in final_test_cmd and "Unable to find a device matching the provided destination specifier" in full_test_output:
@@ -288,7 +329,7 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
                 if candidate == curr_dest: continue
                 print(f"\n\033[1;93m⚠️  Simulator destination rejected during testing ({curr_dest}). Retrying with: {candidate}...\033[0m")
                 retry_cmd = command_with_destination(final_test_cmd, candidate)
-                retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=True)
+                retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=True, timeout=test_limit)
                 full_test_output = retry_res.stdout + "\n\nSTDERR:\n" + retry_res.stderr
                 if retry_res.returncode == 0:
                     test_result = retry_res

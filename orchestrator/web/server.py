@@ -2088,6 +2088,24 @@ def save_test_group_mode(root: Path, groups: list[dict[str, Any]], body: dict[st
     return {"changed": sorted(changes), "skipped": skipped}
 
 
+def save_platforms(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Name the project's platforms yourself (`platforms` in project.json), or go back to detecting them from the folders."""
+    from orchestrator import platforms as platform_view
+    if body.get("reset"):
+        update_project_json(root, {"platforms": None})
+        return {"saved": True, "automatic": True, "count": 0}
+    raw = body.get("platforms")
+    if not isinstance(raw, list) or len(raw) > 30:
+        raise UIError("Send a list of up to 30 platforms.")
+    clean, errors = platform_view.parse(raw, root)
+    if errors:
+        raise UIError(" ".join(errors))
+    if not clean:
+        raise UIError("Add at least one platform, or choose automatic detection.")
+    update_project_json(root, {"platforms": clean})
+    return {"saved": True, "automatic": False, "count": len(clean)}
+
+
 def save_delivery_target(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     from orchestrator import delivery_adapters
     changes, errors = delivery_adapters.target_update(root, body)
@@ -5396,6 +5414,9 @@ ACTIONS: dict[str, Action] = {
     "test_command": Action("Run test command", lambda p, r: orchestrator_argv("run-tests", "--", _name(p, "name")), fields=["name"]),
     "test_probe": Action("Check tests", lambda p, r: orchestrator_argv("script", "job_actions.py", "probe",
                          *(["--group", _name(p, "group")] if p.get("group") and p.get("group") != "all" else [])), fields=["group"]),
+    "platform_coverage": Action("Measure line coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "measure-coverage"),
+                                confirm="Runs your .NET and Python tests under a coverage tool to measure which lines they execute. "
+                                        "This runs the tests, so it can take a while."),
     "test_plan": Action("Run test plan", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-plan", _name(p, "name")), fields=["name"]),
     "coverage": Action("Measure coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "coverage")),
     "git_pull": Action("Pull", build_git_pull),
@@ -7851,6 +7872,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 data["groups"] = [{**g, "last": latest.get(g.get("extra") or "")} for g in data.get("groups") or []]
                 from orchestrator import test_probe
                 data["groups"] = test_probe.overlay(data["groups"], test_probe.read_cache(runtime_dir(root)))
+            if data.get("platforms", {}).get("platforms"):
+                from orchestrator import line_coverage
+                data["platforms"] = line_coverage.apply(data["platforms"], line_coverage.read_cache(runtime_dir(root)))
             self._json(data)
         elif method == "GET" and parts == ["devlogs"]:
             self._json({"pulls": device_log_pulls(root), "sessions": self._device_sessions(root)})
@@ -7924,6 +7948,12 @@ class UIHandler(BaseHTTPRequestHandler):
             self.server.tests_cache = None
             if result["changed"]:
                 self._audit("test_group_mode_changed", root=str(root), group=str(body.get("group")), mode=str(body.get("mode")))
+            self._json(result)
+        elif method == "POST" and parts == ["platforms"]:
+            self._require_owner("change the project's platforms")
+            result = save_platforms(root, self._body())
+            self.server.tests_cache = None  # the Tests page's platform card is built with the test list
+            self._audit("platforms_changed", root=str(root), automatic=result["automatic"])
             self._json(result)
         elif method == "POST" and parts == ["delivery", "target"]:
             self._require_owner("change where builds are delivered")

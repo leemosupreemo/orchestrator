@@ -190,3 +190,52 @@ class TesterGroupIsNotClearedByIosTests(ServerTestCase):
         self.request("POST", "/api/delivery/target", {"delivery_platform": "file", "delivery_artifact": "o/*.ipa", "firebase_app_id": "1:1:ios:a",
                                                       "firebase_groups": "daoc-testers"}, headers=UI_HEADERS)
         self.assertEqual(json.loads(path.read_text())["firebase_groups"], "daoc-testers")
+
+
+class PlatformEditorTests(ServerTestCase):
+    def post(self, body):
+        return self.request("POST", "/api/platforms", body, headers=UI_HEADERS)
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "app").mkdir()
+        (self.root / "server").mkdir()
+        self.path = self.root / ".orchestrator" / "project.json"
+
+    def saved(self):
+        return json.loads(self.path.read_text())
+
+    def test_platforms_are_saved_cleaned_and_the_rest_of_the_config_is_kept(self):
+        res, data = self.post({"platforms": [{"name": "Game app", "kind": "client", "paths": ["app/"]},
+                                             {"name": "Game server", "kind": "server", "paths": ["server"]}]})
+        self.assertEqual((res.status, data["count"], data["automatic"]), (200, 2, False))
+        saved = self.saved()
+        self.assertEqual(saved["platforms"][0], {"name": "Game app", "kind": "client", "paths": ["app"]})
+        self.assertEqual(saved["project_name"], "Demo")
+
+    def test_going_back_to_automatic_removes_the_list(self):
+        self.post({"platforms": [{"name": "A", "paths": ["app"]}]})
+        res, data = self.post({"reset": True})
+        self.assertEqual((res.status, data["automatic"]), (200, True))
+        self.assertNotIn("platforms", self.saved())
+
+    def test_bad_lists_are_refused_with_the_reason_and_nothing_is_saved(self):
+        for body, reason in (({"platforms": [{"name": "A", "paths": ["missing"]}]}, "doesn't exist"),
+                             ({"platforms": [{"name": "A", "paths": ["../x"]}]}, "inside the project"),
+                             ({"platforms": []}, "Add at least one platform"), ({"platforms": "x"}, "list of up to 30")):
+            res, data = self.post(body)
+            self.assertEqual(res.status, 400, body)
+            self.assertIn(reason, data["error"], body)
+        self.assertNotIn("platforms", self.saved())
+
+    def test_members_cannot_change_them(self):
+        with patch.object(ui.UIHandler, "_is_owner", return_value=False):
+            self.assertEqual(self.post({"reset": True})[0].status, 403)
+
+    def test_check_config_reports_a_bad_platform_list(self):
+        from orchestrator.config_validation import validate_project_config
+        from orchestrator.project_config import load_project_config
+        self.path.write_text(json.dumps({"project_name": "Demo", "build_command": "b", "test_command": "t",
+                                         "platforms": [{"name": "A", "paths": ["missing"]}]}))
+        errors = validate_project_config(load_project_config(self.root))
+        self.assertTrue(any("doesn't exist in the project" in e for e in errors), errors)

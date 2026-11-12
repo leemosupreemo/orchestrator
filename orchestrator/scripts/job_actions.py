@@ -404,6 +404,23 @@ def probe_groups(group_ids: list[str] | None) -> int:
     return 0
 
 
+def measure_coverage() -> int:
+    """Run the measurable test groups under a coverage tool and save per-file line coverage for the Tests page."""
+    from dev_console import PROJECT_CONFIG, ROOT
+    from orchestrator import line_coverage, test_probe
+
+    groups = [g for g in test_inventory()["groups"] if g["toggle"]]
+    if not groups:
+        print("Nothing to measure: no .NET or Python test group was found.")
+        return 0
+    probes = test_probe.read_cache(PROJECT_CONFIG.runtime_dir)
+    blocked = {gid for gid, r in probes.items() if r.get("status") == "needs-setup"}
+    result = line_coverage.measure(groups, ROOT, blocked=blocked, log=lambda line: print(line, flush=True))
+    line_coverage.write_cache(PROJECT_CONFIG.runtime_dir, result)
+    print(f"Saved line coverage for {len(result['files'])} files. The Tests page now shows it by platform.")
+    return 0
+
+
 def run_suite(name: str) -> int:
     from dev_console import ROOT, PROJECT_CONFIG, discover_test_suites, test_command_for_suite
 
@@ -463,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     tests_p.add_argument("--json", action="store_true")
     probe_p = sub.add_parser("probe", help="Ask the test frameworks what their tests are and whether they can run here")
     probe_p.add_argument("--group", action="append", help="Only this group (repeat for several)")
+    sub.add_parser("measure-coverage", help="Run the .NET and Python test groups under a coverage tool, per file")
     sub.add_parser("run-suite", help="Run one test suite").add_argument("name")
     sub.add_parser("run-plan", help="Run one test plan").add_argument("name")
     sub.add_parser("coverage", help="Measure code coverage")
@@ -480,6 +498,8 @@ def main(argv: list[str] | None = None) -> int:
             for p in inventory["plans"]:
                 print(f"plan: {p}")
         return 0
+    if args.action == "measure-coverage":
+        return measure_coverage()
     if args.action == "probe":
         return probe_groups(args.group)
     if args.action == "run-suite":

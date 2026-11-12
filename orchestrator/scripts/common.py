@@ -1148,10 +1148,60 @@ def run(cmd: list[str], cwd: Path | None = None, check: bool = True, capture: bo
     if check and res.returncode != 0: raise subprocess.CalledProcessError(res.returncode, cmd, res.stdout, res.stderr)
     return res
 
-def run_shell(cmd: str, cwd: Path | None = None, check: bool = True, capture: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+TIMEOUT_EXIT_CODE = 124  # what timeout(1) exits with
+STOP_GRACE_SECONDS = 10
+
+
+def _run_with_timeout(cmd: str, cwd: Path, capture: bool, env: dict[str, str], timeout: int) -> subprocess.CompletedProcess:
+    """Run a shell command, and if it is still going after `timeout` seconds stop it and everything it started (a Unity
+    or xcodebuild run has helper processes): politely first, then for good. The result has `timed_out` set."""
+    import signal
+    pipe = subprocess.PIPE if capture else None
+    process = subprocess.Popen(cmd, cwd=str(cwd), shell=True, executable="/bin/bash", stdout=pipe, stderr=pipe, text=True,
+                               errors="replace", env=env, start_new_session=True)
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        stdout = stderr = None
+        for sig, wait in ((signal.SIGTERM, STOP_GRACE_SECONDS), (signal.SIGKILL, None)):
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                stdout, stderr = process.communicate(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    result = subprocess.CompletedProcess(cmd, TIMEOUT_EXIT_CODE if timed_out else process.returncode, stdout or "", stderr or "")
+    result.timed_out = timed_out  # type: ignore[attr-defined]
+    return result
+
+
+def timeout_note(timeout: int) -> str:
+    minutes = timeout / 60
+    span = f"{timeout} seconds" if timeout < 60 else f"{int(minutes) if minutes == int(minutes) else round(minutes, 1)} minutes"
+    return f"Stopped after {span} without finishing, so it was ended."
+
+
+def run_shell(cmd: str, cwd: Path | None = None, check: bool = True, capture: bool = True, env: dict[str, str] | None = None,
+              timeout: int | None = None) -> subprocess.CompletedProcess:
+    """Run a shell command. With `timeout` (seconds) a command that doesn't finish is stopped, and the result's
+    `returncode` is 124 and `timed_out` is True; without it the command may run as long as it likes."""
     full_env = os.environ.copy()
     if env: full_env.update(env)
-    res = subprocess.run(cmd, cwd=str(cwd or ROOT), shell=True, executable="/bin/bash", capture_output=capture, text=True, check=False, env=full_env)
+    if timeout:
+        res = _run_with_timeout(cmd, cwd or ROOT, capture, full_env, int(timeout))
+        if res.timed_out:
+            note = timeout_note(int(timeout))
+            if capture:
+                res.stderr = (res.stderr + "\n" if res.stderr else "") + note
+            else:
+                print(f"\n{note}", file=sys.stderr, flush=True)
+    else:
+        res = subprocess.run(cmd, cwd=str(cwd or ROOT), shell=True, executable="/bin/bash", capture_output=capture, text=True, check=False, env=full_env)
     
     if capture: _print_completed_process(res)
 

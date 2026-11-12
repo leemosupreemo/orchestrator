@@ -130,7 +130,7 @@ class RunBuildAndTestsExecutionTests(unittest.TestCase):
         job = {"job_id": "custom-test-job", "test_command_override": "python3 -m pytest tests/unit"}
         executed_cmds = []
 
-        def fake_run_shell(cmd, cwd=None, check=False, capture=False):
+        def fake_run_shell(cmd, cwd=None, check=False, capture=False, timeout=None):
             executed_cmds.append(cmd)
             return subprocess.CompletedProcess(args=[cmd], returncode=0, stdout="1 passed", stderr="")
 
@@ -159,7 +159,7 @@ class RunBuildAndTestsExecutionTests(unittest.TestCase):
         job = {"job_id": "only-test-job", "test_command_override": "-only-testing:MyAppTests/AuthTests"}
         executed = []
 
-        def fake_run(cmd, cwd=None, check=False, capture=False):
+        def fake_run(cmd, cwd=None, check=False, capture=False, timeout=None):
             executed.append(cmd)
             return subprocess.CompletedProcess(args=[cmd], returncode=0, stdout="Passed", stderr="")
 
@@ -177,7 +177,7 @@ class RunBuildAndTestsExecutionTests(unittest.TestCase):
         job = {"job_id": "malformed-override-job", "test_command_override": "Some random markdown response"}
         executed = []
 
-        def fake_run(cmd, cwd=None, check=False, capture=False):
+        def fake_run(cmd, cwd=None, check=False, capture=False, timeout=None):
             executed.append(cmd)
             return subprocess.CompletedProcess(args=[cmd], returncode=0, stdout="Passed", stderr="")
 
@@ -195,7 +195,7 @@ class RunBuildAndTestsExecutionTests(unittest.TestCase):
         err_msg = "Unable to find a device matching the provided destination specifier"
         calls = []
 
-        def fake_run(cmd, cwd=None, check=False, capture=False):
+        def fake_run(cmd, cwd=None, check=False, capture=False, timeout=None):
             calls.append((cmd, capture))
             if "DEST_A" in cmd:
                 return subprocess.CompletedProcess(args=[cmd], returncode=70, stdout=err_msg, stderr="")
@@ -226,7 +226,7 @@ class RunBuildAndTestsExecutionTests(unittest.TestCase):
         job = {"job_id": "disk-full-job"}
         attempts = [0]
 
-        def fake_run(cmd, cwd=None, check=False, capture=False):
+        def fake_run(cmd, cwd=None, check=False, capture=False, timeout=None):
             attempts[0] += 1
             if attempts[0] == 1:
                 return subprocess.CompletedProcess(args=[cmd], returncode=1, stdout="No space left on device", stderr="")

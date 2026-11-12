@@ -5025,3 +5025,7 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .plat-bar.ok { background: var(--ok); } .plat-bar.warn { background: var(--warn); } .plat-bar.bad { background: var(--bad); }
 .plat-pct { font-size: var(--type-page); }
 .plat-pct.ok { color: var(--ok); } .plat-pct.warn { color: var(--warn); } .plat-pct.bad { color: var(--bad); }
+
+/* Edit platforms dialog: name, kind and folders on one row (stacked on phones). */
+.plat-edit-row { display: grid; grid-template-columns: 1.2fr 0.9fr 1.6fr; gap: var(--space-2); }
+@media (max-width: 640px) { .plat-edit-row { grid-template-columns: 1fr; padding-bottom: var(--space-3); border-bottom: 1px solid var(--border); } }

@@ -8578,6 +8578,67 @@ function suiteLastRun(r) {
 }
 
 // Which parts of the project have tests, by platform (client, server, shared code, tooling), and the biggest gaps in each.
+// Name the project's platforms yourself: what each part is called, what kind it is, and which folders belong to it.
+const PLATFORM_KINDS = { client: "Client", server: "Server", shared: "Shared code", tooling: "Tooling", separate: "Another repository", other: "Other" };
+
+function platformRowHtml(i, p = { name: "", kind: "other", paths: [] }) {
+  return `<div class="plat-edit-row" data-row="${i}">
+    <input type="text" name="name_${i}" value="${esc(p.name)}" placeholder="Name, like Game server" aria-label="Platform name" maxlength="60">
+    <select name="kind_${i}" aria-label="Kind of platform">${Object.entries(PLATFORM_KINDS).map(([k, v]) => `<option value="${k}"${k === p.kind ? " selected" : ""}>${esc(v)}</option>`).join("")}</select>
+    <input type="text" name="paths_${i}" class="mono" value="${esc((p.paths || []).join(", "))}" placeholder="Folders, like src/server, shared/api" aria-label="Folders">
+  </div>`;
+}
+
+async function editPlatforms(current) {
+  const rows = current.map((p, i) => platformRowHtml(i, p)).join("");
+  const dlg = $("#dialog");
+  const onAdd = (e) => {
+    if (!e.target.closest("#platform-add-row")) return;
+    const box = $("#platform-rows");
+    box.insertAdjacentHTML("beforeend", platformRowHtml(box.children.length));
+    box.lastElementChild.querySelector("input")?.focus();
+  };
+  dlg.addEventListener("click", onAdd);
+  const values = await formDialog("Edit platforms", `
+    <p class="muted">A platform is one part of your project, like the app people use or the server behind it. Give each one a name, a kind, and the folders it covers, separated by commas. Clear a name to remove that row.</p>
+    <div id="platform-rows" class="stack gap-8">${rows}</div>
+    <div><button type="button" class="btn small ghost" id="platform-add-row">Add platform</button></div>
+    <label class="yolo-switch"><input type="checkbox" role="switch" name="reset"><span>Go back to finding platforms automatically from the folders</span></label>
+  `, "Save");
+  dlg.removeEventListener("click", onAdd);
+  return values;
+}
+
+function collectPlatforms(values) {
+  const out = [];
+  for (let i = 0; values[`name_${i}`] !== undefined || values[`paths_${i}`] !== undefined; i++) {
+    const name = (values[`name_${i}`] || "").trim();
+    if (!name) continue;
+    out.push({ name, kind: values[`kind_${i}`] || "other", paths: (values[`paths_${i}`] || "").split(",").map((x) => x.trim()).filter(Boolean) });
+  }
+  return out;
+}
+
+// Line coverage that a coverage tool measured, or why there isn't any.
+function measuredLine(p, measuredAt) {
+  const m = p.measured;
+  if (m) {
+    return `<div class="row gap-8 align-center wrap"><strong class="plat-pct ${m.percent >= 70 ? "ok" : m.percent >= 30 ? "warn" : "bad"}">${m.percent}%</strong>
+      <span class="muted">of lines run when the tests run <span class="t-secondary">(measured: ${m.covered.toLocaleString()} of ${m.lines.toLocaleString()} lines in the ${plural(m.files, "file")} the tests load, out of ${p.files} in this platform${measuredAt ? `, ${esc(ago(measuredAt))}` : ""})</span></span></div>`;
+  }
+  return `<p class="muted t-secondary m-0">Line coverage: ${measuredAt ? "none of this platform's files were loaded by the tests that could be measured (.NET and Python tests are measured; other languages aren't yet)." : "not measured yet. Choose Measure line coverage above."}</p>`;
+}
+
+function gapList(p) {
+  const measured = p.measured?.gaps?.length;
+  const rows = measured ? p.measured.gaps : p.gaps;
+  if (!rows.length) return "";
+  const title = measured ? `Biggest gaps: lines no test runs` : `Biggest gaps: files with no test (${p.untested_files})`;
+  return `<details class="fw-tests"><summary class="muted t-secondary">${title}</summary>
+    <div class="list">${rows.map((g) => `<div class="item"><div class="main-col"><div class="title mono">${esc(g.path)}</div><div class="meta">${measured ? `${g.uncovered.toLocaleString()} of ${plural(g.lines, "line")} never run` : plural(g.lines, "line")}</div></div>
+      <div class="side"><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add tests for ${g.path}`)}">Add tests</a></div></div>`).join("")}</div></details>`;
+}
+
 function platformCoverageHtml(data) {
   const platforms = data?.platforms?.platforms || [];
   if (!platforms.length) return "";
@@ -8588,16 +8649,19 @@ function platformCoverageHtml(data) {
       <div class="plat-meter" role="img" aria-label="${p.percent}% of ${esc(p.name)} has a test"><span class="plat-bar ${tone(p.percent)}" style="width:${Math.max(p.percent, 1)}%"></span></div>
       <div class="row gap-8 align-center wrap"><strong class="plat-pct ${tone(p.percent)}">${p.percent}%</strong><span class="muted">of the code has a test pointing at it</span></div>
       <p class="muted t-secondary m-0">${plural(p.lines, "line")} in ${plural(p.files, "file")} (${esc(p.languages.map((l) => l.name).slice(0, 2).join(", "))}) · ${plural(p.tests, "test")} · ${plural(p.tested_files, "file")} with tests, ${p.untested_files} without</p>
-      ${p.gaps.length ? `<details class="fw-tests"><summary class="muted t-secondary">Biggest gaps: files with no test (${p.untested_files})</summary>
-        <div class="list">${p.gaps.map((g) => `<div class="item"><div class="main-col"><div class="title mono">${esc(g.path)}</div><div class="meta">${plural(g.lines, "line")}</div></div>
-          <div class="side"><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add tests for ${g.path}`)}">Add tests</a></div></div>`).join("")}</div></details>` : ""}
+      ${measuredLine(p, data.platforms.measured_at)}
+      ${gapList(p)}
     </div>`).join("");
-  return `<section class="card mb-16" id="platform-coverage"><div class="card-h"><h2>Test coverage by platform</h2></div>
+  const owner = state.you?.role !== "member";
+  const custom = platforms.some((p) => p.detected === false);
+  return `<section class="card mb-16" id="platform-coverage"><div class="card-h"><h2>Test coverage by platform <span class="pill" title="${custom ? "You named these platforms yourself." : "Worked out from your folders."}">${custom ? "Custom" : "Automatic"}</span></h2>
+      <div class="row gap-8">${owner ? `<button type="button" class="btn small ghost" id="edit-platforms" title="Rename the platforms, change their kind, or choose which folders belong to each.">Edit platforms</button>` : ""}
+      ${owner ? `<button type="button" class="btn small" ${act("platform_coverage")} title="Runs your .NET and Python tests under a coverage tool and records which lines they run.">Measure line coverage</button>` : ""}</div></div>
     <div class="card-b stack gap-12">
       ${weakest ? `<p class="m-0"><strong>Least tested:</strong> ${esc(weakest.name)}, ${weakest.percent}%. ${weakest.gaps[0] ? `The biggest untested file is <span class="mono">${esc(weakest.gaps[0].path)}</span> (${plural(weakest.gaps[0].lines, "line")}).` : ""}</p>` : ""}
       <div class="stack gap-16">${rows}</div>
       <details class="setup-legend"><summary>How is this worked out?</summary>
-        <p class="muted">Each part of your project is a platform: the client app, the server, shared code, tooling. They are found from your folders, and you can name them yourself with <code>platforms</code> in <code>.orchestrator/project.json</code>. A file counts as having a test when a test mentions it by name. That shows where tests exist and where none do, but it isn't line coverage, which needs a coverage tool for each language. Names that many files share are ignored, so a vague match doesn't count.</p></details>
+        <p class="muted">Each part of your project is a platform: the client app, the server, shared code, tooling. They are found from your folders, and you can name them yourself with <code>platforms</code> in <code>.orchestrator/project.json</code>. A file counts as having a test when a test mentions it by name. That shows where tests exist and where none do, but it isn't line coverage. <strong>Measure line coverage</strong> runs your tests under a coverage tool (.NET and Python) and shows the lines that really ran, which is the number to trust where it exists. Names that many files share are ignored, so a vague match doesn't count.</p></details>
     </div></section>`;
 }
 
@@ -8998,6 +9062,17 @@ pages.tests = async (_, query) => {
           route();
         }
         catch (err) { toast(err.message, true); target.disabled = false; }
+      });
+      $("#edit-platforms")?.addEventListener("click", async () => {
+        const current = (data.platforms?.platforms || []).map((p) => ({ name: p.name, kind: p.kind, paths: p.paths }));
+        const values = await editPlatforms(current.concat([{ name: "", kind: "other", paths: [] }]));
+        if (!values) return;
+        try {
+          const body = values.reset ? { reset: true } : { platforms: collectPlatforms(values) };
+          await api("platforms", { method: "POST", body });
+          toast(values.reset ? "Finding platforms automatically again" : "Saved your platforms");
+          route();
+        } catch (err) { toast(err.message, true); }
       });
       const commands = data.commands || [];
       const saveCommand = async (body, done) => {

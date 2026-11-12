@@ -254,6 +254,16 @@ Swift Package example:
 }
 ```
 
+### When a build or test hangs
+
+The main build and test commands that run for a job are stopped if they don't finish: after **90 minutes** for the build and **60 minutes** for the tests, with everything they started (a Unity or Xcode run has helper processes). The job then says so in plain words: what ran, how long it was allowed, the last output, and the usual causes, such as a test waiting on a server or Docker that isn't running, or a Unity project that is open in the editor. A build that times out is not run a second time to capture its output, and a hang isn't sent to an AI to analyze. Change the limits in `.orchestrator/project.json`, in seconds, where `0` means no limit:
+
+```json
+{ "build_timeout": 7200, "test_timeout": 1800 }
+```
+
+`check-config` reports a value that isn't a whole number. Tests you start yourself from the Tests page run until you stop them, and extra test commands have their own `timeout` (below).
+
 ### More than one test command
 
 `test_command` is the main test run. When a project's tests live in several places (a game's protocol library, its server and its client), add the others as `test_commands`. They run after `test_command` passes, in the order listed:
@@ -284,7 +294,7 @@ A command whose `requires` aren't met is **blocked**, not failed: the result say
 
 In the web app, the **Tests** page lists them under **Extra test commands**: each shows when it runs, what is missing right now (such as Docker not running), and its latest result with test counts. **Run** starts one by hand, **Check again** looks at Docker and files again, and **Add command** and **Edit** change `test_commands` for you. The **App delivery** page has **Where builds go** for the Android and web options below.
 
-**Test coverage by platform.** The top of the **Tests** page shows each part of your project (the client app, the server, shared code, tooling) with how much of its code has a test pointing at it, how many tests that is, and the biggest files with no test at all, each with an **Add tests** button. It also says which platform is least tested. Platforms are found from your folders: a Unity or Xcode app is the client, `server/`, `functions/` and `api/` are the server, a `Protocol` or `Shared` library is shared code, `tools/` and `scripts/` are tooling, and another repository cloned inside your project is its own platform (labelled a server or client when it looks like one). To name them yourself, add `platforms` to `.orchestrator/project.json`:
+**Test coverage by platform.** The top of the **Tests** page shows each part of your project (the client app, the server, shared code, tooling) with how much of its code has a test pointing at it, how many tests that is, and the biggest files with no test at all, each with an **Add tests** button. It also says which platform is least tested. Platforms are found from your folders: a Unity or Xcode app is the client, `server/`, `functions/` and `api/` are the server, a `Protocol` or `Shared` library is shared code, `tools/` and `scripts/` are tooling, and another repository cloned inside your project is its own platform (labelled a server or client when it looks like one). If a guess is wrong (a cloned repository labelled as a client, say), choose **Edit platforms** on the card: give each platform a name, a kind and its folders (separated by commas), clear a name to remove a row, or tick the box to go back to automatic detection. The card shows **Automatic** or **Custom** beside its title. Two platforms can't claim the identical folder, though one may cover a sub-folder of another, and every folder must exist; `check-config` reports the same problems. Behind the dialog it is just `platforms` in `.orchestrator/project.json`, which you can edit by hand:
 
 ```json
 "platforms": [
@@ -293,7 +303,9 @@ In the web app, the **Tests** page lists them under **Extra test commands**: eac
 ]
 ```
 
-A file counts as having a test when a test mentions one of its types or its name; names that many files share are ignored. This shows where tests exist and where none do, but it isn't line coverage, which needs a coverage tool for each language. Nothing is run to work it out.
+A file counts as having a test when a test mentions one of its types or its name (a Python import counts, however short the module's name); names that many files share are ignored. This shows where tests exist and where none do, but it isn't line coverage, and nothing is run to work it out.
+
+**Measure line coverage** (the button on the card, or `orchestrator script job_actions.py measure-coverage`) runs your tests under a coverage tool and shows, for each platform, how many lines really ran: `dotnet test` with the `coverlet.collector` package for .NET test projects, and `coverage.py` for Python tests. It asks first, because it runs the tests. The figure is the share of lines in the files the tests load, shown beside how many files the platform has, and the biggest gaps become the files with the most lines no test runs. Groups that a **Check** found can't run here are skipped, and other languages aren't measured yet. A platform no measured test loads says so instead of showing a number. Where both exist, trust the measured one: for example a file can be mentioned by a test and still have most of its lines never run.
 
 **Suites by framework.** The **Suites** section groups your tests by the framework they're written with (xUnit, NUnit, unittest, pytest, and so on) and folder. Each group says in plain words what the framework is, how many tests and suites it holds, and lists every test by name under **Show the tests**. A test framework is simply the library the tests are written with.
 
@@ -312,6 +324,7 @@ Switching a group that is part of your main test command to **By hand** takes ju
 - Found .NET tests become the main test command, which runs after every job.
 - Scripts only ever become **By hand** commands, and any that use Docker get `docker` as a requirement.
 - A script that looks like it connects to a server (it names an address and opens a connection, or has "live" in its name) is shown under **Needs care**, is not ticked, and is never included in `--accept all`. Make sure it points at a test server before you accept it.
+- **Unity batch checks** are found too: static no-argument methods in a Unity project's `Editor` folders that exit the editor themselves (`EditorApplication.Exit`) and are named like a check (`Validate`, `Verify`, `Check`, `RunBatch`, in a class named like a verification). They are suggested as **By hand** commands marked **Needs care**: a Unity batch run takes a while, can change project files, and needs the project closed in the editor, so "accept all" never includes them. Methods that build or import things aren't offered.
 - Skipped: Unity's `Assets` folder, build output, and other repositories cloned inside yours.
 
 Run the ones that don't run with a job by hand with `orchestrator run-tests` (the `manual` tier), `orchestrator run-tests --tier nightly`, or by name: `orchestrator run-tests server`. Logs go to `output/manual-tests/<time>/`. The exit code is 0 when everything passed, 1 when something failed or timed out, and 2 when nothing could run (blocked, unknown name, or none configured).
