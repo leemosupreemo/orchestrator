@@ -1199,7 +1199,8 @@ dialog h2 {
   .topbar { flex-direction: column; gap: var(--space-3); }
   .topbar-actions { justify-content: flex-start; width: 100%; }
   .topbar-actions > .btn.primary { flex: 1; min-height: var(--control-lg); }
-  body[data-page="tests"] .topbar-actions { flex-wrap: nowrap; }
+  body[data-page="tests"] .topbar-actions { flex-wrap: wrap; }
+  body[data-page="tests"] .topbar-actions > .test-distribute-link { flex: 1 1 100%; min-height: var(--control-lg); justify-content: center; } /* its own row under the two buttons */
   body[data-page="tests"] .topbar-actions > .test-run-all-btn { flex: 2 1 0; min-width: 0; min-height: var(--control-lg); }
   body[data-page="tests"] .topbar-actions > .test-expand-coverage-btn {
     flex: 1 1 0; min-width: 0; min-height: var(--control-lg);
@@ -5015,3 +5016,12 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .fw-mode { margin-left: auto; }
 .fw-tests > summary { cursor: pointer; margin-top: var(--space-2); }
 .fw-test-list { margin: var(--space-2) 0 0; padding-left: var(--space-5); max-height: 16rem; overflow: auto; overflow-wrap: anywhere; }
+
+/* Test coverage by platform. */
+.plat { display: flex; flex-direction: column; gap: var(--space-2); }
+.plat + .plat { padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.plat-meter { height: 10px; border-radius: var(--r-pill); background: var(--panel-2); overflow: hidden; }
+.plat-bar { display: block; height: 100%; border-radius: var(--r-pill); background: var(--muted); }
+.plat-bar.ok { background: var(--ok); } .plat-bar.warn { background: var(--warn); } .plat-bar.bad { background: var(--bad); }
+.plat-pct { font-size: var(--type-page); }
+.plat-pct.ok { color: var(--ok); } .plat-pct.warn { color: var(--warn); } .plat-pct.bad { color: var(--bad); }

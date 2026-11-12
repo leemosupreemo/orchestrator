@@ -120,8 +120,9 @@ class SuiteLastRunTests(unittest.TestCase):
 
     def test_the_page_says_when_and_how_each_suite_last_ran(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        fn = js[js.index("function suiteGroupsHtml"):][:2500]
+        fn = js[js.index("function suiteRowHtml"):][:1500]  # the row every suite view shares
         self.assertIn("suiteLastRun(s.last_run)", fn)
+        self.assertIn("suiteRowHtml", js[js.index("function suiteGroupsHtml"):][:1500])
         helper = js[js.index("function suiteLastRun"):][:900]
         for part in ("Not run yet", "passed", "failed", "running", "(all tests)", "ago("):
             self.assertIn(part, helper, part)

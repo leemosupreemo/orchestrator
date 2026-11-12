@@ -207,6 +207,59 @@ class ConfigIntegrationTests(unittest.TestCase):
 
 
 
+class FilePlatformTests(unittest.TestCase):
+    """`file`: a build your own script makes (an .ipa from a Unity project's iOS script, say), sent to Firebase App Distribution."""
+
+    def test_it_is_a_platform_and_needs_an_app_id_and_a_file_inside_the_project(self):
+        self.assertIn("file", da.PLATFORMS)
+        self.assertEqual(da.validate_platform(cfg(Path("."), delivery_platform="file", delivery_artifact=".local/r-*/ios/*.ipa",
+                                                  firebase_app_id="1:1:ios:a")), [])
+        errors = da.validate_platform(cfg(Path("."), delivery_platform="file", firebase_app_id=None, delivery_artifact=None))
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all("'file'" in e for e in errors))
+        self.assertIn("inside the project", da.validate_platform(cfg(Path("."), delivery_platform="file", delivery_artifact="../x.ipa"))[0])
+
+    def test_an_ipa_is_found_uploaded_with_the_groups_and_receipted_as_ios(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".local/release-0.1/ios").mkdir(parents=True)
+            ipa = root / ".local/release-0.1/ios/App.ipa"
+            ipa.write_bytes(b"ipa")
+            os.utime(ipa, (time.time() + 5, time.time() + 5))
+            config = cfg(root, delivery_platform="file", delivery_artifact=".local/release-*/ios/*.ipa", firebase_app_id="1:8:ios:abc",
+                         firebase_project_id="daoc", firebase_groups="daoc-testers", delivery_build_command="tools/package_ios.sh")
+            calls = []
+
+            def run(argv, cwd, timeout):
+                calls.append(argv)
+                return 0, "uploaded"
+
+            receipt, log = da.deliver(config, {"job_id": "j"}, "notes", run=run, now=time.time, which=FIREBASE)
+            self.assertEqual(calls[0][-1], "tools/package_ios.sh")
+            self.assertEqual(calls[1], ["firebase", "appdistribution:distribute", str(ipa.resolve()), "--app", "1:8:ios:abc",
+                                        "--release-notes", "notes", "--groups", "daoc-testers", "--project", "daoc"])
+            self.assertEqual((receipt["status"], receipt["platform"], receipt["file"], receipt["groups"]),
+                             ("delivered", "ios", "App.ipa", "daoc-testers"))
+
+    def test_saving_it_keeps_the_fields_and_leaves_automatic_delivery_off_unless_asked(self):
+        changes, errors = da.target_update(Path("."), {"delivery_platform": "file", "delivery_artifact": "out/*.ipa",
+                                                      "firebase_app_id": "1:1:ios:a", "delivery_build_command": "tools/x.sh",
+                                                      "firebase_hosting_target": "dropped", "firebase_groups": "daoc-testers"})
+        self.assertEqual(errors, [])
+        self.assertEqual((changes["firebase_distribution"], changes["delivery_artifact"], changes["firebase_hosting_target"],
+                          changes["firebase_groups"]), (False, "out/*.ipa", None, "daoc-testers"))
+        ios, _ = da.target_update(Path("."), {"delivery_platform": "ios", "firebase_groups": "ignored"})
+        self.assertNotIn("firebase_groups", ios)  # not touched for iOS: the wizard and the config file own it there
+        self.assertNotIn("delivery_provider", changes)
+
+    def test_a_file_project_with_firebase_needs_no_scheme_plist_or_distribution_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(Path(tmp), xcode_project=None, scheme=None, test_target="", build_command="make", test_command="make test",
+                                 firebase_distribution=False, delivery_platform="file", delivery_artifact="o/*.ipa", firebase_app_id="1:1:ios:a")
+            self.assertEqual(validate_project_config(config), [])
+            self.assertEqual(config.validate_distribution_config(), [])
+
+
 class DeliverScriptTests(unittest.TestCase):
     """scripts/deliver_build.py hands non-iOS projects to the adapter and writes the receipt."""
 

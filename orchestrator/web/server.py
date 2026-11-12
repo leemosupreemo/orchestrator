@@ -1051,25 +1051,33 @@ def gh_cached(root: Path, args: list[str]) -> str | None:
     return out
 
 
+def unity_without_xcode(root: Path, config: dict[str, Any]) -> bool:
+    """A Unity project with no Xcode project of its own: its iOS build comes from its own script, not the wizard's."""
+    return unity_project_kind(root) is not None and not (config.get("xcode_project") or config.get("xcode_workspace"))
+
+
 def distribution_gaps(root: Path, config: dict[str, Any]) -> list[str]:
     """What stops this project sending test builds, in plain words; empty when it is ready. The Test Build card and the
     Tester build setup page both show this, so they never disagree."""
     platform = str(config.get("delivery_platform") or "ios").strip().lower()
-    if platform in ("android", "web"):  # Firebase through the adapter: no phone-app, plist or build-script requirement
+    if platform in ("android", "web", "file"):  # Firebase through the adapter: no phone-app, plist or build-script requirement
         from orchestrator import delivery_adapters
         from types import SimpleNamespace
         fields = {k: config.get(k) for k in delivery_adapters.TARGET_KEYS}
         gaps = delivery_adapters.validate_platform(SimpleNamespace(root=root, **fields))
         if shutil.which("firebase") is None:
             gaps.append("Install the Firebase CLI: npm install -g firebase-tools, then firebase login")
-        if not config.get("firebase_distribution"):
-            gaps.append("Turn on automatic delivery in Where builds go, or send builds by hand.")
-        return gaps
+        return gaps  # automatic delivery is a choice, not a requirement: Launch build for testing works without it
     if not is_mobile_app(root, config):
         return ["This project isn't a phone app, so there are no test builds to send."]
     gaps = []
     if shutil.which("firebase") is None:
         gaps.append("Install the Firebase CLI: npm install -g firebase-tools")
+    if unity_without_xcode(root, config):
+        # The wizard's iPhone path wraps an Xcode project; a Unity project builds its iOS app with its own script.
+        gaps.append("This is a Unity project, so Orchestrator can't build the iPhone app itself. Under Where builds go, choose "
+                    "“A file your own script builds” and give it your build script and the .ipa it makes.")
+        return gaps
     script = config.get("distribution_script_path") or "scripts/distribute_ios.sh"
     if not config.get("firebase_distribution") or not (root / script).is_file():
         gaps.append("Turn on Firebase delivery: run orchestrator wizard on this computer. It adds the build script and signing settings.")
@@ -1382,7 +1390,7 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
                                   base_branch(root, settings), jobs, firebase, ci)
     data["web_url"] = repo_web_url(root)
     from orchestrator import delivery_adapters
-    data["target"] = delivery_adapters.target_view(config)
+    data["target"] = {**delivery_adapters.target_view(config), "unity_without_xcode": unity_without_xcode(root, config)}
     if is_web_app(root, config):
         data["web"] = {"gaps": web_preview_gaps(root, config), "previews": web_previews(root),
                        "auto": bool(settings.get("auto_preview"))}
@@ -2053,12 +2061,23 @@ def save_test_group_mode(root: Path, groups: list[dict[str, Any]], body: dict[st
         raise UIError("Choose every job or by hand.")
     which = _text(body, "group", required=True, limit=100)
     config = read_json_file(runtime_dir(root) / "project.json")
+    from orchestrator import test_probe
+    probes = test_probe.read_cache(runtime_dir(root))
+    blocked = {g["id"]: (probes.get(g["id"]) or {}).get("reason") for g in groups
+               if (probes.get(g["id"]) or {}).get("status") == "needs-setup"}
+    skipped: list[str] = []
     if which == "all":
-        changes = test_groups.plan_all(config, groups, mode)
+        movable = groups
+        if mode == "per-job":  # a group that can't run here would fail every job
+            skipped = [g["framework"] + " " + g.get("folder", "") for g in groups if g["id"] in blocked]
+            movable = [g for g in groups if g["id"] not in blocked]
+        changes = test_groups.plan_all(config, movable, mode)
     else:
         group = next((g for g in groups if g["id"] == which), None)
         if not group or not group.get("toggle"):
             raise UIError("That group's tests run through the project's main test command, so there is nothing to switch.")
+        if mode == "per-job" and group["id"] in blocked:
+            raise UIError(f"{group['framework']} can't run here yet: {blocked[group['id']]}. Fix that, then choose Check, and try again.")
         changes = test_groups.plan(config, group, mode)
     if changes.get("test_commands"):
         errors = test_commands.parse(changes["test_commands"], root)[1]
@@ -2066,7 +2085,7 @@ def save_test_group_mode(root: Path, groups: list[dict[str, Any]], body: dict[st
             raise UIError(" ".join(errors))
     if changes:
         update_project_json(root, changes)
-    return {"changed": sorted(changes)}
+    return {"changed": sorted(changes), "skipped": skipped}
 
 
 def save_delivery_target(root: Path, body: dict[str, Any]) -> dict[str, Any]:
@@ -5375,6 +5394,8 @@ ACTIONS: dict[str, Action] = {
     "revise": Action("Revise plan", build_revise, fields=["job", "change", "where", "done_when"]),
     "test_suite": Action("Run test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-suite", _name(p, "name")), fields=["name"]),
     "test_command": Action("Run test command", lambda p, r: orchestrator_argv("run-tests", "--", _name(p, "name")), fields=["name"]),
+    "test_probe": Action("Check tests", lambda p, r: orchestrator_argv("script", "job_actions.py", "probe",
+                         *(["--group", _name(p, "group")] if p.get("group") and p.get("group") != "all" else [])), fields=["group"]),
     "test_plan": Action("Run test plan", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-plan", _name(p, "name")), fields=["name"]),
     "coverage": Action("Measure coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "coverage")),
     "git_pull": Action("Pull", build_git_pull),
@@ -7828,6 +7849,8 @@ class UIHandler(BaseHTTPRequestHandler):
                 latest = test_commands.latest_results(runtime_dir(root))
                 data["commands"] = [{**c, "last": latest.get(c["name"])} for c in data.get("commands") or []]
                 data["groups"] = [{**g, "last": latest.get(g.get("extra") or "")} for g in data.get("groups") or []]
+                from orchestrator import test_probe
+                data["groups"] = test_probe.overlay(data["groups"], test_probe.read_cache(runtime_dir(root)))
             self._json(data)
         elif method == "GET" and parts == ["devlogs"]:
             self._json({"pulls": device_log_pulls(root), "sessions": self._device_sessions(root)})

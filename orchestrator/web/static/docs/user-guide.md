@@ -284,13 +284,26 @@ A command whose `requires` aren't met is **blocked**, not failed: the result say
 
 In the web app, the **Tests** page lists them under **Extra test commands**: each shows when it runs, what is missing right now (such as Docker not running), and its latest result with test counts. **Run** starts one by hand, **Check again** looks at Docker and files again, and **Add command** and **Edit** change `test_commands` for you. The **App delivery** page has **Where builds go** for the Android and web options below.
 
+**Test coverage by platform.** The top of the **Tests** page shows each part of your project (the client app, the server, shared code, tooling) with how much of its code has a test pointing at it, how many tests that is, and the biggest files with no test at all, each with an **Add tests** button. It also says which platform is least tested. Platforms are found from your folders: a Unity or Xcode app is the client, `server/`, `functions/` and `api/` are the server, a `Protocol` or `Shared` library is shared code, `tools/` and `scripts/` are tooling, and another repository cloned inside your project is its own platform (labelled a server or client when it looks like one). To name them yourself, add `platforms` to `.orchestrator/project.json`:
+
+```json
+"platforms": [
+  { "name": "Game client", "kind": "client", "paths": ["DaocUnity"] },
+  { "name": "Game server", "kind": "server", "paths": ["OpenDAoC-Core"] }
+]
+```
+
+A file counts as having a test when a test mentions one of its types or its name; names that many files share are ignored. This shows where tests exist and where none do, but it isn't line coverage, which needs a coverage tool for each language. Nothing is run to work it out.
+
 **Suites by framework.** The **Suites** section groups your tests by the framework they're written with (xUnit, NUnit, unittest, pytest, and so on) and folder. Each group says in plain words what the framework is, how many tests and suites it holds, and lists every test by name under **Show the tests**. A test framework is simply the library the tests are written with.
 
 For .NET test projects (xUnit, NUnit, MSTest) and Python test folders (unittest, pytest), each group has an **Every job / By hand** switch, and there's one for all of them:
 
 - **Every job:** the group runs after the main tests pass on each job. If it fails, the job is sent back to be fixed.
 - **By hand:** it only runs when you press **Run**, or with `orchestrator run-tests`.
-- **Not set up:** the tests exist but nothing runs them as a group yet. Turning it on adds a command to `test_commands` in `project.json`.
+- **Not added yet:** the tests exist but nothing runs them as a group yet. Turning it on adds a command to `test_commands` in `project.json`.
+
+**Check.** The number next to a group starts as an estimate ("about 179 tests"), because it is worked out by reading the files, and that misses tests that run once per set of inputs. **Check** (or **Check all**, or `orchestrator script job_actions.py probe`) asks the framework itself: `dotnet test --list-tests` for .NET, `pytest --collect-only` for pytest, and unittest's own loader for unittest. It runs no tests, but it builds .NET projects and imports Python test files, so it only runs when you press it. The group then shows the exact count in green, with every test listed, and the time it was checked. If the tool can't list the tests, the group says **Needs setup** with the reason the tool gave (for example, a .NET project that needs something prepared first, or a test file that imports a missing module). Such a group can still be set to **By hand**, but **Every job** is disabled for it until a check succeeds, because a group that can't run would fail every job.
 
 Switching a group that is part of your main test command to **By hand** takes just that part out of the command (your flags are kept) and saves it as its own by-hand command. If you turn off the last automatic group, the main command becomes a short message saying no automatic tests are selected, so jobs finish without running tests until you turn one back on. A group that has never been run from here asks you to try it first, because one that always fails would fail every job. Groups for other frameworks (Xcode, Unity, Go, Rust and others) are listed with their tests, and run through your main test command. Tests inside another repository cloned into your project aren't shown.
 
@@ -619,6 +632,8 @@ You can set this up on the **App delivery** page, under **Where builds go**, or 
 - **Android** runs `delivery_build_command` (optional), takes the newest `.apk` or `.aab` that matches `delivery_artifact` and was written by that build, and uploads it to App Distribution with `firebase_app_id`. Find the app ID in the Firebase console under Project settings. Recipients are `firebase_groups` and `firebase_testers`, as for iOS. A Unity project can use the same fields, with a command that runs its batch-mode Android build.
 - **Web** runs `delivery_build_command` (optional), then deploys a Firebase Hosting preview channel named after the job, which expires after 7 days. The receipt and the console show the preview URL. It needs a `firebase.json` in the project; set `firebase_project_id` or `firebase_hosting_target` when the project has more than one.
 - Both write a receipt under `.orchestrator/output/delivery/`, like iOS, and `check-config` reports what is missing. Verified jobs deliver automatically, the same as iOS jobs that change iOS files. Delivery is confirmed only when Firebase exits cleanly; the log, `distribution_<job>.log`, leaves out release notes and tester emails.
+- **A file your own script builds** (`"delivery_platform": "file"`) uploads an `.ipa`, `.apk` or `.aab` that your own script makes, to Firebase App Distribution. It is for projects Orchestrator can't build itself, such as a Unity project with its own iOS script. `delivery_build_command` is your script (`tools/package_ios.sh`), `delivery_artifact` is the file it writes (`.local/release-*/ios/*.ipa`), and `firebase_app_id` is the Firebase app it goes to (use the iOS app's ID for an `.ipa`). Orchestrator doesn't build or sign the app: your script does, and Orchestrator uploads the file it wrote.
+- **Automatic delivery is optional.** Leave **Deliver automatically** off if each upload has to be asked for. **Launch build for testing** on the App delivery page then sends one build per press, and nothing is sent after a job on its own.
 - Not covered: Steam, desktop installers, TestFlight and Google Play. Firebase has no desktop option.
 
 In the console, use **Quick Build & Distribution** to deliver the current branch. The live delivery test under **Firebase App Distro** also publishes a real release; it is not a dry run. A delivery job targeting another branch stops and asks you to switch explicitly so local changes are never discarded.

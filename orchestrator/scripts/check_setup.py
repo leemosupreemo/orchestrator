@@ -282,7 +282,7 @@ def _check():
     print_header("2. Project Config")
     
     delivery_platform = getattr(PROJECT_CONFIG, "delivery_platform", "ios")
-    non_ios_delivery = delivery_platform in ("android", "web")
+    non_ios_delivery = delivery_platform in ("android", "web", "file")
     if PROJECT_CONFIG.firebase_distribution and non_ios_delivery:
         have_cli = shutil.which("firebase") is not None
         print_result(have_cli, f"Firebase CLI ({delivery_platform} delivery)", "OK" if have_cli else "MISSING",

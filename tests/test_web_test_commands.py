@@ -109,12 +109,31 @@ class WebProjectConfigTests(ServerTestCase):
         self.post("/api/delivery/target", {"delivery_platform": "android", "firebase_app_id": "1:1:android:a", "delivery_artifact": "o/*.apk"})
         with patch.object(ui.shutil, "which", return_value="/usr/bin/firebase"):
             gaps = ui.distribution_gaps(self.root, self.project())
-        self.assertEqual(len(gaps), 1)  # only: automatic delivery is off
-        self.assertIn("automatic delivery", gaps[0])
+        self.assertEqual(gaps, [])  # complete; automatic delivery is off, which is allowed
         with patch.object(ui.shutil, "which", return_value=None):
             self.assertTrue(any("Firebase CLI" in g for g in ui.distribution_gaps(self.root, self.project())))
         _, overview = self.request("GET", "/api/delivery")
         self.assertEqual(overview["target"]["delivery_platform"], "android")
+
+    def test_a_unity_project_without_an_xcode_project_is_pointed_at_its_own_script_not_the_wizard(self):
+        write = lambda rel, text: ((self.root / rel).parent.mkdir(parents=True, exist_ok=True), (self.root / rel).write_text(text))  # noqa: E731
+        write("ProjectSettings/ProjectVersion.txt", "m_EditorVersion: 6000.0.30f1\n")
+        write("Assets/Editor/Build.cs", "class B { void Go() { var t = BuildTarget.iOS; } }")
+        with patch.object(ui.shutil, "which", return_value="/usr/bin/firebase"):
+            gaps = ui.distribution_gaps(self.root, self.project())
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("This is a Unity project", gaps[0])
+        self.assertIn("your own script builds", gaps[0])
+        self.assertNotIn("wizard", gaps[0])
+        _, overview = self.request("GET", "/api/delivery")
+        self.assertTrue(overview["target"]["unity_without_xcode"])
+        res, data = self.post("/api/delivery/target", {"delivery_platform": "file", "delivery_artifact": ".local/r-*/ios/*.ipa",
+                                                       "firebase_app_id": "1:1:ios:a", "delivery_build_command": "tools/package_ios.sh"})
+        self.assertEqual(res.status, 200)
+        saved = self.project()
+        self.assertEqual((saved["delivery_platform"], saved["firebase_distribution"]), ("file", False))  # no automatic uploads
+        with patch.object(ui.shutil, "which", return_value="/usr/bin/firebase"):
+            self.assertEqual(ui.distribution_gaps(self.root, saved), [])  # ready to send by hand, with nothing automatic
 
     def test_members_cannot_change_either(self):
         with patch.object(ui.UIHandler, "_is_owner", return_value=False):
@@ -159,3 +178,15 @@ class ComputerCardStateTests(ServerTestCase):
         offline = css[css.index(".account-machine.is-offline {"):][:700]
         self.assertIn("var(--panel-2)", offline)
         self.assertIn("var(--muted)", offline)
+
+
+class TesterGroupIsNotClearedByIosTests(ServerTestCase):
+    def test_saving_ios_leaves_an_existing_tester_group_alone_but_android_and_own_builds_set_it(self):
+        path = self.root / ".orchestrator" / "project.json"
+        path.write_text(json.dumps({"project_name": "Demo", "firebase_groups": "qa-team"}))
+        res, _ = self.request("POST", "/api/delivery/target", {"delivery_platform": "ios"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(json.loads(path.read_text())["firebase_groups"], "qa-team")
+        self.request("POST", "/api/delivery/target", {"delivery_platform": "file", "delivery_artifact": "o/*.ipa", "firebase_app_id": "1:1:ios:a",
+                                                      "firebase_groups": "daoc-testers"}, headers=UI_HEADERS)
+        self.assertEqual(json.loads(path.read_text())["firebase_groups"], "daoc-testers")

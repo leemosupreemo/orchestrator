@@ -206,3 +206,41 @@ class EndpointTests(ServerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SuiteRunCommandTests(unittest.TestCase):
+    """The Run button of a Python or JavaScript suite works whatever the project's main test command is."""
+
+    def command(self, tmp, suite_dict, test_command):
+        sys.path.insert(0, str(PACKAGE_ROOT / "orchestrator" / "scripts"))
+        import dev_console
+        from types import SimpleNamespace
+        return dev_console.test_command_for_suite(suite_dict, SimpleNamespace(root=Path(tmp), test_command=test_command))
+
+    def test_python_suites_use_the_library_the_file_uses_unless_the_project_command_is_already_a_python_runner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "tests/tools/test_a.py", "import unittest\n")
+            write(root, "tests/api/test_b.py", "import pytest\n")
+            unit = suite(root, "tests/tools/test_a.py", "python", ["test_x"])
+            pyt = suite(root, "tests/api/test_b.py", "python", ["test_y"])
+            for base in ("dotnet test x && python3 tools/mutations.py", "", "make test"):
+                self.assertEqual(self.command(tmp, unit, base), "python3 -m unittest discover -s tests/tools -p test_a.py", base)
+                self.assertEqual(self.command(tmp, pyt, base), "python3 -m pytest tests/api/test_b.py", base)
+            self.assertEqual(self.command(tmp, pyt, "python3 -m pytest -q"), "python3 -m pytest -q tests/api/test_b.py")
+            self.assertEqual(self.command(tmp, unit, "python3 -m unittest discover tests"), "python3 -m unittest discover -s tests/tools -p test_a.py")
+
+    def test_javascript_suites_use_the_nearest_package_json_when_there_is_no_project_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "functions/package.json", json.dumps({"devDependencies": {"jest": "29"}}))
+            write(root, "web/package.json", json.dumps({"devDependencies": {"vitest": "1"}}))
+            write(root, "api/package.json", json.dumps({"scripts": {"test": "mocha"}}))
+            write(root, "bare/x.test.js", "x")
+            js = lambda rel: suite(root, rel, "javascript", ["t"])  # noqa: E731
+            self.assertEqual(self.command(tmp, js("functions/__tests__/a.test.js"), ""), "cd functions && npx jest __tests__/a.test.js")
+            self.assertEqual(self.command(tmp, js("web/src/b.test.ts"), ""), "cd web && npx vitest run src/b.test.ts")
+            self.assertEqual(self.command(tmp, js("api/c.test.js"), ""), "cd api && npm test -- c.test.js")
+            self.assertEqual(self.command(tmp, js("functions/__tests__/a.test.js"), "npm test"), "npm test -- functions/__tests__/a.test.js")
+            with self.assertRaises(ValueError):
+                self.command(tmp, js("bare/x.test.js"), "")

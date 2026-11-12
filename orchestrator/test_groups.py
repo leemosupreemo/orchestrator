@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_NAMES_PER_SUITE = 300
+MAX_FILES_IN_COMMAND = 40
 NO_AUTOMATIC_TESTS = 'echo "No automatic tests are selected. Choose them on the Tests page."'
 
 FRAMEWORK_INFO = {
@@ -38,6 +39,26 @@ FRAMEWORK_INFO = {
 LANGUAGE_FRAMEWORK = {"swift": "XCTest / Swift Testing", "kotlin": "JUnit", "java": "JUnit", "go": "Go testing",
                       "rust": "Rust tests", "javascript": "JavaScript tests", "typescript": "JavaScript tests"}
 DOTNET_LIBRARIES = (("xunit", "xUnit"), ("nunit", "NUnit"), ("mstest", "MSTest"))
+
+
+UNITTEST_ISOLATED = ("import sys, unittest; sys.path.insert(0, sys.argv[1]); "
+                     "unittest.main(module=None, argv=['unittest'] + sys.argv[2:])")
+
+
+def python_command(framework: str, folder: str, files: list[str], isolate: bool) -> str:
+    """The command for a Python test folder. `unittest discover -s <folder>` and `pytest <folder>` also run every package
+    and sub-folder inside it, which is what you want unless another group already covers those: then (`isolate`) the
+    command names this folder's own files only. The unittest form keeps both the project root and the folder on the import
+    path, as discover does, so tests that import the project's own modules still work."""
+    names = sorted(files)
+    stems = [f[:-3] for f in names if f.endswith(".py")]
+    plain = (f"python3 -m pytest {shlex.quote(folder)}" if framework == "pytest"
+             else f"python3 -m unittest discover -s {shlex.quote(folder)}")
+    if not isolate or not names or len(names) > MAX_FILES_IN_COMMAND or not all(x.isidentifier() for x in stems):
+        return plain
+    if framework == "pytest":
+        return "python3 -m pytest " + " ".join(shlex.quote(f"{folder}/{f}" if folder != "." else f) for f in names)
+    return f"python3 -c {shlex.quote(UNITTEST_ISOLATED)} {shlex.quote(folder)} " + " ".join(stems)
 
 
 def slug(text: str) -> str:
@@ -118,19 +139,29 @@ def build(root: Path, suites: list[dict[str, Any]], config: dict[str, Any]) -> t
             framework = _python_library(Path(suite["path"]))
             folder = Path(rel).parent.as_posix()
             runner = "python"
-            command = f"python3 -m pytest {shlex.quote(folder)}" if framework == "pytest" \
-                else f"python3 -m unittest discover -s {shlex.quote(folder)}"
+            command = None  # set below, once the folder's files are known
         else:
             framework, folder = LANGUAGE_FRAMEWORK.get(str(language), f"{language} tests"), ""
         key = slug(f"{framework}-{folder}") if folder else slug(framework)
         group = groups.setdefault(key, {
             "id": key, "framework": framework, "info": FRAMEWORK_INFO.get(framework, ""), "language": language,
             "folder": folder, "project": project, "runner": runner, "command": command, "toggle": bool(command),
-            "tests": 0, "suites": 0})
+            "tests": 0, "suites": 0, "files": []})
+        if runner == "python":
+            name = Path(rel).name
+            if name not in group["files"]:
+                group["files"].append(name)
         group["tests"] += suite["test_count"]
         group["suites"] += 1
         per_suite[rel] = {"group": key, "framework": framework, "funcs": list(suite.get("test_funcs") or [])[:MAX_NAMES_PER_SUITE]}
-    out = sorted(groups.values(), key=lambda g: (not g["toggle"], g["framework"], g["folder"]))
+    python_folders = [g["folder"] for g in groups.values() if g["runner"] == "python"]
+    for group in groups.values():
+        if group["runner"] == "python":
+            folder = group["folder"]
+            group["isolate"] = any(other != folder and (folder == "." or other.startswith(folder + "/")) for other in python_folders)
+            group["command"] = python_command(group["framework"], folder, group["files"], group["isolate"])
+            group["toggle"] = True
+    out = sorted(groups.values(), key=lambda g: (-g["tests"], g["framework"], g["folder"]))  # the main framework first
     for group in out:
         group.update(state_of(group, config))
     return out, per_suite

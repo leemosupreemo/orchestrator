@@ -6,6 +6,10 @@
   That flow lives in scripts/deliver_build.py; this adapter only says it is the iOS one.
 - `android`: build (optional `delivery_build_command`), find the newest APK/AAB matching `delivery_artifact`, and upload
   it with `firebase appdistribution:distribute` to `firebase_app_id`, for `firebase_groups` / `firebase_testers`.
+- `file`: the same upload for a build your own script makes, any of `.apk`, `.aab` or `.ipa` (a Unity project's own iOS
+  script, for instance). `delivery_build_command` runs your script, `delivery_artifact` says which file it writes, and
+  `firebase_app_id` is the Firebase app (iOS or Android) it goes to. Leave automatic delivery off if each upload has to be
+  requested; the Distribute build button is then one explicit upload.
 - `web`: build (optional `delivery_build_command`), then `firebase hosting:channel:deploy` a preview channel named after
   the job, which expires after 7 days. Testers get the preview URL.
 
@@ -23,8 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-PLATFORMS = ("ios", "android", "web")
-ARTIFACT_SUFFIXES = (".apk", ".aab")
+PLATFORMS = ("ios", "android", "file", "web")
+ARTIFACT_SUFFIXES = (".apk", ".aab", ".ipa")
 DEFAULT_GROUP = "internal-testers"
 BUILD_TIMEOUT = 60 * 60
 UPLOAD_TIMEOUT = 30 * 60
@@ -55,7 +59,7 @@ def channel_id(job_id: str) -> str:
 
 
 def find_artifact(root: Path, pattern: str, since: float | None = None) -> Path | None:
-    """The newest APK/AAB matching a glob inside the project. With `since`, one older than that is stale and ignored."""
+    """The newest APK, AAB or IPA matching a glob inside the project. With `since`, one older than that is stale and ignored."""
     root = root.resolve()
     found = []
     for path in root.glob(pattern):
@@ -142,6 +146,30 @@ class AndroidAdapter(Adapter):
                 "console_url": console[-1] if console else None, "confirmed_by": "firebase"}
 
 
+class FileAdapter(AndroidAdapter):
+    """A build file (APK, AAB or IPA) made by the project's own script, uploaded to Firebase App Distribution."""
+
+    def validate(self, config: Any) -> list[str]:
+        errors = []
+        if not getattr(config, "firebase_app_id", None):
+            errors.append("delivery_platform 'file' requires firebase_app_id (Firebase console > Project settings > Your apps, "
+                          "like 1:1234567890:ios:abc123 or 1:1234567890:android:abc123).")
+        artifact = getattr(config, "delivery_artifact", None)
+        if not artifact:
+            errors.append("delivery_platform 'file' requires delivery_artifact: the .ipa, .apk or .aab your script writes, "
+                          "or a glob like .local/release-*/ios/*.ipa.")
+        elif (error := _glob_error("delivery_artifact", artifact)):
+            errors.append(error)
+        return errors
+
+    def receipt(self, config, job, output, artifact):
+        receipt = super().receipt(config, job, output, artifact)
+        if receipt and artifact is not None:
+            receipt["platform"] = "ios" if artifact.suffix.lower() == ".ipa" else "android"
+            receipt["file"] = artifact.name
+        return receipt
+
+
 class WebAdapter(Adapter):
     def validate(self, config: Any) -> list[str]:
         errors = []
@@ -186,6 +214,7 @@ def _preview_url(output: str) -> str | None:
 ADAPTERS: dict[str, Adapter] = {
     "ios": IosAdapter("ios", "Firebase App Distribution (iOS)"),
     "android": AndroidAdapter("android", "Firebase App Distribution (Android)"),
+    "file": FileAdapter("file", "Firebase App Distribution (your own build)"),
     "web": WebAdapter("web", "Firebase Hosting preview"),
 }
 
@@ -224,10 +253,10 @@ def deliver(config: Any, job: dict[str, Any], notes: str, *, run: Run, now: Call
         if code != 0:
             return {}, "\n".join(log) + f"\nThe build command failed (exit {code}); nothing was sent."
     artifact = None
-    if adapter.platform == "android":
+    if adapter.platform in ("android", "file"):
         artifact = find_artifact(root, config.delivery_artifact, started if build else None)
         if artifact is None:
-            return {}, "\n".join(log) + (f"\nNo .apk or .aab matching {config.delivery_artifact}"
+            return {}, "\n".join(log) + (f"\nNo .apk, .aab or .ipa matching {config.delivery_artifact}"
                                          + (" was written by the build." if build else " exists. Set delivery_build_command to build it."))
     argv = adapter.command(config, job, notes, artifact)
     log.append("$ " + " ".join(argv[:3]) + " …")  # not the rest: release notes and tester emails stay out of logs
@@ -244,7 +273,7 @@ def deliver(config: Any, job: dict[str, Any], notes: str, *, run: Run, now: Call
 # ---------------------------------------------------------------------------------------------- for the web UI
 
 TARGET_KEYS = ("delivery_platform", "delivery_build_command", "delivery_artifact", "firebase_app_id",
-               "firebase_project_id", "firebase_hosting_target")
+               "firebase_project_id", "firebase_hosting_target", "firebase_groups")
 
 
 def target_view(config: dict[str, Any]) -> dict[str, Any]:
@@ -268,9 +297,12 @@ def target_update(root: Path, body: dict[str, Any]) -> tuple[dict[str, Any], lis
     if platform not in PLATFORMS:
         return {}, [f"Choose one of: {', '.join(PLATFORMS)}."]
     changes: dict[str, Any] = {"delivery_platform": platform}
-    keep = {"ios": (), "android": ("delivery_build_command", "delivery_artifact", "firebase_app_id", "firebase_project_id"),
+    keep = {"ios": (), "android": ("delivery_build_command", "delivery_artifact", "firebase_app_id", "firebase_project_id", "firebase_groups"),
+            "file": ("delivery_build_command", "delivery_artifact", "firebase_app_id", "firebase_project_id", "firebase_groups"),
             "web": ("delivery_build_command", "firebase_project_id", "firebase_hosting_target")}[platform]
     for key in TARGET_KEYS[1:]:
+        if key == "firebase_groups" and key not in keep:
+            continue  # iOS (and web) read it from project.json too; this card doesn't own it there, so it isn't cleared
         changes[key] = text(key) if key in keep and text(key) else None
     if platform != "ios":
         changes["firebase_distribution"] = bool(body.get("automatic"))

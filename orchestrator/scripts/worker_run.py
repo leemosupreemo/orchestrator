@@ -785,7 +785,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         distributed_status = "Not Triggered"
         # iOS delivers only for jobs that touched iOS files; Android and web projects deliver every verified job.
-        delivers_here = is_ios or getattr(PROJECT_CONFIG, "delivery_platform", "ios") in ("android", "web")
+        delivers_here = is_ios or getattr(PROJECT_CONFIG, "delivery_platform", "ios") in ("android", "web", "file")
         if PROJECT_CONFIG.firebase_distribution and delivers_here and (not is_yolo or all_tasks_done):
             print("\n🚀 Automated build delivery triggered after verification...")
             try:
@@ -793,7 +793,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 if res.returncode == 0:
                     formatted_time = now_iso().replace("T", " ")[:19]
                     platform = getattr(PROJECT_CONFIG, "delivery_platform", "ios")
-                    if platform in ("android", "web"):
+                    if platform in ("android", "web", "file"):
                         distributed_status = f"SUCCESS via Firebase ({platform}) at {formatted_time}"
                     else:
                         method = PROJECT_CONFIG.delivery_method or "ad-hoc"

@@ -340,7 +340,12 @@ def test_inventory() -> dict[str, Any]:
     from orchestrator.coverage import count_source_lines
 
     suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
-    from orchestrator import test_groups
+    from orchestrator import platforms as platform_view, test_groups
+    try:
+        raw_config = json.loads((PROJECT_CONFIG.runtime_dir / "project.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw_config = {}
+    platform_data = platform_view.analyze(ROOT, raw_config, suites)  # all suites: a cloned server's tests count for the server
     suites = test_groups.outside_nested_repos(ROOT, suites)
     groups, suite_extras = test_groups.build(ROOT, suites, {"test_command": PROJECT_CONFIG.test_command,
                                                             "test_commands": PROJECT_CONFIG.test_commands})
@@ -367,11 +372,36 @@ def test_inventory() -> dict[str, Any]:
                     "language": s.get("language", "swift"), **(suite_extras.get(Path(str(s.get("rel_path") or "")).as_posix()) or {})}
                    for s in suites],
         "groups": groups,
+        "platforms": platform_data,
         "plans": [p.stem for p in plans],
         "coverage": cov,
         "frameworks": frameworks_inventory(),
         "commands": _extra_test_commands(PROJECT_CONFIG),
     }
+
+
+def probe_groups(group_ids: list[str] | None) -> int:
+    """Ask each test framework what its tests are (and whether it can run here), and save the answers for the Tests page."""
+    import time
+    from dev_console import ROOT, PROJECT_CONFIG
+    from orchestrator import test_probe
+
+    groups = [g for g in test_inventory()["groups"] if g["toggle"] and (not group_ids or g["id"] in group_ids)]
+    if not groups:
+        print("Nothing to check: no test group here can be listed by its framework.")
+        return 0
+    results = {}
+    for g in groups:
+        print(f"Checking {g['framework']} {g['folder']} …", flush=True)
+        result = test_probe.probe(g, ROOT)
+        results[g["id"]] = {**result, "at": time.time(), "scan": g["tests"]}
+        if result["status"] == "ok":
+            print(f"  {result['tests']} tests (counted by {result.get('how')}); the files suggested about {g['tests']}", flush=True)
+        else:
+            print(f"  {'Needs setup' if result['status'] == 'needs-setup' else 'Could not check'}: {result.get('reason')}", flush=True)
+    test_probe.write_cache(PROJECT_CONFIG.runtime_dir, results)
+    print("Saved. The Tests page now shows these results.")
+    return 0
 
 
 def run_suite(name: str) -> int:
@@ -431,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     revise_p.add_argument("--done-when", default="")
     tests_p = sub.add_parser("tests", help="List test suites, test plans and the last coverage result")
     tests_p.add_argument("--json", action="store_true")
+    probe_p = sub.add_parser("probe", help="Ask the test frameworks what their tests are and whether they can run here")
+    probe_p.add_argument("--group", action="append", help="Only this group (repeat for several)")
     sub.add_parser("run-suite", help="Run one test suite").add_argument("name")
     sub.add_parser("run-plan", help="Run one test plan").add_argument("name")
     sub.add_parser("coverage", help="Measure code coverage")
@@ -448,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
             for p in inventory["plans"]:
                 print(f"plan: {p}")
         return 0
+    if args.action == "probe":
+        return probe_groups(args.group)
     if args.action == "run-suite":
         return run_suite(args.name)
     if args.action == "run-plan":

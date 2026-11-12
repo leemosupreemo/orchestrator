@@ -5943,31 +5943,35 @@ pages.delivery = async (args, query) => {
   const target = d.target || { delivery_platform: "ios" };
   const platform = target.delivery_platform;
   const canEditTarget = state.you?.role !== "member";
-  const platformNames = { ios: "iPhone and iPad (Firebase App Distribution, signed with Apple)", android: "Android (Firebase App Distribution)", web: "Web preview (Firebase Hosting)" };
+  const platformNames = { ios: "iPhone and iPad from an Xcode project (Firebase App Distribution)", android: "Android (Firebase App Distribution)",
+    file: "A file your own script builds: .ipa, .apk or .aab (Firebase App Distribution)", web: "Web preview (Firebase Hosting)" };
   const targetCard = `<section class="card mb-16" id="delivery-target"><div class="card-h"><h2>Where builds go</h2>
-    <span class="pill">${esc({ ios: "iOS", android: "Android", web: "Web" }[platform] || platform)}</span></div>
+    <span class="pill">${esc({ ios: "iOS", android: "Android", file: "Own build", web: "Web" }[platform] || platform)}</span></div>
     <form id="delivery-target-form" class="card-b stack gap-12">
       <label class="field"><span>Build type</span><select name="delivery_platform" id="delivery-platform"${canEditTarget ? "" : " disabled"}>
         ${Object.entries(platformNames).map(([k, v]) => `<option value="${k}"${k === platform ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
-      <p class="muted t-secondary" data-for="ios">Uses the signing and distribution settings from the setup wizard. Nothing else to set here.</p>
-      <div class="stack gap-12" data-for="android web">
-        <label class="field"><span>Build command <span class="muted">(optional)</span></span><input type="text" name="delivery_build_command" class="mono" value="${esc(target.delivery_build_command)}" placeholder="./gradlew assembleDebug"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">Runs first, in the project folder. Leave it empty if you build the file yourself.</small></label>
+      <p class="muted t-secondary" data-for="ios">Uses the signing and distribution settings from the setup wizard, and needs an Xcode project. ${target.unity_without_xcode ? "This is a Unity project with no Xcode project of its own, so choose “A file your own script builds” instead." : "Nothing else to set here."}</p>
+      <div class="stack gap-12" data-for="android web file">
+        <label class="field"><span>Build command <span class="muted">(optional)</span></span><input type="text" name="delivery_build_command" class="mono" value="${esc(target.delivery_build_command)}" placeholder="${platform === "file" ? "tools/package_ios.sh" : "./gradlew assembleDebug"}"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Runs first, in the project folder: your own build script. Leave it empty if you build the file yourself.</small></label>
       </div>
-      <div class="stack gap-12" data-for="android">
-        <label class="field"><span>File to send</span><input type="text" name="delivery_artifact" class="mono" value="${esc(target.delivery_artifact)}" placeholder="app/build/outputs/apk/debug/*.apk"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">An .apk or .aab inside the project; a pattern picks the newest match.</small></label>
-        <label class="field"><span>Firebase app ID</span><input type="text" name="firebase_app_id" class="mono" value="${esc(target.firebase_app_id)}" placeholder="1:1234567890:android:abc123"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">Firebase console, Project settings, Your apps.</small></label>
+      <div class="stack gap-12" data-for="android file">
+        <label class="field"><span>File to send</span><input type="text" name="delivery_artifact" class="mono" value="${esc(target.delivery_artifact)}" placeholder="${platform === "file" ? ".local/release-*/ios/*.ipa" : "app/build/outputs/apk/debug/*.apk"}"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">An .apk, .aab or .ipa inside the project; a pattern picks the newest match written by the build command.</small></label>
+        <label class="field"><span>Firebase app ID</span><input type="text" name="firebase_app_id" class="mono" value="${esc(target.firebase_app_id)}" placeholder="1:1234567890:ios:abc123"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Firebase console, Project settings, Your apps. Use the iOS app's ID for an .ipa.</small></label>
+        <label class="field"><span>Tester group <span class="muted">(optional)</span></span><input type="text" name="firebase_groups" value="${esc(target.firebase_groups)}" placeholder="daoc-testers"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Where builds are sent unless you pick another when you launch one. Empty means the default group, <code>internal-testers</code>: set it if your project only allows one group.</small></label>
       </div>
       <div class="stack gap-12" data-for="web">
         <label class="field"><span>Hosting site <span class="muted">(optional)</span></span><input type="text" name="firebase_hosting_target" value="${esc(target.firebase_hosting_target)}" placeholder="app"${canEditTarget ? "" : " disabled"}>
           <small class="muted">Only when firebase.json has more than one site. A preview link lasts 7 days.</small></label>
       </div>
-      <div class="stack gap-12" data-for="android web">
+      <div class="stack gap-12" data-for="android web file">
         <label class="field"><span>Firebase project <span class="muted">(optional)</span></span><input type="text" name="firebase_project_id" value="${esc(target.firebase_project_id)}" placeholder="my-project"${canEditTarget ? "" : " disabled"}>
           <small class="muted">Defaults to the project chosen by <code>firebase use</code>.</small></label>
         <label class="yolo-switch"><input type="checkbox" role="switch" name="automatic"${target.automatic ? " checked" : ""}${canEditTarget ? "" : " disabled"}><span>Deliver automatically when a job's tests pass</span></label>
+        <p class="muted t-secondary" data-for="file">Leave this off if each upload has to be asked for. Then the <strong>Launch build for testing</strong> button above is one upload, every time you press it.</p>
         <p class="muted t-secondary">Needs the Firebase CLI installed and signed in: <code>npm install -g firebase-tools</code>, then <code>firebase login</code>.</p>
       </div>
       ${canEditTarget ? `<div><button type="submit" class="btn primary">Save</button></div>` : ""}
@@ -5989,7 +5993,7 @@ pages.delivery = async (args, query) => {
           <div class="stack">
             <strong>Not ready to send test builds</strong>
             <ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
-            <div>${platform === "ios" ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="#delivery-target" data-scroll-target>Set up delivery</a>`}</div>
+            <div>${platform === "ios" && !target.unity_without_xcode ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="#delivery-target" data-scroll-target${platform === "ios" ? ` data-pick-platform="file"` : ""}>Set up delivery</a>`}</div>
           </div>
         </div>
       ` : `
@@ -6151,6 +6155,9 @@ pages.delivery = async (args, query) => {
       }
       view.querySelector("[data-scroll-target]")?.addEventListener("click", (e) => {
         e.preventDefault();
+        const pick = e.currentTarget.dataset.pickPlatform;
+        const select = view.querySelector("#delivery-platform");
+        if (pick && select && !select.disabled) { select.value = pick; select.dispatchEvent(new Event("change")); }
         view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
       });
 
@@ -8570,6 +8577,30 @@ function suiteLastRun(r) {
   return `Ran ${esc(ago(r.at))}${r.all ? " (all tests)" : ""}, ${how}`;
 }
 
+// Which parts of the project have tests, by platform (client, server, shared code, tooling), and the biggest gaps in each.
+function platformCoverageHtml(data) {
+  const platforms = data?.platforms?.platforms || [];
+  if (!platforms.length) return "";
+  const tone = (pct) => (pct >= 70 ? "ok" : pct >= 30 ? "warn" : "bad");
+  const weakest = [...platforms].filter((p) => p.lines >= 100 && ["client", "server", "shared"].includes(p.kind)).sort((a, b) => a.percent - b.percent)[0];
+  const rows = platforms.map((p) => `<div class="plat" data-platform="${esc(p.name)}">
+      <div class="row gap-8 align-center wrap"><strong>${esc(p.name)}</strong><span class="pill">${esc(p.label)}</span><span class="muted mono t-secondary">${esc(p.paths.join(", "))}</span></div>
+      <div class="plat-meter" role="img" aria-label="${p.percent}% of ${esc(p.name)} has a test"><span class="plat-bar ${tone(p.percent)}" style="width:${Math.max(p.percent, 1)}%"></span></div>
+      <div class="row gap-8 align-center wrap"><strong class="plat-pct ${tone(p.percent)}">${p.percent}%</strong><span class="muted">of the code has a test pointing at it</span></div>
+      <p class="muted t-secondary m-0">${plural(p.lines, "line")} in ${plural(p.files, "file")} (${esc(p.languages.map((l) => l.name).slice(0, 2).join(", "))}) · ${plural(p.tests, "test")} · ${plural(p.tested_files, "file")} with tests, ${p.untested_files} without</p>
+      ${p.gaps.length ? `<details class="fw-tests"><summary class="muted t-secondary">Biggest gaps: files with no test (${p.untested_files})</summary>
+        <div class="list">${p.gaps.map((g) => `<div class="item"><div class="main-col"><div class="title mono">${esc(g.path)}</div><div class="meta">${plural(g.lines, "line")}</div></div>
+          <div class="side"><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add tests for ${g.path}`)}">Add tests</a></div></div>`).join("")}</div></details>` : ""}
+    </div>`).join("");
+  return `<section class="card mb-16" id="platform-coverage"><div class="card-h"><h2>Test coverage by platform</h2></div>
+    <div class="card-b stack gap-12">
+      ${weakest ? `<p class="m-0"><strong>Least tested:</strong> ${esc(weakest.name)}, ${weakest.percent}%. ${weakest.gaps[0] ? `The biggest untested file is <span class="mono">${esc(weakest.gaps[0].path)}</span> (${plural(weakest.gaps[0].lines, "line")}).` : ""}</p>` : ""}
+      <div class="stack gap-16">${rows}</div>
+      <details class="setup-legend"><summary>How is this worked out?</summary>
+        <p class="muted">Each part of your project is a platform: the client app, the server, shared code, tooling. They are found from your folders, and you can name them yourself with <code>platforms</code> in <code>.orchestrator/project.json</code>. A file counts as having a test when a test mentions it by name. That shows where tests exist and where none do, but it isn't line coverage, which needs a coverage tool for each language. Names that many files share are ignored, so a vague match doesn't count.</p></details>
+    </div></section>`;
+}
+
 // What Orchestrator found for testing that isn't set up yet, explained for someone who doesn't write tests.
 const testSetupDismissKey = () => `orch.testSetupHidden:${state.project?.root || ""}`;
 const testSetupHidden = () => { try { return localStorage.getItem(testSetupDismissKey()) === "1"; } catch { return false; } };
@@ -8665,7 +8696,16 @@ async function editTestCommand(existing) {
   return values;
 }
 
-function suiteGroupsHtml(suites, { open = false } = {}) {
+// One suite: its name, size, last run and Run button, and (when known) the names of its tests.
+function suiteRowHtml(s) {
+  const names = s.funcs || [];
+  return `<div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${plural(s.tests, "test")} · ${esc((s.path || "").split("/").pop())}</div><div class="meta suite-last-run">${suiteLastRun(s.last_run)}</div>
+    ${names.length ? `<details class="fw-tests"><summary class="muted t-secondary">Show the ${plural(names.length, "test")}</summary>
+      <ul class="fw-test-list mono t-secondary">${names.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>${names.length < s.tests ? `<p class="muted t-secondary m-0">Some tests run with several inputs, so the count above is higher than the names listed.</p>` : ""}</details>` : ""}</div>
+    <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`;
+}
+
+function suiteGroupsHtml(suites, { open = false, collapsed = false } = {}) {
   if (!suites.length) {
     return `<div class="empty stack gap-8">
       <p>No test suites found in this project${open ? " matching your filter" : ""}.</p>
@@ -8677,21 +8717,23 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
     const folder = (s.path || "").split("/").slice(0, -1).join("/") || "(project root)";
     groups.set(folder, [...(groups.get(folder) || []), s]);
   }
-  const expand = open || groups.size === 1;
+  const expand = open || (groups.size === 1 && !collapsed);
   return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([folder, rows]) => `
     <details class="fold suite-group"${expand ? " open" : ""}><summary class="card-h"><h3 class="mono">${esc(folder)}</h3>
       <span class="count">${rows.length} ${rows.length === 1 ? "suite" : "suites"} · ${plural(rows.reduce((n, s) => n + s.tests, 0), "test")}</span></summary>
-      <div class="list">${rows.map((s) => `<div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div><div class="meta">${plural(s.tests, "test")} · ${esc((s.path || "").split("/").pop())}</div><div class="meta suite-last-run">${suiteLastRun(s.last_run)}</div></div>
-        <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`).join("")}</div></details>`).join("");
+      <div class="list">${rows.map(suiteRowHtml).join("")}</div></details>`).join("");
 }
 
 // The suites grouped by test framework (xUnit, unittest, ...), each saying what the framework is, listing its tests, and
 // letting you choose whether it runs on every job or by hand. `groups` come from the server; `suites` are already filtered.
-const GROUP_MODE_LABEL = { "per-job": "Runs on every job", manual: "By hand", nightly: "Nightly", off: "Not set up" };
+const GROUP_MODE_LABEL = { "per-job": "Runs on every job", manual: "By hand", nightly: "Nightly", off: "Not added yet" };
 const GROUP_MODE_TONE = { "per-job": "ok", manual: "", nightly: "", off: "warn" };
 
-function groupModeControl(id, mode, { all = false } = {}) {
-  const btn = (value, label) => `<button type="button" class="btn small${mode === value || (value === "manual" && mode === "nightly") ? " primary" : ""}" aria-pressed="${mode === value}" data-group="${esc(id)}" data-group-mode="${value}">${label}</button>`;
+function groupModeControl(id, mode, { all = false, blocked = "" } = {}) {
+  const btn = (value, label) => {
+    const off = blocked && value === "per-job" && mode !== "per-job";
+    return `<button type="button" class="btn small${mode === value || (value === "manual" && mode === "nightly") ? " primary" : ""}" aria-pressed="${mode === value}" data-group="${esc(id)}" data-group-mode="${value}"${off ? ` disabled title="${esc(`Can't run here yet: ${blocked}`)}"` : ""}>${label}</button>`;
+  };
   return `<span class="filters fw-mode" role="group" aria-label="${all ? "When all of these run" : "When this runs"}">${btn("per-job", "Every job")}${btn("manual", "By hand")}</span>`;
 }
 
@@ -8706,32 +8748,35 @@ function frameworkGroupsHtml(groups, suites, { filtering = false } = {}) {
       <p class="m-0"><strong>Test frameworks in this project:</strong> ${frameworks.map((f) => `<span class="pill">${esc(f)}</span>`).join(" ")}</p>
       <p class="muted t-secondary m-0">A test framework is the library the tests are written with. Each group below is one framework in one folder, with the tests it holds.${movable.length ? " Choose whether a group runs after every job, or only when you press Run." : ""}</p>
       ${movable.length && owner ? `<div class="row gap-8 align-center wrap"><span class="muted">All of them:</span>${groupModeControl("all", null, { all: true })}
-        <span class="muted t-secondary">${onEveryJob} of ${movable.length} run on every job</span></div>` : ""}
+        <span class="muted t-secondary">${onEveryJob} of ${movable.length} run on every job</span>
+        <button type="button" class="btn small ghost" ${act("test_probe", { group: "all" })} title="Asks each test framework to list its tests, which also shows whether they can run here. Builds .NET projects; runs no tests.">Check all</button></div>` : ""}
     </div>`;
   const body = groups.map((g) => {
     const rows = bySuite.get(g.id) || [];
     if (filtering && !rows.length) return "";
     const mode = g.mode;
+    const probe = g.probe;
+    const blocked = probe?.status === "needs-setup" ? (probe.reason || "it needs something set up first") : "";
     const last = g.last ? `<p class="muted t-secondary m-0">Last run by hand: ${esc(g.last.status)}${g.last.tests ? `, ${plural(g.last.tests.total_run, "test")}${g.last.tests.failed_count ? `, ${g.last.tests.failed_count} failed` : ""}` : ""}${g.last.at ? `, ${esc(ago(g.last.at))}` : ""}</p>` : "";
-    const control = !g.toggle ? `<span class="muted t-secondary">Runs as part of your project's main test command.</span>`
-      : owner ? groupModeControl(g.id, mode) : "";
+    const control = !g.toggle ? `<span class="muted t-secondary">${g.language === "swift" ? "Runs through Xcode. Use Run on a suite, or a test plan above." : "Runs as part of your project's main test command."}</span>`
+      : owner ? groupModeControl(g.id, mode, { blocked }) : "";
+    const countPill = g.exact
+      ? `<span class="pill ok" title="Counted by the test framework itself (${esc(probe.how || "its own list")})${probe.at ? `, ${esc(ago(probe.at))}` : ""}">${plural(g.tests, "test")}</span>`
+      : `<span class="pill" title="${g.toggle ? "Estimated by reading the files. Choose Check to have the test framework count them." : "Counted by reading the files."}">${g.toggle ? "about " : ""}${plural(g.tests, "test")}</span>`;
+    const checkBtn = g.toggle && owner ? `<button type="button" class="btn small ghost" ${act("test_probe", { group: g.id })} title="Asks ${esc(g.framework)} to list its tests, which also shows whether they can run here. Runs no tests.">${probe ? "Check again" : "Check"}</button>` : "";
+    const probeNote = blocked ? `<p class="notice m-0"><strong>Can't run here yet.</strong> ${esc(blocked)}${probe.tests ? ` <span class="muted">(${plural(probe.tests, "test")} could still be listed.)</span>` : ""}</p>`
+      : g.exact && g.estimated !== g.tests ? `<p class="muted t-secondary m-0">The suites below are read from the files and add up to about ${g.estimated}. ${esc(g.framework)} counts ${g.tests}, because some tests run once for each set of inputs they are given.</p>` : "";
+    const allTests = g.exact && (probe.names || []).length ? `<details class="fw-tests"><summary class="muted t-secondary">Show all ${plural(probe.names.length, "test")}, as ${esc(g.framework)} lists them</summary>
+        <ul class="fw-test-list mono t-secondary">${probe.names.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></details>` : "";
     return `<div class="fw-group" data-fw-group="${esc(g.id)}">
       <div class="fw-head stack gap-8">
         <div><strong>${esc(g.framework)}</strong>${g.folder ? ` <span class="mono muted t-secondary">${esc(g.folder)}</span>` : ""}</div>
         ${g.info ? `<p class="muted t-secondary m-0">${esc(g.info)}</p>` : ""}
-        <div class="row gap-8 align-center wrap"><span class="pill">${plural(g.tests, "test")}</span><span class="pill">${plural(g.suites, "suite")}</span>
-          ${g.toggle ? `<span class="pill ${GROUP_MODE_TONE[mode] || ""}">${esc(GROUP_MODE_LABEL[mode] || mode)}</span>` : ""}${control}</div>
-        ${last}
+        <div class="row gap-8 align-center wrap">${countPill}<span class="pill">${plural(g.suites, "suite")}</span>
+          ${g.toggle ? `<span class="pill ${GROUP_MODE_TONE[mode] || ""}">${esc(GROUP_MODE_LABEL[mode] || mode)}</span>` : ""}${blocked ? `<span class="pill warn">Needs setup</span>` : ""}${checkBtn}${control}</div>
+        ${probeNote}${allTests}${last}
       </div>
-      <details class="fold suite-group"${filtering ? " open" : ""}><summary class="card-h"><h3>Suites and their tests</h3><span class="count">${plural(rows.length, "suite")}</span></summary>
-        <div class="list">${rows.map((s) => {
-          const names = s.funcs || [];
-          return `<div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div>
-            <div class="meta">${plural(s.tests, "test")} · ${esc((s.path || "").split("/").pop())}</div><div class="meta suite-last-run">${suiteLastRun(s.last_run)}</div>
-            ${names.length ? `<details class="fw-tests"><summary class="muted t-secondary">Show the ${plural(names.length, "test")}</summary>
-              <ul class="fw-test-list mono t-secondary">${names.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>${names.length < s.tests ? `<p class="muted t-secondary m-0">Some tests run with several inputs, so the count above is higher than the names listed.</p>` : ""}</details>` : ""}</div>
-            <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`;
-        }).join("")}</div></details></div>`;
+      ${suiteGroupsHtml(rows, { open: filtering, collapsed: true })}</div>`;
   }).join("");
   return `${summary}${body}`;
 }
@@ -8808,7 +8853,7 @@ pages.tests = async (_, query) => {
   const showNextStep = Boolean(!hasTests || (recentCoverageRun && recentCoverageRun.exit_code !== 0) || cov?.last_error);
   return {
     title: "Tests",
-    actions: `<button class="btn primary test-run-all-btn" ${act("test")}>Run all tests</button><button type="button" class="btn test-expand-coverage-btn" id="expand-coverage">Expand coverage</button>`,
+    actions: `<button class="btn primary test-run-all-btn" ${act("test")}>Run all tests</button><button type="button" class="btn test-expand-coverage-btn" id="expand-coverage">Expand coverage</button><a class="btn test-distribute-link" href="#/delivery" title="Send a build to testers"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-send"/></svg> Distribute build</a>`,
     html: `
       ${data.error ? `<div class="notice bad">${esc(data.error)}</div>` : ""}
       ${caseView.cases.length ? `<section class="card mb-16"><div class="card-h"><h2>Test cases</h2>
@@ -8827,6 +8872,7 @@ pages.tests = async (_, query) => {
           : `<p class="muted">Not measured yet. ${matchMedia("(pointer: coarse)").matches ? "Tap" : "Click"} Calculate to populate.</p>`}</div></section>
       ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
         <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
+      ${platformCoverageHtml(data)}
       ${testSetupHtml(testSetup)}
       ${extraCommandsHtml(data.commands || [])}
       <section class="card" id="test-suites"><div class="card-h"><h2>Suites <span class="count">${plural(withTests.length, "suite")} · ${plural(total, "test")}</span></h2>
@@ -8936,7 +8982,7 @@ pages.tests = async (_, query) => {
             : `<p>None of these groups will run automatically. Jobs will finish without running them, and you run them yourself with Run.</p>`;
         } else if (mode === "per-job" && group.mode === "off") {
           confirmText = `<p>After the main tests pass, every job will also run these ${plural(group.tests, "test")} (${esc(group.folder)}). If one fails, the job is sent back to be fixed.</p>
-            ${group.last ? "" : `<p class="muted">It hasn't been run from here yet. Press Run on one of its suites first to check that it passes, because a group that always fails would fail every job.</p>`}`;
+            ${group.last || group.probe ? "" : `<p class="muted">It hasn't been checked yet. Choose Check on this group first: it confirms the tests can run here, and a group that can't would fail every job.</p>`}`;
         } else if (mode === "manual" && group.mode === "per-job" && movable.filter((g) => g.mode === "per-job").length === 1) {
           confirmText = `<p>This is the only group that runs after every job. With it off, jobs will finish without running any tests until you turn one back on.</p>`;
         }
@@ -8946,7 +8992,11 @@ pages.tests = async (_, query) => {
           if (!ok) return;
         }
         target.disabled = true;
-        try { await api("test-groups", { method: "POST", body: { group: gid, mode } }); toast("Saved"); route(); }
+        try {
+          const res = await api("test-groups", { method: "POST", body: { group: gid, mode } });
+          toast(res.skipped?.length ? `Saved. Left out because they can't run here yet: ${res.skipped.join(", ")}` : "Saved");
+          route();
+        }
         catch (err) { toast(err.message, true); target.disabled = false; }
       });
       const commands = data.commands || [];

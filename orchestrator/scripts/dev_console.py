@@ -2277,13 +2277,20 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
 
     if language == "python":
         words = shlex.split(base_command)
+        folder = shlex.quote(str(rel_path.parent))
         if "unittest" in words:
             # unittest doesn't take a file path (`discover tests tests/test_x.py` runs nothing); discover just that
             # file in its folder, which works with or without an __init__.py there
             python = words[0] if words else "python3"
-            folder = shlex.quote(str(rel_path.parent))
             return f"{python} -m unittest discover -s {folder} -p {shlex.quote(rel_path.name)}"
-        return f"{base_command} {quoted_path}".strip()
+        if any(w == "pytest" or w.endswith("/pytest") for w in words):  # a runner that takes a path (not just any python script)
+            return f"{base_command} {quoted_path}".strip()
+        # The project's test command is something else (a dotnet chain, make, nothing): it can't take a Python file, so
+        # run this one with the library the file itself uses
+        from orchestrator import test_groups
+        if test_groups._python_library(Path(suite["path"])) == "pytest":
+            return f"python3 -m pytest {quoted_path}"
+        return f"python3 -m unittest discover -s {folder} -p {shlex.quote(rel_path.name)}"
     if language in {"kotlin", "java"}:
         root = Path(getattr(project_config, "root", ".") or ".")
         suite_class = shlex.quote(str(suite["name"]))
@@ -2318,7 +2325,32 @@ def test_command_for_suite(suite: dict[str, Any], project_config: Any) -> str:
             raise ValueError("Set test_command to a Unity -runTests command to run a single C# suite.")
         return f"{command} -testFilter {shlex.quote(str(suite['name']))}"
     if language in {"javascript", "typescript"}:
-        return f"{base_command} -- {quoted_path}".strip()
+        if base_command:
+            return f"{base_command} -- {quoted_path}".strip()
+        # No project test command: use the runner of the nearest package.json (Vitest, Jest, or its `test` script)
+        root = Path(getattr(project_config, "root", ".") or ".")
+        folder = (root / rel_path).parent
+        while True:
+            package = folder / "package.json"
+            if package.is_file():
+                try:
+                    manifest = json.loads(package.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    manifest = {}
+                deps = {**(manifest.get("dependencies") or {}), **(manifest.get("devDependencies") or {})}
+                relative = shlex.quote(str((root / rel_path).relative_to(folder)))
+                where = shlex.quote(str(folder.relative_to(root))) if folder != root else "."
+                if "vitest" in deps:
+                    return f"cd {where} && npx vitest run {relative}"
+                if "jest" in deps:
+                    return f"cd {where} && npx jest {relative}"
+                if (manifest.get("scripts") or {}).get("test"):
+                    return f"cd {where} && npm test -- {relative}"
+                break
+            if folder == root or root not in folder.parents:
+                break
+            folder = folder.parent
+        raise ValueError("Set test_command (or add a test runner to package.json) to run a single JavaScript suite.")
     raise ValueError(f"Unsupported non-Xcode test language: {language}")
 
 
