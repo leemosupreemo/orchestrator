@@ -8685,6 +8685,57 @@ function suiteGroupsHtml(suites, { open = false } = {}) {
         <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`).join("")}</div></details>`).join("");
 }
 
+// The suites grouped by test framework (xUnit, unittest, ...), each saying what the framework is, listing its tests, and
+// letting you choose whether it runs on every job or by hand. `groups` come from the server; `suites` are already filtered.
+const GROUP_MODE_LABEL = { "per-job": "Runs on every job", manual: "By hand", nightly: "Nightly", off: "Not set up" };
+const GROUP_MODE_TONE = { "per-job": "ok", manual: "", nightly: "", off: "warn" };
+
+function groupModeControl(id, mode, { all = false } = {}) {
+  const btn = (value, label) => `<button type="button" class="btn small${mode === value || (value === "manual" && mode === "nightly") ? " primary" : ""}" aria-pressed="${mode === value}" data-group="${esc(id)}" data-group-mode="${value}">${label}</button>`;
+  return `<span class="filters fw-mode" role="group" aria-label="${all ? "When all of these run" : "When this runs"}">${btn("per-job", "Every job")}${btn("manual", "By hand")}</span>`;
+}
+
+function frameworkGroupsHtml(groups, suites, { filtering = false } = {}) {
+  const owner = state.you?.role !== "member";
+  const bySuite = new Map();
+  for (const s of suites) bySuite.set(s.group, [...(bySuite.get(s.group) || []), s]);
+  const movable = groups.filter((g) => g.toggle);
+  const onEveryJob = movable.filter((g) => g.mode === "per-job").length;
+  const frameworks = [...new Set(groups.map((g) => g.framework))];
+  const summary = `<div class="fw-summary stack gap-8">
+      <p class="m-0"><strong>Test frameworks in this project:</strong> ${frameworks.map((f) => `<span class="pill">${esc(f)}</span>`).join(" ")}</p>
+      <p class="muted t-secondary m-0">A test framework is the library the tests are written with. Each group below is one framework in one folder, with the tests it holds.${movable.length ? " Choose whether a group runs after every job, or only when you press Run." : ""}</p>
+      ${movable.length && owner ? `<div class="row gap-8 align-center wrap"><span class="muted">All of them:</span>${groupModeControl("all", null, { all: true })}
+        <span class="muted t-secondary">${onEveryJob} of ${movable.length} run on every job</span></div>` : ""}
+    </div>`;
+  const body = groups.map((g) => {
+    const rows = bySuite.get(g.id) || [];
+    if (filtering && !rows.length) return "";
+    const mode = g.mode;
+    const last = g.last ? `<p class="muted t-secondary m-0">Last run by hand: ${esc(g.last.status)}${g.last.tests ? `, ${plural(g.last.tests.total_run, "test")}${g.last.tests.failed_count ? `, ${g.last.tests.failed_count} failed` : ""}` : ""}${g.last.at ? `, ${esc(ago(g.last.at))}` : ""}</p>` : "";
+    const control = !g.toggle ? `<span class="muted t-secondary">Runs as part of your project's main test command.</span>`
+      : owner ? groupModeControl(g.id, mode) : "";
+    return `<div class="fw-group" data-fw-group="${esc(g.id)}">
+      <div class="fw-head stack gap-8">
+        <div><strong>${esc(g.framework)}</strong>${g.folder ? ` <span class="mono muted t-secondary">${esc(g.folder)}</span>` : ""}</div>
+        ${g.info ? `<p class="muted t-secondary m-0">${esc(g.info)}</p>` : ""}
+        <div class="row gap-8 align-center wrap"><span class="pill">${plural(g.tests, "test")}</span><span class="pill">${plural(g.suites, "suite")}</span>
+          ${g.toggle ? `<span class="pill ${GROUP_MODE_TONE[mode] || ""}">${esc(GROUP_MODE_LABEL[mode] || mode)}</span>` : ""}${control}</div>
+        ${last}
+      </div>
+      <details class="fold suite-group"${filtering ? " open" : ""}><summary class="card-h"><h3>Suites and their tests</h3><span class="count">${plural(rows.length, "suite")}</span></summary>
+        <div class="list">${rows.map((s) => {
+          const names = s.funcs || [];
+          return `<div class="item"><div class="main-col"><div class="title">${esc(s.name)}</div>
+            <div class="meta">${plural(s.tests, "test")} · ${esc((s.path || "").split("/").pop())}</div><div class="meta suite-last-run">${suiteLastRun(s.last_run)}</div>
+            ${names.length ? `<details class="fw-tests"><summary class="muted t-secondary">Show the ${plural(names.length, "test")}</summary>
+              <ul class="fw-test-list mono t-secondary">${names.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>${names.length < s.tests ? `<p class="muted t-secondary m-0">Some tests run with several inputs, so the count above is higher than the names listed.</p>` : ""}</details>` : ""}</div>
+            <div class="side"><button class="btn small" ${act("test_suite", { name: s.name })}>Run</button></div></div>`;
+        }).join("")}</div></details></div>`;
+  }).join("");
+  return `${summary}${body}`;
+}
+
 function coverageJobParams(data, caseView, values = {}) {
   const rawTarget = values.target !== undefined && values.target !== "" ? String(values.target).replace(/%/g, "").trim() : "100";
   const target = rawTarget ? Number(rawTarget) : 100;
@@ -8780,7 +8831,7 @@ pages.tests = async (_, query) => {
       ${extraCommandsHtml(data.commands || [])}
       <section class="card" id="test-suites"><div class="card-h"><h2>Suites <span class="count">${plural(withTests.length, "suite")} · ${plural(total, "test")}</span></h2>
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
-        ${suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
+        ${data.groups?.length && suites.length ? frameworkGroupsHtml(data.groups, suites, { filtering: Boolean(filter) }) : suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
       ${state.project.mobile_app !== false && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><div class="card-h"><h2>Simulator visual check</h2></div>
         <div class="card-b stack"><p>Builds and launches your app in the simulator, then captures screenshots for you to review.</p>
           <p class="muted">Requires Xcode and an iOS simulator.</p>
@@ -8868,6 +8919,35 @@ pages.tests = async (_, query) => {
         const accept = [...e.target.querySelectorAll('input[name="accept"]:checked')].map((i) => i.value);
         if (!accept.length) { toast("Tick what you want to use.", true); return; }
         try { await api("test-setup/apply", { method: "POST", body: { accept } }); toast("Saved your test setup"); route(); } catch (err) { toast(err.message, true); }
+      });
+      $("#test-suites")?.addEventListener("click", async (e) => {
+        const target = e.target.closest("[data-group-mode]");
+        if (!target) return;
+        const gid = target.dataset.group, mode = target.dataset.groupMode;
+        const groups = data.groups || [];
+        const group = gid === "all" ? null : groups.find((g) => g.id === gid);
+        const movable = groups.filter((g) => g.toggle);
+        const sameAlready = group ? (mode === "per-job" ? group.mode === "per-job" : group.mode === "manual") : false;
+        if (sameAlready) return;
+        let confirmText = "";
+        if (gid === "all") {
+          confirmText = mode === "per-job"
+            ? `<p>After the main tests pass, every job will also run all ${movable.length} groups of tests below (${plural(movable.reduce((n, g) => n + g.tests, 0), "test")}). Jobs will take longer, and a failing test sends the job back to be fixed.</p>`
+            : `<p>None of these groups will run automatically. Jobs will finish without running them, and you run them yourself with Run.</p>`;
+        } else if (mode === "per-job" && group.mode === "off") {
+          confirmText = `<p>After the main tests pass, every job will also run these ${plural(group.tests, "test")} (${esc(group.folder)}). If one fails, the job is sent back to be fixed.</p>
+            ${group.last ? "" : `<p class="muted">It hasn't been run from here yet. Press Run on one of its suites first to check that it passes, because a group that always fails would fail every job.</p>`}`;
+        } else if (mode === "manual" && group.mode === "per-job" && movable.filter((g) => g.mode === "per-job").length === 1) {
+          confirmText = `<p>This is the only group that runs after every job. With it off, jobs will finish without running any tests until you turn one back on.</p>`;
+        }
+        if (confirmText) {
+          const ok = await formDialog(gid === "all" ? (mode === "per-job" ? "Run all of these on every job?" : "Make all of these by hand?")
+            : (mode === "per-job" ? `Run ${group.framework} on every job?` : "Make this by hand?"), confirmText, mode === "per-job" ? "Run on every job" : "Make it by hand");
+          if (!ok) return;
+        }
+        target.disabled = true;
+        try { await api("test-groups", { method: "POST", body: { group: gid, mode } }); toast("Saved"); route(); }
+        catch (err) { toast(err.message, true); target.disabled = false; }
       });
       const commands = data.commands || [];
       const saveCommand = async (body, done) => {

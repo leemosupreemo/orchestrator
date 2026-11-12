@@ -2045,6 +2045,30 @@ def save_test_command(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     return {"saved": True, "count": len(items)}
 
 
+def save_test_group_mode(root: Path, groups: list[dict[str, Any]], body: dict[str, Any]) -> dict[str, Any]:
+    """Make one test group, or all of them, run on every job (`per-job`) or by hand (`manual`)."""
+    from orchestrator import test_commands, test_groups
+    mode = _text(body, "mode", required=True, limit=20)
+    if mode not in ("per-job", "manual"):
+        raise UIError("Choose every job or by hand.")
+    which = _text(body, "group", required=True, limit=100)
+    config = read_json_file(runtime_dir(root) / "project.json")
+    if which == "all":
+        changes = test_groups.plan_all(config, groups, mode)
+    else:
+        group = next((g for g in groups if g["id"] == which), None)
+        if not group or not group.get("toggle"):
+            raise UIError("That group's tests run through the project's main test command, so there is nothing to switch.")
+        changes = test_groups.plan(config, group, mode)
+    if changes.get("test_commands"):
+        errors = test_commands.parse(changes["test_commands"], root)[1]
+        if errors:
+            raise UIError(" ".join(errors))
+    if changes:
+        update_project_json(root, changes)
+    return {"changed": sorted(changes)}
+
+
 def save_delivery_target(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     from orchestrator import delivery_adapters
     changes, errors = delivery_adapters.target_update(root, body)
@@ -7799,10 +7823,11 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["tests"]:
             data = dict(self._tests(root, refresh=bool(query.get("refresh"))))
             data["suites"] = with_last_runs(root, data.get("suites") or [])  # outside the cache: these change with every run
-            if data.get("commands"):
+            if data.get("commands") or data.get("groups"):
                 from orchestrator import test_commands
                 latest = test_commands.latest_results(runtime_dir(root))
-                data["commands"] = [{**c, "last": latest.get(c["name"])} for c in data["commands"]]
+                data["commands"] = [{**c, "last": latest.get(c["name"])} for c in data.get("commands") or []]
+                data["groups"] = [{**g, "last": latest.get(g.get("extra") or "")} for g in data.get("groups") or []]
             self._json(data)
         elif method == "GET" and parts == ["devlogs"]:
             self._json({"pulls": device_log_pulls(root), "sessions": self._device_sessions(root)})
@@ -7868,6 +7893,14 @@ class UIHandler(BaseHTTPRequestHandler):
             result = save_test_command(root, self._body())
             self.server.tests_cache = None  # the Tests page lists these
             self._audit("test_commands_changed", root=str(root))
+            self._json(result)
+        elif method == "POST" and parts == ["test-groups"]:
+            self._require_owner("change when tests run")
+            body = self._body()
+            result = save_test_group_mode(root, self._tests(root).get("groups") or [], body)
+            self.server.tests_cache = None
+            if result["changed"]:
+                self._audit("test_group_mode_changed", root=str(root), group=str(body.get("group")), mode=str(body.get("mode")))
             self._json(result)
         elif method == "POST" and parts == ["delivery", "target"]:
             self._require_owner("change where builds are delivered")

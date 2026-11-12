@@ -284,6 +284,16 @@ A command whose `requires` aren't met is **blocked**, not failed: the result say
 
 In the web app, the **Tests** page lists them under **Extra test commands**: each shows when it runs, what is missing right now (such as Docker not running), and its latest result with test counts. **Run** starts one by hand, **Check again** looks at Docker and files again, and **Add command** and **Edit** change `test_commands` for you. The **App delivery** page has **Where builds go** for the Android and web options below.
 
+**Suites by framework.** The **Suites** section groups your tests by the framework they're written with (xUnit, NUnit, unittest, pytest, and so on) and folder. Each group says in plain words what the framework is, how many tests and suites it holds, and lists every test by name under **Show the tests**. A test framework is simply the library the tests are written with.
+
+For .NET test projects (xUnit, NUnit, MSTest) and Python test folders (unittest, pytest), each group has an **Every job / By hand** switch, and there's one for all of them:
+
+- **Every job:** the group runs after the main tests pass on each job. If it fails, the job is sent back to be fixed.
+- **By hand:** it only runs when you press **Run**, or with `orchestrator run-tests`.
+- **Not set up:** the tests exist but nothing runs them as a group yet. Turning it on adds a command to `test_commands` in `project.json`.
+
+Switching a group that is part of your main test command to **By hand** takes just that part out of the command (your flags are kept) and saves it as its own by-hand command. If you turn off the last automatic group, the main command becomes a short message saying no automatic tests are selected, so jobs finish without running tests until you turn one back on. A group that has never been run from here asks you to try it first, because one that always fails would fail every job. Groups for other frameworks (Xcode, Unity, Go, Rust and others) are listed with their tests, and run through your main test command. Tests inside another repository cloned into your project aren't shown.
+
 **Suggested test setup.** When a project is added, Orchestrator looks through it (it never runs anything) for tests it can use: .NET test projects anywhere in the repository (a Unity client with its protocol tests next to it), and scripts in `tools/`, `scripts/` or `ci/` named like tests or checks (`test-*`, `check-*`, `verify-*`). The **Tests** page shows them under **Set up testing for this project**, in plain words: what each one is (an automated unit test, a data check, or a server test), what it says it does in its own description, and whether it is safe. The main command and the safe scripts are ticked; if you're not sure, leave the ticks and press **Add what's ticked**. **Use selected** saves them, or use `orchestrator suggest-tests` and `orchestrator suggest-tests --accept all`. `orchestrator check-config` also points at the tests it found when no test command is set.
 
 - Found .NET tests become the main test command, which runs after every job.

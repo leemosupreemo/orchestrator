@@ -147,3 +147,15 @@ class ProjectSwitchTests(ServerTestCase):
         tick = js[js.index("async function tick() {"):][:300]
         self.assertIn("if (projectSwitching) return;", tick)
         self.assertIn('loadingSkeleton("home")', js[js.index("function showProjectSwitching"):][:900])
+
+
+class ComputerCardStateTests(ServerTestCase):
+    def test_computers_are_blue_when_online_and_gray_when_offline_using_existing_colors(self):
+        static = Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static"
+        account = (static / "account.js").read_text()
+        self.assertIn('<article class="account-machine ${m.online ? "is-online" : "is-offline"}">', account)
+        css = (static / "style.css").read_text()
+        self.assertIn(".account-machine.is-online { background: var(--accent-soft); border-color: var(--accent); }", css)
+        offline = css[css.index(".account-machine.is-offline {"):][:700]
+        self.assertIn("var(--panel-2)", offline)
+        self.assertIn("var(--muted)", offline)

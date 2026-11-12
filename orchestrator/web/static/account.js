@@ -351,7 +351,7 @@
       const canUpdate = m.updatable && m.online && !UPDATE_BUSY.includes(updateState);
       const fixes = readinessFixes(m.readiness);
       const help = failed ? troubleshoot : {machine: m, endpoint: m.endpoint};
-      return `<article class="account-machine">
+      return `<article class="account-machine ${m.online ? "is-online" : "is-offline"}">
         <div class="account-machine-heading">
           <strong>${escapeHtml(m.name)}</strong>
           <span class="account-status ${tone}" title="${failed ? "This browser could not reach Orchestrator’s web connection. Other connections, such as SSH, may still work." : "Reported by this computer. Open checks the connection from your browser."}">${status}</span>

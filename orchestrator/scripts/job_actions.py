@@ -340,6 +340,10 @@ def test_inventory() -> dict[str, Any]:
     from orchestrator.coverage import count_source_lines
 
     suites = discover_test_suites(ROOT, PROJECT_CONFIG.test_target)
+    from orchestrator import test_groups
+    suites = test_groups.outside_nested_repos(ROOT, suites)
+    groups, suite_extras = test_groups.build(ROOT, suites, {"test_command": PROJECT_CONFIG.test_command,
+                                                            "test_commands": PROJECT_CONFIG.test_commands})
     plans_root = ROOT / (PROJECT_CONFIG.test_target or "") / "TestPlans"
     plans = sorted(plans_root.glob("*.xctestplan")) if PROJECT_CONFIG.test_target and plans_root.exists() else []
     cov = get_coverage_data()
@@ -360,7 +364,9 @@ def test_inventory() -> dict[str, Any]:
             cov["total_lines"] = lines_cnt
     return {
         "suites": [{"name": s["name"], "tests": s["test_count"], "path": str(s.get("rel_path") or ""),
-                    "language": s.get("language", "swift")} for s in suites],
+                    "language": s.get("language", "swift"), **(suite_extras.get(Path(str(s.get("rel_path") or "")).as_posix()) or {})}
+                   for s in suites],
+        "groups": groups,
         "plans": [p.stem for p in plans],
         "coverage": cov,
         "frameworks": frameworks_inventory(),
