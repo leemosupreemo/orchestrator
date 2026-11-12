@@ -86,6 +86,9 @@ const attrJSON = (o) => esc(JSON.stringify(o));
 let state = { project: null, runs: [], actions: {} };
 let cleanup = [];
 let current = { page: null, args: [], query: null, rendered: "" };
+// Set from the moment you pick another project until its first page is ready. While it is set, nothing may paint the
+// previous project's page (route, live refresh); the page shows a skeleton and the new project's name instead.
+let projectSwitching = null;
 let previewRecovery = null;
 
 const DEFAULT_REMOTE_BACKEND = "";
@@ -1548,9 +1551,27 @@ function renderProjectSelect(select) {
 function setMobileProjectTitle(name, kind) {
   const mobileTitle = $("#mobile-title");
   if (!mobileTitle) return;
-  mobileTitle.innerHTML = `<span class="project-title-switch"><span class="mobile-title-name">${esc(name || "")}</span>${kindPill(kind)}<span class="project-title-chevron" aria-hidden="true">▾</span>
+  mobileTitle.innerHTML = `<span class="project-title-switch"><span class="mobile-title-name">${esc(name || "")}</span>${kindPill(kind)}<span class="project-title-chevron" aria-hidden="true"></span>
     <select class="mobile-project-select" aria-label="Switch project"></select></span>`;
   renderProjectSelect($(".mobile-project-select"));
+}
+
+// The new project's view, straight away: its name in the headers and the page's shape while its data loads.
+function showProjectSwitching(name) {
+  routeToken++; // a page still loading for the old project must not paint over this
+  navigationDrawer?.close();
+  document.body.dataset.page = "home";
+  document.body.classList.remove("signin-gate");
+  document.body.classList.add("route-loading");
+  view.setAttribute("aria-busy", "true");
+  if (name) setMobileProjectTitle(name, "");
+  const heading = $("#page-title");
+  if (heading) { heading.textContent = name || "Switching project…"; heading.classList.add("skeleton-title"); }
+  const sub = $("#page-sub");
+  if (sub) sub.hidden = true;
+  const actions = $("#topbar-actions");
+  if (actions) actions.innerHTML = "";
+  view.innerHTML = loadingSkeleton("home");
 }
 
 document.addEventListener("change", async (e) => {
@@ -1568,6 +1589,12 @@ document.addEventListener("change", async (e) => {
     await projectDownloads.download(repo);
     return;
   }
+  const picked = e.target.selectedOptions?.[0]?.textContent?.split(" · ")[0]?.trim() || "";
+  const mine = { name: picked };
+  projectSwitching = mine; // before anything is awaited: the new project's view shows now, not after the server answers
+  location.hash = location.hash.startsWith("#/product") ? "#/product" : "#/"; // hashchange paints the skeleton...
+  showProjectSwitching(picked); // ...and so does this, for when the address didn't change
+  let routed = false;
   try {
     const chosen = await projectDownloads.select(val);
     if (!chosen || !chosen.isCurrent()) return;
@@ -1577,17 +1604,23 @@ document.addEventListener("change", async (e) => {
     await refreshState({isCurrent:chosen.isCurrent});
     if (!chosen.isCurrent()) return;
     toast(`Switched to ${state.project?.name || "project"}`);
-    if (location.hash.startsWith("#/product")) {
-      location.hash = "#/product";
-    } else {
-      location.hash = "#/";
-    }
+    if (projectSwitching === mine) projectSwitching = null;
+    routed = true;
     await route();
-    navigationDrawer?.close();
   } catch (err) {
+    if (projectSwitching === mine) projectSwitching = null;
+    routed = true;
     if (state.project) e.target.value = state.project.root;
     toast(err.message, true);
     await route();
+  } finally {
+    if (projectSwitching === mine) projectSwitching = null; // a newer pick keeps its own
+    if (!routed && !projectSwitching) await route(); // stopped early: don't leave the skeleton up
+    if (!projectSwitching) {
+      $("#page-title")?.classList.remove("skeleton-title");
+      document.body.classList.remove("route-loading");
+      view.removeAttribute("aria-busy");
+    }
   }
 });
 
@@ -13085,6 +13118,7 @@ function loadingSkeleton(page = "") {
 let routeToken = 0; // only the newest navigation may clear or fill the loading state
 async function route() {
   if (signingIn) return; // the loading screen stays until sign-in finishes
+  if (projectSwitching) { showProjectSwitching(projectSwitching.name); return; }
   const moved = RouteAliases.redirect(location.hash); // an old address: show the page where it lives now
   if (moved) history.replaceState(null, "", moved);
   navigationDrawer.close();
@@ -13162,6 +13196,7 @@ async function route() {
 // Live pages refresh in place — but never under the user's hands.
 async function tick() {
   if (typeof signingIn !== "undefined" && signingIn) return;
+  if (projectSwitching) return;
   if (view.querySelector && view.querySelector(".signin-card:not(.signing-in)") && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   await refreshState(); // also while the tab is hidden, so notifications can fire
   if (view.querySelector?.("[data-project-download]") && projectDownloads.pending()) return; // The download owns Home until its data is ready.

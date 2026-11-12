@@ -651,8 +651,9 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
         start = app_js.index('matches("#project-select, .home-project-select, .mobile-project-select")')
         end = app_js.index("showSigningIn", start)
         handler_code = app_js[start:end]
-        self.assertIn('location.hash = "#/";', handler_code)
-        self.assertIn('location.hash.startsWith("#/product")', handler_code)
+        # Home (or Product, when you are on it) is shown at once, not after the server has switched
+        self.assertIn('location.hash = location.hash.startsWith("#/product") ? "#/product" : "#/";', handler_code)
+        self.assertLess(handler_code.index("showProjectSwitching(picked)"), handler_code.index("await projectDownloads.select(val)"))
 
 
 class FakeTunnelProcess:

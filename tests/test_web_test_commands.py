@@ -131,3 +131,19 @@ class PhoneTitleRecursionTests(ServerTestCase):
         js = js.decode() if isinstance(js, bytes) else js
         body = js[js.index("function renderProjectSelect"):js.index("function setMobileProjectTitle")]
         self.assertIn('!select.classList.contains("mobile-project-select")', body)
+
+
+class ProjectSwitchTests(ServerTestCase):
+    def test_picking_a_project_shows_its_skeleton_before_the_server_answers_and_nothing_paints_the_old_page(self):
+        _, js = self.request("GET", "/app.js", auth=False)
+        js = js.decode() if isinstance(js, bytes) else js
+        handler = js[js.index('document.addEventListener("change", async (e) => {\n  if (!e.target.matches("#project-select'):]
+        handler = handler[:handler.index("// Shown from the click on a provider")]
+        # the switching flag and the skeleton come before the first await on the server
+        self.assertLess(handler.index("projectSwitching = mine"), handler.index("await projectDownloads.select(val)"))
+        self.assertLess(handler.index("showProjectSwitching(picked)"), handler.index("await projectDownloads.select(val)"))
+        route = js[js.index("async function route() {"):][:400]
+        self.assertIn("if (projectSwitching) { showProjectSwitching(projectSwitching.name); return; }", route)
+        tick = js[js.index("async function tick() {"):][:300]
+        self.assertIn("if (projectSwitching) return;", tick)
+        self.assertIn('loadingSkeleton("home")', js[js.index("function showProjectSwitching"):][:900])

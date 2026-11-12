@@ -167,7 +167,7 @@ class ProjectKindTests(unittest.TestCase):
         self.assertIn(".mobile-title { display: flex; align-items: center; justify-content: center;", css)
         self.assertIn('<span class="mobile-title-name">', app)
         self.assertIn('${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}', app)  # project picker
-        self.assertEqual(app.count("setMobileProjectTitle("), 4)  # phone header also names a project while it downloads (3 callers + definition)
+        self.assertEqual(app.count("setMobileProjectTitle("), 5)  # phone header also names a project while it downloads or switches (4 callers + definition)
         self.assertIn('<div class="project-card-badges">\n          ${kindPill(p.kind)}', app)
         self.assertIn('<span id="project-kind"></span>', (static / "index.html").read_text())
         server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
