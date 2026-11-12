@@ -51,5 +51,125 @@
     };
   }
 
-  root.ProjectPicker = { addRequest, availableProjects, renderRows, createAddQueue };
+  function createDownloads(deps) {
+    let active = null, version = 0;
+    const jobs = new Map();
+    const valid = choice => choice.version === version && choice.backend === deps.backend();
+    const selected = op => active === op && valid(op);
+    const queue = createAddQueue(({project, choice}) => valid(choice) ? deps.activate(project) : null);
+    const register = createAddQueue(({project, backend}) => {
+      if (backend !== deps.backend()) throw new DOMException('Aborted', 'AbortError');
+      return deps.register(project);
+    });
+    const pending = () => {
+      if (active && active.backend !== deps.backend()) { active = null; version++; }
+      return active;
+    };
+    const leave = () => { active = null; version++; };
+    const fail = async (op, error) => {
+      if (!selected(op)) return false;
+      op.phase = 'error'; op.error = error.message || 'The project could not be loaded.';
+      await deps.change(op, false);
+      return true;
+    };
+    const obtain = job => {
+      if (job.registered) return Promise.resolve(job.project);
+      if (job.running) return job.promise;
+      job.running = true;
+      job.promise = (async () => {
+        try {
+          if (job.backend !== deps.backend()) throw new DOMException('Aborted', 'AbortError');
+          if (!job.project) {
+            if (!job.task) job.task = (await deps.start(job.repo)).task;
+            if (job.backend !== deps.backend()) throw new DOMException('Aborted', 'AbortError');
+            job.project = await deps.wait({task:job.task}, {timeoutMs:16 * 60 * 1000,
+              isCurrent:() => job.backend === deps.backend(),
+              onProgress: progress => {
+                const shown = active;
+                if (!shown || shown.job !== job || !selected(shown) || !progress.stage
+                    || shown.stage === progress.stage && shown.detail === progress.detail) return;
+                shown.stage = progress.stage; shown.detail = progress.detail || '';
+                deps.change(shown, false);
+              }});
+          }
+          if (job.backend !== deps.backend()) throw new DOMException('Aborted', 'AbortError');
+          await register({project:job.project, backend:job.backend});
+          job.registered = true;
+          return job.project;
+        } catch (error) {
+          if (error.taskFailed || error.status === 404) job.task = null;
+          throw error;
+        } finally { job.running = false; }
+      })();
+      return job.promise;
+    };
+    const download = (repo, resume = null) => {
+      const previous = pending();
+      if (previous?.repo === repo && previous.phase !== 'error') return previous.promise;
+      const backend = deps.backend(), key = JSON.stringify([backend, repo.toLowerCase()]);
+      let job = jobs.get(key);
+      if (!job) {
+        job = {repo, backend, project:resume?.project || null, task:resume?.task || null};
+        jobs.set(key, job);
+      }
+      const op = {repo, name:repo.split('/').pop(), backend, version:++version, phase:'downloading', job};
+      active = op;
+      op.promise = (async () => {
+        try {
+          await deps.change(op, true); // Render the selected project's Home before starting the request.
+          op.project = await obtain(job);
+          op.name = op.project.name || op.name;
+          if (selected(op)) { op.phase = 'preparing'; await deps.change(op, false); }
+          if (!selected(op)) return;
+          await queue({project:op.project, choice:op});
+          if (!selected(op)) return;
+          await deps.ready(op, () => selected(op));
+          if (!selected(op)) return;
+          op.phase = 'loading';
+          await deps.change(op, false);
+          return op.project; // Home clears the loading state only after its own data is ready.
+        } catch (error) { await fail(op, error); }
+      })();
+      return op.promise;
+    };
+    return {pending, download, leave, fail,
+      complete: op => {
+        if (!selected(op) || op.phase !== 'loading') return false;
+        active = null;
+        return true;
+      },
+      select: async root => {
+        leave();
+        const choice = {version, backend:deps.backend()};
+        try {
+          const response = await queue({project:{root}, choice});
+          return valid(choice) && response ? {response, isCurrent:() => valid(choice)} : null;
+        } catch (error) {
+          if (valid(choice)) throw error;
+          return null;
+        }
+      },
+    };
+  }
+
+  function downloadStatus(op) {
+    const failed = op.phase === 'error';
+    const stage = failed ? 'Project could not be loaded' : op.phase === 'loading' ? 'Loading project'
+      : op.phase === 'preparing' ? 'Opening project' : op.stage || 'Downloading project';
+    const detail = failed ? op.error : op.phase === 'loading' ? 'Loading your project information…' : op.detail || op.repo;
+    return {failed, stage, detail};
+  }
+
+  function downloadMarkup(op) {
+    const {failed, stage, detail} = downloadStatus(op);
+    return `<section class="banner run-status ${failed ? 'failed' : 'working'}" data-project-download
+        role="${failed ? 'alert' : 'status'}" aria-busy="${!failed}">
+      <strong data-project-download-stage>${escapeHtml(stage)}</strong>
+      <p class="t-secondary" data-project-download-detail>${escapeHtml(detail || '')}</p>
+      ${failed ? '<button type="button" class="btn primary" data-retry-project-download>Try again</button>'
+        : `<progress class="run-status-progress" aria-label="Loading ${escapeHtml(op.name)}"></progress>`}
+    </section>`;
+  }
+
+  root.ProjectPicker = { addRequest, availableProjects, renderRows, createAddQueue, createDownloads, downloadStatus, downloadMarkup };
 })(globalThis);

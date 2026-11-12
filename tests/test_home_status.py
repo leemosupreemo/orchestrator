@@ -199,7 +199,7 @@ class HomeIntegrationTests(unittest.TestCase):
 const fs=require('fs'),vm=require('vm');
 const dir=process.argv[1];require(dir+'/html.js');require(dir+'/home-status.js');
 const source=fs.readFileSync(dir+'/app.js','utf8');
-const context={HomeStatus,URLSearchParams,esc:Html.escape,setupState:{complete:true},loadSetup:async()=>{},getBackendUrl:()=>'',
+const context={HomeStatus,URLSearchParams,esc:Html.escape,projectDownloads:{pending:()=>null},setupState:{complete:true},loadSetup:async()=>{},getBackendUrl:()=>'',
  state:{project:{root:'/sample',name:'Snake',branch:'main',branches:[],dirty_files:42,machine_count:1,model_count:1},runs:[],you:{role:'owner'}},pages:{},
  api:async path=>{if(path==='jobs')return {jobs:[]};if(path==='inbox')return {elsewhere:[]};if(path==='product')return {sections:[]};if(path==='jobs/archived')return {archived:[]};throw Error('older backend');},
  sortJobs:x=>x,homeProjectTitle:p=>p.name,homeHealthIndicator:()=>'',setupState:{complete:true},
@@ -227,7 +227,7 @@ class HomeProjectSwitchTests(unittest.TestCase):
 const fs=require('fs'),vm=require('vm'),dir=process.argv[1];
 require(dir+'/html.js');require(dir+'/home-status.js');
 const source=fs.readFileSync(dir+'/app.js','utf8');
-const context={HomeStatus,URLSearchParams,esc:Html.escape,setupState:{complete:true},loadSetup:async()=>{},getBackendUrl:()=>'',
+const context={HomeStatus,URLSearchParams,esc:Html.escape,projectDownloads:{pending:()=>null},setupState:{complete:true},loadSetup:async()=>{},getBackendUrl:()=>'',
  state:{project:{root:'/A',name:'A',branches:[]},runs:[],you:{role:'owner'}},pages:{},
  api:async path=>{if(path==='jobs'){context.state.project={root:'/B',name:'B',branches:[]};return {jobs:[]};}if(path==='inbox')return {elsewhere:[]};if(path==='product')return {sections:[]};if(path==='jobs/archived')return {archived:[]};return {};},
  sortJobs:x=>x,homeProjectTitle:p=>p.name,homeHealthIndicator:()=>'',statusLine:()=>'',

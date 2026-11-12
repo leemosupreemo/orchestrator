@@ -312,10 +312,11 @@ const refreshState = async () => {refreshed++;};
 const loadSetup = async () => {};
 const route = async () => {routed++;};
 const act = action => `data-action="${action}"`;
-const branchOption = (b, current) => `<option value="${esc(b)}"${b === current ? ' selected' : ''}>${esc(b)}</option>`;
 const moreMenu = () => '';
 const ago = () => 'a moment ago';
 const source = fs.readFileSync(process.argv[1], 'utf8');
+const optionsStart = source.indexOf('function branchOptions(');
+eval(source.slice(optionsStart, source.indexOf('// The branch you last chose', optionsStart)));
 const clampStart = source.indexOf('function clamped(');
 eval(source.slice(clampStart, source.indexOf('document.addEventListener', clampStart)));
 const start = source.indexOf('pages.git = async');
@@ -423,14 +424,16 @@ pages.git().then(async result => {
         self.assertNotIn("<script>.txt", html)
         self.assertLess(html.index('data-action="git_new_branch"'), html.index("Uncommitted changes"))
 
-    def test_project_selector_groups_other_hosts_separately_from_local_projects(self):
+    def test_project_selector_lists_all_local_hosts_before_downloadable_repositories(self):
         static = Path(__file__).resolve().parents[1] / "orchestrator/web/static"
         script = r'''
 const fs = require('fs');
 require(process.argv[2]);
 const esc = Html.escape;
 const KIND_LABELS = {web: 'Web app', desktop: 'Desktop app', mobile: 'Mobile app'};
-const state = {you: {role: 'member'}, project: {root: '/github', recent: [
+const projectDownloads = {pending: () => null};
+const $ = () => null;
+const state = {you: {role: 'member'}, project: {root: '/github', github_repos:['me/Remote'], recent: [
  {name: 'Hub', root: '/github', source_type: 'github'},
  {name: 'Lab', root: '/gitlab', source_type: 'git', source_label: 'GitLab'},
  {name: 'Offline', root: '/local', source_type: 'local'}]}};
@@ -444,9 +447,13 @@ console.log(JSON.stringify(select.innerHTML));
         result = subprocess.run(["node", "-e", script, str(static / "app.js"), str(static / "html.js")],
                                 capture_output=True, text=True, check=True)
         html = json.loads(result.stdout)
-        self.assertRegex(html, r'<optgroup label="Other Git hosts">[^<]*(?:<option[^>]*>[^<]*</option>)*</optgroup>')
-        self.assertIn('value="/gitlab"', html.split('<optgroup label="Other Git hosts">')[1].split('</optgroup>')[0])
-        self.assertIn('value="/local"', html.split('<optgroup label="On this computer">')[1].split('</optgroup>')[0])
+        installed = html.split('<optgroup label="Installed locally">')[1].split('</optgroup>')[0]
+        download = html.split('<optgroup label="Download">')[1].split('</optgroup>')[0]
+        for root in ('/github', '/gitlab', '/local'):
+            self.assertIn(f'value="{root}"', installed)
+        self.assertIn('GitLab', installed)
+        self.assertIn('value="github:me/Remote"', download)
+        self.assertLess(html.index('Installed locally'), html.index('label="Download"'))
 
     def test_successful_fetch_refreshes_state_without_showing_an_error(self):
         result = self.render(can_fetch=True, interaction="#git-fetch")

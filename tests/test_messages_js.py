@@ -53,6 +53,28 @@ console.log(JSON.stringify({ at5s: tick(5000), at9s: tick(4999), at10s: tick(1) 
 """)
         self.assertEqual(out, {"at5s": [], "at9s": [], "at10s": ["Deleted"]})
 
+    def test_models_updated_expires_without_being_restored_by_polling(self):
+        out = self.run_js("""
+const fs = require("fs"), path = require("path");
+const source = fs.readFileSync(path.join(path.dirname(process.argv[1]), "app.js"), "utf8");
+const notify = (kind, text, options) => store.push({ kind, text, ...options });
+const clearMessage = id => store.dismiss(id);
+const api = () => Promise.resolve({});
+const Notifications = { show() {} };
+eval(source.slice(source.indexOf("let lastModelsNotice;"), source.indexOf("async function undoPrdUpdate")) + `
+const note = { id: "refresh-1", summary: "New models available", added: ["new-model"] };
+showModelsUpdate(note);
+const action = store.list()[0].actions[0];
+const early = tick(9999), late = tick(1);
+showModelsUpdate(note);
+console.log(JSON.stringify({ early, late, remaining: ids(), action: action.label, href: action.href }));
+`);
+""")
+        self.assertEqual(out, {
+            "early": [], "late": ["AI models updated: New models available"],
+            "remaining": [], "action": "See models", "href": "#/config/ai",
+        })
+
     def test_the_same_id_updates_in_place_and_restarts_its_clock(self):
         out = self.run_js("""
 store.push({ id: "up", kind: "info", text: "Uploading 1 of 3" }); tick(3000);

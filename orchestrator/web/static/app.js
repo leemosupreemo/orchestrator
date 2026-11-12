@@ -638,26 +638,8 @@ function addProjectsDialog(trackedProjects) {
   const cloneRepo = async (button) => {
     const repo = button.dataset.cloneRepo;
     button.disabled = true;
-    button.textContent = "Downloading…";
-    pendingAdds += 1;
-    done.disabled = cancel.disabled = true;
-    try {
-      const project = await waitForTask(await api("projects/clone", { method: "POST", body: { repo } }));
-      lastDiscovered = [...lastDiscovered, { github_repo: repo }];
-      if (await needsImport(project.root)) { importPath = project.root; pendingAdds -= 1; dlg.close("ok"); return; }
-      await sendAdd(ProjectPicker.addRequest(project));
-      changed = true;
-      button.textContent = "Added";
-      button.classList.remove("primary");
-      toast(`${repo} downloaded to ${project.root} and added`);
-    } catch (err) {
-      button.disabled = false;
-      button.textContent = "Clone & add";
-      toast(err.message, true);
-    } finally {
-      pendingAdds = Math.max(0, pendingAdds - 1);
-      done.disabled = cancel.disabled = pendingAdds > 0;
-    }
+    dlg.close("download");
+    await projectDownloads.download(repo);
   };
 
   const showScanResults = async () => {
@@ -1438,9 +1420,53 @@ function renderSessionComputer(button) {
   };
 }
 
+// Project downloads have their own Home state until the selected project's real page is ready.
+const projectDownloads = ProjectPicker.createDownloads({
+  backend: getBackendUrl,
+  start: repo => api("projects/clone", {method:"POST", body:{repo}}),
+  wait: waitForTask,
+  register: project => api("projects/add", {method:"POST", body:{root:project.root, name:project.name || "", active:false}}),
+  activate: project => api("project", {method:"POST", body:{root:project.root}}),
+  ready: async (op, isCurrent) => {
+    setupFetched = 0;
+    await refreshState({opening:true, isCurrent});
+    if (isCurrent() && state.project?.root !== op.project.root) throw new Error("The selected project hasn't opened yet. Try again.");
+  },
+  change: async (op, started) => {
+    if (started) { navigationDrawer?.close(); location.hash = "#/"; }
+    if (started || op.phase !== "downloading") {
+      renderProjectSelect($("#project-select"));
+      await route();
+    } else if (current.page === "home") {
+      const status = ProjectPicker.downloadStatus(op);
+      const stage = view.querySelector("[data-project-download-stage]");
+      const detail = view.querySelector("[data-project-download-detail]");
+      if (stage) stage.textContent = status.stage;
+      if (detail) detail.textContent = status.detail;
+    }
+  },
+});
+
+function projectDownloadPage(op) {
+  return {title:op.name, titleHtml:homeProjectTitle(op), sub:esc(op.repo), actions:"", status:"",
+    html:ProjectPicker.downloadMarkup(op), after:() => {
+      renderProjectSelect($(".home-project-select"));
+      view.querySelector("[data-retry-project-download]")?.addEventListener("click", () => projectDownloads.download(op.repo, op));
+    }};
+}
+
+function finishProjectDownload(op) {
+  if (!projectDownloads.complete(op)) return false;
+  renderProjectSelect($("#project-select"));
+  renderSetupFab();
+  return true;
+}
+
 function renderProjectSelect(select) {
   if (!select || !state.project) return;
   const p = state.project;
+  const download = projectDownloads.pending();
+  const selectedRoot = download ? `github:${download.repo}` : p.root;
   const options = [...(p.recent || [])];
   if (!options.some((o) => o.root === p.root)) {
     options.unshift({
@@ -1473,18 +1499,23 @@ function renderProjectSelect(select) {
     }
   }
 
+  const shown = download ? options.filter(o => o.root !== selectedRoot && o.root !== download.project?.root && o.github_repo !== download.repo) : options;
+  if (download) shown.push({name:download.name, root:selectedRoot, source_type:"github", unDownloaded:true});
   const groups = [
-    ["GitHub", options.filter(o => o.source_type === "github")],
-    ["Other Git hosts", options.filter(o => o.source_type === "git")],
-    ["On this computer", options.filter(o => !o.source_type || o.source_type === "local")],
+    ["Installed locally", shown.filter(o => !o.unDownloaded)],
+    ["Download", shown.filter(o => o.unDownloaded)],
   ].filter(([, projects]) => projects.length);
   let html = groups.map(([label, projects]) => `<optgroup label="${esc(label)}">${projects.map(o =>
-    `<option value="${esc(o.root)}" ${o.root === p.root ? "selected" : ""}>${esc(o.name)}${o.unDownloaded ? " · Download" : ""}${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
+    `<option value="${esc(o.root)}" ${o.root === selectedRoot ? "selected" : ""}>${esc(o.name)}${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}${o.source_type === "git" && o.source_label ? ` · ${esc(o.source_label)}` : ""}</option>`
   ).join("")}</optgroup>`).join("");
   if (state.you?.role !== "member") html += `<option value="__manage__" class="manage-projects-option">📁 Manage all projects...</option>`;
   if (select.dataset.html !== html) {
     select.innerHTML = html;
     select.dataset.html = html;
+  }
+  const mobileTitle = $("#mobile-title");
+  if (mobileTitle && !document.body.classList.contains("signin-gate")) {
+    mobileTitle.innerHTML = `<span class="mobile-title-name">${esc(download?.name || p.name)}</span>${download ? "" : kindPill(p.kind)}`;
   }
 }
 
@@ -1492,6 +1523,7 @@ document.addEventListener("change", async (e) => {
   if (!e.target.matches("#project-select, .home-project-select")) return;
   const val = e.target.value;
   if (val === "__manage__") {
+    projectDownloads.leave();
     location.hash = "#/projects";
     if (state.project) e.target.value = state.project.root;
     navigationDrawer?.close();
@@ -1499,25 +1531,17 @@ document.addEventListener("change", async (e) => {
   }
   if (val.startsWith("github:")) {
     const repo = val.slice("github:".length);
-    toast(`Downloading ${repo}...`);
-    try {
-      const project = await waitForTask(await api("projects/clone", { method: "POST", body: { repo } }));
-      await api("projects/add", { method: "POST", body: { root: project.root, name: project.name || "", active: true } });
-      await refreshState();
-      toast(`Downloaded and switched to ${project.name || repo}`);
-      location.hash = "#/";
-      navigationDrawer?.close();
-    } catch (err) {
-      if (state.project) e.target.value = state.project.root;
-      toast(err.message, true);
-    }
+    await projectDownloads.download(repo);
     return;
   }
   try {
-    const res = await api("project", { method: "POST", body: { root: val } });
+    const chosen = await projectDownloads.select(val);
+    if (!chosen || !chosen.isCurrent()) return;
+    const res = chosen.response;
     if (res?.project) state.project = res.project;
     setupFetched = 0;
-    await refreshState();
+    await refreshState({isCurrent:chosen.isCurrent});
+    if (!chosen.isCurrent()) return;
     toast(`Switched to ${state.project?.name || "project"}`);
     if (location.hash.startsWith("#/product")) {
       location.hash = "#/product";
@@ -1529,6 +1553,7 @@ document.addEventListener("change", async (e) => {
   } catch (err) {
     if (state.project) e.target.value = state.project.root;
     toast(err.message, true);
+    await route();
   }
 });
 
@@ -2314,7 +2339,7 @@ function showSignInGate(message, kind = "error") {
           <p class="muted">Or use the access token below${location.hostname === "127.0.0.1" ? `, or open <a href="${esc(location.href.replace("//127.0.0.1", "//localhost"))}">localhost</a> instead of 127.0.0.1` : ""}.</p></div>`}
         <div class="sso-buttons" ${providers ? "" : "hidden"}>
           <button type="button" class="sso-btn google-btn ${isLastProvider("google") ? "last-used" : ""}" id="google-signin-btn">
-            <svg class="icon"><use href="#i-google"/></svg>
+            <img class="icon" src="google-g.png" width="20" height="20" alt="" aria-hidden="true">
             <span>Continue with Google</span>
             ${isLastProvider("google") ? `<span class="last-used-tag">Last used</span>` : ""}
           </button>
@@ -3245,8 +3270,9 @@ document.addEventListener("click", (e) => {
 
 function statusLine(p, hasPreview = false) {
   const branches = p.branches || [];
-  const branchPicker = branches.length
-    ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${p.branch ? "" : `<option selected disabled>no branch</option>`}${branches.map((b) => branchOption(b, p.branch, p.elsewhere)).join("")}</select>`
+  const downloads = p.download_branches || [];
+  const branchPicker = branches.length || downloads.length
+    ? `<select class="branch-select mono" aria-label="Switch branch" title="Switch branch">${branchOptions(branches, p.branch, p.elsewhere, downloads)}</select>`
     : `<a class="mono" href="#/git">${esc(p.branch || "no branch")}</a>`;
   // Branch and setup controls stay here; project facts and uncommitted files live in the status card below.
   const stats = [
@@ -3256,6 +3282,12 @@ function statusLine(p, hasPreview = false) {
   return `<div class="status-line status-stack home-status-line"><div class="status-main-row"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>
     <div class="row gap-8 align-center">${hasPreview ? `<a class="btn" href="#/preview">Preview</a>` : ""}<button type="button" class="ask-ai-btn" data-ask-ai aria-label="Ask AI about this project" title="Ask AI about this project"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></button></div></div>
     ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</div>`;
+}
+
+function branchOptions(branches, current, elsewhere = {}, downloads = []) {
+  return (!branches.includes(current) ? `<option value="" selected disabled>${esc(current || "no branch")}</option>` : "")
+    + (branches.length ? `<optgroup label="Installed locally">${branches.map(b => branchOption(b, current, elsewhere)).join("")}</optgroup>` : "")
+    + (downloads.length ? `<optgroup label="Download">${downloads.map(b => `<option value="${esc("remote:" + b.ref)}">${esc(b.name)} (${esc(b.remote)})</option>`).join("")}</optgroup>` : "");
 }
 
 // A branch checked out in another worktree folder is labelled: git won't switch to it here. So is the one last chosen here.
@@ -3301,7 +3333,8 @@ async function switchBranch(branch) {
   }
   const dirty = state.project?.dirty_files || 0;
   if (!dirty) return runAction("git_checkout", { branch });
-  const ok = await formDialog(`Switch to ${branch}?`, `<p>You have ${dirty} uncommitted file${dirty > 1 ? "s" : ""}, which git may refuse to carry over.</p>
+  const download = branch.startsWith("remote:") ? state.project?.download_branches?.find(b => b.ref === branch.slice(7)) : null;
+  const ok = await formDialog(`Switch to ${download?.name || branch.replace(/^remote:/, "")}?`, `<p>You have ${dirty} uncommitted file${dirty > 1 ? "s" : ""}, which git may refuse to carry over.</p>
     <p>Orchestrator can stash them (set them aside safely), then switch. Get them back any time with <code>git stash pop</code>.</p>`, "Stash & switch");
   if (ok) runAction("stash_checkout", { branch });
 }
@@ -3425,6 +3458,7 @@ function setupPage(s) {
 function renderSetupFab() {
   const fab = $("#setup-fab");
   if (!fab) return;
+  if (projectDownloads.pending()) { fab.hidden = true; closeSetupPanel(); return; }
   const s = setupState;
   const show = s && !s.complete && ["home", "checkup"].includes(current.page) && !(current.page === "home" && !s.seen);
   fab.hidden = !show;
@@ -3554,7 +3588,8 @@ document.addEventListener("click", async (e) => {
 const HOME_JOBS_SHOWN = 10;
 
 function homeHealthIndicator(s) {
-  if (!s?.items) return `<details class="home-health-inline home-health-yellow"><summary class="home-health-trigger" title="System health: status unavailable. Tap for details." aria-label="System health: status unavailable"><span class="home-health-light" aria-hidden="true"></span></summary><div class="home-health-popover"><strong>System health</strong><p>Setup checks could not be loaded. Reload Home to try again.</p></div></details>`;
+  const icon = (ready, optional = false) => `<span class="home-health-icon${optional ? " home-health-icon-optional" : ""}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z"/><path d="${ready ? "m9 12 2 2 4-4" : "M12 8v5m0 4h.01"}"/></svg></span>`;
+  if (!s?.items) return `<details class="home-health-inline home-health-yellow"><summary class="home-health-trigger" title="System health: status unavailable. Tap for details." aria-label="System health: status unavailable">${icon(false)}</summary><div class="home-health-popover"><strong>System health</strong><p>Setup checks could not be loaded. Reload Home to try again.</p></div></details>`;
   const required = s.items.filter(item => item.required);
   const missing = required.filter(item => !item.done);
   const optional = s.items.filter(item => !item.required);
@@ -3564,7 +3599,7 @@ function homeHealthIndicator(s) {
   const summary = missing.length ? `${missing.length} required item${missing.length === 1 ? "" : "s"} to fix`
     : optionalMissing.length ? `All ${s.required_total} required items are ready · ${optionalMissing.length} optional to review` : "All required setup is ready";
   return `<details class="home-health-inline home-health-${tone}">
-    <summary class="home-health-trigger" title="System health: ${esc(status)}${optionalMissing.length ? `; ${optionalMissing.length} optional items available` : ""}. Tap for details." aria-label="System health: ${esc(status)}"><span class="home-health-light${!missing.length && optionalMissing.length ? " home-health-light-optional" : ""}" aria-hidden="true"></span></summary>
+    <summary class="home-health-trigger" title="System health: ${esc(status)}${optionalMissing.length ? `; ${optionalMissing.length} optional items available` : ""}. Tap for details." aria-label="System health: ${esc(status)}">${icon(!missing.length, !missing.length && optionalMissing.length > 0)}</summary>
     <div class="home-health-popover"><div class="home-health-popover-head"><strong>System health</strong><span>${esc(summary)}</span></div>
       <div class="home-health-section"><h3>Required · ${required.length - missing.length}/${required.length} ready</h3>${required.length ? required.map(setupItem).join("") : `<p class="home-health-ready">No required setup items.</p>`}</div>
       ${optional.length ? `<div class="home-health-section home-health-optional"><h3>Optional · ${optional.length - optionalMissing.length}/${optional.length} ready</h3>${optional.map(setupItem).join("")}</div>` : ""}
@@ -3690,11 +3725,16 @@ function homeProjectTitle(p) {
 }
 
 pages.home = async (_, query) => {
+  const download = projectDownloads.pending();
+  if (download && (download.phase !== "loading" || state.project?.root !== download.project?.root)) return projectDownloadPage(download);
   const p = state.project, homeBackend = getBackendUrl();
-  const sameProject = () => state.project?.root === p?.root && getBackendUrl() === homeBackend;
+  const sameProject = () => state.project?.root === p?.root && getBackendUrl() === homeBackend && projectDownloads.pending() === download;
   await loadSetup();
   if (!sameProject()) return {stale: true};
-  if (setupState && !setupState.complete && !setupState.seen) return setupPage(setupState);
+  if (setupState && !setupState.complete && !setupState.seen) {
+    if (download && !finishProjectDownload(download)) return {stale:true};
+    return setupPage(setupState);
+  }
   const [{ jobs }, waiting, product, archivedList, homeGit, homePreview] = await Promise.all([
     api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
     api("git").catch(() => ({})), api("preview").catch(() => null),
@@ -3732,6 +3772,7 @@ pages.home = async (_, query) => {
         <div class="list">${runningRuns.map(liveRunCard).join("")}</div></section>`
     : "";
 
+  if (download && !finishProjectDownload(download)) return {stale:true};
   return {
     title: p.name,
     titleHtml: homeProjectTitle(p), // the name is also a project switcher, like the sidebar's
@@ -7134,7 +7175,7 @@ function showPrdUpdate(note) {
   if (!first) Notifications.show({ title: "Product requirements updated", body: note.summary, key: `prd:${note.id}`, hash: `#/product?history=${encodeURIComponent(note.id)}` });
 }
 
-// The list of AI models changed (a refresh, or the Codex login offering something new): say so once, over the page, until it is dismissed.
+// The list of AI models changed: say so once, using the standard message timeout.
 let lastModelsNotice; // undefined until the first poll, so a change made while you were away is shown but doesn't also fire an alert
 let newModelIds = []; // the models that note announced, highlighted on the AI tools page for the rest of this visit
 function showModelsUpdate(note) {
@@ -7146,7 +7187,7 @@ function showModelsUpdate(note) {
   newModelIds = note.added || [];
   const seen = () => api("models/dismiss", { method: "POST", body: {} }).catch(() => {});
   notify("info", `AI models updated: ${note.summary}`, {
-    id: `models:${note.id}`, sticky: true, onDismiss: seen,
+    id: `models:${note.id}`, onDismiss: seen,
     actions: [{ label: "See models", href: "#/config/ai", after: seen }],
   });
   if (!first) Notifications.show({ title: "AI models updated", body: note.summary, key: `models:${note.id}`, hash: "#/config/ai" });
@@ -7173,9 +7214,9 @@ async function waitForTask(started, opts) {
   const began = Date.now();
   let misses = 0;
   for (;;) {
-    if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (opts?.signal?.aborted || opts?.isCurrent && !opts.isCurrent()) throw new DOMException("Aborted", "AbortError");
     await new Promise((r) => setTimeout(r, opts?.pollInterval || 1500));
-    if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (opts?.signal?.aborted || opts?.isCurrent && !opts.isCurrent()) throw new DOMException("Aborted", "AbortError");
     let r;
     try { r = await api(`product/task/${encodeURIComponent(task)}`, { signal: opts?.signal }); misses = 0; }
     catch (e) {
@@ -7187,8 +7228,8 @@ async function waitForTask(started, opts) {
     if (r.status === "running") opts?.onProgress?.(r);
     if (r.status === "done") return r.result;
     if (r.status === "canceled" || r.status === "cancelled") throw new DOMException("Aborted", "AbortError");
-    if (r.status === "error") throw new Error(r.error);
-    if (Date.now() - began > 7 * 60 * 1000) throw new Error("This is taking much longer than expected. Try again.");
+    if (r.status === "error") throw Object.assign(new Error(r.error), {taskFailed:true});
+    if (Date.now() - began > (opts?.timeoutMs ?? 7 * 60 * 1000)) throw new Error("This is taking much longer than expected. Try again.");
   }
 }
 
@@ -8855,8 +8896,8 @@ pages.git = async (_, query) => {
     <div class="card-b git-branch-fields">
       <div class="git-branch-field">
         <label class="field" for="git-branch-select"><span>Current branch</span></label>
-        <div class="git-branch-controls"><select id="git-branch-select" name="branch" class="mono" ${!g.branches.length ? "disabled" : ""}>
-          ${g.branches.map(b => branchOption(b, g.branch, g.elsewhere)).join("")}
+        <div class="git-branch-controls"><select id="git-branch-select" name="branch" class="mono" ${!(g.branches.length || g.download_branches?.length) ? "disabled" : ""}>
+          ${branchOptions(g.branches, g.branch, g.elsewhere, g.download_branches || [])}
         </select><button type="button" class="btn small ghost" ${act("git_new_branch")} ${!g.is_repo ? "disabled" : ""}>New branch…</button></div>
       </div>
       ${g.has_commits && g.branch && (g.can_fetch || g.remote_branches?.length) ? `<div class="git-branch-field"><span class="git-field-label">Tracking branch</span><div class="git-tracking-value"><span class="mono">${esc(g.upstream || "Not set")}</span>
@@ -9698,20 +9739,28 @@ const PROVIDER_HINT = {
   figma: "Paste a link to a file or frame (right-click a frame → Copy link)",
 };
 
+// Official provider assets are served locally; see brands/README.md for sources.
 const PROVIDER_ICONS = {
-  figma: `<svg class="brand-icon" viewBox="0 0 38 57" width="14" height="14" fill="none" aria-hidden="true"><path d="M19 28.5a9.5 9.5 0 1 1 19 0 9.5 9.5 0 0 1-19 0z" fill="#1ABCFE"/><path d="M0 47.5a9.5 9.5 0 0 1 9.5-9.5H19v9.5a9.5 9.5 0 1 1-19 0z" fill="#0ACF83"/><path d="M19 0v19h9.5a9.5 9.5 0 1 0 0-19H19z" fill="#FF7262"/><path d="M0 9.5a9.5 9.5 0 0 0 9.5 9.5H19V0H9.5A9.5 9.5 0 0 0 0 9.5z" fill="#F24E1E"/><path d="M0 28.5a9.5 9.5 0 0 0 9.5 9.5H19V19H9.5A9.5 9.5 0 0 0 0 28.5z" fill="#A259FF"/></svg>`,
-  jira: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#0052CC" d="M11.5 2.5a9.5 9.5 0 0 0-9.5 9.5h9.5V2.5z"/><path fill="#2684FF" d="M12.5 12a9.5 9.5 0 0 0 9.5-9.5H12.5V12z"/><path fill="#0052CC" d="M11.5 12H2a9.5 9.5 0 0 0 9.5 9.5V12z"/></svg>`,
-  trello: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#0079BF"/><rect x="4.5" y="4.5" width="6" height="11" rx="1.5" fill="#ffffff"/><rect x="13.5" y="4.5" width="6" height="7.5" rx="1.5" fill="#ffffff"/></svg>`,
-  sentry: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path fill="#E1567C" d="M13.2 2.2a1.5 1.5 0 0 0-2.4 0L1.8 19.3a1.5 1.5 0 0 0 1.2 2.3h18a1.5 1.5 0 0 0 1.2-2.3L13.2 2.2zm-1.2 6.3 4.2 8.7H7.8L12 8.5z"/></svg>`,
-  unity: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#222C37"/><path d="M12 4.5l6.5 3.75v7.5L12 19.5l-6.5-3.75v-7.5L12 4.5zm0 3.2l-3.7 2.1 3.7 2.1 3.7-2.1L12 7.7zm-3.9 3.9v3.2l3.2 1.85v-3.2L8.1 11.6zm7.8 0l-3.2 1.85v3.2l3.2-1.85v-3.2z" fill="#ffffff"/></svg>`,
-  mixpanel: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#7856FF"/><path d="M6 16.5V7.5L10 13.5L14 7.5V16.5H12V11L10 14L8 11V16.5H6Z" fill="#ffffff"/></svg>`,
-  amplitude: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#1E61F0"/><path d="M7 17L12 7L17 17H14.5L12 11.5L9.5 17H7Z" fill="#ffffff"/></svg>`,
-  posthog: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#F54E00"/><circle cx="9" cy="12" r="3" fill="#ffffff"/><circle cx="15" cy="12" r="3" fill="#ffffff"/></svg>`,
-  analytics: `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  figma: "figma.svg",
+  jira: "jira.svg",
+  trello: "trello.svg",
+  sentry: "sentry.svg",
+  unity: "unity.svg",
+  mixpanel: "mixpanel.png",
+  amplitude: "amplitude.png",
+  posthog: "posthog.svg",
+  github: "github.svg",
+  slack: "slack.png",
 };
+const MONOCHROME_PROVIDER_ICONS = new Set(["sentry", "unity", "github"]);
 
 function providerIcon(id) {
-  return PROVIDER_ICONS[String(id || "").toLowerCase()] || "";
+  const provider = String(id || "").toLowerCase();
+  if (provider === "analytics") return `<svg class="brand-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const asset = PROVIDER_ICONS[provider];
+  if (!asset) return "";
+  if (MONOCHROME_PROVIDER_ICONS.has(provider)) return `<span class="brand-icon brand-icon-mask" style="--brand-mask: url('brands/${asset}')" aria-hidden="true"></span>`;
+  return `<img class="brand-icon" src="brands/${asset}" width="14" height="14" alt="" aria-hidden="true">`;
 }
 
 // Trello's own approval page, then back to the app with the token (trello-auth.html passes it along).
@@ -9812,7 +9861,7 @@ const RECOMMENDED_MCPS = [
     id: "github",
     name: "github",
     badge: "Source control",
-    icon: `<svg class="brand-icon" style="width:18px;height:18px" aria-hidden="true"><use href="#i-github"/></svg>`,
+    icon: providerIcon("github"),
     blurb: "Official GitHub Model Context Protocol server for inspecting repositories, issues, PR diffs, commits, and automating code reviews.",
     cmd: "npx -y @modelcontextprotocol/server-github",
   },
@@ -10002,7 +10051,7 @@ pages.connections = async (_, query) => {
         <h2 class="connections-section-title" id="connections-alerts-title">Alerts / notifications</h2>
         <div class="conn-grid">
           <section class="card conn-card"><div class="card-b stack">
-            <div class="row"><strong class="conn-name">Slack, email, this device and your Mac</strong>${alertsPill}</div>
+            <div class="row"><strong class="conn-name">${providerIcon("slack")}Slack, email, this device and your Mac</strong>${alertsPill}</div>
             <p class="muted">${hook?.set ? `Slack is connected${hook.paused ? " but paused" : ""}. ` : ""}${config?.email?.recipients?.length ? `Email goes to ${plural(config.email.recipients.length, "address", "addresses")}. ` : ""}Where updates reach you is set in one place.</p>
             <div><a class="btn small primary" href="#/config/alerts">Open Alerts settings</a></div>
           </div></section>
@@ -12796,6 +12845,7 @@ async function route() {
     if (!window.firebase?.auth?.().currentUser) return showSignInGate(r.page === "connect" ? "Sign in to add your computer to your account." : "", "info");
     return openAccount({ list: r.page === "computers" });
   }
+  if (projectDownloads.pending() && r.page !== "home") { location.hash = "#/"; return; }
   trackNavigation();
   current = { page: r.page, args: r.args, query: r.query, rendered: "", parent: routeParent(r) };
   document.body.dataset.page = r.page || "";
@@ -12810,6 +12860,7 @@ async function route() {
   view.setAttribute("aria-busy", "true");
   const slow = setTimeout(() => {
     if (token !== routeToken) return;
+    if (projectDownloads.pending()) return; // Keep download progress visible while real Home data loads.
     $("#page-sub").hidden = true;
     $("#topbar-actions").innerHTML = "";
     $("#page-title").classList.add("skeleton-title");
@@ -12829,6 +12880,9 @@ async function route() {
       if (r.page !== "run") $("#page-title")?.focus({ preventScroll: true }); // so screen readers announce the new page
     }
   } catch (e) {
+    if (token !== routeToken) return;
+    const download = projectDownloads.pending();
+    if (download && await projectDownloads.fail(download, e)) return;
     if (e.status === 401) return showLocked(e.message);
     // Say what happened and offer a way on, never a dead end.
     const missing = e.status === 404;
@@ -12851,6 +12905,7 @@ async function tick() {
   if (typeof signingIn !== "undefined" && signingIn) return;
   if (view.querySelector && view.querySelector(".signin-card:not(.signing-in)") && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   await refreshState(); // also while the tab is hidden, so notifications can fire
+  if (view.querySelector?.("[data-project-download]") && projectDownloads.pending()) return; // The download owns Home until its data is ready.
   if (document.hidden) return;
   if (!state.project) return;
   await loadSetup();

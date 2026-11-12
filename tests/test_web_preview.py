@@ -92,6 +92,47 @@ class ProjectKindTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root, True)
 
+    def unity_project(self, folder="DaocUnity", targets=""):
+        unity = self.root / folder
+        (unity / "ProjectSettings").mkdir(parents=True)
+        (unity / "ProjectSettings/ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.6f1\n")
+        (unity / "Assets/Editor").mkdir(parents=True)
+        (unity / "Assets/Editor/Build.cs").write_text(targets)
+        (self.root / "package.json").write_text(json.dumps({"dependencies": {"puppeteer": "^25.16.0"}}))
+
+    def test_nested_unity_mobile_build_beats_node_tooling(self):
+        self.unity_project(targets="target = BuildTarget.iOS; target = BuildTarget.StandaloneOSX;")
+        self.assertEqual(ui.project_kind(self.root, {}), "mobile")
+        self.assertTrue(ui.is_mobile_app(self.root, {}))
+        self.assertFalse(ui.is_web_app(self.root, {}))
+        self.assertEqual(ui.project_kind(self.root, {"project_kind": "desktop"}), "desktop")
+
+    def test_unity_desktop_build_is_not_a_web_or_phone_app(self):
+        self.unity_project(folder=".", targets="target = BuildTarget.StandaloneOSX;")
+        self.assertEqual(ui.project_kind(self.root, {}), "desktop")
+        self.assertFalse(ui.is_mobile_app(self.root, {}))
+        self.assertFalse(ui.is_web_app(self.root, {}))
+
+    def test_unity_without_build_targets_does_not_infer_web_from_tooling(self):
+        self.unity_project()
+        self.assertEqual(ui.project_kind(self.root, {}), "")
+        self.assertFalse(ui.is_web_app(self.root, {}))
+
+    def test_unity_webgl_build_can_be_a_web_app(self):
+        self.unity_project(targets="target = BuildTarget.WebGL;")
+        self.assertEqual(ui.project_kind(self.root, {}), "web")
+        self.assertTrue(ui.is_web_app(self.root, {}))
+
+    def test_unity_android_build_is_mobile_and_commented_targets_are_ignored(self):
+        self.unity_project(targets="// BuildTarget.iOS\n/* BuildTarget.StandaloneOSX */\ntarget = BuildTarget.Android;")
+        self.assertEqual(ui.project_kind(self.root, {}), "mobile")
+        self.assertTrue(ui.is_mobile_app(self.root, {}))
+        self.assertFalse(ui.is_web_app(self.root, {}))
+
+    def test_commented_unity_build_target_does_not_choose_a_platform(self):
+        self.unity_project(targets="// BuildTarget.iOS\n/* BuildTarget.StandaloneOSX */")
+        self.assertEqual(ui.project_kind(self.root, {}), "")
+
     def xcode(self, sdk):
         (self.root / "App.xcodeproj").mkdir(exist_ok=True)
         (self.root / "App.xcodeproj" / "project.pbxproj").write_text(f"SDKROOT = {sdk};\n")
@@ -126,7 +167,7 @@ class ProjectKindTests(unittest.TestCase):
         self.assertIn(".mobile-title { display: flex; align-items: center; justify-content: center;", css)
         self.assertIn('<span class="mobile-title-name">', app)
         self.assertIn('${KIND_LABELS[o.kind] ? ` · ${KIND_LABELS[o.kind]}` : ""}', app)  # project picker
-        self.assertEqual(app.count("mobileTitle.innerHTML = "), 2)  # phone header, both places it's set
+        self.assertEqual(app.count("mobileTitle.innerHTML = "), 3)  # phone header also names a project while it downloads
         self.assertIn('<div class="project-card-badges">\n          ${kindPill(p.kind)}', app)
         self.assertIn('<span id="project-kind"></span>', (static / "index.html").read_text())
         server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
@@ -218,7 +259,7 @@ class OneAddProjectButtonTests(unittest.TestCase):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertNotIn("Import existing project", app)
         self.assertIn("!(await api(`projects/import-info?path=${encodeURIComponent(root)}`)).has_config", app)
-        self.assertEqual(app.count("if (await needsImport("), 3)  # discovered folders, a typed path and a cloned GitHub repository
+        self.assertEqual(app.count("if (await needsImport("), 2)  # discovered folders and a typed path; downloads use their own Home flow
         self.assertIn("location.hash = `#/import-project?path=${encodeURIComponent(result.importPath)}`", app)
         setup = app[app.index('pages["import-project"] = async (_, query)'):]
         self.assertIn('let path = query?.get("path") || "";', setup[:400])

@@ -6,6 +6,9 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SetupRefreshUiTests(unittest.TestCase):
+    def test_orphaned_download_markup_does_not_stop_home_refresh(self):
+        self.run_refresh_scenario('orphaned')
+
     def run_refresh_scenario(self, scenario):
         app = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js"
         script = r"""
@@ -23,7 +26,8 @@ const context = vm.createContext({
   },
   window: { addEventListener: () => {} },
   $: () => ({ open: false }),
-  view: { contains: () => false },
+  view: { contains: () => false, querySelector: selector => process.argv[2] === 'orphaned' && selector === '[data-project-download]' ? {} : null },
+  projectDownloads: { pending: () => null },
   current: { page: 'home', args: [], query: {}, rendered: '' },
   LIVE: new Set(['home']), state: { runs: [], project: { root: '/project' } },
   refreshState: async () => {}, renderSetupFab: () => {}, route: () => {},

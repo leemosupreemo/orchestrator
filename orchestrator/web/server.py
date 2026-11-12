@@ -26,6 +26,7 @@ import fcntl
 import hashlib
 import hmac
 import io
+from itertools import islice
 import json
 import mimetypes
 import os
@@ -1064,10 +1065,46 @@ def distribution_gaps(root: Path, config: dict[str, Any]) -> list[str]:
     return gaps
 
 
+def unity_project_kind(root: Path) -> str | None:
+    """Unity's declared build targets, including a client one folder below the repo.
+
+    None means no Unity project; an empty label means Unity with unknown targets.
+    A tooling package.json must not turn either native case into a website.
+    """
+    found = False
+    targets: set[str] = set()
+    try:
+        candidates = [root, *(p.parent.parent for p in islice(root.glob("*/ProjectSettings/ProjectVersion.txt"), 32))]
+        for unity in candidates:
+            if not (unity / "ProjectSettings/ProjectVersion.txt").is_file() or not (unity / "Assets").is_dir():
+                continue
+            found = True
+            for script in islice((unity / "Assets/Editor").rglob("*.cs"), 64):
+                try:
+                    with script.open(encoding="utf-8", errors="ignore") as source:
+                        text = source.read(128 * 1024)
+                    text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.DOTALL)
+                    targets.update(re.findall(r"\bBuildTarget\s*\.\s*(\w+)", text))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    if targets & {"iOS", "Android", "tvOS", "VisionOS"}:
+        return "mobile"
+    if any(target.startswith("Standalone") for target in targets):
+        return "desktop"
+    if "WebGL" in targets:
+        return "web"
+    return "" if found else None
+
+
 def is_web_app(root: Path, config: dict[str, Any]) -> bool:
     """A website or web app (not a phone app): what App delivery previews on a link instead of sending to devices."""
     if is_mobile_app(root, config):
         return False
+    unity = unity_project_kind(root)
+    if unity is not None:
+        return unity == "web"
     try:
         hosting = bool(json.loads((root / "firebase.json").read_text(encoding="utf-8")).get("hosting"))
     except (OSError, ValueError, AttributeError):
@@ -1085,6 +1122,9 @@ def project_kind(root: Path, config: dict[str, Any]) -> str:
     chosen = str(config.get("project_kind") or "").lower()
     if chosen in PROJECT_KINDS:
         return chosen
+    unity = unity_project_kind(root)
+    if unity is not None:
+        return unity
     try:
         sdks: set[str] = set()
         for pbx in list(root.glob("*.xcodeproj/project.pbxproj"))[:3]:
@@ -2459,7 +2499,7 @@ def git_state(root: Path) -> dict[str, Any]:
         "changes": [{"status": l[:2].strip() or "?", "path": l[3:]} for l in status[:100]],
         "changes_total": len(status),
         "change_groups": git_change_groups(changes[:100]),
-        "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
+        **branch_choices(root),
         "elsewhere": branches_elsewhere(root),
         "web_url": repo_web_url(root),
         "origin": re.sub(r"(https?://)[^/@]+@", r"\1", origin),
@@ -2952,6 +2992,9 @@ def is_mobile_app(root: Path, config: dict[str, Any]) -> bool:
     """True when the project builds an app for a phone or simulator, which is when device logs and simulator checks mean something."""
     if config.get("xcode_project") or config.get("xcode_workspace") or config.get("app_bundle_id") or config.get("remote_logs"):
         return True
+    unity = unity_project_kind(root)
+    if unity is not None:
+        return unity == "mobile"
     try:
         if any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace")) or (root / "Package.swift").is_file():
             return True
@@ -3123,7 +3166,7 @@ def project_state(root: Path) -> dict[str, Any]:
         "name": project_display_name(root),
         "root": str(root),
         "branch": git(root, "branch", "--show-current"),
-        "branches": [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b][:200],
+        **branch_choices(root),
         "elsewhere": branches_elsewhere(root),
         "last_branch": last_branch(root),
         "dirty_files": len([l for l in status.splitlines() if l.strip()]),
@@ -3313,12 +3356,14 @@ def clone_destination(repo_name: str) -> Path:
     return base / repo_name
 
 
-def clone_github_repo(repo: str) -> dict[str, Any]:
+def clone_github_repo(repo: str, progress: TaskProgress | None = None) -> dict[str, Any]:
     """Clone `owner/name` with the GitHub CLI (it uses the account's sign-in, so private repositories work too)."""
     dest = clone_destination(repo.split("/", 1)[1])
     if dest.exists():
         raise UIError(f"There's already a folder at {dest}. Add it from Discovered or Custom Path instead.", HTTPStatus.CONFLICT)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if progress:
+        progress.update("Downloading repository", repo)
     try:
         res = subprocess.run(["gh", "repo", "clone", repo, str(dest), "--", "--quiet"], capture_output=True, text=True, timeout=900)
     except subprocess.TimeoutExpired:
@@ -3327,6 +3372,8 @@ def clone_github_repo(repo: str) -> dict[str, Any]:
     if res.returncode != 0:
         shutil.rmtree(dest, ignore_errors=True)
         raise UIError((res.stderr.strip().splitlines() or ["The repository couldn't be downloaded."])[-1])
+    if progress:
+        progress.update("Download complete", dest.name)
     return {"root": str(dest), "name": dest.name}
 
 
@@ -3811,8 +3858,61 @@ def build_package_update(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("script", "update_package.py", "--ecosystem", ecosystem, "--name", name, "--manifest", manifest)
 
 
+def branch_choices(root: Path) -> dict[str, Any]:
+    """Local branches first; remote-only branches retain their exact remote identity."""
+    branches = [b for b in git(root, "branch", "--format=%(refname:short)").splitlines() if b]
+    installed = set(branches)
+    remotes = sorted(git(root, "remote").splitlines(), key=len, reverse=True)
+    fetch_specs = {r: git(root, "config", "--get-all", f"remote.{r}.fetch").splitlines() for r in remotes}
+    downloads = []
+    for line in git(root, "for-each-ref", "--format=%(refname)%09%(symref)", "refs/remotes/").splitlines():
+        ref, _, symbolic = line.partition("\t")
+        if symbolic or not ref.startswith("refs/remotes/"):
+            continue
+        short_ref = ref.removeprefix("refs/remotes/")
+        remote = next((r for r in remotes if short_ref.startswith(r + "/")), None)
+        if not remote:
+            continue
+        sources = set()
+        for spec in fetch_specs[remote]:
+            source, _, destination = spec.removeprefix("+").partition(":")
+            if not source.startswith("refs/heads/"):
+                continue
+            if "*" in destination and source.count("*") == destination.count("*") == 1:
+                prefix, _, suffix = destination.partition("*")
+                if ref.startswith(prefix) and ref.endswith(suffix) and len(ref) >= len(prefix) + len(suffix):
+                    matched = ref[len(prefix):len(ref) - len(suffix) if suffix else None]
+                    sources.add(source.replace("*", matched))
+            elif destination == ref and "*" not in source:
+                sources.add(source)
+        if len(sources) != 1:
+            continue  # Never guess which source branch an unusual or ambiguous mapping represents.
+        source = sources.pop()
+        if any(spec.startswith("^") and re.fullmatch(re.escape(spec[1:]).replace(r"\*", ".*"), source)
+               for spec in fetch_specs[remote]):
+            continue
+        name = source.removeprefix("refs/heads/")
+        if name and name != "HEAD" and name not in installed:
+            downloads.append({"name": name, "ref": short_ref, "remote": remote})
+    downloads.sort(key=lambda b: (b["name"].casefold(), b["ref"]))
+    return {"branches": branches[:200], "download_branches": downloads[:200]}
+
+
 def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
     branch = _text(params, "branch", required=True, limit=250)
+    if branch.startswith("remote:"):
+        ref = branch.removeprefix("remote:")
+        choice = next((b for b in branch_choices(root)["download_branches"] if b["ref"] == ref), None)
+        if not choice:
+            raise UIError("Choose a remote branch that isn't already installed locally. Refresh the branch list.")
+        name = choice["name"]
+        check = subprocess.run(["git", "check-ref-format", "--branch", name], cwd=root, capture_output=True, text=True)
+        if check.returncode or name.startswith("-"):
+            raise UIError("That isn't a valid branch name")
+        remember_branch(root, name)
+        # Refs are allowlisted above and passed as positional arguments, never inserted into shell code.
+        return ["sh", "-c", 'git fetch -- "$1" "$2:$3" && git checkout --track -b "$4" "$3"', "sh",
+                choice["remote"], f"refs/heads/{name}", f"refs/remotes/{ref}", name]
     if branch not in git(root, "branch", "--format=%(refname:short)").splitlines():
         raise UIError("Not a local branch")
     elsewhere = branches_elsewhere(root).get(branch)
@@ -3826,9 +3926,10 @@ def build_git_checkout(params: dict[str, Any], root: Path) -> list[str]:
 def build_stash_checkout(params: dict[str, Any], root: Path) -> list[str]:
     """Set uncommitted tracked changes aside (git stash), then switch. Branch and message
     are passed as arguments, never spliced into the shell string."""
-    branch = build_git_checkout(params, root)[-1]
+    checkout = build_git_checkout(params, root)
+    branch = checkout[-1]
     message = f"orchestrator: before switching to {branch}"
-    return ["sh", "-c", 'git stash push -m "$1" && git checkout "$2"', "sh", message, branch]
+    return ["sh", "-c", 'git stash push -m "$1" && shift && "$@"', "sh", message, *checkout]
 
 
 def build_git_new_branch(params: dict[str, Any], root: Path) -> list[str]:
@@ -6441,7 +6542,7 @@ class UIHandler(BaseHTTPRequestHandler):
             if clone_destination(repo.split("/", 1)[1]).exists():
                 raise UIError(f"There's already a folder at {clone_destination(repo.split('/', 1)[1])}. Add it from Discovered or Custom Path instead.",
                               HTTPStatus.CONFLICT)
-            self._json({"task": self.server.tasks.start(lambda: clone_github_repo(repo))}, HTTPStatus.ACCEPTED)
+            self._json({"task": self.server.tasks.start(lambda progress: clone_github_repo(repo, progress), progress=True)}, HTTPStatus.ACCEPTED)
         elif method == "POST" and parts == ["projects", "add"]:
             self._require_owner("add a project folder")
             body = self._body()

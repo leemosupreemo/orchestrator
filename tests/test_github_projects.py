@@ -100,6 +100,16 @@ class CloneTests(unittest.TestCase):
         self.assertEqual(calls[0][:4], ["gh", "repo", "clone", "me/daoc-mobile"])
         self.assertEqual(result, {"root": str(self.home / "Projects" / "daoc-mobile"), "name": "daoc-mobile"})
 
+    def test_download_stage_is_reported_until_the_clone_finishes(self):
+        stages = []
+        progress = SimpleNamespace(update=lambda stage, detail='': stages.append((stage, detail)))
+        def run(argv, **kw):
+            self.assertEqual(stages, [('Downloading repository', 'me/new')])
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        with patch.object(ui.subprocess, 'run', run):
+            ui.clone_github_repo('me/new', progress)
+        self.assertEqual(stages[-1], ('Download complete', 'new'))
+
 
 class ScanTests(unittest.TestCase):
     """The folder scan: three folders deep, worktrees found and told apart from the checkout they belong to."""
@@ -163,8 +173,9 @@ class EndpointTests(ServerTestCase):
     def test_the_page_offers_a_github_tab(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         dialog = app[app.index("function addProjectsDialog"):app.index("const dialogs = {")]
-        for bit in ('data-project-tab="github"', 'api("projects/github")', 'api("projects/clone"', "On this computer", "Clone &amp; add"):
+        for bit in ('data-project-tab="github"', 'api("projects/github")', 'projectDownloads.download(repo)', "On this computer", "Clone &amp; add"):
             self.assertIn(bit, dialog)
+        self.assertIn('api("projects/clone"', app)
 
     def test_dropdown_includes_github_repos(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()

@@ -3108,7 +3108,8 @@ class WorktreeBranchTests(unittest.TestCase):
         switch = js[js.index("async function switchBranch"):][:900]
         self.assertLess(switch.index("state.project?.elsewhere?.[branch]"), switch.index("runAction"))  # explained, never run
         self.assertIn('" (in another folder)"', js)
-        self.assertEqual(js.count("branchOption("), 3)  # defined once, used by the top bar and the Git page
+        self.assertEqual(js.count("branchOptions("), 3)  # shared groups in Home and Git
+        self.assertEqual(js.count("branchOption("), 2)  # local option labels stay shared inside the groups
 
 
 class JobStateTests(unittest.TestCase):
@@ -4905,7 +4906,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("dialogs.add_tests()", run_all)
         self.assertNotIn('location.hash = "#/new?type=coverage"', run_all)
 
-    def test_setup_health_is_a_round_icon_button_in_the_top_bar(self):
+    def test_setup_health_is_a_shield_icon_button_in_the_top_bar(self):
         css = (self.STATIC / "style.css").read_text()
         app = (self.STATIC / "app.js").read_text()
         html = (self.STATIC / "index.html").read_text()
@@ -4915,11 +4916,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('<div class="home-topbar-tools">${homeHealthIndicator(setupState)}<a class="btn primary home-new-job-btn"', home)  # top right, beside New job
         self.assertIn("status: homeHealthIndicator(setupState),", home)  # and in the phone header bar
         self.assertIn('id="mobile-header-end"', html)
-        trigger = app[app.index("function homeHealthIndicator"):][:2200]
-        self.assertIn('aria-label="System health: ${esc(status)}"><span class="home-health-light', trigger)
+        trigger = app[app.index("function homeHealthIndicator"):app.index("function positionHomeHealthPopover")]
+        self.assertIn('aria-label="System health: ${esc(status)}">${icon(', trigger)
         self.assertNotIn("<span>${esc(status)}</span>", trigger)  # icon only: the word is in the label and tooltip
         rule = css[css.index(".home-health-trigger {"):][:500]
-        for bit in ("width: var(--control-md)", "height: var(--control-md)", "border-radius: 50%", "box-shadow: var(--shadow)", "cursor: pointer"):
+        for bit in ("width: var(--control-md)", "height: var(--control-md)", "border-radius: var(--r-md)", "box-shadow: var(--shadow)", "cursor: pointer"):
             self.assertIn(bit, rule)
         self.assertIn(".home-health-trigger:hover {", css)  # it lifts, so it reads as something to tap
         self.assertIn(".home-health-inline[open] > .home-health-trigger {", css)
@@ -5303,7 +5304,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("Last used", self.js)
 
     def test_signin_modal_sso_icons_alignment_and_assets(self):
-        # SSO button icons align in a fixed column, use official 24x24 assets, and backgrounds match
+        # SSO button icons align in a fixed column and preserve provider branding.
         css = (self.STATIC / "style.css").read_text()
         self.assertIn(".sso-btn .icon {", css)
         self.assertIn("position: absolute;", css)
@@ -5314,7 +5315,9 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(".sso-btn.github-btn {", css)
         self.assertNotIn(".sso-btn.apple-btn {\n  background: #000;", css)
         index_html = (self.STATIC / "index.html").read_text()
-        self.assertIn('<symbol id="i-google" viewBox="0 0 48 48">', index_html)
+        self.assertIn('src="google-g.png"', self.js)
+        self.assertTrue((self.STATIC / "google-g.png").is_file())
+        self.assertIn("object-fit: contain;", css)
         self.assertIn('<symbol id="i-apple" viewBox="17 14 22 22">', index_html)
         self.assertIn('<symbol id="i-github" viewBox="0 0 24 24">', index_html)
         self.assertIn(".signin-wrap {", css)
@@ -5539,10 +5542,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         home = self.js[self.js.index("function productStripHtml"):][:1500]
         self.assertNotIn("notice", home)
 
-    def test_a_change_to_the_model_list_is_announced_over_the_page_until_dismissed(self):
+    def test_a_change_to_the_model_list_is_announced_with_automatic_dismissal(self):
         fn = self.js[self.js.index("function showModelsUpdate"):self.js.index("async function undoPrdUpdate")]
-        for part in ('id: `models:${note.id}`', "sticky: true", "See models", '"#/config/ai"', 'api("models/dismiss"', "onDismiss: seen", "AI models updated"):
+        for part in ('id: `models:${note.id}`', "See models", '"#/config/ai"', 'api("models/dismiss"', "onDismiss: seen", "AI models updated"):
             self.assertIn(part, fn, part)
+        self.assertNotIn("sticky: true", fn)
         self.assertIn("if (!first) Notifications.show", fn)  # a browser alert only for a change that happens while you are here
         refresh = self.js[self.js.index("async function refreshState("):][:3000]
         self.assertIn("showModelsUpdate(newState.models_notice)", refresh)

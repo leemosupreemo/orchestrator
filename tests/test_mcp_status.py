@@ -97,7 +97,7 @@ class ConnectionsPageTests(unittest.TestCase):
         self.assertIn('self._require_owner("add MCP servers to AI tools")', server)
 
     def test_alerts_and_git_cards_show_a_status(self):
-        self.assertIn("<strong class=\"conn-name\">Slack, email, this device and your Mac</strong>${alertsPill}", self.app)
+        self.assertIn('<strong class="conn-name">${providerIcon("slack")}Slack, email, this device and your Mac</strong>${alertsPill}', self.app)
         self.assertIn("<strong class=\"conn-name\">Repository &amp; branches</strong>${gitPill}", self.app)
 
     def test_connect_jira_opens_the_jira_form(self):
