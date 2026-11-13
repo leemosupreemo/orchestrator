@@ -618,6 +618,8 @@ Open **App delivery**. If a project can't send builds yet, the **Send to my phon
 
 Each value shows where it was found. Check it, fill in anything marked **needed**, and press **Use this setup**. After that the card is a single **Send build** button. Automatic delivery is never turned on for you; if your `AGENTS.md` says uploads must be requested explicitly, the card says so. An Xcode project uses the setup wizard's signing flow instead, and every individual option stays under **Advanced delivery settings**, collapsed.
 
+**The signing key stays on one computer.** An iOS build is signed with your App Store Connect key (a `.p8` file). It lives in `~/.private_keys/` (or `~/.appstoreconnect/private_keys/`) on the computer that builds, and is never committed. The project's settings name it by its ID, so on another computer Orchestrator finds `AuthKey_<id>.p8` in that computer's own folder, with no settings change. If it isn't there, Send build stops before building and says so: copy the file into that folder (AirDrop or `scp`), then try again.
+
 ### Servers
 
 If your project has a Docker compose file (`docker-compose.yml`, or one like `compose.profile.yml`, including a server repository cloned inside your project), the **Server** card at the top of **App delivery** shows each server, whether it is running, the ports it uses, and its services. **Start**, **Stop** and **Restart** ask first, naming the exact command and folder (`docker compose up -d`, `stop`, `restart`), and run it as a normal run with its output. **Start** also starts Docker Desktop on this Mac if it isn't running, then waits until every service is up and healthy and tells you if one is unhealthy. **Logs** shows the end of the server's output.

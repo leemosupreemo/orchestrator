@@ -113,3 +113,30 @@ class DeliveryWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_a_key_that_is_on_another_computer_says_to_copy_it_not_to_run_the_wizard(self) -> None:
+        config = MagicMock()
+        config.validate_distribution_config.return_value = [
+            "The App Store Connect key for this project isn't on this computer. Copy AuthKey_X.p8 into ~/.private_keys/ on this computer."
+        ]
+        config.runtime_dir = Path(".orchestrator")
+        for web in ("1", ""):
+            with self.subTest(web=bool(web)):
+                output = io.StringIO()
+                with (
+                    patch.dict(os.environ, {"ORCHESTRATOR_NONINTERACTIVE": web}),
+                    patch.object(smoke_test_delivery, "PROJECT_CONFIG", config),
+                    patch("smoke_test_delivery.prompt_confirm", side_effect=AssertionError("must not offer the wizard")),
+                    patch.object(smoke_test_delivery.subprocess, "run") as wizard,
+                    contextlib.redirect_stdout(output),
+                    self.assertRaises(SystemExit) as exit_context,
+                ):
+                    smoke_test_delivery.run_smoke_delivery()
+                self.assertEqual(exit_context.exception.code, 1)
+                wizard.assert_not_called()
+                text = output.getvalue()
+                self.assertIn("isn't on this computer", text)
+                self.assertIn("~/.private_keys/", text)
+                self.assertNotIn("orchestrator wizard", text)
+                self.assertNotIn("Option A", text)
+

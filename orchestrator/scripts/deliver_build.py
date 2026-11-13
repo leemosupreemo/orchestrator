@@ -21,7 +21,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
 from common import ROOT, read_json, write_json, format_markdown_for_terminal, ProgressIndicator, print_header, ensure_keychain_unlocked
-from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator.project_config import PROJECT_CONFIG, locate_asc_key
 from orchestrator import delivery_adapters, test_commands
 
 
@@ -317,7 +317,7 @@ Built: {built_at}
             
         asc_key_path = getattr(PROJECT_CONFIG, "asc_key_path", None)
         if PROJECT_CONFIG.asc_key_path and "--asc-key-path" in supported_options:
-            key_path = ROOT / asc_key_path if not Path(asc_key_path).is_absolute() else Path(asc_key_path)
+            key_path = locate_asc_key(asc_key_path, asc_key_id, ROOT) or (ROOT / asc_key_path if not Path(asc_key_path).is_absolute() else Path(asc_key_path))
             cmd.extend(["--asc-key-path", str(key_path)])
         if PROJECT_CONFIG.firebase_plist_path and "--firebase-plist" in supported_options:
             cmd.extend(["--firebase-plist", PROJECT_CONFIG.firebase_plist_path])

@@ -19,7 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from common import CONFIG_DIR, DOCS_DIR, ROOT, read_json, print_header, print_divider, ProgressIndicator, StatusBar
 from model_registry import cli_is_available, preferred_cli
-from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator.project_config import PROJECT_CONFIG, asc_key_is_on_another_computer, asc_key_location_error, locate_asc_key
 
 REMEDIATION_GUIDE = {
     "Homebrew": {
@@ -349,21 +349,14 @@ def _check():
         
         if has_asc:
             key_path_str = PROJECT_CONFIG.asc_key_path
-            p = Path(key_path_str).expanduser()
-            if not p.is_absolute():
-                p = (ROOT / p).resolve()
-            else:
-                p = p.resolve()
+            p = locate_asc_key(key_path_str, PROJECT_CONFIG.asc_key_id, ROOT)
+            problem = asc_key_location_error(key_path_str, PROJECT_CONFIG.asc_key_id, ROOT)
 
-            home = Path.home().resolve()
-            secure_paths = [
-                home / ".private_keys",
-                home / ".appstoreconnect" / "private_keys"
-            ]
-            is_secure_dir = any(p.parent == sp for sp in secure_paths)
-
-            if is_secure_dir:
+            if not problem:
                 print_result(True, "Signing Credentials", "ASC API KEYS (HEADLESS)")
+            elif asc_key_is_on_another_computer(key_path_str):
+                print_result(False, "Signing Credentials", "ASC API KEYS (NOT ON THIS COMPUTER)")
+                print(f"     \033[93m└─ {problem}\033[0m")
             else:
                 print_result(False, "Signing Credentials", "ASC API KEYS (INSECURE LOCATION)")
                 print("     \033[93m└─ WARNING: xcodebuild ignores/rejects API keys unless they are in ~/.private_keys/ or ~/.appstoreconnect/private_keys/\033[0m")

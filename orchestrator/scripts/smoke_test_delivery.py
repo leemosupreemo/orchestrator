@@ -28,6 +28,12 @@ def run_smoke_delivery():
         print(f"\n\033[93mYou must configure signing and accounts in the config file before distributing:\033[0m", flush=True)
         print(f"      \033[1;97m{config_file}\033[0m", flush=True)
         
+        if any("isn't on this computer" in err for err in dist_errors):
+            # The settings are fine; this computer just doesn't have the key. The wizard and the options below wouldn't help.
+            print("\nDistribution stopped before building: the signing key isn't on this computer.", flush=True)
+            print("Copy the key file named above into ~/.private_keys/ on this computer (AirDrop or scp, never git), then retry Distribution. The settings don't need to change.", flush=True)
+            sys.exit(1)
+
         if web_run():
             print("\nDistribution stopped before building. Signing setup cannot run interactively from the web app.", flush=True)
             print("Run 'orchestrator wizard' in a terminal for this project, complete distribution and signing setup, then retry Distribution.", flush=True)

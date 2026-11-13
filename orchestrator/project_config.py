@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -38,6 +39,67 @@ def safe_resolve(path: Path) -> Path:
         return path.resolve()
     except InterruptedError:
         return path.absolute()
+
+
+def secure_key_dirs() -> list[Path]:
+    """The folders xcodebuild reads App Store Connect API keys from, on this computer."""
+    home = safe_resolve(Path.home())
+    return [safe_resolve(home / ".private_keys"), safe_resolve(home / ".appstoreconnect" / "private_keys")]
+
+
+def locate_asc_key(key_path: str | None, key_id: str | None, root: Path) -> Path | None:
+    """Where this computer keeps the project's App Store Connect key.
+
+    A project's settings are shared (they are committed), but a key lives on one computer, and its path includes that
+    computer's user name. So the configured path is used when it works here; otherwise the key is looked for by its ID
+    (AuthKey_<id>.p8) in the two folders xcodebuild reads, on this computer. Nothing is created or moved."""
+    if not key_path:
+        return None
+    configured = Path(key_path).expanduser()
+    configured = safe_resolve(configured if configured.is_absolute() else root / configured)
+    folders = secure_key_dirs()
+    if configured.parent in folders and configured.exists():
+        return configured
+    if key_id and re.fullmatch(r"[A-Za-z0-9]{6,20}", key_id.strip()):
+        for folder in folders:
+            candidate = folder / f"AuthKey_{key_id.strip()}.p8"
+            if candidate.is_file():
+                return safe_resolve(candidate)
+    return configured
+
+
+def asc_key_is_on_another_computer(key_path: str | None) -> bool:
+    """The configured path is inside another user's home folder (/Users/<name>/..., /home/<name>/...) that isn't here."""
+    if not key_path:
+        return False
+    path = Path(key_path).expanduser()
+    if not path.is_absolute() or len(path.parts) < 4 or path.parts[1] not in ("Users", "home"):
+        return False
+    home = safe_resolve(Path.home())
+    try:
+        path.relative_to(home)
+        return False
+    except ValueError:
+        pass
+    return not path.exists()
+
+
+def asc_key_location_error(key_path: str | None, key_id: str | None, root: Path) -> str | None:
+    """Why the key can't be used from where it is, or None when its location is fine."""
+    if not key_path:
+        return None
+    found = locate_asc_key(key_path, key_id, root)
+    if found is not None and found.parent in secure_key_dirs():
+        return None
+    if asc_key_is_on_another_computer(key_path):
+        name = f"AuthKey_{key_id.strip()}.p8" if key_id and key_id.strip() else Path(key_path).name
+        return (f"The App Store Connect key for this project isn't on this computer. The project's settings point to '{key_path}', "
+                f"which is in another computer's folder, and {name} isn't in ~/.private_keys/ or ~/.appstoreconnect/private_keys/ here either. "
+                f"Copy {name} into ~/.private_keys/ on this computer (AirDrop or scp, never git) and distribute again. "
+                "The settings don't need to change.")
+    return (f"App Store Connect API key path '{key_path}' is not in a designated secure Xcode directory. "
+            "xcodebuild ignores/rejects .p8 keys stored elsewhere (e.g. inside the project repository). "
+            "Please store your key in ~/.private_keys/ or ~/.appstoreconnect/private_keys/ and update project.json.")
 
 
 PACKAGE_ROOT = safe_resolve(Path(__file__)).parent
@@ -371,34 +433,11 @@ class ProjectConfig:
                  errors.append("App Store Connect API keys are partially configured. Please provide all three (ID, Issuer, Path).")
 
         if self.asc_key_path:
-            p = Path(self.asc_key_path).expanduser()
-            if not p.is_absolute():
-                p = safe_resolve(self.root / p)
-            else:
-                p = safe_resolve(p)
-
-            home = safe_resolve(Path.home())
-            secure_paths = [
-                home / ".private_keys",
-                home / ".appstoreconnect" / "private_keys"
-            ]
-            
-            is_secure = False
-            for sp in secure_paths:
-                try:
-                    if p.parent == safe_resolve(sp):
-                        is_secure = True
-                        break
-                except Exception:
-                    pass
-            
-            if not is_secure:
-                errors.append(
-                    f"App Store Connect API key path '{self.asc_key_path}' is not in a designated secure Xcode directory. "
-                    "xcodebuild ignores/rejects .p8 keys stored elsewhere (e.g. inside the project repository). "
-                    "Please store your key in ~/.private_keys/ or ~/.appstoreconnect/private_keys/ and update project.json."
-                )
-            elif p.exists():
+            p = locate_asc_key(self.asc_key_path, self.asc_key_id, self.root)
+            problem = asc_key_location_error(self.asc_key_path, self.asc_key_id, self.root)
+            if problem:
+                errors.append(problem)
+            elif p is not None and p.exists():
                 try:
                     mode = p.stat().st_mode
                     if (mode & 0o077) != 0:
