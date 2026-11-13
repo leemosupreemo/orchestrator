@@ -99,13 +99,20 @@ class FindTests(unittest.TestCase):
         services, ports = servers.parse_compose(COMPOSE)
         self.assertNotIn("secret", json.dumps([services, ports]))
 
-    def test_a_note_appears_when_the_project_mentions_a_protected_server(self):
+    def test_the_projects_own_rule_about_a_protected_server_is_quoted(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.assertIsNone(servers.protected_note(root))
-            write(root, "AGENTS.md", "Never run tests against the baseline server on port 10300.")
-            self.assertIn("baseline", servers.protected_note(root))
-
+            self.assertIsNone(servers.protected_rule(root))
+            write(root, "AGENTS.md", "# Rules\n\nBe kind.\n\n- **Servers:** Never run tests against the baseline server on port 10300. Ask first.\n")
+            rule = servers.protected_rule(root)
+            self.assertEqual(rule["file"], "AGENTS.md")
+            self.assertEqual(rule["sentence"], "Servers: Never run tests against the baseline server on port 10300.")
+            write(root, "AGENTS.md", "Only the release gate may publish the production server image. A missing or ambiguous server environment is production.")
+            self.assertEqual(servers.protected_rule(root)["sentence"], "A missing or ambiguous server environment is production.")  # about running it, not publishing it
+            write(root, "AGENTS.md", "x " * 200 + "the production server must not be restarted.")
+            self.assertLessEqual(len(servers.protected_rule(root)["sentence"]), 241)
+            write(root, "AGENTS.md", "Nothing about servers here.")
+            self.assertIsNone(servers.protected_rule(root))
 
 class StatusTests(unittest.TestCase):
     def test_parse_reads_an_array_or_one_object_per_line(self):

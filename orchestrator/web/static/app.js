@@ -5846,33 +5846,46 @@ const SERVER_STATE = {
   unhealthy: ["Unhealthy", "bad"], "docker-off": ["Docker is off", "warn"], unreachable: ["Can't reach it", "bad"],
 };
 
-function serverCardHtml(view) {
+let serverPick = ""; // which server the card is showing, when a project has more than one
+
+function serverLabel(sv) {
+  const name = sv.dir === "." ? "This project" : sv.dir.split("/").pop();
+  return sv.file ? `${name} (${sv.file.replace(/\.ya?ml$/, "")})` : name;
+}
+
+function serverCardHtml(view, canSend, open = false) {
   if (!view?.servers?.length) return "";
   const owner = state.you?.role !== "member";
+  const sv = view.servers.find((x) => x.id === serverPick) || view.servers[0];
   const machines = view.machines || [];
-  const where = machines.find((m) => m.name === view.machine)?.label || "This computer";
-  const rows = view.servers.map((sv) => {
-    const st = sv.status || { state: "unreachable", containers: [] };
-    const [label, tone] = SERVER_STATE[st.state] || [st.state, ""];
-    const up = ["running", "starting", "partial", "unhealthy"].includes(st.state);
-    const services = (st.containers?.length ? st.containers : sv.services.map((name) => ({ service: name, state: "not created", health: "" })))
-      .map((c) => `<span class="pill ${c.state === "running" ? (c.health === "unhealthy" ? "bad" : "ok") : ""}" title="${esc(c.state + (c.health ? " / " + c.health : ""))}">${esc(c.service)}</span>`).join(" ");
-    return `<div class="item server-row" data-server="${esc(sv.id)}"><div class="main-col">
-        <div class="title">${esc(sv.name)} <span class="pill ${tone}">${esc(label)}</span></div>
-        <div class="meta">${sv.ports.length ? sv.ports.map((p) => `<code>localhost:${p}</code>`).join(" ") : "no published ports"} · ${services}</div>
-        ${st.message ? `<div class="meta muted">${esc(st.message)}</div>` : ""}
-        ${owner ? `<label class="server-app"><input type="checkbox" data-server-app${(view.app || []).some((a) => a.id === sv.id && a.machine === view.machine) ? " checked" : ""}> <span class="muted t-secondary">Start it before I send a build to my phone</span></label>` : ""}</div>
-      <div class="side row gap-8">${owner ? `${up ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>`
-        : `<button type="button" class="btn small primary" data-server-action="start">Start</button>`}` : ""}
-        <button type="button" class="btn small ghost" data-server-logs>Logs</button></div></div>`;
-  }).join("");
-  return `<div class="card-h"><h2>Server</h2><div class="row gap-8 align-center">
-      ${machines.length > 1 ? `<select id="server-machine" class="inline-select" aria-label="Computer">${machines.map((m) => `<option value="${esc(m.name)}"${m.name === view.machine ? " selected" : ""}>${esc(m.label)}</option>`).join("")}</select>` : `<span class="muted t-secondary">${esc(where)}</span>`}
-      <button type="button" class="btn small ghost" id="server-refresh">Refresh</button></div></div>
-    <div class="card-b stack gap-12">
-      ${view.note ? `<p class="notice m-0">${esc(view.note)}</p>` : ""}
-      <div class="list">${rows}</div>
-      <p class="muted t-secondary m-0">Start and Stop only start and stop the containers. Nothing is deleted, and the data stays.</p></div>`;
+  const dockerOff = view.docker === false;
+  const st = sv.status || { state: "unreachable", containers: [] };
+  const [label, tone] = dockerOff ? ["Not running", ""] : (SERVER_STATE[st.state] || [st.state, ""]);
+  const up = !dockerOff && ["running", "starting", "partial", "unhealthy"].includes(st.state);
+  const hasContainers = !dockerOff && (st.containers || []).length > 0;
+  const services = (hasContainers ? st.containers : sv.services.map((name) => ({ service: name, state: "not created", health: "" })))
+    .map((c) => `<span class="pill ${c.state === "running" ? (c.health === "unhealthy" ? "bad" : "ok") : ""}">${esc(c.service)}</span>`).join(" ");
+  const onSend = (view.app || []).some((a) => a.id === sv.id && a.machine === view.machine);
+  const hint = dockerOff ? (view.machine === "local" ? "Docker is off. Start opens it first." : "Docker is off on that computer.") : (st.message || "");
+  return `<div class="card-h"><h2>Server</h2><button type="button" class="btn small ghost" id="server-refresh">Refresh</button></div>
+    <div class="card-b stack gap-8" data-server="${esc(sv.id)}">
+      <div class="row gap-12 align-center server-main">
+        ${view.servers.length > 1 ? `<select id="server-pick" class="inline-select" aria-label="Server">${view.servers.map((x) => `<option value="${esc(x.id)}"${x.id === sv.id ? " selected" : ""}>${esc(serverLabel(x))}</option>`).join("")}</select>` : `<strong>${esc(serverLabel(sv))}</strong>`}
+        <span class="pill ${tone}">${esc(label)}</span>
+        <span class="grow"></span>
+        ${owner ? (up ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>` : `<button type="button" class="btn small primary" data-server-action="start">Start</button>`) : ""}
+      </div>
+      ${hint ? `<p class="muted t-secondary m-0">${esc(hint)}</p>` : ""}
+      <details class="server-details"${open ? " open" : ""}><summary class="muted t-secondary">Details</summary>
+        <div class="stack gap-8 server-more">
+          <div>${sv.ports.length ? sv.ports.map((p) => `<code>localhost:${p}</code>`).join(" ") : `<span class="muted">No ports published.</span>`} ${services}</div>
+          <div class="muted t-secondary">${sv.file ? `Set up in ${esc(sv.dir === "." ? "" : sv.dir + "/")}${esc(sv.file)}. ` : `Set up in ${esc(sv.dir)}. `}Start and Stop only start and stop the containers; nothing is deleted.</div>
+          ${view.rule ? `<div class="muted t-secondary">Your project says (${esc(view.rule.file)}): “${esc(view.rule.sentence)}” Check which server that applies to before starting or stopping one.</div>` : ""}
+          ${machines.length > 1 ? `<label class="row gap-8 align-center muted t-secondary">Computer <select id="server-machine" class="inline-select" aria-label="Computer">${machines.map((m) => `<option value="${esc(m.name)}"${m.name === view.machine ? " selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>` : ""}
+          ${owner && canSend ? `<label class="server-app"><input type="checkbox" data-server-app${onSend ? " checked" : ""}> <span class="muted t-secondary">Also start it when I send a build</span></label>` : ""}
+          ${hasContainers ? `<div><button type="button" class="btn small ghost" data-server-logs>View logs</button></div>` : ""}
+        </div></details>
+    </div>`;
 }
 
 async function confirmServerAction(action, server, whereLabel, view) {
@@ -5881,16 +5894,20 @@ async function confirmServerAction(action, server, whereLabel, view) {
   const ports = server.ports.length ? `<p>It uses ${server.ports.map((p) => `<code>${p}</code>`).join(", ")} on that computer.</p>` : "";
   return formDialog(`${verb} ${server.name}?`, `<p>${verb} <strong>${esc(server.name)}</strong> on <strong>${esc(whereLabel)}</strong>.</p>
     <p class="muted">It runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code>${action === "stop" ? "" : ", starting Docker first if it isn't running, and waits until every service is up and healthy"}. Nothing is deleted.</p>
-    ${ports}${view.note ? `<p class="notice">${esc(view.note)}</p>` : ""}`, verb, { compact: true, danger: action === "stop" });
+    ${ports}${view.rule ? `<p class="notice">Your project says (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</p>` : ""}`, verb, { compact: true, danger: action === "stop" });
 }
 
-async function loadServerCard(box) {
+async function loadServerCard(box, canSend = false) {
   if (!box) return;
+  let detailsOpen = false; // survives Refresh and switching server, which both redraw the card
   const draw = (view) => {
-    box.innerHTML = serverCardHtml(view);
+    detailsOpen = Boolean(box.querySelector(".server-details")?.open) || detailsOpen;
+    box.innerHTML = serverCardHtml(view, canSend, detailsOpen);
+    box.querySelector(".server-details")?.addEventListener("toggle", (e) => { detailsOpen = e.target.open; });
     box.hidden = !view?.servers?.length;
     box.querySelector("#server-refresh")?.addEventListener("click", () => load(view.machine));
     box.querySelector("#server-machine")?.addEventListener("change", (e) => load(e.target.value));
+    box.querySelector("#server-pick")?.addEventListener("change", (e) => { serverPick = e.target.value; draw(view); });
     box.querySelectorAll("[data-server-action]").forEach((btn) => btn.addEventListener("click", async () => {
       const server = view.servers.find((x) => x.id === btn.closest("[data-server]").dataset.server);
       const where = view.machines.find((m) => m.name === view.machine)?.label || "This computer";
@@ -6276,7 +6293,7 @@ pages.delivery = async (args, query) => {
           } catch (err) { toast(err.message, true); }
         });
       }
-      loadServerCard(view.querySelector("#server-card")); // after the page is up: it asks Docker, which can take a moment
+      loadServerCard(view.querySelector("#server-card"), Boolean(testers.configured) && !web); // after the page is up: it asks Docker, which can take a moment
       view.querySelector("#delivery-proposal-form")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = Object.fromEntries(new FormData(e.target).entries());

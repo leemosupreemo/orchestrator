@@ -3929,7 +3929,7 @@ def servers_view(root: Path, machine: str | None) -> dict[str, Any]:
     selection = servers.parse_selection(read_json_file(runtime_dir(root) / "project.json").get("servers_for_app"), found,
                                         [m["name"] for m in server_machines(root)])[0]
     return {"servers": rows, "machines": server_machines(root), "machine": machine or "local", "docker": docker,
-            "note": servers.protected_note(root), "app": selection}
+            "rule": servers.protected_rule(root), "app": selection}
 
 
 def save_servers_for_app(root: Path, body: dict[str, Any]) -> dict[str, Any]:

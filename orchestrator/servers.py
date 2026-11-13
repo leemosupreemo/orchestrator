@@ -187,15 +187,25 @@ def ensure_running(selection: list[dict[str, str]], found: list[dict[str, Any]],
     return True
 
 
-def protected_note(root: Path) -> str | None:
-    """A warning when the project's own rules talk about a live, baseline or production server."""
+def protected_rule(root: Path) -> dict[str, str] | None:
+    """The project's own rule about a live, baseline or production server, quoted: {file, sentence}. The card shows the
+    sentence itself, so the person reads what the project says instead of a summary of it."""
     for name in ("AGENTS.md", "CLAUDE.md"):
         try:
             text = (root / name).read_text(encoding="utf-8", errors="ignore")[:150_000]
         except OSError:
             continue
-        if PROTECTED_WORDS.search(text):
-            return f"{name} mentions a live, baseline or production server. Check which one this is before you start, stop or restart it."
+        best: tuple[int, str] | None = None
+        for sentence in re.split(r"(?<=[.;])\s+|\n+", text):
+            if len(sentence) > 25 and PROTECTED_WORDS.search(sentence):
+                # the sentences that say what may be done to the server (its environment, starting, updating) beat ones about publishing
+                score = 2 * bool(re.search(r"(?i)environment|port \d+", sentence)) + bool(re.search(r"(?i)\b(start|stop|restart|run|test|update|deploy)", sentence))
+                if best is None or score > best[0]:
+                    best = (score, sentence)
+        if best:
+            cleaned = re.sub(r"[*`_>#]+", "", best[1]).strip(" -\t").rstrip(";:,")
+            cleaned = cleaned if len(cleaned) <= 240 else cleaned[:237].rstrip() + "..."
+            return {"file": name, "sentence": cleaned if cleaned.endswith((".", "!", "?")) else cleaned + "."}
     return None
 
 
