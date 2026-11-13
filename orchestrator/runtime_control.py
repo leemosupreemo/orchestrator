@@ -51,10 +51,13 @@ class ActivityGate:
         self._lock = threading.Lock()
         self._active = 0
         self._reason = ""
+        self._exclusive = ""
 
     def hold(self) -> Callable[[], None]:
         """Admit work and return an idempotent release callback for async owners."""
         with self._lock:
+            if self._exclusive:
+                raise BusyError(f"{self._exclusive} is in progress. Try again shortly.")
             if self._reason:
                 raise BusyError("Orchestrator is preparing to stop or update. Try again shortly.")
             self._active += 1
@@ -66,6 +69,26 @@ class ActivityGate:
                 if not released:
                     released = True
                     self._active -= 1
+        return release
+
+    def hold_exclusive(self, reason: str) -> Callable[[], None]:
+        """Admit one maintenance task only while idle and block other work until it exits."""
+        if not reason:
+            raise ValueError("An exclusive operation needs a reason")
+        with self._lock:
+            if self._active or self._reason or self._exclusive:
+                raise BusyError("Wait for active work to finish before uninstalling an AI tool.")
+            self._active = 1
+            self._exclusive = reason
+        released = False
+
+        def release():
+            nonlocal released
+            with self._lock:
+                if not released:
+                    released = True
+                    self._active = 0
+                    self._exclusive = ""
         return release
 
     @contextmanager
@@ -91,4 +114,4 @@ class ActivityGate:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {"active": self._active, "preparing": self._reason}
+            return {"active": self._active, "preparing": self._reason or self._exclusive}

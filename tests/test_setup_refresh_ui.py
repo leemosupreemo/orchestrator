@@ -6,6 +6,27 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SetupRefreshUiTests(unittest.TestCase):
+    def test_configure_refreshes_the_project_without_a_missing_function_error(self):
+        script = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const source=fs.readFileSync(process.argv[1],'utf8');
+const start=source.indexOf('document.addEventListener("click", async (e) => {',source.indexOf('function renderSetupPanel'));
+const end=source.indexOf('const HOME_JOBS_SHOWN',start);
+let click,refreshed=0,setup=0,routed=0;const errors=[],go={dataset:{setupGo:'project'}};
+const context={document:{addEventListener:(type,fn)=>{click=fn;}},
+ setupState:{items:[{id:'project',action:{type:'configure_project'}}]},
+ $:()=>({hidden:true}),api:async()=>({ok:true}),toast:(message,error)=>{if(error)errors.push(message);},
+ refreshState:async()=>{refreshed++;},loadSetup:async()=>{setup++;},route:()=>{routed++;}};
+vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+(async()=>{
+ await click({target:{closest:s=>s==='[data-setup-go]'?go:null}});
+ assert.deepEqual(errors,[]);assert.equal(refreshed,1);assert.equal(setup,1);assert.equal(routed,1);assert.equal(go.disabled,false);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+        result = subprocess.run(["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_orphaned_download_markup_does_not_stop_home_refresh(self):
         self.run_refresh_scenario('orphaned')
 
@@ -27,7 +48,7 @@ const context = vm.createContext({
   window: { addEventListener: () => {} },
   $: () => ({ open: false }),
   view: { contains: () => false, querySelector: selector => process.argv[2] === 'orphaned' && selector === '[data-project-download]' ? {} : null },
-  projectDownloads: { pending: () => null },
+  projectDownloads: { pending: () => null }, projectSwitch: null, routeToken: 0,
   current: { page: 'home', args: [], query: {}, rendered: '' },
   LIVE: new Set(['home']), state: { runs: [], project: { root: '/project' } },
   refreshState: async () => {}, renderSetupFab: () => {}, route: () => {},

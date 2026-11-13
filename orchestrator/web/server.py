@@ -164,10 +164,10 @@ class BackgroundTasks:
         self._lock = threading.Lock()
         self.condition = threading.Condition(self._lock)
 
-    def start(self, work: Callable[..., Any], commit: Callable[[Any], Any] | None = None, *, progress: bool = False) -> str:
+    def start(self, work: Callable[..., Any], commit: Callable[[Any], Any] | None = None, *, progress: bool = False, exclusive: str = "") -> str:
         """Run `work` in the background. `commit` (if given) saves its result, and is skipped when the person cancelled meanwhile;
         what it returns is what the page gets. With `progress`, `work` is passed a TaskProgress so the page can say what's happening."""
-        release = self.gate.hold()
+        release = self.gate.hold_exclusive(exclusive) if exclusive else self.gate.hold()
         task_id = secrets.token_hex(6)
         item: dict[str, Any] = {"status": "running", "at": time.time()}
         if progress:
@@ -6583,8 +6583,13 @@ class UIHandler(BaseHTTPRequestHandler):
                 # model runs. Requests with no body are covered too.
                 if self.headers.get("X-Orchestrator-UI") != "1":
                     raise UIError("Missing UI headers", HTTPStatus.FORBIDDEN)
-                with self.server.gate.admit():
+                if method == "POST" and url.path == "/api/ai-providers/uninstall":
+                    # This endpoint atomically admits an exclusive background task.
+                    # An ordinary request hold would itself make the computer look busy.
                     self._api(method, url.path, query)
+                else:
+                    with self.server.gate.admit():
+                        self._api(method, url.path, query)
             else:
                 self._api(method, url.path, query)
         except BusyError as exc:
@@ -7787,6 +7792,19 @@ class UIHandler(BaseHTTPRequestHandler):
             provider_id = _choice(body, "provider", [p["id"] for p in ai_providers.PROVIDERS])
             self._json({"task": self.server.tasks.start(lambda: ai_providers.install_provider(provider_id))}, HTTPStatus.ACCEPTED)
             self._audit("ai_provider_install_started", provider=provider_id)
+        elif method == "POST" and parts == ["ai-providers", "uninstall"]:
+            self._require_owner("uninstall an AI provider")
+            body = self._body()
+            from orchestrator import ai_providers, ai_tool_removal
+            provider_id = _choice(body, "provider", [p["id"] for p in ai_providers.PROVIDERS])
+            if body.get("confirmed") is not True:
+                raise UIError("Confirm that you want to uninstall this AI tool.")
+            try:
+                task = self.server.tasks.start(lambda: ai_tool_removal.uninstall_provider(provider_id), exclusive="AI tool removal")
+            except BusyError as exc:
+                raise UIError(str(exc), HTTPStatus.CONFLICT) from exc
+            self._json({"task": task}, HTTPStatus.ACCEPTED)
+            self._audit("ai_provider_uninstall_started", provider=provider_id)
         elif method == "POST" and parts == ["ai-providers", "yolo"]:
             self._require_owner("change how AI tools approve changes")
             body = self._body()

@@ -133,7 +133,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
 const source=fs.readFileSync(process.argv[1],'utf8');let rejectOld,active=null,failed=0,rendered='',calls=0;
 const old=new Promise((resolve,reject)=>{rejectOld=reject;});
 const node={open:false,dataset:{},classList:{add(){},remove(){}},focus(){},setAttribute(){},removeAttribute(){}};
-const context={URLSearchParams,signingIn:false,RouteAliases:{redirect:()=>null},history:{replaceState(){}},location:{hash:'#/'},
+const context={URLSearchParams,signingIn:false,projectSwitch:null,RouteAliases:{redirect:()=>null},history:{replaceState(){}},location:{hash:'#/'},
  navigationDrawer:{close(){}},cleanup:[],$:()=>node,document:{body:{dataset:{},classList:{add(){},remove(){}}},querySelectorAll:()=>[]},
  view:node,state:{project:{root:'/old'}},parseHash:()=>({parts:[]}),trackNavigation(){},renderSetupFab(){},routeToken:0,
  resolveRoute:()=>({page:'home',args:[],query:new URLSearchParams(),nav:'home'}),routeParent:()=>null,

@@ -132,6 +132,21 @@ class ResearchCallTests(unittest.TestCase):
 
 
 class ActivityGateTests(unittest.TestCase):
+    def test_exclusive_removal_requires_idle_and_blocks_new_work_until_released(self):
+        gate = ActivityGate()
+        normal = gate.hold()
+        with self.assertRaises(BusyError):
+            gate.hold_exclusive("AI tool removal")
+        normal()
+        release = gate.hold_exclusive("AI tool removal")
+        with self.assertRaises(BusyError):
+            gate.hold()
+        with self.assertRaises(BusyError):
+            gate.hold_exclusive("Another removal")
+        release(); release()
+        self.assertEqual(gate.snapshot(), {"active": 0, "preparing": ""})
+        gate.hold()()
+
     def test_prepare_refuses_active_work(self):
         gate = ActivityGate()
         with gate.admit():

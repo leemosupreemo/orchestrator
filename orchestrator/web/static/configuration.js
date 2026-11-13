@@ -370,8 +370,9 @@
       : owner ? `<label class="yolo-switch" title="On: changes files without asking, so jobs run unattended. Off: asks first, and a job can stop to wait."><input type="checkbox" role="switch" data-yolo-cli="${escapeHtml(p.cli)}"${p.auto_approve ? " checked" : ""}><span>YOLO</span></label>`
       : `<span class="pill ${p.auto_approve ? "done" : "muted"}">${p.auto_approve ? "YOLO on" : "YOLO off"}</span>`;
     const toolRow = (p) => `<details class="ai-tool" data-provider="${escapeHtml(p.id)}"${newCount(p) ? " open" : ""}>
-        <summary><span class="ai-tool-title"><span class="ai-tool-name">${escapeHtml(p.name)}</span>${modelCount(p)}</span>${status(p)}${yolo(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span></summary>
+        <summary><span class="ai-tool-title"><span class="ai-tool-name">${escapeHtml(p.name)}</span>${p.deprecated ? `<span class="pill attention" title="${escapeHtml(p.deprecation || '')}">Legacy · use Antigravity</span>` : ""}${modelCount(p)}</span>${status(p)}${yolo(p)}<span class="ai-tool-cost">${escapeHtml(p.cost_label)}</span></summary>
         <div class="ai-tool-details stack">
+          ${p.deprecated ? `<div class="notice warn"><strong>Google sign-in deprecated</strong><p>${escapeHtml(p.deprecation)}</p>${owner && p.replacement ? `<button type="button" class="btn small primary" data-ai-connect="${escapeHtml(p.replacement)}" data-ai-name="Antigravity CLI (Google)">Set up Antigravity CLI</button>` : ""}${p.migration_link ? `<a href="${escapeHtml(p.migration_link)}" target="_blank" rel="noopener">Google’s migration announcement ↗</a>` : ""}</div>` : ""}
           <p>${escapeHtml(p.what)}</p>
           ${p.ready ? `<p class="ai-ready-note">Ready to use on this computer.</p>`
             : p.id === "opencode" && owner ? `<p class="muted">Installs it, checks its free models work and turns them on. No account or terminal needed.</p><div><button type="button" class="btn small primary" data-free-ai>Set up free AI</button></div>`
@@ -379,7 +380,7 @@
             : !p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><div><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button></div>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>`
             : `<p class="muted">${escapeHtml(p.sign_in)}</p>`}
           ${keyOf(p) ? apiKeyRow(keyOf(p), state) : ""}
-          <p><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a></p>
+          <div class="row between align-center"><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${owner && p.installed ? `<button type="button" class="btn small danger" data-ai-uninstall="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Uninstall</button>` : ""}</div>
           ${modelTreeHtml(p.id, false, ai.models?.[p.id], newIds)}
         </div>
       </details>`;

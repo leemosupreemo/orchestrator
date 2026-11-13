@@ -32,6 +32,7 @@ if (typeof window !== "undefined" && window.firebase && !window.firebase.apps?.l
 // True from the moment someone starts signing in until they are in (or told why not). While it is set, background
 // refreshes leave the page alone, so the sign-in screen is replaced by a loading screen instead of being redrawn.
 let signingIn = false;
+let projectSwitch = null;
 let blockedProvider = null; // set when the browser blocks the sign-in window, so full-page sign-in can be offered (it fails in some browsers)
 let authResolved = false;
 let authUser = null;
@@ -88,7 +89,6 @@ let cleanup = [];
 let current = { page: null, args: [], query: null, rendered: "" };
 // Set from the moment you pick another project until its first page is ready. While it is set, nothing may paint the
 // previous project's page (route, live refresh); the page shows a skeleton and the new project's name instead.
-let projectSwitching = null;
 let previewRecovery = null;
 
 const DEFAULT_REMOTE_BACKEND = "";
@@ -1153,27 +1153,8 @@ document.addEventListener("click", (e) => {
   const switchBtn = e.target.closest("[data-switch-project]");
   if (switchBtn) {
     const root = switchBtn.dataset.switchProject;
-    // Respond instantly: move the highlight now; the page rebuilds once the switch lands.
-    const card = switchBtn.closest(".project-card");
-    if (card) {
-      document.querySelectorAll(".project-card.active-project").forEach((c) => c.classList.remove("active-project"));
-      card.classList.add("active-project");
-      card.setAttribute("aria-busy", "true");
-    }
     const then = switchBtn.dataset.then || "#/";
-    api("project", { method: "POST", body: { root } })
-      .then(async (res) => {
-        if (res?.project) state.project = res.project;
-        setupFetched = 0;
-        await refreshState();
-        toast(`Switched to ${state.project?.name || "project"}`);
-        if (location.hash !== then) {
-          location.hash = then;
-        } else {
-          await route();
-        }
-      })
-      .catch((err) => { toast(err.message, true); route(); }); // put the highlight back
+    void switchProject(root, then);
     return;
   }
   const el = e.target.closest("[data-action]");
@@ -1223,8 +1204,9 @@ function checkRunnerVersion(runner) {
   notify("warning", `This computer runs an older Orchestrator${runner?.version ? ` (${runner.version})` : ""}, so some things may not work. ${Account.UPDATE_HINT.replace(/`/g, "")}`, { id: "runner-old", sticky: true });
 }
 
-async function refreshState({ opening = false, isCurrent = () => true } = {}) {
+async function refreshState({ opening = false, isCurrent = () => true, switching = false } = {}) {
   if (signingIn && !opening) return;
+  if (projectSwitch && !switching) return;
   const backend = getBackendUrl();
   const token = getToken();
   if (backend === null && !token) {
@@ -1255,7 +1237,7 @@ async function refreshState({ opening = false, isCurrent = () => true } = {}) {
   }
   try {
     const newState = await api("state", opening ? { signal: AbortSignal.timeout(8000) } : undefined);
-    if (!isCurrent()) return;
+    if (!isCurrent() || (projectSwitch && !switching)) return;
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
     lastRuns = newState.runs;
     lastInbox = newState.inbox || [];
@@ -1459,7 +1441,7 @@ const projectDownloads = ProjectPicker.createDownloads({
     if (isCurrent() && state.project?.root !== op.project.root) throw new Error("The selected project hasn't opened yet. Try again.");
   },
   change: async (op, started) => {
-    if (started) { navigationDrawer?.close(); location.hash = "#/"; }
+    if (started) { projectSwitch = null; navigationDrawer?.close(); location.hash = "#/"; }
     if (started || op.phase !== "downloading") {
       renderProjectSelect($("#project-select"));
       renderProjectSelect($(".mobile-project-select"));
@@ -1557,22 +1539,6 @@ function setMobileProjectTitle(name, kind) {
 }
 
 // The new project's view, straight away: its name in the headers and the page's shape while its data loads.
-function showProjectSwitching(name) {
-  routeToken++; // a page still loading for the old project must not paint over this
-  navigationDrawer?.close();
-  document.body.dataset.page = "home";
-  document.body.classList.remove("signin-gate");
-  document.body.classList.add("route-loading");
-  view.setAttribute("aria-busy", "true");
-  if (name) setMobileProjectTitle(name, "");
-  const heading = $("#page-title");
-  if (heading) { heading.textContent = name || "Switching project…"; heading.classList.add("skeleton-title"); }
-  const sub = $("#page-sub");
-  if (sub) sub.hidden = true;
-  const actions = $("#topbar-actions");
-  if (actions) actions.innerHTML = "";
-  view.innerHTML = loadingSkeleton("home");
-}
 
 document.addEventListener("change", async (e) => {
   if (!e.target.matches("#project-select, .home-project-select, .mobile-project-select")) return;
@@ -1589,43 +1555,52 @@ document.addEventListener("change", async (e) => {
     await projectDownloads.download(repo);
     return;
   }
-  const picked = e.target.selectedOptions?.[0]?.textContent?.split(" · ")[0]?.trim() || "";
-  const mine = { name: picked };
-  projectSwitching = mine; // before anything is awaited: the new project's view shows now, not after the server answers
-  location.hash = location.hash.startsWith("#/product") ? "#/product" : "#/"; // hashchange paints the skeleton...
-  showProjectSwitching(picked); // ...and so does this, for when the address didn't change
-  let routed = false;
+  await switchProject(val, location.hash.startsWith("#/product") ? "#/product" : "#/");
+  if (!projectSwitch && state.project) e.target.value = state.project.root; // a switch that failed puts the picker back
+});
+
+async function switchProject(root, then = "#/") {
+  const choice = {root, backend:getBackendUrl()};
+  projectSwitch = choice;
+  const isCurrent = () => projectSwitch === choice && choice.backend === getBackendUrl();
+  const name = state.project?.recent?.find(p => p.root === root)?.name || root.split("/").pop() || "project";
+  navigationDrawer?.close();
+  cleanup.splice(0).forEach(fn => { try { fn(); } catch {} });
+  ++routeToken; // An old page request must not overwrite the new project's skeleton.
+  setHeader({title:`Opening ${name}…`, sub:"", actions:"", status:""});
+  if (typeof setMobileProjectTitle === "function") setMobileProjectTitle(name, ""); // the phone header names the new project at once
+  $("#page-title")?.classList.add("skeleton-title");
+  document.body.classList.add("route-loading");
+  view.setAttribute("aria-busy", "true");
+  view.innerHTML = loadingSkeleton(then.startsWith("#/product") ? "product" : "home");
   try {
-    const chosen = await projectDownloads.select(val);
-    if (!chosen || !chosen.isCurrent()) return;
+    const chosen = await projectDownloads.select(root);
+    if (!chosen || !chosen.isCurrent() || !isCurrent()) return;
     const res = chosen.response;
     if (res?.project) state.project = res.project;
     setupFetched = 0;
-    await refreshState({isCurrent:chosen.isCurrent});
-    if (!chosen.isCurrent()) return;
+    await refreshState({switching:true, isCurrent:() => isCurrent() && chosen.isCurrent()});
+    if (!isCurrent() || !chosen.isCurrent()) return;
+    projectSwitch = null;
     toast(`Switched to ${state.project?.name || "project"}`);
-    if (projectSwitching === mine) projectSwitching = null;
-    routed = true;
+    location.hash = then;
     await route();
   } catch (err) {
-    if (projectSwitching === mine) projectSwitching = null;
-    routed = true;
-    if (state.project) e.target.value = state.project.root;
-    toast(err.message, true);
-    await route();
+    if (isCurrent()) toast(err.message, true);
   } finally {
-    if (projectSwitching === mine) projectSwitching = null; // a newer pick keeps its own
-    if (!routed && !projectSwitching) await route(); // stopped early: don't leave the skeleton up
-    if (!projectSwitching) {
-      $("#page-title")?.classList.remove("skeleton-title");
-      document.body.classList.remove("route-loading");
-      view.removeAttribute("aria-busy");
+    if (projectSwitch === choice) {
+      projectSwitch = null;
+      await route(); // Restore the selected project if opening failed or was cancelled.
     }
   }
-});
+}
 
 // Shown from the click on a provider (or the token form) until the first page is ready.
 function showSigningIn(label = "Signing you in…") {
+  projectSwitch = null;
+  ++routeToken;
+  document.body.classList.remove("route-loading");
+  view.removeAttribute("aria-busy");
   setHeader({ title: "", sub: "", actions: "" });
   document.title = Notifications.tabTitle("Signing in · Orchestrator", state.inbox_count || 0);
   document.body.classList.add("signin-gate");
@@ -1634,10 +1609,9 @@ function showSigningIn(label = "Signing you in…") {
   if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
-      <div class="spinner" aria-hidden="true"></div>
       <h2>${esc(label)}</h2>
-      <p class="muted">Connecting to your computer and loading your projects.</p></div></div>
-    ${loadingSkeleton("home")}`;
+      <p class="muted">Connecting to your computer and loading your projects.</p>
+      ${loadingSkeleton("home")}</div></div>`;
 }
 
 // ---------------------------------------------------------------- account (hosted app)
@@ -2559,8 +2533,8 @@ function showSignInGate(message, kind = "error") {
         sessionStorage.setItem("orchestrator_pending_signin", "true");
         sessionStorage.setItem("orchestrator_pending_signin_at", Date.now().toString());
       } catch {}
-      const originalHtml = btn.innerHTML;
       btn.innerHTML = `<span>Signing in with ${name}...</span>`;
+      showSigningIn(`Signing in with ${name}…`);
       try {
         if (useSameTabSignIn()) {
           showSigningIn(`Opening ${name}…`);
@@ -2581,7 +2555,7 @@ function showSignInGate(message, kind = "error") {
         await afterProviderSignIn(cred.user, name);
       } catch (err) {
         endSigningIn();
-        if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { btn.disabled = false; btn.innerHTML = originalHtml; return; }
+        if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") { showSignInGate(); return; }
         const msg = explain[err.code] || (err.code === "auth/operation-not-allowed"
           ? `${name} sign-in isn't turned on yet. Use another way to sign in, or enable ${name} in the Firebase console under Authentication → Sign-in method.`
           : err.code === "auth/unauthorized-domain"
@@ -3150,12 +3124,10 @@ function askAiTierButton(id, t, chosen) {
     <span class="ask-ai-tier-model">${t.available ? `<span class="ask-ai-dot${t.checked ? " is-ok" : ""}" aria-hidden="true"></span>${esc(t.model)}` : (t.skipped?.length ? "Not answering" : "Not set up")}</span></label>`;
 }
 
-// Whether the models really answer: when they were last checked, and a way to check again.
+// Only show model checks while they're running; completed checks stay out of the chat UI.
 function askAiCheckLine(data, checking) {
   if (checking) return `${runningMark}Checking which models answer…`;
-  const times = Object.values(data.tiers).filter((t) => t.checked && t.checked_at).map((t) => t.checked_at);
-  const when = times.length ? ago(Math.min(...times)) : "";
-  return `${when ? `Models checked ${esc(when)}` : "Models not checked yet"} · <button type="button" class="linklike" data-ask-ai-check>Check again</button>`;
+  return "";
 }
 
 function askAiMessage(m) {
@@ -3228,6 +3200,7 @@ async function openAskAi() {
     const chosen = data.tiers[current]?.available ? current : data.tiers[data.default]?.available ? data.default : ["balanced", "free", "complex"].find((t) => data.tiers[t].available);
     tiersBox.innerHTML = `<legend class="sr-only">Kind of AI</legend>${["free", "balanced", "complex"].map((id) => askAiTierButton(id, data.tiers[id], chosen)).join("")}`;
     checkBox.innerHTML = askAiCheckLine(data, checking);
+    checkBox.hidden = !checking;
     input.disabled = send.disabled = !tiersBox.querySelector("input:checked");
   };
   // Check the models before relying on them: the first time, and when it's been a while (project_chat.CHECK_FRESH).
@@ -3243,11 +3216,10 @@ async function openAskAi() {
     } catch (e) { if (e.status !== 404) toast(e.message, true); }
     finally { checking = false; if (dlg.open) { drawTiers(); tierNote(); } }
   };
-  checkBox.addEventListener("click", (e) => { if (e.target.closest("[data-ask-ai-check]")) checkModels(); });
   drawTiers();
   const tierNote = () => {
     const id = tiersBox.querySelector("input:checked")?.value;
-    status.textContent = id ? data.tiers[id].hint : "No AI is set up yet. Connect one under AI tools.";
+    status.textContent = id ? "" : "No AI is set up yet. Connect one under AI tools.";
   };
   tierNote();
   if (data.needs_check) checkModels();
@@ -3607,7 +3579,7 @@ document.addEventListener("click", async (e) => {
       try {
         await api("setup/git-init", { method: "POST", body: {} });
         toast("Initialized git repository");
-        await loadState();
+        await refreshState();
         await loadSetup(true);
         if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
         route();
@@ -3621,7 +3593,7 @@ document.addEventListener("click", async (e) => {
       try {
         await api("setup/configure", { method: "POST", body: {} });
         toast("Project configured");
-        await loadState();
+        await refreshState();
         await loadSetup(true);
         if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
         route();
@@ -3653,7 +3625,7 @@ document.addEventListener("click", async (e) => {
         } else {
           toast("Created repository on GitHub");
         }
-        await loadState();
+        await refreshState();
         await loadSetup(true);
         if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
         route();
@@ -10193,6 +10165,32 @@ pages.config = async (args = []) => {
           view.addEventListener("click", onInstall);
           cleanup.push(() => view.removeEventListener("click", onInstall));
 
+          const onUninstall = async (event) => {
+            const button = event.target.closest("[data-ai-uninstall]");
+            if (!button || button.disabled) return;
+            const {aiUninstall: provider, aiName: name} = button.dataset;
+            const backend = getBackendUrl();
+            const computer = state.project?.computer?.name || "the connected computer";
+            const confirmed = await formDialog(`Uninstall ${name}?`, `<p>Remove ${esc(name)} from <strong>${esc(computer)}</strong>? Jobs will no longer be able to use this installation.</p><p>Your projects, saved settings, API keys, chat history and downloaded models will be kept. Any running Orchestrator work must finish first.</p>`, "Uninstall", {danger:true});
+            if (!confirmed) return;
+            if (backend !== getBackendUrl()) { toast("The connected computer changed. Open AI tools on that computer and try again.", true); return; }
+            button.disabled = true;
+            button.textContent = "Uninstalling…";
+            try {
+              const started = await api("ai-providers/uninstall", {method:"POST", body:{provider, confirmed:true}});
+              const result = await waitForTask(started, {timeoutMs:7 * 60 * 1000, isCurrent:() => backend === getBackendUrl()});
+              if (backend !== getBackendUrl()) return;
+              toast(result.detail, result.remaining ? "warning" : false);
+              await route();
+            } catch (error) {
+              if (backend === getBackendUrl()) toast(error.message, true);
+            } finally {
+              if (button.isConnected) { button.disabled = false; button.textContent = "Uninstall"; }
+            }
+          };
+          view.addEventListener("click", onUninstall);
+          cleanup.push(() => view.removeEventListener("click", onUninstall));
+
           // The YOLO switch sits in a row's summary; the checkbox owns its state, so a click, a tap on its label or Space all work.
           const onYolo = async (event) => {
             const input = event.target.closest?.("input[data-yolo-cli]");
@@ -13482,7 +13480,7 @@ function loadingSkeleton(page = "") {
 let routeToken = 0; // only the newest navigation may clear or fill the loading state
 async function route() {
   if (signingIn) return; // the loading screen stays until sign-in finishes
-  if (projectSwitching) { showProjectSwitching(projectSwitching.name); return; }
+  if (projectSwitch) return; // so does the opening skeleton, until switchProject is done
   const moved = RouteAliases.redirect(location.hash); // an old address: show the page where it lives now
   if (moved) history.replaceState(null, "", moved);
   navigationDrawer.close();
@@ -13559,14 +13557,17 @@ async function route() {
 
 // Live pages refresh in place — but never under the user's hands.
 async function tick() {
+  const token = routeToken;
   if (typeof signingIn !== "undefined" && signingIn) return;
-  if (projectSwitching) return;
+  if (projectSwitch || token !== routeToken) return;
   if (view.querySelector && view.querySelector(".signin-card:not(.signing-in)") && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   await refreshState(); // also while the tab is hidden, so notifications can fire
+  if (projectSwitch || token !== routeToken) return;
   if (view.querySelector?.("[data-project-download]") && projectDownloads.pending()) return; // The download owns Home until its data is ready.
   if (document.hidden) return;
   if (!state.project) return;
   await loadSetup();
+  if (projectSwitch || token !== routeToken) return;
   if (current.page === "run") {
     const run = state.runs.find((r) => r.id === current.args[0]);
     if (run) {
@@ -13581,6 +13582,7 @@ async function tick() {
   try {
     const result = await pages[page](current.args, current.query);
     if (result?.stale) return;
+    if (projectSwitch || token !== routeToken) return;
     if (current.page !== page || current.args.join() !== args) return;
     if (page === "ux-review" && updateUxReviewWhileEditing(result)) return;
     if (signatureOf(result) !== current.rendered) apply(result);

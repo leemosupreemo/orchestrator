@@ -156,16 +156,18 @@ class ProjectSwitchTests(ServerTestCase):
     def test_picking_a_project_shows_its_skeleton_before_the_server_answers_and_nothing_paints_the_old_page(self):
         _, js = self.request("GET", "/app.js", auth=False)
         js = js.decode() if isinstance(js, bytes) else js
-        handler = js[js.index('document.addEventListener("change", async (e) => {\n  if (!e.target.matches("#project-select'):]
-        handler = handler[:handler.index("// Shown from the click on a provider")]
-        # the switching flag and the skeleton come before the first await on the server
-        self.assertLess(handler.index("projectSwitching = mine"), handler.index("await projectDownloads.select(val)"))
-        self.assertLess(handler.index("showProjectSwitching(picked)"), handler.index("await projectDownloads.select(val)"))
+        fn = js[js.index("async function switchProject("):]
+        fn = fn[:fn.index("// Shown from the click on a provider")]
+        wait = fn.index("await projectDownloads.select(root)")
+        # the switching flag, the skeleton and the phone header's new project name all come before the first wait on the server
+        self.assertLess(fn.index("projectSwitch = choice"), wait)
+        self.assertLess(fn.index("loadingSkeleton("), wait)
+        self.assertLess(fn.index("setMobileProjectTitle(name"), wait)
+        # while it is switching, a late page load or poll leaves the skeleton alone
         route = js[js.index("async function route() {"):][:400]
-        self.assertIn("if (projectSwitching) { showProjectSwitching(projectSwitching.name); return; }", route)
-        tick = js[js.index("async function tick() {"):][:300]
-        self.assertIn("if (projectSwitching) return;", tick)
-        self.assertIn('loadingSkeleton("home")', js[js.index("function showProjectSwitching"):][:900])
+        self.assertIn("if (projectSwitch) return;", route)
+        tick = js[js.index("async function tick() {"):][:1400]
+        self.assertGreaterEqual(tick.count("if (projectSwitch || token !== routeToken) return;"), 3)
 
 
 class ComputerCardStateTests(ServerTestCase):

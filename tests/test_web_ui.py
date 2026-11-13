@@ -330,6 +330,7 @@ class SignInTests(ServerTestCase):
         token = self.sign_in(source="settings")
         member = {"tester@example.com": "settings"}
         for path, body in (("/api/ai-providers/install", {"provider": "opencode"}),
+                           ("/api/ai-providers/uninstall", {"provider": "opencode", "confirmed": True}),
                            ("/api/ai-providers/check-machines", {}),
                            ("/api/ai-providers/yolo", {"cli": "opencode", "on": False})):
             with self.subTest(path=path):
@@ -652,9 +653,8 @@ Promise.all([enqueue('first'), enqueue('second')]).then(() => {
         start = app_js.index('matches("#project-select, .home-project-select, .mobile-project-select")')
         end = app_js.index("showSigningIn", start)
         handler_code = app_js[start:end]
-        # Home (or Product, when you are on it) is shown at once, not after the server has switched
-        self.assertIn('location.hash = location.hash.startsWith("#/product") ? "#/product" : "#/";', handler_code)
-        self.assertLess(handler_code.index("showProjectSwitching(picked)"), handler_code.index("await projectDownloads.select(val)"))
+        # Home (or Product, when you are on it) is where the switch lands; the skeleton shows at once, see switchProject
+        self.assertIn('await switchProject(val, location.hash.startsWith("#/product") ? "#/product" : "#/");', handler_code)
 
 
 class FakeTunnelProcess:
@@ -5089,7 +5089,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn("initial state", js[js.index("Redirect sign-in notice"):][:600])  # and that error, if it reaches the app, is explained
         self.assertIn("pendingRedirect", js)  # coming back from a redirect shows loading, not the options
         self.assertIn("orchestrator_pending_signin", js)  # preserves in-flight redirect flag across page reloads
-        self.assertIn('loadingSkeleton("home")', js[js.index("function showSigningIn"):js.index("function showSigningIn") + 800])
+        self.assertIn('loadingSkeleton("home")', js[js.index("function showSigningIn"):js.index("function showSigningIn") + 1400])
         self.assertIn("showSigningIn(\"Unlocking…\")", js)  # the token form too
 
     def test_what_the_home_menu_held_lives_on_the_page_it_belongs_to(self):
