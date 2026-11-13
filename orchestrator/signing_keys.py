@@ -400,13 +400,18 @@ def android_view(config: dict[str, Any], root: Path) -> dict[str, Any] | None:
 
 # -------------------------------------------------------------------------------------------- where each secret is
 
-def status(config: dict[str, Any], root: Path, projects: list[tuple[str, Path]] | None = None) -> dict[str, Any]:
-    """Everything the delivery page shows about signing, from this computer only (no network)."""
-    ios, android = ios_view(config, root), android_view(config, root)
-    if ios and ios["state"] in ("none", "partial", "missing"):
-        ios["downloads"] = downloaded_keys()
-        ios["issuer_hints"] = issuer_hints(projects or [], root) if ios["state"] != "missing" or not config.get("asc_issuer_id") else []
-    return {"ios": ios, "android": android}
+def status(config: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Everything the delivery page shows about signing, from this computer only (no network).
+
+    It reads the project's own files and the secure key folders, nothing else. It deliberately does not look in Downloads or
+    on the Desktop: macOS asks permission for those folders, and a background service that touches them on every page load
+    would sit waiting for an answer. `setup_help` does that, when someone presses Set up."""
+    return {"ios": ios_view(config, root), "android": android_view(config, root)}
+
+
+def setup_help(config: dict[str, Any], root: Path, projects: list[tuple[str, Path]]) -> dict[str, Any]:
+    """What the iOS setup dialog offers: downloaded keys waiting in Downloads or on the Desktop, and Issuer IDs other projects use."""
+    return {"downloads": downloaded_keys(), "issuer_hints": issuer_hints(projects, root)}
 
 
 # -------------------------------------------------------------------------------------------- moving a secret over SSH

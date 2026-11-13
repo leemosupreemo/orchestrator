@@ -99,6 +99,21 @@ class IosViewTests(TempWorld):
         view = sk.ios_view({"asc_key_id": KEY_ID, "asc_issuer_id": ISSUER, "asc_key_path": f"~/.private_keys/{NAME}"}, self.root)
         self.assertEqual((view["state"], view["on_another_computer"]), ("missing", False))
 
+    def test_status_never_looks_in_downloads_or_at_other_projects(self):
+        self.key_in(self.home, "Downloads", mode=0o644)
+        with patch.object(sk, "downloaded_keys", side_effect=AssertionError("Downloads")), patch.object(sk, "issuer_hints", side_effect=AssertionError("projects")):
+            view = sk.status({"delivery_platform": "ios"}, self.root)
+        self.assertEqual(view["ios"]["state"], "none")
+
+    def test_the_setup_help_lists_downloads_and_issuer_ids_when_asked(self):
+        self.key_in(self.home, "Downloads", mode=0o644)
+        other = Path(self.temp.name) / "other"
+        (other / ".orchestrator").mkdir(parents=True)
+        (other / ".orchestrator" / "project.json").write_text(json.dumps({"asc_issuer_id": ISSUER}))
+        help = sk.setup_help({}, self.root, [("Other", other)])
+        self.assertEqual([d["name"] for d in help["downloads"]], [NAME])
+        self.assertEqual(help["issuer_hints"], [{"from": "Other", "issuer": ISSUER}])
+
     def test_the_view_never_contains_key_contents(self):
         self.key_in(self.home)
         view = sk.status({"asc_key_id": KEY_ID, "asc_issuer_id": ISSUER, "asc_key_path": f"~/.private_keys/{NAME}"}, self.root)

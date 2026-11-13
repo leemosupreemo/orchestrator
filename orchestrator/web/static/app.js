@@ -5925,23 +5925,26 @@ async function loadSigningCard(box) {
 const ISSUER_PATTERN = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
 
 // No key yet: Apple makes it in a web page (that step is the person's), everything after it is done here.
+// Looking in Downloads happens only now, when someone pressed Set up: macOS asks permission for that folder, and asking on
+// every page load (from a background service) would leave the page waiting for an answer.
 async function signingSetupDialog(ios) {
-  const render = (item) => {
-    const downloads = item.downloads || [];
+  const render = (item, help) => {
+    const downloads = help?.downloads || [];
+    const step2 = !help ? `<span class="muted">Looking in Downloads and on the Desktop… (macOS may ask to allow this the first time.)</span>`
+      : downloads.length ? downloads.map((d, i) => `<label class="row gap-8"><input type="radio" name="file" value="${esc(d.name)}"${(item.key_id ? d.id === item.key_id : i === 0) ? " checked" : ""}> <code>${esc(d.name)}</code> <span class="muted t-secondary">in ${esc(d.folder)}</span></label>`).join("")
+        : `<div class="row gap-8 align-center"><span class="muted">None found in Downloads or on the Desktop yet.</span> <button type="button" class="btn small" id="signing-recheck">Check again</button></div>`;
     return `<p class="muted m-0">Apple makes this key in a web page, so the first step is yours. Keys belong to your team: one key works for all your apps.</p>
       <ol class="signing-steps">
         <li><a href="${esc(item.keys_url)}" target="_blank" rel="noopener">Open App Store Connect → Keys ↗</a>. Create a key with the <strong>Developer</strong> role. Apple lets you download it once.</li>
-        <li>The file you downloaded:
-          ${downloads.length ? downloads.map((d, i) => `<label class="row gap-8"><input type="radio" name="file" value="${esc(d.name)}"${(item.key_id ? d.id === item.key_id : i === 0) ? " checked" : ""}> <code>${esc(d.name)}</code> <span class="muted t-secondary">in ${esc(d.folder)}</span></label>`).join("")
-            : `<div class="row gap-8 align-center"><span class="muted">None found in Downloads or on the Desktop yet.</span> <button type="button" class="btn small" id="signing-recheck">Check again</button></div>`}</li>
+        <li>The file you downloaded: ${step2}</li>
         <li>The Issuer ID, shown above the keys on the same page:
           <input type="text" name="issuer" class="mono" placeholder="69a6de7e-8b0c-47e3-e053-5b8c7c11a4d1" autocomplete="off" spellcheck="false">
-          ${(item.issuer_hints || []).map((h) => `<button type="button" class="btn small ghost" data-issuer="${esc(h.issuer)}">Use the one from ${esc(h.from)}</button>`).join(" ")}</li>
+          ${(help?.issuer_hints || []).map((h) => `<button type="button" class="btn small ghost" data-issuer="${esc(h.issuer)}">Use the one from ${esc(h.from)}</button>`).join(" ")}</li>
       </ol>
       <p class="muted t-secondary m-0">The key is copied into ~/.private_keys and made owner-only. The download stays where it is, so you can delete it once a build works.</p>
       <p class="muted t-secondary m-0">Rather not use a key? Sign in to Xcode with your Apple ID on this Mac and keep automatic signing.</p>`;
   };
-  const answer = formDialog("Set up the iOS signing key", render(ios), "Save key", { compact: false });
+  const answer = formDialog("Set up the iOS signing key", render(ios, null), "Save key", { compact: false });
   const ok = $("#dialog-ok");
   const body = $("#dialog-body");
   const valid = () => Boolean(body.querySelector('input[name="file"]:checked')) && ISSUER_PATTERN.test(body.querySelector('input[name="issuer"]')?.value.trim() || "");
@@ -5949,14 +5952,20 @@ async function signingSetupDialog(ios) {
     ok.disabled = !valid();
     body.querySelectorAll('input[name="issuer"], input[name="file"]').forEach((el) => el.addEventListener("input", () => { ok.disabled = !valid(); }));
     body.querySelectorAll("[data-issuer]").forEach((b) => b.addEventListener("click", () => { body.querySelector('input[name="issuer"]').value = b.dataset.issuer; ok.disabled = !valid(); }));
-    body.querySelector("#signing-recheck")?.addEventListener("click", async () => {
-      const issuer = body.querySelector('input[name="issuer"]').value;
-      try { body.innerHTML = render((await api("signing")).ios || ios); } catch (err) { toast(err.message, true); return; }
-      body.querySelector('input[name="issuer"]').value = issuer;
-      wire();
-    });
+    body.querySelector("#signing-recheck")?.addEventListener("click", () => load(true));
+  };
+  const load = async (again = false) => {
+    const issuer = body.querySelector('input[name="issuer"]')?.value || "";
+    if (again) { body.innerHTML = render(ios, null); }
+    let help;
+    try { help = await api("signing/setup"); } catch (err) { if (!$("#dialog").open) return; toast(err.message, true); help = { downloads: [], issuer_hints: [] }; }
+    if (!$("#dialog").open) return; // closed while it was looking
+    body.innerHTML = render(ios, help);
+    if (issuer) body.querySelector('input[name="issuer"]').value = issuer;
+    wire();
   };
   wire();
+  load();
   const result = await answer;
   if (result?.file) await runAction("signing_import", { file: result.file, issuer: result.issuer.trim() }, { skipConfirm: true });
 }

@@ -3930,20 +3930,20 @@ def build_signing_argv(action: str, params: dict[str, Any]) -> list[str]:
     return argv
 
 
-def signing_view(root: Path, owner: bool) -> dict[str, Any]:
-    """Where each platform's signing key stands on this computer. No network; secret contents never included."""
+def signing_view(root: Path) -> dict[str, Any]:
+    """Where each platform's signing key stands on this computer. No network, no Downloads; secret contents never included."""
     from orchestrator import signing_keys
-    from orchestrator.project_config import load_recent_projects
-    config = read_json_file(runtime_dir(root) / "project.json")
-    projects = [(str(p.get("name") or Path(p["root"]).name), Path(p["root"])) for p in load_recent_projects(prune_missing=False).get("projects", []) if p.get("root")]
-    view = signing_keys.status(config, root, projects if owner else [])
-    if not owner:  # file names in Downloads and other projects' issuer ids are for the person running this computer
-        for item in (view.get("ios"),):
-            if item:
-                item.pop("downloads", None)
-                item.pop("issuer_hints", None)
+    view = signing_keys.status(read_json_file(runtime_dir(root) / "project.json"), root)
     view["machines"] = [m.name for m in signing_keys.machines_from_config(root)]
     return view
+
+
+def signing_setup_help(root: Path) -> dict[str, Any]:
+    """Downloaded keys and Issuer IDs for the setup dialog. Looks in Downloads and on the Desktop, so it only runs when asked."""
+    from orchestrator import signing_keys
+    from orchestrator.project_config import load_recent_projects
+    projects = [(str(p.get("name") or Path(p["root"]).name), Path(p["root"])) for p in load_recent_projects(prune_missing=False).get("projects", []) if p.get("root")]
+    return signing_keys.setup_help(read_json_file(runtime_dir(root) / "project.json"), root, projects)
 
 
 def signing_find(root: Path, platform: str) -> dict[str, Any]:
@@ -8054,7 +8054,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
         elif method == "GET" and parts == ["signing"]:
-            self._json(signing_view(root, self._is_owner()))
+            self._json(signing_view(root))
+        elif method == "GET" and parts == ["signing", "setup"]:
+            self._require_owner("look for a downloaded signing key")
+            self._json(signing_setup_help(root))
         elif method == "POST" and parts == ["signing", "find"]:
             self._require_owner("look for the signing key on your other computers")
             platform = _choice(self._body(), "platform", ["ios", "android"])

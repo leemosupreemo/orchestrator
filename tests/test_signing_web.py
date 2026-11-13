@@ -44,16 +44,35 @@ class SigningWebTests(ServerTestCase):
             self.server.forget_allowed_emails()
             return self.request(method, path, body=body, headers=headers, auth=False)
 
-    def test_the_view_tells_the_owner_where_the_key_stands_and_what_is_waiting_in_downloads(self):
+    def test_the_view_tells_where_the_key_stands_without_looking_in_downloads(self):
+        """A background service reading ~/Downloads makes macOS ask for permission and then waits, so the page-load call must not."""
         (self.home / "Downloads" / NAME).write_bytes(PEM)
         self.configure(delivery_platform="ios")
-        res, data = self.request("GET", "/api/signing")
+        with patch.object(signing_keys, "downloaded_keys", side_effect=AssertionError("must not look in Downloads on page load")), \
+                patch.object(signing_keys, "issuer_hints", side_effect=AssertionError("must not read other projects on page load")):
+            res, data = self.request("GET", "/api/signing")
         self.assertEqual(res.status, 200, data)
         self.assertEqual(data["ios"]["state"], "none")
-        self.assertEqual([d["name"] for d in data["ios"]["downloads"]], [NAME])
+        self.assertNotIn("downloads", data["ios"])
+        self.assertNotIn("issuer_hints", data["ios"])
         self.assertIsNone(data["android"])
         self.assertEqual(data["machines"], [])
         self.assertNotIn("MIGTAgEAMBMG", json.dumps(data))
+
+    def test_the_setup_dialog_asks_for_what_is_waiting_in_downloads_and_the_issuer_ids_other_projects_use(self):
+        (self.home / "Downloads" / NAME).write_bytes(PEM)
+        self.configure(delivery_platform="ios")
+        res, data = self.request("GET", "/api/signing/setup")
+        self.assertEqual(res.status, 200, data)
+        self.assertEqual([d["name"] for d in data["downloads"]], [NAME])
+        self.assertEqual(data["issuer_hints"], [])
+        self.assertNotIn("MIGTAgEAMBMG", json.dumps(data))
+
+    def test_only_an_owner_can_ask_what_is_in_downloads(self):
+        (self.home / "Downloads" / NAME).write_bytes(PEM)
+        token = self.sign_in(source="settings")
+        res, data = self.as_member(token, "GET", "/api/signing/setup")
+        self.assertEqual(res.status, 403, data)
 
     def test_it_follows_the_projects_delivery_type(self):
         self.configure(delivery_platform="web")
@@ -68,15 +87,12 @@ class SigningWebTests(ServerTestCase):
         key.chmod(0o600)
         self.assertEqual(self.request("GET", "/api/signing")[1]["ios"]["state"], "ready")
 
-    def test_a_member_sees_the_state_but_not_download_names_or_other_projects_issuer_ids(self):
-        (self.home / "Downloads" / NAME).write_bytes(PEM)
+    def test_a_member_sees_the_state(self):
         self.configure(delivery_platform="ios")
         token = self.sign_in(source="settings")
         res, data = self.as_member(token, "GET", "/api/signing")
         self.assertEqual(res.status, 200, data)
         self.assertEqual(data["ios"]["state"], "none")
-        self.assertNotIn("downloads", data["ios"])
-        self.assertNotIn("issuer_hints", data["ios"])
 
     def test_only_an_owner_can_search_other_computers(self):
         token = self.sign_in(source="settings")
