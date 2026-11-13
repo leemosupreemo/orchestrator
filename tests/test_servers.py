@@ -303,3 +303,156 @@ class WebTests(unittest.TestCase):
             self.assertEqual((res.status, data["logs"]), (200, "game ready\n"))
             self.assertEqual(case.request("GET", "/api/servers/logs?id=../../etc")[0].status, 404)
         self.assertIn("docker compose logs --tail 80 --no-color", [c for c, _ in shell.commands])
+
+
+class SelectionTests(unittest.TestCase):
+    FOUND = [{"id": "a", "name": "A", "dir": "a", "file": None, "services": ["db"], "ports": []},
+             {"id": "b", "name": "B", "dir": "b", "file": None, "services": ["db"], "ports": []}]
+
+    def test_the_selection_keeps_real_servers_and_known_computers_and_reports_the_rest(self):
+        clean, errors = servers.parse_selection([{"id": "a"}, {"id": "a", "machine": "local"}, {"id": "b", "machine": "air"},
+                                                 {"id": "zzz"}, {"id": "a", "machine": "gone"}, "x"], self.FOUND, ["air"])
+        self.assertEqual(clean, [{"id": "a", "machine": "local"}, {"id": "b", "machine": "air"}])  # the duplicate is dropped
+        self.assertEqual(len(errors), 3)
+        self.assertIn('no server "zzz"', " ".join(errors))
+        self.assertIn('"gone"', " ".join(errors))
+        self.assertEqual(servers.parse_selection(None, self.FOUND, []), ([], []))
+        self.assertEqual(servers.parse_selection("x", self.FOUND, [])[1], ["servers_for_app must be a list."])
+
+    def test_ensure_running_starts_only_what_is_down_and_stops_at_the_first_failure(self):
+        said: list[str] = []
+        up = FakeShell()
+        up.ps_sequence = [[row("db")]]
+        down = FakeShell()
+        down.ps_sequence = [[], [], [row("db")]]
+        shells = {"local": up, "air": down}
+        selection = [{"id": "a", "machine": "local"}, {"id": "b", "machine": "air"}]
+        self.assertTrue(servers.ensure_running(selection, self.FOUND, lambda m: shells[m], said.append))
+        self.assertFalse(any("up -d" in c for c, _ in up.commands))  # already running: left alone
+        self.assertTrue(any("up -d" in c for c, _ in down.commands))
+        self.assertTrue(any("already running on this computer" in m for m in said))
+        self.assertTrue(any("running on air" in m for m in said))
+
+    def test_a_server_that_will_not_come_up_stops_the_rest_and_says_why(self):
+        bad = FakeShell({"up -d": (1, "port is already allocated")})
+        bad.ps_sequence = [[]]
+        never = FakeShell()
+        never.ps_sequence = [[]]
+        said: list[str] = []
+        shells = {"local": bad, "air": never}
+        self.assertFalse(servers.ensure_running([{"id": "a", "machine": "local"}, {"id": "b", "machine": "air"}], self.FOUND, lambda m: shells[m], said.append))
+        self.assertTrue(any("port is already allocated" in m for m in said))
+        self.assertEqual(never.commands, [])  # the second server was never touched
+        self.assertFalse(servers.ensure_running([{"id": "gone", "machine": "local"}], self.FOUND, lambda m: up_shell(), said.append))
+
+
+def up_shell():
+    return FakeShell()
+
+
+class DistributeWithServersTests(unittest.TestCase):
+    """The real command: `orchestrator distribute --with-servers` starts the chosen server first, and doesn't go on if it can't."""
+
+    def run_cli(self, tmp: Path, fake_docker: str, *extra: str):
+        import os
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        log = tmp / "docker.log"
+        (bindir / "docker").write_text(fake_docker.replace("__LOG__", str(log)), encoding="utf-8")
+        (bindir / "docker").chmod(0o755)
+        root = tmp / "proj"
+        write(root, "srv/docker-compose.yml", COMPOSE)
+        write(root, ".orchestrator/project.json", json.dumps({"project_name": "P", "build_command": "b", "test_command": "t",
+                                                                "servers_for_app": [{"id": "srv-default", "machine": "local"}], "delivery_platform": "file"}))
+        env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "PYTHONPATH": str(PACKAGE_ROOT), "ORCHESTRATOR_NONINTERACTIVE": "1"}
+        done = subprocess.run([sys.executable, "-m", "orchestrator", "distribute", "--with-servers", "--project", str(root), *extra],
+                              cwd=root, env=env, capture_output=True, text=True, timeout=120)
+        return done, (log.read_text() if log.exists() else "")
+
+    HEALTHY = """#!/bin/bash
+echo "$*" >> __LOG__
+[ "$1" = "info" ] && exit 0
+shift; [ "$1" = "-f" ] && shift 2
+case "$1" in
+  ps) if grep -q " up -d" __LOG__; then echo '[{"Service":"db","State":"running","Health":"healthy","Publishers":[]},{"Service":"gameserver","State":"running","Health":"","Publishers":[]}]'; else echo '[]'; fi;;
+esac
+exit 0
+"""
+    BROKEN = """#!/bin/bash
+echo "$*" >> __LOG__
+[ "$1" = "info" ] && exit 0
+shift; [ "$1" = "-f" ] && shift 2
+case "$1" in up) echo "Error: port is already allocated"; exit 1;; ps) echo '[]';; esac
+exit 0
+"""
+
+    def test_the_server_is_started_before_the_delivery_is_even_attempted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done, log = self.run_cli(Path(tmp), self.HEALTHY)
+            out = done.stdout
+            self.assertIn("Making sure the server is up first", out)
+            self.assertIn("is running on this computer", out)
+            self.assertIn("compose up -d", log)
+            # the delivery that follows stops at its own configuration check (nothing is built or uploaded here)
+            self.assertLess(out.index("is running on this computer"), out.index("Distribution configuration is incomplete"))
+            self.assertNotEqual(done.returncode, 0)
+            self.assertNotIn("firebase", log)
+
+    def test_a_server_that_will_not_come_up_stops_everything_before_any_delivery_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done, log = self.run_cli(Path(tmp), self.BROKEN)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn("didn't come up", done.stdout)
+            self.assertIn("Not sending the build", done.stdout)
+            self.assertNotIn("Pre-flight Configuration Check", done.stdout)  # the delivery never began
+
+
+class SelectionWebTests(unittest.TestCase):
+    def make(self):
+        from test_web_ui import UI_HEADERS, ServerTestCase
+
+        class Case(ServerTestCase):
+            def runTest(self):
+                pass
+
+        case = Case()
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        write(case.root, "srv/docker-compose.yml", COMPOSE)
+        return case, UI_HEADERS
+
+    def test_the_choice_is_saved_validated_and_reported_back_and_only_the_owner_may_change_it(self):
+        from test_web_ui import ui
+        case, headers = self.make()
+        res, data = case.request("POST", "/api/servers/app", {"selection": [{"id": "srv-default", "machine": "local"}]}, headers=headers)
+        self.assertEqual((res.status, data["app"]), (200, [{"id": "srv-default", "machine": "local"}]))
+        saved = json.loads((case.root / ".orchestrator" / "project.json").read_text())
+        self.assertEqual((saved["servers_for_app"], saved["project_name"]), ([{"id": "srv-default", "machine": "local"}], "Demo"))
+        with patch.object(servers, "shell_for", return_value=FakeShell(docker=False)):
+            _, view = case.request("GET", "/api/servers")
+            _, delivery = case.request("GET", "/api/delivery")
+        self.assertEqual(view["app"], [{"id": "srv-default", "machine": "local"}])
+        self.assertEqual(delivery["servers_for_app"], [{"id": "srv-default", "machine": "local", "name": "srv"}])
+        res, data = case.request("POST", "/api/servers/app", {"selection": [{"id": "nope"}]}, headers=headers)
+        self.assertEqual(res.status, 400)
+        self.assertEqual(case.request("POST", "/api/servers/app", {"selection": []}, headers=headers)[1]["app"], [])
+        self.assertNotIn("servers_for_app", json.loads((case.root / ".orchestrator" / "project.json").read_text()))
+        with patch.object(ui.UIHandler, "_is_owner", return_value=False):
+            self.assertEqual(case.request("POST", "/api/servers/app", {"selection": []}, headers=headers)[0].status, 403)
+
+    def test_the_send_action_passes_the_flag_only_when_asked(self):
+        from test_web_ui import ui
+        case, _ = self.make()
+        self.assertIn("--with-servers", ui.ACTIONS["distribute"].build({"with_servers": True, "notes": "n"}, case.root))
+        self.assertNotIn("--with-servers", ui.ACTIONS["distribute"].build({"notes": "n"}, case.root))
+
+
+class PageBehaviourTests(unittest.TestCase):
+    def test_choosing_a_server_for_sending_refreshes_the_page_so_the_send_form_matches(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        handler = app[app.index("data-server-app]\").forEach"):][:900]
+        self.assertIn('api("servers/app"', handler)
+        self.assertLess(handler.index('api("servers/app"'), handler.index("route();"))
+        form = app[app.index("const withServers = Boolean(d.servers_for_app?.length);"):][:1300]
+        self.assertIn("with_servers: true", form)
+        self.assertIn("Start and send", form)

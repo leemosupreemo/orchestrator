@@ -5860,7 +5860,8 @@ function serverCardHtml(view) {
     return `<div class="item server-row" data-server="${esc(sv.id)}"><div class="main-col">
         <div class="title">${esc(sv.name)} <span class="pill ${tone}">${esc(label)}</span></div>
         <div class="meta">${sv.ports.length ? sv.ports.map((p) => `<code>localhost:${p}</code>`).join(" ") : "no published ports"} · ${services}</div>
-        ${st.message ? `<div class="meta muted">${esc(st.message)}</div>` : ""}</div>
+        ${st.message ? `<div class="meta muted">${esc(st.message)}</div>` : ""}
+        ${owner ? `<label class="server-app"><input type="checkbox" data-server-app${(view.app || []).some((a) => a.id === sv.id && a.machine === view.machine) ? " checked" : ""}> <span class="muted t-secondary">Start it before I send a build to my phone</span></label>` : ""}</div>
       <div class="side row gap-8">${owner ? `${up ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>`
         : `<button type="button" class="btn small primary" data-server-action="start">Start</button>`}` : ""}
         <button type="button" class="btn small ghost" data-server-logs>Logs</button></div></div>`;
@@ -5896,6 +5897,18 @@ async function loadServerCard(box) {
       if (await confirmServerAction(btn.dataset.serverAction, server, where, view)) {
         await runAction(`server_${btn.dataset.serverAction}`, { id: server.id, machine: view.machine }, { skipConfirm: true });
       }
+    }));
+    box.querySelectorAll("[data-server-app]").forEach((box2) => box2.addEventListener("change", async () => {
+      const id = box2.closest("[data-server]").dataset.server;
+      const next = (view.app || []).filter((a) => !(a.id === id && a.machine === view.machine));
+      if (box2.checked) next.push({ id, machine: view.machine });
+      try {
+        const res = await api("servers/app", { method: "POST", body: { selection: next } });
+        view.app = res.app;
+        toast(box2.checked ? "It will be started before a build is sent." : "It won't be started for a build.");
+        route(); // the Send build form below says (and does) something different now
+      }
+      catch (err) { box2.checked = !box2.checked; toast(err.message, true); }
     }));
     box.querySelectorAll("[data-server-logs]").forEach((btn) => btn.addEventListener("click", async () => {
       const id = btn.closest("[data-server]").dataset.server;
@@ -6126,6 +6139,7 @@ pages.delivery = async (args, query) => {
             <span>Release notes <span class="muted">(optional)</span></span>
             <input type="text" name="notes" placeholder="e.g. Test notes for this build">
           </label>
+          ${d.servers_for_app?.length ? `<p class="notice m-0" id="with-servers-note">Before the build is sent, this starts <strong>${esc(d.servers_for_app.map((x) => `${x.name}${x.machine === "local" ? "" : ` on ${x.machine}`}`).join(", "))}</strong> if it isn't already running, and stops if it won't come up. Change this under Server above.</p>` : ""}
           <div class="row gap-12 align-center">
             <button type="submit" class="btn primary" ${act("distribute")}>Send build</button>
             ${testers.invite_url ? `
@@ -6232,12 +6246,14 @@ pages.delivery = async (args, query) => {
           const group = recipientType === "group" ? (fd.get("group") || "").trim() : "";
           const testersTarget = recipientType === "me" ? user_email : "";
 
-          runAction("distribute", {
-            branch: selected_branch,
-            group,
-            testers: testersTarget,
-            notes,
-          }, { skipConfirm: false });
+          const withServers = Boolean(d.servers_for_app?.length);
+          const params = { branch: selected_branch, group, testers: testersTarget, notes, ...(withServers ? { with_servers: true } : {}) };
+          if (!withServers) { runAction("distribute", params, { skipConfirm: false }); return; }
+          formDialog("Start the server, then send the build?", `<p>Two steps, in this order:</p>
+            <ol><li>Start <strong>${esc(d.servers_for_app.map((x) => x.name).join(", "))}</strong> if it isn't running, and wait until it is healthy. Nothing is deleted.</li>
+            <li>Build the app and send it to Firebase App Distribution.</li></ol>
+            <p class="muted">If the server won't come up, nothing is sent.</p>`, "Start and send", { compact: true })
+            .then((ok) => { if (ok) runAction("distribute", params, { skipConfirm: true }); });
         });
       }
 

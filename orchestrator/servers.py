@@ -141,6 +141,52 @@ def find(root: Path) -> list[dict[str, Any]]:
     return found
 
 
+def parse_selection(raw: Any, found: list[dict[str, Any]], machines: list[str]) -> tuple[list[dict[str, str]], list[str]]:
+    """The servers to start before a build is sent (`servers_for_app` in project.json): [{id, machine}], each naming a server
+    the project has and a computer that is local or in machines.json. Anything else is reported and left out."""
+    if raw in (None, []):
+        return [], []
+    if not isinstance(raw, list):
+        return [], ["servers_for_app must be a list."]
+    ids = {s["id"] for s in found}
+    clean: list[dict[str, str]] = []
+    errors: list[str] = []
+    for item in raw:
+        server = str(item.get("id") or "") if isinstance(item, dict) else ""
+        machine = str(item.get("machine") or "local") if isinstance(item, dict) else "local"
+        if server not in ids:
+            errors.append(f'There is no server "{server}" in this project.')
+        elif machine != "local" and machine not in machines:
+            errors.append(f'"{machine}" isn\'t a computer that servers can be managed on.')
+        elif not any(c["id"] == server and c["machine"] == machine for c in clean):
+            clean.append({"id": server, "machine": machine})
+    return clean, errors
+
+
+def ensure_running(selection: list[dict[str, str]], found: list[dict[str, Any]], shell_for_machine: Callable[[str], Shell],
+                   say: Callable[[str], None] = lambda s: None) -> bool:
+    """Make sure each selected server is up, starting the ones that aren't and waiting until they are healthy. False (after
+    saying why) as soon as one can't be brought up: whatever needed the server should not go ahead."""
+    by_id = {s["id"]: s for s in found}
+    for item in selection:
+        server = by_id.get(item["id"])
+        if server is None:
+            say(f"The server {item['id']} is no longer in this project.")
+            return False
+        where = "this computer" if item["machine"] == "local" else item["machine"]
+        shell = shell_for_machine(item["machine"])
+        if status(server, shell)["state"] == "running":
+            say(f"{server['name']} is already running on {where}.")
+            continue
+        say(f"Starting {server['name']} on {where} …")
+        result = change(server, "start", shell, say)
+        if not result["ok"]:
+            say(f"{server['name']} didn't come up: {result['message'] or result['state']}")
+            return False
+        say(f"{server['name']} is running on {where}.")
+    return True
+
+
 def protected_note(root: Path) -> str | None:
     """A warning when the project's own rules talk about a live, baseline or production server."""
     for name in ("AGENTS.md", "CLAUDE.md"):

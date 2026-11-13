@@ -1391,6 +1391,10 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     data["web_url"] = repo_web_url(root)
     from orchestrator import delivery_adapters
     data["target"] = {**delivery_adapters.target_view(config), "unity_without_xcode": unity_without_xcode(root, config)}
+    from orchestrator import servers as server_tools
+    picked = server_tools.parse_selection(config.get("servers_for_app"), server_tools.find(root), [m["name"] for m in server_machines(root)])[0]
+    by_id = {s["id"]: s["name"] for s in server_tools.find(root)} if picked else {}
+    data["servers_for_app"] = [{**item, "name": by_id.get(item["id"], item["id"])} for item in picked]
     if gaps:  # not ready to send: offer what the project's own files already say, to confirm in one step
         from orchestrator import delivery_setup
         data["proposal"] = delivery_setup.propose(root, config)
@@ -3922,8 +3926,20 @@ def servers_view(root: Path, machine: str | None) -> dict[str, Any]:
     found = servers.find(root)[:8]
     docker = servers.docker_ready(shell) if found else True
     rows = [{**s, "status": servers.status(s, shell, docker=docker)} for s in found]
+    selection = servers.parse_selection(read_json_file(runtime_dir(root) / "project.json").get("servers_for_app"), found,
+                                        [m["name"] for m in server_machines(root)])[0]
     return {"servers": rows, "machines": server_machines(root), "machine": machine or "local", "docker": docker,
-            "note": servers.protected_note(root)}
+            "note": servers.protected_note(root), "app": selection}
+
+
+def save_servers_for_app(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Which servers are started before a build is sent."""
+    from orchestrator import servers
+    selection, errors = servers.parse_selection(body.get("selection"), servers.find(root), [m["name"] for m in server_machines(root)])
+    if errors:
+        raise UIError(" ".join(errors))
+    update_project_json(root, {"servers_for_app": selection or None})
+    return {"saved": True, "app": selection}
 
 
 def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
@@ -3932,6 +3948,8 @@ def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
     group = _text(params, "group", limit=200)
     testers = _text(params, "testers", limit=500)
     argv = orchestrator_argv("distribute")
+    if params.get("with_servers") in (True, "true", "1", 1):
+        argv += ["--with-servers"]
     if notes:
         argv += ["--notes", notes]
     if branch:
@@ -5476,7 +5494,7 @@ ACTIONS: dict[str, Action] = {
     "test": Action("Run all tests", build_manual("test")),
     "distribute": Action("Distribute build for testing", build_distribute,
                          confirm="Builds and sends a test build to Firebase App Distribution.",
-                         fields=["notes", "branch", "group", "testers"]),
+                         fields=["notes", "branch", "group", "testers", "with_servers"]),
     "config_menu": Action("Configuration", build_config_menu, fields=["menu"]),
     "test_email": Action("Send test email", build_test_email),
     "logs_setup": Action("Device logs setup", lambda p, r: build_logs_setup(p, r),
@@ -7957,6 +7975,11 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
         elif method == "GET" and parts == ["servers"]:
             self._json(servers_view(root, (query.get("machine") or [None])[0]))
+        elif method == "POST" and parts == ["servers", "app"]:
+            self._require_owner("choose which servers start before a build is sent")
+            result = save_servers_for_app(root, self._body())
+            self._audit("servers_for_app_changed", root=str(root), count=len(result["app"]))
+            self._json(result)
         elif method == "GET" and parts == ["servers", "logs"]:
             from orchestrator import servers as server_tools
             wanted = (query.get("id") or [""])[0]

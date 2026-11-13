@@ -624,6 +624,8 @@ If your project has a Docker compose file (`docker-compose.yml`, or one like `co
 
 It only starts and stops containers. It never removes containers, networks or volumes (no `down`, no `-v`, no `prune`), so data stays. Environment values in compose files, such as passwords, are never read or shown. If your `AGENTS.md` or `CLAUDE.md` mentions a live, baseline or production server, the card says so, so you check which one you are about to touch.
 
+**Start it when I send a build.** Tick **Start it before I send a build to my phone** on a server and **Send build** will make sure it is running first: it starts it if needed, waits until it is healthy, and only then builds and sends. If the server won't come up, nothing is sent. Nothing is ever started for a build unless you ticked it (you may not want a live server touched), the Send form says which servers it will start, and the confirmation names both steps. From a terminal: `orchestrator distribute --with-servers`. The choice is saved as `servers_for_app` in `.orchestrator/project.json`.
+
 Pick another computer from the card's menu to manage its copy of the project over SSH. It lists the machines in `machines.json` that have an SSH address and a project folder; the SSH login must work without a password prompt. The same thing from a terminal: `orchestrator server status`, `orchestrator server start <id> --machine <name>`, `stop`, `restart`, `logs`. With more than one server in the project, `start` asks you to name it instead of guessing.
 
 ### The options behind it

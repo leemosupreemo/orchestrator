@@ -2251,6 +2251,30 @@ def _machine_named(config: Any, name: str | None) -> dict[str, Any] | None:
     return match
 
 
+def ensure_app_servers(config: Any) -> bool:
+    """Start the servers chosen for sending a build (`servers_for_app`), if they aren't up. False means do not go on."""
+    from orchestrator import servers
+
+    selection, errors = servers.parse_selection(_project_json_dict(config).get("servers_for_app"), servers.find(config.root), _known_machine_names(config))
+    for error in errors:
+        print(f"  - {error}")
+    if errors:
+        return False
+    if not selection:
+        return True
+    print("Making sure the server is up first …", flush=True)
+    return servers.ensure_running(selection, servers.find(config.root),
+                                  lambda name: servers.shell_for(config.root, _machine_named(config, name)), lambda line: print(f"  {line}", flush=True))
+
+
+def _known_machine_names(config: Any) -> list[str]:
+    try:
+        machines = json.loads((config.config_dir / "machines.json").read_text(encoding="utf-8")).get("machines", [])
+    except (OSError, ValueError):
+        return []
+    return [m["name"] for m in machines if isinstance(m, dict) and m.get("name")]
+
+
 def server_command(args: argparse.Namespace) -> int:
     """Docker servers: see whether they are up, start, stop or restart them here or on another computer, read the logs."""
     from orchestrator import servers
@@ -2740,6 +2764,7 @@ def _main(argv: list[str] | None = None) -> int:
     update_parser.add_argument("--project", help="Recent project name or project root path (required for --fleet)")
 
     distribute_parser = subparsers.add_parser("distribute", help="Quickly build and distribute current project to Firebase")
+    distribute_parser.add_argument("--with-servers", action="store_true", help="Start the servers chosen for the app (servers_for_app) first, and stop if one won't come up")
     distribute_parser.add_argument("--project", help="Recent project name or project root path")
     distribute_parser.add_argument("--notes", help="Release notes for this build")
     distribute_parser.add_argument("--branch", help="Git branch to distribute")
@@ -2857,6 +2882,9 @@ def _main(argv: list[str] | None = None) -> int:
             os.environ["FIREBASE_GROUPS"] = args.groups
         if getattr(args, "testers", None):
             os.environ["FIREBASE_TESTERS"] = args.testers
+        if getattr(args, "with_servers", False) and not ensure_app_servers(load_project_config()):
+            print("Not sending the build: the server it needs isn't up.")
+            return 1
         return run_script("smoke_test_delivery.py", [])
     if args.command == "fix":
         return fix_command(args)
