@@ -2314,6 +2314,104 @@ def server_command(args: argparse.Namespace) -> int:
     return code
 
 
+def signing_command(args: argparse.Namespace) -> int:
+    """Where each platform's signing key is, and getting it onto this computer. Never prints a key; exit 1 when something is refused."""
+    from orchestrator import signing_keys as sk
+
+    config = load_project_config()
+    root = config.root
+    say = lambda line: print(line, flush=True)
+    raw = sk._read_json(sk.runtime_dir(root) / "project.json")
+    try:
+        if args.action == "status":
+            view = sk.status(raw, root)
+            for platform in ("ios", "android"):
+                item = view[platform]
+                if item is None:
+                    continue
+                detail = {"ios": f" ({item.get('file') or 'no key set up'})"}.get(platform, "")
+                print(f"{item['label']}: {item['state']}{detail}")
+                for entry in item.get("files", []):
+                    print(f"    {entry['label']}: {'here' if entry['here'] else 'not on this computer'}")
+            if not any(view.values()):
+                print("This project's delivery type has no signing key to check.")
+            return 0
+        if args.action == "import-ios":
+            if not args.file or not args.issuer:
+                print("import-ios needs --file AuthKey_<id>.p8 and --issuer <Issuer ID>.")
+                return 2
+            result = sk.import_ios_key(root, args.file, args.issuer, replace=args.replace, say=say)
+            print(f"Done: the key {result['key_id']} is ready on this computer.")
+            if result["original_left"]:
+                print(f"The download is still at {result['original']}. Delete it once you've checked the build works; it is a second copy of the secret.")
+            for problem in result["problems"]:
+                print(f"  - Still to do: {problem}")
+            return 0
+        if args.action == "secure-ios":
+            result = sk.secure_ios_key(root)
+            print(f"{result['file']} is now owner-only.")
+            return 0
+        return _signing_copy(args, raw, root, say)
+    except sk.SecretError as exc:
+        print(str(exc))
+        return 1
+
+
+def _signing_copy(args: argparse.Namespace, raw: dict, root: Path, say) -> int:
+    from orchestrator import signing_keys as sk
+
+    if not args.understood:
+        print("This puts a second copy of a signing secret on another computer. Add --i-understand to go ahead.")
+        return 2
+    if not (args.platform and args.source and args.destination):
+        print("copy needs --platform, --from and --to.")
+        return 2
+    machines = {m.name: m for m in sk.machines_from_config(root)}
+    here = sk.Machine("local")
+
+    def machine(name: str) -> "sk.Machine":
+        if name.lower() in ("local", "this computer"):
+            return here
+        if name not in machines:
+            raise sk.SecretError(f"No computer named {name} is set up for SSH. Known: {', '.join(machines) or 'none'}.")
+        return machines[name]
+
+    source, destination = machine(args.source), machine(args.destination)
+    if args.platform == "ios":
+        key_id = str(raw.get("asc_key_id") or "")
+        secret = sk.ios_secret_on(source, key_id, root)
+        if secret is None:
+            raise sk.SecretError(f"The key AuthKey_{key_id}.p8 isn't on {'this computer' if source is here else source.name}.")
+        say(f"Copying the iOS signing key from {args.source} to {args.destination} …")
+        sk.copy_secret(secret, source, destination, root, replace=args.replace, say=say, destination_secret=sk.ios_secret(key_id))
+        print("Done. The key is in place and checked. Keep it owner-only and never put it in git.")
+        return 0
+    # Android: the keystore's path is only known once its settings file is here, so copy what's missing, then look again
+    copied = 0
+    for _ in range(4):
+        files = (sk.android_view({**raw, "delivery_platform": raw.get("delivery_platform") or "android"}, root) or {}).get("files", [])
+        pending = [f for f in files if f.get("copyable") and (f["here"] != (destination is here))]  # missing where it is going
+        if args.file:
+            pending = [f for f in pending if f.get("id") == args.file]
+        blocked = [f for f in files if not f.get("copyable") and not f["here"]]
+        if not pending:
+            if blocked and destination is here:
+                raise sk.SecretError(f"{blocked[0]['label']} is at a path that exists only on the other computer ({blocked[0]['name']}). "
+                                     "Copy it by hand into your home folder, then point the settings file's storeFile at it.")
+            break
+        entry = pending[0]
+        say(f"Copying {entry['label']} from {args.source} to {args.destination} …")
+        sk.copy_secret(sk.android_secret(entry), source, destination, root, replace=args.replace, say=say)
+        copied += 1
+        if args.file:
+            break
+    if not copied:
+        print("There was nothing to copy: the files this project needs are already where they should be.")
+        return 0
+    print(f"Done: {copied} file{'s' if copied != 1 else ''} copied and checked. Keep them owner-only and never put them in git.")
+    return 0
+
+
 def run_tests_command(args: argparse.Namespace) -> int:
     """Run the project's extra test commands by hand: the ones named, or a whole tier (`manual` by default).
     Exit code: 0 all passed, 1 something failed or timed out, 2 nothing could run (blocked or none configured)."""
@@ -2735,6 +2833,18 @@ def _main(argv: list[str] | None = None) -> int:
     server_parser.add_argument("server", nargs="?", help="Server id (see `server status`); optional when the project has one")
     server_parser.add_argument("--machine", help="A computer from machines.json (default: this one)")
     server_parser.add_argument("--project", help="Recent project name or project root path")
+    signing_parser = subparsers.add_parser(
+        "signing", help="Signing keys for iOS and Android builds: where they are, import an Apple key, or copy one between your computers")
+    signing_parser.add_argument("action", choices=["status", "import-ios", "secure-ios", "copy"])
+    signing_parser.add_argument("--file", help="import-ios: the downloaded AuthKey_<id>.p8 in Downloads or on the Desktop; copy: one file from `signing status`")
+    signing_parser.add_argument("--issuer", help="import-ios: the Issuer ID shown on App Store Connect's Keys page")
+    signing_parser.add_argument("--platform", choices=["ios", "android"], help="copy: which platform's key")
+    signing_parser.add_argument("--from", dest="source", help="copy: the computer it is on (a name from machines.json, or 'local')")
+    signing_parser.add_argument("--to", dest="destination", help="copy: the computer it goes to (a name from machines.json, or 'local')")
+    signing_parser.add_argument("--replace", action="store_true", help="replace a different file that is already at the destination")
+    signing_parser.add_argument("--i-understand", dest="understood", action="store_true",
+                                help="copy: you know this puts a second copy of a signing secret on another computer")
+    signing_parser.add_argument("--project", help="Recent project name or project root path")
     suggest_parser = subparsers.add_parser(
         "suggest-tests", help="Show the test setup found for this project (tests, scripts, Docker) and save what you accept")
     suggest_parser.add_argument("--accept", nargs="+", metavar="ID",
@@ -2900,6 +3010,10 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         return server_command(args)
+    if args.command == "signing":
+        if args.project and apply_project_env(args.project):
+            return 1
+        return signing_command(args)
     if args.command == "suggest-tests":
         if args.project and apply_project_env(args.project):
             return 1

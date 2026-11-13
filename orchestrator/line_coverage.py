@@ -3,8 +3,10 @@
 `platforms.py` says which files a test mentions. This runs the tests under a coverage tool and reports which lines they
 really executed:
 
-    .NET    dotnet test <project> --collect:"XPlat Code Coverage"   (the project needs the coverlet.collector package)
-    Python  coverage run -m unittest / pytest, then coverage json    (needs the coverage package)
+    .NET     dotnet test <project> --collect:"XPlat Code Coverage"   (the project needs the coverlet.collector package)
+    Python   coverage run -m unittest / pytest, then coverage json    (needs the coverage package)
+    Android  Gradle unit tests with the Android Gradle Plugin's coverage report (enableUnitTestCoverage), or the jacoco plugin
+    JS       Jest or Vitest with an lcov report (Vitest needs a coverage provider such as @vitest/coverage-v8)
 
 Other languages have no per-file measurement here yet, so they show nothing rather than a guess.
 
@@ -84,6 +86,82 @@ def parse_coverage_json(text: str, root: Path) -> FileLines:
     return out
 
 
+def parse_lcov(text: str, base: Path, root: Path) -> FileLines:
+    """Per-file lines from an lcov report. Paths are relative to the folder the tool ran in; files outside the project and
+    anything in node_modules are dropped."""
+    out: FileLines = {}
+    current: tuple[set[int], set[int]] | None = None
+    for line in text.splitlines():
+        if line.startswith("SF:"):
+            raw = Path(line[3:].strip())
+            path = raw if raw.is_absolute() else base / raw
+            try:
+                rel = path.resolve().relative_to(root.resolve()).as_posix()
+            except (OSError, ValueError):
+                current = None
+                continue
+            current = None if "node_modules" in Path(rel).parts else out.setdefault(rel, (set(), set()))
+        elif line.startswith("DA:") and current is not None:
+            number, _, rest = line[3:].partition(",")
+            hits = rest.split(",")[0]
+            if number.isdigit() and hits.lstrip("-").isdigit():
+                current[1].add(int(number))
+                if int(hits) > 0:
+                    current[0].add(int(number))
+        elif line.startswith("end_of_record"):
+            current = None
+    return {path: lines for path, lines in out.items() if lines[1]}
+
+
+def _source_index(module: Path, root: Path) -> dict[str, str]:
+    """`com/example/Foo.kt` -> that file's path in the project, for the source sets under <module>/src (main first)."""
+    index: dict[str, str] = {}
+    src = module / "src"
+    try:
+        sets = sorted((p for p in src.iterdir() if p.is_dir()), key=lambda p: (p.name != "main", p.name))
+    except OSError:
+        return index
+    for source_set in sets:
+        for language in ("java", "kotlin"):
+            folder = source_set / language
+            if not folder.is_dir():
+                continue
+            for path in list(folder.rglob("*"))[:20_000]:
+                if path.is_file():
+                    index.setdefault(path.relative_to(folder).as_posix(), path.resolve().relative_to(root.resolve()).as_posix())
+    return index
+
+
+def parse_jacoco(xml_text: str, root: Path, module: Path) -> FileLines:
+    """Per-file lines from a JaCoCo XML report: a line is covered when any of its instructions ran. JaCoCo names a file by its
+    package and name, so each is looked up in the module's source folders."""
+    if "<!ENTITY" in xml_text.upper() or re.search(r"<!DOCTYPE[^>]*\[", xml_text[:4000]):
+        return {}  # an internal DTD subset is how entity tricks are written; a real report has only the plain DOCTYPE line
+    cleaned = re.sub(r"<!DOCTYPE[^>]*>", "", xml_text, count=1)
+    try:
+        tree = ET.fromstring(cleaned.lstrip("\ufeff"))
+    except ET.ParseError:
+        return {}
+    index = _source_index(module, root)
+    out: FileLines = {}
+    for package in tree.iter("package"):
+        folder = (package.get("name") or "").strip("/")
+        for source in package.iter("sourcefile"):
+            key = f"{folder}/{source.get('name')}" if folder else str(source.get("name"))
+            rel = index.get(key)
+            if rel is None:
+                continue
+            covered, every = out.setdefault(rel, (set(), set()))
+            for line in source.iter("line"):
+                number = int(line.get("nr", "0"))
+                if number <= 0:
+                    continue
+                every.add(number)
+                if int(line.get("ci", "0")) > 0:
+                    covered.add(number)
+    return {path: lines for path, lines in out.items() if lines[1]}
+
+
 def merge(into: FileLines, other: FileLines) -> None:
     """Add one group's lines to the total: a line any group executed counts as covered."""
     for path, (covered, every) in other.items():
@@ -96,10 +174,14 @@ def measure_group(group: dict[str, Any], root: Path, run: Run = test_commands.ex
                   which: Callable[[str], str | None] = shutil.which) -> dict[str, Any]:
     """Run one test group under a coverage tool. {status: ok | needs-setup | error | unsupported, files, reason}."""
     runner = group.get("runner")
-    if runner not in ("dotnet", "python"):
+    if runner not in ("dotnet", "python", "gradle", "node"):
         return {"status": "unsupported", "reason": "No coverage tool is wired up for this framework yet."}
     with tempfile.TemporaryDirectory(prefix="orchestrator-linecov-") as tmp:
         out = Path(tmp)
+        if runner == "gradle":
+            return _measure_gradle(group, root, run, out)
+        if runner == "node":
+            return _measure_node(group, root, run, out)
         if runner == "dotnet":
             if not which("dotnet"):
                 return {"status": "needs-setup", "reason": "dotnet isn't installed or isn't on PATH"}
@@ -139,6 +221,74 @@ def measure_group(group: dict[str, Any], root: Path, run: Run = test_commands.ex
         if not report.is_file():
             return {"status": "error", "reason": "the tests ran but no coverage data was written"}
         return {"status": "ok", "files": parse_coverage_json(report.read_text(encoding="utf-8", errors="ignore"), root), "tests_passed": code == 0}
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")[:400_000]
+    except OSError:
+        return ""
+
+
+def _measure_gradle(group: dict[str, Any], root: Path, run: Run, out: Path) -> dict[str, Any]:
+    """Unit tests of one Gradle module, with the coverage report its build already knows how to write."""
+    if group.get("gradle_kind") != "unit":
+        return {"status": "unsupported", "reason": "Tests that run on a phone or emulator aren't measured for coverage here."}
+    module = root / group["folder"]
+    build_text = _read(module / "build.gradle") + _read(module / "build.gradle.kts")
+    path = group["project"] if group.get("project") not in (None, ".") else ""
+    base = group["command"].rsplit(" ", 1)[0]
+    if group.get("android") and "enableUnitTestCoverage" in build_text:
+        task, reports = "createDebugUnitTestCoverageReport", module / "build" / "reports" / "coverage"
+    elif not group.get("android") and "jacoco" in build_text:
+        task, reports = "jacocoTestReport", module / "build" / "reports" / "jacoco"
+    else:
+        how = "set enableUnitTestCoverage = true in the debug build type" if group.get("android") else "apply the jacoco plugin"
+        return {"status": "needs-setup", "reason": f"This module's build doesn't write a coverage report yet. In its build.gradle, {how}, then measure again."}
+    if group.get("android"):
+        command = f"{base} {path}:{task}"
+    else:
+        command = f"{base} {path}:test {path}:{task}" if path else f"{base} test {task}"
+    code, output, timed_out = run(command, root, TIMEOUT)
+    if timed_out:
+        return {"status": "error", "reason": f"stopped after {TIMEOUT // 60} minutes"}
+    files: FileLines = {}
+    for report in (sorted(reports.rglob("*.xml"))[:30] if reports.is_dir() else []):
+        merge(files, parse_jacoco(_read(report), root, module))
+    if not files:
+        return {"status": "needs-setup", "reason": _reason_from(output) if code else "the coverage report wasn't written or had no source files from this module"}
+    return {"status": "ok", "files": files, "tests_passed": code == 0}
+
+
+def _measure_node(group: dict[str, Any], root: Path, run: Run, out: Path) -> dict[str, Any]:
+    """Jest or Vitest run once with an lcov report. Nothing is downloaded: the tool has to be installed in the project."""
+    tool = group.get("tool")
+    if tool not in ("jest", "vitest"):
+        return {"status": "unsupported", "reason": "Coverage is measured for Jest and Vitest. This package's test tool isn't one of them."}
+    folder_rel = group.get("folder") or "."
+    folder = root / folder_rel
+    if not ((folder / "node_modules").is_dir() or (root / "node_modules").is_dir()):
+        return {"status": "needs-setup", "reason": "The packages aren't installed here. Run npm install (or your package manager's install) first."}
+    try:
+        package = json.loads(_read(folder / "package.json") or "{}")
+    except ValueError:
+        package = {}
+    deps = {**(package.get("dependencies") or {}), **(package.get("devDependencies") or {})}
+    if tool == "vitest" and not any(d in deps for d in ("@vitest/coverage-v8", "@vitest/coverage-istanbul")):
+        return {"status": "needs-setup", "reason": "Vitest needs a coverage provider. Add one with npm i -D @vitest/coverage-v8, then measure again."}
+    where = f"cd {shlex.quote(folder_rel)} && " if folder_rel != "." else ""
+    destination = shlex.quote(str(out))
+    if tool == "vitest":
+        command = f"{where}npx --no-install vitest run --coverage --coverage.reporter=lcov --coverage.reportsDirectory={destination}"
+    else:
+        command = f"{where}npx --no-install jest --coverage --coverageReporters=lcov --coverageDirectory={destination}"
+    code, output, timed_out = run(command, root, TIMEOUT)
+    if timed_out:
+        return {"status": "error", "reason": f"stopped after {TIMEOUT // 60} minutes"}
+    report = next(iter(sorted(out.rglob("lcov.info"))), None)
+    if report is None:
+        return {"status": "needs-setup", "reason": _reason_from(output) if code else "the tests ran but no coverage report was written"}
+    return {"status": "ok", "files": parse_lcov(_read(report), folder, root), "tests_passed": code == 0}
 
 
 def _reason_from(output: str) -> str:

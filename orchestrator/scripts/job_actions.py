@@ -412,13 +412,16 @@ def _measure_platforms() -> int:
 
     groups = [g for g in test_inventory()["groups"] if g["toggle"]]
     if not groups:
-        print("Nothing to measure by platform: no .NET or Python test group was found.")
+        print("Nothing to measure by platform: no test group with a command of its own was found (.NET, Python, Android or JavaScript).")
         return 0
     probes = test_probe.read_cache(PROJECT_CONFIG.runtime_dir)
     blocked = {gid for gid, r in probes.items() if r.get("status") == "needs-setup"}
     result = line_coverage.measure(groups, ROOT, blocked=blocked, log=lambda line: print(line, flush=True))
     line_coverage.write_cache(PROJECT_CONFIG.runtime_dir, result)
-    print(f"Saved line coverage for {len(result['files'])} files. The Tests page now shows it by platform.")
+    if result["files"]:
+        print(f"Saved line coverage for {len(result['files'])} files. The Tests page now shows it by platform.")
+    else:
+        print("No lines could be measured. The reasons are above, and the Tests page shows them for each group.")
     return len(result["files"])
 
 
@@ -454,15 +457,19 @@ def run_plan(name: str) -> int:
 
 
 def coverage() -> int:
-    """The Tests page's one coverage button: line coverage by platform (.NET and Python test groups), then the project's
-    overall measurement, which is skipped when it would only run the same Python tests under coverage again."""
+    """The Tests page's one coverage button: line coverage by platform (.NET, Python, Gradle and JavaScript test groups), then the
+    project's overall measurement, which is skipped when it would only run the same tests under coverage again."""
     from dev_console import PROJECT_CONFIG, project_uses_xcode, run_calculate_coverage
     from orchestrator import coverage as coverage_tools
 
     measured_files = _measure_platforms()
-    tool = None if project_uses_xcode() else coverage_tools.chosen_tool(PROJECT_CONFIG.root, PROJECT_CONFIG.test_command)
-    if measured_files and tool == "python":
-        print("The overall figure comes from the per-platform run above (the same Python tests, already measured).")
+    uses_xcode = project_uses_xcode()
+    tool = None if uses_xcode else coverage_tools.chosen_tool(PROJECT_CONFIG.root, PROJECT_CONFIG.test_command)
+    # The per-platform run already measured these tests (Python, JavaScript, Gradle, .NET). The overall step would run them
+    # again, and fails for a package or module that isn't at the project root. Go, Rust and Swift packages aren't measured per
+    # platform, and an Xcode project's headline figure is the overall one, so those still get it.
+    if measured_files and not uses_xcode and tool in (None, "python", "javascript"):
+        print("The overall figure comes from the per-platform run above (those tests were measured directly).")
         return 0
     overall = run_calculate_coverage([], [], interactive=False)
     return 0 if overall is not None or measured_files else 1

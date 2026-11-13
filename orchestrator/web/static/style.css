@@ -5044,3 +5044,16 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .server-main .grow { flex: 1 1 0; }
 .server-details > summary { cursor: pointer; width: fit-content; }
 .server-more { margin-top: 8px; }
+
+/* Signing keys on App delivery */
+.signing-row p { margin-top: 4px; }
+.signing-steps { margin: var(--space-3) 0; padding-left: var(--space-5); display: grid; gap: var(--space-3); }
+.signing-steps input[type=text] { width: 100%; margin-top: var(--space-2); }
+.signing-option { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--r-md, 8px); margin-top: var(--space-3); justify-items: start; }
+.signing-risks { margin: var(--space-2) 0 var(--space-3); padding-left: var(--space-5); display: grid; gap: var(--space-1); }
+#signing-copy-panel { margin-top: var(--space-3); width: 100%; }
+
+/* Platforms line under the sign-in options */
+.signin-platforms { margin: 0; text-align: center; color: var(--muted); font-size: var(--type-secondary); line-height: 1.8; }
+.signin-platform { white-space: nowrap; color: var(--text); font-weight: var(--weight-medium); }
+.signin-platform .icon { position: static; display: inline-block; width: 1.15em; height: 1.15em; vertical-align: -0.2em; margin-right: 0.25em; }

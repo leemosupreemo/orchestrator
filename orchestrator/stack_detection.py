@@ -27,6 +27,43 @@ class DetectedStack:
     project_dir: str | None = None  # a stack that lives in a subfolder (Unity), relative to the repo root; None = the root itself
 
 
+GRADLE_FILES = ("settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle")
+
+
+def _gradle_build_text(root: Path) -> str:
+    """The Gradle build files at the root and one level down (an app/ module), enough to tell what kind of project it is."""
+    texts: list[str] = []
+    folders = [root]
+    try:
+        folders += sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".") and p.name not in ("node_modules", "build", "Pods"))[:12]
+    except OSError:
+        pass
+    for folder in folders:
+        for name in ("build.gradle.kts", "build.gradle"):
+            try:
+                if (folder / name).is_file():
+                    texts.append((folder / name).read_text(encoding="utf-8", errors="ignore")[:200_000])
+            except OSError:
+                continue
+    return "\n".join(texts)
+
+
+def _gradle_stack(root: Path) -> DetectedStack | None:
+    """An Android app (assemble the debug build, run its unit tests) or a plain Java / Kotlin Gradle project. Nothing is run."""
+    present = [name for name in GRADLE_FILES if (root / name).is_file()]
+    if not present:
+        return None
+    text = _gradle_build_text(root)
+    wrapper = "./gradlew" if (root / "gradlew").is_file() else "gradle"
+    kotlin = "kotlin" in text.lower() or any(True for _ in root.glob("**/src/main/kotlin"))
+    language = "kotlin" if kotlin else "java"
+    if "com.android." in text:
+        return DetectedStack(language=language, framework="gradle", display_name="Android (Gradle)", build_command=f"{wrapper} assembleDebug",
+                             test_command=f"{wrapper} testDebugUnitTest", uses_xcode=False, manifest_file=present[0])
+    return DetectedStack(language=language, framework="gradle", display_name=f"{'Kotlin' if kotlin else 'Java'} (Gradle)", build_command=f"{wrapper} build -x test",
+                         test_command=f"{wrapper} test", uses_xcode=False, manifest_file=present[0])
+
+
 UNITY_VERSION_FILE = Path("ProjectSettings") / "ProjectVersion.txt"
 UNITY_EDITOR_ROOT = "/Applications/Unity/Hub/Editor"
 
@@ -170,6 +207,11 @@ def _detect_project_stack(root: Path) -> DetectedStack:
             uses_xcode=False,
             manifest_file="Cargo.toml",
         )
+
+    # 3b. Gradle: an Android app, or a Java / Kotlin project
+    gradle_stack = _gradle_stack(root)
+    if gradle_stack is not None:
+        return gradle_stack
 
     # 4. Python
     pyproject = root / "pyproject.toml"

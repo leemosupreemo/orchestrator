@@ -34,7 +34,7 @@ def _prd_question(section_id: str, key: str, required: bool = False) -> dict[str
 QUESTIONS: list[dict[str, Any]] = [
     {"key": "name", "label": "What's it called?", "help": "A working name is fine. It becomes the folder name.", "kind": "text", "required": True, "section": "project"},
     {"key": "platform", "label": "What are you building it for?", "help": "Pick every platform you want, or let the AI recommend.", "kind": "multi", "required": True,
-     "options": ["iOS app", "Android app", "macOS app", "Windows or Linux app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"], "section": "project"},
+     "options": ["iOS app", "Android app", "Web app", "Backend / API", "Command-line tool or library", "Not sure: recommend for me"], "section": "project"},
     _prd_question("pitch", "pitch"),
     _prd_question("who", "audience"),
     _prd_question("features", "features"),
@@ -54,8 +54,6 @@ RECOMMEND = "Not sure: recommend for me"
 PLATFORM_NEEDS: dict[str, list[str]] = {
     "iOS app": ["An Xcode project with a scheme and a test target", "Firebase App Distribution (or TestFlight) to put builds on testers' phones", "Simulator checks for screens"],
     "Android app": ["A Gradle project with unit and instrumented test tasks", "Firebase App Distribution to put builds on testers' phones"],
-    "macOS app": ["An Xcode project with a scheme and a test target", "Code signing for sharing builds"],
-    "Windows or Linux app": ["A build toolchain for the framework you pick", "A packaging step testers can install"],
     "Web app": ["A package manager and a dev server", "A unit test runner plus a browser test tool", "Hosting for a preview link"],
     "Backend / API": ["A runtime and a test runner", "A way to run it locally with a database", "A deploy target"],
     "Command-line tool or library": ["A language toolchain and test runner", "A package registry if others will install it"],

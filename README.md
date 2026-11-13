@@ -4,7 +4,7 @@
 
 Orchestrator brings planning, implementation, review, testing, and delivery into a single multi-agent process. It distributes work across local and remote machines, assigns different LLMs to specialized roles, and carries each change from an idea or bug report through verification.
 
-Orchestrator began with deep support for Swift and Xcode. It is now expanding across languages, with beta support for Rust, Python, Node.js/TypeScript, Go, Swift Package Manager, and Xcode projects.
+Orchestrator runs on a Mac and fully supports **iOS, Android and web** projects (see [Supported platforms](#-supported-platforms)). Other languages and stacks (Rust, Python, Go, Swift Package Manager) are detected in beta.
 
 ---
 
@@ -21,13 +21,14 @@ Orchestrator began with deep support for Swift and Xcode. It is now expanding ac
 *   **Fleet Orchestration**: Dispatch heavy builds or exhaustive test suites to remote machines via SSH. The Orchestrator handles branch synchronization, worker package installation, remote execution, and job output automatically.
 *   **Interactive Account Setup**: Detect installed AI and GitHub CLIs, then sign in or add API keys from the wizard without restarting.
 *   **GitHub, GitLab, Bitbucket or plain git**: With GitHub, jobs become issues and finished work a pull request (through the `gh` CLI). With any other host, or none, jobs run on their own branches, which are pushed for a merge request or merged locally. See [Code hosts](docs/code-hosts.md).
-*   **Multi-Language Project Setup (Beta)**: Detect Rust, Python, Node.js/TypeScript, Go, Swift Package Manager, and Xcode projects, then configure the appropriate build and test commands.
+*   **Project setup**: Detect Xcode, Android (Gradle) and Node.js/TypeScript projects and configure their build and test commands. Rust, Python, Go and Swift Package Manager projects are detected in beta.
+*   **Signing keys, checked for you**: App delivery shows whether this computer has the key that signs your builds (the App Store Connect key for iOS, the release keystore for Android), walks you through setting it up, and can copy it from another of your computers after a security warning.
 
 ---
 
 ## 🛠️ Install
 
-On a Mac or Linux computer, one command installs what's missing, installs Orchestrator, adds the computer to your account and starts it at login:
+On a Mac, one command installs what's missing, installs Orchestrator, adds the computer to your account and starts it at login:
 
 ```bash
 curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh
@@ -121,6 +122,20 @@ Add workers in `.orchestrator/config/machines.json` and prepare them with:
 orchestrator worker-install --machine worker1
 orchestrator worker-check --machine worker1
 ```
+
+---
+
+## 📱 Supported platforms
+
+Orchestrator runs on **macOS**. From that Mac it works on three kinds of project:
+
+| Project | Build, test and coverage | Send to testers |
+| --- | --- | --- |
+| **iOS** | Xcode builds and tests, simulator screenshots, line coverage | Archive, sign, and upload the IPA to Firebase App Distribution |
+| **Android** | Gradle builds and unit tests (instrumented tests by hand), emulator screenshots, line coverage when the module writes a coverage report | Build the APK or AAB and upload it to Firebase App Distribution |
+| **Web** | `npm`, `pnpm`, `yarn` or `bun` builds and tests (Jest, Vitest), screenshots, line coverage | A preview link on Firebase Hosting (it expires after 7 days) |
+
+Not supported yet: running Orchestrator on Windows or Linux, macOS, tvOS, watchOS or visionOS apps, publishing to Google Play, and deploying a web app to production (previews only). Android needs the Android SDK and Gradle on the Mac that builds it.
 
 ---
 

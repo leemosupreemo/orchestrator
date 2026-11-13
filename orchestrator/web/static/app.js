@@ -2451,6 +2451,10 @@ function showSignInGate(message, kind = "error") {
           <span>Continue as ${esc(hostedUser.email || "you")}</span>
           <span class="last-used-tag">Last used</span>
         </button>` : ""}
+        <p class="signin-platforms">Fully supports
+          <span class="signin-platform"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>web</span>,
+          <span class="signin-platform"><svg class="icon" aria-hidden="true"><use href="#i-apple"/></svg>iOS</span>, and
+          <span class="signin-platform"><svg class="icon" aria-hidden="true"><use href="#i-android"/></svg>Android</span> platforms</p>
         ${isRemote && !hosted ? `
         <div class="backend-config-card">
           <div class="row between gap-8">
@@ -5859,6 +5863,163 @@ function serverCardHtml(view, canSend, open = false) {
     </div>`;
 }
 
+// ---------------------------------------------------------------- signing keys (App delivery)
+
+const SIGNING_STATE = {
+  ready: ["Ready", "ok"], "too-open": ["Too open", "warn"], none: ["Not set up", ""], partial: ["Incomplete", "warn"],
+  missing: ["Not on this computer", "warn"], "not-needed": ["Not needed", ""], env: ["Set outside the project", ""], unknown: ["Can't tell", ""],
+};
+
+function signingHint(item) {
+  const missing = (item.files || []).filter((f) => !f.here).map((f) => f.label.toLowerCase());
+  const hints = {
+    "ios/none": "Lets this computer sign iOS builds without Xcode being signed in. One key covers all your apps.",
+    "ios/partial": "The key id, issuer or file is missing.",
+    "ios/missing": item.on_another_computer ? "The project's settings point at another computer's folder." : "The key file isn't in ~/.private_keys on this computer.",
+    "ios/too-open": "Other people who use this computer could read it.",
+    "android/missing": missing.length ? `Not here: ${missing.join(", ")}.` : "",
+    "android/not-needed": "Tester builds use the debug key, so there's nothing to set up.",
+    "android/env": `Release signing reads ${(item.env || []).join(", ")}. Orchestrator can't check those.`,
+    "android/unknown": "Orchestrator couldn't read this project's Gradle signing setup.",
+  };
+  return hints[`${item.platform}/${item.state}`] || "";
+}
+
+function signingRowHtml(item, owner) {
+  if (!item || item.state === "no-project") return "";
+  const [label, tone] = SIGNING_STATE[item.state] || [item.state, ""];
+  const act = { none: ["setup", "Set up…"], partial: ["setup", "Finish setup…"], missing: ["get", "Get it here…"], "too-open": ["secure", "Make private"] }[item.state];
+  const hint = signingHint(item);
+  return `<div class="signing-row" data-signing="${esc(item.platform)}">
+      <div class="row gap-12 align-center"><strong>${esc(item.label)}</strong><span class="pill ${tone}">${esc(label)}</span><span class="grow"></span>
+        ${owner && act ? `<button type="button" class="btn small ${act[0] === "secure" ? "" : "primary"}" data-signing-act="${act[0]}">${act[1]}</button>` : ""}</div>
+      ${hint ? `<p class="muted t-secondary m-0">${esc(hint)}</p>` : ""}</div>`;
+}
+
+async function loadSigningCard(box) {
+  if (!box) return;
+  const draw = (view) => {
+    const owner = state.you?.role !== "member";
+    const rows = [view.ios, view.android].map((item) => signingRowHtml(item, owner)).join("");
+    box.hidden = !rows;
+    if (!rows) return;
+    const details = [view.ios && `iOS: ${view.ios.file || "no key set up yet"}, kept in ${view.ios.folder}`,
+      ...(view.android?.files || []).map((f) => `Android: ${f.label} (${f.name || "unknown"}) ${f.here ? "is here" : "is not here"}`)].filter(Boolean);
+    box.innerHTML = `<div class="card-h"><h2>Signing</h2><button type="button" class="btn small ghost" id="signing-refresh">Refresh</button></div>
+      <div class="card-b stack gap-12">${rows}
+        <details class="server-details"><summary class="muted t-secondary">Details</summary>
+          <div class="stack gap-8 server-more">${details.map((d) => `<div class="muted t-secondary">${esc(d)}</div>`).join("")}
+            <div class="muted t-secondary">Signing keys are secrets. They stay on the computer that builds and are never put in the project's files.</div></div></details></div>`;
+    box.querySelector("#signing-refresh").addEventListener("click", load);
+    box.querySelectorAll("[data-signing-act]").forEach((btn) => btn.addEventListener("click", async () => {
+      const item = view[btn.closest("[data-signing]").dataset.signing];
+      if (btn.dataset.signingAct === "setup") await signingSetupDialog(item);
+      else if (btn.dataset.signingAct === "get") await signingGetDialog(item, view);
+      else await runAction("signing_secure", {}, { skipConfirm: true });
+    }));
+  };
+  const load = async () => { try { draw(await api("signing")); } catch { box.hidden = true; } };
+  await load();
+}
+
+const ISSUER_PATTERN = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
+
+// No key yet: Apple makes it in a web page (that step is the person's), everything after it is done here.
+async function signingSetupDialog(ios) {
+  const render = (item) => {
+    const downloads = item.downloads || [];
+    return `<p class="muted m-0">Apple makes this key in a web page, so the first step is yours. Keys belong to your team: one key works for all your apps.</p>
+      <ol class="signing-steps">
+        <li><a href="${esc(item.keys_url)}" target="_blank" rel="noopener">Open App Store Connect → Keys ↗</a>. Create a key with the <strong>Developer</strong> role. Apple lets you download it once.</li>
+        <li>The file you downloaded:
+          ${downloads.length ? downloads.map((d, i) => `<label class="row gap-8"><input type="radio" name="file" value="${esc(d.name)}"${(item.key_id ? d.id === item.key_id : i === 0) ? " checked" : ""}> <code>${esc(d.name)}</code> <span class="muted t-secondary">in ${esc(d.folder)}</span></label>`).join("")
+            : `<div class="row gap-8 align-center"><span class="muted">None found in Downloads or on the Desktop yet.</span> <button type="button" class="btn small" id="signing-recheck">Check again</button></div>`}</li>
+        <li>The Issuer ID, shown above the keys on the same page:
+          <input type="text" name="issuer" class="mono" placeholder="69a6de7e-8b0c-47e3-e053-5b8c7c11a4d1" autocomplete="off" spellcheck="false">
+          ${(item.issuer_hints || []).map((h) => `<button type="button" class="btn small ghost" data-issuer="${esc(h.issuer)}">Use the one from ${esc(h.from)}</button>`).join(" ")}</li>
+      </ol>
+      <p class="muted t-secondary m-0">The key is copied into ~/.private_keys and made owner-only. The download stays where it is, so you can delete it once a build works.</p>
+      <p class="muted t-secondary m-0">Rather not use a key? Sign in to Xcode with your Apple ID on this Mac and keep automatic signing.</p>`;
+  };
+  const answer = formDialog("Set up the iOS signing key", render(ios), "Save key", { compact: false });
+  const ok = $("#dialog-ok");
+  const body = $("#dialog-body");
+  const valid = () => Boolean(body.querySelector('input[name="file"]:checked')) && ISSUER_PATTERN.test(body.querySelector('input[name="issuer"]')?.value.trim() || "");
+  const wire = () => {
+    ok.disabled = !valid();
+    body.querySelectorAll('input[name="issuer"], input[name="file"]').forEach((el) => el.addEventListener("input", () => { ok.disabled = !valid(); }));
+    body.querySelectorAll("[data-issuer]").forEach((b) => b.addEventListener("click", () => { body.querySelector('input[name="issuer"]').value = b.dataset.issuer; ok.disabled = !valid(); }));
+    body.querySelector("#signing-recheck")?.addEventListener("click", async () => {
+      const issuer = body.querySelector('input[name="issuer"]').value;
+      try { body.innerHTML = render((await api("signing")).ios || ios); } catch (err) { toast(err.message, true); return; }
+      body.querySelector('input[name="issuer"]').value = issuer;
+      wire();
+    });
+  };
+  wire();
+  const result = await answer;
+  if (result?.file) await runAction("signing_import", { file: result.file, issuer: result.issuer.trim() }, { skipConfirm: true });
+}
+
+// The key is on another computer: use that computer, or copy it here (a second copy of a secret, so it says so first).
+async function signingGetDialog(item, view) {
+  const ios = item.platform === "ios";
+  const machines = view.machines || [];
+  const name = ios ? item.file || "the key" : "the signing files";
+  let found = null; // which computers have it, once asked
+  const copyPanel = (from) => `<div class="notice m-0" id="signing-copy-panel" data-from="${esc(from)}"><strong>Before you copy ${esc(name)} from ${esc(from)}:</strong>
+      <ul class="signing-risks">
+        <li>This makes a <strong>second copy of a secret</strong>${ios ? " that can sign and upload apps as your team" : " that signs your release builds. If it leaks it can't be replaced for an app already on Google Play"}.</li>
+        <li>Anyone who gets either copy can act as you. Copy only between computers you own and control, never to a shared or work computer.</li>
+        <li>It goes over SSH between your two computers. It doesn't pass through the browser, Orchestrator's servers or GitHub.</li>
+        <li>It's saved owner-only${ios ? ", and you can revoke the key any time in App Store Connect" : ""}. If a different file is already there, nothing is replaced.</li></ul>
+      <label class="row gap-8"><input type="checkbox" id="signing-understood"> I understand and want to copy it</label>
+      <div class="row"><button type="button" class="btn danger" id="signing-copy-go" disabled>Copy ${ios ? "key" : "files"} here</button><button type="button" class="btn ghost" id="signing-copy-cancel">Not now</button></div></div>`;
+  const render = () => `<p class="m-0">${esc(ios ? item.file || "The key" : "The signing files")} ${ios ? "isn't" : "aren't"} on this computer. Two ways to carry on:</p>
+    <div class="signing-option"><strong>Use the computer that has it</strong>
+      <p class="muted t-secondary m-0">Open Orchestrator on that computer and send the build from there. Nothing is copied.</p>
+      <a class="btn" href="#/computers" id="signing-use-other">Choose a computer</a></div>
+    <div class="signing-option"><strong>Copy it here</strong>
+      ${machines.length ? `<p class="muted t-secondary m-0">Looks on your computers that are set up for SSH, and copies from the one that has it.</p>
+        <div class="row gap-8 align-center"><button type="button" class="btn" id="signing-find">${found ? "Look again" : "Find it on my computers"}</button><span class="muted t-secondary" id="signing-find-note"></span></div>
+        ${found ? `<div class="stack gap-8" id="signing-found">${found.map((c) => c.has === true
+          ? `<div class="row gap-8 align-center"><span>${esc(c.name)} has it</span><button type="button" class="btn small" data-signing-from="${esc(c.name)}">Copy from ${esc(c.name)}…</button></div>`
+          : `<div class="muted t-secondary">${esc(c.name)}: ${c.has === false ? "doesn't have it" : "couldn't be reached"}</div>`).join("") || `<div class="muted t-secondary">No computers to check.</div>`}</div>` : ""}
+        <div id="signing-copy-slot"></div>`
+        : `<p class="muted t-secondary m-0">No other computers are set up for SSH. Copy it by hand, then press Refresh on the card: ${ios
+          ? `<code>scp "&lt;that computer&gt;:~/.private_keys/${esc(item.file || "AuthKey_ID.p8")}" ~/.private_keys/ &amp;&amp; chmod 600 ~/.private_keys/${esc(item.file || "AuthKey_ID.p8")}</code>`
+          : "copy the files named above into the same places in this project, and keep them out of git."}</p>`}</div>`;
+  const done = formDialog(ios ? "Get the iOS signing key" : "Get the Android signing files", render(), "Close", { cancelLabel: "Close" });
+  $("#dialog-ok").hidden = true; // one Close is enough; the actions are inside
+  const body = $("#dialog-body");
+  const wire = () => {
+    body.querySelector("#signing-find")?.addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      body.querySelector("#signing-find-note").textContent = "Asking your computers…";
+      try {
+        const started = await api("signing/find", { method: "POST", body: { platform: item.platform } });
+        found = (await waitForTask(started, { timeoutMs: 3 * 60 * 1000 })).computers;
+      } catch (err) { toast(err.message, true); found = []; }
+      body.innerHTML = render();
+      wire();
+    });
+    body.querySelectorAll("[data-signing-from]").forEach((b) => b.addEventListener("click", () => {
+      body.querySelector("#signing-copy-slot").innerHTML = copyPanel(b.dataset.signingFrom);
+      const go = body.querySelector("#signing-copy-go");
+      body.querySelector("#signing-understood").addEventListener("change", (e) => { go.disabled = !e.target.checked; });
+      body.querySelector("#signing-copy-cancel").addEventListener("click", () => { body.querySelector("#signing-copy-slot").innerHTML = ""; });
+      go.addEventListener("click", async () => {
+        const from = body.querySelector("#signing-copy-panel").dataset.from;
+        $("#dialog").close("cancel");
+        await runAction("signing_copy", { platform: item.platform, from, to: "local", acknowledged: true }, { skipConfirm: true });
+      });
+    }));
+    body.querySelector("#signing-use-other")?.addEventListener("click", () => $("#dialog").close("cancel"));
+  };
+  wire();
+  await done;
+}
+
 async function confirmServerAction(action, server, whereLabel, view) {
   const verb = { start: "Start", stop: "Stop", restart: "Restart" }[action];
   const command = { start: "docker compose up -d", stop: "docker compose stop", restart: "docker compose restart" }[action];
@@ -6196,7 +6357,7 @@ pages.delivery = async (args, query) => {
   return {
     title: "App delivery",
     sub: web ? "Publish preview links and track releases." : "Launch test builds on devices and monitor pipelines.",
-    html: `<section class="card mb-16" id="server-card" hidden></section>${branchCard}<details class="fold mb-16" id="advanced-delivery"><summary class="card-h"><h2>Advanced delivery settings</h2><span class="muted t-secondary">platform, signing and every option</span></summary>${targetCard}</details>${releaseCard}${buildsCard}${pipelineCard}`,
+    html: `<section class="card mb-16" id="server-card" hidden></section><section class="card mb-16" id="signing-card" hidden></section>${branchCard}<details class="fold mb-16" id="advanced-delivery"><summary class="card-h"><h2>Advanced delivery settings</h2><span class="muted t-secondary">platform, signing and every option</span></summary>${targetCard}</details>${releaseCard}${buildsCard}${pipelineCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
       if (branchSelect) {
@@ -6265,6 +6426,7 @@ pages.delivery = async (args, query) => {
         });
       }
       loadServerCard(view.querySelector("#server-card"), Boolean(testers.configured) && !web); // after the page is up: it asks Docker, which can take a moment
+      if (!web) loadSigningCard(view.querySelector("#signing-card")); // files only: no network unless "Find it" is pressed
       view.querySelector("#delivery-proposal-form")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = Object.fromEntries(new FormData(e.target).entries());

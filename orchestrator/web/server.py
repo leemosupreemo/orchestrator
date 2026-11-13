@@ -121,7 +121,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 # change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
 OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
-OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
+OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 ALLOWED_EMAILS_CACHE_SECONDS = 60
@@ -3906,6 +3906,63 @@ def build_server_argv(action: str, params: dict[str, Any]) -> list[str]:
     return argv
 
 
+def build_signing_argv(action: str, params: dict[str, Any]) -> list[str]:
+    argv = orchestrator_argv("signing", action)
+    if action == "import-ios":
+        file = _text(params, "file", required=True, limit=60)
+        if not re.fullmatch(r"AuthKey_[A-Za-z0-9]{6,20}\.p8", file):
+            raise UIError("That isn't an Apple key file name.")
+        argv += ["--file", file, "--issuer", _text(params, "issuer", required=True, limit=60)]
+        if params.get("replace") in (True, "true", "1", 1):
+            argv += ["--replace"]
+    elif action == "copy":
+        if params.get("acknowledged") not in (True, "true", "1", 1):
+            raise UIError("Confirm that you understand what copying a signing key means.")
+        platform = _choice(params, "platform", ["ios", "android"])
+        argv += ["--platform", platform or "ios", "--from", _name(params, "from"), "--to", _name(params, "to"), "--i-understand"]
+        item = _text(params, "item", limit=20)  # one file from `signing status`, by its id
+        if item:
+            if not re.fullmatch(r"[0-9a-f]{10}", item):
+                raise UIError("Invalid item")
+            argv += ["--file", item]
+        if params.get("replace") in (True, "true", "1", 1):
+            argv += ["--replace"]
+    return argv
+
+
+def signing_view(root: Path, owner: bool) -> dict[str, Any]:
+    """Where each platform's signing key stands on this computer. No network; secret contents never included."""
+    from orchestrator import signing_keys
+    from orchestrator.project_config import load_recent_projects
+    config = read_json_file(runtime_dir(root) / "project.json")
+    projects = [(str(p.get("name") or Path(p["root"]).name), Path(p["root"])) for p in load_recent_projects(prune_missing=False).get("projects", []) if p.get("root")]
+    view = signing_keys.status(config, root, projects if owner else [])
+    if not owner:  # file names in Downloads and other projects' issuer ids are for the person running this computer
+        for item in (view.get("ios"),):
+            if item:
+                item.pop("downloads", None)
+                item.pop("issuer_hints", None)
+    view["machines"] = [m.name for m in signing_keys.machines_from_config(root)]
+    return view
+
+
+def signing_find(root: Path, platform: str) -> dict[str, Any]:
+    """Which of the SSH computers has the key. Slow (it asks each computer), so it runs as a background task."""
+    from orchestrator import signing_keys
+    config = read_json_file(runtime_dir(root) / "project.json")
+    machines = signing_keys.machines_from_config(root)
+    if platform == "ios":
+        key_id = str(config.get("asc_key_id") or "")
+        if not signing_keys.KEY_ID.fullmatch(key_id):
+            raise UIError("This project has no App Store Connect key id yet, so there is nothing to look for.")
+        computers = signing_keys.find_ios_elsewhere(key_id, machines, root)
+    else:
+        view = signing_keys.android_view(config, root) or {}
+        secrets = [signing_keys.android_secret(f) for f in view.get("files", []) if f.get("copyable") and not f.get("here")]
+        computers = signing_keys.find_elsewhere(secrets, machines, root) if secrets else [{"name": m.name, "has": None} for m in machines]
+    return {"platform": platform, "computers": computers}
+
+
 def server_machines(root: Path) -> list[dict[str, Any]]:
     """Computers a server can be managed on: this one, and any SSH machine that has an address and a project folder."""
     machines = read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", [])
@@ -5472,6 +5529,10 @@ ACTIONS: dict[str, Action] = {
     "server_start": Action("Start server", lambda p, r: build_server_argv("start", p), fields=["id", "machine"]),
     "server_stop": Action("Stop server", lambda p, r: build_server_argv("stop", p), fields=["id", "machine"]),
     "server_restart": Action("Restart server", lambda p, r: build_server_argv("restart", p), fields=["id", "machine"]),
+    "signing_import": Action("Set up the signing key", lambda p, r: build_signing_argv("import-ios", p), fields=["file", "issuer", "replace"]),
+    "signing_secure": Action("Make the signing key private", lambda p, r: build_signing_argv("secure-ios", p)),
+    "signing_copy": Action("Copy the signing key", lambda p, r: build_signing_argv("copy", p),
+                           fields=["platform", "from", "to", "item", "replace", "acknowledged"]),
     "test_plan": Action("Run test plan", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-plan", _name(p, "name")), fields=["name"]),
     "coverage": Action("Measure coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "coverage")),
     "git_pull": Action("Pull", build_git_pull),
@@ -7992,6 +8053,14 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
                 return
             self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+        elif method == "GET" and parts == ["signing"]:
+            self._json(signing_view(root, self._is_owner()))
+        elif method == "POST" and parts == ["signing", "find"]:
+            self._require_owner("look for the signing key on your other computers")
+            platform = _choice(self._body(), "platform", ["ios", "android"])
+            task = self.server.tasks.start(lambda: signing_find(root, platform or "ios"))
+            self._audit("signing_key_search", platform=platform)
+            self._json({"task": task}, HTTPStatus.ACCEPTED)
         elif method == "GET" and parts == ["servers"]:
             self._json(servers_view(root, (query.get("machine") or [None])[0]))
         elif method == "POST" and parts == ["servers", "app"]:

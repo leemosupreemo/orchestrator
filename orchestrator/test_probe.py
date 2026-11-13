@@ -8,6 +8,9 @@ cheap way to list its tests without running them, and that step also fails when 
     .NET     dotnet test <project> --list-tests            (builds the project, runs no tests)
     pytest   python3 -m pytest <folder> --collect-only -q
     unittest the loader's discover(), which imports the test files and reports the ones it couldn't import
+    Gradle   the group's own command with --dry-run        (Gradle plans the tasks and runs none: it fails when the SDK, JDK or
+                                                            build is missing). The tests aren't counted, so the file scan's count stays.
+    JS       Node and the installed packages are there    (the tests aren't run or counted)
 
 `probe` runs that for a group and returns {status, tests, names, reason}: status is "ok", "needs-setup" (with the reason the
 tool gave) or "error" (it timed out or the output wasn't understood). Results are cached in
@@ -81,6 +84,17 @@ def parse_pytest(output: str) -> list[str] | None:
     return names or None
 
 
+def _gradle_reason(output: str) -> str:
+    """Gradle's own explanation: the line under "* What went wrong:", which names a missing SDK, JDK or task directly."""
+    lines = [x.rstrip() for x in clean(output).splitlines()]
+    for i, line in enumerate(lines):
+        if line.strip().startswith("* What went wrong"):
+            for follow in lines[i + 1:]:
+                if follow.strip():
+                    return follow.strip()[:300]
+    return _first_error(output)
+
+
 def _result(status: str, started: float, now: float, **extra: Any) -> dict[str, Any]:
     names = extra.pop("names", None)
     return {"status": status, "seconds": round(now - started, 1), "tests": len(names) if names is not None else None,
@@ -92,6 +106,22 @@ def probe(group: dict[str, Any], root: Path, *, run: Run = test_commands.execute
     """Check one group with its framework's own listing. Groups for other frameworks come back as "unsupported"."""
     started = clock()
     runner = group.get("runner")
+    if runner == "gradle":
+        if group["command"].startswith("gradle") and not which("gradle"):
+            return _result("needs-setup", started, clock(), reason="Gradle isn't installed, and this project has no gradlew to use instead")
+        code, output, timed_out = run(f"{group['command']} --dry-run", root, TIMEOUT)
+        if timed_out:
+            return _result("error", started, clock(), reason=f"stopped after {TIMEOUT}s")
+        if code == 0:
+            return _result("ok", started, clock(), how="gradle --dry-run: the build is set up, no tests were run")
+        return _result("needs-setup", started, clock(), reason=_gradle_reason(output))
+    if runner == "node":
+        folder = root / (group.get("folder") or ".")
+        if not which("node"):
+            return _result("needs-setup", started, clock(), reason="Node.js isn't installed or isn't on PATH")
+        if not ((folder / "node_modules").is_dir() or (root / "node_modules").is_dir()):
+            return _result("needs-setup", started, clock(), reason="The packages aren't installed here. Run npm install (or your package manager's install) first.")
+        return _result("ok", started, clock(), how="Node.js and the packages are here; the tests weren't run")
     if runner == "dotnet":
         if not which("dotnet"):
             return _result("needs-setup", started, clock(), reason="dotnet isn't installed or isn't on PATH")
