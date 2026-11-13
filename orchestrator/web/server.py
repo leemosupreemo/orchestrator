@@ -207,9 +207,10 @@ class BackgroundTasks:
                 return False
             if item.get("status") == "running":
                 item.update(status="canceled", error="Draft cancelled.")
-            with self.condition:
-                self.condition.notify_all()
-            return True
+        # After the lock is let go: the condition is built on it, and a plain Lock can't be taken twice by the same thread.
+        with self.condition:
+            self.condition.notify_all()
+        return True
 
     def get_raw(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
