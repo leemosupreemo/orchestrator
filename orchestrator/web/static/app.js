@@ -5840,6 +5840,113 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// The project's Docker servers: whether each is up, and Start / Stop / Restart here or on another computer.
+const SERVER_STATE = {
+  running: ["Running", "ok"], stopped: ["Stopped", ""], starting: ["Starting", "warn"], partial: ["Partly running", "warn"],
+  unhealthy: ["Unhealthy", "bad"], "docker-off": ["Docker is off", "warn"], unreachable: ["Can't reach it", "bad"],
+};
+
+function serverCardHtml(view) {
+  if (!view?.servers?.length) return "";
+  const owner = state.you?.role !== "member";
+  const machines = view.machines || [];
+  const where = machines.find((m) => m.name === view.machine)?.label || "This computer";
+  const rows = view.servers.map((sv) => {
+    const st = sv.status || { state: "unreachable", containers: [] };
+    const [label, tone] = SERVER_STATE[st.state] || [st.state, ""];
+    const up = ["running", "starting", "partial", "unhealthy"].includes(st.state);
+    const services = (st.containers?.length ? st.containers : sv.services.map((name) => ({ service: name, state: "not created", health: "" })))
+      .map((c) => `<span class="pill ${c.state === "running" ? (c.health === "unhealthy" ? "bad" : "ok") : ""}" title="${esc(c.state + (c.health ? " / " + c.health : ""))}">${esc(c.service)}</span>`).join(" ");
+    return `<div class="item server-row" data-server="${esc(sv.id)}"><div class="main-col">
+        <div class="title">${esc(sv.name)} <span class="pill ${tone}">${esc(label)}</span></div>
+        <div class="meta">${sv.ports.length ? sv.ports.map((p) => `<code>localhost:${p}</code>`).join(" ") : "no published ports"} · ${services}</div>
+        ${st.message ? `<div class="meta muted">${esc(st.message)}</div>` : ""}</div>
+      <div class="side row gap-8">${owner ? `${up ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>`
+        : `<button type="button" class="btn small primary" data-server-action="start">Start</button>`}` : ""}
+        <button type="button" class="btn small ghost" data-server-logs>Logs</button></div></div>`;
+  }).join("");
+  return `<div class="card-h"><h2>Server</h2><div class="row gap-8 align-center">
+      ${machines.length > 1 ? `<select id="server-machine" class="inline-select" aria-label="Computer">${machines.map((m) => `<option value="${esc(m.name)}"${m.name === view.machine ? " selected" : ""}>${esc(m.label)}</option>`).join("")}</select>` : `<span class="muted t-secondary">${esc(where)}</span>`}
+      <button type="button" class="btn small ghost" id="server-refresh">Refresh</button></div></div>
+    <div class="card-b stack gap-12">
+      ${view.note ? `<p class="notice m-0">${esc(view.note)}</p>` : ""}
+      <div class="list">${rows}</div>
+      <p class="muted t-secondary m-0">Start and Stop only start and stop the containers. Nothing is deleted, and the data stays.</p></div>`;
+}
+
+async function confirmServerAction(action, server, whereLabel, view) {
+  const verb = { start: "Start", stop: "Stop", restart: "Restart" }[action];
+  const command = { start: "docker compose up -d", stop: "docker compose stop", restart: "docker compose restart" }[action];
+  const ports = server.ports.length ? `<p>It uses ${server.ports.map((p) => `<code>${p}</code>`).join(", ")} on that computer.</p>` : "";
+  return formDialog(`${verb} ${server.name}?`, `<p>${verb} <strong>${esc(server.name)}</strong> on <strong>${esc(whereLabel)}</strong>.</p>
+    <p class="muted">It runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code>${action === "stop" ? "" : ", starting Docker first if it isn't running, and waits until every service is up and healthy"}. Nothing is deleted.</p>
+    ${ports}${view.note ? `<p class="notice">${esc(view.note)}</p>` : ""}`, verb, { compact: true, danger: action === "stop" });
+}
+
+async function loadServerCard(box) {
+  if (!box) return;
+  const draw = (view) => {
+    box.innerHTML = serverCardHtml(view);
+    box.hidden = !view?.servers?.length;
+    box.querySelector("#server-refresh")?.addEventListener("click", () => load(view.machine));
+    box.querySelector("#server-machine")?.addEventListener("change", (e) => load(e.target.value));
+    box.querySelectorAll("[data-server-action]").forEach((btn) => btn.addEventListener("click", async () => {
+      const server = view.servers.find((x) => x.id === btn.closest("[data-server]").dataset.server);
+      const where = view.machines.find((m) => m.name === view.machine)?.label || "This computer";
+      if (await confirmServerAction(btn.dataset.serverAction, server, where, view)) {
+        await runAction(`server_${btn.dataset.serverAction}`, { id: server.id, machine: view.machine }, { skipConfirm: true });
+      }
+    }));
+    box.querySelectorAll("[data-server-logs]").forEach((btn) => btn.addEventListener("click", async () => {
+      const id = btn.closest("[data-server]").dataset.server;
+      btn.disabled = true;
+      try {
+        const { logs } = await api(`servers/logs?id=${encodeURIComponent(id)}&machine=${encodeURIComponent(view.machine)}`);
+        await formDialog("Server logs", `<pre class="mono t-secondary server-logs">${esc(logs)}</pre>`, "Close", { compact: false, cancelLabel: "Close" });
+      } catch (err) { toast(err.message, true); } finally { btn.disabled = false; }
+    }));
+  };
+  const load = async (machine) => {
+    box.hidden = false;
+    box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="muted m-0">Checking Docker…</p></div>`;
+    try { draw(await api(`servers${machine && machine !== "local" ? `?machine=${encodeURIComponent(machine)}` : ""}`)); }
+    catch (err) { box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="notice bad m-0">${esc(err.message)}</p></div>`; }
+  };
+  await load();
+}
+
+// "Send to my phone" setup as a confirmation: what the project's own files say, each value with where it was found.
+const PROPOSAL_FIELDS = [  // [setting, label, what it is (when nothing was found), platforms it applies to, label used in the found list]
+  ["delivery_build_command", "Build command", "Runs first, in the project folder: your own build script. Leave it empty if you build the file yourself.", ["file", "android", "web"], "Build script"],
+  ["delivery_artifact", "File it makes", "The .ipa, .apk or .aab it writes. A pattern picks the newest one.", ["file", "android"], "File it makes"],
+  ["firebase_app_id", "Firebase app ID", "Firebase console, Project settings, Your apps.", ["file", "android"], "Firebase app ID"],
+  ["firebase_project_id", "Firebase project", "", ["file", "android", "web"], "Firebase project"],
+  ["firebase_groups", "Tester group", "Where builds go unless you pick another when you send one.", ["file", "android"], "Tester group"],
+];
+
+function deliveryProposalHtml(proposal, canEdit) {
+  if (!proposal || proposal.state !== "proposal") return "";
+  const fields = proposal.fields || {};
+  const platform = proposal.platform;
+  const missing = new Set(proposal.missing || []);
+  const sources = Object.fromEntries((proposal.found || []).map((f) => [f.label, f.source]));
+  const inputs = PROPOSAL_FIELDS.filter(([, , , platforms]) => platforms.includes(platform)).map(([name, label, hint, , foundLabel]) => {
+    const need = (name === "firebase_app_id" && missing.has("Firebase app ID")) || (name === "delivery_artifact" && [...missing].some((m) => m.startsWith("the file")));
+    const note = sources[foundLabel] ? `Found in ${sources[foundLabel]}.` : hint;
+    return `<label class="field"><span>${esc(label)}${need ? ` <span class="pill warn">needed</span>` : ""}</span>
+      <input type="text" name="${name}" class="mono" value="${esc(fields[name] || "")}"${need ? " required" : ""}${canEdit ? "" : " disabled"}>
+      ${note ? `<small class="muted">${esc(note)}</small>` : ""}</label>`;
+  }).join("");
+  return `<form id="delivery-proposal-form" class="stack gap-12">
+    <input type="hidden" name="delivery_platform" value="${esc(platform)}">
+    <div class="stack gap-8"><strong>Here is how this project can send builds to your phone.</strong>
+      <p class="muted m-0">Worked out from your project's own files. Check it, fill in anything marked needed, and press <strong>Use this setup</strong>. After that, sending a build is one button.</p></div>
+    ${inputs}
+    ${(proposal.notes || []).map((n) => `<p class="notice m-0">${esc(n)}</p>`).join("")}
+    ${canEdit ? `<div class="row gap-8"><button type="submit" class="btn primary">Use this setup</button><button type="button" class="btn ghost" data-open-advanced>Choose differently</button></div>` : ""}
+  </form>`;
+}
+
 pages.delivery = async (args, query) => {
   const branchParam = query?.get("branch") || "";
   const d = await api("delivery" + (branchParam ? `?branch=${encodeURIComponent(branchParam)}` : ""));
@@ -5971,7 +6078,7 @@ pages.delivery = async (args, query) => {
         <label class="field"><span>Firebase project <span class="muted">(optional)</span></span><input type="text" name="firebase_project_id" value="${esc(target.firebase_project_id)}" placeholder="my-project"${canEditTarget ? "" : " disabled"}>
           <small class="muted">Defaults to the project chosen by <code>firebase use</code>.</small></label>
         <label class="yolo-switch"><input type="checkbox" role="switch" name="automatic"${target.automatic ? " checked" : ""}${canEditTarget ? "" : " disabled"}><span>Deliver automatically when a job's tests pass</span></label>
-        <p class="muted t-secondary" data-for="file">Leave this off if each upload has to be asked for. Then the <strong>Launch build for testing</strong> button above is one upload, every time you press it.</p>
+        <p class="muted t-secondary" data-for="file">Leave this off if each upload has to be asked for. Then the <strong>Send build</strong> button above is one upload, every time you press it.</p>
         <p class="muted t-secondary">Needs the Firebase CLI installed and signed in: <code>npm install -g firebase-tools</code>, then <code>firebase login</code>.</p>
       </div>
       ${canEditTarget ? `<div><button type="submit" class="btn primary">Save</button></div>` : ""}
@@ -5979,7 +6086,7 @@ pages.delivery = async (args, query) => {
 
   const branchCard = `<section class="card mb-16">
     <div class="card-h">
-      <h2>${web ? "Preview" : "Test Build"}</h2>
+      <h2>${web ? "Preview" : "Send to my phone"}</h2>
       <div class="row gap-8 align-center">
         <span class="muted t-secondary">Branch:</span>
         <select id="delivery-branch-select" class="inline-select">
@@ -5988,7 +6095,7 @@ pages.delivery = async (args, query) => {
       </div>
     </div>
     <div class="card-b stack">
-      ${web ? previewBlock : !testers.configured ? `
+      ${web ? previewBlock : !testers.configured && d.proposal?.state === "proposal" ? deliveryProposalHtml(d.proposal, canEditTarget) : !testers.configured ? `
         <div class="notice">
           <div class="stack">
             <strong>Not ready to send test builds</strong>
@@ -6020,7 +6127,7 @@ pages.delivery = async (args, query) => {
             <input type="text" name="notes" placeholder="e.g. Test notes for this build">
           </label>
           <div class="row gap-12 align-center">
-            <button type="submit" class="btn primary" ${act("distribute")}>Launch build for testing</button>
+            <button type="submit" class="btn primary" ${act("distribute")}>Send build</button>
             ${testers.invite_url ? `
               <button type="button" class="btn small ghost" data-setup-copy="${esc(testers.invite_url)}">Copy invite link</button>
             ` : ""}
@@ -6087,7 +6194,7 @@ pages.delivery = async (args, query) => {
   return {
     title: "App delivery",
     sub: web ? "Publish preview links and track releases." : "Launch test builds on devices and monitor pipelines.",
-    html: `${branchCard}${targetCard}${releaseCard}${buildsCard}${pipelineCard}`,
+    html: `<section class="card mb-16" id="server-card" hidden></section>${branchCard}<details class="fold mb-16" id="advanced-delivery"><summary class="card-h"><h2>Advanced delivery settings</h2><span class="muted t-secondary">platform, signing and every option</span></summary>${targetCard}</details>${releaseCard}${buildsCard}${pipelineCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
       if (branchSelect) {
@@ -6153,8 +6260,22 @@ pages.delivery = async (args, query) => {
           } catch (err) { toast(err.message, true); }
         });
       }
+      loadServerCard(view.querySelector("#server-card")); // after the page is up: it asks Docker, which can take a moment
+      view.querySelector("#delivery-proposal-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const body = Object.fromEntries(new FormData(e.target).entries());
+        body.automatic = false; // sending a build is an explicit act: it is never turned on for you
+        try { await api("delivery/target", { method: "POST", body }); toast("Saved. You can send a build now."); route(); }
+        catch (err) { toast(err.message, true); }
+      });
+      view.querySelector("[data-open-advanced]")?.addEventListener("click", () => {
+        const adv = view.querySelector("#advanced-delivery");
+        if (adv) { adv.open = true; adv.scrollIntoView({ block: "start" }); }
+      });
       view.querySelector("[data-scroll-target]")?.addEventListener("click", (e) => {
         e.preventDefault();
+        const advanced = view.querySelector("#advanced-delivery");
+        if (advanced) advanced.open = true; // the settings it points at live in here
         const pick = e.currentTarget.dataset.pickPlatform;
         const select = view.querySelector("#delivery-platform");
         if (pick && select && !select.disabled) { select.value = pick; select.dispatchEvent(new Event("change")); }
@@ -8626,7 +8747,7 @@ function measuredLine(p, measuredAt) {
     return `<div class="row gap-8 align-center wrap"><strong class="plat-pct ${m.percent >= 70 ? "ok" : m.percent >= 30 ? "warn" : "bad"}">${m.percent}%</strong>
       <span class="muted">of lines run when the tests run <span class="t-secondary">(measured: ${m.covered.toLocaleString()} of ${m.lines.toLocaleString()} lines in the ${plural(m.files, "file")} the tests load, out of ${p.files} in this platform${measuredAt ? `, ${esc(ago(measuredAt))}` : ""})</span></span></div>`;
   }
-  return `<p class="muted t-secondary m-0">Line coverage: ${measuredAt ? "none of this platform's files were loaded by the tests that could be measured (.NET and Python tests are measured; other languages aren't yet)." : "not measured yet. Choose Measure line coverage above."}</p>`;
+  return `<p class="muted t-secondary m-0">Line coverage: ${measuredAt ? "none of this platform's files were loaded by the tests that could be measured (.NET and Python tests are measured; other languages aren't yet)." : "not measured yet. Choose Calculate in the Coverage card above."}</p>`;
 }
 
 function gapList(p) {
@@ -8643,7 +8764,6 @@ function platformCoverageHtml(data) {
   const platforms = data?.platforms?.platforms || [];
   if (!platforms.length) return "";
   const tone = (pct) => (pct >= 70 ? "ok" : pct >= 30 ? "warn" : "bad");
-  const weakest = [...platforms].filter((p) => p.lines >= 100 && ["client", "server", "shared"].includes(p.kind)).sort((a, b) => a.percent - b.percent)[0];
   const rows = platforms.map((p) => `<div class="plat" data-platform="${esc(p.name)}">
       <div class="row gap-8 align-center wrap"><strong>${esc(p.name)}</strong><span class="pill">${esc(p.label)}</span><span class="muted mono t-secondary">${esc(p.paths.join(", "))}</span></div>
       <div class="plat-meter" role="img" aria-label="${p.percent}% of ${esc(p.name)} has a test"><span class="plat-bar ${tone(p.percent)}" style="width:${Math.max(p.percent, 1)}%"></span></div>
@@ -8655,13 +8775,11 @@ function platformCoverageHtml(data) {
   const owner = state.you?.role !== "member";
   const custom = platforms.some((p) => p.detected === false);
   return `<section class="card mb-16" id="platform-coverage"><div class="card-h"><h2>Test coverage by platform <span class="pill" title="${custom ? "You named these platforms yourself." : "Worked out from your folders."}">${custom ? "Custom" : "Automatic"}</span></h2>
-      <div class="row gap-8">${owner ? `<button type="button" class="btn small ghost" id="edit-platforms" title="Rename the platforms, change their kind, or choose which folders belong to each.">Edit platforms</button>` : ""}
-      ${owner ? `<button type="button" class="btn small" ${act("platform_coverage")} title="Runs your .NET and Python tests under a coverage tool and records which lines they run.">Measure line coverage</button>` : ""}</div></div>
+      <div class="row gap-8">${owner ? `<button type="button" class="btn small ghost" id="edit-platforms" title="Rename the platforms, change their kind, or choose which folders belong to each.">Edit platforms</button>` : ""}</div></div>
     <div class="card-b stack gap-12">
-      ${weakest ? `<p class="m-0"><strong>Least tested:</strong> ${esc(weakest.name)}, ${weakest.percent}%. ${weakest.gaps[0] ? `The biggest untested file is <span class="mono">${esc(weakest.gaps[0].path)}</span> (${plural(weakest.gaps[0].lines, "line")}).` : ""}</p>` : ""}
       <div class="stack gap-16">${rows}</div>
       <details class="setup-legend"><summary>How is this worked out?</summary>
-        <p class="muted">Each part of your project is a platform: the client app, the server, shared code, tooling. They are found from your folders, and you can name them yourself with <code>platforms</code> in <code>.orchestrator/project.json</code>. A file counts as having a test when a test mentions it by name. That shows where tests exist and where none do, but it isn't line coverage. <strong>Measure line coverage</strong> runs your tests under a coverage tool (.NET and Python) and shows the lines that really ran, which is the number to trust where it exists. Names that many files share are ignored, so a vague match doesn't count.</p></details>
+        <p class="muted">Each part of your project is a platform: the client app, the server, shared code, tooling. They are found from your folders, and you can name them yourself with <code>platforms</code> in <code>.orchestrator/project.json</code>. A file counts as having a test when a test mentions it by name. That shows where tests exist and where none do, but it isn't line coverage. <strong>Calculate</strong> in the Coverage card above runs your tests under a coverage tool (.NET and Python) and shows the lines that really ran here, which is the number to trust where it exists. Names that many files share are ignored, so a vague match doesn't count.</p></details>
     </div></section>`;
 }
 
@@ -8878,9 +8996,17 @@ pages.tests = async (_, query) => {
   const total = withTests.reduce((n, s) => n + s.tests, 0);
   const hasTests = total > 0;
   // Automatically show 0% if project has no tests yet.
+  // No overall figure, but platforms were measured: add those up, so the card never says "not measured" beside measured numbers.
+  const measuredPlatforms = (data.platforms?.platforms || []).filter((p) => p.measured);
+  const platformTotals = measuredPlatforms.reduce((a, p) => ({ covered: a.covered + p.measured.covered, lines: a.lines + p.measured.lines }), { covered: 0, lines: 0 });
+  const fromPlatforms = platformTotals.lines ? {
+    overall_coverage_pct: Math.round((100 * platformTotals.covered) / platformTotals.lines), total_lines: platformTotals.lines, covered_lines: platformTotals.covered,
+    metric: "lines", tool: "your tests' coverage tools, by platform", total_tests: total, total_suites: withTests.length,
+    timestamp: data.platforms?.measured_at ? new Date(data.platforms.measured_at * 1000).toISOString() : undefined,
+  } : null;
   const effectiveCov = (cov && cov.overall_coverage_pct != null && !cov.estimated)
     ? cov
-    : (!hasTests ? {
+    : fromPlatforms || (!hasTests ? {
         overall_coverage_pct: 0,
         total_lines: cov?.total_lines ?? 0,
         covered_lines: 0,

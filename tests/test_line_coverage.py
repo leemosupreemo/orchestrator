@@ -161,5 +161,45 @@ class MeasureAllTests(unittest.TestCase):
             self.assertTrue(any("Skipping" in line for line in logged))
 
 
+class OneCoverageButtonTests(unittest.TestCase):
+    def test_the_overall_tool_is_chosen_in_the_order_the_measurement_tries_them(self):
+        from orchestrator import coverage as tools
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertIsNone(tools.chosen_tool(root, "dotnet test"))
+            self.assertEqual(tools.chosen_tool(root, "python3 -m pytest"), "python")
+            write(root, "pyproject.toml", "")
+            self.assertEqual(tools.chosen_tool(root, ""), "python")
+            write(root, "package.json", "{}")
+            self.assertEqual(tools.chosen_tool(root, ""), "javascript")
+            write(root, "Package.swift", "")
+            self.assertEqual(tools.chosen_tool(root, ""), "swift")
+            write(root, "Cargo.toml", "")
+            self.assertEqual(tools.chosen_tool(root, ""), "rust")
+            write(root, "go.mod", "")
+            self.assertEqual(tools.chosen_tool(root, ""), "go")
+
+    def test_the_coverage_action_measures_by_platform_and_does_not_run_the_same_python_tests_twice(self):
+        import importlib.util
+        import os
+        import subprocess
+        if importlib.util.find_spec("coverage") is None:
+            self.skipTest("coverage.py isn't installed here")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "lib/calc.py", "def add(a, b):\n    return a + b\n\ndef never():\n    return 1\n")
+            write(root, "tests/test_calc.py", "import unittest\nfrom lib.calc import add\nclass T(unittest.TestCase):\n    def test_add(self): self.assertEqual(add(1, 2), 3)\n")
+            write(root, "pyproject.toml", "[project]\nname = 'x'\n")
+            write(root, ".orchestrator/project.json", json.dumps({"project_name": "P", "build_command": "b", "test_command": "python3 -m unittest discover -s tests"}))
+            env = {**os.environ, "ORCHESTRATOR_PROJECT_ROOT": str(root), "PYTHONPATH": str(PACKAGE_ROOT)}
+            done = subprocess.run([sys.executable, "-m", "orchestrator", "script", "job_actions.py", "coverage"], cwd=root, env=env,
+                                  capture_output=True, text=True, timeout=240)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertIn("Saved line coverage for", done.stdout)
+            self.assertIn("comes from the per-platform run above", done.stdout)  # the overall run was skipped, not repeated
+            cache = json.loads((root / ".orchestrator/output/line-coverage.json").read_text())
+            self.assertEqual(cache["files"]["lib/calc.py"], [3, 4])  # both defs and add()'s body ran; never()'s body didn't
+
+
 if __name__ == "__main__":
     unittest.main()

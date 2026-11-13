@@ -2948,7 +2948,8 @@ class ActionTests(unittest.TestCase):
         sp.run(["git", "config", "branch.main.remote", "origin"], cwd=self.root, check=True)
         sp.run(["git", "config", "branch.main.merge", "refs/heads/main"], cwd=self.root, check=True)
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
-                  "provider": "claude", "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test", "framework": "xcbeautify"}
+                  "provider": "claude", "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test", "framework": "xcbeautify",
+                  "id": "srv-default"}
         (self.root / ".orchestrator" / "epics.json").write_text(json.dumps({"epics": [
             {"id": "ep-test", "name": "Word score", "summary": "", "status": "approved", "feature": "word-score", "requirements": [], "stories": [], "depends_on": []}]}))
         (self.root / ".orchestrator" / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "planned", "paths": [], "depends_on": []}]}))

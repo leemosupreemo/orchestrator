@@ -2237,6 +2237,59 @@ def suggest_tests_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _machine_named(config: Any, name: str | None) -> dict[str, Any] | None:
+    """A machine from machines.json by name; None for this computer."""
+    if not name or name == "local":
+        return None
+    try:
+        machines = json.loads((config.config_dir / "machines.json").read_text(encoding="utf-8")).get("machines", [])
+    except (OSError, ValueError):
+        machines = []
+    match = next((m for m in machines if isinstance(m, dict) and m.get("name") == name), None)
+    if match is None:
+        raise ValueError(f"No computer named {name}. Known: {', '.join(m.get('name', '?') for m in machines) or 'none'}.")
+    return match
+
+
+def server_command(args: argparse.Namespace) -> int:
+    """Docker servers: see whether they are up, start, stop or restart them here or on another computer, read the logs."""
+    from orchestrator import servers
+
+    config = load_project_config()
+    found = servers.find(config.root)
+    if not found:
+        print("No Docker compose file was found in this project.")
+        return 2
+    try:
+        shell = servers.shell_for(config.root, _machine_named(config, args.machine))
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    chosen = [s for s in found if s["id"] == args.server] if args.server else (found if args.action == "status" else found if len(found) == 1 else [])
+    if not chosen:
+        print(("No server named " + args.server + ". " if args.server else "Which server? ") + "Choose one of: " + ", ".join(s["id"] for s in found))
+        return 2
+    code = 0
+    for server in chosen:
+        where = f" on {args.machine}" if args.machine and args.machine != "local" else ""
+        if args.action == "status":
+            result = servers.status(server, shell)
+            ports = ", ".join(f"localhost:{p}" for p in server["ports"]) or "no published ports"
+            print(f"{server['name']}{where}: {result['state']}  ({ports})")
+            for c in result["containers"]:
+                print(f"    {c['service']}: {c['state']}{' / ' + c['health'] if c['health'] else ''}")
+            if result["message"]:
+                print(f"    {result['message']}")
+        elif args.action == "logs":
+            print(servers.logs(server, shell))
+        else:
+            print(f"{args.action.capitalize()} {server['name']}{where} …", flush=True)
+            result = servers.change(server, args.action, shell, lambda line: print(f"  {line}", flush=True))
+            print(("Done: " if result["ok"] else "Not done: ") + f"{server['name']} is {result['state']}." + (f" {result['message']}" if result["message"] else ""))
+            code = code or (0 if result["ok"] else 1)
+    return code
+
+
 def run_tests_command(args: argparse.Namespace) -> int:
     """Run the project's extra test commands by hand: the ones named, or a whole tier (`manual` by default).
     Exit code: 0 all passed, 1 something failed or timed out, 2 nothing could run (blocked or none configured)."""
@@ -2653,6 +2706,11 @@ def _main(argv: list[str] | None = None) -> int:
     check_parser.add_argument("--project", help="Recent project name or project root path")
     check_config_parser = subparsers.add_parser("check-config")
     check_config_parser.add_argument("--project", help="Recent project name or project root path")
+    server_parser = subparsers.add_parser("server", help="Docker servers: status, start, stop, restart or logs, here or on another computer")
+    server_parser.add_argument("action", choices=["status", "start", "stop", "restart", "logs"])
+    server_parser.add_argument("server", nargs="?", help="Server id (see `server status`); optional when the project has one")
+    server_parser.add_argument("--machine", help="A computer from machines.json (default: this one)")
+    server_parser.add_argument("--project", help="Recent project name or project root path")
     suggest_parser = subparsers.add_parser(
         "suggest-tests", help="Show the test setup found for this project (tests, scripts, Docker) and save what you accept")
     suggest_parser.add_argument("--accept", nargs="+", metavar="ID",
@@ -2810,6 +2868,10 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         return validate_config_command()
+    if args.command == "server":
+        if args.project and apply_project_env(args.project):
+            return 1
+        return server_command(args)
     if args.command == "suggest-tests":
         if args.project and apply_project_env(args.project):
             return 1

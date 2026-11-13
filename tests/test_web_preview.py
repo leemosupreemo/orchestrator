@@ -75,8 +75,8 @@ class WebProjectDeliveryTests(unittest.TestCase):
 
     def test_delivery_shows_a_preview_in_place_of_sending_to_devices(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('<h2>${web ? "Preview" : "Test Build"}</h2>', app)
-        self.assertIn("${web ? previewBlock : !testers.configured ?", app)
+        self.assertIn('<h2>${web ? "Preview" : "Send to my phone"}</h2>', app)
+        self.assertIn("${web ? previewBlock : !testers.configured && d.proposal?.state", app)  # a web project shows the preview, never the send setup
         self.assertIn('runAction("web_preview", { branch: selected_branch })', app)
         self.assertIn('act("web_preview", { branch: s.branch })', app)  # the job's Share menu too
 

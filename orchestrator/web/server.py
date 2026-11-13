@@ -121,7 +121,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 # change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
 OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
-OWNER_ONLY_ACTIONS = {"console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
+OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 ALLOWED_EMAILS_CACHE_SECONDS = 60
@@ -1067,7 +1067,7 @@ def distribution_gaps(root: Path, config: dict[str, Any]) -> list[str]:
         gaps = delivery_adapters.validate_platform(SimpleNamespace(root=root, **fields))
         if shutil.which("firebase") is None:
             gaps.append("Install the Firebase CLI: npm install -g firebase-tools, then firebase login")
-        return gaps  # automatic delivery is a choice, not a requirement: Launch build for testing works without it
+        return gaps  # automatic delivery is a choice, not a requirement: Send build works without it
     if not is_mobile_app(root, config):
         return ["This project isn't a phone app, so there are no test builds to send."]
     gaps = []
@@ -1391,6 +1391,9 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     data["web_url"] = repo_web_url(root)
     from orchestrator import delivery_adapters
     data["target"] = {**delivery_adapters.target_view(config), "unity_without_xcode": unity_without_xcode(root, config)}
+    if gaps:  # not ready to send: offer what the project's own files already say, to confirm in one step
+        from orchestrator import delivery_setup
+        data["proposal"] = delivery_setup.propose(root, config)
     if is_web_app(root, config):
         data["web"] = {"gaps": web_preview_gaps(root, config), "previews": web_previews(root),
                        "auto": bool(settings.get("auto_preview"))}
@@ -3890,6 +3893,39 @@ def build_dev_preview(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("script", "dev_preview.py", "--branch", branch, "--root", str(root))
 
 
+def build_server_argv(action: str, params: dict[str, Any]) -> list[str]:
+    argv = orchestrator_argv("server", action, _name(params, "id"))
+    machine = _text(params, "machine", limit=100)
+    if machine and machine != "local":
+        argv += ["--machine", _name({"m": machine}, "m")]
+    return argv
+
+
+def server_machines(root: Path) -> list[dict[str, Any]]:
+    """Computers a server can be managed on: this one, and any SSH machine that has an address and a project folder."""
+    machines = read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", [])
+    out = [{"name": "local", "label": "This computer"}]
+    for m in machines if isinstance(machines, list) else []:
+        if isinstance(m, dict) and m.get("execution_mode") == "ssh" and m.get("ssh_target") and m.get("repo_path") and m.get("name"):
+            out.append({"name": str(m["name"]), "label": str(m["name"])})
+    return out
+
+
+def servers_view(root: Path, machine: str | None) -> dict[str, Any]:
+    """The project's Docker servers and whether each is up, on this computer or a named one. Read-only."""
+    from orchestrator import servers
+    raw = read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", [])
+    chosen = next((m for m in raw if isinstance(m, dict) and m.get("name") == machine), None) if machine and machine != "local" else None
+    if machine and machine != "local" and chosen is None:
+        raise UIError("That computer isn't set up for servers.")
+    shell = servers.shell_for(root, chosen)
+    found = servers.find(root)[:8]
+    docker = servers.docker_ready(shell) if found else True
+    rows = [{**s, "status": servers.status(s, shell, docker=docker)} for s in found]
+    return {"servers": rows, "machines": server_machines(root), "machine": machine or "local", "docker": docker,
+            "note": servers.protected_note(root)}
+
+
 def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
     notes = _text(params, "notes", limit=4000)
     branch = _text(params, "branch", limit=200)
@@ -5414,9 +5450,9 @@ ACTIONS: dict[str, Action] = {
     "test_command": Action("Run test command", lambda p, r: orchestrator_argv("run-tests", "--", _name(p, "name")), fields=["name"]),
     "test_probe": Action("Check tests", lambda p, r: orchestrator_argv("script", "job_actions.py", "probe",
                          *(["--group", _name(p, "group")] if p.get("group") and p.get("group") != "all" else [])), fields=["group"]),
-    "platform_coverage": Action("Measure line coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "measure-coverage"),
-                                confirm="Runs your .NET and Python tests under a coverage tool to measure which lines they execute. "
-                                        "This runs the tests, so it can take a while."),
+    "server_start": Action("Start server", lambda p, r: build_server_argv("start", p), fields=["id", "machine"]),
+    "server_stop": Action("Stop server", lambda p, r: build_server_argv("stop", p), fields=["id", "machine"]),
+    "server_restart": Action("Restart server", lambda p, r: build_server_argv("restart", p), fields=["id", "machine"]),
     "test_plan": Action("Run test plan", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-plan", _name(p, "name")), fields=["name"]),
     "coverage": Action("Measure coverage", lambda p, r: orchestrator_argv("script", "job_actions.py", "coverage")),
     "git_pull": Action("Pull", build_git_pull),
@@ -7919,6 +7955,18 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
                 return
             self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+        elif method == "GET" and parts == ["servers"]:
+            self._json(servers_view(root, (query.get("machine") or [None])[0]))
+        elif method == "GET" and parts == ["servers", "logs"]:
+            from orchestrator import servers as server_tools
+            wanted = (query.get("id") or [""])[0]
+            machine = (query.get("machine") or ["local"])[0]
+            server = next((s for s in server_tools.find(root) if s["id"] == wanted), None)
+            if server is None:
+                raise UIError("No such server.", HTTPStatus.NOT_FOUND)
+            raw = read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", [])
+            chosen = next((m for m in raw if isinstance(m, dict) and m.get("name") == machine), None) if machine != "local" else None
+            self._json({"logs": server_tools.logs(server, server_tools.shell_for(root, chosen))})
         elif method == "GET" and parts == ["test-setup"]:
             from orchestrator import test_setup
             found = test_setup.suggest(root, read_json_file(runtime_dir(root) / "project.json"))

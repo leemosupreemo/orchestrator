@@ -260,6 +260,22 @@ def measure(root: Path, test_command: str | None, run: Run = stream) -> Measurem
         raise CoverageUnavailable(f"Coverage tool or report failed: {exc}") from exc
 
 
+def chosen_tool(root: Path, test_command: str | None) -> str | None:
+    """Which language's tool the overall measurement would use, in the order `_measure` tries them."""
+    command = test_command or ""
+    if (root / "go.mod").exists():
+        return "go"
+    if (root / "Cargo.toml").exists():
+        return "rust"
+    if (root / "Package.swift").exists():
+        return "swift"
+    if (root / "package.json").exists():
+        return "javascript"
+    if any((root / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt")) or "pytest" in command or "unittest" in command:
+        return "python"
+    return None
+
+
 def _measure(root: Path, test_command: str | None, run: Run) -> Measurement:
     """Coverage for a project that isn't built with Xcode, by the language's own tool."""
     with tempfile.TemporaryDirectory(prefix="orchestrator-coverage-") as tmp:
