@@ -281,7 +281,13 @@ def _check():
     # 1. Check Essential Files
     print_header("2. Project Config")
     
-    if PROJECT_CONFIG.firebase_distribution:
+    delivery_platform = getattr(PROJECT_CONFIG, "delivery_platform", "ios")
+    non_ios_delivery = delivery_platform in ("android", "web", "file")
+    if PROJECT_CONFIG.firebase_distribution and non_ios_delivery:
+        have_cli = shutil.which("firebase") is not None
+        print_result(have_cli, f"Firebase CLI ({delivery_platform} delivery)", "OK" if have_cli else "MISSING",
+                     "npm install -g firebase-tools, then firebase login")
+    elif PROJECT_CONFIG.firebase_distribution:
         app_dir = ROOT / PROJECT_CONFIG.project_name
         gs_path = app_dir / "GoogleService-Info.plist"
         if gs_path.exists():
@@ -331,7 +337,7 @@ def _check():
             print(f"     \033[1;91m⚠️  Error checking Xcode: {e}\033[0m")
 
     # iOS Code Signing & Distribution check
-    if PROJECT_CONFIG.firebase_distribution:
+    if PROJECT_CONFIG.firebase_distribution and not non_ios_delivery:
         print_header("2b. iOS Code Signing & Distribution")
         
         has_team = bool(PROJECT_CONFIG.development_team)
@@ -414,16 +420,21 @@ def _check():
     # Grounding Docs
     print_header("3. Grounding Docs (Critical for AI)")
     docs = [
-        ("Architecture", "docs/architecture.md"), 
-        ("Standards", "docs/coding-standards.md"), 
-        ("Build Commands", "docs/build-test-commands.md"), 
-        ("AI Rules", "AGENTS.md")
+        ("Architecture", "docs/architecture.md"),
+        ("Standards", "docs/coding-standards.md"),
+        ("Build Commands", "docs/build-test-commands.md"),
+        ("AI Rules", "AGENTS.md"),
     ]
+    missing_docs = []
     for name, d in docs:
         exists = (ROOT / d).exists()
         print_result(exists, f"Doc: {name}", "OK" if exists else "MISSING", f"Create grounding doc file at '{d}' under the project root")
         if not exists:
+            missing_docs.append(d)
             print(f"        \033[90m(File: {d})\033[0m")
+    if missing_docs:
+        print(f"        \033[1;93m└─ Generate all missing docs: orchestrator init --with-starter-docs --force\033[0m")
+        print(f"        \033[1;96m└─ Or import the project from scratch: orchestrator import --project {ROOT}\033[0m")
 
     # 3. Check GitHub Environment
     print_header("4. GitHub Integration")
@@ -502,6 +513,7 @@ def _check():
         ("XcodeBuildMCP / iOS plugin", ["xcodebuildmcp", "build-ios-apps"], "Build, run, inspect, and screenshot iOS Simulator apps directly."),
         ("Sentry MCP/plugin", ["sentry"], "Inspect production issues, events, stack traces, and release health."),
         ("Playwright MCP", ["playwright"], "Inspect and automate web UIs, dashboards, and browser-based tools."),
+        ("Unity MCP", ["unity-mcp", "unity_mcp", "unitymcp", "mcp-unity", "mcpforunity"], "Read the console, run tests, and inspect scenes in a running Unity Editor."),
     ]
     for label, names, value_desc in optional_integrations:
         detected = detect_codex_integration(names)

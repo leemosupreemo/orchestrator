@@ -8,6 +8,7 @@ import shlex
 from pathlib import Path
 
 from common import (
+    PROJECT_CONFIG,
     DOCS_DIR, 
     OUTPUT_DIR, 
     PROMPTS_DIR,
@@ -22,6 +23,7 @@ from common import (
     get_fallback_simulator_destinations,
     command_with_destination,
     extract_destination_from_command,
+    timeout_note,
 )
 from llm import run_llm
 from model_router import ModelRole
@@ -31,34 +33,17 @@ class EnvironmentValidationError(RuntimeError):
     """Raised when local machine setup prevents meaningful build/test validation."""
 
 
-def detect_simulator_environment_issue(output: str) -> str | None:
-    if "There is no XCFramework found at" in output and ".swiftpm/artifacts" in output:
-        return (
-            "Stale or incomplete SwiftPM binary artifact cache: Xcode is resolving package "
-            "XCFrameworks from missing .swiftpm/artifacts paths. Clear the worker's DerivedData "
-            "and .swiftpm package cache, then re-resolve package dependencies on the worker machine."
-        )
+class DiskFullError(RuntimeError):
+    """Raised when a build or test still ran out of disk space after cleaning up and retrying. The scheduler reads the
+    message (it says "No space left on device") to move the job to another machine."""
 
-    if "CoreSimulator is out of date" in output:
-        return (
-            "Xcode/CoreSimulator mismatch: CoreSimulator is out of date for the selected Xcode. "
-            "Restart the machine or CoreSimulator services, then reopen Xcode. If the issue persists, "
-            "finish installing Xcode components."
-        )
 
-    if "iOS 26.5 is not installed" in output or "Please download and install the platform from Xcode > Settings > Components" in output:
-        return (
-            "Missing iOS simulator platform: install the required iOS platform from "
-            "Xcode > Settings > Components on the worker machine."
-        )
+def disk_full_message(job: dict, step: str) -> str:
+    machine = job.get("assigned_machine") or "local"
+    return f"No space left on device: {machine} ran out of disk space while {step}, even after cleaning up."
 
-    if "Unable to find a device matching the provided destination specifier" in output and "no available devices matched" in output:
-        return (
-            "Unavailable simulator destination: the requested simulator/device is not available on this worker. "
-            "Install the required runtime or select an available simulator destination."
-        )
 
-    return None
+from orchestrator.env_issues import detect_simulator_environment_issue  # noqa: E402,F401
 
 
 def nice_timestamp() -> str:
@@ -90,6 +75,30 @@ def capture_system_logs(out_path: Path):
     except Exception as e:
         print(f"      - Warning: Failed to capture system logs: {e}")
     return False
+
+DEFAULT_BUILD_TIMEOUT = 90 * 60
+DEFAULT_TEST_TIMEOUT = 60 * 60
+
+
+def command_timeout(kind: str) -> int | None:
+    """Seconds the main `build` or `test` command may run: `build_timeout` / `test_timeout` in project.json, else a default
+    long enough for a big Unity import or an Xcode build. 0 turns the limit off. Without one, a hung run blocks a job forever."""
+    value = getattr(PROJECT_CONFIG, f"{kind}_timeout", None)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value or None
+    return DEFAULT_BUILD_TIMEOUT if kind == "build" else DEFAULT_TEST_TIMEOUT
+
+
+def timeout_report(kind: str, command: str, seconds: int, output: str) -> str:
+    """What to tell the fix step (and you) when a build or test run was stopped. Not sent to an AI to analyze: a hang
+    has no error to read, and a second look would only wait again."""
+    what = "build" if kind == "build" else "tests"
+    return (f"# The {what} didn't finish\n\n{timeout_note(seconds)}\n\nCommand: `{command}`\n\n"
+            f"This usually means something is waiting and never answering: a test that connects to a server or Docker that isn't "
+            f"running, a Unity or Xcode process stuck on a dialog or a lock (is the project open in an editor?), or a loop. "
+            f"If it is just slow, raise `{kind}_timeout` (seconds, 0 for no limit) in .orchestrator/project.json.\n\n"
+            f"## Last output\n\n```\n{chr(10).join(output.splitlines()[-60:])}\n```\n")
+
 
 def analyze_failure(kind: str, output: str) -> str:
     prompt = (PROMPTS_DIR / "build_checker.md").read_text(encoding="utf-8")
@@ -152,7 +161,40 @@ def uses_configured_test_tool(command: str, base_command: str) -> bool:
     return bool(command_parts and base_parts and command_parts[0] == base_parts[0])
 
 
+NO_TESTS_NEEDED = {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"}
+
+
 def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
+    """Build and run the project's tests: the main `test_command`, then the extra `test_commands` once it passes."""
+    build_ok, test_ok = run_main_build_and_tests(job, summary_file)
+    if not (build_ok and test_ok):
+        return build_ok, test_ok
+    if (job.get("test_command_override") or "").strip().lower() in NO_TESTS_NEEDED:
+        return build_ok, test_ok  # the job said no tests apply; extra suites are no exception
+    return build_ok, run_extra_test_commands(job)
+
+
+def run_extra_test_commands(job: dict) -> bool:
+    """Run the per-job `test_commands` (and `backend_test_command`). Blocked ones are reported and don't fail the job."""
+    from orchestrator import test_commands
+    commands, errors = test_commands.from_config(PROJECT_CONFIG)
+    for error in errors:
+        print(f"      - Warning: {error}")
+    if not any(c.tier == "per-job" for c in commands):
+        return True
+    out_dir = OUTPUT_DIR / job["job_id"]
+    print_phase("testing", subtext="extra test commands")
+    results = test_commands.run_all(commands, ROOT, out_dir)
+    print("      - Extra test commands:\n" + test_commands.summary(results))
+    if test_commands.passed(results):
+        return True
+    report = test_commands.failure_report(results)
+    write_text(out_dir / "test.log", report)  # what the fix step and the failure views read
+    write_text(out_dir / f"test_analysis_{nice_timestamp()}.md", analyze_failure("test", report))
+    return False
+
+
+def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
     out_dir = OUTPUT_DIR / job["job_id"]
     out_dir.mkdir(parents=True, exist_ok=True)
     
@@ -171,7 +213,7 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
     if override:
         o = override.strip().lower()
         # Robust N/A check
-        is_na = o in {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"}
+        is_na = o in NO_TESTS_NEEDED
         
         if is_na:
             test_cmd = None
@@ -205,10 +247,18 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
         build_ok = False
         for attempt in range(max_retries + 1):
             print(f"      - Running build: {build_cmd} (Attempt {attempt + 1})")
-            build_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=False)
+            build_limit = command_timeout("build")
+            build_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=False, timeout=build_limit)
+
+            if getattr(build_result, "timed_out", False):  # don't run a hung build a second time to capture its output
+                report = timeout_report("build", build_cmd, build_limit, "")
+                write_text(out_dir / "build.log", report)
+                write_text(out_dir / f"build_analysis_{ts}.md", report)
+                print(f"      - Build STOPPED: {timeout_note(build_limit)}")
+                return False, False
 
             if build_result.returncode != 0:
-                cap_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True)
+                cap_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True, timeout=build_limit)
                 full_output = cap_result.stdout + "\n" + cap_result.stderr
 
                 # If destination mismatch, attempt automated fallback retry
@@ -218,7 +268,7 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
                         if candidate == curr_dest: continue
                         print(f"\n\033[1;93m⚠️  Simulator destination rejected during build ({curr_dest}). Retrying with: {candidate}...\033[0m")
                         retry_cmd = command_with_destination(build_cmd, candidate)
-                        retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=False)
+                        retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=False, timeout=build_limit)
                         if retry_res.returncode == 0:
                             build_cmd = retry_cmd
                             build_ok = True
@@ -238,6 +288,9 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
                     purge_zombie_processes([job.get("assigned_machine", "local")], silent=False)
                     print("\033[1;92m✅ Cleanup complete. Retrying build...\033[0m\n")
                     continue
+                if is_disk_full_error(full_output):
+                    write_text(out_dir / "build.log", full_output)
+                    raise DiskFullError(disk_full_message(job, "building"))
                 print("      - Build FAILED. Analyzing errors...")
                 analysis = analyze_failure("build", full_output)
                 write_text(out_dir / f"build_analysis_{ts}.md", analysis)
@@ -258,8 +311,16 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
     test_ok = False
     for attempt in range(max_retries + 1):
         print(f"      - Running tests: {final_test_cmd} (Attempt {attempt + 1})")
-        test_result = run_shell(final_test_cmd, cwd=ROOT, check=False, capture=True)
+        test_limit = command_timeout("test")
+        test_result = run_shell(final_test_cmd, cwd=ROOT, check=False, capture=True, timeout=test_limit)
         full_test_output = test_result.stdout + "\n\nSTDERR:\n" + test_result.stderr
+        if getattr(test_result, "timed_out", False):
+            report = timeout_report("test", final_test_cmd, test_limit, test_result.stdout)
+            write_text(out_dir / f"test_{ts}.log", full_test_output)
+            write_text(out_dir / "test.log", report + "\n\n" + full_test_output)
+            write_text(out_dir / f"test_analysis_{ts}.md", report)
+            print(f"      - Tests STOPPED: {timeout_note(test_limit)}")
+            return build_ok, False
         
         # If destination mismatch, attempt automated fallback retry
         if test_result.returncode != 0 and "xcodebuild" in final_test_cmd and "Unable to find a device matching the provided destination specifier" in full_test_output:
@@ -268,7 +329,7 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
                 if candidate == curr_dest: continue
                 print(f"\n\033[1;93m⚠️  Simulator destination rejected during testing ({curr_dest}). Retrying with: {candidate}...\033[0m")
                 retry_cmd = command_with_destination(final_test_cmd, candidate)
-                retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=True)
+                retry_res = run_shell(retry_cmd, cwd=ROOT, check=False, capture=True, timeout=test_limit)
                 full_test_output = retry_res.stdout + "\n\nSTDERR:\n" + retry_res.stderr
                 if retry_res.returncode == 0:
                     test_result = retry_res
@@ -280,6 +341,9 @@ def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
             purge_zombie_processes([job.get("assigned_machine", "local")], silent=False)
             print("\033[1;92m✅ Cleanup complete. Retrying tests...\033[0m\n")
             continue
+        if test_result.returncode != 0 and is_disk_full_error(full_test_output):
+            write_text(out_dir / "test.log", full_test_output)
+            raise DiskFullError(disk_full_message(job, "running tests"))
         
         write_text(out_dir / f"test_{ts}.log", full_test_output)
         write_text(out_dir / "test.log", full_test_output)

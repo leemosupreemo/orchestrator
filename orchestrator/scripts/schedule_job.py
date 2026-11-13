@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from common import CONFIG_DIR, ROOT, now_iso, read_json, run, write_json, print_phase
+from common import CONFIG_DIR, ROOT, is_disk_full_error, now_iso, read_json, run, write_json, print_phase
 from model_registry import get_model
+from orchestrator.run_check import MIN_DISK_GB, equivalent_model_names, model_names_overlap  # noqa: F401
 from probe_machine import load_machines, probe_machine
 from worker_tools import remote_env_prefix, remote_import_check_command
 
@@ -116,17 +118,6 @@ def ready_groups(job: dict[str, Any]) -> list[dict[str, Any]]:
     return ready
 
 
-def equivalent_model_names(model_name: str) -> set[str]:
-    model = get_model(model_name)
-    if not model:
-        return {model_name}
-    return {model.id, *model.aliases}
-
-
-def model_names_overlap(left: str, right: str) -> bool:
-    return bool(equivalent_model_names(left).intersection(equivalent_model_names(right)))
-
-
 def machine_supports_model(machine: dict[str, Any], candidate: str) -> bool:
     return any(model_names_overlap(candidate, machine_model) for machine_model in machine.get("models", []))
 
@@ -187,7 +178,6 @@ def format_ineligible_machines(ineligible: list[tuple[dict[str, Any], str]]) -> 
 
 
 STICKINESS_BONUS = 150.0  # Strong preference for remaining on previous machine to preserve state
-MIN_DISK_GB = 15  # Minimum required to start a build
 LOW_DISK_THRESHOLD = 30 # Threshold for applying penalties
 
 def score_machine(machine: dict[str, Any], probe: dict[str, Any], group: dict[str, Any], previously_assigned: str | None = None) -> tuple[float, list[str]]:
@@ -298,9 +288,13 @@ def choose_machine_and_model(job: dict[str, Any], group: dict[str, Any], machine
     # Restrict to allowed machines if specified in job
     allowed_names = job.get("allowed_machines")
     
+    out_of_space = {str(i.get("machine")): i for i in job.get("machine_issues") or [] if isinstance(i, dict)}
     for machine in machines:
         if allowed_names and machine["name"] not in allowed_names:
             ineligible.append((machine, "Not in allowed set for this job"))
+            continue
+        if machine["name"] in out_of_space:
+            ineligible.append((machine, "Ran out of disk space earlier on this job"))
             continue
             
         probe = probe_machine(machine)
@@ -389,6 +383,11 @@ def schedule_ready_group(
     job: dict[str, Any],
     machines: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        machines = [machine for machine in machines if machine.get("execution_mode") == "local"]
+        if not machines:
+            raise RuntimeError("Design and Tests jobs require a local worker.")
     groups = ready_groups(job)
 
     if not groups:
@@ -483,6 +482,9 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
         execute_job(job_path, resume=resume)
         return
 
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if read_json(job_path).get("type") in NONPRODUCTION_TYPES:
+        raise RuntimeError("Design and Tests jobs require a local worker.")
     remote_repo = machine["repo_path"]
     job_basename = job_path.name
     ssh_target = remote_probe.get("active_ssh_target") or machine.get("ssh_target")
@@ -533,6 +535,21 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
             print(f"      - Warning: Could not download updated job state from {machine['name']}.")
 
 
+def ran_out_of_disk(job: dict[str, Any]) -> bool:
+    """The job stopped because the machine it was on ran out of disk space."""
+    return job.get("status") == "human-needed" and is_disk_full_error(str(job.get("last_error") or ""))
+
+
+def skip_full_machine(job_path: Path, job: dict[str, Any], machine_name: str) -> dict[str, Any]:
+    """Remember that `machine_name` ran out of disk space for this job, so the next scheduling passes over it."""
+    issues = [i for i in job.get("machine_issues") or [] if isinstance(i, dict) and i.get("machine") != machine_name]
+    issues.append({"machine": machine_name, "reason": "ran out of disk space", "at": now_iso()})
+    job["machine_issues"] = issues
+    job["updated_at"] = now_iso()
+    write_json(job_path, job)
+    return job
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_file")
@@ -544,19 +561,38 @@ def main() -> None:
     job_path = Path(args.job_file)
     job = normalize_job(load_job(job_path))
     machines = load_machines()
-    
-    group, machine, _probe, _model, assignment = schedule_ready_group(job, machines)
-    
-    if not args.dry_run:
-        write_json(job_path, job)
 
-    action = "Would schedule" if args.dry_run else "Scheduled"
-    print(
-        f"{action} {job['job_id']} group {group['group_id']} "
-        f"to {assignment['machine']} using {assignment['model']}"
-    )
+    while True:
+        try:
+            group, machine, _probe, _model, assignment = schedule_ready_group(job, machines)
+        except RuntimeError as exc:
+            if job.get("machine_issues"):  # every machine is full or unavailable: say so on the job, not just in the log
+                job["last_error"] = f"{exc}\nMachines that ran out of disk space: {', '.join(i['machine'] for i in job['machine_issues'])}."
+                write_json(job_path, job)
+            raise
 
-    dispatch_job(job_path, machine, _probe, dry_run=args.dry_run, resume=args.resume)
+        if not args.dry_run:
+            write_json(job_path, job)
+
+        action = "Would schedule" if args.dry_run else "Scheduled"
+        print(
+            f"{action} {job['job_id']} group {group['group_id']} "
+            f"to {assignment['machine']} using {assignment['model']}"
+        )
+
+        try:
+            dispatch_job(job_path, machine, _probe, dry_run=args.dry_run, resume=args.resume)
+        except Exception:
+            # A remote run that ran out of space exits with an error; anything else is still an error.
+            if args.dry_run or not ran_out_of_disk(load_job(job_path)):
+                raise
+        if args.dry_run:
+            return
+        job = normalize_job(load_job(job_path))
+        if not ran_out_of_disk(job):
+            return
+        print(f"\n\033[1;93m⚠️  {machine['name']} ran out of disk space. Trying another machine...\033[0m")
+        job = skip_full_machine(job_path, job, machine["name"])
 
 
 if __name__ == "__main__":

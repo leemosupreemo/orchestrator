@@ -1,0 +1,381 @@
+"""Ask AI on Home: which models answer for Free, Balanced and Complex, what they're told, and that a tier never borrows."""
+from __future__ import annotations
+
+import io
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
+from orchestrator import project_chat as pc  # noqa: E402
+from orchestrator.scripts.model_registry import ModelTier  # noqa: E402
+
+from tests.test_web_ui import ServerTestCase, UI_HEADERS, ui  # noqa: E402
+
+
+def model(id, tier, cost):
+    return SimpleNamespace(id=id, tier=tier, cost_factor=cost)
+
+
+CATALOG = [
+    model("opus", ModelTier.EXTREME, 10.0), model("fable", ModelTier.EXTREME, 8.0),
+    model("sonnet", ModelTier.HIGH, 5.0), model("gpt-mini", ModelTier.MEDIUM, 1.0), model("pricey-pro", ModelTier.HIGH, 9.0),
+    model("ollama-big", ModelTier.HIGH, 0.0), model("free-flash", ModelTier.LOW, 0.0), model("copilot", ModelTier.HIGH, 0.0),
+]
+
+
+class IsolatedState(unittest.TestCase):
+    """Model checks live in the user's state folder: each test gets its own."""
+
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self._env = patch.dict("os.environ", {"ORCHESTRATOR_USER_STATE_DIR": self._state.name})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.addCleanup(self._state.cleanup)
+
+
+class TierTests(IsolatedState):
+    def test_each_model_lands_in_one_tier(self):
+        tiers = pc.chat_tiers(CATALOG)
+        self.assertEqual(set(tiers["free"]["models"]) | {"free-flash"}, {"ollama-big", "copilot", "free-flash"})
+        self.assertEqual(tiers["complex"]["models"], ["opus", "fable"])  # the strongest first
+        self.assertEqual(tiers["balanced"]["model"], "sonnet")  # good before cheap; the cheaper of equals first
+        self.assertEqual(tiers["balanced"]["models"], ["sonnet", "pricey-pro", "gpt-mini"])
+        self.assertEqual(tiers["free"]["model"], "copilot")  # best quality among the free ones (ties by name)
+
+    def test_free_never_includes_a_model_that_costs_anything(self):
+        free = pc.chat_tiers(CATALOG)["free"]["models"]
+        costs = {m.id: m.cost_factor for m in CATALOG}
+        self.assertTrue(free)
+        self.assertTrue(all(costs[m] == 0.0 for m in free))
+
+    def test_an_empty_tier_says_why_and_borrows_nothing(self):
+        tiers = pc.chat_tiers([model("sonnet", ModelTier.HIGH, 5.0)])
+        for tier in ("free", "complex"):
+            self.assertFalse(tiers[tier]["available"])
+            self.assertEqual(tiers[tier]["models"], [])
+            self.assertEqual(tiers[tier]["model"], "")
+            self.assertTrue(tiers[tier]["reason"])
+        self.assertEqual(pc.default_tier(tiers), "balanced")
+        self.assertEqual(pc.default_tier(pc.chat_tiers([model("f", ModelTier.LOW, 0.0)])), "free")
+
+    def test_a_tier_keeps_a_couple_of_fallbacks_at_most(self):
+        many = [model(f"x{i}", ModelTier.EXTREME, 9.0) for i in range(6)]
+        self.assertEqual(len(pc.chat_tiers(many)["complex"]["models"]), 1 + pc.MAX_FALLBACKS)
+
+
+def make_repo(root: Path) -> None:
+    root.mkdir(parents=True)
+    run = lambda *a: subprocess.run(["git", *a], cwd=root, capture_output=True, check=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "Tester")
+    (root / "README.md").write_text("# Snake\n\n## Install\nRun it.\n")
+    (root / "docs").mkdir()
+    (root / "docs" / "design.md").write_text("# Design\nThe board is 20 by 20.\n")
+    run("add", ".")
+    run("commit", "-q", "-m", "Add the board")
+
+
+@unittest.skipUnless(shutil.which("git"), "git required")
+class ContextTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "snake"
+        make_repo(self.root)
+        self.prd = patch("orchestrator.prd.read_text", return_value="# Snake\n\n## Pitch\nA Nokia snake game for phones.\n")
+        self.prd.start()
+
+    def tearDown(self):
+        self.prd.stop()
+        self.tmp.cleanup()
+
+    def test_the_project_goes_with_every_question(self):
+        ctx = pc.project_context(self.root, "balanced", [{"title": "Add score", "state": {"label": "Planned"}, "branch": "feat/score"}], "Snake")
+        for expected in ("Name: Snake", "Current branch: main", "A Nokia snake game for phones.", "Add the board", "Tester",
+                         "Add score (Planned) · branch feat/score", "#### README.md", "The board is 20 by 20."):
+            self.assertIn(expected, ctx)
+        # A quoted document's headings sit below the context's own sections.
+        self.assertNotIn("\n## Install", ctx)
+        self.assertNotIn("\n## Pitch", ctx)
+        self.assertIn("###### Install", ctx)
+
+    def test_it_stays_within_the_tier_budget(self):
+        (self.root / "docs" / "huge.md").write_text("word " * 50_000)
+        for tier in pc.TIERS:
+            self.assertLessEqual(len(pc.project_context(self.root, tier)), pc.CONTEXT_BUDGET[tier] + 50)
+        self.assertLess(pc.CONTEXT_BUDGET["free"], pc.CONTEXT_BUDGET["balanced"])  # free models tend to have small windows
+
+    def test_any_model_gets_the_conversation_and_the_question_last(self):
+        prompt = pc.build_prompt("## Project\nName: Snake", [{"role": "user", "text": "Hi"}, {"role": "assistant", "text": "Hello"}], "What next?")
+        self.assertIn("User: Hi\nAssistant: Hello", prompt)
+        self.assertTrue(prompt.rstrip().endswith("# New question\nWhat next?"))
+        self.assertLess(prompt.index("Name: Snake"), prompt.index("# Conversation so far"))
+
+
+@unittest.skipUnless(shutil.which("git"), "git required")
+class AskTests(IsolatedState):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "snake"
+        make_repo(self.root)
+        self.tiers = pc.chat_tiers(CATALOG)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_only_the_chosen_tiers_models_are_asked_and_the_answer_is_saved(self):
+        asked = []
+
+        def llm(prompt, models):
+            asked.append(models)
+            return "It's a snake game.", models[1]
+
+        thread = pc.ask(self.root, "What is this?", "free", llm, self.tiers)
+        self.assertEqual(asked, [self.tiers["free"]["models"]])
+        self.assertEqual([m["role"] for m in thread], ["user", "assistant"])
+        self.assertEqual(thread[1]["model"], self.tiers["free"]["models"][1])  # the one that actually answered
+        self.assertEqual(thread[1]["tier"], "free")
+        self.assertEqual(pc.messages(self.root), thread)  # saved with the project
+        pc.ask(self.root, "And then?", "complex", llm, self.tiers)
+        self.assertEqual(len(pc.messages(self.root)), 4)  # one conversation, whichever kind of AI answers
+        pc.clear(self.root)
+        self.assertEqual(pc.messages(self.root), [])
+
+    def test_a_tier_with_nothing_set_up_refuses_instead_of_upgrading(self):
+        tiers = pc.chat_tiers([model("sonnet", ModelTier.HIGH, 5.0)])
+        called = []
+        with self.assertRaises(pc.ChatError) as caught:
+            pc.ask(self.root, "Hi", "free", lambda p, m: called.append(m) or ("x", ""), tiers)
+        self.assertIn("No free model", str(caught.exception))
+        self.assertEqual(called, [])
+
+    def test_empty_long_and_unknown_requests_are_refused(self):
+        llm = lambda p, m: ("x", "")
+        for question, tier in (("  ", "free"), ("x" * (pc.MAX_MESSAGE_CHARS + 1), "free"), ("Hi", "turbo")):
+            with self.assertRaises(pc.ChatError):
+                pc.ask(self.root, question, tier, llm, self.tiers)
+
+
+class AllowListTests(unittest.TestCase):
+    """job_chat_run.py --allow: the model runner never steps outside the list it's given."""
+
+    def run_main(self, argv):
+        sys.path.insert(0, str(PACKAGE_ROOT / "orchestrator" / "scripts"))
+        import job_chat_run
+        seen = {}
+
+        def fake_run_llm(model, prompt, **kw):
+            seen.update(model=model, allowed=kw.get("allowed_models"))
+            return "answer", kw["allowed_models"][-1], "s"
+
+        out = io.StringIO()
+        with patch.object(job_chat_run, "run_llm", fake_run_llm), \
+             patch.object(job_chat_run, "get_prioritized_models", return_value=["opus", "sonnet", "free-flash"]), \
+             patch("sys.stdin", io.StringIO("prompt")), redirect_stdout(out):
+            code = job_chat_run.main(argv)
+        return code, seen, out.getvalue()
+
+    def test_only_the_allowed_models_are_tried_in_order(self):
+        code, seen, out = self.run_main(["--allow", "free-flash,ollama-big"])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["model"], "free-flash")
+        self.assertEqual(seen["allowed"], ["free-flash", "ollama-big"])  # never opus or sonnet
+        self.assertIn("<<<ORCHESTRATOR-MODEL>>>ollama-big", out)  # says which one answered
+
+    def test_without_an_allow_list_it_works_as_before(self):
+        code, seen, _ = self.run_main([])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["model"], "opus")
+
+
+class AvailabilityTests(IsolatedState):
+    """A model is offered only while it really answers: checks, real questions and failures all count."""
+
+    def test_a_model_that_failed_is_left_out_with_why_and_comes_back_later(self):
+        now = 1_000_000.0
+        pc.record_check("opus", False, "out of quota for now", now=now)
+        tiers = pc.chat_tiers(CATALOG, now=now + 60)
+        self.assertEqual(tiers["complex"]["model"], "fable")
+        self.assertEqual(tiers["complex"]["skipped"], [{"model": "opus", "reason": "out of quota for now"}])
+        self.assertEqual(pc.chat_tiers(CATALOG, now=now + pc.FAIL_HOLD + 1)["complex"]["model"], "opus")  # a quota comes back
+
+    def test_models_that_answered_come_first_and_count_as_checked(self):
+        now = 1_000_000.0
+        pc.record_check("pricey-pro", True, now=now)
+        tiers = pc.chat_tiers(CATALOG, now=now + 60)
+        self.assertEqual(tiers["balanced"]["model"], "pricey-pro")
+        self.assertTrue(tiers["balanced"]["checked"])
+        self.assertFalse(tiers["free"]["checked"])
+        self.assertTrue(pc.needs_check(tiers))
+        self.assertFalse(pc.chat_tiers(CATALOG, now=now + pc.CHECK_FRESH + 1)["balanced"]["checked"])  # checked a while ago: again
+
+    def test_a_tier_whose_models_all_failed_says_so(self):
+        pc.record_check("opus", False, "not signed in, or no access")
+        pc.record_check("fable", False, "out of quota for now")
+        tiers = pc.chat_tiers(CATALOG)
+        self.assertFalse(tiers["complex"]["available"])
+        self.assertIn("None of its models answered: opus (not signed in, or no access)", tiers["complex"]["reason"])
+
+    def test_checking_asks_each_tier_until_one_answers(self):
+        asked = []
+        answers = {"opus": (False, "out of quota for now", ""), "fable": (True, "", "fable"),
+                   "sonnet": (True, "", "gpt-6.1-sol"),  # a stand-in answered: sonnet itself didn't
+                   "pricey-pro": (True, "", "pricey-pro"), "copilot": (True, "", "copilot")}
+
+        def probe(model):
+            asked.append(model)
+            return answers.get(model, (False, "didn't answer", ""))
+        tiers = pc.check_tiers(CATALOG, probe, retry_after=0)
+        self.assertEqual(tiers["complex"]["model"], "fable")
+        self.assertEqual(asked.count("opus"), 2)  # a failure is asked once more before it counts
+        self.assertTrue(tiers["complex"]["checked"])
+        self.assertEqual(tiers["balanced"]["model"], "pricey-pro")
+        self.assertEqual(pc.load_checks()["sonnet"]["reason"], "answered by gpt-6.1-sol instead")
+        self.assertNotIn("ollama-big", asked)  # copilot answered first: the rest of Free wasn't asked
+        self.assertFalse(pc.needs_check(tiers))
+
+    def test_a_blip_does_not_take_a_model_away(self):
+        calls = []
+
+        def probe(model):
+            calls.append(model)
+            return (len([c for c in calls if c == model]) > 1, "Invalid API key", model)  # fails once, then answers
+        tiers = pc.check_tiers(CATALOG, probe, retry_after=0)
+        self.assertEqual(tiers["complex"]["model"], "opus")
+        self.assertTrue(pc.load_checks()["opus"]["ok"])
+
+    def test_failures_are_said_in_a_few_words(self):
+        self.assertEqual(pc.failure_reason("Error: You exceeded your current quota (429)"), "out of quota for now")
+        self.assertEqual(pc.failure_reason("The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."), "not offered to this sign-in")
+        self.assertEqual(pc.failure_reason("401 Unauthorized"), "not signed in, or no access")
+        self.assertEqual(pc.failure_reason("claude timed out after 90s"), "didn't answer in time")
+
+    def test_a_real_answer_counts_as_a_check_and_a_given_up_model_as_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "p"
+            make_repo(root)
+            pc.ask(root, "Hi", "free", lambda p, m: ("Hello", "copilot"), pc.chat_tiers(CATALOG))
+        self.assertTrue(pc.load_checks()["copilot"]["ok"])
+        ui.note_model_failures("⚠️  ollama-big failed (model not found). Attempting fallback...\n⚠️  free-flash timed out. Attempting fallback...")
+        checks = pc.load_checks()
+        self.assertEqual((checks["ollama-big"]["ok"], checks["ollama-big"]["reason"]), (False, "not offered to this sign-in"))
+        self.assertEqual(checks["free-flash"]["reason"], "didn't answer in time")
+
+
+class EndpointTests(ServerTestCase):
+    def tiers(self):
+        return patch.object(pc, "ready_models", return_value=CATALOG)
+
+    def test_the_page_gets_the_conversation_and_what_each_tier_would_use(self):
+        with self.tiers():
+            res, data = self.request("GET", "/api/chat")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(data["messages"], [])
+        self.assertEqual(data["tiers"]["complex"]["model"], "opus")
+        self.assertEqual(data["default"], "balanced")
+        self.assertTrue(data["needs_check"])  # nothing checked yet: the page checks before relying on it
+
+    def test_checking_runs_in_the_background_and_answers_with_the_tiers(self):
+        probed = []
+        fake = lambda server, root, model: probed.append(model) or (model != "opus", "out of quota for now" if model == "opus" else "", model)
+        with self.tiers(), patch.object(ui, "probe_model", fake):
+            res, data = self.request("POST", "/api/chat/check", body={}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202)
+            for _ in range(100):
+                _, task = self.request("GET", f"/api/product/task/{data['task']}")
+                if task["status"] != "running":
+                    break
+                time.sleep(0.05)
+        self.assertEqual(task["status"], "done", task)
+        self.assertEqual(task["result"]["tiers"]["complex"]["model"], "fable")
+        self.assertIn("opus", probed)
+
+    def test_a_question_runs_in_the_background_with_only_its_tiers_models(self):
+        calls = []
+
+        def fake(server, root, prompt, models, timeout=240, progress=None):
+            calls.append((prompt, models))
+            return "A snake game.", models[0]
+
+        with self.tiers(), patch.object(ui, "chat_call", fake):
+            res, data = self.request("POST", "/api/chat", body={"message": "What is this?", "tier": "complex"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202)
+            for _ in range(100):
+                _, task = self.request("GET", f"/api/product/task/{data['task']}")
+                if task["status"] != "running":
+                    break
+                time.sleep(0.05)
+        self.assertEqual(task["status"], "done", task)
+        self.assertEqual(calls[0][1], ["opus", "fable"])
+        self.assertIn("# New question\nWhat is this?", calls[0][0])
+        self.assertEqual(task["result"]["messages"][1]["text"], "A snake game.")
+        _, data = self.request("POST", "/api/chat/clear", body={}, headers=UI_HEADERS)
+        self.assertEqual(data["messages"], [])
+
+    def test_an_unavailable_tier_is_refused_at_once(self):
+        with patch.object(pc, "ready_models", return_value=[model("sonnet", ModelTier.HIGH, 5.0)]):
+            res, data = self.request("POST", "/api/chat", body={"message": "Hi", "tier": "free"}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 400)
+        self.assertIn("No free model", data["error"])
+
+    def test_task_streaming_emits_chunks_and_done(self):
+        def fake(server, root, prompt, models, timeout=240, progress=None):
+            if progress:
+                progress.append_chunk("Snake ")
+                time.sleep(0.01)
+                progress.append_chunk("game.")
+            return "Snake game.", models[0]
+
+        with self.tiers(), patch.object(ui, "chat_call", fake):
+            res, data = self.request("POST", "/api/chat", body={"message": "What is this?", "tier": "complex"}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 202)
+            task_id = data["task"]
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
+            conn.request("GET", f"/api/product/task/{task_id}/stream", headers={"Authorization": f"Bearer {self.server.token}"})
+            reply = conn.getresponse()
+            self.assertEqual(reply.status, 200)
+            self.assertEqual(reply.getheader("Content-Type"), "text/event-stream")
+            self.assertEqual(reply.getheader("X-Accel-Buffering"), "no")
+            self.assertIn("no-transform", reply.getheader("Cache-Control"))
+            content = reply.read().decode("utf-8")
+            self.assertIn("event: chunk", content)
+            self.assertIn("Snake ", content)
+            self.assertIn("event: done", content)
+            conn.close()
+
+
+class PageTests(unittest.TestCase):
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def test_the_chat_button_sits_opposite_the_branch_picker(self):
+        app = (self.STATIC / "app.js").read_text()
+        line = app[app.index("function statusLine"):][:2000]
+        self.assertIn('class="ask-ai-btn" data-ask-ai aria-label="Ask AI about this project"', line)
+        self.assertIn('<symbol id="i-chat"', (self.STATIC / "index.html").read_text())
+        panel = app[app.index("async function openAskAi"):][:9000]
+        self.assertIn('name="ask-ai-tier"', app[app.index("function askAiTierButton"):][:600])
+        for bit in ('api("chat")', "waitForTask(started", "Ask AI needs a newer Orchestrator on this computer",
+                    "ASK_AI_TIER_KEY", 'send.textContent = "Stop"', "streamTask(started"):
+            self.assertIn(bit, panel)
+        stream_code = app[app.index("async function streamTask"):][:1200]
+        self.assertIn("if (backend)", stream_code)
+        self.assertIn("pollInterval: 250", stream_code)
+
+
+if __name__ == "__main__":
+    unittest.main()

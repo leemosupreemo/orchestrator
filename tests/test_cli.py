@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,82 @@ class CliTests(unittest.TestCase):
         else:
             os.environ["ORCHESTRATOR_USER_STATE_DIR"] = self.old_state_dir
         self.state_dir.cleanup()
+
+    def run_update(self, *, pipx_install: bool, git_checkout: bool = False, which: str | None = "/usr/bin/pipx", returncode: int = 0):
+        ran: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            ran.append(list(argv))
+            return MagicMock(returncode=returncode[len(ran) - 1] if isinstance(returncode, list) else returncode)
+
+        pkg = Path(tempfile.mkdtemp(prefix="orchestrator-pkg-"))
+        if git_checkout:
+            (pkg / ".git").mkdir()
+        out = io.StringIO()
+        with patch.object(cli, "installed_with_pipx", return_value=pipx_install), \
+             patch("orchestrator.project_config.PACKAGE_ROOT", pkg / "orchestrator"), \
+             patch.object(cli.shutil, "which", return_value=which), \
+             patch.object(cli.subprocess, "run", side_effect=fake_run), redirect_stdout(out):
+            code = cli.update_command(argparse.Namespace(fleet=False))
+        return code, ran, out.getvalue()
+
+    def test_update_reinstalls_pipx_installs_instead_of_trusting_the_version_number(self) -> None:
+        from orchestrator import account
+        code, ran, out = self.run_update(pipx_install=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran, [["/usr/bin/pipx", "install", "--force", account.INSTALL_SPEC]])
+        self.assertIn("Restart `orchestrator ui`", out)
+
+    def test_update_says_so_when_pipx_fails_or_is_missing(self) -> None:
+        code, _, out = self.run_update(pipx_install=True, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertIn("didn't finish", out)
+        code, ran, out = self.run_update(pipx_install=True, which=None)
+        self.assertEqual((code, ran), (1, []))
+        self.assertIn("pipx install --force", out)
+
+    def test_update_pulls_a_git_checkout(self) -> None:
+        code, ran, _ = self.run_update(pipx_install=False, git_checkout=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran[0], ["git", "pull", "--ff-only"])
+
+    def test_git_update_stops_when_pull_fails(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, git_checkout=True, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(ran), 1)
+        self.assertNotIn("updated successfully", out)
+        self.assertIn("pull", out)
+
+    def test_git_update_reports_install_failure(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, git_checkout=True, returncode=[0, 1])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(ran), 2)
+        self.assertNotIn("updated successfully", out)
+
+    def test_git_update_preserves_branch_history_and_requires_restart(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, git_checkout=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran[0], ["git", "pull", "--ff-only"])
+        self.assertIn("Restart `orchestrator ui`", out)
+
+    def test_plain_pip_update_installs_the_matching_release_and_requires_restart(self) -> None:
+        from orchestrator import account
+        code, ran, out = self.run_update(pipx_install=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(ran, [[cli.sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", account.INSTALL_SPEC]])
+        self.assertIn("Restart `orchestrator ui`", out)
+
+    def test_plain_pip_update_failure_is_not_success(self) -> None:
+        code, ran, out = self.run_update(pipx_install=False, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(ran), 1)
+        self.assertIn("didn't finish", out)
+
+    def test_pipx_installs_are_recognized_by_their_virtualenv(self) -> None:
+        with patch.object(cli.sys, "prefix", "/Users/me/.local/pipx/venvs/orchestrator"):
+            self.assertTrue(cli.installed_with_pipx())
+        with patch.object(cli.sys, "prefix", "/Library/Frameworks/Python.framework/Versions/3.14"):
+            self.assertFalse(cli.installed_with_pipx())
 
     def test_init_project_scaffolds_runtime_config(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orchestrator-init-") as temp_dir:
@@ -361,6 +438,22 @@ class CliTests(unittest.TestCase):
 
     @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(False, [], None))
     @patch("orchestrator.scripts.discover_machines.get_local_ssh_hosts", return_value=[])
+    @patch("orchestrator.cli.prompt_text", side_effect=["", ""])
+    @patch("orchestrator.cli.prompt_yes_no", return_value=False)
+    @patch("orchestrator.cli.run_script", return_value=0)
+    def test_wizard_requires_github_before_applying(self, _run, _yes_no, _text, _hosts, _gh) -> None:
+        with tempfile.TemporaryDirectory(prefix="orchestrator-wizard-") as temp_dir:
+            root = Path(temp_dir)
+            (root / "SampleApp.xcodeproj").mkdir()
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = cli.main(["wizard", "--root", str(root), "--project-name", "SampleApp", "--models", "codex"])
+            self.assertEqual(result, 1)
+            self.assertIn("GitHub is required", output.getvalue())
+            self.assertFalse((root / ".orchestrator" / "project.json").exists())
+
+    @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(True, [{"user": "devuser", "host": "github.com", "active": True}], "devuser"))
+    @patch("orchestrator.scripts.discover_machines.get_local_ssh_hosts", return_value=[])
     @patch("orchestrator.cli.prompt_text")
     @patch("orchestrator.cli.prompt_yes_no")
     @patch("orchestrator.cli.prompt_radio")
@@ -447,7 +540,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(final_p_data["development_team"], "TEAM12345")
             self.assertEqual(final_p_data["firebase_distribution"], True)
 
-    @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(False, [], None))
+    @patch("orchestrator.scripts.dev_console.get_github_auth_info", return_value=(True, [{"user": "devuser", "host": "github.com", "active": True}], "devuser"))
     @patch("orchestrator.cli.run_script", return_value=0)
     @patch("orchestrator.cli.prompt_text")
     @patch("orchestrator.cli.prompt_yes_no")
@@ -496,6 +589,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(cli.main(["distribute", "--notes", "Quick test build"]), 0)
         mock_run_script.assert_called_with("smoke_test_delivery.py", [])
         self.assertEqual(os.environ.get("DISTRIBUTION_RELEASE_NOTES"), "Quick test build")
+
+    @patch("orchestrator.connection_log.show", return_value=0)
+    def test_connection_log_command_dispatches_with_arguments(self, mock_show) -> None:
+        self.assertEqual(cli.main(["connection-log", "-n", "25", "-f"]), 0)
+        mock_show.assert_called_once_with(lines=25, follow=True)
 
     def test_audit_project_setup_detects_all_pillars_and_gaps(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orchestrator-audit-") as temp_dir:
@@ -549,6 +647,56 @@ class CliTests(unittest.TestCase):
             self.assertEqual(doc_items["Architecture"], "ok")
             self.assertEqual(doc_items["Coding Standards"], "ok")
             self.assertEqual(doc_items["AI Workflow"], "ok")
+
+class RunTestsCommandTests(unittest.TestCase):
+    """`orchestrator run-tests`: extra test commands by hand, with real (harmless) shell commands."""
+
+    def run_cli(self, entries, argv, **config):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = SimpleNamespace(root=root, runtime_dir=root / "runtime", test_commands=entries,
+                                   backend_test_command=config.get("backend"))
+            out = io.StringIO()
+            with patch("orchestrator.cli.load_project_config", return_value=fake), redirect_stdout(out):
+                code = cli.main(["run-tests", *argv])
+            logs = sorted((root / "runtime" / "output" / "manual-tests").glob("*/test_*.log"))
+            return code, out.getvalue(), [log.name for log in logs]
+
+    def test_runs_the_manual_tier_by_default_and_writes_logs(self) -> None:
+        entries = [{"name": "ok", "command": "echo fine", "tier": "manual"},
+                   {"name": "job", "command": "exit 1"}]  # per-job: not part of a manual run
+        code, out, logs = self.run_cli(entries, [])
+        self.assertEqual(code, 0)
+        self.assertIn("ok: passed", out)
+        self.assertNotIn("job:", out)
+        self.assertEqual(logs, ["test_ok.log"])
+
+    def test_a_failure_exits_1_and_other_commands_still_run(self) -> None:
+        entries = [{"name": "bad", "command": "exit 3", "tier": "manual"},
+                   {"name": "good", "command": "true", "tier": "manual"}]
+        code, out, _ = self.run_cli(entries, [])
+        self.assertEqual(code, 1)
+        self.assertIn("bad: FAILED (exit 3)", out)
+        self.assertIn("good: passed", out)
+
+    def test_names_run_whatever_their_tier(self) -> None:
+        entries = [{"name": "job", "command": "true"}, {"name": "other", "command": "exit 1"}]
+        code, out, logs = self.run_cli(entries, ["job"])
+        self.assertEqual((code, logs), (0, ["test_job.log"]))
+
+    def test_a_blocked_command_exits_2_and_says_why(self) -> None:
+        entries = [{"name": "srv", "command": "true", "tier": "manual", "requires": ["env:NO_SUCH_VARIABLE_FOR_TEST"]}]
+        code, out, _ = self.run_cli(entries, [])
+        self.assertEqual(code, 2)
+        self.assertIn("blocked: NO_SUCH_VARIABLE_FOR_TEST isn't set", out)
+
+    def test_nothing_to_run_and_unknown_names_exit_2(self) -> None:
+        code, out, _ = self.run_cli([], [])
+        self.assertEqual(code, 2)
+        self.assertIn("No test commands to run", out)
+        code, out, _ = self.run_cli([{"name": "a", "command": "true"}], ["nope"])
+        self.assertEqual(code, 2)
+        self.assertIn("No test command named nope. Configured: a", out)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,8 +11,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class DetectedStack:
-    language: str              # "swift", "python", "rust", "typescript", "javascript", "go", "generic"
-    framework: str | None      # "xcode", "spm", "pytest", "unittest", "cargo", "npm", "yarn", "pnpm", "bun", "go test"
+    language: str              # "swift", "python", "rust", "typescript", "javascript", "go", "csharp", "generic"
+    framework: str | None      # "xcode", "spm", "pytest", "unittest", "cargo", "npm", "yarn", "pnpm", "bun", "go test", "unity"
     display_name: str          # e.g. "Swift (Xcode)", "Rust (Cargo)", "Python (pytest)", "TypeScript (npm)", "Go"
     build_command: str | None  # e.g. "cargo build", "npm run build", "go build ./..."
     test_command: str | None   # e.g. "cargo test", "npm test", "go test ./..."
@@ -23,13 +24,105 @@ class DetectedStack:
     xcode_project: str | None = None
     xcode_workspace: str | None = None
     manifest_file: str | None = None
+    project_dir: str | None = None  # a stack that lives in a subfolder (Unity), relative to the repo root; None = the root itself
+
+
+UNITY_VERSION_FILE = Path("ProjectSettings") / "ProjectVersion.txt"
+UNITY_EDITOR_ROOT = "/Applications/Unity/Hub/Editor"
+
+
+def unity_editor_version(root: Path) -> str | None:
+    """The editor version a Unity project was last saved with, e.g. "2022.3.10f1"."""
+    try:
+        text = (root / UNITY_VERSION_FILE).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    match = re.search(r"^m_EditorVersion:\s*(\S+)", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def unity_project_dir(root: Path) -> Path | None:
+    """The Unity project in `root`: the folder itself, else one directly below it (a game repo that keeps the client
+    next to its server and tools). Generated folders are skipped; the first match by name wins."""
+    def is_unity(folder: Path) -> bool:
+        return (folder / UNITY_VERSION_FILE).is_file() and (folder / "Assets").is_dir()
+    if is_unity(root):
+        return root
+    try:
+        for child in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".") and p.name not in {"node_modules", "Library", "Temp"})[:64]:
+            if is_unity(child):
+                return child
+    except OSError:
+        pass
+    return None
+
+
+def unity_has_tests(unity: Path) -> bool:
+    """False only when the project can't have Unity tests: a package manifest that doesn't list the Test Framework
+    and no test assembly. Without a manifest to read, assume it can, as before."""
+    try:
+        manifest = (unity / "Packages" / "manifest.json").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return True
+    if "com.unity.test-framework" in manifest:
+        return True
+    try:
+        return any("UnityEngine.TestRunner" in asmdef.read_text(encoding="utf-8", errors="ignore")
+                   for asmdef in (unity / "Assets").rglob("*.asmdef"))
+    except OSError:
+        return False
+
+
+def unity_command(root: Path, *arguments: str, project_dir: str = ".") -> str:
+    """A batchmode Unity command for this project. `UNITY_PATH` names the editor binary; without it, the Hub's
+    default location for the project's own editor version is used. `project_dir` is the Unity folder relative to
+    where the command runs (the repo root)."""
+    version = unity_editor_version(root / project_dir) or "<version>"
+    default = f"{UNITY_EDITOR_ROOT}/{version}/Unity.app/Contents/MacOS/Unity"
+    return " ".join([f'"${{UNITY_PATH:-{default}}}"', "-batchmode", "-nographics", "-projectPath", shlex.quote(project_dir), *arguments, "-logFile", "-"])
+
+
+def _unity_stack(root: Path, unity: Path) -> DetectedStack:
+    rel = "." if unity == root else unity.relative_to(root).as_posix()
+    version = unity_editor_version(unity)
+    return DetectedStack(
+        language="csharp",
+        framework="unity",
+        display_name=f"Unity {version}" if version else "Unity",
+        # batchmode has no compile-only switch; importing and quitting fails on script compile errors
+        build_command=unity_command(root, "-quit", project_dir=rel),
+        # -runTests on a project with no Unity tests runs nothing, so leave the command to be set (its tests may be elsewhere)
+        test_command=unity_command(root, "-runTests", "-testPlatform", "EditMode",
+                                   "-testResults", f"{rel}/Temp/unity-editmode-results.xml".removeprefix("./"), project_dir=rel)
+        if unity_has_tests(unity) else None,
+        uses_xcode=False,
+        manifest_file=(Path(rel) / UNITY_VERSION_FILE).as_posix() if rel != "." else str(UNITY_VERSION_FILE),
+        project_dir=None if rel == "." else rel,
+    )
 
 
 def detect_project_stack(root: Path) -> DetectedStack:
+    """The stack, with a `dotnet test` command filled in when the stack has none but the repository has .NET test projects
+    (a Unity client with its protocol tests next to it)."""
+    from dataclasses import replace
+    stack = _detect_project_stack(root)
+    if stack.test_command is None and not stack.uses_xcode:
+        from orchestrator import test_setup
+        command = test_setup.dotnet_test_command(root)
+        if command:
+            return replace(stack, test_command=command)
+    return stack
+
+
+def _detect_project_stack(root: Path) -> DetectedStack:
     """
     Inspects a repository root to determine its primary language, toolchain,
     default build/test commands, and whether it relies on Xcode.
     """
+    # 0. Unity project at the root (checked first: a Unity repo can carry generated Xcode or SPM files)
+    if (root / UNITY_VERSION_FILE).is_file() and (root / "Assets").is_dir():
+        return _unity_stack(root, root)
+
     # 1. Xcode Project or Workspace
     xcode_proj = next(iter(sorted(root.glob("*.xcodeproj"))), None)
     xcode_ws = next(iter(sorted(root.glob("*.xcworkspace"))), None)
@@ -116,6 +209,12 @@ def detect_project_stack(root: Path) -> DetectedStack:
             manifest_file=manifest,
         )
 
+    # 4b. A Unity client one folder down. It outranks a package.json (game repos keep tooling there) and the
+    # fallbacks below, but not a native stack at the root.
+    nested_unity = unity_project_dir(root)
+    if nested_unity is not None:
+        return _unity_stack(root, nested_unity)
+
     # 5. Node / TypeScript
     package_json = root / "package.json"
     if package_json.exists():
@@ -164,7 +263,70 @@ def detect_project_stack(root: Path) -> DetectedStack:
             manifest_file="go.mod",
         )
 
-    # 7. Generic / Unknown Stack
+    # 7. Documented commands in docs/build-test-commands.md
+    doc_cmds = root / "docs" / "build-test-commands.md"
+    if doc_cmds.exists():
+        try:
+            content = doc_cmds.read_text(encoding="utf-8", errors="ignore")
+            def _extract_cmd(heading: str) -> str | None:
+                pat = rf"^## (?:iOS app )?{heading}\s*$((?:(?!^## ).)*?)^```bash\s*\n(.*?)^```"
+                m = re.search(pat, content, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+                return m.group(2).strip() if m else None
+            b_cmd = _extract_cmd("build")
+            t_cmd = _extract_cmd("tests?")
+            if b_cmd or t_cmd:
+                return DetectedStack(
+                    language="generic",
+                    framework="docs",
+                    display_name="Documented",
+                    build_command=b_cmd,
+                    test_command=t_cmd,
+                    uses_xcode=False,
+                    manifest_file="docs/build-test-commands.md",
+                )
+        except Exception:
+            pass
+
+    # 8. Inferred from Product Requirements (new project created from idea)
+    from orchestrator import prd
+    for prd_path in (prd.document_path(root), root / "docs" / "product" / "prd.md", root / "docs" / "prd.md"):
+        if prd_path.exists():
+            try:
+                prd_text = prd_path.read_text(encoding="utf-8", errors="ignore").lower()
+                if any(k in prd_text for k in ("ios app", "macos app", "swift", "apple")):
+                    return DetectedStack(
+                        language="swift",
+                        framework="spm",
+                        display_name="Swift (from PRD)",
+                        build_command="swift build",
+                        test_command="swift test",
+                        uses_xcode=False,
+                        manifest_file=prd.PATH if prd_path == prd.document_path(root) else str(prd_path.relative_to(root)),
+                    )
+                if any(k in prd_text for k in ("python", "fastapi", "django", "flask")):
+                    return DetectedStack(
+                        language="python",
+                        framework="unittest",
+                        display_name="Python (from PRD)",
+                        build_command="python3 -m compileall -q .",
+                        test_command="python3 -m unittest discover tests",
+                        uses_xcode=False,
+                        manifest_file=prd.PATH if prd_path == prd.document_path(root) else str(prd_path.relative_to(root)),
+                    )
+                if any(k in prd_text for k in ("web app", "node", "typescript", "javascript", "react", "vue", "svelte")):
+                    return DetectedStack(
+                        language="typescript",
+                        framework="npm",
+                        display_name="Web / Node.js (from PRD)",
+                        build_command="npm run build",
+                        test_command="npm test",
+                        uses_xcode=False,
+                        manifest_file=prd.PATH if prd_path == prd.document_path(root) else str(prd_path.relative_to(root)),
+                    )
+            except Exception:
+                pass
+
+    # 9. Generic / Unknown Stack
     return DetectedStack(
         language="generic",
         framework=None,

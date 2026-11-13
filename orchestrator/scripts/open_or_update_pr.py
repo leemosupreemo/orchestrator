@@ -1,14 +1,36 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
+import time
 from pathlib import Path
 
 from common import OUTPUT_DIR, ROOT, gh_json, gh_text, read_json, run
+from orchestrator.code_host import review_request_url
 from orchestrator.project_config import PROJECT_CONFIG
 
 
-def open_or_update_pr(job_path: Path) -> tuple[int | None, str | None]:
+def push_branch_for_review(job: dict) -> str:
+    """Plain git: push the job's branch to origin when there is one, and return a link that opens a merge or pull
+    request on the host ("" when there's no remote or the host has no known link)."""
+    branch = job.get("branch")
+    remote = PROJECT_CONFIG.git_remote or ""
+    if not branch or not remote:
+        return ""
+    try:
+        run(["git", "push", "-u", "origin", branch], cwd=ROOT)
+    except Exception as e:
+        job["publish_error"] = re.sub(r"(https?://)[^/@\s]+@", r"\1", str(e))[-500:]
+        print(f"Warning: git push failed: {job['publish_error']}")
+        return ""
+    job.update(publish_error=None, last_published_at=time.time())
+    base = (job.get("base_branch") or PROJECT_CONFIG.base_branch or "main").strip()
+    return review_request_url(remote, branch, base)
+
+
+def open_or_update_pr(job_path: Path, publish_result: dict | None = None) -> tuple[int | None, str | None]:
     job = read_json(job_path)
+    result = publish_result if publish_result is not None else {}
     issue_number = job.get("issue_number")
     branch = job.get("branch")
     if not branch:
@@ -18,8 +40,10 @@ def open_or_update_pr(job_path: Path) -> tuple[int | None, str | None]:
 
     try:
         run(["git", "push", "-u", "origin", branch], cwd=ROOT)
+        result.update(publish_error=None, last_published_at=time.time())
     except Exception as e:
-        print(f"Warning: git push failed: {e}")
+        result["publish_error"] = re.sub(r"(https?://)[^/@\s]+@", r"\1", str(e))[-500:]
+        print(f"Warning: git push failed: {result['publish_error']}")
 
     existing = []
     try:
@@ -129,5 +153,6 @@ AI_BRIEF_FILE: {brief_file}
             pr_number = None
         return pr_number, pr_url
     except Exception as e:
-        print(f"Warning: Failed to create PR: {e}")
+        result["publish_error"] = re.sub(r"(https?://)[^/@\s]+@", r"\1", str(e))[-500:]
+        print(f"Warning: Failed to create PR: {result['publish_error']}")
         return None, None

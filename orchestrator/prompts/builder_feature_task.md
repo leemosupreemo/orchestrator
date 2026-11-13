@@ -6,6 +6,8 @@ Read the brief first.
 USE YOUR TOOLS (read_file, grep_search, replace, write_file) to inspect the code, implement the changes, and verify your work.
 Follow existing patterns and naming conventions.
 
+When the brief names KPI events, implement them through the project's existing analytics layer. Add or update an automated test for each required event, then report each event, its verifying test, and whether that test passed in your completion summary. A test result only confirms the tested instrumentation path; do not claim it proves product adoption or that a KPI target was reached.
+
 ### MANDATORY TEST-DRIVEN DEVELOPMENT (TDD)
 1. **Red:** Use your tools to implement a failing unit or integration test FIRST. Use the repository's existing test framework and conventions.
 2. **Green:** Implement the minimal production code to pass that test.

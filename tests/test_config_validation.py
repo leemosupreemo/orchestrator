@@ -58,6 +58,17 @@ class ConfigValidationTests(unittest.TestCase):
                                  test_target="", build_command="cargo build", test_command="cargo test")
             self.assertEqual(validate_project_config(config), [])
 
+    def test_extra_test_commands_are_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = make_config(Path(tmp), xcode_project=None, scheme=None, test_target="", build_command="make",
+                               test_command="make test",
+                               test_commands=[{"name": "server", "command": "pytest", "tier": "manual", "requires": ["docker"]}])
+            self.assertEqual(validate_project_config(good), [])
+            bad = make_config(Path(tmp), xcode_project=None, scheme=None, test_target="", build_command="make",
+                              test_command="make test",
+                              test_commands=[{"name": "server", "command": "pytest", "timeout": -1}], backend_test_command="x")
+            self.assertEqual(validate_project_config(bad), ['test_commands "server": timeout must be a whole number of seconds above 0.'])
+
     def test_xcode_project_still_requires_scheme(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

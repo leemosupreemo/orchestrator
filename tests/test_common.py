@@ -183,9 +183,10 @@ xcodebuild test CLANG_MODULE_CACHE_PATH=$(pwd)/.clang-module-cache
         self.assertNotIn("select models", header)
 
     def test_header_string_keeps_parenthetical_helper_text_lowercase(self) -> None:
-        header = common.get_header_string(
-            "Load spec from a local file or web address? (useful for large multi-page docs)"
-        )
+        with patch("os.get_terminal_size", return_value=(120, 24)):
+            header = common.get_header_string(
+                "Load spec from a local file or web address? (useful for large multi-page docs)"
+            )
 
         self.assertIn("LOAD SPEC FROM A LOCAL FILE OR WEB ADDRESS?", header)
         self.assertIn("(useful for large multi-page docs)", header)
@@ -1358,3 +1359,28 @@ class ConvergenceAnalysisTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecretsFileTests(unittest.TestCase):
+    """A project's secrets file is loaded into the environment, but not the lines nobody has filled in yet."""
+
+    def test_placeholders_and_shell_expressions_are_left_out(self):
+        from common import secret_value_usable
+        for value in ("your_anthropic_api_key_here", "YOUR-KEY", "changeme", "<paste key>", "xxxxx", "...", "",
+                      "$(cd \"$_SECRETS_DIR/..\" && pwd)", "${${(%):-%x}:A:h}", "$PROJECT_ROOT/.secrets/x.json", "`whoami`"):
+            self.assertFalse(secret_value_usable(value), value)
+        for value in ("sk-live-123", "AIzaSyExample", "1:69:ios:1ba2", "/Users/me/creds.json", "here-and-there"):
+            self.assertTrue(secret_value_usable(value), value)
+
+    def test_load_secrets_skips_a_placeholder_that_would_override_a_sign_in(self):
+        import common
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text('ANTHROPIC_API_KEY="your_anthropic_api_key_here"\nexport REAL_TOKEN_FOR_TEST=abc123\n')
+            with patch.object(common, "ROOT", root), patch.object(common, "ORCHESTRATOR_RUNTIME_DIR", root / ".orchestrator"), \
+                 patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+                os.environ.pop("REAL_TOKEN_FOR_TEST", None)
+                common.load_secrets()
+                self.assertNotIn("ANTHROPIC_API_KEY", os.environ)
+                self.assertEqual(os.environ.get("REAL_TOKEN_FOR_TEST"), "abc123")

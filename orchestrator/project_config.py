@@ -77,6 +77,11 @@ def load_recent_projects(prune_missing: bool = True) -> dict[str, Any]:
                 changed = True
                 continue
             root_path = Path(root_val).expanduser()
+            projects_alt = Path.home() / "Projects" / root_path.name
+            if (not root_path.exists() or "Documents" in str(root_path)) and projects_alt.is_dir() and (projects_alt / ".orchestrator" / "project.json").is_file():
+                project["root"] = str(projects_alt)
+                root_path = projects_alt
+                changed = True
             if root_path.exists() and root_path.is_dir():
                 valid_projects.append(project)
             else:
@@ -140,20 +145,37 @@ def project_display_name(root: Path) -> str:
     return data.get("project_name") or root.name
 
 
-def remember_project(root: Path, name: str | None = None, active: bool = True) -> None:
+def remember_project(
+    root: Path,
+    name: str | None = None,
+    active: bool = True,
+    source_type: str | None = None,
+    source_label: str | None = None,
+    github_repo: str | None = None,
+) -> None:
     root = safe_resolve(root.expanduser())
     display_name = name or project_display_name(root)
     data = load_recent_projects(prune_missing=True)
+    existing_entry = next((p for p in data.get("projects", []) if safe_resolve(Path(p.get("root", "")).expanduser()) == root), {})
     projects = [
         project for project in data.get("projects", [])
         if safe_resolve(Path(project.get("root", "")).expanduser()) != root
         and project.get("name") != display_name
     ]
-    projects.insert(0, {"name": display_name, "root": str(root)})
+    entry = dict(existing_entry)
+    entry.update({"name": display_name, "root": str(root)})
+    if source_type is not None:
+        entry["source_type"] = source_type
+    if source_label is not None:
+        entry["source_label"] = source_label
+    if github_repo is not None:
+        entry["github_repo"] = github_repo
+    projects.insert(0, entry)
     data["projects"] = projects[:20]
     if active:
         data["active"] = display_name
     save_recent_projects(data)
+
 
 
 def resolve_project_reference(reference: str | None) -> Path | None:
@@ -221,6 +243,25 @@ def _git_remote(root: Path) -> str | None:
         return None
 
 
+class PromptFolder:
+    """Where role prompts are read from. A prompt the project has customised wins; every other prompt comes from the
+    built-in set, so customising one role never hides the rest."""
+
+    def __init__(self, project: Path, package: Path):
+        self.project = project
+        self.package = package
+
+    def __truediv__(self, name: str) -> Path:
+        mine = self.project / name
+        return mine if mine.is_file() else self.package / name
+
+    def __fspath__(self) -> str:
+        return str(self.package)
+
+    def __str__(self) -> str:
+        return str(self.package)
+
+
 @dataclass(frozen=True)
 class ProjectConfig:
     root: Path
@@ -256,8 +297,32 @@ class ProjectConfig:
     signing_style: str | None = None
     firebase_testers: str | None = None
     firebase_groups: str | None = None
+    # Where finished builds go: "ios" (default, the distribution script), "android" or "web"; see delivery_adapters.py.
+    delivery_platform: str = "ios"
+    delivery_build_command: str | None = None
+    delivery_artifact: str | None = None
+    firebase_app_id: str | None = None
+    firebase_project_id: str | None = None
+    firebase_hosting_target: str | None = None
     # Central runtime-log store the app ships to; see scripts/cloud_logs.py.
     remote_logs: dict[str, Any] = field(default_factory=dict)
+    # "github", "git" or "auto" (the default: GitHub when origin is on github.com). See orchestrator/code_host.py.
+    code_host: str = "auto"
+    # Extra test commands run after test_command passes; see orchestrator/test_commands.py.
+    test_commands: list[Any] = field(default_factory=list)
+    # Seconds the main build and test command may run before they are stopped; None is the default, 0 means no limit.
+    build_timeout: int | None = None
+    test_timeout: int | None = None
+
+    @property
+    def code_host_mode(self) -> str:
+        """"github" (issues and pull requests through gh) or "git" (plain git branches, any host or none)."""
+        from orchestrator.code_host import resolve_mode
+        return resolve_mode(self.code_host, self.git_remote or "")
+
+    @property
+    def uses_github(self) -> bool:
+        return self.code_host_mode == "github"
 
     @property
     def stack(self) -> Any:
@@ -271,7 +336,7 @@ class ProjectConfig:
             self.xcode_project or self.xcode_workspace
             or any("xcodebuild" in command for command in
                    (self.build_command or "", self.test_command or ""))
-            or self.firebase_distribution or self.visual_app_path
+            or (self.firebase_distribution and (self.delivery_platform or "ios") == "ios") or self.visual_app_path
         )
 
     @property
@@ -279,7 +344,11 @@ class ProjectConfig:
         return self.runtime_dir / "config"
 
     def validate_distribution_config(self) -> list[str]:
-        """Returns a list of missing required fields for iOS distribution."""
+        """Returns a list of missing required fields for distribution (iOS signing, or the Android/web adapter's)."""
+        platform = (self.delivery_platform or "ios").strip().lower()
+        if platform != "ios":
+            from orchestrator import delivery_adapters
+            return delivery_adapters.validate_platform(self)
         errors = []
         if not self.development_team:
             errors.append("Apple Development Team ID (development_team) is not set.")
@@ -359,21 +428,21 @@ class ProjectConfig:
         return errors
 
     @property
-    def prompts_dir(self) -> Path:
-        project_prompts = self.runtime_dir / "prompts"
-        return project_prompts if project_prompts.exists() else self.package_prompts_dir
+    def prompts_dir(self) -> "PromptFolder":
+        return PromptFolder(self.runtime_dir / "prompts", self.package_prompts_dir)
 
 
-def load_project_config() -> ProjectConfig:
-    root = find_project_root()
-    config_path = os.environ.get("ORCHESTRATOR_CONFIG")
+def load_project_config(root: Path | None = None) -> ProjectConfig:
+    explicit_root = root is not None
+    root = safe_resolve(root) if explicit_root else find_project_root()
+    config_path = None if explicit_root else os.environ.get("ORCHESTRATOR_CONFIG")
     if config_path:
         config_file = safe_resolve(Path(config_path).expanduser())
     else:
         config_file = root / DEFAULT_RUNTIME_DIRNAME / "project.json"
 
     data = _load_json(config_file)
-    runtime_dir = Path(
+    runtime_dir = root / DEFAULT_RUNTIME_DIRNAME if explicit_root else Path(
         os.environ.get(
             "ORCHESTRATOR_RUNTIME_DIR",
             os.environ.get("AI_RUNTIME_DIR", str(root / DEFAULT_RUNTIME_DIRNAME)),
@@ -430,7 +499,17 @@ def load_project_config() -> ProjectConfig:
         signing_style=data.get("signing_style", "automatic"),
         firebase_testers=data.get("firebase_testers"),
         firebase_groups=data.get("firebase_groups"),
+        delivery_platform=str(data.get("delivery_platform") or "ios").strip().lower(),
+        delivery_build_command=data.get("delivery_build_command"),
+        delivery_artifact=data.get("delivery_artifact"),
+        firebase_app_id=data.get("firebase_app_id"),
+        firebase_project_id=data.get("firebase_project_id"),
+        firebase_hosting_target=data.get("firebase_hosting_target"),
         remote_logs=data.get("remote_logs") or {},
+        code_host=str(data.get("code_host") or "auto"),
+        test_commands=data.get("test_commands") or [],
+        build_timeout=data.get("build_timeout"),
+        test_timeout=data.get("test_timeout"),
     )
 
 
