@@ -2786,7 +2786,9 @@ def model_turn(server: Any, root: Path, prompt: str, extra: list[str], timeout: 
     stdout = "".join(out)
     marker = "<<<ORCHESTRATOR-REPLY>>>"
     if proc.returncode != 0 or marker not in stdout:
-        failure = UIError(("".join(err).strip().splitlines() or ["The model couldn't answer."])[-1], HTTPStatus.BAD_GATEWAY)
+        from orchestrator.scripts.model_registry import summarize_cli_error
+        said = "".join(err).strip()
+        failure = UIError(summarize_cli_error(said) if said else "The model couldn't answer.", HTTPStatus.BAD_GATEWAY)
         failure.output = stdout  # which models were tried and why each gave up, for whoever keeps track of that
         raise failure
     head, reply = stdout.split(marker, 1)

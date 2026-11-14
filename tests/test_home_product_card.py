@@ -4,8 +4,12 @@ The card's real functions are read out of app.js and run in Node, so what is tes
 import json
 import shutil
 import subprocess
+import time
 import unittest
 from pathlib import Path
+
+from orchestrator import prd
+from tests.test_web_ui import ServerTestCase
 
 APP = Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js"
 TITLES = ["Pitch", "Who it's for", "Core features", "Look and feel", "What to exclude", "Success measures"]
@@ -125,6 +129,189 @@ console.log(JSON.stringify({today: prdWhen(at(2026, 10, 13), now), yesterday: pr
         home = code[code.index("pages.home = async"):code.index("function jobHeaderActions")]
         self.assertIn('${product ? productStripHtml(product, jobs) : ""}', home)
         self.assertNotIn("sections.some((x) => x.filled) ? productStripHtml", home)
+
+
+SECTION_IDS = [s["id"] for s in prd.SECTIONS]
+SECTION_BODIES = {"pitch": "A word game for two friends. Players take turns building words.", "who": "Two friends with a spare minute.",
+                  "features": "- Turn-based play\n- A scoreboard", "look": "Calm, paper-like.", "not": "No ads.", "success": "Friends play twice a week."}
+
+
+def document(count: int) -> str:
+    text = prd.template()
+    for section in SECTION_IDS[:count]:
+        text = prd.replace_section(text, section, SECTION_BODIES[section])
+    return text
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js required")
+class HomePageStatesTests(unittest.TestCase):
+    """Home assembled for real (its own page function, the card's real code) with the server's answer for each state:
+    the card is on Home when nothing is written, when it's partly written, and when it's complete."""
+
+    STATIC = APP.parent
+
+    def home(self, product: dict | None, jobs: list | None = None) -> str:
+        script = r"""
+const fs=require('fs'),vm=require('vm'),dir=process.argv[1];
+require(dir+'/html.js');require(dir+'/home-status.js');
+const source=fs.readFileSync(dir+'/app.js','utf8');
+const product=JSON.parse(process.argv[2]), jobs=JSON.parse(process.argv[3]);
+const context={HomeStatus,URLSearchParams,esc:Html.escape,projectDownloads:{pending:()=>null},setupState:{complete:true},loadSetup:async()=>{},getBackendUrl:()=>'',
+ state:{project:{root:'/sample',name:'Snake',branch:'main',branches:[],machine_count:1,model_count:1},runs:[],you:{role:'owner'}},pages:{},
+ api:async path=>{if(path==='jobs')return {jobs};if(path==='inbox')return {elsewhere:[]};if(path==='product'){if(product===null)throw Error('older backend');return product;}if(path==='jobs/archived')return {archived:[]};throw Error('older backend');},
+ sortJobs:x=>x,homeProjectTitle:p=>p.name,homeHealthIndicator:()=>'',previewCard:()=>'',elsewhereLine:()=>'',HOME_JOBS_SHOWN:10,
+ sortArrow:()=>'',jobTableRow:()=>'<tr></tr>',jobPill:()=>'',jobIsRunning:()=>false,kindPill:()=>'',ago:()=>'',plural:(n,w)=>n+' '+w,pill:()=>'',runningMark:''};
+vm.createContext(context);
+const take=(from,to)=>{const a=source.indexOf(from);return source.slice(a,source.indexOf(to,a));};
+vm.runInContext(take('const prdStatusPill','const pill = '),context);
+vm.runInContext(take('function prdSnippet','// The AI updated the product requirements by itself'),context);
+vm.runInContext(take('const PRD_ACTOR','pages.product = async'),context);
+vm.runInContext(take('function statusLine(','\n}\n')+'\n}\n',context);
+vm.runInContext(take('pages.home = async','function jobHeaderActions('),context);
+(async()=>{const page=await context.pages.home([],new URLSearchParams());console.log(JSON.stringify({html:page.html}));})().catch(e=>{console.error(e);process.exit(1)});
+"""
+        done = subprocess.run(["node", "-e", script, str(self.STATIC), json.dumps(product), json.dumps(jobs or [])], capture_output=True, text=True, timeout=20)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)["html"]
+
+    def sections(self, count: int) -> list[dict]:
+        return prd.sections_view(document(count))
+
+    def card(self, html: str) -> str:
+        start = html.index('id="product-strip"')
+        return html[start:html.index("</section>", start)]
+
+    def test_state_1_nothing_written_the_card_is_on_home_with_the_prompt(self):
+        html = self.home({"sections": self.sections(0), "can_draft": True, "updated": None})
+        card = self.card(html)
+        self.assertIn("Tell us what you're building", card)
+        self.assertIn("Write it", card)
+        self.assertNotIn("Last updated", card)
+        self.assertNotIn("sections filled in", card)
+
+    def test_state_2_partly_written_the_card_stays_on_home_with_progress_and_a_way_to_finish(self):
+        for count in (1, 3, 5):
+            with self.subTest(filled=count):
+                card = self.card(self.home({"sections": self.sections(count), "updated": {"at": time.time(), "source": "you", "job": ""}}))
+                self.assertIn("Partially completed", card)
+                self.assertIn(f"{count} of 6 sections filled in", card)
+                self.assertIn("Finish it", card)
+                self.assertIn("Last updated", card)
+                self.assertNotIn("Tell us what you're building", card)
+
+    def test_state_3_complete_the_card_stays_on_home_with_the_pitch_and_no_missing_list(self):
+        card = self.card(self.home({"sections": self.sections(6), "updated": {"at": time.time(), "source": "you", "job": ""}}))
+        self.assertIn("Completed", card)
+        self.assertIn("A word game for two friends", card)
+        self.assertNotIn("Still to fill in", card)
+        self.assertNotIn("Finish it", card)
+        self.assertIn("Last updated", card)
+
+    def test_the_card_names_the_job_behind_an_automatic_update_from_the_jobs_home_already_has(self):
+        updated = {"at": time.time(), "source": "auto", "job": "job-5"}
+        card = self.card(self.home({"sections": self.sections(6), "updated": updated}, jobs=[{"id": "job-5", "title": "Add a scoreboard", "status": "done", "state": {"label": "Done", "tone": "done"}}]))
+        self.assertIn("by AI after “Add a scoreboard”", card)
+
+    def test_an_older_server_without_the_product_endpoint_just_has_no_card(self):
+        self.assertNotIn('id="product-strip"', self.home(None))
+
+    def test_a_server_that_does_not_send_the_update_record_shows_the_card_without_a_date(self):
+        card = self.card(self.home({"sections": self.sections(3)}))
+        self.assertIn("Partially completed", card)
+        self.assertNotIn("Last updated", card)
+
+    def test_the_card_sits_right_under_the_project_status_in_every_state(self):
+        for count in (0, 3, 6):
+            with self.subTest(filled=count):
+                html = self.home({"sections": self.sections(count), "updated": None})
+                self.assertLess(html.index('id="home-project-status"'), html.index('id="product-strip"'))
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js required")
+class StatusPillThresholdTests(unittest.TestCase):
+    def pill(self, filled: int, total: int = 6) -> str:
+        script = r"""
+const fs = require('fs'), vm = require('vm');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+globalThis.esc = (s) => String(s);
+vm.runInThisContext(code.slice(code.indexOf('const prdStatusPill'), code.indexOf('const pill = ')));
+const [filled, total] = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(prdStatusPill(Array.from({length: total}, (_, i) => ({filled: i < filled})))));
+"""
+        done = subprocess.run(["node", "-e", script, str(APP), json.dumps([filled, total])], capture_output=True, text=True, timeout=20)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_none_some_and_all_sections_give_three_different_statuses(self):
+        none, some, every = self.pill(0), self.pill(1), self.pill(6)
+        self.assertIn("Needs completion", none)
+        self.assertIn('class="pill failed"', none)
+        self.assertIn("Partially completed", some)
+        self.assertIn('class="pill attention"', some)
+        self.assertIn("Completed", every)
+        self.assertIn('class="pill done"', every)
+        self.assertIn("1 of 6 sections filled in", some)
+
+    def test_the_edges_between_the_states(self):
+        self.assertIn("Partially completed", self.pill(5))
+        self.assertIn("Completed", self.pill(6))
+        self.assertIn("Needs completion", self.pill(0, 0))  # no sections at all counts as nothing written
+
+
+class ProductEndpointStatesTests(ServerTestCase):
+    """The server's answer for each state, from a real document on disk: what Home is given."""
+
+    def doc(self):
+        return prd.Prd(self.root, self.root / ".orchestrator")
+
+    def product(self) -> dict:
+        res, data = self.request("GET", "/api/product")
+        self.assertEqual(res.status, 200, data)
+        return data
+
+    def filled(self, data) -> int:
+        return sum(1 for s in data["sections"] if s["filled"])
+
+    def test_state_1_no_document_nothing_filled_and_no_update(self):
+        data = self.product()
+        self.assertEqual((self.filled(data), len(data["sections"]), data["updated"]), (0, 6, None))
+
+    def test_state_1b_a_template_only_document_is_still_nothing_filled(self):
+        self.doc().write(prd.template(), "draft", "Drafted")
+        self.assertEqual(self.filled(self.product()), 0)
+
+    def test_state_2_partly_written_counts_what_is_filled_and_says_who_wrote_it(self):
+        self.doc().write(document(3), "you", "Wrote three sections")
+        data = self.product()
+        self.assertEqual(self.filled(data), 3)
+        self.assertEqual([s["id"] for s in data["sections"] if not s["filled"]], ["look", "not", "success"])
+        self.assertEqual((data["updated"]["source"], data["updated"]["summary"], data["updated"]["job"]), ("you", "Wrote three sections", ""))
+        self.assertLess(abs(data["updated"]["at"] - time.time()), 30)
+
+    def test_state_3_complete_has_every_section_filled(self):
+        self.doc().write(document(6), "you", "Finished it")
+        data = self.product()
+        self.assertEqual(self.filled(data), 6)
+
+    def test_an_automatic_update_after_a_job_is_reported_as_the_ais_with_the_job(self):
+        self.doc().write(document(6), "you", "Finished it")
+        self.doc().write(document(6) + "\n\nAlso: a scoreboard.", "auto", "Noted the scoreboard", job="20260922-bug-1")
+        updated = self.product()["updated"]
+        self.assertEqual((updated["source"], updated["job"]), ("auto", "20260922-bug-1"))
+
+    def test_the_page_can_name_that_job_because_the_jobs_list_carries_its_title(self):
+        res, data = self.request("GET", "/api/jobs")
+        self.assertEqual(res.status, 200, data)
+        self.assertEqual({j["id"]: j["title"] for j in data["jobs"]}["20260922-bug-1"], "Lobby seat stays empty")
+
+    def test_a_document_edited_outside_the_app_is_reported_as_such(self):
+        import os
+        self.doc().write(document(6), "you", "Finished it")
+        later = time.time() + 3600
+        os.utime(self.doc().path, (later, later))
+        updated = self.product()["updated"]
+        self.assertEqual((updated["source"], updated["job"]), ("outside", ""))
+        self.assertAlmostEqual(updated["at"], later, delta=2)
 
 
 if __name__ == "__main__":

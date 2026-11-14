@@ -8,6 +8,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -242,7 +243,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             last_error = exc
             continue
 
-    raise RuntimeError(f"All models failed (quota limits reached). Last error: {last_error}")
+    raise RuntimeError(f"No model could answer. Last error: {summarize_cli_error(str(last_error))}")
 
 
 import selectors
@@ -344,9 +345,9 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
         if web:
             cmd_base += ' --allowedTools "WebSearch,WebFetch"'
     elif model_id == "deepseek":
-        cmd_base = "ollama run deepseek-coder --nowordwrap"
+        cmd_base = _ollama_command("deepseek-coder", prompt_file)
     elif m_meta and ("ollama" in m_meta.required_clis or m_meta.family == "ollama" or m_meta.family == "qwen"):
-        cmd_base = f"ollama run {model_id} --nowordwrap"
+        cmd_base = _ollama_command(model_id, prompt_file)
     elif model_id == "copilot":
         cmd_base = "gh copilot"
     # OpenCode: pass --auto so a headless job doesn't stall waiting for a human to approve a tool
@@ -366,6 +367,19 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
 
     cmd_base = _apply_yolo_choice(cmd_base)
     return f'cat "{shlex.quote(prompt_file)}" | {cmd_base}{image_args(cmd_base, images)}'
+
+
+def _ollama_command(model: str, prompt_file: str) -> str:
+    """`ollama run` for a prompt that fits Ollama's default window. A longer one would silently lose its beginning (for Ask AI, the
+    whole project), so it goes through the API, which can ask for a bigger window (see orchestrator/ollama_api.py)."""
+    from orchestrator import ollama_api
+    try:
+        size = os.path.getsize(prompt_file)
+    except OSError:
+        size = 0
+    if size <= ollama_api.RUN_MAX_CHARS:
+        return f"ollama run {model} --nowordwrap"
+    return f"{shlex.quote(sys.executable)} -P -m orchestrator script ollama_generate.py --model {shlex.quote(model)}"
 
 
 def _apply_yolo_choice(cmd_base: str) -> str:

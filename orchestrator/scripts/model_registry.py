@@ -946,9 +946,47 @@ def parse_opencode_models_output(output: str) -> list[str]:
             models.append(token)
     return sorted(set(models))
 
+_PUNCTUATION_ONLY = re.compile(r"^[\s\[\]{}(),:;\"'`<>|\-=_~*]*$")  # a line that is only brackets and punctuation says nothing
+
+
+def _message_in(value: Any, depth: int = 0) -> str:
+    """The first human-readable message in parsed JSON: {"error": {"message": "..."}}, {"detail": "..."}, a list of those."""
+    if depth > 5:
+        return ""
+    if isinstance(value, dict):
+        for key in ("message", "error_description", "detail", "reason", "error", "msg"):
+            item = value.get(key)
+            if isinstance(item, str) and len(item.strip()) > 3 and not _PUNCTUATION_ONLY.match(item):
+                return item.strip()
+        for item in value.values():
+            if isinstance(item, (dict, list)) and (found := _message_in(item, depth + 1)):
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            if found := _message_in(item, depth + 1):
+                return found
+    return ""
+
+
+def json_error_message(text: str) -> str:
+    """The message a tool put in a JSON error body somewhere in its output, or ""."""
+    decoder = json.JSONDecoder()
+    for start in re.finditer(r"[{\[]", text):
+        try:
+            value, _ = decoder.raw_decode(text[start.start():])
+        except ValueError:
+            continue
+        if found := _message_in(value):
+            return found
+    return ""
+
+
 def summarize_cli_error(output: str) -> str:
-    """Returns the most actionable single line from CLI output."""
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    """Returns the most actionable single line from CLI output. Never a stray bracket: a message inside JSON is used as it is, and
+    lines that are only punctuation are not candidates."""
+    if found := json_error_message(output):
+        return found[:300]
+    lines = [line.strip() for line in output.splitlines() if line.strip() and not _PUNCTUATION_ONLY.match(line)]
     if not lines:
         return "unknown error"
     # A CLI's warnings ("⚠ connectors are disabled…") and the "<model> failed (code 1):" heading say nothing about why.
@@ -965,7 +1003,11 @@ def summarize_cli_error(output: str) -> str:
             return line
     if "operation not permitted" in output.lower():
         return "CLI could not start (operation not permitted)"
-    return said[0]
+    for line in reversed(said):  # a Python traceback ends with the exception that matters
+        if re.match(r"^[A-Za-z_][\w.]*(?:Error|Exception|Failure)\b", line):
+            return line
+    frames = [l for l in said if not l.startswith(("Traceback", "File \"", "at "))]
+    return (frames or said)[0]
 
 def get_ssl_context() -> ssl.SSLContext:
     import ssl

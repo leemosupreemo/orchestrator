@@ -365,7 +365,7 @@
       "family": "qwen",
       "tier": "HIGH",
       "capabilities": ["coding", "reasoning"],
-      "cost_factor": 0.0,
+      "cost_factor": 5.0,
       "required_clis": ["ollama"]
     },
     {
@@ -373,7 +373,7 @@
       "family": "opencode",
       "tier": "HIGH",
       "capabilities": ["coding", "reasoning"],
-      "cost_factor": 0.0,
+      "cost_factor": 5.0,
       "required_clis": ["opencode"]
     },
     {

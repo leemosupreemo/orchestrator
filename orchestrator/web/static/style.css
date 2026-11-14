@@ -4936,6 +4936,13 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .ask-ai-starters .btn { text-align: left; white-space: normal; }
 .ask-ai-form { display: flex; flex-direction: column; gap: var(--space-2); padding: 0; max-height: none; }
 .ask-ai-form textarea { min-height: 64px; max-height: 30vh; resize: vertical; }
+/* The question and its button are one row, the button at the far right and level with the bottom of the box. */
+.ask-ai-compose { display: flex; align-items: flex-end; gap: var(--space-2); }
+.ask-ai-compose textarea { flex: 1 1 auto; min-width: 0; }
+.ask-ai-send { flex: none; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; }
+.ask-ai-send .icon { width: 20px; height: 20px; }
+.ask-ai-send.is-stop { background: var(--text); border-color: var(--text); color: var(--panel); }
+.ask-ai-send.is-stop:hover:not(:disabled) { background: var(--text); border-color: var(--text); color: var(--panel); }
 @media (max-width: 760px) { dialog.ask-ai { width: 100vw; max-width: 100vw; border-width: 0; } }
 /* Add Existing Project → GitHub: a filter over a long list of repositories. */
 .github-repo-filter { width: 100%; margin: 0 0 var(--space-2); box-sizing: border-box; }

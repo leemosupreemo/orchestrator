@@ -10,8 +10,11 @@ Which models fall in each comes from the model registry (its quality tier and co
 computer. A tier never borrows from another: when none of its models can answer, the person is told, not upgraded quietly.
 
 The model doesn't remember anything between turns. Every question is sent with the project as it is now (product
-requirements, attached documents, notes, Git history, jobs) and the conversation so far, so any model, of any tier, picked
-for any turn, knows the same things. The model runs in an empty folder and can't change anything.
+requirements, attached documents, notes and README, what it is built with, its folder structure and the start of its main
+source files, Git history, jobs) and the conversation so far, so any model, of any tier, picked for any turn, knows the same
+things. The model runs in an empty folder and can't change anything, so everything it should know is in the prompt. A
+project whose requirements aren't written is described by its README, documents and code instead. A local model has a fixed
+window, so what is sent is sized to fit it (see ollama_api).
 
 The conversation is saved with the project (shared by its worktrees), so it is there on any device that opens it.
 """
@@ -118,7 +121,8 @@ def failure_reason(text: str) -> str:
                           (("timed out", "timeout", "took too long"), "didn't answer in time")):
         if any(w in lowered for w in words):
             return reason
-    return (text.strip().splitlines() or ["didn't answer"])[-1][:140]
+    from orchestrator.scripts.model_registry import summarize_cli_error
+    return (summarize_cli_error(text) if text.strip() else "didn't answer")[:140]
 
 
 def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> dict[str, dict[str, Any]]:
@@ -240,13 +244,14 @@ def _attached_documents(root: Path, limit: int) -> str:
 
 
 def _project_notes(root: Path, limit: int) -> str:
+    """README, AGENTS/CLAUDE notes and the markdown under docs/. The notes at the top (README first) get `limit` each, the docs half of it."""
     from orchestrator import prd, project_docs
     parts = []
     for f in project_docs.project_files(root):
         if f["path"] == prd.PATH:
             continue  # the requirements are their own section
         try:
-            parts.append(f"#### {f['path']}\n{_quote(project_docs.read_project_file(root, f['path']), limit)}")
+            parts.append(f"#### {f['path']}\n{_quote(project_docs.read_project_file(root, f['path']), limit if '/' not in f['path'] else limit // 2)}")
         except Exception:
             continue
     return "\n\n".join(parts)
@@ -260,21 +265,33 @@ def _jobs(jobs: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def project_context(root: Path, tier: str = "balanced", jobs: list[dict[str, Any]] | None = None, name: str = "") -> str:
-    """Everything known about the project, in priority order, within the tier's budget. Rebuilt for every question."""
-    from orchestrator import prd
-    budget = CONTEXT_BUDGET.get(tier, CONTEXT_BUDGET["balanced"])
+def project_context(root: Path, tier: str = "balanced", jobs: list[dict[str, Any]] | None = None, name: str = "",
+                    max_chars: int | None = None) -> str:
+    """Everything known about the project, in priority order, within the tier's budget (and `max_chars`, a local model's window).
+    Rebuilt for every question. Without written requirements, the README, documents, build files, structure and code speak for it."""
+    from orchestrator import prd, project_scan
+    budget = min(CONTEXT_BUDGET.get(tier, CONTEXT_BUDGET["balanced"]), max_chars) if max_chars else CONTEXT_BUDGET.get(tier, CONTEXT_BUDGET["balanced"])
     small = tier == "free"
     branch = _git(root, "branch", "--show-current") or "(detached)"
+    try:
+        scanned = project_scan.scan(root, tier)
+    except Exception:  # an unreadable repository must never stop a question
+        scanned = {}
+    requirements = _quote(prd.read_text(root) or "", 8_000 if small else 24_000)
+    if not prd.is_filled(requirements):
+        requirements = "(Not written yet. Work out what the project is from its README and notes, what it is built with, its structure and its code below, and say so when you do.)"
     sections = [
         ("Project", f"Name: {name or root.name}\nFolder: {root.name}\nCurrent branch: {branch}"),
-        ("Product requirements (the source of truth for what is being built)", _quote(prd.read_text(root) or "", 8_000 if small else 24_000)),
+        ("Product requirements (the source of truth for what is being built)", requirements),
         ("Documents attached to the requirements", _attached_documents(root, 3_000 if small else 12_000)),
+        ("What it is built with", scanned.get("What it's built with", "")),
+        ("Project notes and docs (README first)", _project_notes(root, 2_500 if small else 8_000)),
+        ("Project structure (folders, with how many files each holds)", scanned.get("Project structure", "")),
         ("Recent commits (newest first)", _git(root, "log", "-n", "25" if small else "60", "--date=short", "--format=%h %ad %an: %s")),
+        ("Key source files (the start of each)", scanned.get("Key source files (the start of each)", "")),
+        ("Jobs (planned, in progress and done)", _jobs(jobs or [])),
         ("Uncommitted changes", _clip(_git(root, "status", "--short"), 2_000)),
         ("Branches", _clip(_git(root, "branch", "--format=%(refname:short)"), 1_500)),
-        ("Jobs (planned, in progress and done)", _jobs(jobs or [])),
-        ("Project notes and docs", _project_notes(root, 1_500 if small else 5_000)),
     ]
     out, used = [], 0
     for title, body in sections:
@@ -285,11 +302,25 @@ def project_context(root: Path, tier: str = "balanced", jobs: list[dict[str, Any
         if used + len(block) > budget:
             room = budget - used - len(title) - 20
             if room < 400:
-                break
+                continue  # this one doesn't fit; a smaller one after it still might
             block = f"## {title}\n{_clip(body, room)}"
         out.append(block)
         used += len(block)
     return "\n\n".join(out)
+
+
+def context_cap(models: list[str]) -> int | None:
+    """The most prompt, in characters, that every local model this turn may use can take in whole; None when none is local or it can't be known."""
+    from orchestrator import ollama_api
+    from orchestrator.scripts.model_registry import get_model
+    caps = []
+    for model_id in models:
+        meta = get_model(model_id)
+        local = ollama_api.model_for(model_id, getattr(meta, "required_clis", ()), getattr(meta, "family", "")) if meta else None
+        window = ollama_api.window_chars(local) if local else None
+        if window:
+            caps.append(window)
+    return min(caps) if caps else None
 
 
 def build_prompt(context: str, history: list[dict[str, Any]], question: str) -> str:
@@ -297,8 +328,10 @@ def build_prompt(context: str, history: list[dict[str, Any]], question: str) -> 
                            for m in history[-MAX_HISTORY_MESSAGES:])
     return "\n\n".join(part for part in [
         "You answer questions about one software project for the people building it, inside an AI coding orchestrator. "
-        "Everything known about the project is below: its product requirements, attached documents, notes, Git history and jobs. "
-        "Answer from it, concisely and concretely. Say plainly when the project information doesn't settle something instead of guessing. "
+        "Everything known about the project is below: its product requirements (when written), attached documents, README and notes, what it is built with, "
+        "its folder structure, the start of its main source files, Git history and jobs. "
+        "Answer from it, concisely and concretely. When the requirements aren't written, say what the project is from the README, documents and code. "
+        "Say plainly when the project information doesn't settle something instead of guessing. "
         "You can't change code or files; when something should change, say what, and suggest starting a job for it from Home.",
         f"# The project\n\n{context}" if context else "",
         f"# Conversation so far\n{transcript}" if transcript else "",
@@ -356,7 +389,10 @@ def ask(root: Path, question: str, tier: str, llm: LlmFn, tiers: dict[str, dict[
     if not choice.get("available"):
         raise ChatError(choice.get("reason") or f"No {TIER_LABELS[tier]} model is set up.")
     asked_at = time.time()
-    prompt = build_prompt(project_context(root, tier, jobs, name), messages(root), question)
+    history = messages(root)
+    cap = context_cap(list(choice["models"]))
+    room = None if cap is None else max(3_000, cap - len(build_prompt("", history, question)) - 500)  # what is left for the project once the rest is counted
+    prompt = build_prompt(project_context(root, tier, jobs, name, max_chars=room), history, question)
     reply, used = llm(prompt, list(choice["models"]))
     reply = (reply or "").strip()
     if not reply:

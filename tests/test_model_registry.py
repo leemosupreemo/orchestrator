@@ -599,3 +599,23 @@ class ModelsNoticeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreeModelNamingTests(unittest.TestCase):
+    """A hosted model is only free when OpenCode says so. `opencode/qwen-3.7-max`, an Alibaba flagship, was listed at no cost,
+    ranked first in the Free tier of Ask AI, and failed for anyone whose plan doesn't include it."""
+
+    def test_every_free_model_hosted_by_opencode_carries_its_free_marker(self):
+        from orchestrator.scripts.model_registry import get_all_models
+        free_without_marker = {"opencode/big-pickle"}  # OpenCode's own free model, which just isn't named that way
+        unmarked = [m.id for m in get_all_models()
+                    if m.cost_factor == 0.0 and "opencode" in m.required_clis and "ollama" not in m.required_clis
+                    and not m.id.endswith("-free") and m.id not in free_without_marker]
+        self.assertEqual(unmarked, [], "hosted by OpenCode and listed as costing nothing, but not named -free")
+
+    def test_the_qwen_flagship_is_not_in_the_free_tier(self):
+        from orchestrator import project_chat
+        from orchestrator.scripts.model_registry import get_model
+        for model_id in ("qwen-3.7-max", "opencode/qwen-3.7-max"):
+            with self.subTest(model=model_id):
+                self.assertEqual(project_chat.classify(get_model(model_id)), "balanced")

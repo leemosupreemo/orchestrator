@@ -370,7 +370,7 @@ class PageTests(unittest.TestCase):
         panel = app[app.index("async function openAskAi"):][:9000]
         self.assertIn('name="ask-ai-tier"', app[app.index("function askAiTierButton"):][:600])
         for bit in ('api("chat")', "waitForTask(started", "Ask AI needs a newer Orchestrator on this computer",
-                    "ASK_AI_TIER_KEY", 'send.textContent = "Stop"', "streamTask(started"):
+                    "ASK_AI_TIER_KEY", "sendMode(true)", "streamTask(started"):  # Send becomes Stop while waiting
             self.assertIn(bit, panel)
         stream_code = app[app.index("async function streamTask"):][:1200]
         self.assertIn("if (backend)", stream_code)

@@ -3143,7 +3143,7 @@ function askAiThread(dlg, messages) {
   const log = dlg.querySelector(".ask-ai-thread");
   log.innerHTML = messages.length ? messages.map(askAiMessage).join("")
     : `<div class="ask-ai-empty"><strong>Ask anything about this project.</strong>
-        <p>It knows the product requirements, attached documents, project notes, Git history and jobs, whichever kind of AI you choose.</p>
+        <p>It knows your product requirements (when written), documents, README, folder structure, main source files, Git history and jobs, whichever kind of AI you choose.</p>
         <div class="ask-ai-starters">${["What is this product, in a few sentences?", "What changed in the last week?", "What's still unfinished in the requirements?"]
           .map((q) => `<button type="button" class="btn small" data-ask-ai-starter>${esc(q)}</button>`).join("")}</div></div>`;
   log.scrollTop = log.scrollHeight;
@@ -3170,14 +3170,23 @@ async function openAskAi() {
     <div class="ask-ai-check muted" aria-live="polite"></div>
     <div class="ask-ai-thread" role="log" aria-live="polite"></div>
     <form class="ask-ai-form">
-      <textarea name="message" rows="2" maxlength="4000" placeholder="Ask about the product, the code, its history…" aria-label="Your question"></textarea>
-      <div class="clarify-reply-actions"><span class="muted ask-ai-status">Enter to send · Shift+Enter for a new line</span>
-        <button type="submit" class="btn primary">Send</button></div>
+      <div class="ask-ai-compose">
+        <textarea name="message" rows="2" maxlength="4000" placeholder="Ask about the product, the code, its history…" aria-label="Your question"></textarea>
+        <button type="submit" class="btn primary ask-ai-send" aria-label="Send" title="Send"><svg class="icon" aria-hidden="true"><use href="#i-arrow-up"/></svg></button>
+      </div>
+      <span class="muted t-secondary ask-ai-status">Enter to send · Shift+Enter for a new line</span>
     </form></div>`;
   if (!dlg.open) dlg.showModal();
   const form = dlg.querySelector(".ask-ai-form");
   const input = form.message;
   const send = form.querySelector('button[type="submit"]');
+  // An up arrow sends and a square stops: only the icon and its accessible name change.
+  const sendMode = (stopping) => {
+    send.classList.toggle("is-stop", stopping);
+    send.setAttribute("aria-label", stopping ? "Stop" : "Send");
+    send.title = stopping ? "Stop" : "Send";
+    send.querySelector("use").setAttribute("href", stopping ? "#i-stop" : "#i-arrow-up");
+  };
   const status = dlg.querySelector(".ask-ai-status");
   const tiersBox = dlg.querySelector(".ask-ai-tiers");
   const clearBtn = dlg.querySelector("[data-ask-ai-clear]");
@@ -3244,8 +3253,7 @@ async function openAskAi() {
       <div class="chat-text"><span class="run-spin" aria-hidden="true"></span> <span class="ask-ai-stage">Asking ${esc(data.tiers[tier].model)}…</span></div></div>`);
     log.scrollTop = log.scrollHeight;
     input.value = "";
-    send.textContent = "Stop";
-    send.classList.replace("primary", "ghost");
+    sendMode(true);
     try {
       const started = await api("chat", { method: "POST", body: { message: question, tier } });
       askAiRun.task = started.task;
@@ -3282,8 +3290,7 @@ async function openAskAi() {
       else if (askAiRun?.task) api(`product/task/${encodeURIComponent(askAiRun.task)}/cancel`, { method: "POST", body: {} }).catch(() => {});
     } finally {
       askAiRun = null;
-      send.textContent = "Send";
-      send.classList.replace("ghost", "primary");
+      sendMode(false);
       if (dlg.open) { draw(); input.focus(); }
       // A model that just failed is left out from now on; one that answered is checked.
       api("chat").then((fresh) => { if (dlg.open && fresh?.tiers) { data.tiers = fresh.tiers; drawTiers(); tierNote(); } }).catch(() => {});
@@ -3303,14 +3310,15 @@ async function openAskAi() {
     if (starter) ask(starter.textContent.trim());
   });
   dlg.querySelector("[data-ask-ai-close]").addEventListener("click", () => dlg.close());
-  // Clearing removes the conversation for everyone on the project, so it takes a second tap.
+  // Clear opens the confirmation straight away. It removes this Ask AI conversation (shared by the people on the project) and
+  // nothing else: not job chats, the requirements, or other projects.
   clearBtn.addEventListener("click", async () => {
-    if (!clearBtn.dataset.armed) {
-      clearBtn.dataset.armed = "1";
-      clearBtn.textContent = "Clear for everyone?";
-      setTimeout(() => { delete clearBtn.dataset.armed; clearBtn.textContent = "Clear"; }, 4000);
-      return;
-    }
+    if (askAiRun) { toast("Stop the question being answered first", "info"); return; }
+    const answer = await formDialog("Clear this conversation?",
+      `<p>This removes the Ask AI conversation for <strong>${esc(state.project?.name || "this project")}</strong>, for everyone on the project. It can't be undone.</p>
+       <p class="muted">Job chats, the product requirements and everything else stay as they are.</p>`,
+      "Clear conversation", { danger: true, compact: true });
+    if (answer === null) return;
     try { await api("chat/clear", { method: "POST", body: {} }); messages = []; draw(); toast("Conversation cleared"); }
     catch (e) { toast(e.message, true); }
   });
