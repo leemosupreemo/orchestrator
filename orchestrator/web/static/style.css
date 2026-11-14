@@ -1244,7 +1244,7 @@ dialog h2 {
   .item:has(.side .btn) .main-col { flex-basis: 100%; }
   .item:has(.side .btn) .side { width: 100%; justify-content: space-between; }
   .job-hero { padding: var(--container-pad-y) var(--container-pad-x); gap: var(--space-3); }
-  .job-hero-action { width: 100%; }
+  .job-hero-action { width: 100%; gap: var(--space-2); flex-wrap: wrap; }
   .job-hero-action .btn { width: 100%; min-height: var(--control-lg); }
   .term-input { display: flex; }
   dialog {
@@ -1917,8 +1917,52 @@ dialog h2 {
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-.job-table-row:last-child {
+.job-table-row:last-child,
+.job-swipe-wrap:last-child .job-table-row {
   border-bottom: 0;
+}
+.job-swipe-wrap {
+  position: relative;
+  overflow: hidden;
+  touch-action: pan-y;
+}
+.job-swipe-wrap[hidden] {
+  display: none;
+}
+.job-swipe-wrap .job-table-row {
+  position: relative;
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), background var(--motion-fast) ease, box-shadow var(--motion-medium) ease, border-color var(--motion-medium) ease;
+}
+.job-swipe-wrap.is-swiping .job-table-row {
+  transition: none;
+}
+.job-swipe-wrap.is-open .job-table-row {
+  transform: translateX(-96px);
+}
+.job-swipe-archive {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: var(--warn);
+  color: var(--warn-ink);
+  font: inherit;
+  font-size: var(--type-secondary);
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+  padding: 0 var(--space-2);
+}
+.job-swipe-archive:hover {
+  filter: brightness(0.95);
+}
+.job-swipe-archive:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 /* Tests jobs: a faint tint of the accent over the panel, so they read as a different kind of row without a new colour */
@@ -2241,7 +2285,7 @@ dialog h2 {
 .job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); min-width: 0; flex: 1 1 260px; }
 .job-hero-title { margin: 0; font-size: var(--type-body); font-weight: var(--weight-bold); line-height: 1.3; color: var(--text); }
 .job-hero-reason { margin: 0; font-size: var(--type-body); line-height: 1.45; overflow-wrap: anywhere; }
-.job-hero-action { display: flex; align-items: center; flex-shrink: 0; }
+.job-hero-action { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; flex-shrink: 0; }
 
 /* Tasks Progress Bar */
 .tasks-progress-wrap {
@@ -3781,11 +3825,10 @@ body[data-page="run"] .topbar-actions {
 .job-body { grid-area: body; min-width: 0; }
 .job-rail { grid-area: rail; min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-4); }
 @media (min-width: 1100px) {
-  .job-layout { grid-template-columns: minmax(0, 1fr) 300px; grid-template-areas: "top rail" "body rail"; column-gap: var(--space-5); align-items: start; }
+  .job-layout:has(.job-rail) { grid-template-columns: minmax(0, 1fr) 300px; grid-template-areas: "top rail" "body rail"; column-gap: var(--space-5); align-items: start; }
   .job-rail { position: sticky; top: var(--space-4); }
 }
 .rail-h { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: var(--control-sm); }
-.rail-empty { margin: 0; padding: var(--space-3) var(--space-4); border: 1px dashed var(--border); border-radius: var(--radius); font-size: var(--type-secondary); }
 .rail-card .card-h h2 { font-size: var(--type-body); }
 .context-item { align-items: flex-start; }
 .context-item .main-col { white-space: normal; overflow-wrap: anywhere; }

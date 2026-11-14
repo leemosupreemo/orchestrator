@@ -19,6 +19,8 @@ import json
 import os
 import plistlib
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -259,3 +261,78 @@ def propose(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     if policy:
         notes.append(policy)
     return {"state": "proposal", "platform": fields["delivery_platform"], "fields": fields, "found": found, "missing": missing, "notes": notes}
+
+
+def _unity_editor_version(root: Path) -> str | None:
+    if not root.is_dir():
+        return None
+    candidates = [root, *(c for c in root.iterdir() if c.is_dir() and c.name not in SKIP_DIRS)]
+    for candidate in candidates:
+        version_file = candidate / "ProjectSettings" / "ProjectVersion.txt"
+        if not version_file.is_file() or not (candidate / "Assets").is_dir():
+            continue
+        match = re.search(r"^\s*m_EditorVersion:\s*(\S+)", _read(version_file, 4096), re.M)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _targets_ios_unity(root: Path, config: dict[str, Any]) -> bool:
+    platform = str(config.get("delivery_platform") or "ios").strip().lower()
+    if platform in ("android", "web"):
+        return False
+    artifact = str(config.get("delivery_artifact") or "").lower()
+    build_cmd = str(config.get("delivery_build_command") or "").lower()
+    app_id = str(config.get("firebase_app_id") or "").lower()
+    if artifact.endswith(".ipa") or ":ios:" in app_id or "ios" in build_cmd or "ipa" in build_cmd:
+        return True
+    return platform == "ios" and not config.get("xcode_project") and not config.get("xcode_workspace")
+
+
+def unity_ios_status(root: Path, config: dict[str, Any]) -> dict[str, Any] | None:
+    """Whether a Unity iOS build on macOS has its iOS Build Support module installed."""
+    if sys.platform != "darwin" and not os.environ.get("UNITY_HUB_EDITOR_ROOT"):
+        return None
+    version = _unity_editor_version(root)
+    if not version or not _targets_ios_unity(root, config):
+        return None
+    editor_base = Path(os.environ.get("UNITY_HUB_EDITOR_ROOT") or "/Applications/Unity/Hub/Editor")
+    hub_bin = Path(os.environ.get("UNITY_HUB_BIN") or "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub")
+    editor_dir = editor_base / version
+    editor_installed = editor_dir.is_dir()
+    ios_installed = (editor_dir / "PlaybackEngines" / "iOSSupport").is_dir()
+    hub_installed = hub_bin.is_file()
+    return {
+        "required": True,
+        "version": version,
+        "editor_installed": editor_installed,
+        "ios_installed": ios_installed,
+        "ready": editor_installed and ios_installed,
+        "hub_installed": hub_installed,
+        "can_install": hub_installed and editor_installed and not ios_installed,
+    }
+
+
+def install_unity_ios(root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """Install Unity's iOS Build Support module via Unity Hub's headless CLI."""
+    status = unity_ios_status(root, config)
+    if not status:
+        raise RuntimeError("This project does not require Unity iOS Build Support on this computer.")
+    if status["ready"]:
+        return {"ok": True, "version": status["version"], "detail": f"Unity {status['version']} iOS Build Support is already installed."}
+    if not status["hub_installed"]:
+        raise RuntimeError("Unity Hub was not found at /Applications/Unity Hub.app.")
+    if not status["editor_installed"]:
+        raise RuntimeError(f"Unity {status['version']} is not installed in Unity Hub yet. Install Unity {status['version']} first.")
+    hub_bin = Path(os.environ.get("UNITY_HUB_BIN") or "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub")
+    version = status["version"]
+    res = subprocess.run(
+        [str(hub_bin), "--", "--headless", "install-modules", "--version", version, "-m", "ios", "--cm"],
+        cwd=str(root), capture_output=True, text=True, timeout=900,
+    )
+    after = unity_ios_status(root, config)
+    if after and after["ready"]:
+        return {"ok": True, "version": version, "detail": f"Installed Unity {version} iOS Build Support."}
+    output = (res.stderr or res.stdout or "").strip().splitlines()
+    last = output[-1][:200] if output else f"Unity Hub exited with code {res.returncode}."
+    raise RuntimeError(f"Could not install Unity {version} iOS Build Support: {last}")

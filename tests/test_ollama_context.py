@@ -24,8 +24,9 @@ from orchestrator.scripts import ollama_generate  # noqa: E402
 class FakeOllama:
     """A tiny Ollama: /api/show reports a context length, /api/generate streams a reply (or an error) and remembers the request."""
 
-    def __init__(self, context_length=16384, reply=("Hello", " world"), error=None):
+    def __init__(self, context_length=16384, reply=("Hello", " world"), error=None, parameter_size=None, quantization=None):
         self.requests, self.context_length, self.reply, self.error = [], context_length, reply, error
+        self.parameter_size, self.quantization = parameter_size, quantization
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -37,6 +38,8 @@ class FakeOllama:
                 outer.requests.append((self.path, body))
                 if self.path == "/api/show":
                     info = {"model_info": {"llama.context_length": outer.context_length}} if outer.context_length else {"model_info": {}}
+                    if outer.parameter_size or outer.quantization:
+                        info["details"] = {"parameter_size": outer.parameter_size, "quantization_level": outer.quantization}
                     return self._send(200, json.dumps(info).encode())
                 if outer.error:
                     return self._send(404, json.dumps({"error": outer.error}).encode())

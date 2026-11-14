@@ -880,11 +880,11 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
             progress = f"{finished} of {len(tasks)} tasks done" if finished and tasks else f"{plural_count(changed, 'file')} changed"
             return state("needs_you", "attention", "Partially complete",
                          f"Paused: {progress}. {('It stopped with an error: ' + error) if error else 'It stopped before finishing.'}".strip(),
-                         *(("resume", "Try again") if remaining else ("debug", "Run a fix")))
+                         *(("resume", "Resume") if (remaining or not error) else ("debug", "Run a fix")))
         reason = f"It stopped with an error: {error}" if error else "It stopped before finishing."
-        if remaining:
-            return state("needs_you", "failed" if error else "attention", "Stopped", reason, "resume", "Try again")
-        return state("needs_you", "failed" if error else "attention", "Stopped", reason, "debug", "Run a fix")
+        if remaining or not error or check.get("kind") != "tests":
+            return state("needs_you", "failed" if error else "attention", "Stopped", reason, "resume", "Resume")
+        return state("needs_you", "failed", "Stopped", reason, "debug", "Run a fix")
     if status == "designing":
         return state("needs_you", "attention", "Design ready", "Approve the design to plan its implementation, or ask for changes.", "approve", "Approve design")
     if status == "planned":
@@ -1396,8 +1396,9 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     picked = server_tools.parse_selection(config.get("servers_for_app"), server_tools.find(root), [m["name"] for m in server_machines(root)])[0]
     by_id = {s["id"]: s["name"] for s in server_tools.find(root)} if picked else {}
     data["servers_for_app"] = [{**item, "name": by_id.get(item["id"], item["id"])} for item in picked]
+    from orchestrator import delivery_setup
+    data["unity_ios"] = delivery_setup.unity_ios_status(root, config)
     if gaps:  # not ready to send: offer what the project's own files already say, to confirm in one step
-        from orchestrator import delivery_setup
         data["proposal"] = delivery_setup.propose(root, config)
     if is_web_app(root, config):
         data["web"] = {"gaps": web_preview_gaps(root, config), "previews": web_previews(root),
@@ -8152,6 +8153,19 @@ class UIHandler(BaseHTTPRequestHandler):
             result = save_delivery_target(root, self._body())
             self._audit("delivery_target_changed", root=str(root), platform=result["target"]["delivery_platform"])
             self._json(result)
+        elif method == "POST" and parts == ["delivery", "unity-ios"]:
+            self._require_owner("install Unity iOS Build Support")
+            body = self._body()
+            if body.get("confirmed") is not True:
+                raise UIError("Confirm that you want to install Unity iOS Build Support.")
+            config = read_json_file(runtime_dir(root) / "project.json")
+            from orchestrator import delivery_setup
+            try:
+                task = self.server.tasks.start(lambda: delivery_setup.install_unity_ios(root, config), exclusive="Unity iOS module install")
+            except BusyError as exc:
+                raise UIError(str(exc), HTTPStatus.CONFLICT) from exc
+            self._json({"task": task}, HTTPStatus.ACCEPTED)
+            self._audit("unity_ios_install_started")
         elif method == "POST" and parts == ["ui-review"]:
             self._require_owner("change which screens are reviewed")
             self._json(save_ui_review(root, self._body()))

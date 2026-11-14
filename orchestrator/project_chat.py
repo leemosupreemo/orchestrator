@@ -62,10 +62,61 @@ def classify(model: Any) -> str:
     return "complex" if int(model.tier) == int(ModelTier.EXTREME) else "balanced"
 
 
-def _order(tier: str, models: list[Any]) -> list[Any]:
-    """Best first, within the tier: free and complex by quality; balanced the cheaper of the good ones first."""
+def local_sizes(models: Iterable[Any]) -> dict[str, tuple[float | None, str]]:
+    """For the models that run in Ollama on this computer: {id: (billions of parameters, quantization)}, from the server itself.
+    The registry labels every one of them "high", including a 1-billion-parameter model; what the server reports is what it is."""
+    from orchestrator import ollama_api
+    found: dict[str, tuple[float | None, str]] = {}
+    for m in models:
+        name = ollama_api.model_for(m.id, getattr(m, "required_clis", ()), getattr(m, "family", ""))
+        if name:
+            found[m.id] = ollama_api.size_of(name)
+    return found
+
+
+def quality_tier(model: Any, size: tuple[float | None, str] | None = None) -> int:
+    """How good a model really is, on the registry's scale (1 best .. 4 lowest, 5 below it). A hosted model keeps its label. A local one
+    is judged by its size: 20B or more is high, 6B or more middling, 3B or more low, smaller still lower. A heavily squeezed copy
+    (2 or 3 bits) is a step worse, and one whose size isn't known isn't trusted with its label."""
+    label = int(model.tier)
+    if size is None:
+        return label
+    params, quant = size
+    if not params:
+        return min(label + 1, 5)
+    tier = 2 if params >= 20 else 3 if params >= 6 else 4 if params >= 3 else 5
+    if re.match(r"(?i)q[23]_", quant or ""):
+        tier += 1
+    return min(max(label, tier), 5)
+
+
+def _band(quality: int) -> int:
+    return 0 if quality <= 3 else 1 if quality == 4 else 2  # decent, weak, very weak
+
+
+def _order(tier: str, models: list[Any], sizes: dict[str, tuple[float | None, str]] | None = None) -> list[Any]:
+    """Best first, within the tier: complex by quality; balanced the cheaper of the good ones first. Free is by what each model really
+    is (see quality_tier), in bands: decent models first, then weak, then very weak. Inside a band one on this computer comes before
+    a hosted one (what is asked, and the project text that goes with it, stays here when a local model is good enough), then
+    better, then smaller (quicker)."""
     if tier == "balanced":
         return sorted(models, key=lambda m: (int(m.tier), float(m.cost_factor), m.id))
+    if tier == "free":
+        sizes = sizes or {}
+
+        def key(m: Any) -> tuple:
+            quality = quality_tier(m, sizes.get(m.id))
+            return (_band(quality), m.id not in sizes, quality, (sizes.get(m.id) or (0, ""))[0] or 0, m.id)
+        from orchestrator import ollama_api
+        ordered, seen = [], set()
+        for m in sorted(models, key=key):
+            name = ollama_api.model_for(m.id, getattr(m, "required_clis", ()), getattr(m, "family", ""))
+            name = name.removesuffix(":latest") if name else None
+            if name and name in seen:
+                continue  # the same model under another id: trying it again after it failed would only fail again
+            seen.add(name) if name else None
+            ordered.append(m)
+        return ordered
     return sorted(models, key=lambda m: (int(m.tier), -float(m.cost_factor), m.id))
 
 
@@ -201,7 +252,8 @@ def _why_skipped(model_id: str, checks: dict[str, dict[str, Any]], rejected: set
     return KEY_REJECTED if provider_of(model_id) in rejected else "didn't answer"
 
 
-def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> dict[str, dict[str, Any]]:
+def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None = None, now: float | None = None,
+               sizes: dict[str, tuple[float | None, str]] | None = None) -> dict[str, dict[str, Any]]:
     """For each tier: the model it uses, the ones it falls back to, whether that model has been checked, the models left
     out because they failed recently (and why), and, when it has none, why."""
     checks = load_checks() if checks is None else checks
@@ -213,9 +265,10 @@ def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None =
     groups: dict[str, list[Any]] = {t: [] for t in TIERS}
     for m in models:
         groups[classify(m)].append(m)
+    sizes = local_sizes(groups["free"]) if sizes is None else sizes
     out = {}
     for tier in TIERS:
-        ordered = _order(tier, groups[tier])
+        ordered = _order(tier, groups[tier], sizes)
         skipped = [{"model": m.id, "reason": _why_skipped(m.id, checks, rejected)} for m in ordered if failed(m)]
         ordered = sorted([m for m in ordered if not failed(m)], key=lambda m: not answered(m))  # stable: checked ones first
         ids = [m.id for m in ordered]

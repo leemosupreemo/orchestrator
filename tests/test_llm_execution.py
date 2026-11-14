@@ -153,6 +153,29 @@ class LLMRunSingleTests(unittest.TestCase):
         self.assertIn("gemini failed (code 1)", str(ctx.exception))
         self.assertIn("API key rejected", str(ctx.exception))
 
+    def test_run_llm_only_says_attempting_fallback_when_more_models_exist(self):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with patch.object(llm, "get_prioritized_models", return_value=["claude-sonnet-4-6"]), \
+             patch.object(llm, "model_usable", return_value=True), \
+             patch.object(llm, "_run_llm_single", side_effect=RuntimeError("You've hit your weekly limit")):
+            with redirect_stdout(buf), self.assertRaises(RuntimeError) as ctx:
+                llm.run_llm("claude-sonnet-4-6", "hi", allowed_models=["claude-sonnet-4-6"])
+        self.assertNotIn("Attempting fallback", buf.getvalue())
+        self.assertIn("No fallback models remain.", buf.getvalue())
+        self.assertIn("tried: claude-sonnet-4-6", str(ctx.exception))
+
+        buf2 = io.StringIO()
+        with patch.object(llm, "get_prioritized_models", return_value=["claude-sonnet-4-6", "gemini"]), \
+             patch.object(llm, "model_usable", return_value=True), \
+             patch.object(llm, "_run_llm_single", side_effect=[RuntimeError("You've hit your weekly limit"), "ok"]):
+            with redirect_stdout(buf2):
+                out, used, _ = llm.run_llm("claude-sonnet-4-6", "hi", allowed_models=["claude-sonnet-4-6", "gemini"])
+        self.assertEqual((out, used), ("ok", "gemini"))
+        self.assertIn("Attempting fallback...", buf2.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

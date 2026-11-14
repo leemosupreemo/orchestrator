@@ -143,6 +143,11 @@ class PageTests(unittest.TestCase):
         tabs = app[app.index("function wireRunTabs"):][:1800]
         self.assertIn('if (r?.waiting && !askedBefore) { askedBefore = true; show("terminal");', tabs)  # a question goes to the terminal
 
+    def test_failed_run_auto_opens_steps_with_errors(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        timeline = app[app.index("function wireRunTimeline"):][:2500]
+        self.assertIn('s.status === "failed" || s.errors > 0', timeline)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -153,8 +153,10 @@ class JobsNeverSendYouToTheConsoleTests(unittest.TestCase):
     def test_a_job_that_stopped_with_an_error_says_so_and_offers_to_try_again(self):
         st = ui.job_state({"type": "feature-plan", "status": "human-needed", "last_error": "No module named 'x'",
                            "plan": {"tasks": [{"title": "a"}]}})
-        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Stopped", "resume", "Try again"))
+        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Stopped", "resume", "Resume"))
         self.assertIn("No module named 'x'", st["reason"])
+        stopped = ui.job_state({"type": "quick", "status": "human-needed"})
+        self.assertEqual((stopped["label"], stopped["next"]["action"], stopped["next"]["label"]), ("Stopped", "resume", "Resume"))
 
 
     def test_tests_that_were_written_but_couldnt_run_offer_try_again_not_a_fix(self):

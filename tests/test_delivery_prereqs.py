@@ -76,5 +76,46 @@ class StyleTests(unittest.TestCase):
         self.assertIn(".prereqs .card { margin-bottom: 0; box-shadow: none; }", CSS)
 
 
+class UnityIosPrereqTests(unittest.TestCase):
+    def test_detects_missing_and_installed_unity_ios_support(self):
+        import os
+        import tempfile
+        from unittest import mock
+        from orchestrator import delivery_setup
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            (root / "DaocUnity" / "Assets").mkdir(parents=True)
+            (root / "DaocUnity" / "ProjectSettings").mkdir(parents=True)
+            (root / "DaocUnity" / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.6f1\n")
+            hub_root = Path(tmp) / "Editors"
+            (hub_root / "6000.6.6f1").mkdir(parents=True)
+            hub_bin = Path(tmp) / "Unity Hub"
+            hub_bin.write_text("#!/bin/sh\n")
+            cfg = {"delivery_platform": "file", "delivery_build_command": "bash tools/package_ios.sh", "delivery_artifact": ".local/*.ipa"}
+
+            with mock.patch.dict(os.environ, {"UNITY_HUB_EDITOR_ROOT": str(hub_root), "UNITY_HUB_BIN": str(hub_bin)}):
+                status = delivery_setup.unity_ios_status(root, cfg)
+                self.assertIsNotNone(status)
+                self.assertFalse(status["ready"])
+                self.assertTrue(status["can_install"])
+                self.assertEqual(status["version"], "6000.6.6f1")
+
+                def fake_run(cmd, **kwargs):
+                    (hub_root / "6000.6.6f1" / "PlaybackEngines" / "iOSSupport").mkdir(parents=True)
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+
+                with mock.patch("subprocess.run", side_effect=fake_run) as run_mock:
+                    res = delivery_setup.install_unity_ios(root, cfg)
+                self.assertTrue(res["ok"])
+                self.assertEqual(run_mock.call_args[0][0], [str(hub_bin), "--", "--headless", "install-modules", "--version", "6000.6.6f1", "-m", "ios", "--cm"])
+                self.assertTrue(delivery_setup.unity_ios_status(root, cfg)["ready"])
+
+    def test_delivery_page_offers_modal_approved_unity_ios_install(self):
+        for bit in ('id="prereq-unity"', 'id="install-unity-ios-btn"', 'formDialog(\n          "Install Unity iOS Build Support?"',
+                    'api("delivery/unity-ios"', 'confirmed: true'):
+            self.assertIn(bit, PAGE)
+
+
 if __name__ == "__main__":
     unittest.main()

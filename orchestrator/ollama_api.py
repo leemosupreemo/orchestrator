@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -23,7 +24,7 @@ ANSWER_ROOM = 1500           # tokens kept free for the reply
 DEFAULT_WINDOW = 4096        # what Ollama gives a model unless asked for more
 MAX_WINDOW = 32768           # never ask for more than this: memory grows with it
 RUN_MAX_CHARS = (DEFAULT_WINDOW - ANSWER_ROOM) * CHARS_PER_TOKEN - 500   # the longest prompt `ollama run` can be trusted with
-_CACHE: dict[str, tuple[float, int | None]] = {}
+_CACHE: dict[str, tuple[float, tuple[int | None, float | None, str]]] = {}  # model -> (when, (context length, billions of parameters, quantization))
 CACHE_SECONDS = 600
 
 Opener = Callable[..., Any]
@@ -58,23 +59,45 @@ def _post(path: str, payload: dict[str, Any], timeout: float, opener: Opener = u
     return opener(request, timeout=timeout)
 
 
-def context_length(model: str, *, timeout: float = 3.0, opener: Opener = urllib.request.urlopen, now: float | None = None,
-                   env: dict[str, str] | None = None) -> int | None:
-    """The most tokens this model supports, from the server, or None when it can't be asked. Remembered for ten minutes."""
+def billions(text: Any) -> float | None:
+    """Parameters, in billions, from what Ollama calls the parameter size: "7.6B", "1B", "566M", "30B"."""
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([KMBT])\s*", str(text or "").upper())
+    if not match:
+        return None
+    return float(match[1]) * {"K": 1e-6, "M": 1e-3, "B": 1.0, "T": 1e3}[match[2]]
+
+
+def _info(model: str, *, timeout: float = 3.0, opener: Opener = urllib.request.urlopen, now: float | None = None,
+          env: dict[str, str] | None = None) -> tuple[int | None, float | None, str]:
+    """What the server says about a model: (most tokens it supports, billions of parameters, quantization). One question,
+    remembered for ten minutes; anything it doesn't say, or a server that can't be reached, is None."""
     clock = now if now is not None else time.time()
     cached = _CACHE.get(model)
     if cached and clock - cached[0] < CACHE_SECONDS:
         return cached[1]
-    found: int | None = None
+    found: tuple[int | None, float | None, str] = (None, None, "")
     try:
         with _post("/api/show", {"model": model}, timeout, opener, env) as response:
-            info = json.loads(response.read().decode("utf-8", "replace")).get("model_info") or {}
+            data = json.loads(response.read().decode("utf-8", "replace"))
+        info = data.get("model_info") or {}
         values = [v for k, v in info.items() if str(k).endswith(".context_length") and isinstance(v, int) and v > 0]
-        found = max(values) if values else None
-    except (OSError, ValueError, urllib.error.URLError):
-        found = None
+        details = data.get("details") or {}
+        found = (max(values) if values else None, billions(details.get("parameter_size")), str(details.get("quantization_level") or ""))
+    except (OSError, ValueError, AttributeError, urllib.error.URLError):
+        found = (None, None, "")
     _CACHE[model] = (clock, found)
     return found
+
+
+def context_length(model: str, **kw: Any) -> int | None:
+    """The most tokens this model supports, from the server, or None when it can't be asked. Remembered for ten minutes."""
+    return _info(model, **kw)[0]
+
+
+def size_of(model: str, **kw: Any) -> tuple[float | None, str]:
+    """(billions of parameters, quantization such as "Q4_K_M") of a model on the server, or (None, "") when it can't be asked."""
+    _, params, quant = _info(model, **kw)
+    return params, quant
 
 
 WINDOW_STEPS = (4096, 8192, 16384, 32768)  # a few fixed sizes: Ollama reloads a model whenever the size it is asked for changes

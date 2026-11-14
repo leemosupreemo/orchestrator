@@ -3158,7 +3158,7 @@ function askAiThread(dlg, messages) {
   log.scrollTop = log.scrollHeight;
 }
 
-async function openAskAi() {
+async function openAskAi(opts = {}) {
   let dlg = document.getElementById("ask-ai");
   if (!dlg) {
     dlg = document.createElement("dialog");
@@ -3337,6 +3337,10 @@ async function openAskAi() {
   });
   dlg.querySelector("[data-ask-ai-close]").addEventListener("click", () => dlg.close());
   dlg.addEventListener("click", (e) => { if (e.target.closest("[data-ask-ai-fix]")) dlg.close(); }); // the link then opens AI tools behind it
+  if (opts?.prompt) {
+    if (tiersBox.querySelector("input:checked")?.value) void ask(opts.prompt);
+    else input.value = opts.prompt;
+  }
   // Clear opens the confirmation straight away. It removes this Ask AI conversation (shared by the people on the project) and
   // nothing else: not job chats, the requirements, or other projects.
   clearBtn.addEventListener("click", async () => {
@@ -3353,6 +3357,8 @@ async function openAskAi() {
 
 document.addEventListener("click", (e) => {
   if (e.target.closest?.("[data-ask-ai]")) openAskAi();
+  const recFix = e.target.closest?.("[data-recommend-fix]");
+  if (recFix) openAskAi({ prompt: `This job failed with the following error. Explain why it happened and recommend how to fix it:\n\n${recFix.dataset.recommendFix || ""}` });
 });
 
 function statusLine(p, hasPreview = false) {
@@ -3749,6 +3755,15 @@ document.addEventListener("click", (event) => {
 document.addEventListener("scroll", repositionOpenHomeHealthPopovers, true);
 if (typeof window !== "undefined") window.addEventListener("resize", repositionOpenHomeHealthPopovers);
 
+// Wrap idle job rows in a swipeable container so swiping left reveals the Archive confirmation button.
+function jobSwipeRow(j, { hidden = false } = {}) {
+  if (j.active_run) return jobTableRow(j, { hidden });
+  return `<div class="job-swipe-wrap"${hidden ? " hidden" : ""} data-swipe-job="${esc(j.id)}">
+    <button type="button" class="job-swipe-archive" data-archive-jobs='${attrJSON([j.id])}' aria-label="Archive ${esc(j.title)}" tabindex="-1">Archive</button>
+    ${jobTableRow(j)}
+  </div>`;
+}
+
 // Archive keeps the branch and files; Home's Archived section (or Undo here) brings a job back as it was.
 document.addEventListener("click", async (e) => {
   const button = e.target.closest("[data-archive-jobs]");
@@ -3764,6 +3779,77 @@ document.addEventListener("click", async (e) => {
     } });
   } catch (err) { button.disabled = false; toast(err.message, true); }
 });
+
+// Gmail-style swipe-left on a job row to reveal the Archive confirmation button.
+{
+  const SWIPE_WIDTH = 96;
+  let drag = null;
+  let suppressClickUntil = 0;
+
+  const closeOpenSwipes = (except = null) => {
+    document.querySelectorAll(".job-swipe-wrap.is-open").forEach((el) => {
+      if (el !== except) el.classList.remove("is-open");
+    });
+  };
+
+  document.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (e.target.closest(".job-swipe-archive")) return;
+    const wrap = e.target.closest(".job-swipe-wrap");
+    if (!wrap) { closeOpenSwipes(); return; }
+    const row = wrap.querySelector(".job-table-row");
+    if (!row) return;
+    closeOpenSwipes(wrap);
+    drag = {
+      wrap,
+      row,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      baseOffset: wrap.classList.contains("is-open") ? -SWIPE_WIDTH : 0,
+      offset: wrap.classList.contains("is-open") ? -SWIPE_WIDTH : 0,
+      swiping: false,
+    };
+  });
+
+  document.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (!drag.swiping) {
+      if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(dy) * 1.2) return;
+      drag.swiping = true;
+      drag.wrap.classList.add("is-swiping");
+    }
+    drag.offset = Math.max(-(SWIPE_WIDTH + 16), Math.min(0, drag.baseOffset + dx));
+    drag.row.style.transform = `translateX(${drag.offset}px)`;
+  });
+
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const { wrap, row, swiping, offset } = drag;
+    drag = null;
+    wrap.classList.remove("is-swiping");
+    row.style.transform = "";
+    if (swiping) {
+      suppressClickUntil = Date.now() + 250;
+      wrap.classList.toggle("is-open", offset <= -(SWIPE_WIDTH / 2));
+    }
+  };
+  document.addEventListener("pointerup", endDrag);
+  document.addEventListener("pointercancel", endDrag);
+
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest(".job-swipe-wrap .job-table-row");
+    if (!row) return;
+    if (Date.now() < suppressClickUntil) { e.preventDefault(); return; }
+    const wrap = row.closest(".job-swipe-wrap");
+    if (wrap?.classList.contains("is-open")) {
+      e.preventDefault();
+      wrap.classList.remove("is-open");
+    }
+  }, true);
+}
 
 // Jobs waiting in other projects: one line, not a second list.
 function elsewhereLine(items) {
@@ -3908,7 +3994,7 @@ pages.home = async (_, query) => {
               <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified"><span class="date-header-long">Last modified</span><span class="date-header-short">Date</span>${sortArrow("updated")}</button>
             </div>
             <div class="job-table-body" id="job-list">
-              ${filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
+              ${filteredJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
             </div>
             ${filteredJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${filteredJobs.length}</button></div>` : ""}
           </div>
@@ -3919,7 +4005,7 @@ pages.home = async (_, query) => {
       ${finishedJobs.length ? `<section class="card mb-16" id="home-finished">
         <div class="card-h"><h2>Completed <span class="count">${finishedJobs.length}</span></h2></div>
         <div class="job-table"><div class="job-table-body" id="finished-list">
-          ${finishedJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}</div>
+          ${finishedJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}</div>
           ${finishedJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="finished-list">Show all ${finishedJobs.length}</button></div>` : ""}</div>
       </section>` : ""}
       ${archivedJobs.length ? `<section class="card" id="home-archived-section">
@@ -4756,12 +4842,15 @@ pages.job = async ([id]) => {
 
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
+  const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug"
+    ? `<button class="btn" data-recommend-fix="${esc(job.last_error)}">Recommend fix</button>`
+    : "";
   const heroAction = activeRun
     ? (isStoppingActive
       ? `<button class="btn" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>${job.task_growth && data.undoable_task === job.task_growth.task
-      ? `<button class="btn" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}` : "";
+    : `${next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
+      ? `<button class="btn" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 4-Phase Lifecycle determination
   const status = s.status || "";
@@ -6165,8 +6254,7 @@ function deliveryProposalHtml(proposal, canEdit) {
   }).join("");
   return `<form id="delivery-proposal-form" class="stack gap-12">
     <input type="hidden" name="delivery_platform" value="${esc(platform)}">
-    <div class="stack gap-8"><strong>Here is how this project can send builds to your phone.</strong>
-      <p class="muted m-0">Worked out from your project's own files. Check it, fill in anything marked needed, and press <strong>Use this setup</strong>. After that, sending a build is one button.</p></div>
+    <p class="muted m-0">Worked out from your project's own files. Check it, fill in anything marked needed, and press <strong>Use this setup</strong>. After that, sending a build is one button.</p>
     ${inputs}
     ${(proposal.notes || []).map((n) => `<p class="notice m-0">${esc(n)}</p>`).join("")}
     ${canEdit ? `<div class="row gap-8"><button type="submit" class="btn primary">Use this setup</button><button type="button" class="btn ghost" data-open-advanced>Choose differently</button></div>` : ""}
@@ -6278,8 +6366,7 @@ pages.delivery = async (args, query) => {
   const canEditTarget = state.you?.role !== "member";
   const platformNames = { ios: "iPhone and iPad from an Xcode project (Firebase App Distribution)", android: "Android (Firebase App Distribution)",
     file: "A file your own script builds: .ipa, .apk or .aab (Firebase App Distribution)", web: "Web preview (Firebase Hosting)" };
-  const targetCard = `<section class="card mb-16" id="delivery-target"><div class="card-h"><h2>Where builds go</h2>
-    <span class="pill">${esc({ ios: "iOS", android: "Android", file: "Own build", web: "Web" }[platform] || platform)}</span></div>
+  const targetCard = `<section class="card mb-16" id="delivery-target">
     <form id="delivery-target-form" class="card-b stack gap-12">
       <label class="field"><span>Build type</span><select name="delivery_platform" id="delivery-platform"${canEditTarget ? "" : " disabled"}>
         ${Object.entries(platformNames).map(([k, v]) => `<option value="${k}"${k === platform ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
@@ -6418,6 +6505,16 @@ pages.delivery = async (args, query) => {
     : d.proposal?.state === "proposal" ? deliveryProposalHtml(d.proposal, canEditTarget)
     : `<div class="stack"><ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
         <div>${platform === "ios" && !target.unity_without_xcode ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="#delivery-target" data-scroll-target${platform === "ios" ? ` data-pick-platform="file"` : ""}>Set up delivery</a>`}</div></div>`;
+  const unityIos = d.unity_ios;
+  const unityBody = !unityIos ? "" : unityIos.ready
+    ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} iOS Build Support is installed.</p>`
+    : unityIos.can_install
+      ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is missing its iOS Build Support module.</p>
+         ${canEditTarget ? `<div><button type="button" class="btn small primary" id="install-unity-ios-btn">Install iOS module</button></div>` : ""}`
+      : !unityIos.editor_installed
+        ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is not installed on this computer. Install it in Unity Hub with iOS Build Support.</p>`
+        : `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is missing iOS Build Support and Unity Hub was not found at /Applications/Unity Hub.app.</p>`;
+  const unityCardHtml = unityIos ? `<section class="card prereq-item"><div class="card-h"><h2>Unity iOS Build Support</h2><span class="pill ${unityIos.ready ? "ok" : "warn"}">${unityIos.ready ? "Ready" : "Not set up"}</span></div><div class="card-b stack gap-8">${unityBody}</div></section>` : "";
   const prereqHtml = web ? "" : `<details class="fold prereqs mb-16" id="delivery-prereqs"${targetReady ? " hidden" : " open"}>
       <summary class="card-h"><h2>Before you can send builds</h2><span class="muted t-secondary" id="prereq-summary">${targetReady ? "" : "1 to do"}</span></summary>
       <div class="card-b stack gap-12">
@@ -6425,6 +6522,7 @@ pages.delivery = async (args, query) => {
           <section class="card prereq-item" id="prereq-target"><div class="card-h"><h2>Where builds go</h2><span class="pill ${targetReady ? "ok" : "warn"}">${targetReady ? "Ready" : "Not set up"}</span></div>
             <div class="card-b stack gap-8">${targetBody}</div></section>
           <div id="prereq-signing" hidden><section class="card" id="signing-card" hidden></section></div>
+          <div id="prereq-unity" hidden>${unityCardHtml}</div>
           <div id="prereq-server" hidden></div>
         </div>
         <details class="prereq-done" id="prereq-done" hidden><summary class="muted t-secondary">Already set up (<span id="prereq-done-count">0</span>)</summary>
@@ -6506,6 +6604,7 @@ pages.delivery = async (args, query) => {
       // have answered, a container with nothing to do stays out of sight instead of flashing at the top and then moving.
       const box = view.querySelector("#delivery-prereqs"), send = view.querySelector("#delivery-send");
       const items = box ? { target: { el: view.querySelector("#prereq-target"), ready: targetReady }, signing: { el: view.querySelector("#prereq-signing") },
+        unity: { el: view.querySelector("#prereq-unity"), ready: unityIos ? Boolean(unityIos.ready) : null },
         server: { el: view.querySelector("#prereq-server") } } : {};
       let placed = null;
       const refreshPrereqs = () => {
@@ -6536,6 +6635,30 @@ pages.delivery = async (args, query) => {
         const advanced = view.querySelector("#advanced-delivery");
         if (advanced) advanced.open = true;
         view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
+      });
+      view.querySelector("#install-unity-ios-btn")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        if (btn.disabled) return;
+        const computer = state.project?.computer?.name || "this computer";
+        const confirmed = await formDialog(
+          "Install Unity iOS Build Support?",
+          `<p>This runs Unity Hub's headless installer on <strong>${esc(computer)}</strong> to add the iOS Build Support module to Unity <strong>${esc(unityIos?.version || "")}</strong>.</p><p class="muted t-secondary">It downloads the module from Unity and may take a few minutes.</p>`,
+          "Install module",
+        );
+        if (!confirmed) return;
+        btn.disabled = true;
+        btn.textContent = "Installing…";
+        try {
+          const started = await api("delivery/unity-ios", { method: "POST", body: { confirmed: true } });
+          const result = await waitForTask(started);
+          toast(result.detail || "Unity iOS Build Support installed");
+          await route();
+        } catch (err) {
+          toast(err.message, true);
+          if (btn.isConnected) btn.textContent = "Try again";
+        } finally {
+          if (btn.isConnected) btn.disabled = false;
+        }
       });
       loadServerCard(view.querySelector("#server-card"), Boolean(testers.configured) && !web, (s) => { // after the page is up: it asks Docker, which can take a moment
         // A server is a prerequisite only when builds are set to start it first; otherwise it is an ordinary card below.
@@ -11377,15 +11500,15 @@ function contextItemHtml(it) {
 
 function jobContextRail(s, ctx) {
   ctx = ctx || { designs: [], problem: [] };
+  const empty = !(ctx.designs || []).length && !(ctx.problem || []).length;
+  if (empty) return "";
   const group = (title, items) => items.length ? `<section class="card rail-card"><div class="card-h"><h2>${title} <span class="count">${items.length}</span></h2></div>
     <div class="list">${items.map(contextItemHtml).join("")}</div></section>` : "";
   const groups = [group("Designs", ctx.designs || []), group("What went wrong", ctx.problem || [])];
   if (ctx.problem_first) groups.reverse();
-  const empty = !(ctx.designs || []).length && !(ctx.problem || []).length;
-  const add = (role, text) => `<button type="button" class="linklike" data-attach-context="${esc(s.id)}" data-attach-role="${role}">${text}</button>`;
   return `<aside class="job-rail" aria-label="Context">
-    <div class="rail-h"><span class="label">Context</span>${empty ? "" : `<button type="button" class="btn small" data-attach-context="${esc(s.id)}" data-attach-role="${ctx.problem_first ? "problem" : "design"}">Attach…</button>`}</div>
-    ${empty ? `<p class="rail-empty muted">Add ${add("ticket", "a ticket")}, ${add("design", "a design")} or ${add("problem", "a log or error")}. The AI reads it on its next step.</p>` : groups.join("")}
+    <div class="rail-h"><span class="label">Context</span><button type="button" class="btn small" data-attach-context="${esc(s.id)}" data-attach-role="${ctx.problem_first ? "problem" : "design"}">Attach…</button></div>
+    ${groups.join("")}
   </aside>`;
 }
 
@@ -12159,6 +12282,25 @@ function runFailureGuidance(r) {
     };
   }
 
+  const isAiOAuthExpired = fullText.includes("oauth session expired")
+    || fullText.includes("failed to authenticate")
+    || (fullText.includes("session expired") && fullText.includes("refresh"));
+
+  if (isAiOAuthExpired) {
+    const rerunBtn = targetJob
+      ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
+      : "";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
+    return {
+      title: "AI sign-in expired",
+      detail: "The AI tool's login session expired and could not be refreshed automatically. Sign in again under AI tools (or pick another model in the job's Settings) and rerun.",
+      action: `<a class="btn small primary" href="#/config/ai">Open AI tools</a>`,
+      secondary: `${rerunBtn}${backBtn}`,
+    };
+  }
+
   const isBuildCacheLock = fullText.includes("database is locked")
     || (fullText.includes("build.db") && (fullText.includes("lock") || fullText.includes("sqlite") || fullText.includes("busy")))
     || fullText.includes("unable to open database file")
@@ -12492,6 +12634,7 @@ function runFailureGuidance(r) {
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
+    const recommendBtn = `<button type="button" class="btn small" data-recommend-fix="${esc(err)}">Recommend fix</button>`;
     const backBtn = targetJob
       ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
       : "";
@@ -12499,7 +12642,7 @@ function runFailureGuidance(r) {
       title: "Execution error",
       detail: err,
       action: rerunBtn || `<a class="btn small primary" href="#/new">Create new job</a>`,
-      secondary: backBtn,
+      secondary: `${recommendBtn}${backBtn}`,
     };
   }
 
@@ -12610,7 +12753,7 @@ function runStatus(r, vc = null) {
     </section>`;
   }
 
-  if (failed && guidance && (guidance.title === "Execution error" || guidance.recoveryAction || guidance.isGhAuth || guidance.title.includes("failed") || guidance.title.includes("locked") || guidance.title.includes("required") || guidance.title.includes("incomplete") || guidance.title.includes("issue"))) {
+  if (failed && guidance && (guidance.title === "Execution error" || guidance.recoveryAction || guidance.isGhAuth || guidance.title.includes("failed") || guidance.title.includes("expired") || guidance.title.includes("locked") || guidance.title.includes("required") || guidance.title.includes("incomplete") || guidance.title.includes("issue"))) {
     return `<section class="banner failed attention run-status run-status-notice" aria-label="Run status">
       <div class="run-status-notice-body">
         <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
@@ -13193,10 +13336,12 @@ function wireRunTimeline(id, { saved = false } = {}) {
       if (!data) box.innerHTML = `<div class="notice">${e.status === 404 ? "The step-by-step view needs a newer Orchestrator on this computer. The Terminal tab has the full output." : esc(Errors.explain(e.message))}</div>`;
       return;
     }
-    if (!autoOpened && !data.running) { // a failed run opens the step it failed in
+    if (!autoOpened && !data.running) { // a failed run opens the step it failed in and any step that logged errors
       autoOpened = true;
-      const failed = (data.steps || []).find((s) => s.status === "failed");
-      if (failed?.lines) { open.add(failed.id); await loadLines(failed.id); }
+      const steps = data.steps || [];
+      const failed = steps.find((s) => s.status === "failed");
+      const toOpen = failed ? steps.filter((s) => (s.status === "failed" || s.errors > 0) && s.lines) : [];
+      await Promise.all(toOpen.map((s) => { open.add(s.id); return loadLines(s.id); }));
     }
     const live = (data.steps || []).filter((s) => open.has(s.id) && (s.status === "running" || !outputs.has(s.id)));
     await Promise.all(live.map((s) => loadLines(s.id)));

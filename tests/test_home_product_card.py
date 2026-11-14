@@ -160,7 +160,7 @@ const context={HomeStatus,URLSearchParams,esc:Html.escape,projectDownloads:{pend
  state:{project:{root:'/sample',name:'Snake',branch:'main',branches:[],machine_count:1,model_count:1},runs:[],you:{role:'owner'}},pages:{},
  api:async path=>{if(path==='jobs')return {jobs};if(path==='inbox')return {elsewhere:[]};if(path==='product'){if(product===null)throw Error('older backend');return product;}if(path==='jobs/archived')return {archived:[]};throw Error('older backend');},
  sortJobs:x=>x,homeProjectTitle:p=>p.name,homeHealthIndicator:()=>'',previewCard:()=>'',elsewhereLine:()=>'',HOME_JOBS_SHOWN:10,
- sortArrow:()=>'',jobTableRow:()=>'<tr></tr>',jobPill:()=>'',jobIsRunning:()=>false,kindPill:()=>'',ago:()=>'',plural:(n,w)=>n+' '+w,pill:()=>'',runningMark:''};
+ sortArrow:()=>'',jobTableRow:()=>'<tr></tr>',jobSwipeRow:()=>'<div></div>',jobPill:()=>'',jobIsRunning:()=>false,kindPill:()=>'',ago:()=>'',plural:(n,w)=>n+' '+w,pill:()=>'',runningMark:''};
 vm.createContext(context);
 const take=(from,to)=>{const a=source.indexOf(from);return source.slice(a,source.indexOf(to,a));};
 vm.runInContext(take('const prdStatusPill','const pill = '),context);

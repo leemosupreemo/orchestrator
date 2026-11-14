@@ -12,7 +12,7 @@ STATIC = Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static"
 
 def ask_ai_source() -> str:
     app = (STATIC / "app.js").read_text()
-    return app[app.index("async function openAskAi()"):]
+    return app[app.index("async function openAskAi("):]
 
 
 class AskAiButtonMarkupTests(unittest.TestCase):

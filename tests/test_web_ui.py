@@ -2253,7 +2253,7 @@ process.stdout.write(JSON.stringify({
         home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
         filters = home[home.index("const HOME_FILTERS"):home.index("const requested")]
         self.assertNotIn("stale", filters.lower())  # the job filters never hide older jobs; suggestions have their own cache freshness
-        self.assertIn("filteredJobs.map((j, n) => jobTableRow(j, { hidden: n >= HOME_JOBS_SHOWN }))", home)
+        self.assertIn("filteredJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN }))", home)
 
     def test_empty_jobs_on_home_has_simplified_message_and_link_to_start_new_job(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()

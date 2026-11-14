@@ -195,7 +195,8 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     last_error = None
     actual_session_id = session_id or str(uuid.uuid4())
 
-    for current_model in attempts:
+    for idx, current_model in enumerate(attempts):
+        fallback_note = "Attempting fallback..." if idx + 1 < len(attempts) else "No fallback models remain."
         try:
             raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
             
@@ -214,7 +215,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                         raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection)
                         json.loads(extract_json_block(raw_output), strict=False)
                     except json.JSONDecodeError as exc2:
-                        print(f"⚠️  {current_model} still produced invalid JSON. Attempting fallback...")
+                        print(f"⚠️  {current_model} still produced invalid JSON. {fallback_note}")
                         last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc2}")
                         if on_chunk:
                             on_chunk(None)
@@ -225,7 +226,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
         except LLMTimeoutError as exc:
             if on_chunk:
                 on_chunk(None)
-            print(f"⚠️  {current_model} timed out. Attempting fallback...")
+            print(f"⚠️  {current_model} timed out. {fallback_note}")
             last_error = exc
             continue
         except RuntimeError as exc:
@@ -233,17 +234,18 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 on_chunk(None)
             err_str = str(exc)
             summary = summarize_cli_error(err_str)
-            print(f"⚠️  {current_model} failed ({summary}). Attempting fallback...")
+            print(f"⚠️  {current_model} failed ({summary}). {fallback_note}")
             last_error = exc
             continue
         except Exception as exc:
             if on_chunk:
                 on_chunk(None)
-            print(f"⚠️  {current_model} failed ({exc}). Attempting fallback...")
+            print(f"⚠️  {current_model} failed ({exc}). {fallback_note}")
             last_error = exc
             continue
 
-    raise RuntimeError(f"No model could answer. Last error: {summarize_cli_error(str(last_error))}")
+    tried = ", ".join(attempts) or primary_id
+    raise RuntimeError(f"No model could answer (tried: {tried}). Last error: {summarize_cli_error(str(last_error))}")
 
 
 import selectors

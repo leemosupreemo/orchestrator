@@ -231,6 +231,42 @@ def _checkout_branch_with_recovery(
         raise _format_git_checkout_error(branch, base_branch, exc, getattr(retry, "stderr", "") or getattr(retry, "stdout", "")) from exc
 
 
+def _pull_branch_with_recovery(branch: str, *, allow_missing_remote: bool = False) -> None:
+    """Fast-forward `branch` from origin; if diverged, try rebasing cleanly, else raise an actionable error."""
+    try:
+        run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT)
+        return
+    except subprocess.CalledProcessError as exc:
+        has_remote = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+            cwd=str(ROOT), capture_output=True, check=False,
+        ).returncode == 0
+        if allow_missing_remote and not has_remote:
+            print(f"      - Remote branch origin/{branch} does not exist yet; continuing with local branch.")
+            return
+
+        print(f"      - Fast-forward pull failed for '{branch}'; attempting rebase onto origin/{branch}...")
+        rebase = subprocess.run(
+            ["git", "pull", "--rebase", "origin", branch],
+            cwd=str(ROOT), capture_output=True, text=True, check=False,
+        )
+        if rebase.returncode == 0:
+            print(f"      - Rebased '{branch}' onto origin/{branch}.")
+            return
+
+        subprocess.run(["git", "rebase", "--abort"], cwd=str(ROOT), capture_output=True, check=False)
+        detail = (rebase.stderr or rebase.stdout or getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or "").strip()
+        raise RuntimeError(
+            f"Could not update branch '{branch}' from 'origin/{branch}' because local and remote commits have diverged"
+            f" and automatic rebase could not complete cleanly.\n\n"
+            f"{(detail + chr(10) + chr(10)) if detail else ''}"
+            "How to fix:\n"
+            f"- In the project folder, run `git pull --rebase origin {branch}` and resolve any conflicts, then rerun the job.\n"
+            f"- Or run `git reset --hard origin/{branch}` if you want to discard unpushed local commits on '{branch}'.\n"
+            "- Or change the job's branch mode to 'Create a new branch' (or 'Don't create or switch branches')."
+        ) from exc
+
+
 def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
     base_branch = job.get("base_branch") or os.environ.get("BASE_BRANCH", PROJECT_CONFIG.base_branch)
     generated_branch = job_branch_name(job, issue_number)
@@ -250,16 +286,7 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
             run(["git", "remote", "set-url", "origin", PROJECT_CONFIG.git_remote], cwd=ROOT)
         run(["git", "fetch", "origin"], cwd=ROOT)
         branch = _checkout_branch_with_recovery(branch, base_branch, job, allow_current_fallback=True)
-        try:
-            run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT)
-        except subprocess.CalledProcessError:
-            has_remote = subprocess.run(
-                ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
-                cwd=str(ROOT), capture_output=True, check=False,
-            ).returncode == 0
-            if has_remote:
-                raise
-            print(f"      - Remote branch origin/{branch} does not exist yet; continuing with local branch.")
+        _pull_branch_with_recovery(branch, allow_missing_remote=True)
         return branch, base_branch
 
     branch = job.get("branch") or generated_branch
@@ -269,7 +296,7 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
         run(["git", "remote", "set-url", "origin", PROJECT_CONFIG.git_remote], cwd=ROOT)
     run(["git", "fetch", "origin"], cwd=ROOT)
     _checkout_branch_with_recovery(base_branch, base_branch, job, allow_current_fallback=False)
-    run(["git", "pull", "--ff-only", "origin", base_branch], cwd=ROOT)
+    _pull_branch_with_recovery(base_branch, allow_missing_remote=False)
 
     checkout_res = subprocess.run(["git", "checkout", "-f", branch], cwd=str(ROOT), capture_output=True)
     if checkout_res.returncode == 0:

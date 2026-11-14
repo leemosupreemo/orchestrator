@@ -565,3 +565,31 @@ class WorkerRunTests(unittest.TestCase):
                  patch.object(worker.subprocess, 'run', return_value=SimpleNamespace(returncode=128, stderr="fatal: 'main' is already used by worktree at '/tmp/wt'", stdout='')):
                 with self.assertRaisesRegex(RuntimeError, r"already checked out in another git worktree[\s\S]*How to fix:"):
                     worker.prepare_git_branch({'title': 'Feat', 'job_id': 'id-3', 'branch_mode': 'new'}, None)
+
+            # Diverged pull autocorrects via rebase, and aborts + gives remediation steps on conflict
+            def fail_ff_pull(cmd, cwd=None, **kwargs):
+                if cmd[:3] == ['git', 'pull', '--ff-only']:
+                    raise worker.subprocess.CalledProcessError(1, cmd)
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'run', side_effect=fail_ff_pull), \
+                 patch.object(worker.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stderr='', stdout='')):
+                self.assertEqual(
+                    worker.prepare_git_branch({'title': 'Quick', 'job_id': 'id-4', 'branch': 'codex/two-faction-foundation', 'branch_mode': 'current'}, None),
+                    ('codex/two-faction-foundation', 'main'),
+                )
+
+            seen_cmds = []
+            def conflict_subproc(cmd, cwd=None, **kwargs):
+                seen_cmds.append(cmd)
+                if cmd[:3] == ['git', 'pull', '--rebase']:
+                    return SimpleNamespace(returncode=1, stderr='CONFLICT (content): Merge conflict in foo.py', stdout='')
+                return SimpleNamespace(returncode=0, stderr='', stdout='')
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'run', side_effect=fail_ff_pull), \
+                 patch.object(worker.subprocess, 'run', side_effect=conflict_subproc):
+                with self.assertRaisesRegex(RuntimeError, r"have diverged[\s\S]*How to fix:"):
+                    worker.prepare_git_branch({'title': 'Quick', 'job_id': 'id-5', 'branch': 'codex/two-faction-foundation', 'branch_mode': 'current'}, None)
+            self.assertIn(['git', 'rebase', '--abort'], seen_cmds)

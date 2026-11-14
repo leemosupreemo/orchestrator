@@ -341,3 +341,21 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
         self.assertNotIn("Not primary", app)
         self.assertNotIn("session-not-primary", app)
         self.assertNotIn('api("computer/primary"', app)
+
+    def test_recommend_fix_button_shows_with_error(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('data-recommend-fix="${esc(err)}">Recommend fix</button>', app)
+        self.assertIn('data-recommend-fix="${esc(job.last_error)}">Recommend fix</button>', app)
+
+    def test_swipe_left_on_job_reveals_archive_button(self):
+        app = APP.read_text(encoding="utf-8")
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        self.assertIn('class="job-swipe-wrap"', app)
+        self.assertIn('class="job-swipe-archive" data-archive-jobs=', app)
+        self.assertIn('.job-swipe-wrap.is-open .job-table-row', css)
+
+    def test_oauth_expired_error_guides_user_to_ai_tools(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('fullText.includes("oauth session expired")', app)
+        self.assertIn('title: "AI sign-in expired"', app)
+        self.assertIn('href="#/config/ai">Open AI tools</a>', app)
