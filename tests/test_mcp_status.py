@@ -510,7 +510,8 @@ class CrossMachineJobsTests(unittest.TestCase):
         self.assertLess(opener.index("await refreshState()"), opener.index("location.hash"))
         # archived jobs count as present, the control plane can't stall Home, matching is by repo, yolo is local only
         for bit in ("jobs.concat(archivedJobs)", 'cpApi("machines", { signal: AbortSignal.timeout(3000) })',
-                    "signal: AbortSignal.timeout(3000) })", "p.repo || p.github_repo", "!myRepo && !rRepo && myName",
+                    "signal: AbortSignal.timeout(3000) })", "p.repo || p.github_repo || p.git_remote",
+                    'const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);',
                     "!j.remote_machine && HOME_FILTERS.working[1](j)", "rj.tasks_done", 'st === "failed"', 'st === "scheduled"'):
             self.assertIn(bit, app)
         self.assertNotIn('t.status === "completed"', app[app.index("const remoteJobs"):app.index("const mergedJobs")])

@@ -3961,7 +3961,7 @@ pages.home = async (_, query) => {
       if (["running", "executing", "in-progress", "decomposed"].includes(st)) return { group: "working", tone: "working", label: "Running" };
       return { group: "backlog", tone: "neutral", label: st ? st.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()) : "Planned" };
     };
-    const myRepo = normRepo(p.repo || p.github_repo || "");
+    const myRepo = normRepo(p.repo || p.github_repo || p.git_remote || "");
     const myName = String(p.name || "").toLowerCase();
     let currentMachineId = "";
     try { currentMachineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
@@ -3977,8 +3977,7 @@ pages.home = async (_, query) => {
         const jid = rj.job_id || rj.id;
         if (!jid || seen.has(jid)) continue;
         const rRepo = normRepo(rj.repo || "");
-        // Same repo when both sides know theirs; folder name only when neither can tell (one side knowing is a mismatch).
-        const same = (myRepo && rRepo) ? myRepo === rRepo : (!myRepo && !rRepo && myName && String(rj.project || "").toLowerCase() === myName);
+        const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);
         if (!same) continue;
         seen.add(jid);
         const tasks = Array.isArray(rj.tasks) ? rj.tasks : [];
