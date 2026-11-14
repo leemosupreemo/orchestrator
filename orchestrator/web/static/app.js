@@ -1703,7 +1703,7 @@ async function afterProviderSignIn(user, name) {
   } catch (apiErr) {
     throw new Error(`Signed in as ${user.email || name}, but couldn't reach ${backend || "Orchestrator"} (${apiErr.message}). Make sure Orchestrator is running on your computer.`);
   }
-  await unlockWith(res.token, `Signed in as ${user.email || name}`);
+  await unlockWith(res.token, `Signed in as ${user.email || name}`, { home: true });
 }
 
 // Back from the computers page to the computer this session is still connected to: no new sign-in.
@@ -1724,7 +1724,16 @@ async function returnToApp() {
   refreshState().catch(() => {});
 }
 
-async function unlockWith(token, message, { isCurrent = () => true } = {}) {
+// After signing in, always start on Home, not on whatever page the address still names: a reload, or a sign-in that came back through
+// a redirect or an email link, keeps the old address. Replaces the address rather than adding to the history, so Back doesn't return
+// to the sign-in screen.
+function landOnHome() {
+  if (!location.hash || location.hash === "#" || location.hash === "#/") return;
+  try { history.replaceState(null, "", `${location.pathname}${location.search}#/`); } catch { location.hash = "#/"; }
+}
+
+// `home`: this is a sign-in, so land on Home. Reconnecting a page that is already open leaves it where it is.
+async function unlockWith(token, message, { isCurrent = () => true, home = false } = {}) {
   if (!isCurrent()) return;
   if (token) localStorage.setItem("orchestrator_token", token);
   RESTORED_BRANCH.clear(); // signed in again: put the last used branch back
@@ -1737,6 +1746,7 @@ async function unlockWith(token, message, { isCurrent = () => true } = {}) {
   document.querySelector(".app")?.classList.remove("session-locked");
   document.body.classList.remove("signin-gate");
   endSigningIn();
+  if (home) landOnHome();
   route();
   let pushToken = null;
   try { pushToken = localStorage.getItem(PUSH_KEY); } catch { /* storage blocked */ }
@@ -2169,7 +2179,7 @@ async function enterMachine(machine) {
       location.hash = Account.ideaRoute(idea);
       if (idea.existing) Account.clearIdea();
     }
-    await unlockWith(res.token, `Opened ${machine.name}`);
+    await unlockWith(res.token, `Opened ${machine.name}`, { home: !idea });
   } catch (err) {
     if (machine.has_snapshot) {
       toast(machine.online ? `Browser connection to ${machine.name} is unavailable. Showing saved snapshot.` : `${machine.name} is offline. Showing its last snapshot.`, "info");
@@ -2916,6 +2926,7 @@ function showSignInGate(message, kind = "error") {
         document.querySelector(".app")?.classList.remove("session-locked");
         endSigningIn();
         await refreshState();
+        landOnHome();
         route();
       } catch (err) {
         endSigningIn();
@@ -3127,6 +3138,13 @@ function askAiTierButton(id, t, chosen) {
     <span class="ask-ai-tier-model">${t.available ? `<span class="ask-ai-dot${t.checked ? " is-ok" : ""}" aria-hidden="true"></span>${esc(t.model)}` : (t.skipped?.length ? "Not answering" : "Not set up")}</span></label>`;
 }
 
+// A provider whose API key was refused is left out of every tier. Say so here, with the way to fix it, instead of only dropping it.
+function askAiProblemsHtml(problems) {
+  return (problems || []).map((x) => `<div class="ask-ai-problem"><svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+    <span><strong>${esc(x.name)}</strong> is left out: its API key was rejected. The other AI tools still work.</span>
+    <a href="#/config/ai" data-ask-ai-fix>Fix in AI tools</a></div>`).join("");
+}
+
 // Only show model checks while they're running; completed checks stay out of the chat UI.
 function askAiCheckLine(data, checking) {
   if (checking) return `${runningMark}Checking which models answer…`;
@@ -3168,6 +3186,7 @@ async function openAskAi() {
         <button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button></div>
     </header>
     <fieldset class="ask-ai-tiers" aria-label="Kind of AI"><legend class="sr-only">Kind of AI</legend><span class="muted">Loading…</span></fieldset>
+    <div class="ask-ai-problems" aria-live="polite" hidden></div>
     <div class="ask-ai-check muted" aria-live="polite"></div>
     <div class="ask-ai-thread" role="log" aria-live="polite"></div>
     <form class="ask-ai-form">
@@ -3223,6 +3242,9 @@ async function openAskAi() {
     const current = tiersBox.querySelector("input:checked")?.value || saved;
     const chosen = data.tiers[current]?.available ? current : data.tiers[data.default]?.available ? data.default : ["balanced", "free", "complex"].find((t) => data.tiers[t].available);
     tiersBox.innerHTML = `<legend class="sr-only">Kind of AI</legend>${["free", "balanced", "complex"].map((id) => askAiTierButton(id, data.tiers[id], chosen)).join("")}`;
+    const problemBox = dlg.querySelector(".ask-ai-problems");
+    problemBox.innerHTML = askAiProblemsHtml(data.problems);
+    problemBox.hidden = !(data.problems || []).length;
     checkBox.innerHTML = askAiCheckLine(data, checking);
     checkBox.hidden = !checking;
     input.disabled = send.disabled = !tiersBox.querySelector("input:checked");
@@ -3237,6 +3259,7 @@ async function openAskAi() {
       const started = await api("chat/check", { method: "POST", body: {} });
       const result = await waitForTask(started, {});
       data.tiers = result.tiers || data.tiers;
+      data.problems = result.problems || data.problems;
     } catch (e) { if (e.status !== 404) toast(e.message, true); }
     finally { checking = false; if (dlg.open) { drawTiers(); tierNote(); } }
   };
@@ -3305,7 +3328,7 @@ async function openAskAi() {
       sendMode(false);
       if (dlg.open) { draw(); input.focus(); }
       // A model that just failed is left out from now on; one that answered is checked.
-      api("chat").then((fresh) => { if (dlg.open && fresh?.tiers) { data.tiers = fresh.tiers; drawTiers(); tierNote(); } }).catch(() => {});
+      api("chat").then((fresh) => { if (dlg.open && fresh?.tiers) { data.tiers = fresh.tiers; data.problems = fresh.problems; drawTiers(); tierNote(); } }).catch(() => {});
     }
   };
 
@@ -3322,6 +3345,7 @@ async function openAskAi() {
     if (starter) ask(starter.textContent.trim());
   });
   dlg.querySelector("[data-ask-ai-close]").addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", (e) => { if (e.target.closest("[data-ask-ai-fix]")) dlg.close(); }); // the link then opens AI tools behind it
   // Clear opens the confirmation straight away. It removes this Ask AI conversation (shared by the people on the project) and
   // nothing else: not job chats, the requirements, or other projects.
   clearBtn.addEventListener("click", async () => {
@@ -8667,7 +8691,7 @@ function epicsSection(initial, { onPrdChanged }) {
 
   const breakdownCard = () => {
     if (!ov.prd_filled) return `<section class="card mb-16"><div class="card-b stack"><strong>Epics fill in here on their own</strong>
-      <span class="muted">As soon as you fill in any product field above, your requirements are broken down into epics automatically. Anything in any field is enough: the breakdown follows how much you've said.</span>
+      <span class="muted">As soon as you fill in any product field above, your requirements are broken down into epics automatically.</span>
       </div></section>`;
     return `<section class="card mb-16" id="epic-breakdown"><div class="card-h"><h2>Break down from the PRD</h2></div><div class="card-b stack">
       <p class="muted">Splits your requirements into epics. You pick the ones to keep.</p>
@@ -10384,6 +10408,27 @@ pages.config = async (args = []) => {
           };
           view.addEventListener("click", onConnect);
           cleanup.push(() => view.removeEventListener("click", onConnect));
+          // After replacing a rejected key: forget the failure and ask that provider's models again.
+          const onRecheck = async (event) => {
+            const button = event.target.closest("[data-ai-recheck]");
+            if (!button || button.disabled) return;
+            const provider = button.dataset.aiRecheck;
+            button.disabled = true;
+            button.textContent = "Checking…";
+            try {
+              await api("ai-providers/recheck", {method: "POST", body: {provider}});
+              const result = await waitForTask(await api("chat/check", {method: "POST", body: {}}), {});
+              const still = (result.problems || []).some((x) => x.provider === provider);
+              toast(still ? "Its key is still rejected. Check the key and try again." : "It answers now, so it is back in Ask AI.", still ? "warning" : false);
+              await route();
+            } catch (error) {
+              toast(error.message, true);
+              button.disabled = false;
+              button.textContent = "I've fixed it, check again";
+            }
+          };
+          view.addEventListener("click", onRecheck);
+          cleanup.push(() => view.removeEventListener("click", onRecheck));
           const onInstall = async (event) => {
             const button = event.target.closest("[data-ai-install]");
             if (!button || button.disabled) return;
@@ -11008,7 +11053,7 @@ pages.connections = async (_, query) => {
               ${!p.authorize_key ? `<label class="field"><span>Figma Client ID <span class="muted">(from figma.com/developers/apps)</span></span>
                 <input type="text" name="figma_client_id" placeholder="e.g. your_figma_oauth_client_id" value="">
               </label>` : ""}
-              <div><button type="button" class="btn small primary" id="figma-dialog-quick-btn">Log in &amp; authorize with Figma ↗</button></div>
+              <div><button type="button" class="btn small primary" id="figma-dialog-quick-btn" aria-label="Log in and authorize with Figma">Login ↗</button></div>
               <small class="hint-text">Sign in with your Figma account (or Enterprise SSO) and approve read access.</small>
             </div>
 ` : "";
@@ -11018,7 +11063,7 @@ pages.connections = async (_, query) => {
               ${p.authorize_key ? `<p class="muted">Sign in and approve in your browser.</p>`
                 : `<p class="muted">Trello signs you in through an app, so it needs an API key first: copy it from <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up Admin ↗</a> (make a Power-Up there if you have none), paste it here, then log in. You won't need a token.</p>
               <label class="field"><span>API key</span><input type="text" name="trello_login_key" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="32 letters and numbers"></label>`}
-              <div><button type="button" class="btn small primary" id="trello-dialog-quick-btn">Log in &amp; authorize with Trello ↗</button></div>
+              <div><button type="button" class="btn small primary" id="trello-dialog-quick-btn" aria-label="Log in and authorize with Trello">Login ↗</button></div>
             </div>
 ` : "";
           // Sentry: approve a code in the browser (device sign-in), once Orchestrator's Sentry app id is set. No token to make,
@@ -11027,19 +11072,19 @@ pages.connections = async (_, query) => {
             <div class="card stack mb-16 conn-auth-box" id="sentry-signin">
               <strong>Sign in with Sentry</strong>
               <p class="muted">Approve Orchestrator in your browser. There's no token to create, and your organization is filled in for you.</p>
-              <div><button type="button" class="btn small primary" id="sentry-signin-btn">Sign in with Sentry ↗</button></div>
+              <div><button type="button" class="btn small primary" id="sentry-signin-btn" aria-label="Sign in with Sentry">Login ↗</button></div>
               <div id="sentry-signin-wait" class="stack" hidden></div>
             </div>` : "";
           const jiraOptionA = p.id === "jira" ? `
             <div class="card stack mb-16 conn-auth-box">
               <strong>1. Create an API token</strong>
-              <div><a class="btn small primary" href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">Log in to Atlassian &amp; create token ↗</a></div>
+              <div><a class="btn small primary" href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener" aria-label="Log in to Atlassian and create an API token">Login ↗</a></div>
               <small class="hint-text">Click "Create API token" and copy it.</small>
             </div>
             <div class="conn-auth-divider mb-8"><strong>2. Fill in your site and paste the token</strong></div>` : "";
           // Figma and Trello sign you in with a button; typing a token by hand is the fallback, tucked under Advanced.
           const hasLogin = p.id === "figma" || p.id === "trello" || Boolean(sentryOptionA);
-          const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener">Create a token ↗</a></p>` : "";
+          const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener" aria-label="Log in to ${esc(p.name)} and create a token">Login ↗</a></p>` : "";
           const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
             ${figmaOptionA}
             ${trelloOptionA}

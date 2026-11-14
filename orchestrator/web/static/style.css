@@ -4919,6 +4919,12 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .ask-ai-clear .icon { width: 18px; height: 18px; }
 .ask-ai-clear:hover { color: var(--bad); }
 .ask-ai-tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-1); margin: 0; padding: var(--space-1); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); min-width: 0; }
+/* A provider left out because its key was refused: said plainly, with the way to fix it. */
+.ask-ai-problems { display: flex; flex-direction: column; gap: var(--space-1); }
+.ask-ai-problem { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--warn-soft, var(--panel-2)); border: 1px solid var(--warn, var(--border)); font-size: var(--type-secondary); }
+.ask-ai-problem .icon { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--warn); }
+.ask-ai-problem span { flex: 1 1 auto; min-width: 0; }
+.ask-ai-problem a { flex: none; white-space: nowrap; font-weight: var(--weight-medium); }
 .ask-ai-tier { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: var(--space-2) var(--space-1); border-radius: calc(var(--r-md) - 2px); cursor: pointer; text-align: center; min-width: 0; }
 .ask-ai-tier input { position: absolute; opacity: 0; pointer-events: none; }
 .ask-ai-tier-name { font-weight: var(--weight-medium); font-size: var(--type-body); }

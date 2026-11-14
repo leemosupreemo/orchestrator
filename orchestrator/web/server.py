@@ -4497,7 +4497,9 @@ def ai_providers_state(root: Path) -> dict[str, Any]:
     settings = read_settings(root)
     state = ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready,
                                      checklist.saved_api_keys(settings), settings)
-    return {**state, "models": provider_models(), "models_synced": models_last_synced()}
+    # Providers whose API key was refused: left out of Ask AI, and shown here where they can be fixed.
+    return {**state, "models": provider_models(), "models_synced": models_last_synced(),
+            "problems": project_chat.provider_problems(project_chat.ready_models(root))}
 
 
 def ai_machine_statuses(root: Path) -> dict[str, Any]:
@@ -7584,13 +7586,17 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "planner": job.get("planner"), "builder": job.get("builder"), "reviewer": job.get("reviewer")})
         elif method == "GET" and parts == ["chat"]:
             # Ask AI on Home: the conversation, and which model each of Free, Balanced and Complex would use here.
-            tiers = project_chat.chat_tiers(project_chat.ready_models(root))
+            models = project_chat.ready_models(root)
+            tiers = project_chat.chat_tiers(models)
             self._json({"messages": project_chat.messages(root), "tiers": tiers, "default": project_chat.default_tier(tiers),
-                        "needs_check": project_chat.needs_check(tiers)})
+                        "needs_check": project_chat.needs_check(tiers),
+                        "problems": project_chat.provider_problems(models)})  # providers left out of every tier, and what to do about each
         elif method == "POST" and parts == ["chat", "check"]:
             # Which models really answer: a one-word question to each tier's best model until one does (see project_chat).
             models, server = project_chat.ready_models(root), self.server
-            work = lambda: {"tiers": project_chat.check_tiers(models, lambda m: probe_model(server, root, m))}
+            def work():
+                tiers = project_chat.check_tiers(models, lambda m: probe_model(server, root, m))
+                return {"tiers": tiers, "problems": project_chat.provider_problems(models)}
             self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
         elif method == "POST" and parts == ["chat"]:
             body = self._body()
@@ -7858,6 +7864,14 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(result)
         elif method == "GET" and parts == ["ai-providers"]:
             self._json(ai_providers_state(root))
+        elif method == "POST" and parts == ["ai-providers", "recheck"]:
+            # After replacing a rejected key: forget what failed, so Ask AI asks that provider's models again.
+            self._require_owner("check an AI provider again")
+            provider = _text(self._body(), "provider", limit=80)
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", provider or ""):
+                raise UIError("Say which provider to check again.")
+            self._json({"ok": True, "forgotten": project_chat.forget_provider(provider)})
+            self._audit("ai_provider_recheck", provider=provider)
         elif method == "POST" and parts == ["ai-providers", "free"]:
             # Set up free AI in one step (orchestrator/ai_setup.py): check, install OpenCode, test its free models, turn them on.
             self._require_owner("set up an AI tool")

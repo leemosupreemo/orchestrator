@@ -77,6 +77,7 @@ def _order(tier: str, models: list[Any]) -> list[Any]:
 
 CHECK_FRESH = 6 * 3600      # how long a model that answered counts as checked
 FAIL_HOLD = 30 * 60         # how long one that failed is left out: a sign-in being renewed or a busy provider is often back soon
+KEY_HOLD = 24 * 3600        # a rejected API key stays rejected until it is replaced, so it is left out far longer (or until the sign-in file changes)
 RETRY_AFTER = 4.0           # a check that fails is asked once more before it counts, so a blip doesn't take a model away
 PROBE = "Reply with the single word OK."
 MAX_PROBES_PER_TIER = 4
@@ -122,6 +123,63 @@ def provider_of(model_id: str) -> str:
     return head if sep and head not in SHARED_KEY_EXEMPT else ""
 
 
+def credentials_file() -> Path:
+    """Where OpenCode keeps its sign-ins (and its providers' API keys); it changes when someone signs in or out."""
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "opencode" / "auth.json"
+
+
+def rejected_providers(checks: dict[str, dict[str, Any]], now: float | None = None) -> dict[str, dict[str, Any]]:
+    """Providers whose API key was refused, with the check that showed it. Forgotten after KEY_HOLD, or as soon as the sign-in
+    file is newer than the refusal (the key may have been replaced), so the provider gets another chance."""
+    now = now or time.time()
+    try:
+        changed = credentials_file().stat().st_mtime
+    except OSError:
+        changed = 0.0
+    found: dict[str, dict[str, Any]] = {}
+    for model, check in checks.items():
+        provider = provider_of(model)
+        at = float(check.get("at") or 0)
+        if provider and not check.get("ok") and check.get("reason") == KEY_REJECTED and now - at < KEY_HOLD and changed <= at:
+            if provider not in found or at > float(found[provider].get("at") or 0):
+                found[provider] = {**check, "model": model}
+    return found
+
+
+def provider_label(provider: str) -> str:
+    return " ".join(word.capitalize() for word in provider.replace("_", "-").split("-"))
+
+
+def provider_problems(models: Iterable[Any] | None = None, checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> list[dict[str, Any]]:
+    """What to fix so an AI provider works again: [{provider, name, reason, models, since, fix}], one per provider whose key was refused."""
+    checks = load_checks() if checks is None else checks
+    ids = [m.id for m in (models or [])]
+    out = []
+    for provider, check in sorted(rejected_providers(checks, now).items()):
+        covered = sorted({m for m in [*ids, *checks] if provider_of(m) == provider})
+        out.append({"provider": provider, "name": provider_label(provider), "reason": KEY_REJECTED, "models": len(covered),
+                    "since": check.get("at"), "fix": f"Run `opencode auth login` on this computer, choose {provider_label(provider)} and enter a valid key."})
+    return out
+
+
+def forget_provider(provider: str) -> int:
+    """Drop every recorded failure for a provider (after its key was replaced), so its models are asked again. Returns how many."""
+    if not provider:
+        return 0
+    with _CHECKS_LOCK:
+        data = load_checks()
+        gone = [m for m in data if provider_of(m) == provider]
+        for m in gone:
+            del data[m]
+        if gone:
+            path = checks_path()
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".checks-")
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=1)
+            os.replace(tmp, path)
+    return len(gone)
+
+
 def failure_reason(text: str) -> str:
     """What went wrong with a model, in a few words, from its error."""
     lowered = re.sub(r"api[-_ ]?key", "api key", text.lower())  # "API-key", "api_key" and "apikey" are all "api key"
@@ -149,8 +207,7 @@ def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None =
     checks = load_checks() if checks is None else checks
     now = now or time.time()
     # A rejected key is the provider's, not one model's: every model of that provider fails with it until the key is replaced.
-    rejected = {provider_of(k) for k, c in checks.items()
-                if provider_of(k) and not c.get("ok") and c.get("reason") == KEY_REJECTED and now - float(c.get("at") or 0) < FAIL_HOLD}
+    rejected = set(rejected_providers(checks, now))
     failed = lambda m: ((c := checks.get(m.id)) and not c.get("ok") and now - float(c.get("at") or 0) < FAIL_HOLD) or provider_of(m.id) in rejected
     answered = lambda m: (c := checks.get(m.id)) and c.get("ok") and now - float(c.get("at") or 0) < CHECK_FRESH
     groups: dict[str, list[Any]] = {t: [] for t in TIERS}

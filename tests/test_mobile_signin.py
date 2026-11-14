@@ -76,7 +76,7 @@ class RedirectReturnTests(unittest.TestCase):
 const fs=require('fs'),vm=require('vm');
 const [outcome,pending,hosted,exchangeError]=JSON.parse(process.argv[2]);
 const source=fs.readFileSync(process.argv[1],'utf8');
-const calls=[],errors=[];
+const calls=[],errors=[],unlockOptions=[];
 const user={uid:'demo-user',email:'demo@example.invalid',providerData:[{providerId:'google.com'}],
  getIdToken:async()=>{calls.push(['id-token']);return 'isolated-fake-token';}};
 const auth={getRedirectResult:async()=>{
@@ -92,17 +92,17 @@ storage.getItem=k=>storage[k];
 const context={window:{firebase:{auth:()=>auth},location:{hostname:'demo.firebaseapp.com'}},
  sessionStorage:storage,console:{warn:()=>{}},
  refreshState:async()=>{calls.push(['refresh']);},route:()=>calls.push(['route']),
- showSignInGate:m=>errors.push(m),setLastLoginMethod:m=>calls.push(['method',m]),
+ showSigningIn:()=>{},showSignInGate:m=>errors.push(m),setLastLoginMethod:m=>calls.push(['method',m]),
  Account:{active:()=>hosted},getBackendUrl:()=> 'http://127.0.0.1:8080',
  openAccount:async()=>{calls.push(['account']);vm.runInContext('endSigningIn()',context);},
  api:async(path,request)=>{calls.push(['exchange',path,request]);if(exchangeError)throw new Error('backend offline');return {token:'local-session'};},
- unlockWith:async(token,message)=>{calls.push(['unlock',token,message]);vm.runInContext('endSigningIn()',context);}};
+ unlockWith:async(token,message,options)=>{unlockOptions.push(options);calls.push(['unlock',token,message]);vm.runInContext('endSigningIn()',context);}};
 vm.createContext(context);
 const providerStart=source.indexOf('async function afterProviderSignIn(');
 vm.runInContext(source.slice(providerStart,source.indexOf('// Back from the computers',providerStart)),context);
 const start=source.indexOf('// True from the moment');
 vm.runInContext(source.slice(start,source.indexOf('// ---------------------------------------------------------------- helpers',start)),context);
-setImmediate(()=>console.log(JSON.stringify({calls,errors,signingIn:vm.runInContext('signingIn',context)})));
+setImmediate(()=>console.log(JSON.stringify({calls,errors,unlockOptions,signingIn:vm.runInContext('signingIn',context)})));
 '''
         result = subprocess.run(['node', '-e', script, str(APP), json.dumps([outcome, pending, hosted, exchange_error])],
                                 capture_output=True, text=True, timeout=10)
@@ -116,6 +116,7 @@ setImmediate(()=>console.log(JSON.stringify({calls,errors,signingIn:vm.runInCont
             ['exchange', 'auth', {'method': 'POST', 'body': {'id_token': 'isolated-fake-token'}}],
             ['unlock', 'local-session', 'Signed in as demo@example.invalid'],
         ])
+        self.assertEqual(out['unlockOptions'], [{'home': True}])  # a sign-in lands on Home
         self.assertFalse(out['signingIn'])
         self.assertEqual(out['errors'], [])
 

@@ -393,12 +393,23 @@
     };
     const installed = providers.filter((p) => p.installed);
     const notInstalled = providers.filter((p) => !p.installed);
+    // A provider whose API key was refused is left out of Ask AI until it is fixed; this is where to fix it.
+    const problems = Array.isArray(ai.problems) ? ai.problems : [];
+    const problemCard = problems.length ? `<section class="card configuration-card ai-problem-card" id="ai-problems"><div class="card-h"><h2>Needs attention</h2><span class="count">${problems.length}</span></div>
+      <div class="card-b stack gap-12">${problems.map((x) => `<div class="notice warn" data-ai-problem="${escapeHtml(x.provider)}">
+        <strong>${escapeHtml(x.name)}: its API key was rejected</strong>
+        <p>${x.models === 1 ? "Its model is" : `Its ${x.models} models are`} left out of Ask AI until this is fixed, so nothing is asked of it in the meantime. A job set to use one of them fails the same way.</p>
+        <p class="muted">${escapeHtml(x.fix)}</p>
+        <div class="row gap-8 wrap align-center"><code>opencode auth login</code>
+          <button type="button" class="btn small ghost" data-setup-copy="opencode auth login">Copy command</button>
+          ${owner ? `<button type="button" class="btn small primary" data-ai-recheck="${escapeHtml(x.provider)}">I've fixed it, check again</button>` : ""}</div></div>`).join("")}</div></section>` : "";
     const secondary = (state.machines || []).filter((m) => m.enabled !== false && m.mode === "ssh");
     const plugins = (ai.plugins || []).map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {
       title: "Manage AI tools",
       sub: ai.any_ready ? "" : "Install and connect an AI tool to plan, build, and review jobs.",
       html: `<div class="configuration-page">
+        ${problemCard}
         ${available && owner && !ai.any_ready ? `<section class="card configuration-card ai-free-card"><div class="card-b row between align-center gap-12 wrap">
           <div class="stack gap-4"><strong>Start with a free AI</strong>
             <span class="muted">One click: Orchestrator installs OpenCode and turns on its free models. No account, card or terminal needed.</span></div>

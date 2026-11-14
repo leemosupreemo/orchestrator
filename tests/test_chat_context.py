@@ -415,6 +415,17 @@ class RejectedKeyTests(unittest.TestCase):
     tried its models one after another, each failing the same way, and only ever showed the raw error."""
     ALIBABA_ERROR = "Error: Invalid API-key provided. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#apikey-error"
 
+    def setUp(self):
+        # The real sign-in file's age must not decide these: pretend it was last touched long ago
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        auth = Path(self.tmp.name) / "auth.json"
+        auth.write_text("{}")
+        os.utime(auth, (1.0, 1.0))
+        patcher = patch.object(project_chat, "credentials_file", return_value=auth)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def models(self, *ids):
         from orchestrator.scripts.model_registry import get_model
         return [m for m in (get_model(i) for i in ids) if m]
@@ -469,3 +480,82 @@ class RejectedKeyTests(unittest.TestCase):
             project_chat.check_tiers(models, probe, retry_after=0)
         self.assertEqual(len([m for m in asked if m == asked[0]]), 2)  # the one retry, as before
         self.assertEqual(sorted(set(asked)), [asked[0]])  # and none of the provider's other models
+
+
+class ProviderProblemTests(unittest.TestCase):
+    """A provider whose API key was refused is left out of Ask AI for good measure (not just 30 minutes), reported where it can be
+    fixed, and tried again as soon as its sign-in file changes or someone asks."""
+    KEY = project_chat.KEY_REJECTED
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.auth = Path(self.tmp.name) / "opencode" / "auth.json"
+        self.auth.parent.mkdir(parents=True)
+        self.auth.write_text("{}")
+        patcher = patch.object(project_chat, "credentials_file", return_value=self.auth)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def set_auth_time(self, when: float):
+        os.utime(self.auth, (when, when))
+
+    def failure(self, at, reason=None):
+        return {"ok": False, "reason": reason or self.KEY, "at": at}
+
+    def test_a_refused_key_is_remembered_for_a_day_not_half_an_hour(self):
+        self.set_auth_time(100.0)
+        checks = {"alibaba-token-plan/glm-5.2": self.failure(1000.0)}
+        self.assertIn("alibaba-token-plan", project_chat.rejected_providers(checks, now=1000.0 + project_chat.FAIL_HOLD + 60))
+        self.assertNotIn("alibaba-token-plan", project_chat.rejected_providers(checks, now=1000.0 + project_chat.KEY_HOLD + 60))
+
+    def test_signing_in_again_gives_the_provider_another_chance_at_once(self):
+        checks = {"alibaba-token-plan/glm-5.2": self.failure(1000.0)}
+        self.set_auth_time(900.0)  # the sign-in file is older than the refusal: nothing has changed
+        self.assertTrue(project_chat.rejected_providers(checks, now=1500.0))
+        self.set_auth_time(1200.0)  # a key was entered after the refusal
+        self.assertEqual(project_chat.rejected_providers(checks, now=1500.0), {})
+
+    def test_only_a_refused_key_counts_and_only_for_providers_that_need_their_own(self):
+        self.set_auth_time(100.0)
+        checks = {"alibaba-token-plan/a": self.failure(1000.0, "out of quota for now"),
+                  "opencode/beam-free": self.failure(1000.0), "ollama/qwen3:8b": self.failure(1000.0), "claude-sonnet-4-6": self.failure(1000.0)}
+        self.assertEqual(project_chat.rejected_providers(checks, now=1100.0), {})
+
+    def test_the_problem_says_who_what_how_many_models_and_how_to_fix_it(self):
+        self.set_auth_time(100.0)
+        checks = {"alibaba-token-plan/glm-5.2": self.failure(1000.0)}
+        models = [type("M", (), {"id": i})() for i in ("alibaba-token-plan/glm-5.2", "alibaba-token-plan/qwen3.7-max", "claude-sonnet-4-6")]
+        problems = project_chat.provider_problems(models, checks=checks, now=1100.0)
+        self.assertEqual(len(problems), 1)
+        problem = problems[0]
+        self.assertEqual((problem["provider"], problem["name"], problem["models"]), ("alibaba-token-plan", "Alibaba Token Plan", 2))
+        self.assertEqual(problem["reason"], self.KEY)
+        self.assertIn("opencode auth login", problem["fix"])
+        self.assertIn("Alibaba Token Plan", problem["fix"])
+
+    def test_no_problem_means_an_empty_list(self):
+        self.assertEqual(project_chat.provider_problems([], checks={}), [])
+
+    def test_forgetting_a_provider_drops_only_its_failures(self):
+        with patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": self.tmp.name}):
+            project_chat.record_check("alibaba-token-plan/glm-5.2", False, self.KEY)
+            project_chat.record_check("alibaba-token-plan/qwen3.7-max", False, self.KEY)
+            project_chat.record_check("claude-sonnet-4-6", False, "out of quota for now")
+            self.assertEqual(project_chat.forget_provider("alibaba-token-plan"), 2)
+            left = project_chat.load_checks()
+            self.assertEqual(list(left), ["claude-sonnet-4-6"])
+            self.assertEqual(project_chat.forget_provider("alibaba-token-plan"), 0)
+            self.assertEqual(project_chat.forget_provider(""), 0)
+
+    def test_tiers_leave_the_provider_out_while_rejected_and_take_it_back_after_a_new_sign_in(self):
+        models = [type("M", (), {"id": i, "tier": 2, "cost_factor": 5.0, "family": "opencode", "capabilities": ["coding"], "required_clis": ["opencode"]})()
+                  for i in ("alibaba-token-plan/glm-5.2", "alibaba-token-plan/qwen3.7-max")]
+        checks = {"alibaba-token-plan/glm-5.2": self.failure(1000.0)}
+        self.set_auth_time(100.0)
+        left_out = project_chat.chat_tiers(models, checks=checks, now=1000.0 + 3 * project_chat.FAIL_HOLD)  # well past the old half hour
+        self.assertFalse(left_out["balanced"]["available"])
+        self.assertEqual(left_out["balanced"]["models"], [])
+        self.set_auth_time(1000.0 + 60)
+        back = project_chat.chat_tiers(models, checks=checks, now=1000.0 + 3 * project_chat.FAIL_HOLD)
+        self.assertTrue(back["balanced"]["available"])

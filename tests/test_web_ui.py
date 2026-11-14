@@ -5462,7 +5462,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("formDialog(", offer)
         epics = self.js[self.js.index("function epicsSection("):][:2500]
         self.assertIn("Epics fill in here on their own", epics)
-        self.assertIn("Anything in any field is enough", epics)
+        self.assertNotIn("Anything in any field is enough", epics)
         self.assertNotIn("Write your product requirements first.", epics)
         self.assertGreaterEqual(page.count("offerBreakdown();"), 2)  # when the page opens, and after the first thing is saved
         self.assertIn('query?.get("suggest") === "1"', page)  # the old link still lands somewhere useful
@@ -8385,6 +8385,49 @@ class SetupActionEndpointTests(ServerTestCase):
         with patch.object(ui, "setup_checklist", return_value={"items": []}):
             res, data = self.request("GET", "/api/setup")
         self.assertEqual(data["root"], str(self.root))
+
+    def reject_alibaba(self):
+        """Record what a failed Alibaba call leaves behind, in a state folder of its own and with an old sign-in file."""
+        from orchestrator import project_chat
+        state = Path(self.tmp.name) / "chat-state"
+        state.mkdir(exist_ok=True)
+        auth = state / "auth.json"
+        auth.write_text("{}")
+        os.utime(auth, (1.0, 1.0))
+        for patcher in (patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(state)}), patch.object(project_chat, "credentials_file", return_value=auth)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        project_chat.record_check("alibaba-token-plan/glm-5.2", False, project_chat.KEY_REJECTED)
+        return project_chat
+
+    def test_the_chat_and_the_ai_tools_page_both_report_a_provider_with_a_rejected_key(self):
+        self.reject_alibaba()
+        with patch.object(ui.project_chat, "ready_models", return_value=[]):
+            res, chat = self.request("GET", "/api/chat")
+            res2, tools = self.request("GET", "/api/ai-providers")
+        self.assertEqual((res.status, res2.status), (200, 200))
+        for answer in (chat, tools):
+            self.assertEqual([p["provider"] for p in answer["problems"]], ["alibaba-token-plan"])
+            self.assertEqual(answer["problems"][0]["name"], "Alibaba Token Plan")
+            self.assertIn("opencode auth login", answer["problems"][0]["fix"])
+
+    def test_no_problems_when_nothing_was_rejected(self):
+        with patch.object(ui.project_chat, "ready_models", return_value=[]), patch.object(ui.project_chat, "load_checks", return_value={}):
+            res, chat = self.request("GET", "/api/chat")
+        self.assertEqual(chat["problems"], [])
+
+    def test_checking_again_forgets_the_failure_and_the_provider_is_asked_again(self):
+        project_chat = self.reject_alibaba()
+        res, data = self.request("POST", "/api/ai-providers/recheck", body={"provider": "alibaba-token-plan"}, headers=UI_HEADERS)
+        self.assertEqual((res.status, data["ok"], data["forgotten"]), (200, True, 1))
+        self.assertEqual(project_chat.load_checks(), {})
+        self.assertEqual(project_chat.provider_problems([], checks=project_chat.load_checks()), [])
+
+    def test_checking_again_needs_a_provider_name_that_is_one(self):
+        for body in ({}, {"provider": ""}, {"provider": "../etc"}, {"provider": "a b"}):
+            with self.subTest(body=body):
+                res, data = self.request("POST", "/api/ai-providers/recheck", body=body, headers=UI_HEADERS)
+                self.assertEqual(res.status, 400)
 
     def test_setup_github_create_endpoint(self):
         with patch("orchestrator.new_project.publish_to_github") as mock_pub:
