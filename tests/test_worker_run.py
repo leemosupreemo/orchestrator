@@ -507,3 +507,61 @@ class WorkerRunTests(unittest.TestCase):
                      patch('nonproduction_job.execute_nonproduction_job') as scoped:
                     runpy.run_module('worker_run', run_name='__main__')
                 scoped.assert_called_once_with(path)
+
+    def test_prepare_git_branch_autocorrects_checkout_failures(self):
+        config = SimpleNamespace(base_branch='main', git_remote=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git_dir = root / '.git'
+            git_dir.mkdir()
+            lock = git_dir / 'index.lock'
+            lock.write_text('stale')
+
+            def fake_run(cmd, cwd=None, **kwargs):
+                if cmd[:3] == ['git', 'checkout', '-f'] and lock.exists():
+                    raise worker.subprocess.CalledProcessError(128, cmd)
+                return SimpleNamespace(returncode=0)
+
+            def fake_subproc(cmd, cwd=None, **kwargs):
+                if cmd[:3] == ['git', 'checkout', '-f']:
+                    return SimpleNamespace(returncode=1 if lock.exists() else 0)
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'run', side_effect=fake_run), \
+                 patch.object(worker.subprocess, 'run', side_effect=fake_subproc):
+                branch, base = worker.prepare_git_branch(
+                    {'title': 'Quick', 'job_id': 'id-1', 'branch': 'codex/two-faction-foundation', 'branch_mode': 'current'},
+                    None,
+                )
+            self.assertFalse(lock.exists())
+            self.assertEqual((branch, base), ('codex/two-faction-foundation', 'main'))
+
+            # Unrecoverable checkout in 'current' mode falls back to active branch and tolerates local-only pull
+            job = {'title': 'Quick', 'job_id': 'id-2', 'branch': 'codex/two-faction-foundation', 'branch_mode': 'current'}
+            def fail_checkout_and_pull(cmd, cwd=None, **kwargs):
+                if cmd[:3] == ['git', 'checkout', '-f'] and cmd[3] == 'codex/two-faction-foundation':
+                    raise worker.subprocess.CalledProcessError(128, cmd)
+                if cmd[:3] == ['git', 'pull', '--ff-only']:
+                    raise worker.subprocess.CalledProcessError(128, cmd)
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'current_git_branch', return_value='main'), \
+                 patch.object(worker, 'run', side_effect=fail_checkout_and_pull), \
+                 patch.object(worker.subprocess, 'run', return_value=SimpleNamespace(returncode=1)):
+                branch, base = worker.prepare_git_branch(job, None)
+            self.assertEqual((branch, base), ('main', 'main'))
+            self.assertEqual(job['branch'], 'main')
+
+            # Unrecoverable checkout in 'new' mode raises an actionable error with remediation steps
+            def fail_checkout_only(cmd, cwd=None, **kwargs):
+                if cmd[:3] == ['git', 'checkout', '-f']:
+                    raise worker.subprocess.CalledProcessError(128, cmd)
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'run', side_effect=fail_checkout_only), \
+                 patch.object(worker.subprocess, 'run', return_value=SimpleNamespace(returncode=128, stderr="fatal: 'main' is already used by worktree at '/tmp/wt'", stdout='')):
+                with self.assertRaisesRegex(RuntimeError, r"already checked out in another git worktree[\s\S]*How to fix:"):
+                    worker.prepare_git_branch({'title': 'Feat', 'job_id': 'id-3', 'branch_mode': 'new'}, None)

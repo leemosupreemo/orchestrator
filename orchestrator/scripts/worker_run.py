@@ -111,6 +111,126 @@ def job_branch_name(job: dict, issue_number: int | None) -> str:
     return f'ai/job-{job.get("job_ref") or job["job_id"].rsplit("-", 1)[-1]}-{slugify(job["title"])}'
 
 
+def _cleanup_stale_git_state(cwd: Path) -> None:
+    """Best-effort cleanup of stale git lockfiles and orphaned worktree registrations."""
+    git_dir = cwd / ".git"
+    if git_dir.is_file():
+        try:
+            content = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+            if content.startswith("gitdir:"):
+                raw = Path(content.split(":", 1)[1].strip())
+                git_dir = raw if raw.is_absolute() else (cwd / raw)
+        except OSError:
+            pass
+    if git_dir.is_dir():
+        for lock_name in ("index.lock", "HEAD.lock"):
+            lock_path = git_dir / lock_name
+            if lock_path.is_file():
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+        worktrees_dir = git_dir / "worktrees"
+        if worktrees_dir.is_dir():
+            try:
+                for wt in worktrees_dir.iterdir():
+                    locked = wt / "locked"
+                    gitdir_ref = wt / "gitdir"
+                    if locked.is_file() and gitdir_ref.is_file():
+                        target = Path(gitdir_ref.read_text(encoding="utf-8", errors="replace").strip())
+                        if not target.exists():
+                            locked.unlink(missing_ok=True)
+            except OSError:
+                pass
+    subprocess.run(["git", "worktree", "prune"], cwd=str(cwd), capture_output=True, text=True, check=False)
+
+
+def _format_git_checkout_error(branch: str, base_branch: str, exc: subprocess.CalledProcessError, detail: str = "") -> RuntimeError:
+    """Turn a raw git checkout CalledProcessError into an actionable message with steps to fix it."""
+    msg = (detail or getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or "").strip()
+    lower = msg.lower()
+    if "already used by worktree" in lower or "already checked out" in lower:
+        steps = (
+            "How to fix:\n"
+            "- Switch away from that branch in the other worktree, or open that worktree folder to run the job.\n"
+            "- Or change the job's branch mode to 'Create a new branch' (or 'Don't create or switch branches')."
+        )
+        headline = f"Could not check out branch '{branch}' because it is already checked out in another git worktree."
+    elif "invalid reference" in lower or "did not match any file" in lower or "pathspec" in lower:
+        steps = (
+            "How to fix:\n"
+            "- Run `git fetch origin` and `git branch -a` in the project folder to verify the branch name.\n"
+            f"- Or change the job's branch mode to 'Create a new branch' to start from '{base_branch}'."
+        )
+        headline = f"Could not check out branch '{branch}' because it does not exist locally or on origin."
+    elif ".lock" in lower or "unable to create" in lower:
+        steps = (
+            "How to fix:\n"
+            "- Wait for any other git command or IDE git operation to finish, then retry.\n"
+            "- If no git process is running, remove the stale `.git/index.lock` file and retry."
+        )
+        headline = f"Could not check out branch '{branch}' because git's lockfile is held by another process."
+    else:
+        steps = (
+            "How to fix:\n"
+            "- Run `git status` and `git worktree list` in the project folder to see what is blocking checkout.\n"
+            "- Or change the job's branch mode to 'Create a new branch' (or 'Don't create or switch branches')."
+        )
+        headline = f"Could not check out branch '{branch}' (git exited with status {exc.returncode})."
+    parts = [headline]
+    if msg:
+        parts.append(msg)
+    parts.append(steps)
+    return RuntimeError("\n\n".join(parts))
+
+
+def _checkout_branch_with_recovery(
+    branch: str,
+    base_branch: str,
+    job: dict,
+    *,
+    allow_current_fallback: bool = False,
+) -> str:
+    """Check out `branch`, autocorrecting stale locks, orphaned worktrees, remote-only refs, or stale branch metadata."""
+    try:
+        run(["git", "checkout", "-f", branch], cwd=ROOT)
+        return branch
+    except subprocess.CalledProcessError as exc:
+        _cleanup_stale_git_state(ROOT)
+        retry = subprocess.run(["git", "checkout", "-f", branch], cwd=str(ROOT), capture_output=True, text=True, check=False)
+        if retry.returncode == 0:
+            return branch
+
+        has_remote = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+            cwd=str(ROOT), capture_output=True, check=False,
+        ).returncode == 0
+        if has_remote:
+            track = subprocess.run(
+                ["git", "checkout", "-f", "-B", branch, f"origin/{branch}"],
+                cwd=str(ROOT), capture_output=True, text=True, check=False,
+            )
+            if track.returncode == 0:
+                return branch
+
+        if allow_current_fallback:
+            try:
+                active = current_git_branch()
+            except Exception:
+                active = ""
+            if active and active != "HEAD" and active != branch:
+                print(f"      - Could not check out '{branch}'; continuing on current branch '{active}'.")
+                job["branch"] = active
+                return active
+            if base_branch and base_branch != branch:
+                print(f"      - Could not check out '{branch}'; falling back to '{base_branch}'.")
+                run(["git", "checkout", "-f", base_branch], cwd=ROOT)
+                job["branch"] = base_branch
+                return base_branch
+
+        raise _format_git_checkout_error(branch, base_branch, exc, getattr(retry, "stderr", "") or getattr(retry, "stdout", "")) from exc
+
+
 def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
     base_branch = job.get("base_branch") or os.environ.get("BASE_BRANCH", PROJECT_CONFIG.base_branch)
     generated_branch = job_branch_name(job, issue_number)
@@ -129,8 +249,17 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
         if PROJECT_CONFIG.git_remote:
             run(["git", "remote", "set-url", "origin", PROJECT_CONFIG.git_remote], cwd=ROOT)
         run(["git", "fetch", "origin"], cwd=ROOT)
-        run(["git", "checkout", "-f", branch], cwd=ROOT)
-        run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT)
+        branch = _checkout_branch_with_recovery(branch, base_branch, job, allow_current_fallback=True)
+        try:
+            run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT)
+        except subprocess.CalledProcessError:
+            has_remote = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+                cwd=str(ROOT), capture_output=True, check=False,
+            ).returncode == 0
+            if has_remote:
+                raise
+            print(f"      - Remote branch origin/{branch} does not exist yet; continuing with local branch.")
         return branch, base_branch
 
     branch = job.get("branch") or generated_branch
@@ -139,7 +268,7 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
     if PROJECT_CONFIG.git_remote:
         run(["git", "remote", "set-url", "origin", PROJECT_CONFIG.git_remote], cwd=ROOT)
     run(["git", "fetch", "origin"], cwd=ROOT)
-    run(["git", "checkout", "-f", base_branch], cwd=ROOT)
+    _checkout_branch_with_recovery(base_branch, base_branch, job, allow_current_fallback=False)
     run(["git", "pull", "--ff-only", "origin", base_branch], cwd=ROOT)
 
     checkout_res = subprocess.run(["git", "checkout", "-f", branch], cwd=str(ROOT), capture_output=True)

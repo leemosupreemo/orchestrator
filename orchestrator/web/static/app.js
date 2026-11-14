@@ -53,6 +53,15 @@ function endSigningIn(resume = false) {
   if (resume) refreshState().then(route);
 }
 
+// A reload starts on Home, like a sign-in does. Only a reload: a link opened fresh (a notification, a shared address) still goes where it
+// points, and the address of an email sign-in link keeps what it carries.
+function landOnHomeAfterReload() {
+  let kind = "";
+  try { kind = performance.getEntriesByType("navigation")[0]?.type || ""; } catch { /* no navigation timing */ }
+  if (kind === "reload" && !/[?&](apiKey|oobCode|mode)=/.test(location.hash)) landOnHome();
+}
+landOnHomeAfterReload();
+
 if (typeof window !== "undefined" && window.firebase?.auth) {
   try {
     window.firebase.auth().getRedirectResult().then(async (cred) => {
@@ -1389,42 +1398,24 @@ function fillComputerSelect(select) {
   };
 }
 
-// Which computer this session is on, and whether it's the project's primary: the one computer that starts its jobs (and
-// hands some to supporting computers). Another computer can look but not start work, until it's made primary.
+// Which computer this session is on: the currently selected machine is always the project's primary
+// (and hands some jobs to supporting computers if any are configured).
 function renderSessionComputer(button) {
   const c = state.project?.computer;
   if (!button || !c || document.body.classList.contains("signin-gate")) { if (button) button.hidden = true; return; }
+  if (Account.active()) { button.hidden = true; return; } // the Computer menu above says which one this is
   const workers = c.workers || [];
-  const primary = c.primary !== false;
-  if (primary && Account.active()) { button.hidden = true; return; } // the Computer menu above says which one this is
   button.hidden = false;
-  button.classList.toggle("is-secondary", !primary);
+  button.classList.remove("is-secondary");
   button.innerHTML = `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-    <span class="session-computer-name">${esc(c.name)}</span>${primary ? `<span class="pill session-primary">Primary</span>` : `<span class="pill session-not-primary">Not primary</span>`}${primary && workers.length ? `<span class="session-workers">+${workers.length}</span>` : ""}`;
-  const about = primary
-    ? `This session is on ${c.name}, the primary computer for this project: jobs start here${workers.length ? ` and are handed to ${workers.join(", ")}` : ""}.`
-    : `${c.primary_name || "Another computer"} is the primary computer for this project, so jobs start there. You can look around here; to start work here, make ${c.name} primary.`;
+    <span class="session-computer-name">${esc(c.name)}</span><span class="pill session-primary">Primary</span>${workers.length ? `<span class="session-workers">+${workers.length}</span>` : ""}`;
+  const about = `This session is on ${c.name}, the primary computer for this project: jobs start here${workers.length ? ` and are handed to ${workers.join(", ")}` : ""}.`;
   button.title = about;
   button.setAttribute("aria-label", about);
-  button.onclick = async () => {
-    if (primary) {
-      if (Account.isHosted()) { openAccount({ list: true }); return; }
-      formDialog(`Primary: ${c.name}`, `<p>${esc(about)}</p>
-        <p class="muted t-secondary">${workers.length ? `Supporting computers: ${esc(workers.join(", "))}.` : "No supporting computers are set up, so every job runs here."} Jobs, history and settings for this project live on this computer.${c.checked ? " Only one computer is primary for a project at a time." : ""}</p>`, "OK", { compact: true, cancelLabel: "Close" });
-      return;
-    }
-    const busy = c.primary_online && c.primary_busy > 0;
-    const ok = await formDialog(`Make ${c.name} primary?`, `<p>${esc(about)}</p>
-      <p>${busy ? `${esc(c.primary_name)} is running ${plural(c.primary_busy, "job")} right now. It can only hand over once they've finished or been stopped there.`
-        : `${esc(c.primary_name || "The other computer")} stops being primary: jobs for this project start here from now on. Jobs and history already on ${esc(c.primary_name || "it")} stay there.`}</p>`,
-      `Make ${c.name} primary`, { compact: true });
-    if (!ok) return;
-    try {
-      await api("computer/primary", { method: "POST", body: {} });
-      toast(`${c.name} is now the primary computer for this project`);
-      await refreshState();
-      route();
-    } catch (err) { toast(err.message, true); }
+  button.onclick = () => {
+    if (Account.isHosted()) { openAccount({ list: true }); return; }
+    formDialog(`Primary: ${c.name}`, `<p>${esc(about)}</p>
+      <p class="muted t-secondary">${workers.length ? `Supporting computers: ${esc(workers.join(", "))}.` : "No supporting computers are set up, so every job runs here."} Jobs, history and settings for this project live on this computer.</p>`, "OK", { compact: true, cancelLabel: "Close" });
   };
 }
 
@@ -5545,7 +5536,7 @@ pages.new = async (_, query) => {
         return { picker: null, html: `${field("What do you want?", `<textarea name="summary" required rows="6" maxlength="20000" placeholder="Anything: an idea, a problem, a change. Say it however you like.">${esc(v.summary)}</textarea>`,
           "The AI works out what kind of work it is. If something important is unclear, it asks a question or two first, and you answer on the job's page.")}` };
       default:
-        return { picker: null, html: `${field("What should change?", `<textarea name="summary" required rows="4" maxlength="20000" placeholder="e.g. Rename Foo to Bar everywhere and update the docs">${esc(v.summary)}</textarea>`, "This goes straight to the builder with no separate planning step.")}` };
+        return { picker: null, html: `${field("What should change?", `<textarea name="summary" required rows="4" maxlength="20000" placeholder="e.g. Rename Foo to Bar everywhere and update the docs">${esc(v.summary)}</textarea>`)}` };
     }
   };
 
@@ -5565,8 +5556,12 @@ pages.new = async (_, query) => {
   };
 
   let picker = null;
+  let renderSeq = 0;
   const render = async () => {
+    const seq = ++renderSeq;
+    const type = st.type;
     const out = await fieldsHtml();
+    if (seq !== renderSeq || type !== st.type || !$("#nj-fields")) return;
     picker = out.picker;
     // A feature or design is planned against who it's for and what version 1 won't do; offer to write that down first.
     const nudge = undefinedProduct && !skipped() && (st.type === "feature" || st.type === "design");
@@ -5660,7 +5655,7 @@ pages.new = async (_, query) => {
     if ((st.type === "bug" || st.type === "coverage") && st.recent === null) {
       // only a log from the last day is likely to be about this problem, so only that one starts ticked
       try { st.recent = (await api("recent-logs")).logs; if (st.logs.size === 0 && st.recent[0] && Date.now() / 1000 - st.recent[0].mtime < 86400) st.logs.add(st.recent[0].path);  } catch { st.recent = []; }
-      if (st.type === "bug" || st.type === "coverage") { capture(); await render(); }
+      if (seq === renderSeq && (st.type === "bug" || st.type === "coverage")) { capture(); await render(); }
     }
   };
 
@@ -6090,7 +6085,8 @@ async function confirmServerAction(action, server, whereLabel, view) {
   const ports = server.ports.length ? `<p>It uses ${server.ports.map((p) => `<code>${p}</code>`).join(", ")} on that computer.</p>` : "";
   return formDialog(`${verb} ${server.name}?`, `<p>${verb} <strong>${esc(server.name)}</strong> on <strong>${esc(whereLabel)}</strong>.</p>
     <p class="muted">It runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code>${action === "stop" ? "" : ", starting Docker first if it isn't running, and waits until every service is up and healthy"}. Nothing is deleted.</p>
-    ${ports}${view.rule ? `<p class="notice">Your project says (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</p>` : ""}`, verb, { compact: true, danger: action === "stop" });
+    ${ports}${view.rule ? `<div class="notice stack gap-4"><span><strong>A rule from your project</strong> (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</span>
+      <span class="muted t-secondary">This is your project's own note about protecting a live or production server. Orchestrator only shows it; it doesn't check it. ${verb} here changes nothing but the containers on ${esc(whereLabel)}, so check that is the computer you mean, and not a live one.</span></div>` : ""}`, verb, { compact: true, danger: action === "stop" });
 }
 
 // `onState({required, ready})`: required when builds are set to start it first, ready when it is running; null when there is no server.

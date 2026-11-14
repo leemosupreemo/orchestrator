@@ -3188,15 +3188,12 @@ def claim_primary(root: Path) -> dict[str, Any]:
 
 
 def session_computer(machines: list[dict[str, Any]], root: Path | None = None) -> dict[str, Any]:
-    """The computer this session runs on, and whether it's the project's primary: the one that starts jobs and hands some
-    to the supporting computers listed in its machines.json."""
+    """The computer this session runs on: the currently selected machine is always the project's primary, and hands some
+    jobs to the supporting computers listed in its machines.json."""
     machine = account.load_machine() or {}
-    status = primary_status(root) if root is not None else {"you": True, "enabled": False}
     return {"name": machine.get("name") or account.default_name(), "id": machine.get("machine_id") or "",
             "workers": [str(m.get("name") or "") for m in machines if m.get("execution_mode") not in (None, "local") and m.get("name")],
-            "primary": status["you"], "primary_name": (status.get("primary") or {}).get("name", ""),
-            "primary_busy": (status.get("primary") or {}).get("running", 0) if not status["you"] else 0,
-            "primary_online": (status.get("primary") or {}).get("online", False), "checked": status["enabled"] and "unknown" not in status}
+            "primary": True}
 
 
 def auto_discover_local_projects() -> None:
@@ -8290,12 +8287,6 @@ class UIHandler(BaseHTTPRequestHandler):
         job_title = ""
         job_id = str(params.get("job") or "") or None
         side = key in SIDE_ACTIONS  # an errand about the job (export, preview) runs alongside work on it
-        if (job_id or key in PRIMARY_ONLY_ACTIONS) and not side:
-            status = primary_status(root)
-            if not status["you"]:
-                name = (status.get("primary") or {}).get("name") or "Another computer"
-                raise UIError(f"{name} is the primary computer for this project, so jobs start there. Use it, or make this "
-                              "computer primary (from the computer name in the sidebar).", HTTPStatus.CONFLICT)
         if job_id and not side and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
             raise UIError("This job already has a run in progress. Open it from Activity instead.", HTTPStatus.CONFLICT)
         if job_id:

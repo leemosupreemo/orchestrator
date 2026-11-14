@@ -322,7 +322,7 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
             self.assertTrue(status["you"])
             self.assertIn("unknown", status)
 
-    def test_another_computer_cant_start_work_but_can_run_errands(self):
+    def test_the_currently_selected_machine_can_always_start_work(self):
         s = self.server
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -330,17 +330,14 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
             (root / ".orchestrator" / "jobs" / "job-1.json").write_text(json.dumps({"id": "job-1", "title": "T", "status": "planned"}))
             handler = SimpleNamespace(server=SimpleNamespace(sessions=SimpleNamespace(running_job_ids=lambda: set()), _publishing_jobs=set()),
                                       _require_owner=lambda what: None)
-            elsewhere = {"you": False, "enabled": True, "primary": {"name": "Studio"}}
-            with patch.object(s, "primary_status", lambda root, refresh=False: elsewhere):
-                with self.assertRaisesRegex(s.UIError, "Studio is the primary computer for this project"):
-                    s.UIHandler._launch_run(handler, "execute", {"job": "job-1"}, root)
-                handler.server.child_env = lambda terminal=False: {}
-                handler.server._repository_lock = __import__("threading").Lock()
-                handler.server.sessions.start = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("started"))
-                with self.assertRaisesRegex(RuntimeError, "started"):  # an errand isn't blocked
-                    s.UIHandler._launch_run(handler, "export_job", {"job": "job-1", "destination": "downloads"}, root)
+            handler.server.child_env = lambda terminal=False: {}
+            handler.server._repository_lock = __import__("threading").Lock()
+            handler.server.sessions.start = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("started"))
+            with self.assertRaisesRegex(RuntimeError, "started"):
+                s.UIHandler._launch_run(handler, "execute", {"job": "job-1"}, root)
 
-    def test_the_sidebar_offers_to_make_this_computer_primary(self):
+    def test_the_sidebar_has_no_not_primary_designation(self):
         app = APP.read_text(encoding="utf-8")
-        self.assertIn('<span class="pill session-not-primary">Not primary</span>', app)
-        self.assertIn('api("computer/primary", { method: "POST", body: {} })', app)
+        self.assertNotIn("Not primary", app)
+        self.assertNotIn("session-not-primary", app)
+        self.assertNotIn('api("computer/primary"', app)
