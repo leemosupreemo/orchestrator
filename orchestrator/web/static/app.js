@@ -3034,6 +3034,7 @@ document.addEventListener("click", (e) => {
 
 function jobTableRow(j, { hidden = false } = {}) {
   const parts = [
+    j.remote_machine ? `on ${esc(j.remote_machine.name)}` : "",
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
   ].filter(Boolean);
@@ -3049,9 +3050,12 @@ function jobTableRow(j, { hidden = false } = {}) {
   const typeTag = isAutoImprove
     ? `<span class="job-type-tag job-type-auto-improve" title="Orchestrator Improvement">🏆 Orchestrator</span>`
     : `<span class="job-type-tag${j.epic ? " job-type-epic" : ""}">${typeLabel}</span>`;
+  const rowHref = j.remote_machine
+    ? `#/remote-job/${encodeURIComponent(j.remote_machine.id)}/${encodeURIComponent(j.id)}`
+    : `#/jobs/${encodeURIComponent(j.id)}`;
 
   return `
-    <a class="job-table-row${testsClass(j)}"${hidden ? " hidden" : ""} href="#/jobs/${encodeURIComponent(j.id)}">
+    <a class="job-table-row${testsClass(j)}"${hidden ? " hidden" : ""} href="${rowHref}">
       <div class="col-job">
         <div class="job-title">${esc(j.title)} ${jiraChip(j)}</div>
         <div class="job-mobile-info">
@@ -3757,7 +3761,7 @@ if (typeof window !== "undefined") window.addEventListener("resize", repositionO
 
 // Wrap idle job rows in a swipeable container so swiping left reveals the Archive confirmation button.
 function jobSwipeRow(j, { hidden = false } = {}) {
-  if (j.active_run) return jobTableRow(j, { hidden });
+  if (j.active_run || j.remote_machine) return jobTableRow(j, { hidden });
   return `<div class="job-swipe-wrap"${hidden ? " hidden" : ""} data-swipe-job="${esc(j.id)}">
     <button type="button" class="job-swipe-archive" data-archive-jobs='${attrJSON([j.id])}' aria-label="Archive ${esc(j.title)}" tabindex="-1">Archive</button>
     ${jobTableRow(j)}
@@ -3933,7 +3937,59 @@ pages.home = async (_, query) => {
   // 1) Default ordered by most recent
   const runningRuns = state.runs.filter((r) => r.running && !isPreviewRun(r)); // a live preview shows in the Preview card
   const isRunningNow = (j) => runningRuns.some((r) => r.job === j.id || r.result_job === j.id); // shown in Running now, not again in the list
-  const sortedJobs = sortJobs(jobs);
+  const remoteJobs = await (async () => {
+    if (typeof Account === "undefined" || !Account.active?.() || typeof cpApi !== "function" || !p) return [];
+    const normRepo = (v) => {
+      let s = String(v || "").trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+      if (!s) return "";
+      if (s.includes(":") && s.split(":", 1)[0].includes("@")) s = s.split(":", 2)[1];
+      else if (s.includes("://")) s = s.split("://", 2)[1].split("/").slice(1).join("/");
+      const segs = s.split("/").filter(Boolean);
+      return (segs.length >= 2 ? segs.slice(-2).join("/") : s).toLowerCase();
+    };
+    const remoteState = (j) => {
+      const st = String(j.status || "");
+      if (st === "human-needed") return { group: "needs_you", tone: "failed", label: "Stopped" };
+      if (st === "review-needed") return { group: "needs_you", tone: "attention", label: "Needs review" };
+      if (st === "completed") return { group: "done", tone: "done", label: "Done" };
+      if (st === "running") return { group: "working", tone: "working", label: "Running" };
+      return { group: "backlog", tone: "neutral", label: st || "Planned" };
+    };
+    const myRepo = normRepo(p.github_repo || p.git_remote || "");
+    const myName = String(p.name || "").toLowerCase();
+    let currentMachineId = "";
+    try { currentMachineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
+    const { machines = [] } = await cpApi("machines").catch(() => ({ machines: [] }));
+    const others = machines.filter((m) => m.id !== currentMachineId && m.has_snapshot);
+    const seen = new Set(jobs.map((j) => j.id));
+    const snaps = await Promise.all(others.map((m) => cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id } }).then((d) => ({ m, snap: d?.snapshot })).catch(() => null)));
+    const out = [];
+    for (const item of snaps) {
+      if (!item?.snap?.recent_jobs) continue;
+      for (const rj of item.snap.recent_jobs) {
+        const jid = rj.job_id || rj.id;
+        if (!jid || seen.has(jid)) continue;
+        const rRepo = normRepo(rj.repo || "");
+        const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);
+        if (!same) continue;
+        seen.add(jid);
+        const tasks = Array.isArray(rj.tasks) ? rj.tasks : [];
+        out.push({
+          ...rj,
+          id: jid,
+          updated: Date.parse(rj.updated_at || rj.created_at || "") / 1000 || 0,
+          tasks_total: rj.tasks_count || tasks.length,
+          tasks_done: tasks.filter((t) => t.status === "completed").length,
+          state: remoteState(rj),
+          remote_machine: { id: item.m.id, name: item.m.name, online: Boolean(item.m.online), reachable: Boolean(item.m.reachable) },
+        });
+      }
+    }
+    return out;
+  })();
+  if (!sameProject()) return {stale: true};
+  const mergedJobs = jobs.concat(remoteJobs);
+  const sortedJobs = sortJobs(mergedJobs);
 
   // Two sections: the work still going, and what's finished or put away. Old links with filter=done or filter=archived land on the second.
   const isFinished = (j) => j.state.group === "done";
@@ -4767,6 +4823,67 @@ async function setUpFreeAi() {
   const cancel = $("#dialog-cancel");
   if (cancel) cancel.hidden = true; // finished: one button to close it
 }
+
+pages["remote-job"] = async ([machineId, jobId]) => {
+  if (typeof Account === "undefined" || !Account.active?.()) return { title: "Job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on another computer.</div></section>` };
+  const [{ machines = [] }, snapRes] = await Promise.all([
+    cpApi("machines").catch(() => ({ machines: [] })),
+    cpApi("machine/snapshot", { method: "POST", body: { machine_id: machineId } }).catch(() => null),
+  ]);
+  const machine = machines.find((m) => m.id === machineId);
+  const rj = (snapRes?.snapshot?.recent_jobs || []).find((j) => (j.job_id || j.id) === jobId);
+  if (!rj) {
+    return { title: "Job not found", sub: "", html: `<section class="card"><div class="empty">Could not find ${esc(jobId)} on ${esc(machine?.name || "that computer")}. <a href="#/">Back to jobs</a></div></section>` };
+  }
+  const machineLabel = machine?.name || "another computer";
+  return {
+    title: rj.title || jobId,
+    sub: `${jobId} · on ${machineLabel}`,
+    back: { href: "#/", label: "Jobs" },
+    html: `<section class="card mb-16">
+      <div class="card-h"><h2>Job on ${esc(machineLabel)}</h2><span class="pill">${esc(rj.status || "planned")}</span></div>
+      <div class="card-b stack gap-12">
+        <p class="muted m-0">This job's files and run logs live on <strong>${esc(machineLabel)}</strong>${rj.branch ? ` on branch <code>${esc(rj.branch)}</code>` : ""}.</p>
+        ${rj.summary ? `<p class="m-0">${esc(rj.summary)}</p>` : ""}
+        ${rj.last_error ? `<div class="notice warn"><strong>Last error:</strong> ${esc(rj.last_error)}</div>` : ""}
+        <div class="row gap-8 wrap">
+          ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open on ${esc(machineLabel)}</button>` : ""}
+          <button type="button" class="btn ${machine?.reachable ? "" : "primary"}" id="continue-remote-job-here">Continue on this computer</button>
+          <a class="btn" href="#/">Back</a>
+        </div>
+      </div>
+    </section>`,
+    after: () => {
+      $("#open-remote-machine-job")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = `Opening ${machineLabel}…`;
+        try {
+          await signInToMachine(machine);
+          location.hash = `#/jobs/${encodeURIComponent(jobId)}`;
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+          btn.textContent = `Open on ${machineLabel}`;
+        }
+      });
+      $("#continue-remote-job-here")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = "Importing…";
+        try {
+          const res = await api("jobs/import-remote", { method: "POST", body: { job: rj, source_machine_name: machineLabel } });
+          toast(res.fetched_branch ? `Imported job and fetched ${rj.branch}` : "Imported job onto this computer");
+          location.hash = `#/jobs/${encodeURIComponent(res.id || jobId)}`;
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+          btn.textContent = "Continue on this computer";
+        }
+      });
+    },
+  };
+};
 
 pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);

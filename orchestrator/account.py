@@ -222,11 +222,26 @@ def send_events(machine: dict[str, Any], events: list[dict[str, Any]], project: 
                                             "path": e["path"]} for e in events]}, machine=machine)
 
 
+def _normalize_repo(value: str | None) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return ""
+    if text.endswith(".git"):
+        text = text[:-4]
+    if ":" in text and "@" in text.split(":", 1)[0]:
+        text = text.split(":", 1)[1]
+    elif "://" in text:
+        text = text.split("://", 1)[1].split("/", 1)[-1]
+    parts = [p for p in text.split("/") if p]
+    return "/".join(parts[-2:]).lower() if len(parts) >= 2 else text.lower()
+
+
 def build_snapshot(root: Path | None = None) -> dict[str, Any]:
     """Assemble lightweight offline view of recent projects and jobs for the hosted app."""
     from orchestrator.project_config import find_project_root, load_recent_projects
 
     recent_data = load_recent_projects(prune_missing=False)
+    repo_by_root: dict[str, str] = {}
     projects_list = []
     jobs_list = []
     roots_to_check = []
@@ -236,6 +251,8 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
         r_str = p.get("root")
         if r_str:
             r_path = Path(r_str).expanduser()
+            if p.get("github_repo"):
+                repo_by_root[str(r_path)] = _normalize_repo(p.get("github_repo"))
             if r_path not in roots_to_check and r_path.is_dir():
                 roots_to_check.append(r_path)
 
@@ -248,6 +265,13 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
             pass
 
     for proj_root in roots_to_check[:10]:
+        repo = repo_by_root.get(str(proj_root), "")
+        if not repo:
+            try:
+                cfg = json.loads((proj_root / ".orchestrator" / "project.json").read_text(encoding="utf-8"))
+                repo = _normalize_repo(cfg.get("git_remote"))
+            except Exception:
+                repo = ""
         jobs_dir = proj_root / ".orchestrator" / "jobs"
         proj_jobs = []
         if jobs_dir.is_dir():
@@ -260,9 +284,16 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
                         proj_jobs.append({
                             "job_id": jdata.get("job_id"),
                             "project": proj_root.name,
+                            "repo": repo,
                             "title": jdata.get("title") or plan_obj.get("title") or jdata.get("job_id"),
                             "type": jdata.get("type", "generic"),
                             "status": jdata.get("status", "planned"),
+                            "branch": jdata.get("branch"),
+                            "base_branch": jdata.get("base_branch"),
+                            "branch_mode": jdata.get("branch_mode"),
+                            "last_error": jdata.get("last_error"),
+                            "yolo": bool(jdata.get("yolo")),
+                            "requirements": jdata.get("requirements"),
                             "created_at": jdata.get("created_at"),
                             "updated_at": jdata.get("updated_at"),
                             "issue_number": jdata.get("issue_number"),
@@ -278,6 +309,7 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
         projects_list.append({
             "name": proj_root.name,
             "root": str(proj_root),
+            "repo": repo,
             "jobs_count": len(proj_jobs),
             "latest_job": latest_job,
         })

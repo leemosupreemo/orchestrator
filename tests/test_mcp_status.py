@@ -375,3 +375,39 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
         self.assertIn('elif action == "git-unlock-index":', srv)
         self.assertIn('["lsof", str(lock)]', srv)
         self.assertIn('["git", "-C", str(root), "status", "--porcelain"]', srv)
+
+
+class CrossMachineJobsTests(unittest.TestCase):
+    def test_normalize_repo_and_import_remote_job(self):
+        import tempfile
+        from orchestrator import account
+        from orchestrator.web import server
+
+        self.assertEqual(account._normalize_repo("git@github.com:leemosupreemo/daoc-mobile.git"), "leemosupreemo/daoc-mobile")
+        self.assertEqual(account._normalize_repo("https://github.com/leemosupreemo/daoc-mobile.git"), "leemosupreemo/daoc-mobile")
+        self.assertEqual(account._normalize_repo("leemosupreemo/DAoC-Mobile"), "leemosupreemo/daoc-mobile")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".orchestrator").mkdir()
+            res = server.import_remote_job(root, {
+                "source_machine_name": "Studio Mac",
+                "job": {
+                    "job_id": "20261114-013319-quick-16",
+                    "title": "Make vegetation more realistic",
+                    "type": "quick",
+                    "status": "human-needed",
+                    "branch": "codex/two-faction-foundation",
+                    "summary": "Improve trees and grass",
+                },
+            })
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["id"], "20261114-013319-quick-16")
+            saved = json.loads((root / ".orchestrator" / "jobs" / "20261114-013319-quick-16.json").read_text())
+            self.assertEqual(saved["imported_from_machine"], "Studio Mac")
+            self.assertEqual(saved["branch"], "codex/two-faction-foundation")
+
+    def test_ui_merges_remote_jobs_and_provides_handoff_page(self):
+        app = APP.read_text(encoding="utf-8")
+        for bit in ('pages["remote-job"] = async', 'api("jobs/import-remote"', '#/remote-job/', 'on ${esc(j.remote_machine.name)}'):
+            self.assertIn(bit, app)

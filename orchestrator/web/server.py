@@ -1614,6 +1614,62 @@ def run_history(root: Path, limit: int = 50) -> list[dict[str, Any]]:
     return sorted(runs, key=lambda r: r["started"], reverse=True)[:limit]
 
 
+def _sync_snapshot_async(root: Path) -> None:
+    machine = account.load_machine()
+    if machine is None:
+        return
+
+    def _run() -> None:
+        try:
+            account.sync_snapshot(machine, root=root)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Import a job snapshot from another machine onto this machine so it can be viewed or resumed here."""
+    raw = body.get("job")
+    if not isinstance(raw, dict):
+        raise UIError("Missing remote job details.")
+    job_id = str(raw.get("job_id") or raw.get("id") or "").strip()
+    if not job_id or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", job_id):
+        raise UIError("Invalid remote job id.")
+    folder = jobs_dir(root)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{job_id}.json"
+    existed = target.exists()
+    if not existed:
+        doc: dict[str, Any] = {
+            "job_id": job_id,
+            "title": str(raw.get("title") or job_id),
+            "type": str(raw.get("type") or "generic"),
+            "status": str(raw.get("status") or "planned"),
+            "created_at": raw.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "updated_at": raw.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "yolo": bool(raw.get("yolo")),
+        }
+        for key in ("branch", "base_branch", "branch_mode", "last_error", "requirements", "issue_number", "pr_number"):
+            if raw.get(key) is not None:
+                doc[key] = raw[key]
+        if raw.get("summary") or raw.get("tasks"):
+            doc["plan"] = {"summary": raw.get("summary") or "", "tasks": raw.get("tasks") or []}
+        if body.get("source_machine_name"):
+            doc["imported_from_machine"] = str(body["source_machine_name"])
+        write_json_file(target, doc)
+
+    branch = str(raw.get("branch") or "").strip()
+    fetched = False
+    if branch and shutil.which("git") and re.fullmatch(r"[A-Za-z0-9._/-]{1,160}", branch):
+        try:
+            res = subprocess.run(["git", "fetch", "origin", branch], cwd=root, capture_output=True, text=True, timeout=15)
+            fetched = res.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            fetched = False
+    return {"ok": True, "id": job_id, "already_existed": existed, "fetched_branch": fetched}
+
+
 def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]:
     """Put jobs away without touching their branch or files: the job file moves to the archive and remembers its
     status, so Home's Archived filter can restore it exactly. Running jobs are left alone."""
@@ -7525,7 +7581,14 @@ class UIHandler(BaseHTTPRequestHandler):
             ids = self._body().get("ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids) or len(ids) > 500:
                 raise UIError("Choose the jobs to archive")
-            self._json({"archived": archive_jobs(root, ids, set(self.server.sessions.running_job_ids()))})
+            archived = archive_jobs(root, ids, set(self.server.sessions.running_job_ids()))
+            _sync_snapshot_async(root)
+            self._json({"archived": archived})
+        elif method == "POST" and parts == ["jobs", "import-remote"]:
+            self._require_owner("continue a job from another computer")
+            result = import_remote_job(root, self._body())
+            _sync_snapshot_async(root)
+            self._json(result)
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
