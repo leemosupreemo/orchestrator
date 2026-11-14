@@ -191,7 +191,7 @@ class ConnectionUIBehaviorTests(unittest.TestCase):
         self.assertIn("window.firebase.auth().onAuthStateChanged(async (user) => {", self.app_js)
         on_auth = self.app_js[self.app_js.index("window.firebase.auth().onAuthStateChanged"):][:500]
         self.assertNotIn("!getToken() && !state.project", on_auth)
-        self.assertIn("if (!state.project) {\n          showSignInGate();", on_auth)
+        self.assertIn("if (!state.project && !signingIn) {\n          showSignInGate();", on_auth)  # not while a sign-in is already underway
 
 
 if __name__ == "__main__":

@@ -123,3 +123,75 @@ createReleaseTag().then(() => {
         self.assertIn("Reconnect", html)
         self.assertIn("Needs setup", html)
 
+
+@unittest.skipUnless(shutil.which("node"), "node is required")
+class SetupChecklistSwitchTests(unittest.TestCase):
+    """DAoC Mobile's checklist said "Project configured" was not done, though it was: the answer for the project switched away from
+    arrived after the switch and replaced the new project's checklist. Each answer now says which project it is for, and an
+    answer that is late or for another project is ignored."""
+
+    APP = Path(__file__).resolve().parents[1] / "orchestrator/web/static/app.js"
+
+    def run_scenario(self, scenario: str):
+        script = r"""
+const fs = require('fs'), source = fs.readFileSync(process.argv[1], 'utf8');
+const start = source.indexOf('let setupState = null;'), end = source.indexOf('function setupItem(', start);
+const pending = [];
+const api = (path) => new Promise((resolve) => pending.push({path, resolve}));
+const state = {project: {root: '/old'}};
+const make = new Function('api', 'state', 'renderSetupFab', source.slice(start, end) + '; return {loadSetup, resetSetup, get setupState() { return setupState; }};');
+const page = make(api, state, () => {});
+const checklist = (root, done) => ({root, items: [{id: 'project', title: 'Project configured', required: true, done}], complete: done});
+const out = {};
+(async () => {
+""" + scenario + r"""
+})().then(() => console.log(JSON.stringify(out))).catch(e => { console.error(e); process.exit(1); });
+"""
+        result = subprocess.run(["node", "-e", script, str(self.APP)], capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+
+    def test_a_late_answer_for_the_old_project_does_not_replace_the_new_projects_checklist(self):
+        out = self.run_scenario("""
+  const first = page.loadSetup(true);                       // asked while the old project was open
+  state.project = {root: '/daoc'}; page.resetSetup();       // switched
+  const second = page.loadSetup(true);
+  pending[1].resolve(checklist('/daoc', true)); await second;  // the new project answers first
+  pending[0].resolve(checklist('/old', false)); await first;   // then the old one's slow answer arrives
+  out.root = page.setupState.root; out.done = page.setupState.items[0].done;
+""")
+        self.assertEqual(out, {"root": "/daoc", "done": True})
+
+    def test_an_answer_for_another_project_is_ignored_even_when_nothing_newer_was_asked(self):
+        out = self.run_scenario("""
+  const first = page.loadSetup(true);
+  state.project = {root: '/daoc'};                           // switched without a reset
+  pending[0].resolve(checklist('/old', false)); await first;
+  out.state = page.setupState;
+""")
+        self.assertIsNone(out["state"])
+
+    def test_the_projects_own_answer_is_used(self):
+        out = self.run_scenario("""
+  const first = page.loadSetup(true);
+  pending[0].resolve(checklist('/old', true)); await first;
+  out.root = page.setupState.root;
+""")
+        self.assertEqual(out["root"], "/old")
+
+    def test_an_older_server_that_names_no_project_still_works(self):
+        out = self.run_scenario("""
+  const first = page.loadSetup(true);
+  pending[0].resolve({items: [], complete: false}); await first;
+  out.has = page.setupState !== null;
+""")
+        self.assertTrue(out["has"])
+
+    def test_both_ways_of_switching_project_reset_the_checklist(self):
+        source = self.APP.read_text()
+        self.assertEqual(source.count("resetSetup();"), 2)  # a downloaded project opening, and switching to a local one
+
+    def test_configure_says_when_there_was_nothing_to_change(self):
+        handler = self.APP.read_text()
+        handler = handler[handler.index('api("setup/configure"'):][:500]
+        self.assertIn("done?.already", handler)
+        self.assertIn("so nothing was changed", handler)

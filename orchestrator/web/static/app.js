@@ -1436,7 +1436,7 @@ const projectDownloads = ProjectPicker.createDownloads({
   register: project => api("projects/add", {method:"POST", body:{root:project.root, name:project.name || "", active:false}}),
   activate: project => api("project", {method:"POST", body:{root:project.root}}),
   ready: async (op, isCurrent) => {
-    setupFetched = 0;
+    resetSetup();
     await refreshState({opening:true, isCurrent});
     if (isCurrent() && state.project?.root !== op.project.root) throw new Error("The selected project hasn't opened yet. Try again.");
   },
@@ -1578,7 +1578,7 @@ async function switchProject(root, then = "#/") {
     if (!chosen || !chosen.isCurrent() || !isCurrent()) return;
     const res = chosen.response;
     if (res?.project) state.project = res.project;
-    setupFetched = 0;
+    resetSetup();
     await refreshState({switching:true, isCurrent:() => isCurrent() && chosen.isCurrent()});
     if (!isCurrent() || !chosen.isCurrent()) return;
     projectSwitch = null;
@@ -3155,15 +3155,16 @@ async function openAskAi() {
     dlg = document.createElement("dialog");
     dlg.id = "ask-ai";
     dlg.className = "ask-ai";
-    dlg.setAttribute("aria-labelledby", "ask-ai-title");
+    dlg.setAttribute("aria-label", "Ask AI");
     document.body.append(dlg);
     dlg.addEventListener("close", () => askAiRun?.controller.abort());
     dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); }); // a click on the backdrop
   }
   dlg.innerHTML = `<div class="ask-ai-box">
     <header class="ask-ai-head">
-      <div><h2 id="ask-ai-title">Ask AI</h2><p class="muted">About ${esc(state.project?.name || "this project")}</p></div>
-      <div class="ask-ai-head-actions"><button type="button" class="btn small ghost" data-ask-ai-clear hidden>Clear</button>
+      <span aria-hidden="true"></span>
+      <h2 class="ask-ai-project">${homeProjectTitle(state.project || { name: "Project" }).replace('class="home-project-select"', 'class="ask-ai-project-select"')}</h2>
+      <div class="ask-ai-head-actions"><button type="button" class="dialog-close-btn ask-ai-clear" data-ask-ai-clear aria-label="Clear conversation" title="Clear conversation" hidden><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
         <button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button></div>
     </header>
     <fieldset class="ask-ai-tiers" aria-label="Kind of AI"><legend class="sr-only">Kind of AI</legend><span class="muted">Loading…</span></fieldset>
@@ -3177,6 +3178,17 @@ async function openAskAi() {
       <span class="muted t-secondary ask-ai-status">Enter to send · Shift+Enter for a new line</span>
     </form></div>`;
   if (!dlg.open) dlg.showModal();
+  // The same title dropdown as Home's: the project's name, opening the project list. Switching reloads this chat for the new project.
+  const projectSelect = dlg.querySelector(".ask-ai-project-select");
+  renderProjectSelect(projectSelect);
+  projectSelect.addEventListener("change", async () => {
+    const val = projectSelect.value;
+    if (val === "__manage__") { dlg.close(); projectDownloads.leave(); location.hash = "#/projects"; return; }
+    if (val.startsWith("github:")) { dlg.close(); await projectDownloads.download(val.slice("github:".length)); return; }
+    await switchProject(val, location.hash.startsWith("#/product") ? "#/product" : "#/");
+    if (state.project?.root === val) openAskAi(); // this project's own conversation
+    else if (state.project) projectSelect.value = state.project.root; // a switch that failed puts the picker back
+  });
   const form = dlg.querySelector(".ask-ai-form");
   const input = form.message;
   const send = form.querySelector('button[type="submit"]');
@@ -3458,12 +3470,19 @@ document.addEventListener("click", async (event) => {
 
 let setupState = null;
 let setupFetched = 0;
+let setupSeq = 0; // each request gets a number, so a slow answer from before a project switch can't overwrite the new project's checklist
 const setupDismissedRoots = new Set();
+// Switching project: forget the previous project's checklist and ignore any answer still on its way.
+function resetSetup() { setupSeq++; setupFetched = 0; setupState = null; }
 async function loadSetup(force = false) {
   if (!force && Date.now() - setupFetched < 15000) return setupState;
   const projectRoot = state.project?.root;
+  const seq = ++setupSeq;
   setupFetched = Date.now();
-  try { setupState = await api(force ? "setup?refresh=1" : "setup"); } catch { setupState = null; } // older servers have no /api/setup
+  let fetched = null;
+  try { fetched = await api(force ? "setup?refresh=1" : "setup"); } catch { fetched = null; } // older servers have no /api/setup
+  if (seq !== setupSeq || (fetched?.root && state.project?.root && fetched.root !== state.project.root)) return setupState; // a newer request, or another project's answer
+  setupState = fetched;
   if (setupState && setupDismissedRoots.has(projectRoot)) setupState.seen = true;
   renderSetupFab();
   if (setupState?.complete && !setupState.seen) {
@@ -3602,8 +3621,9 @@ document.addEventListener("click", async (e) => {
     } else if (item.action.type === "configure_project") {
       go.disabled = true;
       try {
-        await api("setup/configure", { method: "POST", body: {} });
-        toast("Project configured");
+        const done = await api("setup/configure", { method: "POST", body: {} });
+        if (done?.already) toast("This project already has its settings (.orchestrator/project.json), so nothing was changed.", "info");
+        else toast("Project configured");
         await refreshState();
         await loadSetup(true);
         if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();

@@ -54,16 +54,56 @@ class AskAiButtonMarkupTests(unittest.TestCase):
         self.assertRegex(html, r'<symbol id="i-arrow-up"')
         self.assertRegex(html, r'<symbol id="i-stop"')
 
-    def test_the_css_puts_them_in_a_row_with_the_button_at_the_far_right(self):
+    def test_the_css_puts_the_button_inside_the_field_at_its_bottom_right(self):
         css = (STATIC / "style.css").read_text()
         compose = re.search(r"\.ask-ai-compose \{([^}]*)\}", css).group(1)
-        self.assertIn("display: flex", compose)
-        self.assertIn("align-items: flex-end", compose)
-        self.assertRegex(css, r"\.ask-ai-compose textarea \{[^}]*flex: 1 1 auto[^}]*min-width: 0")
+        for bit in ("position: relative", "border: 1px solid", "border-radius: var(--r-lg)"):
+            self.assertIn(bit, compose)  # the field's own border and rounding: the box the button sits in
         send = re.search(r"\.ask-ai-send \{([^}]*)\}", css).group(1)
-        self.assertIn("flex: none", send)  # it never shrinks or wraps under the box
-        self.assertIn("border-radius: 50%", send)
+        for bit in ("position: absolute", "right: var(--space-2)", "bottom: var(--space-2)", "border-radius: 50%"):
+            self.assertIn(bit, send)
+        text = re.search(r"\.ask-ai-form \.ask-ai-compose textarea \{([^}]*)\}", css).group(1)
+        self.assertIn("border: 0", text)  # one border around both, not a box inside a box
+        self.assertIn("padding: var(--space-3) calc(32px", text)  # the words stop short of the button
         self.assertIn(".ask-ai-send.is-stop", css)
+
+
+class AskAiHeaderTests(unittest.TestCase):
+    """The top of the chat is the project's title dropdown, centred, like Home's: no "Ask AI" heading and no "About <project>" line."""
+
+    def header(self) -> str:
+        source = ask_ai_source()
+        start = source.index('<header class="ask-ai-head">')
+        return source[start:source.index("</header>", start)]
+
+    def test_there_is_no_about_line_and_no_ask_ai_heading(self):
+        header = self.header()
+        self.assertNotIn("About ", header)
+        self.assertNotIn(">Ask AI<", header)
+
+    def test_the_header_holds_the_project_dropdown_between_an_empty_cell_and_the_buttons(self):
+        header = self.header()
+        self.assertIn("homeProjectTitle(", header)
+        self.assertLess(header.index('aria-hidden="true"></span>'), header.index("ask-ai-project"))
+        self.assertLess(header.index("ask-ai-project"), header.index("data-ask-ai-clear"))
+
+    def test_the_dropdown_is_centred_by_a_three_column_header(self):
+        css = (STATIC / "style.css").read_text()
+        head = re.search(r"\.ask-ai-head \{([^}]*)\}", css).group(1)
+        self.assertIn("grid-template-columns: 1fr auto 1fr", head)
+        self.assertIn("justify-self: center", re.search(r"\.ask-ai-head h2 \{([^}]*)\}", css).group(1))
+
+    def test_the_dialog_still_has_a_name_for_screen_readers(self):
+        self.assertIn('dlg.setAttribute("aria-label", "Ask AI")', ask_ai_source() + (STATIC / "app.js").read_text())
+
+    def test_switching_project_in_the_chat_loads_that_projects_conversation(self):
+        source = ask_ai_source()
+        handler = source[source.index("projectSelect.addEventListener"):]
+        handler = handler[:handler.index("const form =")]
+        self.assertIn("switchProject(", handler)
+        self.assertIn("openAskAi()", handler)  # and not the previous project's thread
+        self.assertIn('"__manage__"', handler)
+        self.assertIn("github:", handler)
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js required")
@@ -109,6 +149,19 @@ class AskAiClearTests(unittest.TestCase):
         source = ask_ai_source()
         start = source.index("clearBtn.addEventListener")
         return source[start:source.index("\n}\n", start)]
+
+    def test_clear_is_a_trash_icon_with_no_text_and_a_name_for_screen_readers(self):
+        source = ask_ai_source()
+        start = source.index("<button", source.index("ask-ai-head-actions"))
+        button = source[start:source.index("</button>", start) + len("</button>")]
+        self.assertIn("data-ask-ai-clear", button)
+        self.assertIn('href="#i-trash"', button)
+        self.assertIn('aria-label="Clear conversation"', button)
+        self.assertIn('title="Clear conversation"', button)
+        self.assertEqual(re.sub(r"<[^>]+>", "", button).strip(), "")  # nothing but the icon
+
+    def test_the_icon_exists_in_the_page_sprite(self):
+        self.assertRegex((STATIC / "index.html").read_text(), r'<symbol id="i-trash"')
 
     def test_the_first_click_opens_a_confirmation_modal_not_a_second_tap(self):
         source = ask_ai_source()

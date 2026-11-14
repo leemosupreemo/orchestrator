@@ -21,6 +21,7 @@ The conversation is saved with the project (shared by its worktrees), so it is t
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import tempfile
@@ -111,10 +112,20 @@ def record_check(model: str, ok: bool, reason: str = "", now: float | None = Non
         os.replace(tmp, path)
 
 
+KEY_REJECTED = "its API key is rejected (check AI tools)"
+SHARED_KEY_EXEMPT = ("opencode", "ollama")  # these providers have models that need no key of their own
+
+
+def provider_of(model_id: str) -> str:
+    """The provider a model id names ("alibaba-token-plan/qwen3.7-max" -> "alibaba-token-plan"), "" when it names none."""
+    head, sep, _ = model_id.partition("/")
+    return head if sep and head not in SHARED_KEY_EXEMPT else ""
+
+
 def failure_reason(text: str) -> str:
     """What went wrong with a model, in a few words, from its error."""
-    lowered = text.lower()
-    for words, reason in ((("invalid api key", "invalid x-api-key", "incorrect api key"), "its API key is rejected (check AI tools)"),
+    lowered = re.sub(r"api[-_ ]?key", "api key", text.lower())  # "API-key", "api_key" and "apikey" are all "api key"
+    for words, reason in ((("invalid api key", "invalid x-api key", "incorrect api key", "api key is invalid", "api key not valid", "api key was rejected"), KEY_REJECTED),
                           (("quota", "rate limit", "usage limit", "429", "credits"), "out of quota for now"),
                           (("not supported", "not available", "does not exist", "not found", "unknown model", "model_not_found", "isn't available"), "not offered to this sign-in"),
                           (("auth", "login", "sign in", "401", "403", "api key", "unauthorized"), "not signed in, or no access"),
@@ -125,12 +136,22 @@ def failure_reason(text: str) -> str:
     return (summarize_cli_error(text) if text.strip() else "didn't answer")[:140]
 
 
+def _why_skipped(model_id: str, checks: dict[str, dict[str, Any]], rejected: set[str]) -> str:
+    own = checks.get(model_id) or {}
+    if not own.get("ok") and own.get("reason"):
+        return own["reason"]
+    return KEY_REJECTED if provider_of(model_id) in rejected else "didn't answer"
+
+
 def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> dict[str, dict[str, Any]]:
     """For each tier: the model it uses, the ones it falls back to, whether that model has been checked, the models left
     out because they failed recently (and why), and, when it has none, why."""
     checks = load_checks() if checks is None else checks
     now = now or time.time()
-    failed = lambda m: (c := checks.get(m.id)) and not c.get("ok") and now - float(c.get("at") or 0) < FAIL_HOLD
+    # A rejected key is the provider's, not one model's: every model of that provider fails with it until the key is replaced.
+    rejected = {provider_of(k) for k, c in checks.items()
+                if provider_of(k) and not c.get("ok") and c.get("reason") == KEY_REJECTED and now - float(c.get("at") or 0) < FAIL_HOLD}
+    failed = lambda m: ((c := checks.get(m.id)) and not c.get("ok") and now - float(c.get("at") or 0) < FAIL_HOLD) or provider_of(m.id) in rejected
     answered = lambda m: (c := checks.get(m.id)) and c.get("ok") and now - float(c.get("at") or 0) < CHECK_FRESH
     groups: dict[str, list[Any]] = {t: [] for t in TIERS}
     for m in models:
@@ -138,7 +159,7 @@ def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None =
     out = {}
     for tier in TIERS:
         ordered = _order(tier, groups[tier])
-        skipped = [{"model": m.id, "reason": checks[m.id].get("reason") or "didn't answer"} for m in ordered if failed(m)]
+        skipped = [{"model": m.id, "reason": _why_skipped(m.id, checks, rejected)} for m in ordered if failed(m)]
         ordered = sorted([m for m in ordered if not failed(m)], key=lambda m: not answered(m))  # stable: checked ones first
         ids = [m.id for m in ordered]
         first = checks.get(ids[0]) if ids else None
@@ -172,7 +193,10 @@ def check_tiers(models: list[Any], probe: Callable[[str], tuple[bool, str, str]]
     tiers = chat_tiers(models)
 
     def one(tier: str) -> None:
+        refused: set[str] = set()  # providers whose key was just rejected: their other models would fail the same way
         for model in tiers[tier]["candidates"]:
+            if provider_of(model) in refused:
+                continue
             ok, reason, used = probe(model)
             if not ok:  # once more before it counts: a sign-in being renewed can refuse one call
                 time.sleep(retry_after)
@@ -182,6 +206,8 @@ def check_tiers(models: list[Any], probe: Callable[[str], tuple[bool, str, str]]
             record_check(model, ok, reason)
             if ok:
                 return
+            if reason == KEY_REJECTED or failure_reason(reason) == KEY_REJECTED:
+                refused.add(provider_of(model))
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(one, [t for t in TIERS if tiers[t]["available"]]))
     return chat_tiers(models)
@@ -243,17 +269,21 @@ def _attached_documents(root: Path, limit: int) -> str:
     return "\n\n".join(parts)
 
 
-def _project_notes(root: Path, limit: int) -> str:
+def _project_notes(root: Path, limit: int, total: int | None = None) -> str:
     """README, AGENTS/CLAUDE notes and the markdown under docs/. The notes at the top (README first) get `limit` each, the docs half of it."""
     from orchestrator import prd, project_docs
-    parts = []
+    parts, used = [], 0
     for f in project_docs.project_files(root):
         if f["path"] == prd.PATH:
             continue  # the requirements are their own section
         try:
-            parts.append(f"#### {f['path']}\n{_quote(project_docs.read_project_file(root, f['path']), limit if '/' not in f['path'] else limit // 2)}")
+            part = f"#### {f['path']}\n{_quote(project_docs.read_project_file(root, f['path']), limit if '/' not in f['path'] else limit // 2)}"
         except Exception:
             continue
+        if total is not None and parts and used + len(part) > total:
+            break  # the rest of the docs wouldn't fit; the README and agent notes come first, so they are in
+        parts.append(part)
+        used += len(part)
     return "\n\n".join(parts)
 
 
@@ -277,21 +307,22 @@ def project_context(root: Path, tier: str = "balanced", jobs: list[dict[str, Any
         scanned = project_scan.scan(root, tier)
     except Exception:  # an unreadable repository must never stop a question
         scanned = {}
-    requirements = _quote(prd.read_text(root) or "", 8_000 if small else 24_000)
+    requirements = _quote(prd.read_text(root) or "", min(8_000 if small else 24_000, int(budget * .22)))
     if not prd.is_filled(requirements):
         requirements = "(Not written yet. Work out what the project is from its README and notes, what it is built with, its structure and its code below, and say so when you do.)"
+    share = lambda fraction: int(budget * fraction)  # no section may take more than its share: a big docs folder used to leave no room for the rest
     sections = [
         ("Project", f"Name: {name or root.name}\nFolder: {root.name}\nCurrent branch: {branch}"),
         ("Product requirements (the source of truth for what is being built)", requirements),
-        ("Documents attached to the requirements", _attached_documents(root, 3_000 if small else 12_000)),
-        ("What it is built with", scanned.get("What it's built with", "")),
-        ("Project notes and docs (README first)", _project_notes(root, 2_500 if small else 8_000)),
-        ("Project structure (folders, with how many files each holds)", scanned.get("Project structure", "")),
-        ("Recent commits (newest first)", _git(root, "log", "-n", "25" if small else "60", "--date=short", "--format=%h %ad %an: %s")),
-        ("Key source files (the start of each)", scanned.get("Key source files (the start of each)", "")),
-        ("Jobs (planned, in progress and done)", _jobs(jobs or [])),
-        ("Uncommitted changes", _clip(_git(root, "status", "--short"), 2_000)),
-        ("Branches", _clip(_git(root, "branch", "--format=%(refname:short)"), 1_500)),
+        ("Documents attached to the requirements", _clip(_attached_documents(root, 3_000 if small else 12_000), share(.10))),
+        ("What it is built with", _clip(scanned.get("What it's built with", ""), share(.05))),
+        ("Project notes and docs (README first)", _project_notes(root, 2_500 if small else 8_000, share(.25))),
+        ("Project structure (folders, with how many files each holds)", _clip(scanned.get("Project structure", ""), share(.08))),
+        ("Recent commits (newest first)", _clip(_git(root, "log", "-n", "25" if small else "60", "--date=short", "--format=%h %ad %an: %s"), share(.08))),
+        ("Key source files (the start of each)", _clip(scanned.get("Key source files (the start of each)", ""), share(.22))),
+        ("Jobs (planned, in progress and done)", _clip(_jobs(jobs or []), share(.05))),
+        ("Uncommitted changes", _clip(_git(root, "status", "--short"), min(2_000, share(.03)))),
+        ("Branches", _clip(_git(root, "branch", "--format=%(refname:short)"), min(1_500, share(.02)))),
     ]
     out, used = [], 0
     for title, body in sections:

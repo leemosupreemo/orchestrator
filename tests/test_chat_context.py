@@ -233,6 +233,20 @@ class ChatContextTests(ScanTestCase):
         self.assertLessEqual(len(small), 5_200)
         self.assertIn("## Project\n", small)  # the essentials survive a small window
 
+    def test_a_large_docs_folder_cannot_use_up_the_room_for_the_rest(self):
+        """This repository's 49 docs files filled 21.8k of the Free tier's 24k, so its structure, commits and code never reached the model."""
+        self.project()
+        for i in range(60):
+            write(self.root, f"docs/topic{i:02d}.md", f"# Topic {i}\n" + ("Details about this topic. " * 400))
+        git_project(self.root)
+        text = self.context("free")
+        for heading in ("## Project notes and docs", "## Project structure", "## Recent commits", "## Key source files", "## Jobs"):
+            self.assertIn(heading, text)
+        notes = text[text.index("## Project notes and docs"):text.index("## Project structure")]
+        self.assertLessEqual(len(notes), int(project_chat.CONTEXT_BUDGET["free"] * .25) + 400)
+        self.assertIn("A two-player word game", notes)  # the README is still first and whole
+        self.assertLessEqual(len(text), project_chat.CONTEXT_BUDGET["free"] + 300)
+
     def test_a_section_that_does_not_fit_does_not_stop_smaller_ones_after_it(self):
         self.project()
         text = self.context("free", max_chars=2_500)
@@ -394,3 +408,64 @@ class ContextReachesTheLocalModelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RejectedKeyTests(unittest.TestCase):
+    """Alibaba Token Plan answered every call with "Invalid API-key provided." The hyphen slipped past the matcher, so the chat
+    tried its models one after another, each failing the same way, and only ever showed the raw error."""
+    ALIBABA_ERROR = "Error: Invalid API-key provided. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#apikey-error"
+
+    def models(self, *ids):
+        from orchestrator.scripts.model_registry import get_model
+        return [m for m in (get_model(i) for i in ids) if m]
+
+    def test_every_way_of_writing_api_key_is_recognised(self):
+        for text in (self.ALIBABA_ERROR, "invalid api_key", "Invalid apikey", "Incorrect API key provided", "invalid x-api-key"):
+            with self.subTest(text=text):
+                self.assertEqual(project_chat.failure_reason(text), project_chat.KEY_REJECTED)
+
+    def test_other_failures_keep_their_own_reasons(self):
+        self.assertEqual(project_chat.failure_reason("rate limit exceeded"), "out of quota for now")
+        self.assertEqual(project_chat.failure_reason("model not found"), "not offered to this sign-in")
+
+    def test_the_provider_is_the_part_before_the_slash_and_free_hosts_have_none(self):
+        self.assertEqual(project_chat.provider_of("alibaba-token-plan/qwen3.7-max"), "alibaba-token-plan")
+        for model_id in ("opencode/beam-free", "ollama/qwen3:8b", "claude-sonnet-4-6", "deepseek"):
+            self.assertEqual(project_chat.provider_of(model_id), "")
+
+    def tiers_with(self, checks):
+        models = self.models("claude-sonnet-4-6", "gemini-3.5-flash-high", "gpt-5.2")
+        extra = [type("M", (), {"id": i, "tier": 2, "cost_factor": 5.0, "family": "opencode", "capabilities": ["coding"], "required_clis": ["opencode"]})()
+                 for i in ("alibaba-token-plan/qwen3.7-max", "alibaba-token-plan/glm-5.2")]
+        return project_chat.chat_tiers(models + extra, checks=checks, now=1000.0)
+
+    def test_one_rejected_key_takes_every_model_of_that_provider_out_of_the_tier(self):
+        tiers = self.tiers_with({"alibaba-token-plan/glm-5.2": {"ok": False, "reason": project_chat.KEY_REJECTED, "at": 990.0}})
+        for tier in tiers.values():
+            self.assertFalse([m for m in tier["models"] if m.startswith("alibaba-token-plan/")])
+        skipped = {x["model"]: x["reason"] for t in tiers.values() for x in t["skipped"]}
+        self.assertEqual(skipped.get("alibaba-token-plan/qwen3.7-max"), project_chat.KEY_REJECTED)  # never tried, and says why
+        self.assertEqual(skipped.get("alibaba-token-plan/glm-5.2"), project_chat.KEY_REJECTED)
+
+    def test_other_providers_and_a_failure_that_is_not_the_key_are_left_alone(self):
+        tiers = self.tiers_with({"alibaba-token-plan/glm-5.2": {"ok": False, "reason": "out of quota for now", "at": 990.0}})
+        balanced = tiers["balanced"]["models"] + [x["model"] for x in tiers["balanced"]["skipped"]]
+        self.assertIn("alibaba-token-plan/qwen3.7-max", tiers["balanced"]["models"] + tiers["balanced"]["candidates"])  # quota isn't a bad key
+        self.assertTrue(any(m.startswith("claude-") or m.startswith("gemini-") or m.startswith("gpt-") for m in balanced))
+
+    def test_the_rejection_is_forgotten_once_the_hold_is_over(self):
+        tiers = self.tiers_with({"alibaba-token-plan/glm-5.2": {"ok": False, "reason": project_chat.KEY_REJECTED, "at": 1000.0 - project_chat.FAIL_HOLD - 5}})
+        self.assertIn("alibaba-token-plan/qwen3.7-max", sum((t["candidates"] for t in tiers.values()), []))
+
+    def test_checking_stops_asking_a_provider_whose_key_was_just_refused(self):
+        models = [type("M", (), {"id": i, "tier": 2, "cost_factor": 5.0, "family": "opencode", "capabilities": ["coding"], "required_clis": ["opencode"]})()
+                  for i in ("alibaba-token-plan/glm-5.2", "alibaba-token-plan/glm-5.3", "alibaba-token-plan/qwen3.7-max")]
+        asked = []
+
+        def probe(model):
+            asked.append(model)
+            return False, self.ALIBABA_ERROR if False else project_chat.KEY_REJECTED, ""
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": tmp}):
+            project_chat.check_tiers(models, probe, retry_after=0)
+        self.assertEqual(len([m for m in asked if m == asked[0]]), 2)  # the one retry, as before
+        self.assertEqual(sorted(set(asked)), [asked[0]])  # and none of the provider's other models

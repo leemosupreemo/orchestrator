@@ -7806,6 +7806,7 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"links": attach_links_to_job(root, parts[1], _clean_links(self._body().get("links")))})
         elif method == "GET" and parts == ["setup"]:
             setup = setup_checklist(root, runtime_dir(root), fresh=bool(query.get("refresh")))
+            setup["root"] = str(root)  # which project this answers for: the page ignores an answer for a project it has switched away from
             config = read_json_file(runtime_dir(root) / "project.json")
             setup["workflow_checks"] = []
             if config.get("xcode_project") or config.get("xcode_workspace") or any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace")):
@@ -7825,12 +7826,28 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["setup", "configure"]:
             self._require_owner("configure the project")
             self._body()
+            path = runtime_dir(root) / "project.json"
+            existing = ""
             try:
+                existing = path.read_text().strip()
+            except OSError:
+                pass
+            if existing:
+                try:
+                    settings = json.loads(existing)
+                except ValueError:
+                    raise UIError(f"{path} exists but isn't valid JSON, so it wasn't changed. Fix or delete it, then configure again.")
+                if isinstance(settings, dict) and settings:
+                    self._json({"ok": True, "already": True})  # nothing to write: it is configured, and saying "configured" would hide that
+                    return
+            try:
+                if path.exists():
+                    path.unlink()  # it holds nothing ("" or {}): init skips a file that exists, so clear just this one (never --force: that rewrites machines and settings)
                 new_project.configure(root, project_display_name(root))
             except Exception as exc:
                 raise UIError(f"Couldn't configure the project: {exc}")
             self._audit("project_configured", root=str(root))
-            self._json({"ok": True})
+            self._json({"ok": True, "already": False})
         elif method == "POST" and parts == ["setup", "github-create"]:
             self._require_owner("create a GitHub repository")
             body = self._body()

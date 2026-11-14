@@ -4934,10 +4934,15 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('aria-label="System health: ${esc(status)}">${icon(', trigger)
         self.assertNotIn("<span>${esc(status)}</span>", trigger)  # icon only: the word is in the label and tooltip
         rule = css[css.index(".home-health-trigger {"):][:500]
-        for bit in ("width: var(--control-md)", "height: var(--control-md)", "border-radius: var(--r-md)", "box-shadow: var(--shadow)", "cursor: pointer"):
+        for bit in ("width: var(--control-md)", "height: var(--control-md)", "cursor: pointer"):
             self.assertIn(bit, rule)
-        self.assertIn(".home-health-trigger:hover {", css)  # it lifts, so it reads as something to tap
-        self.assertIn(".home-health-inline[open] > .home-health-trigger {", css)
+        # The shield stands alone: no square border, fill or shadow around it (it dims on hover to read as tappable)
+        for bit in ("border: 0", "background: transparent"):
+            self.assertIn(bit, rule)
+        for bit in ("box-shadow", "border: 1px", "var(--panel)"):
+            self.assertNotIn(bit, rule)
+        self.assertIn(".home-health-trigger:hover {", css)
+        self.assertNotIn("home-health-inline[open] > .home-health-trigger", css)  # no box to highlight when it is open
         self.assertIn(".topbar-actions:has(.home-topbar-tools) { display: none; }", css)  # phones show the header copy only
         self.assertIn('id="home-health-half"', html)  # split gradient for optional checks
         self.assertIn('stop-color="var(--ok)"', html)
@@ -8329,6 +8334,57 @@ class SetupActionEndpointTests(ServerTestCase):
         self.assertEqual(res.status, 200)
         self.assertTrue(data.get("ok"))
         self.assertTrue((folder / ".orchestrator" / "project.json").is_file())
+
+    def configure(self, folder: Path):
+        self.server.set_root(folder)
+        with patch("orchestrator.cli.remember_project"):
+            return self.request("POST", "/api/setup/configure", body={}, headers=UI_HEADERS)
+
+    def test_configure_leaves_an_existing_configuration_alone_and_says_so(self):
+        """DAoC Mobile was already configured, and Configure reported "Project configured" after doing nothing."""
+        folder = Path(self.tmp.name) / "already_configured"
+        (folder / ".orchestrator").mkdir(parents=True)
+        original = json.dumps({"project_name": "Mine", "build_command": "make", "base_branch": "develop"})
+        (folder / ".orchestrator" / "project.json").write_text(original)
+        (folder / ".orchestrator" / "config").mkdir()
+        (folder / ".orchestrator" / "config" / "machines.json").write_text('{"machines": [{"name": "keep"}]}')
+        res, data = self.configure(folder)
+        self.assertEqual(res.status, 200)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["already"])
+        self.assertEqual((folder / ".orchestrator" / "project.json").read_text(), original)  # not rewritten
+        self.assertIn("keep", (folder / ".orchestrator" / "config" / "machines.json").read_text())
+
+    def test_configure_writes_a_missing_configuration_and_says_it_did(self):
+        folder = Path(self.tmp.name) / "fresh_for_configure"
+        folder.mkdir()
+        res, data = self.configure(folder)
+        self.assertEqual((res.status, data["ok"], data["already"]), (200, True, False))
+        self.assertTrue((folder / ".orchestrator" / "project.json").is_file())
+
+    def test_configure_fills_in_an_empty_project_json_without_touching_the_rest(self):
+        folder = Path(self.tmp.name) / "empty_project_json"
+        (folder / ".orchestrator" / "config").mkdir(parents=True)
+        (folder / ".orchestrator" / "project.json").write_text("{}")
+        (folder / ".orchestrator" / "config" / "machines.json").write_text('{"machines": [{"name": "keep"}]}')
+        res, data = self.configure(folder)
+        self.assertEqual((res.status, data["already"]), (200, False))
+        self.assertTrue(json.loads((folder / ".orchestrator" / "project.json").read_text()))  # now has settings
+        self.assertIn("keep", (folder / ".orchestrator" / "config" / "machines.json").read_text())  # --force would have rewritten this
+
+    def test_configure_refuses_to_overwrite_a_file_it_cannot_read(self):
+        folder = Path(self.tmp.name) / "broken_project_json"
+        (folder / ".orchestrator").mkdir(parents=True)
+        (folder / ".orchestrator" / "project.json").write_text("{ not json, but somebody's work")
+        res, data = self.configure(folder)
+        self.assertEqual(res.status, 400)
+        self.assertIn("isn't valid JSON", data["error"])
+        self.assertEqual((folder / ".orchestrator" / "project.json").read_text(), "{ not json, but somebody's work")
+
+    def test_the_setup_answer_says_which_project_it_is_for(self):
+        with patch.object(ui, "setup_checklist", return_value={"items": []}):
+            res, data = self.request("GET", "/api/setup")
+        self.assertEqual(data["root"], str(self.root))
 
     def test_setup_github_create_endpoint(self):
         with patch("orchestrator.new_project.publish_to_github") as mock_pub:

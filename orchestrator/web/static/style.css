@@ -1760,9 +1760,10 @@ dialog h2 {
 }
 .project-card-header {
   display: flex;
+  flex-wrap: wrap;  /* a long name or repository puts the badges on the next line instead of pushing the card wider */
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-2) var(--space-3);
 }
 .project-card-title {
   font-size: var(--type-body);
@@ -3388,7 +3389,8 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .projects-head { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); margin-bottom: var(--space-4); }
 .projects-head .projects-filter { margin-bottom: 0; }
 .projects-head h2 { margin: 0; font-size: var(--type-body); }
-.project-card-badges { display: flex; gap: var(--space-1); align-items: center; flex-wrap: wrap; }
+.project-card-badges { display: flex; gap: var(--space-1); align-items: center; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.project-card-badges > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-card:not(.active-project) .project-card-title { color: var(--accent); }
 .projects-filter .badge-icon { width: 12px; height: 12px; margin-right: var(--space-1); vertical-align: -1px; }
 
@@ -4615,11 +4617,10 @@ body[data-page="home"] #page-sub { grid-column: 1 / -1; grid-row: 2; width: 100%
 .home-status-line .status-branch { flex: 0 1 16rem; }
 .home-health-inline { position: relative; flex: none; } /* bottom-aligned with the branch dropdown: same height, no offset */
 /* An outlined shield distinguishes readiness from recording or running controls. */
-.home-health-trigger { display: inline-flex; align-items: center; justify-content: center; width: var(--control-md); height: var(--control-md); min-height: var(--control-md); padding: 0; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); box-shadow: var(--shadow); color: var(--text); cursor: pointer; list-style: none; transition: transform var(--motion-fast) ease, box-shadow var(--motion-fast) ease, border-color var(--motion-fast) ease; }
-.home-health-trigger:hover { transform: translateY(-1px); border-color: var(--muted); box-shadow: var(--shadow-2); }
-.home-health-trigger:active { transform: translateY(0); box-shadow: none; }
+.home-health-trigger { display: inline-flex; align-items: center; justify-content: center; width: var(--control-md); height: var(--control-md); min-height: var(--control-md); padding: 0; border: 0; border-radius: var(--r-md); background: transparent; color: var(--text); cursor: pointer; list-style: none; transition: opacity var(--motion-fast) ease; } /* the shield alone: no square around it */
+.home-health-trigger:hover { opacity: .75; }
+.home-health-trigger:active { opacity: .6; }
 .home-health-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.home-health-inline[open] > .home-health-trigger { border-color: var(--accent); background: var(--accent-soft); }
 .home-health-trigger::-webkit-details-marker { display: none; }
 .home-health-icon { position: relative; display: inline-flex; color: var(--ok); }
 .home-health-icon .icon { width: var(--space-5); height: var(--space-5); }
@@ -4908,10 +4909,15 @@ body[data-page="preview"] .job-preview .job-preview-frame { flex: 1; height: aut
 /* A panel down the right edge, full height; on phones it fills the screen. */
 dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; border-radius: 0; border-width: 0 0 0 1px; }
 .ask-ai-box { display: flex; flex-direction: column; gap: var(--space-3); height: 100%; padding: var(--space-4) var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom)); box-sizing: border-box; }
-.ask-ai-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
-.ask-ai-head h2 { min-height: 0; font-size: var(--type-section); }
-.ask-ai-head p { margin: 0; font-size: var(--type-secondary); }
-.ask-ai-head-actions { display: flex; align-items: center; gap: var(--space-1); }
+/* The project's title dropdown, centred on the top bar; the buttons sit at the right, and an empty cell at the left keeps it centred. */
+.ask-ai-head { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: var(--space-2); }
+.ask-ai-head h2 { min-height: 0; min-width: 0; margin: 0; font-size: var(--type-page); justify-self: center; max-width: 100%; }
+.ask-ai-head-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); }
+.ask-ai-project-select { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; opacity: 0; cursor: pointer; font-size: var(--type-body); }
+.ask-ai-clear { display: inline-grid; place-items: center; }
+.ask-ai-clear[hidden] { display: none; }
+.ask-ai-clear .icon { width: 18px; height: 18px; }
+.ask-ai-clear:hover { color: var(--bad); }
 .ask-ai-tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-1); margin: 0; padding: var(--space-1); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); min-width: 0; }
 .ask-ai-tier { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: var(--space-2) var(--space-1); border-radius: calc(var(--r-md) - 2px); cursor: pointer; text-align: center; min-width: 0; }
 .ask-ai-tier input { position: absolute; opacity: 0; pointer-events: none; }
@@ -4938,12 +4944,12 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .ask-ai-starters { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 .ask-ai-starters .btn { text-align: left; white-space: normal; }
 .ask-ai-form { display: flex; flex-direction: column; gap: var(--space-2); padding: 0; max-height: none; }
-.ask-ai-form textarea { min-height: 64px; max-height: 30vh; resize: vertical; }
-/* The question and its button are one row, the button at the far right and level with the bottom of the box. */
-.ask-ai-compose { display: flex; align-items: flex-end; gap: var(--space-2); }
-.ask-ai-compose textarea { flex: 1 1 auto; min-width: 0; }
-.ask-ai-send { flex: none; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; }
-.ask-ai-send .icon { width: 20px; height: 20px; }
+/* The question box is one rounded field with the send/stop button inside it, at the bottom right (like Claude's own). */
+.ask-ai-compose { position: relative; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); }
+.ask-ai-compose:focus-within { border-color: var(--accent); outline: 1px solid var(--accent); outline-offset: 0; }
+.ask-ai-form .ask-ai-compose textarea { display: block; width: 100%; box-sizing: border-box; min-height: 72px; max-height: 30vh; resize: none; border: 0; background: transparent; box-shadow: none; outline: none; border-radius: var(--r-lg); padding: var(--space-3) calc(32px + var(--space-3) * 2) var(--space-3) var(--space-3); }
+.ask-ai-send { position: absolute; right: var(--space-2); bottom: var(--space-2); width: 32px; height: 32px; min-height: 0; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; }
+.ask-ai-send .icon { width: 18px; height: 18px; }
 .ask-ai-send.is-stop { background: var(--text); border-color: var(--text); color: var(--panel); }
 .ask-ai-send.is-stop:hover:not(:disabled) { background: var(--text); border-color: var(--text); color: var(--panel); }
 @media (max-width: 760px) { dialog.ask-ai { width: 100vw; max-width: 100vw; border-width: 0; } }
