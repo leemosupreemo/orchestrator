@@ -12301,6 +12301,24 @@ function runFailureGuidance(r) {
     };
   }
 
+  const isDivergedBranch = fullText.includes("local and remote commits have diverged")
+    || (fullText.includes("could not update branch") && fullText.includes("diverged"));
+
+  if (isDivergedBranch) {
+    const branchMatch = (err + " " + (r.error_summary || "") + " " + (r.saved_log_text || "")).match(/Could not update branch '([^']+)'/);
+    const branchName = branchMatch ? branchMatch[1] : "this branch";
+    const rerunBtn = targetJob
+      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
+      : "";
+    const backBtn = targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "";
+    return {
+      title: "Branch out of sync with remote",
+      detail: `Local and remote commits on ${branchName} have diverged and could not auto-rebase cleanly. Run git pull --rebase origin ${branchName} (or git reset --hard origin/${branchName}) in the project folder, or switch the job's branch mode, then rerun.`,
+      action: rerunBtn,
+      secondary: backBtn,
+    };
+  }
+
   const isBuildCacheLock = fullText.includes("database is locked")
     || (fullText.includes("build.db") && (fullText.includes("lock") || fullText.includes("sqlite") || fullText.includes("busy")))
     || fullText.includes("unable to open database file")
@@ -12385,6 +12403,24 @@ function runFailureGuidance(r) {
       title: "Uncommitted local changes in working directory",
       detail: "Git checkout or switch was blocked by unstaged local files. Stashing them saves your changes safely into git stash so the job can run.",
       action: `<button type="button" class="btn small primary" data-recover="git-stash" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Stash changes &amp; Rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
+  const isGitIndexLock = fullText.includes("index.lock")
+    && (fullText.includes("file exists") || fullText.includes("unable to create") || fullText.includes("another git process") || fullText.includes("stale"));
+
+  if (isGitIndexLock) {
+    const opAction = r.action || (targetJob ? "execute" : "");
+    const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
+    return {
+      recoveryAction: "git-unlock-index",
+      title: "Stale Git index lock",
+      detail: "A leftover .git/index.lock file is blocking Git commands. Confirm to verify no git process is using it, remove the stale lock, and rerun.",
+      action: `<button type="button" class="btn small primary" data-recover="git-unlock-index" data-recover-confirm="Remove stale .git/index.lock?" data-recover-detail="This checks with lsof that no git process is using .git/index.lock, deletes the stale lock, and runs git status to verify the index before rerunning." ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Remove lock &amp; Rerun</button>`,
       secondary: backBtn,
     };
   }
@@ -12753,7 +12789,7 @@ function runStatus(r, vc = null) {
     </section>`;
   }
 
-  if (failed && guidance && (guidance.title === "Execution error" || guidance.recoveryAction || guidance.isGhAuth || guidance.title.includes("failed") || guidance.title.includes("expired") || guidance.title.includes("locked") || guidance.title.includes("required") || guidance.title.includes("incomplete") || guidance.title.includes("issue"))) {
+  if (failed && guidance && (guidance.title === "Execution error" || guidance.recoveryAction || guidance.isGhAuth || guidance.title.includes("failed") || guidance.title.includes("expired") || guidance.title.includes("sync") || guidance.title.includes("locked") || guidance.title.includes("required") || guidance.title.includes("incomplete") || guidance.title.includes("issue"))) {
     return `<section class="banner failed attention run-status run-status-notice" aria-label="Run status">
       <div class="run-status-notice-body">
         <div class="run-status-notice-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> <strong>${esc(guidance.title)}</strong></div>
@@ -12997,6 +13033,10 @@ function wireAutoRecovery(container) {
       e.preventDefault();
       const op = btn.dataset.recover;
       if (!op) return;
+      if (btn.dataset.recoverConfirm) {
+        const confirmed = await formDialog(btn.dataset.recoverConfirm, `<p>${esc(btn.dataset.recoverDetail || "")}</p>`, "Continue");
+        if (!confirmed) return;
+      }
       const origHtml = btn.innerHTML;
       btn.disabled = true;
       btn.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Recovering…`;

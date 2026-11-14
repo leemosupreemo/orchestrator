@@ -8597,6 +8597,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._git_stash(root)
         elif action == "git-prune-worktrees":
             self._git_prune_worktrees(root)
+        elif action == "git-unlock-index":
+            self._git_unlock_index(root)
         elif action == "reclaim-space":
             self._reclaim_space(root)
         else:
@@ -8710,6 +8712,40 @@ class UIHandler(BaseHTTPRequestHandler):
 
         self._audit("git_stash", {"tag": tag})
         self._json({"ok": True, "message": msg})
+
+    def _git_unlock_index(self, root: Path) -> None:
+        git_dir = root / ".git"
+        if git_dir.is_file():
+            try:
+                content = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+                if content.startswith("gitdir:"):
+                    git_dir = Path(content.split(":", 1)[1].strip())
+                    if not git_dir.is_absolute():
+                        git_dir = (root / git_dir).resolve()
+            except OSError:
+                pass
+        lock = git_dir / "index.lock"
+        if not lock.exists():
+            self._json({"ok": True, "removed": False, "message": "No .git/index.lock file is present."})
+            return
+        if shutil.which("lsof"):
+            try:
+                in_use = subprocess.run(["lsof", str(lock)], capture_output=True, text=True, timeout=10)
+                if in_use.returncode == 0 and in_use.stdout.strip():
+                    raise UIError("A git process is currently using .git/index.lock. Wait for it to finish before removing the lock.", HTTPStatus.CONFLICT)
+            except subprocess.TimeoutExpired:
+                raise UIError("Timed out checking whether .git/index.lock is in use.", HTTPStatus.GATEWAY_TIMEOUT)
+        try:
+            lock.unlink(missing_ok=True)
+        except OSError as exc:
+            raise UIError(f"Could not remove {lock}: {exc}") from exc
+        if shutil.which("git"):
+            status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True, timeout=15)
+            if status.returncode != 0:
+                detail = (status.stderr or status.stdout).strip()
+                raise UIError(f"Removed .git/index.lock, but git status failed: {detail}")
+        self._audit("git_unlock_index")
+        self._json({"ok": True, "removed": True, "message": "Removed stale .git/index.lock and verified the Git index."})
 
     def _git_prune_worktrees(self, root: Path) -> None:
         if not shutil.which("git"):

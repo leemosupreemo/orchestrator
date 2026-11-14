@@ -359,3 +359,19 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
         self.assertIn('fullText.includes("oauth session expired")', app)
         self.assertIn('title: "AI sign-in expired"', app)
         self.assertIn('href="#/config/ai">Open AI tools</a>', app)
+
+    def test_diverged_branch_error_shows_sync_guidance(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('fullText.includes("local and remote commits have diverged")', app)
+        self.assertIn('title: "Branch out of sync with remote"', app)
+        self.assertIn('guidance.title.includes("sync")', app)
+
+    def test_git_index_lock_offers_modal_confirmed_recovery(self):
+        app = APP.read_text(encoding="utf-8")
+        srv = (APP.parents[3] / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
+        self.assertIn('data-recover="git-unlock-index"', app)
+        self.assertIn('data-recover-confirm="Remove stale .git/index.lock?"', app)
+        self.assertIn('formDialog(btn.dataset.recoverConfirm', app)
+        self.assertIn('elif action == "git-unlock-index":', srv)
+        self.assertIn('["lsof", str(lock)]', srv)
+        self.assertIn('["git", "-C", str(root), "status", "--porcelain"]', srv)
