@@ -12124,7 +12124,7 @@ function runFailureGuidance(r) {
       isGhAuth: true,
       title: "GitHub authentication required",
       detail: "GitHub CLI is not signed in on this Mac. Sign in to GitHub or run 'gh auth login --web' in Terminal.",
-      action: `<a class="btn small primary" href="#/config/integrations">Sign in to GitHub</a>`,
+      action: `<a class="btn small primary" href="#/git">Sign in to GitHub</a>`,
       secondary: `<button type="button" class="btn small ghost" data-copy="gh auth login --web">Copy gh command</button>`,
     };
   }
@@ -12229,18 +12229,24 @@ function runFailureGuidance(r) {
 
   if (r.action === "distribute" || r.action === "deliver") {
     if (lower.includes("configuration is incomplete") || lower.includes("not set") || lower.includes("configure signing") || lower.includes("development_team") || lower.includes("provisioning_profile")) {
+      // The App Store Connect key can be set up, found or copied from App delivery's Signing card. The Team ID, method and
+      // provisioning profile have no screen in the web app: they come from the setup wizard in a terminal on that computer.
+      const keyProblem = /app store connect (api )?key|AuthKey_|\.private_keys|secure xcode directory/i.test(err);
+      const retry = targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : `<button type="button" class="btn small" ${act(r.action || "distribute")}>Retry distribution</button>`;
       return {
-        title: "Distribution signing incomplete",
+        title: keyProblem ? "The signing key needs attention" : "Distribution signing incomplete",
         detail: err || "Apple Development Team or provisioning profile is not configured in project settings.",
-        action: `<a class="btn small primary" href="#/config/integrations">Configure Apple Signing</a>`,
-        secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : `<button type="button" class="btn small" ${act(r.action || "distribute")}>Retry distribution</button>`,
+        action: keyProblem
+          ? `<a class="btn small primary" href="#/delivery">Open signing setup</a>`
+          : `<button type="button" class="btn small primary" data-copy="orchestrator wizard">Copy the wizard command</button>`,
+        secondary: keyProblem ? retry : `<a class="btn small" href="#/delivery">Open App delivery</a> ${retry}`,
       };
     }
     if (lower.includes("firebase") && (lower.includes("not configured") || lower.includes("credentials") || lower.includes("app id") || lower.includes("permission"))) {
       return {
         title: "Firebase distribution issue",
         detail: err || "Firebase credentials or distribution app ID are not configured or lacked permission.",
-        action: `<a class="btn small primary" href="#/config/integrations">Configure Firebase</a>`,
+        action: `<a class="btn small primary" href="#/config/firebase">Configure Firebase</a>`,
         secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : `<button type="button" class="btn small" ${act(r.action || "distribute")}>Retry distribution</button>`,
       };
     }

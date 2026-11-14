@@ -518,5 +518,61 @@ class SupportedPlatformsClaimTests(unittest.TestCase):
             self.assertNotIn("Mac or Linux", (static_docs / name).read_text(), name)
 
 
+class FailureCardLinkTests(unittest.TestCase):
+    """A failed distribution must send the person somewhere that can fix it. "Configure Apple Signing" once linked to
+    #/config/integrations, which isn't a page, so Configuration's index opened and nothing was fixed."""
+
+    STATIC = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+
+    def test_every_configuration_link_in_the_app_is_a_page_that_exists(self):
+        linked = set(re.findall(r"#/config/([a-z0-9-]+)", (self.STATIC / "app.js").read_text()))
+        pages = set(re.findall(r'route: "#/config/([a-z0-9-]+)"', (self.STATIC / "configuration.js").read_text()))
+        self.assertTrue(linked)
+        self.assertEqual(sorted(linked - pages), [], "linked from the app but not a Configuration page")
+
+    def guidance(self, run: dict) -> dict:
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node.js required")
+        script = """
+const fs = require('fs');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+globalThis.act = (action, obj) => `data-action="${action}"`;
+globalThis.esc = (s) => s;
+eval(code.slice(code.indexOf('function runFailureGuidance'), code.indexOf('function runStatus')));
+console.log(JSON.stringify(runFailureGuidance(JSON.parse(process.argv[2]))));
+"""
+        done = subprocess.run(["node", "-e", script, str(self.STATIC / "app.js"), json.dumps(run)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def failed(self, error: str) -> dict:
+        return self.guidance({"action": "distribute", "exit_code": 1, "error_summary": error})
+
+    def test_a_key_that_is_not_on_this_computer_opens_the_signing_card_not_a_configuration_page(self):
+        for error in ("Distribution configuration is incomplete: - The App Store Connect key for this project isn't on this computer.",
+                      "Distribution configuration is incomplete: - App Store Connect API key path '/x/.private_keys/AuthKey_ABC123DEFG.p8' is not in a designated secure Xcode directory."):
+            with self.subTest(error=error[:60]):
+                card = self.failed(error)
+                self.assertEqual(card["title"], "The signing key needs attention")
+                self.assertIn('href="#/delivery"', card["action"])
+                self.assertIn("Open signing setup", card["action"])
+                self.assertIn("Retry distribution", card["secondary"])
+
+    def test_a_missing_team_id_says_the_wizard_is_the_way_and_copies_its_command(self):
+        card = self.failed("Distribution configuration is incomplete: - Apple Development Team ID (development_team) is not set.")
+        self.assertEqual(card["title"], "Distribution signing incomplete")
+        self.assertIn('data-copy="orchestrator wizard"', card["action"])
+        self.assertIn('href="#/delivery"', card["secondary"])
+        self.assertNotIn("#/config/integrations", json.dumps(card))
+
+    def test_the_firebase_and_github_cards_link_to_pages_that_exist(self):
+        firebase = self.failed("Firebase credentials are not configured for this app id")
+        self.assertIn('href="#/config/firebase"', firebase["action"])
+        github = self.guidance({"action": "new_job", "exit_code": 1, "error_summary": "You are not logged into any GitHub hosts. Run gh auth login"})
+        self.assertIn('href="#/git"', github["action"])
+
+
 if __name__ == "__main__":
     unittest.main()
