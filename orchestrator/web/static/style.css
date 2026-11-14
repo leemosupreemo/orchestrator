@@ -35,7 +35,8 @@
   /* Type roles: every piece of text uses one of these sizes and weights (docs/web-ui-conventions.md). */
   --type-display: 28px;   /* sign-in and empty-state heroes */
   --type-page: 22px;      /* the page title */
-  --type-home: 24px;      /* Home's title, the project's name: the page title plus 10% */
+  --type-title: calc(var(--type-page) * 1.1);   /* the title in the top bar: 10% over --type-page (the line under it is not) */
+  --type-home: calc(var(--type-title) * 1.1);   /* Home's title, the project's name: 10% over the other top bar titles */
   --type-section: 18px;   /* card titles */
   --type-body: 15px;      /* running text, field labels (medium), subsection titles (bold) */
   --type-secondary: 13px; /* page subtitle, row meta, hints, explanations, timestamps */
@@ -207,7 +208,7 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 .topbar { --back-w: var(--control-sm); }
 .topbar-text { min-width: 0; }
 .topbar-text:has(.back-link:not([hidden])) .sub { padding-left: calc(var(--back-w) - var(--space-1) + var(--space-2)); } /* beside the title, not under the arrow */
-.topbar h1 { font-size: var(--type-page); font-weight: var(--weight-bold); }
+.topbar h1 { font-size: var(--type-title); font-weight: var(--weight-bold); }
 body.signin-gate .topbar { display: none !important; }
 body.signin-gate .mobile-header-start .nav-toggle { visibility: hidden; pointer-events: none; }
 body.signin-gate .sidebar > .brand { visibility: hidden; }

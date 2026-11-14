@@ -183,7 +183,10 @@ class ProjectKindTests(unittest.TestCase):
         self.assertIn('renderProjectSelect($(".home-project-select"))', app)
         self.assertIn('e.target.matches("#project-select, .home-project-select, .mobile-project-select")', app)
         self.assertIn('body[data-page="home"] #page-title { font-size: var(--type-home); }', css)
-        self.assertIn('--type-home: 24px;', css)
+        # Top bar titles are the page size plus 10% (the line under them is not), and Home's is 10% over that
+        self.assertIn('--type-title: calc(var(--type-page) * 1.1);', css)
+        self.assertIn('--type-home: calc(var(--type-title) * 1.1);', css)
+        self.assertIn('.topbar h1 { font-size: var(--type-title); font-weight: var(--weight-bold); }', css)
         # No page heading on Product, Activity or Tests: the sidebar and the tab already say where you are
         self.assertIn('body[data-page="product"] #page-title, body[data-page="activity"] #page-title, body[data-page="tests"] #page-title { display: none; }', css)
 
