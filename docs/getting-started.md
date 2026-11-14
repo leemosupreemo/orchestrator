@@ -4,7 +4,7 @@ Orchestrator coordinates AI coding workflows from a terminal console. It turns f
 
 ## Use the Web App 🌐
 
-The quickest way in, on a Mac or Linux computer:
+The quickest way in, on your Mac:
 
 ```bash
 curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh

@@ -1,16 +1,15 @@
 """Run `orchestrator ui --tunnel` in the background, starting at login and restarting if it stops, so this computer
 stays reachable from the hosted app without a terminal left open.
 
-macOS uses a launchd agent (~/Library/LaunchAgents), Linux a systemd user unit. Both start the same command in a
-neutral working directory, so the server opens the project you last used (the active project) rather than whatever
-folder `install` was run from; switching projects in the web app carries over to the next start.
+Orchestrator runs on a Mac, so this is a launchd agent (~/Library/LaunchAgents). It starts the command in a neutral
+working directory, so the server opens the project you last used (the active project) rather than whatever folder
+`install` was run from; switching projects in the web app carries over to the next start.
 """
 from __future__ import annotations
 
 import os
 import plistlib
 import platform
-import shlex
 import subprocess
 import sys
 import time
@@ -21,7 +20,6 @@ from typing import Callable
 from orchestrator.project_config import DEFAULT_RUNTIME_DIRNAME, active_project_root, find_project_root, load_recent_projects, safe_resolve, user_state_dir
 
 LABEL = "com.orchestrator.ui"
-UNIT = "orchestrator-ui.service"
 RESTART_DELAY_SECONDS = 30  # between restarts, so a server that can't start doesn't spin
 
 
@@ -85,10 +83,6 @@ def launch_agents_dir() -> Path:
     return Path.home() / "Library" / "LaunchAgents"
 
 
-def systemd_user_dir() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user"
-
-
 def render_launchd(spec: Spec) -> bytes:
     return plistlib.dumps({
         "Label": LABEL,
@@ -101,31 +95,6 @@ def render_launchd(spec: Spec) -> bytes:
         "StandardOutPath": str(spec.log),
         "StandardErrorPath": str(spec.log),
     })
-
-
-def _systemd_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
-
-
-def render_systemd(spec: Spec) -> str:
-    env = "\n".join(f"Environment={_systemd_quote(f'{k}={v}')}" for k, v in spec.environment.items())
-    return f"""[Unit]
-Description=Orchestrator web server and tunnel
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart={" ".join(_systemd_quote(part) for part in spec.argv)}
-WorkingDirectory={spec.workdir}
-{env}
-Restart=always
-RestartSec={RESTART_DELAY_SECONDS}
-StandardOutput=append:{spec.log}
-StandardError=append:{spec.log}
-
-[Install]
-WantedBy=default.target
-"""
 
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -147,13 +116,14 @@ def _domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def definition_path(system: str) -> Path:
-    return launch_agents_dir() / f"{LABEL}.plist" if system == "Darwin" else systemd_user_dir() / UNIT
+def definition_path(system: str = "Darwin") -> Path:
+    return launch_agents_dir() / f"{LABEL}.plist"
 
 
 def _check_system(system: str) -> None:
-    if system not in ("Darwin", "Linux"):
-        raise ServiceError("Running in the background is supported on macOS and Linux. On Windows, keep `orchestrator ui --tunnel` open.")
+    if system != "Darwin":
+        raise ServiceError("Orchestrator runs on a Mac, so running it in the background is only supported on macOS. "
+                           "Use it from this computer's browser, phone or tablet once it is running on your Mac.")
 
 
 # -- install, uninstall, status
@@ -164,11 +134,7 @@ def adopt_service_url(path: Path, system: str) -> str:
     adopted = ""
     token = None
     try:
-        if system == "Darwin":
-            argv = plistlib.loads(path.read_bytes()).get("ProgramArguments", [])
-        else:
-            line = next(line for line in path.read_text().splitlines() if line.startswith("ExecStart="))
-            argv = shlex.split(line.split("=", 1)[1])
+        argv = plistlib.loads(path.read_bytes()).get("ProgramArguments", [])
         for index, arg in enumerate(argv):
             value = arg.split("=", 1)[1] if arg.startswith("--public-url=") else (argv[index + 1] if arg == "--public-url" and index + 1 < len(argv) else "")
             if endpoint_url(value):
@@ -176,7 +142,7 @@ def adopt_service_url(path: Path, system: str) -> str:
             credential = arg.split("=", 1)[1] if arg.startswith("--tunnel-token=") else (argv[index + 1] if arg == "--tunnel-token" and index + 1 < len(argv) else None)
             if credential:
                 token = credential
-    except (OSError, ValueError, TypeError, StopIteration, plistlib.InvalidFileException):
+    except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
         pass
     if token is not None:
         ConnectionStore().configure("cloudflare", adopted, token=token)
@@ -201,15 +167,9 @@ def install(spec: Spec, system: str | None = None, run: Runner = subprocess.run)
     adopt_service_url(path, system)
     path.parent.mkdir(parents=True, exist_ok=True)
     notes = [f"Opens {project.name} ({project}) at login; the last project you used from the web app carries over."]
-    if system == "Darwin":
-        path.write_bytes(render_launchd(spec))
-        _run(run, "launchctl", "bootout", f"{_domain()}/{LABEL}", check=False)  # replace one that's already loaded
-        _run(run, "launchctl", "bootstrap", _domain(), str(path), bootstrap_retries=2)
-    else:
-        path.write_text(render_systemd(spec))
-        _run(run, "systemctl", "--user", "daemon-reload")
-        _run(run, "systemctl", "--user", "enable", "--now", UNIT)
-        notes.append("To keep it running when you're logged out: loginctl enable-linger $USER")
+    path.write_bytes(render_launchd(spec))
+    _run(run, "launchctl", "bootout", f"{_domain()}/{LABEL}", check=False)  # replace one that's already loaded
+    _run(run, "launchctl", "bootstrap", _domain(), str(path), bootstrap_retries=2)
     if spec.keep_awake:
         notes.append("This computer won't go to sleep from idleness while it runs (the screen still turns off).")
     notes.append(f"Log: {spec.log}")
@@ -223,13 +183,8 @@ def uninstall(system: str | None = None, run: Runner = subprocess.run) -> bool:
     path = definition_path(system)
     if not path.exists():
         return False
-    if system == "Darwin":
-        _run(run, "launchctl", "bootout", f"{_domain()}/{LABEL}", check=False)
-    else:
-        _run(run, "systemctl", "--user", "disable", "--now", UNIT, check=False)
+    _run(run, "launchctl", "bootout", f"{_domain()}/{LABEL}", check=False)
     path.unlink()
-    if system == "Linux":
-        _run(run, "systemctl", "--user", "daemon-reload", check=False)
     return True
 
 
@@ -240,15 +195,10 @@ def status(system: str | None = None, run: Runner = subprocess.run) -> dict[str,
     installed = definition_path(system).exists()
     if not installed:
         return {"installed": False, "running": False, "detail": "Not installed."}
-    if system == "Darwin":
-        result = _run(run, "launchctl", "print", f"{_domain()}/{LABEL}", check=False)
-        text = result.stdout or ""
-        running = result.returncode == 0 and "state = running" in text
-        pid = next((line.split("=")[1].strip() for line in text.splitlines() if line.strip().startswith("pid =")), "")
-        detail = f"Running (process {pid})." if running and pid else "Running." if running else (
-            "Installed but not running. It retries every 30 seconds; the log says why." if result.returncode == 0 else "Installed but not loaded.")
-    else:
-        result = _run(run, "systemctl", "--user", "is-active", UNIT, check=False)
-        running = (result.stdout or "").strip() == "active"
-        detail = "Running." if running else f"Installed but {(result.stdout or 'not running').strip()}."
+    result = _run(run, "launchctl", "print", f"{_domain()}/{LABEL}", check=False)
+    text = result.stdout or ""
+    running = result.returncode == 0 and "state = running" in text
+    pid = next((line.split("=")[1].strip() for line in text.splitlines() if line.strip().startswith("pid =")), "")
+    detail = f"Running (process {pid})." if running and pid else "Running." if running else (
+        "Installed but not running. It retries every 30 seconds; the log says why." if result.returncode == 0 else "Installed but not loaded.")
     return {"installed": True, "running": running, "detail": detail}

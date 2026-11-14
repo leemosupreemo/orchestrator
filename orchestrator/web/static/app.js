@@ -8962,11 +8962,14 @@ async function editPlatforms(current) {
     box.lastElementChild.querySelector("input")?.focus();
   };
   dlg.addEventListener("click", onAdd);
-  const values = await formDialog("Edit platforms", `
-    <p class="muted">A platform is one part of your project, like the app people use or the server behind it. Give each one a name, a kind, and the folders it covers, separated by commas. Clear a name to remove that row.</p>
+  const values = await formDialog("Change how your project is split", `
+    <p>Orchestrator split your project into parts, called platforms (the app people use, the server behind it, shared code, tooling), and counts the tests for each part separately.</p>
+    <p class="muted">Change this only if a part looks wrong: a server counted as part of the app, a cloned repository labelled the wrong kind, or two things lumped into one. It only changes how the test numbers are grouped. It doesn't touch your code or how tests run.</p>
+    <div class="plat-edit-head" aria-hidden="true"><span>Name</span><span>What it is</span><span>Folders it covers, separated by commas</span></div>
     <div id="platform-rows" class="stack gap-8">${rows}</div>
-    <div><button type="button" class="btn small ghost" id="platform-add-row">Add platform</button></div>
-    <label class="yolo-switch"><input type="checkbox" role="switch" name="reset"><span>Go back to finding platforms automatically from the folders</span></label>
+    <div><button type="button" class="btn small ghost" id="platform-add-row">Add another part</button></div>
+    <p class="muted t-secondary">To remove a part, clear its name.</p>
+    <label class="yolo-switch"><input type="checkbox" role="switch" name="reset"><span>Go back to finding the parts automatically from your folders</span></label>
   `, "Save");
   dlg.removeEventListener("click", onAdd);
   return values;
@@ -9017,9 +9020,11 @@ function platformCoverageHtml(data) {
   const owner = state.you?.role !== "member";
   const custom = platforms.some((p) => p.detected === false);
   return `<section class="card mb-16" id="platform-coverage"><div class="card-h"><h2>Test coverage by platform <span class="pill" title="${custom ? "You named these platforms yourself." : "Worked out from your folders."}">${custom ? "Custom" : "Automatic"}</span></h2>
-      <div class="row gap-8">${owner ? `<button type="button" class="btn small ghost" id="edit-platforms" title="Rename the platforms, change their kind, or choose which folders belong to each.">Edit platforms</button>` : ""}</div></div>
+    </div>
     <div class="card-b stack gap-12">
+      <p class="muted t-secondary m-0">Your project split into parts, with test numbers for each.</p>
       <div class="stack gap-16">${rows}</div>
+      <p class="muted t-secondary m-0" id="platform-split-note">${custom ? "You set these parts yourself." : "Found automatically from your folders."}${owner ? ` Does a part look wrong? <button type="button" class="linklike" id="edit-platforms" title="Rename the parts, change what each one is, or choose which folders belong to it.">Change how it's split</button>` : ""}</p>
       <details class="setup-legend"><summary>How is this worked out?</summary>
         <p class="muted">Each part of your project is a platform: the client app, the server, shared code, tooling. They are found from your folders, and you can name them yourself with <code>platforms</code> in <code>.orchestrator/project.json</code>. A file counts as having a test when a test mentions it by name. That shows where tests exist and where none do, but it isn't line coverage. <strong>Calculate</strong> in the Coverage card above runs your tests under a coverage tool (.NET and Python) and shows the lines that really ran here, which is the number to trust where it exists. Names that many files share are ignored, so a vague match doesn't count.</p></details>
     </div></section>`;

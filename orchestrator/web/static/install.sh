@@ -27,11 +27,8 @@ run() {
 }
 fail() { printf '\nSetup stopped: %s\n' "$1" >&2; exit 1; }
 
-OS="$(uname -s)"
-case "$OS" in
-  Darwin|Linux) ;;
-  *) fail "this installer supports macOS and Linux. On Windows, install Orchestrator from a WSL terminal." ;;
-esac
+# Orchestrator runs on a Mac (it builds and tests iOS, Android and web projects from there).
+[ "$(uname -s)" = Darwin ] || fail "Orchestrator runs on a Mac, and this installer is for macOS only. Run it on a Mac; you can then use it from any browser, phone or tablet."
 
 # The newest Python that is 3.11 or later, or nothing.
 find_python() {
@@ -51,38 +48,30 @@ brew_install() {
 say "Checking this computer"
 PYTHON="$(find_python || true)"
 if [ -z "$PYTHON" ]; then
-  if [ "$OS" = Darwin ]; then
-    brew_install "Python 3.11 or later" python@3.12
-    PYTHON="$(find_python || true)"
-  fi
+  brew_install "Python 3.11 or later" python@3.12
+  PYTHON="$(find_python || true)"
   [ "$DRY" = 1 ] && PYTHON="${PYTHON:-python3}"
   [ -n "$PYTHON" ] || fail "Python 3.11 or later is needed. Install it (https://www.python.org/downloads/), then run this again."
 fi
 echo "    Python: $PYTHON"
 
 if ! have git; then
-  if [ "$OS" = Darwin ]; then
-    say "Git is missing"
-    run xcode-select --install || true
-    fail "finish installing the Command Line Tools in the window that opened, then run this again."
-  fi
-  fail "Git is missing. Install it with your package manager (for example: sudo apt install git), then run this again."
+  say "Git is missing"
+  run xcode-select --install || true
+  fail "finish installing the Command Line Tools in the window that opened, then run this again."
 fi
 echo "    Git: $(command -v git)"
 
 if have cloudflared; then
   echo "    cloudflared: $(command -v cloudflared)"
-elif [ "$OS" = Darwin ]; then
+else
   say "Installing cloudflared (it makes this computer reachable from the web app)"
   brew_install cloudflared cloudflared
-else
-  echo "    cloudflared is missing. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
-  echo "    Orchestrator works without it here, but the hosted app can't reach this computer until it is installed."
 fi
 
 if ! have pipx; then
   say "Installing pipx"
-  if [ "$OS" = Darwin ] && have brew; then
+  if have brew; then
     run brew install pipx
   else
     run "$PYTHON" -m pip install --user pipx

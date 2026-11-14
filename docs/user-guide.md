@@ -6,7 +6,7 @@ If you are new to Orchestrator, start with [Getting Started](getting-started.md)
 
 ## Install
 
-Quickest, on a Mac or Linux computer: one command installs what's missing, installs Orchestrator, adds the computer to your account and starts it at login (see [Web UI](#web-ui) for what that gives you):
+Quickest, on your Mac: one command installs what's missing, installs Orchestrator, adds the computer to your account and starts it at login (see [Web UI](#web-ui) for what that gives you):
 
 ```bash
 curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh
@@ -731,7 +731,7 @@ Every action runs the same CLI command you would type, inside a real terminal th
 
 Use it from anywhere:
 
-Quickest on a Mac or Linux computer: run `curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh`. It installs what's missing (Python 3.11+, Git, pipx, cloudflared), installs Orchestrator, shows the code to confirm, and starts Orchestrator at login. Add `--no-service` to skip the login start, or `--dry-run` to only print what it would do. The steps below do the same by hand.
+Quickest on your Mac: run `curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh`. It installs what's missing (Python 3.11+, Git, pipx, cloudflared), installs Orchestrator, shows the code to confirm, and starts Orchestrator at login. Add `--no-service` to skip the login start, or `--dry-run` to only print what it would do. The steps below do the same by hand.
 
 1. On the computer with your projects, run `orchestrator connect`. It shows a code and a link.
 2. Open the link (or go to https://swift-orch-web-20260923.web.app and enter the code), sign in with Google, and confirm. The computer is now on your account.

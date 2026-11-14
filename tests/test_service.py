@@ -44,7 +44,6 @@ class ServiceTests(unittest.TestCase):
         self.patches = [
             patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(self.state), "PATH": "/opt/homebrew/bin:/usr/bin"}),
             patch.object(service, "launch_agents_dir", return_value=self.home / "LaunchAgents"),
-            patch.object(service, "systemd_user_dir", return_value=self.home / "systemd"),
             patch.object(service, "active_project_root", return_value=self.project),
         ]
         for p in self.patches:
@@ -71,14 +70,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(plist["ProgramArguments"][:2], ["/usr/bin/caffeinate", "-i"])
         self.assertEqual(plist["ProgramArguments"][2], sys.executable)
 
-    def test_the_systemd_unit_quotes_paths_and_restarts(self):
-        unit = service.render_systemd(service.Spec(python="/opt/my python/bin/python3", workdir=Path("/home/me/.orchestrator/service"),
-                                                   log=Path("/home/me/.orchestrator/logs/service.log"), path="/usr/bin:/bin"))
-        self.assertIn('ExecStart="/opt/my python/bin/python3" "-m" "orchestrator" "ui" "--no-open" "--managed-connection"', unit)
-        self.assertIn('Environment="PATH=/usr/bin:/bin"', unit)
-        self.assertIn("Restart=always", unit)
-        self.assertIn("WantedBy=default.target", unit)
-
     def test_install_on_macos_writes_the_agent_and_loads_it(self):
         run = FakeRun()
         notes = service.install(self.spec(), system="Darwin", run=run)
@@ -102,13 +93,6 @@ class ServiceTests(unittest.TestCase):
         self.assertIn('--managed-connection', plistlib.loads(path.read_bytes())['ProgramArguments'])
         service.install(self.spec(), system='Darwin', run=FakeRun())
         self.assertEqual(ConnectionStore().data['selected'], 'funnel')
-
-    def test_install_on_linux_enables_the_unit(self):
-        run = FakeRun()
-        notes = service.install(self.spec(), system="Linux", run=run)
-        self.assertTrue((self.home / "systemd" / "orchestrator-ui.service").is_file())
-        self.assertEqual(run.calls, [["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", "orchestrator-ui.service"]])
-        self.assertTrue(any("enable-linger" in n for n in notes))
 
     def test_install_needs_a_project_to_open(self):
         with patch.object(service, "active_project_root", return_value=None):
@@ -196,10 +180,17 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(sum(call[1] == 'bootstrap' for call in run.calls), attempts)
             self.assertEqual(sleep.call_count, attempts-1)
 
-    def test_other_systems_are_told_plainly(self):
-        with self.assertRaises(service.ServiceError) as caught:
-            service.install(self.spec(), system="Windows", run=FakeRun())
-        self.assertIn("Windows", str(caught.exception))
+    def test_only_a_mac_can_run_it_in_the_background_and_anything_else_is_told_so(self):
+        """Orchestrator runs on a Mac. Linux used to get a systemd unit; it is refused like any other system now, and nothing is written."""
+        for system in ("Linux", "Windows"):
+            for action in (lambda: service.install(self.spec(), system=system, run=FakeRun()),
+                           lambda: service.uninstall(system=system, run=FakeRun()),
+                           lambda: service.status(system=system, run=FakeRun())):
+                with self.subTest(system=system), self.assertRaises(service.ServiceError) as caught:
+                    action()
+                self.assertIn("runs on a Mac", str(caught.exception))
+        self.assertFalse((self.home / "LaunchAgents").exists())
+        self.assertFalse(hasattr(service, "render_systemd"))  # no systemd unit is built any more
 
     def test_uninstall_stops_and_removes(self):
         run = FakeRun()

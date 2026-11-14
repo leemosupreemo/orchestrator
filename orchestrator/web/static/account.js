@@ -5,7 +5,7 @@
 
   const HOSTED_ORIGINS = ["https://swift-orch-web-20260923.web.app", "https://swift-orch-web-20260923.firebaseapp.com"];
   const INSTALL_COMMAND = 'pipx install "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"';
-  // One step for Mac and Linux: installs what's missing, shows the code to confirm, and starts Orchestrator at login.
+  // One step on a Mac: installs what's missing, shows the code to confirm, and starts Orchestrator at login.
   const QUICK_INSTALL_COMMAND = `curl -fsSL ${HOSTED_ORIGINS[0]}/install.sh | sh`;
   // Add a Mac (over SSH) stays hidden until signed app releases are published: install-mac.sh and releases/macos.json
   // must be in this folder first (a test holds the two together). See docs/macos-desktop.md.
