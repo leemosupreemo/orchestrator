@@ -3949,20 +3949,27 @@ pages.home = async (_, query) => {
     };
     const remoteState = (j) => {
       const st = String(j.status || "");
+      // Same grouping as the server's job_state, so a job lands in the same section wherever it runs.
       if (st === "human-needed") return { group: "needs_you", tone: "failed", label: "Stopped" };
       if (st === "review-needed") return { group: "needs_you", tone: "attention", label: "Needs review" };
       if (st === "completed") return { group: "done", tone: "done", label: "Done" };
-      if (st === "running") return { group: "working", tone: "working", label: "Running" };
-      return { group: "backlog", tone: "neutral", label: st || "Planned" };
+      if (st === "failed") return { group: "needs_you", tone: "failed", label: "Failed" };
+      if (st === "planned") return { group: "needs_you", tone: "attention", label: "Planned" };
+      if (st === "designing") return { group: "needs_you", tone: "attention", label: "Design ready" };
+      if (st === "debugging") return { group: "needs_you", tone: "attention", label: "Needs a fix" };
+      if (st === "scheduled") return { group: "working", tone: "working", label: "Queued" };
+      if (["running", "executing", "in-progress", "decomposed"].includes(st)) return { group: "working", tone: "working", label: "Running" };
+      return { group: "backlog", tone: "neutral", label: st ? st.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()) : "Planned" };
     };
-    const myRepo = normRepo(p.github_repo || p.git_remote || "");
+    const myRepo = normRepo(p.repo || p.github_repo || "");
     const myName = String(p.name || "").toLowerCase();
     let currentMachineId = "";
     try { currentMachineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
-    const { machines = [] } = await cpApi("machines").catch(() => ({ machines: [] }));
+    // The control plane is a bonus here: a slow one must not hold up the local list.
+    const { machines = [] } = await cpApi("machines", { signal: AbortSignal.timeout(3000) }).catch(() => ({ machines: [] }));
     const others = machines.filter((m) => m.id !== currentMachineId && m.has_snapshot);
-    const seen = new Set(jobs.map((j) => j.id));
-    const snaps = await Promise.all(others.map((m) => cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id } }).then((d) => ({ m, snap: d?.snapshot })).catch(() => null)));
+    const seen = new Set(jobs.concat(archivedJobs).map((j) => j.id)); // an archived job is still here: never offer it again as "on another computer"
+    const snaps = await Promise.all(others.map((m) => cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id }, signal: AbortSignal.timeout(3000) }).then((d) => ({ m, snap: d?.snapshot })).catch(() => null)));
     const out = [];
     for (const item of snaps) {
       if (!item?.snap?.recent_jobs) continue;
@@ -3970,7 +3977,8 @@ pages.home = async (_, query) => {
         const jid = rj.job_id || rj.id;
         if (!jid || seen.has(jid)) continue;
         const rRepo = normRepo(rj.repo || "");
-        const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);
+        // Same repo when both sides know theirs; folder name only when neither can tell (one side knowing is a mismatch).
+        const same = (myRepo && rRepo) ? myRepo === rRepo : (!myRepo && !rRepo && myName && String(rj.project || "").toLowerCase() === myName);
         if (!same) continue;
         seen.add(jid);
         const tasks = Array.isArray(rj.tasks) ? rj.tasks : [];
@@ -3979,7 +3987,7 @@ pages.home = async (_, query) => {
           id: jid,
           updated: Date.parse(rj.updated_at || rj.created_at || "") / 1000 || 0,
           tasks_total: rj.tasks_count || tasks.length,
-          tasks_done: tasks.filter((t) => t.status === "completed").length,
+          tasks_done: Number.isInteger(rj.tasks_done) ? rj.tasks_done : (Array.isArray(rj.completed_task_indices) ? rj.completed_task_indices.length : 0),
           state: remoteState(rj),
           remote_machine: { id: item.m.id, name: item.m.name, online: Boolean(item.m.online), reachable: Boolean(item.m.reachable) },
         });
@@ -4006,7 +4014,8 @@ pages.home = async (_, query) => {
   const filteredJobs = sortedJobs.filter((j) => !isRunningNow(j) && HOME_FILTERS[filter][1](j));
   const finishedJobs = sortedJobs.filter(isFinished);
   // What YOLO all continues is exactly the In progress list: work that is mid-build, never a job waiting for your decision.
-  const inProgress = sortedJobs.filter(HOME_FILTERS.working[1]);
+  // Local jobs only: the switch can't change a job that runs on another computer.
+  const inProgress = sortedJobs.filter((j) => !j.remote_machine && HOME_FILTERS.working[1](j));
 
   const runningBanner = runningRuns.length
     ? `<section class="card mb-16"><div class="card-h"><h2>Running now</h2><span class="count">${runningRuns.length}</span></div>
@@ -4859,7 +4868,9 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         btn.disabled = true;
         btn.textContent = `Opening ${machineLabel}…`;
         try {
-          await signInToMachine(machine);
+          const res = await signInToMachine(machine); // it moved the browser to that computer and dropped the token: keep the new one
+          localStorage.setItem("orchestrator_token", res.token);
+          await refreshState();
           location.hash = `#/jobs/${encodeURIComponent(jobId)}`;
         } catch (err) {
           toast(err.message, true);
@@ -13995,6 +14006,7 @@ function parseHash() {
 function resolveRoute() {
   const { parts, query } = parseHash();
   if (parts[0] === "jobs" && parts[1]) return { page: "job", args: [parts[1]], nav: "home", query };
+  if (parts[0] === "remote-job" && parts[1] && parts[2]) return { page: "remote-job", args: [parts[1], parts[2]], nav: "home", query };
   if (parts[0] === "runs" && parts[1]) return { page: "run", args: [parts[1]], nav: "activity", query };
   if (parts[0] === "runs") return { page: "activity", args: [], nav: "activity", query };
   if (parts[0] === "file") return { page: "file", args: [], nav: null, query };
@@ -14016,7 +14028,7 @@ function resolveRoute() {
 // Pages one level down (a job, a run, a document, a setting, a form) show "Back". It returns to the page you came
 // from in this app; opened directly (a shared link, a reload), it goes to the page's parent instead.
 function routeParent(r) {
-  if (r.page === "job" || r.page === "new" || r.page === "file") return "#/";
+  if (r.page === "job" || r.page === "remote-job" || r.page === "new" || r.page === "file") return "#/";
   if (r.page === "run") return "#/activity";
   if (r.page === "docs" && r.args[0] === "product") return "#/product";
   if (r.page === "docs" && r.args.length) return "#/";

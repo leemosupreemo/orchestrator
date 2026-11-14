@@ -407,7 +407,110 @@ class CrossMachineJobsTests(unittest.TestCase):
             self.assertEqual(saved["imported_from_machine"], "Studio Mac")
             self.assertEqual(saved["branch"], "codex/two-faction-foundation")
 
+    def test_import_carries_the_full_plan_and_every_state_field(self):
+        import tempfile
+        from unittest import mock
+        from orchestrator.web import server
+
+        tasks = [{"title": f"Task {i}", "description": f"Do step {i}"} for i in range(15)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(server.subprocess, "run"):
+                server.import_remote_job(root, {"job": {
+                    "job_id": "job-15", "status": "review-needed", "code_host": "git", "approved": True,
+                    "yolo": True, "branch": "ai/job-15", "human_clarification_question": "Which one?",
+                    "test_status": "passed", "tasks_count": 15, "tasks": tasks,
+                    "completed_task_indices": [0, 1, 2, 99, "x"],
+                }})
+            saved = json.loads((root / ".orchestrator" / "jobs" / "job-15.json").read_text())
+            self.assertEqual(len(saved["plan"]["tasks"]), 15)
+            self.assertEqual(saved["plan"]["tasks"][12]["description"], "Do step 12")
+            self.assertEqual(saved["completed_task_indices"], [0, 1, 2])  # out-of-range and non-integer entries dropped
+            self.assertEqual((saved["code_host"], saved["approved"], saved["test_status"]), ("git", True, "passed"))
+            self.assertEqual(saved["human_clarification_question"], "Which one?")
+            self.assertTrue(saved["yolo"] and saved["is_yolo"])  # the worker reads is_yolo
+
+    def test_import_refuses_a_partial_plan(self):
+        import tempfile
+        from orchestrator.web import server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(server.UIError):
+                server.import_remote_job(Path(tmp), {"job": {
+                    "job_id": "job-cut", "status": "planned", "tasks_count": 15, "tasks": [{"title": "only one"}],
+                }})
+            self.assertFalse((Path(tmp) / ".orchestrator" / "jobs" / "job-cut.json").exists())
+            # a finished job travels as counts only, and that is fine
+            server.import_remote_job(Path(tmp), {"job": {"job_id": "job-done", "status": "completed", "tasks_count": 15, "tasks": []}})
+            self.assertTrue((Path(tmp) / ".orchestrator" / "jobs" / "job-done.json").exists())
+
+    def test_import_refuses_a_job_archived_here(self):
+        import tempfile
+        from orchestrator.web import server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".orchestrator" / "jobs" / "archive"
+            archive.mkdir(parents=True)
+            original = {"job_id": "job-a", "status": "archived", "plan": {"tasks": [{"title": "kept"}]}}
+            (archive / "job-a.json").write_text(json.dumps(original))
+            with self.assertRaises(server.UIError):
+                server.import_remote_job(root, {"job": {"job_id": "job-a", "status": "planned"}})
+            self.assertFalse((root / ".orchestrator" / "jobs" / "job-a.json").exists())
+            self.assertEqual(json.loads((archive / "job-a.json").read_text()), original)
+
+    def test_import_never_hands_git_an_option_as_the_branch(self):
+        import tempfile
+        from unittest import mock
+        from orchestrator.web import server
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(server.subprocess, "run") as run:
+            res = server.import_remote_job(Path(tmp), {"job": {"job_id": "job-x", "branch": "--prune-tags"}})
+            run.assert_not_called()
+            self.assertFalse(res["fetched_branch"])
+            server.import_remote_job(Path(tmp), {"job": {"job_id": "job-y", "branch": "ai/job-y"}})
+            self.assertEqual(run.call_args.args[0], ["git", "fetch", "origin", "--", "ai/job-y"])
+
+    def test_snapshot_sends_progress_state_fields_and_the_whole_plan(self):
+        import subprocess
+        import tempfile
+        from orchestrator import account
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "remote", "add", "origin", "https://gitlab.com/Team-B/API.git"], cwd=root, check=True)
+            jobs = root / ".orchestrator" / "jobs"
+            jobs.mkdir(parents=True)
+            tasks = [{"title": f"T{i}", "description": f"d{i}"} for i in range(15)]
+            (jobs / "j1.json").write_text(json.dumps({
+                "job_id": "j1", "status": "review-needed", "code_host": "git", "approved": True,
+                "completed_task_indices": [0, 1, 2, 3, 4, 5, 6, 7], "plan": {"summary": "s", "tasks": tasks}}))
+            (jobs / "j2.json").write_text(json.dumps({"job_id": "j2", "status": "completed", "plan": {"tasks": tasks}}))
+            snap = account.build_snapshot(root=root)
+            by_id = {j["job_id"]: j for j in snap["recent_jobs"]}
+            j1 = by_id["j1"]
+            self.assertEqual((j1["tasks_count"], j1["tasks_done"], len(j1["tasks"])), (15, 8, 15))
+            self.assertEqual(j1["tasks"][14]["description"], "d14")
+            self.assertEqual((j1["code_host"], j1["approved"]), ("git", True))
+            self.assertEqual(j1["repo"], "team-b/api")  # a non-GitHub origin still gives a comparable repo
+            self.assertEqual((by_id["j2"]["tasks_count"], by_id["j2"]["tasks"]), (15, []))  # finished: counts only
+
     def test_ui_merges_remote_jobs_and_provides_handoff_page(self):
         app = APP.read_text(encoding="utf-8")
-        for bit in ('pages["remote-job"] = async', 'api("jobs/import-remote"', '#/remote-job/', 'on ${esc(j.remote_machine.name)}'):
+        for bit in ('pages["remote-job"] = async', 'api("jobs/import-remote"', '#/remote-job/', 'on ${esc(j.remote_machine.name)}',
+                    'if (parts[0] === "remote-job" && parts[1] && parts[2]) return { page: "remote-job", args: [parts[1], parts[2]], nav: "home", query };'):
             self.assertIn(bit, app)
+
+    def test_ui_remote_rows_follow_the_review_fixes(self):
+        app = APP.read_text(encoding="utf-8")
+        # "Open on <computer>" keeps the new sign-in and reloads state before navigating
+        opener = app[app.index("const res = await signInToMachine(machine); // it moved"):]
+        self.assertLess(opener.index('localStorage.setItem("orchestrator_token", res.token)'), opener.index("await refreshState()"))
+        self.assertLess(opener.index("await refreshState()"), opener.index("location.hash"))
+        # archived jobs count as present, the control plane can't stall Home, matching is by repo, yolo is local only
+        for bit in ("jobs.concat(archivedJobs)", 'cpApi("machines", { signal: AbortSignal.timeout(3000) })',
+                    "signal: AbortSignal.timeout(3000) })", "p.repo || p.github_repo", "!myRepo && !rRepo && myName",
+                    "!j.remote_machine && HOME_FILTERS.working[1](j)", "rj.tasks_done", 'st === "failed"', 'st === "scheduled"'):
+            self.assertIn(bit, app)
+        self.assertNotIn('t.status === "completed"', app[app.index("const remoteJobs"):app.index("const mergedJobs")])
