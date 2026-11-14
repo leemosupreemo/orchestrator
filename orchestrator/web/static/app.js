@@ -11670,7 +11670,7 @@ pages.projects = async () => {
 
   return {
     title: "Projects",
-    sub: "Manage and switch between codebases on this machine.",
+    sub: "",
     actions: state.you?.role !== "member" ? `
       <div class="projects-actions">
         <a class="btn primary" href="#/new-project"><svg class="icon"><use href="#i-plus"/></svg><span>Start a new project</span></a>

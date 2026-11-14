@@ -3384,7 +3384,9 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .suite-group > summary h3 { margin: 0; font-size: var(--type-body); font-weight: var(--weight-bold); overflow-wrap: anywhere; }
 
 /* Projects */
-.projects-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-4); }
+/* The heading, then the filters on a line of their own below it */
+.projects-head { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); margin-bottom: var(--space-4); }
+.projects-head .projects-filter { margin-bottom: 0; }
 .projects-head h2 { margin: 0; font-size: var(--type-body); }
 .project-card-badges { display: flex; gap: var(--space-1); align-items: center; flex-wrap: wrap; }
 .project-card:not(.active-project) .project-card-title { color: var(--accent); }

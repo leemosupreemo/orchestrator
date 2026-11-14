@@ -85,6 +85,25 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ProjectsPageHeaderTests(unittest.TestCase):
+    """The Projects page: no sentence under the title, and the filters (All, GitHub, Other Git hosts, On this computer) on a line
+    of their own below "Your projects" instead of beside it."""
+
+    def test_there_is_no_line_under_the_title(self):
+        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
+        app = (static / "app.js").read_text()
+        self.assertNotIn("Manage and switch between codebases", app)
+        view = app[app.index('title: "Projects",'):]
+        self.assertTrue(view.startswith('title: "Projects",\n    sub: "",'))
+
+    def test_the_filters_sit_under_the_heading(self):
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        rule = css[css.index(".projects-head {"):].splitlines()[0]
+        self.assertIn("flex-direction: column", rule)
+        self.assertIn("align-items: flex-start", rule)
+        self.assertNotIn("space-between", rule)  # not pushed to the far side of the heading
+
+
 class ProjectKindTests(unittest.TestCase):
     """Projects are labelled Web, Desktop or Mobile wherever they're named."""
 
