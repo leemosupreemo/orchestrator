@@ -962,7 +962,7 @@ class ProjectTitleTests(unittest.TestCase):
 class ProductStripTests(unittest.TestCase):
     def test_the_card_itself_opens_the_product_requirements(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        strip = js[js.index("function productStripHtml"):][:1400]
+        strip = js[js.index("function productStripHtml"):js.index("pages.product =")]  # every state of the card
         self.assertIn('<h2><a class="card-title-link" href="#/product">Product</a></h2>', strip)
         self.assertIn('<a class="product-pitch" href="#/product"', strip)
         self.assertNotIn(">Open</a>", strip)  # no separate Open link

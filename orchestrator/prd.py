@@ -42,6 +42,7 @@ DESIGNS_DIR = "docs/product/designs"
 SOURCES_DIR = "docs/product/source"  # a detailed document the person imported: kept whole, beside the short summaries
 SOURCES_HEADING = "## Source documents"
 MAX_DOC_CHARS = 100_000
+OUTSIDE_EDIT_SLACK = 60  # seconds: a file this much newer than the last recorded change was edited outside Orchestrator
 MAX_VERSIONS = 60
 MAX_IMPORT_CHARS = 40_000
 
@@ -548,9 +549,25 @@ class Prd:
     def sections(self) -> list[dict[str, Any]]:
         return sections_view(self.read())
 
+    def last_change(self) -> dict[str, Any] | None:
+        """When the document last changed and by what: the newest history entry (you, an automatic update after a job, AI help, a
+        draft, an import...), or "outside" when the file is newer than anything recorded, which is an edit made in another
+        editor or a pulled change. None when there is no document yet."""
+        versions = self._versions()
+        latest = versions[-1] if versions else None
+        try:
+            modified = self.path.stat().st_mtime
+        except OSError:
+            modified = None
+        if latest is not None and (modified is None or modified <= float(latest.get("at") or 0) + OUTSIDE_EDIT_SLACK):
+            return {"at": latest["at"], "source": latest.get("source") or "you", "summary": latest.get("summary") or "", "job": latest.get("job") or ""}
+        if modified is not None:
+            return {"at": modified, "source": "outside", "summary": "Edited outside Orchestrator", "job": ""}
+        return None
+
     def overview(self) -> dict[str, Any]:
         text = self.read()
-        return {"exists": text is not None, "text": text if text is not None else template(), "sections": sections_view(text),
+        return {"exists": text is not None, "text": text if text is not None else template(), "sections": sections_view(text), "updated": self.last_change(),
                 "sources": sources(text), "auto_update": self.auto_update(), "breakdown_offered": self.breakdown_offered(), "notice": self.notice(), "path": PATH, "can_draft": can_draft(self.root),
                 "history": self.history(), "shared": True, "shared_path": str(self.path)}
 

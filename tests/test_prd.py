@@ -616,5 +616,72 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertFalse(prd.should_check({"type": "feature-plan", "prd_checked": True}))
 
 
+class LastChangeTests(unittest.TestCase):
+    """When the document last changed and by what, for Home: the newest history entry, or an edit made outside Orchestrator."""
+
+    def save(self, doc, text, source, summary, at, job=""):
+        """A write at a pretend time: the history says `at`, and so does the file, as in real use (they are written together)."""
+        import os
+        with patch.object(prd, "_now", return_value=at):
+            doc.write(text, source, summary, job=job)
+        os.utime(doc.path, (at, at))
+
+    def test_no_document_yet_has_no_last_change(self):
+        tmp, root, doc = project()
+        with tmp:
+            self.assertIsNone(doc.last_change())
+            self.assertIsNone(doc.overview()["updated"])
+
+    def test_a_change_you_make_says_so_and_carries_its_time(self):
+        tmp, root, doc = project()
+        with tmp:
+            self.save(doc, FILLED, "you", "Wrote the pitch", 1_000_000.0)
+            change = doc.last_change()
+            self.assertEqual((change["source"], change["at"], change["summary"], change["job"]), ("you", 1_000_000.0, "Wrote the pitch", ""))
+            self.assertEqual(doc.overview()["updated"], change)
+
+    def test_an_automatic_update_after_a_job_is_recorded_as_the_ais_with_its_job(self):
+        tmp, root, doc = project()
+        with tmp:
+            self.save(doc, FILLED, "you", "Wrote it", 1_000_000.0)
+            self.save(doc, FILLED + "\n\nAlso: a scoreboard.", "auto", "Added the scoreboard", 1_000_500.0, job="job-7")
+            change = doc.last_change()
+            self.assertEqual((change["source"], change["at"], change["job"]), ("auto", 1_000_500.0, "job-7"))
+
+    def test_the_newest_change_wins_over_older_ones(self):
+        tmp, root, doc = project()
+        with tmp:
+            self.save(doc, FILLED, "auto", "Updated", 1_000_000.0, job="job-1")
+            self.save(doc, FILLED + "\n\nMore.", "you", "Edited the pitch", 1_002_000.0)
+            self.assertEqual(doc.last_change()["source"], "you")
+
+    def test_a_file_edited_in_another_editor_is_reported_as_edited_outside(self):
+        import os
+        tmp, root, doc = project()
+        with tmp:
+            self.save(doc, FILLED, "you", "Wrote it", 1_000_000.0)
+            os.utime(doc.path, (1_000_000.0 + 3600, 1_000_000.0 + 3600))  # touched an hour after the last recorded change
+            change = doc.last_change()
+            self.assertEqual((change["source"], change["at"], change["job"]), ("outside", 1_000_000.0 + 3600, ""))
+
+    def test_the_files_own_write_time_is_not_mistaken_for_an_outside_edit(self):
+        import os
+        tmp, root, doc = project()
+        with tmp:
+            self.save(doc, FILLED, "auto", "Updated", 1_000_000.0, job="job-1")
+            os.utime(doc.path, (1_000_030.0, 1_000_030.0))  # 30 s later: inside the slack for writing the file and its record
+            self.assertEqual(doc.last_change()["source"], "auto")
+
+    def test_a_document_with_no_history_reports_its_file_time(self):
+        import os
+        tmp, root, doc = project()
+        with tmp:
+            doc.path.parent.mkdir(parents=True, exist_ok=True)
+            doc.path.write_text(FILLED)
+            os.utime(doc.path, (1_000_000.0, 1_000_000.0))
+            change = doc.last_change()
+            self.assertEqual((change["source"], change["at"]), ("outside", 1_000_000.0))
+
+
 if __name__ == "__main__":
     unittest.main()

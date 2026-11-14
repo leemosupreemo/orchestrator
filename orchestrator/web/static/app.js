@@ -3838,7 +3838,7 @@ pages.home = async (_, query) => {
     status: homeHealthIndicator(setupState),
     html: `
       ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
-      ${product && !product.sections.some((x) => x.filled) ? productStripHtml(product) : ""}
+      ${product ? productStripHtml(product, jobs) : ""}
 
       ${runningBanner}
 
@@ -7763,14 +7763,53 @@ function prdModelField(p, id) {
   return `<label class="field"><span>AI model</span><select id="${esc(id)}" name="model" class="prd-model-select">${models.map(m => `<option value="${esc(m.id)}"${m.id === p.model ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}</select></label>`;
 }
 
-function productStripHtml(p) {
-  const lead = p.sections.find((x) => x.id === "pitch" && x.filled) || p.sections.find((x) => x.filled);
+// Who last changed the product requirements, in words, for the line on Home. Changes the AI made are said so.
+const PRD_ACTOR = {
+  auto: (job) => `by AI after ${job ? `“${job}”` : "a job"}`, ai: () => "with AI help", draft: () => "drafted by AI",
+  reverse: () => "by AI, from the finished app", you: () => "by you", import: () => "imported", revert: () => "restored from an earlier version",
+  answers: () => "from your answers", outside: () => "edited outside Orchestrator", migration: () => "", earlier: () => "",
+};
+
+// "today, 7:02 PM", "yesterday, 7:02 PM", "Nov 12" (with the year when it isn't this one).
+function prdWhen(ts, now = new Date()) {
+  const d = new Date(ts * 1000);
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const apart = Math.round((day(now) - day(d)) / 86400000);
+  if (apart === 0) return `today, ${time}`;
+  if (apart === 1) return `yesterday, ${time}`;
+  return d.toLocaleDateString(undefined, d.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+}
+
+function prdUpdatedLine(updated, jobs = []) {
+  if (!updated?.at) return "";
+  const title = updated.job ? (jobs.find((j) => j.id === updated.job)?.title || "") : "";
+  const who = (PRD_ACTOR[updated.source] || (() => ""))(title);
+  return `<span class="muted t-secondary product-updated" title="${esc(new Date(updated.at * 1000).toLocaleString())}">Last updated ${esc(prdWhen(updated.at))}${who ? ` · ${esc(who)}` : ""}</span>`;
+}
+
+// Home's Product card, in every state: nothing written yet (the prompt and ways to start), partly written (what's still missing and a
+// way to finish), and complete (the pitch). The last change, and whether the AI made it, is always shown once there is something.
+function productStripHtml(p, jobs = []) {
+  const sections = p.sections || [];
+  const filled = sections.filter((x) => x.filled);
+  const missing = sections.filter((x) => !x.filled);
+  const lead = sections.find((x) => x.id === "pitch" && x.filled) || filled[0];
   // The heading and the pitch open the product requirements. Its buttons stay secondary: New job is Home's one primary.
-  return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2></div>
+  if (!lead) {
+    return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2></div>
     <div class="card-b stack">
-      ${lead ? `<a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>`
-        : `<p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
-           <div class="row gap-12 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a><a class="btn small" href="#/product?reverse=1" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</a></div>`}
+      <p>Tell us what you're building, in a few sentences. Every job reads this first, and it stays up to date as you build.</p>
+      <div class="row gap-12 align-center wrap">${p.can_draft ? `<a class="btn small" href="#/product?draft=1">Draft with AI</a>` : ""}<a class="btn small" href="#/product">Write it</a><a class="btn small" href="#/product?import=1">Import PRD</a><a class="btn small" href="#/product?reverse=1" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</a></div>
+    </div></section>`;
+  }
+  const still = missing.length
+    ? `${filled.length} of ${sections.length} sections filled in. Still to fill in: ${missing.slice(0, 3).map((x) => x.title).join(", ")}${missing.length > 3 ? ` and ${missing.length - 3} more` : ""}.` : "";
+  return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2>${prdStatusPill(sections)}</div>
+    <div class="card-b stack gap-8">
+      <a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>
+      ${still ? `<p class="muted t-secondary m-0">${esc(still)}</p>` : ""}
+      <div class="row gap-12 align-center wrap">${prdUpdatedLine(p.updated, jobs)}${missing.length ? `<span class="spacer"></span><a class="btn small" href="#/product">Finish it</a>` : ""}</div>
     </div></section>`;
 }
 
