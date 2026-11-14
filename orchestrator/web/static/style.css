@@ -5080,3 +5080,10 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .signin-platforms { margin: 0; text-align: center; color: var(--muted); font-size: var(--type-secondary); line-height: 1.8; }
 .signin-platform { white-space: nowrap; color: var(--text); font-weight: var(--weight-medium); }
 .signin-platform .icon { position: static; display: inline-block; width: 1.15em; height: 1.15em; vertical-align: -0.2em; margin-right: 0.25em; }
+
+/* App delivery: everything that has to be set before a build can be sent, in one container. What is still to do is on top;
+   what is already set sits under "Already set up", and once nothing is left the container is a single quiet line. */
+.prereqs .card { margin-bottom: 0; box-shadow: none; }
+.prereqs > .card-b { padding-top: var(--space-2); }
+.prereq-done > summary { cursor: pointer; padding: var(--space-1) 0; }
+.prereq-done-list > * { opacity: .92; }

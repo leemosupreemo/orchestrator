@@ -5948,12 +5948,15 @@ function signingRowHtml(item, owner) {
       ${hint ? `<p class="muted t-secondary m-0">${esc(hint)}</p>` : ""}</div>`;
 }
 
-async function loadSigningCard(box) {
+// `onState(ready)`: true when everything signing needs is in place, false when something is still to do, null when it doesn't apply.
+async function loadSigningCard(box, onState = () => {}) {
   if (!box) return;
   const draw = (view) => {
     const owner = state.you?.role !== "member";
     const rows = [view.ios, view.android].map((item) => signingRowHtml(item, owner)).join("");
     box.hidden = !rows;
+    const needed = [view.ios, view.android].filter((item) => item && item.state !== "no-project" && item.state !== "not-needed");
+    onState(!rows || !needed.length ? null : needed.every((item) => ["ready", "env", "unknown"].includes(item.state))); // "can't tell" isn't nagged about
     if (!rows) return;
     const details = [view.ios && `iOS: ${view.ios.file || "no key set up yet"}, kept in ${view.ios.folder}`,
       ...(view.android?.files || []).map((f) => `Android: ${f.label} (${f.name || "unknown"}) ${f.here ? "is here" : "is not here"}`)].filter(Boolean);
@@ -5970,7 +5973,7 @@ async function loadSigningCard(box) {
       else await runAction("signing_secure", {}, { skipConfirm: true });
     }));
   };
-  const load = async () => { try { draw(await api("signing")); } catch { box.hidden = true; } };
+  const load = async () => { try { draw(await api("signing")); } catch { box.hidden = true; onState(null); } };
   await load();
 }
 
@@ -6090,7 +6093,8 @@ async function confirmServerAction(action, server, whereLabel, view) {
     ${ports}${view.rule ? `<p class="notice">Your project says (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</p>` : ""}`, verb, { compact: true, danger: action === "stop" });
 }
 
-async function loadServerCard(box, canSend = false) {
+// `onState({required, ready})`: required when builds are set to start it first, ready when it is running; null when there is no server.
+async function loadServerCard(box, canSend = false, onState = () => {}) {
   if (!box) return;
   let detailsOpen = false; // survives Refresh and switching server, which both redraw the card
   const draw = (view) => {
@@ -6098,6 +6102,9 @@ async function loadServerCard(box, canSend = false) {
     box.innerHTML = serverCardHtml(view, canSend, detailsOpen);
     box.querySelector(".server-details")?.addEventListener("toggle", (e) => { detailsOpen = e.target.open; });
     box.hidden = !view?.servers?.length;
+    const picked = view?.servers?.find((x) => x.id === serverPick) || view?.servers?.[0];
+    onState(picked ? { required: (view.app || []).some((a) => a.id === picked.id && a.machine === view.machine),
+      ready: view.docker !== false && picked.status?.state === "running" } : null);
     box.querySelector("#server-refresh")?.addEventListener("click", () => load(view.machine));
     box.querySelector("#server-machine")?.addEventListener("change", (e) => load(e.target.value));
     box.querySelector("#server-pick")?.addEventListener("change", (e) => { serverPick = e.target.value; draw(view); });
@@ -6133,7 +6140,7 @@ async function loadServerCard(box, canSend = false) {
     box.hidden = false;
     box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="muted m-0">Checking Docker…</p></div>`;
     try { draw(await api(`servers${machine && machine !== "local" ? `?machine=${encodeURIComponent(machine)}` : ""}`)); }
-    catch (err) { box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="notice bad m-0">${esc(err.message)}</p></div>`; }
+    catch (err) { box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="notice bad m-0">${esc(err.message)}</p></div>`; onState(null); }
   };
   await load();
 }
@@ -6307,7 +6314,7 @@ pages.delivery = async (args, query) => {
       ${canEditTarget ? `<div><button type="submit" class="btn primary">Save</button></div>` : ""}
     </form></section>`;
 
-  const branchCard = `<section class="card mb-16">
+  const branchCard = `<section class="card mb-16" id="delivery-send">
     <div class="card-h">
       <h2>${web ? "Preview" : "Send to my phone"}</h2>
       <div class="row gap-8 align-center">
@@ -6318,15 +6325,7 @@ pages.delivery = async (args, query) => {
       </div>
     </div>
     <div class="card-b stack">
-      ${web ? previewBlock : !testers.configured && d.proposal?.state === "proposal" ? deliveryProposalHtml(d.proposal, canEditTarget) : !testers.configured ? `
-        <div class="notice">
-          <div class="stack">
-            <strong>Not ready to send test builds</strong>
-            <ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
-            <div>${platform === "ios" && !target.unity_without_xcode ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="#delivery-target" data-scroll-target${platform === "ios" ? ` data-pick-platform="file"` : ""}>Set up delivery</a>`}</div>
-          </div>
-        </div>
-      ` : `
+      ${web ? previewBlock : !testers.configured ? `<p class="muted m-0">Finish the steps under <strong>Before you can send builds</strong> first. Then you can send a build from here.</p>` : `
         <form id="delivery-build-form" class="stack gap-12">
           <div class="field">
             <span>Send to</span>
@@ -6415,10 +6414,31 @@ pages.delivery = async (args, query) => {
         <div class="meta">${esc(ago(b.delivered))} · <span class="mono">${esc(b.branch)}</span>${b.recipients ? ` · to ${esc(b.recipients)}` : ""}</div></div>
         ${b.job_id ? `<div class="side"><a class="btn small" href="#/jobs/${encodeURIComponent(b.job_id)}">Job</a></div>` : ""}</div>`).join("")}</div></section>` : "";
 
+  // Everything that has to be in place before a build can be sent, in one container. What is still to do comes first; what is
+  // already set is tucked under "Already set up", and once nothing is left the whole container drops below the send card.
+  const targetReady = Boolean(testers.configured);
+  const targetBody = targetReady
+    ? `<p class="muted t-secondary m-0">Firebase App Distribution is set up${testers.groups?.length ? ` · groups: ${testers.groups.map(esc).join(", ")}` : ""}. <a href="#delivery-target" id="prereq-change-target">Change</a></p>`
+    : d.proposal?.state === "proposal" ? deliveryProposalHtml(d.proposal, canEditTarget)
+    : `<div class="stack"><ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
+        <div>${platform === "ios" && !target.unity_without_xcode ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="#delivery-target" data-scroll-target${platform === "ios" ? ` data-pick-platform="file"` : ""}>Set up delivery</a>`}</div></div>`;
+  const prereqHtml = web ? "" : `<details class="fold prereqs mb-16" id="delivery-prereqs"${targetReady ? " hidden" : " open"}>
+      <summary class="card-h"><h2>Before you can send builds</h2><span class="muted t-secondary" id="prereq-summary">${targetReady ? "" : "1 to do"}</span></summary>
+      <div class="card-b stack gap-12">
+        <div class="stack gap-12" id="prereq-todo">
+          <section class="card prereq-item" id="prereq-target"><div class="card-h"><h2>Where builds go</h2><span class="pill ${targetReady ? "ok" : "warn"}">${targetReady ? "Ready" : "Not set up"}</span></div>
+            <div class="card-b stack gap-8">${targetBody}</div></section>
+          <div id="prereq-signing" hidden><section class="card" id="signing-card" hidden></section></div>
+          <div id="prereq-server" hidden></div>
+        </div>
+        <details class="prereq-done" id="prereq-done" hidden><summary class="muted t-secondary">Already set up (<span id="prereq-done-count">0</span>)</summary>
+          <div class="stack gap-8 prereq-done-list" id="prereq-done-list"></div></details>
+      </div></details>`;
+
   return {
     title: "App delivery",
-    sub: web ? "Publish preview links and track releases." : "Launch test builds on devices and monitor pipelines.",
-    html: `<section class="card mb-16" id="server-card" hidden></section><section class="card mb-16" id="signing-card" hidden></section>${branchCard}<details class="fold mb-16" id="advanced-delivery"><summary class="card-h"><h2>Advanced delivery settings</h2><span class="muted t-secondary">platform, signing and every option</span></summary>${targetCard}</details>${releaseCard}${buildsCard}${pipelineCard}`,
+    sub: web ? "Publish preview links and track releases." : "",
+    html: `${prereqHtml}${branchCard}<section class="card mb-16" id="server-card" hidden></section><details class="fold mb-16" id="advanced-delivery"><summary class="card-h"><h2>Advanced delivery settings</h2><span class="muted t-secondary">platform, signing and every option</span></summary>${targetCard}</details>${releaseCard}${buildsCard}${pipelineCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
       if (branchSelect) {
@@ -6486,8 +6506,47 @@ pages.delivery = async (args, query) => {
           } catch (err) { toast(err.message, true); }
         });
       }
-      loadServerCard(view.querySelector("#server-card"), Boolean(testers.configured) && !web); // after the page is up: it asks Docker, which can take a moment
-      if (!web) loadSigningCard(view.querySelector("#signing-card")); // files only: no network unless "Find it" is pressed
+      // The prerequisites: each reports whether it is set (true), still to do (false) or doesn't apply here (null). Until the quick ones
+      // have answered, a container with nothing to do stays out of sight instead of flashing at the top and then moving.
+      const box = view.querySelector("#delivery-prereqs"), send = view.querySelector("#delivery-send");
+      const items = box ? { target: { el: view.querySelector("#prereq-target"), ready: targetReady }, signing: { el: view.querySelector("#prereq-signing") },
+        server: { el: view.querySelector("#prereq-server") } } : {};
+      let placed = null;
+      const refreshPrereqs = () => {
+        if (!box || !send) return;
+        const all = Object.entries(items);
+        const todo = all.filter(([, it]) => it.ready === false), done = all.filter(([, it]) => it.ready === true);
+        const waiting = ["target", "signing"].some((id) => items[id].ready === undefined); // the server check asks Docker and is optional: not waited for
+        todo.forEach(([, it]) => { it.el.hidden = false; box.querySelector("#prereq-todo").append(it.el); });
+        done.forEach(([, it]) => { it.el.hidden = false; box.querySelector("#prereq-done-list").append(it.el); });
+        all.filter(([, it]) => it.ready === null).forEach(([, it]) => { it.el.hidden = true; });
+        const doneBox = box.querySelector("#prereq-done");
+        doneBox.hidden = !done.length;
+        box.querySelector("#prereq-done-count").textContent = String(done.length);
+        box.querySelector("#prereq-summary").textContent = todo.length ? `${todo.length} to do` : "All set";
+        box.hidden = waiting && !todo.length;
+        if (box.hidden) return;
+        const where = todo.length ? "top" : "below";
+        if (where !== placed) {
+          if (where === "top") send.before(box); else send.after(box);
+          box.open = where === "top"; // something to do: open at the top. Nothing left: one quiet line below the send card
+          placed = where;
+        }
+      };
+      const report = (id, ready) => { if (items[id]) { items[id].ready = ready; refreshPrereqs(); } };
+      refreshPrereqs();
+      view.querySelector("#prereq-change-target")?.addEventListener("click", (e) => {
+        e.preventDefault();
+        const advanced = view.querySelector("#advanced-delivery");
+        if (advanced) advanced.open = true;
+        view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
+      });
+      loadServerCard(view.querySelector("#server-card"), Boolean(testers.configured) && !web, (s) => { // after the page is up: it asks Docker, which can take a moment
+        // A server is a prerequisite only when builds are set to start it first; otherwise it is an ordinary card below.
+        if (s?.required && items.server) { items.server.el.append(view.querySelector("#server-card")); report("server", s.ready); }
+        else report("server", null);
+      });
+      if (!web) loadSigningCard(view.querySelector("#signing-card"), (ready) => report("signing", ready)); // files only: no network unless "Find it" is pressed
       view.querySelector("#delivery-proposal-form")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = Object.fromEntries(new FormData(e.target).entries());
