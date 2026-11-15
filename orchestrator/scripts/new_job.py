@@ -555,11 +555,16 @@ def main(args_override: list[str] | None = None) -> None:
         from model_registry import get_all_models, runnable_here
         usable = [m.id for m in get_all_models() if runnable_here(m)]
         # A model no machine has switched on would only be refused later; one this computer can't run fails the plan.
-        runnable = models_machines_can_run([m for m in DEFAULT_FALLBACKS if m in usable], load_machines())
+        usable_defaults = [m for m in DEFAULT_FALLBACKS if m in usable]
+        runnable = models_machines_can_run(usable_defaults, load_machines())
         if not runnable and not interactive():
-            print("\n\033[1;91m⚠️  ERROR: No AI model that this job may use can run right now.\033[0m")
-            print("\033[90m(Set up an AI tool under AI tools, and switch its models on for a computer under Computers.)\033[0m")
-            sys.exit(1)
+            if usable_defaults:
+                print("ℹ️  No model in machines.json matched ready AI tools; using ready models on this computer.")
+                runnable = usable_defaults
+            else:
+                print("\n\033[1;91m⚠️  ERROR: No AI tool or API key is ready on this computer right now.\033[0m")
+                print("\033[90m(Sign in to an AI tool under AI tools or add an API key in Settings.)\033[0m")
+                sys.exit(1)
         if DEFAULT_FALLBACKS and not runnable:
             print("\033[1;93m⚠️  None of the models you can use is switched on for a machine, so this job will not be able to start.\033[0m")
             print("\033[90m(Turn a model on for a machine under Machines, then run the job again.)\033[0m")

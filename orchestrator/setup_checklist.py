@@ -331,7 +331,8 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
             hint=None if git_auth_ok else "gh auth setup-git",
             group="GitHub" if github else "Git",
         ))
-    llm_overlap = has_runnable_machine_model(providers, models)
+    local_models = [m for mach in enabled_machines if mach.get("execution_mode") != "ssh" for m in mach.get("models", [])]
+    llm_overlap = has_runnable_machine_model(providers, local_models or models)
     llm_ok = bool(providers) and bool(models) and llm_overlap
     items += [
         _item("llm", "An AI model is ready", True, llm_ok,

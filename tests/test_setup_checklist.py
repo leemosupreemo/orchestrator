@@ -264,6 +264,16 @@ class SetupChecklistTests(unittest.TestCase):
             self.assertIn("Computers", items["llm"]["detail"])
             self.assertFalse(result["complete"])
 
+            # Remote SSH machine models don't mask a local machine mismatch
+            (root / ".orchestrator" / "config" / "machines.json").write_text(json.dumps({
+                "machines": [
+                    {"name": "local", "enabled": True, "execution_mode": "local", "models": ["codex"]},
+                    {"name": "remote", "enabled": True, "execution_mode": "ssh", "models": ["opencode"]},
+                ]
+            }))
+            result_ssh = _checklist(root, providers=["opencode"])
+            self.assertFalse(_by_id(result_ssh)["llm"]["done"])
+
 
 if __name__ == "__main__":
     unittest.main()
