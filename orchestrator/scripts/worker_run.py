@@ -800,7 +800,6 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         print_phase("status_update")
         status_bar.render()
-        print(f"[2/4] Updating {job_label} status to 'executing'...")
         is_debug = job.get("status") == "debugging"
 
         job["branch"] = branch

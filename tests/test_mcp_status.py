@@ -913,3 +913,13 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
             self.assertTrue(cred_file.exists())
             self.assertIn("https://octo:ghp_secret123@github.com", cred_file.read_text(encoding="utf-8"))
             self.assertEqual(cred_file.stat().st_mode & 0o777, 0o600)
+
+    def test_oauth_expired_guidance_offers_on_the_spot_signin(self):
+        app = APP.read_text(encoding="utf-8")
+        for snippet in (
+            'fullText.includes("oauth access token has expired")',
+            'fullText.includes("re-authenticate to continue")',
+            'act("ai_connect", { provider: oauthProvider, title: `Connect ${oauthLabel}` })',
+            'Sign in to ${oauthLabel}',
+        ):
+            self.assertIn(snippet, app)

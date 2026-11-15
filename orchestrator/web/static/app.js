@@ -12945,21 +12945,39 @@ function runFailureGuidance(r) {
   }
 
   const isAiOAuthExpired = fullText.includes("oauth session expired")
+    || fullText.includes("oauth access token has expired")
+    || fullText.includes("re-authenticate to continue")
     || fullText.includes("failed to authenticate")
     || (fullText.includes("session expired") && fullText.includes("refresh"));
 
   if (isAiOAuthExpired) {
+    let oauthProvider = "";
+    let oauthLabel = "";
+    if (fullText.includes("claude") || fullText.includes("anthropic")) {
+      oauthProvider = "claude";
+      oauthLabel = "Claude";
+    } else if (fullText.includes("codex") || fullText.includes("openai")) {
+      oauthProvider = "codex";
+      oauthLabel = "Codex";
+    } else if (fullText.includes("pool")) {
+      oauthProvider = "pool";
+      oauthLabel = "Pool";
+    }
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : "";
     const backBtn = targetJob
       ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
       : "";
+    const signInBtn = oauthProvider
+      ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: oauthProvider, title: `Connect ${oauthLabel}` })}>Sign in to ${oauthLabel}</button>`
+      : `<a class="btn small primary" href="#/config/ai">Open AI tools</a>`;
+    const aiToolsBtn = oauthProvider ? `<a class="btn small" href="#/config/ai">Open AI tools</a>` : "";
     return {
       title: "AI sign-in expired",
-      detail: "The AI tool's login session expired and could not be refreshed automatically. Sign in again under AI tools (or pick another model in the job's Settings) and rerun.",
-      action: `<a class="btn small primary" href="#/config/ai">Open AI tools</a>`,
-      secondary: `${rerunBtn}${backBtn}`,
+      detail: "The AI tool's login session expired and could not be refreshed automatically. Sign in again on the spot (or pick another model in the job's Settings) and rerun.",
+      action: signInBtn,
+      secondary: `${aiToolsBtn}${rerunBtn}${backBtn}`,
     };
   }
 

@@ -351,7 +351,8 @@ Live discovery can also query provider APIs from environment keys and can query 
 Practical options:
 
 - Install and authenticate a CLI, such as `codex login`, `claude auth login`, or the equivalent command for your provider.
-- Export API keys in the shell where the console runs, such as `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY`.
+- If a CLI's OAuth session expires during a run (for example `401 OAuth access token has expired`), the failure card offers an on-the-spot **Sign in to Claude / Codex** button (using `ai_connect`) and a **Rerun job** button so you can re-authenticate and continue immediately.
+- Export API keys in the shell where the console runs, such as `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY` (API keys also avoid OAuth expirations, and configuring a second provider gives automatic fallback if one fails).
 - Store non-secret project settings in `.orchestrator/config/settings.json`.
 
 Do not commit secrets.
