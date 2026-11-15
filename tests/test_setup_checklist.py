@@ -13,7 +13,10 @@ from orchestrator import setup_checklist as sc
 def _checklist(root: Path, **over):
     gh = over.get("gh", {"installed": True, "user": "dev"})
     providers = over.get("providers", ["claude"])
-    with patch.object(sc, "github_cli_state", return_value=gh), patch.object(sc, "ready_llm_providers", return_value=providers):
+    git_auth = over.get("git_auth", (True, "Non-interactive git access verified"))
+    with patch.object(sc, "github_cli_state", return_value=gh), \
+         patch.object(sc, "ready_llm_providers", return_value=providers), \
+         patch.object(sc, "git_remote_auth_state", return_value=git_auth):
         return sc.setup_checklist(root, root / ".orchestrator")
 
 
@@ -222,6 +225,30 @@ class SetupChecklistTests(unittest.TestCase):
                 ["gh", "auth", "setup-git", "--hostname", "github.com"],
                 timeout=5,
             )
+
+    def test_cli_ready_rejects_expired_oauth_status(self):
+        from orchestrator import setup_checklist
+        with patch("orchestrator.setup_checklist.shutil.which", return_value="/usr/local/bin/claude"), \
+             patch("orchestrator.setup_checklist._run", return_value=unittest.mock.MagicMock(
+                 returncode=0, stdout="OAuth access token has expired. Re-authenticate to continue.", stderr=""
+             )):
+            self.assertFalse(setup_checklist._cli_ready("claude"))
+
+    def test_git_remote_auth_state_flags_missing_credentials(self):
+        from orchestrator import setup_checklist
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            with patch("orchestrator.setup_checklist.subprocess.run", return_value=unittest.mock.MagicMock(
+                returncode=128,
+                stdout="",
+                stderr="fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+            )):
+                ok, detail = setup_checklist.git_remote_auth_state(
+                    root, "https://github.com/org/repo.git", fresh=True
+                )
+            self.assertFalse(ok)
+            self.assertIn("non-interactively", detail)
 
 
 if __name__ == "__main__":

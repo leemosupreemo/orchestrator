@@ -1930,12 +1930,22 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     if job.get("status") in run_check.CHECKED_STATUSES and run_check.switches_branches(job) and run_check.runs_from(root):
         found.insert(0, {"id": "self_checkout", "text": run_check.SELF_CHECKOUT_TEXT, "fix": "", "route": ""})
     if job.get("status") in run_check.CHECKED_STATUSES:
-        from orchestrator.setup_checklist import has_build_and_test_commands
+        from orchestrator.setup_checklist import git_remote_auth_state, has_build_and_test_commands
         have = {b["id"] for b in found}
         config = read_json_file(runtime_dir(root) / "project.json")
         cmds_ok, cmds_detail = has_build_and_test_commands(root, config)
         if not cmds_ok and "build_test_commands" not in have:
             found.append({"id": "build_test_commands", "text": f"Build & test commands are not configured. {cmds_detail}.", "fix": "Setup check", "route": "#/checkup"})
+        if (root / ".git").exists() and "git_auth" not in have:
+            try:
+                origin_res = subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, capture_output=True, text=True, timeout=3)
+                origin_url = (origin_res.stdout or "").strip() if origin_res.returncode == 0 else ""
+            except Exception:
+                origin_url = ""
+            if origin_url:
+                auth_ok, auth_detail = git_remote_auth_state(root, origin_url)
+                if not auth_ok:
+                    found.append({"id": "git_auth", "text": auth_detail, "fix": "Setup check", "route": "#/checkup"})
         for item in preflight.failures(preflight_overview(root)):
             if item["id"] != "disk" and item["id"] not in have:  # disk is already said, with this job's numbers
                 hint = "" if item["route"] or not item["fix"] else f" {item['fix']}."

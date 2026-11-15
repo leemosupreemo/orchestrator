@@ -84,7 +84,14 @@ def _cli_ready(cli: str) -> bool:
                 "opencode": [found, "models"]}
     if cli in commands:
         res = _run(commands[cli], timeout=5)
-        return bool(res and res.returncode == 0 and (cli != "opencode" or res.stdout.strip()))
+        if not res or res.returncode != 0:
+            return False
+        text = ((res.stdout or "") + "\n" + (res.stderr or "")).lower()
+        if cli == "opencode" and not (res.stdout or "").strip():
+            return False
+        if any(marker in text for marker in ("expired", "re-authenticate", "not logged in", "logged out")):
+            return False
+        return True
     if cli == "gemini":
         return False  # Google-account access to Gemini CLI has ended; only a Gemini API key (counted separately) works
     if cli == "agy":
@@ -179,10 +186,54 @@ def has_build_and_test_commands(root: Path, project: dict[str, Any] | None = Non
     return False, "Set test_command in .orchestrator/project.json or ## Tests in docs/build-test-commands.md"
 
 
+def git_remote_auth_state(root: Path, origin: str, gh_user: str | None = None, fresh: bool = False) -> tuple[bool, str]:
+    """Verify git can reach `origin` non-interactively without prompting for a username or password."""
+    if not origin or not (root / ".git").exists():
+        return True, "No remote configured"
+    if gh_user and GITHUB_REMOTE.search(origin) and ensure_gh_git_credentials():
+        return True, "Authenticated via GitHub CLI"
+    cache_key = f"git_auth:{root}:{origin}"
+    if fresh:
+        _cache.pop(cache_key, None)
+
+    def probe() -> tuple[bool, str]:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+        try:
+            res = subprocess.run(
+                ["git", "ls-remote", "--heads", "origin"],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=6,
+            )
+        except Exception:
+            return True, "Could not reach remote"
+        if res.returncode == 0:
+            return True, "Non-interactive git access verified"
+        err = ((res.stderr or "") + "\n" + (res.stdout or "")).lower()
+        auth_markers = (
+            "could not read username",
+            "could not read password",
+            "terminal prompts disabled",
+            "authentication failed",
+            "permission denied",
+            "invalid username or token",
+            "access denied",
+        )
+        if any(marker in err for marker in auth_markers):
+            return False, "Git cannot authenticate with origin non-interactively. Sign in with GitHub CLI or save a GitHub token."
+        return True, "Could not reach remote"
+
+    return _cached(cache_key, 60, probe)
+
+
 def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str, Any]:
     if fresh:
         _cache.pop("gh", None)
         _cache.pop("llm", None)
+        for k in [k for k in _cache if k.startswith("git_auth:")]:
+            _cache.pop(k, None)
     project = _read_json(runtime / "project.json")
     settings = _read_json(runtime / "config" / "settings.json")
     machines = [m for m in _read_json(runtime / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
@@ -229,6 +280,18 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
                            else "None: finished work stays on this computer as branches.",
                            action=remote_action,
                            hint=None if origin else "git remote add origin <url>", group="Git"))
+    if is_git and origin:
+        git_auth_ok, git_auth_detail = git_remote_auth_state(root, origin, gh_user=gh.get("user"), fresh=fresh)
+        items.append(_item(
+            "git_auth",
+            "Git remote authentication",
+            True,
+            git_auth_ok,
+            git_auth_detail,
+            action=({"type": "github"} if gh["installed"] and not gh["user"] else page("#/settings")) if not git_auth_ok else None,
+            hint=None if git_auth_ok else "gh auth setup-git",
+            group="GitHub" if github else "Git",
+        ))
     items += [
         _item("llm", "An AI model is ready", True, bool(providers) and bool(models),
               "No AI is set up yet. Set up a free one in one click, or connect your own." if not providers
