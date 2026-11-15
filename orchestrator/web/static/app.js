@@ -1641,7 +1641,6 @@ function showSigningIn(label = "Signing you in…") {
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
       <h2>${esc(label)}</h2>
-      <p class="muted">Connecting to your computer and loading your projects.</p>
       ${loadingSkeleton("home")}</div></div>`;
 }
 
