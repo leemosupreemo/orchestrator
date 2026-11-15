@@ -318,7 +318,10 @@ Brief:
         
         # Check for clarification needed from builder
         if "clarification_needed" in parsed_output and parsed_output["clarification_needed"]:
-            q = parsed_output["clarification_needed"]
+            q = str(parsed_output["clarification_needed"])
+            q_low = q.lower()
+            if any(m in q_low for m in ("workspace write access", "read-only filesystem", "read-only sandbox", "without write access")):
+                raise RuntimeError(f"Builder could not write to workspace: {q}")
             job["status"] = "human-needed"
             job["human_clarification_question"] = q
             write_json(job_path, job)

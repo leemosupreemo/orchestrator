@@ -715,3 +715,11 @@ class ResolveBuilderModelTests(unittest.TestCase):
         self.assertEqual(model_router.resolve_builder_model({'planner': 'claude-sonnet-4-6'}), 'claude-sonnet-4-6')
         with patch.object(model_router, 'get_prioritized_models', return_value=['gpt-5.4']):
             self.assertEqual(model_router.resolve_builder_model({}), 'gpt-5.4')
+
+    def test_codex_builder_command_has_full_auto_write_access(self):
+        import llm
+        from model_router import ModelRole
+        cmd = llm.get_llm_command('codex', '/tmp/prompt.txt', role=ModelRole.BUILDER)
+        self.assertIn('--full-auto', cmd)
+        cmd_plan = llm.get_llm_command('codex', '/tmp/prompt.txt', role=ModelRole.PLANNER)
+        self.assertNotIn('--full-auto', cmd_plan)
