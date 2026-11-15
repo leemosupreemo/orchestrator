@@ -1627,7 +1627,7 @@ async function switchProject(root, then = "#/") {
 }
 
 // Shown from the click on a provider (or the token form) until the first page is ready.
-function showSigningIn(label = "Signing you in…") {
+function showSigningIn(label = "Signing you in…", { onCancel = null } = {}) {
   projectSwitch = null;
   ++routeToken;
   document.body.classList.remove("route-loading");
@@ -1641,7 +1641,15 @@ function showSigningIn(label = "Signing you in…") {
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
       <h2>${esc(label)}</h2>
-      ${loadingSkeleton("home")}</div></div>`;
+      ${loadingSkeleton("home")}
+      ${onCancel ? `<div class="row mt-12"><button type="button" class="btn small ghost" data-cancel-connect="1">Cancel</button></div>` : ""}
+    </div></div>`;
+  if (onCancel) {
+    view.querySelector("[data-cancel-connect]")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      onCancel();
+    });
+  }
 }
 
 // ---------------------------------------------------------------- account (hosted app)
@@ -1928,7 +1936,13 @@ async function openAccount({ list = false, message = "", troubleshoot = null } =
   let remembered = null;
   try { remembered = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
   let pick = !list && !message && !troubleshoot && Account.pickMachine(machines, remembered);
-  if (pick) return enterMachine(pick);
+  const snapshotFallback = (machines || []).find((m) => m.id === remembered && m.has_snapshot)
+    || (machines || []).find((m) => m.has_snapshot)
+    || null;
+  if (pick) {
+    const rest = Account.orderedMachines(machines, remembered).slice(1);
+    return enterMachine(pick, { failover: rest, snapshotFallback });
+  }
 
   // If opening automatically and a remembered/registered computer isn't reachable yet (e.g. heartbeat or tunnel starting up),
   // briefly poll a few times before giving up to the computers screen.
@@ -1942,7 +1956,13 @@ async function openAccount({ list = false, message = "", troubleshoot = null } =
         accountMachines = machines;
         accountMachinesAt = Date.now();
         pick = Account.pickMachine(machines, remembered);
-        if (pick) return enterMachine(pick);
+        if (pick) {
+          const rest = Account.orderedMachines(machines, remembered).slice(1);
+          const snap = (machines || []).find((m) => m.id === remembered && m.has_snapshot)
+            || (machines || []).find((m) => m.has_snapshot)
+            || null;
+          return enterMachine(pick, { failover: rest, snapshotFallback: snap });
+        }
       } catch {
         break;
       }
@@ -2338,19 +2358,29 @@ async function showSnapshotScreen(machineId, machine) {
   }
 }
 
-async function enterMachine(machine) {
+async function enterMachine(machine, { failover = [], snapshotFallback = null } = {}) {
   stopAccountPoll();
   signingIn = true;
-  if (!machine.reachable && machine.has_snapshot) { // offline: its last snapshot, saying so, instead of waiting to fail
+  if (!machine.reachable && machine.has_snapshot && !failover.length) { // offline: its last snapshot, saying so, instead of waiting to fail
     try { localStorage.setItem(Account.MACHINE_KEY, machine.id); } catch { /* storage blocked */ }
     toast(machine.online ? `Browser connection to ${machine.name} is unavailable. Showing saved snapshot.` : `${machine.name} is offline. Showing its last snapshot.`, "info");
     return showSnapshotScreen(machine.id, machine);
   }
-  showSigningIn(`Opening ${machine.name}…`);
+  let cancelled = false;
+  showSigningIn(`Opening ${machine.name}…`, {
+    onCancel: () => {
+      cancelled = true;
+      openAccount({ list: true });
+    },
+  });
   try {
     let res;
     try { res = await signInToMachine(machine); }
-    catch (error) { res = await repairMachineConnection(machine, error); }
+    catch (error) {
+      if (cancelled) return;
+      res = await repairMachineConnection(machine, error);
+    }
+    if (cancelled) return;
     // An idea from before this computer was set up: go and start it (or add the code they already have).
     const idea = Account.pendingIdea();
     if (idea) {
@@ -2359,9 +2389,16 @@ async function enterMachine(machine) {
     }
     await unlockWith(res.token, `Opened ${machine.name}`, { home: !idea });
   } catch (err) {
-    if (machine.has_snapshot) {
-      toast(machine.online ? `Browser connection to ${machine.name} is unavailable. Showing saved snapshot.` : `${machine.name} is offline. Showing its last snapshot.`, "info");
-      return showSnapshotScreen(machine.id, machine);
+    if (cancelled) return;
+    if (failover.length) {
+      const [next, ...rest] = failover;
+      toast(`Could not reach ${machine.name}. Trying ${next.name}…`, "info");
+      return enterMachine(next, { failover: rest, snapshotFallback: snapshotFallback || (machine.has_snapshot ? machine : null) });
+    }
+    const snap = machine.has_snapshot ? machine : snapshotFallback;
+    if (snap) {
+      toast(snap.online ? `Browser connection to ${snap.name} is unavailable. Showing saved snapshot.` : `${snap.name} is offline. Showing its last snapshot.`, "info");
+      return showSnapshotScreen(snap.id, snap);
     }
     openAccount({ list: true, message: err.message,
       troubleshoot: { machine, endpoint: err.endpoint || machine.endpoint || "", error: err.message } });

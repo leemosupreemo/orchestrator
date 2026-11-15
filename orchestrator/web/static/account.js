@@ -148,6 +148,13 @@
     return reachable.find((m) => m.id === rememberedId) || reachable[0] || null;
   }
 
+  function orderedMachines(machines, rememberedId) {
+    const reachable = (machines || []).filter((m) => m.reachable);
+    const first = pickMachine(machines, rememberedId);
+    if (!first) return [];
+    return [first, ...reachable.filter((m) => m.id !== first.id)];
+  }
+
   function ago(seconds, now = Date.now() / 1000) {
     const s = Math.max(0, Math.round(now - seconds));
     if (s < 90) return "just now";
@@ -498,7 +505,7 @@
   root.Account = {
     HOSTED_ORIGINS, INSTALL_COMMAND, QUICK_INSTALL_COMMAND, MACHINE_KEY, CODE_LENGTH, REQUIRED_RUNNER_API, UPDATE_HINT, UPDATE_PROGRESS, READINESS_FIXES, readinessFixes, MAC_APP_RELEASED,
     enrollCommand, renderEnroll, outdated, macRelease, renderMacSetup,
-    isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, machineStatus,
+    isHosted, active, normalizeCode, formatCode, pendingCode, clearPendingCode, pickMachine, orderedMachines, machineStatus,
     safeFunnelSetupURL, connectionStatus, renderConnectionProgress,
     renderMachines, renderPair, renderSnapshot, providerSignInWorks, pendingIdea, saveIdea, clearIdea, ideaRoute,
   };

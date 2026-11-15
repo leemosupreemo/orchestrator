@@ -931,3 +931,12 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn('if (mobileTitle) mobileTitle.textContent = "Orchestrator";', block)
         self.assertIn('openBtn.textContent = "Connecting…";', block)
         self.assertIn('openBtn.textContent = "Try live connection";', block)
+
+    def test_machine_failover_goes_down_list_unless_cancelled(self):
+        app = APP.read_text(encoding="utf-8")
+        acct = (APP.parent / "account.js").read_text(encoding="utf-8")
+        self.assertIn("function orderedMachines(", acct)
+        self.assertIn("Account.orderedMachines(machines, remembered)", app)
+        self.assertIn("data-cancel-connect", app)
+        self.assertIn("if (cancelled) return;", app)
+        self.assertIn("if (failover.length)", app)
