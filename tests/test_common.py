@@ -1424,3 +1424,29 @@ class GitNonInteractiveEnvTests(unittest.TestCase):
 
             common.run(["echo", "hello"])
             self.assertNotIn("GIT_TERMINAL_PROMPT", captured["env"])
+
+
+class ClarificationClassifierTests(unittest.TestCase):
+    def test_categorizes_ignore_blocking_and_real_questions(self):
+        import common
+        for raw in (None, False, "", "   ", "none", "N/A", "No clarification needed.", "Proceeding with default layout."):
+            kind, _ = common.classify_clarification(raw)
+            self.assertEqual(kind, "ignore", f"expected ignore for {raw!r}")
+
+        for raw in (
+            "Rerun this task with workspace write access so the mandatory failing test can be created.",
+            "Permission denied writing to /repo/Sources",
+            "Failed to authenticate: 401 OAuth access token has expired",
+        ):
+            kind, text = common.classify_clarification(raw)
+            self.assertEqual(kind, "blocking", f"expected blocking for {raw!r}")
+            self.assertTrue(text)
+
+        for raw in (
+            "Should login use email or username?",
+            "Which target should these tests run against?",
+            "Please confirm whether to overwrite existing settings.",
+        ):
+            kind, text = common.classify_clarification(raw)
+            self.assertEqual(kind, "question", f"expected question for {raw!r}")
+            self.assertTrue(text)

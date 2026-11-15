@@ -884,7 +884,14 @@ def main(args_override: list[str] | None = None) -> None:
                 raise
 
             # Check for clarification needed from planner
-            clarification = plan.get("clarification_needed")
+            from common import classify_clarification
+            clar_kind, clarification = classify_clarification(plan.get("clarification_needed"))
+            if clar_kind == "blocking":
+                raise RuntimeError(f"Planner blocked: {clarification}")
+            if clar_kind == "ignore":
+                if clarification:
+                    print(f"      - Ignoring non-question planner note: {clarification}")
+                clarification = ""
             clarification_history = existing_job.get("clarification_history", []) if existing_job else []
             if clarification:
                 print("\n" + "!"*60)
@@ -918,7 +925,11 @@ def main(args_override: list[str] | None = None) -> None:
                                 default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                                 job_type=args.job_type,
                             )
-                            clarification = plan.get("clarification_needed")
+                            clar_kind, clarification = classify_clarification(plan.get("clarification_needed"))
+                            if clar_kind == "blocking":
+                                raise RuntimeError(f"Planner blocked: {clarification}")
+                            if clar_kind == "ignore":
+                                clarification = ""
                             if not clarification:
                                 print(f"      - Plan revised successfully! Proceeding...")
                         except Exception as e:

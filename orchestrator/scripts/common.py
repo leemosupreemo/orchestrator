@@ -3457,3 +3457,67 @@ def format_markdown_for_terminal(text: str) -> str:
             formatted_lines.append(f"  {formatted_wl}")
             
     return "\n".join(formatted_lines)
+
+
+_CLARIFICATION_FILLER = frozenset({
+    "none", "null", "nil", "n/a", "na", "no", "nothing",
+    "no clarification needed", "no questions", "no question",
+    "none needed", "not applicable", "false",
+})
+
+_CLARIFICATION_BLOCKING_MARKERS = (
+    "workspace write access",
+    "without write access",
+    "read-only filesystem",
+    "read-only file system",
+    "read-only sandbox",
+    "sandbox prevents",
+    "cannot write to",
+    "permission denied",
+    "missing api key",
+    "invalid api key",
+    "oauth access token has expired",
+    "failed to authenticate",
+    "not logged in",
+    "command not found",
+    "not installed",
+)
+
+_CLARIFICATION_QUESTION_CUES = (
+    "please confirm",
+    "please clarify",
+    "please specify",
+    "please choose",
+    "please provide",
+    "should i ",
+    "should we ",
+    "would you like",
+    "do you want",
+    "do you prefer",
+    "need your input",
+    "let me know",
+)
+
+
+def classify_clarification(raw: Any) -> tuple[str, str]:
+    """Categorize a model's `clarification_needed` string into ('ignore' | 'blocking' | 'question', text).
+
+    - 'ignore': empty, filler ('none', 'N/A'), or advisory note without an actual question -> keep going.
+    - 'blocking': environment/sandbox/auth/tool blocker -> fail with RuntimeError instead of asking the user.
+    - 'question': real question or decision request for the user -> pause and prompt.
+    """
+    if not isinstance(raw, str):
+        text = str(raw).strip() if raw is not None and raw is not False else ""
+    else:
+        text = raw.strip()
+    if not text:
+        return "ignore", ""
+    low = text.lower()
+    normalized = low.rstrip(".! ")
+    if normalized in _CLARIFICATION_FILLER:
+        return "ignore", ""
+    if any(marker in low for marker in _CLARIFICATION_BLOCKING_MARKERS):
+        return "blocking", text
+    if "?" in text or re.search(r"\bwhich\b", low) or any(cue in low for cue in _CLARIFICATION_QUESTION_CUES):
+        return "question", text
+    return "ignore", text

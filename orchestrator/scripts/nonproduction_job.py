@@ -314,12 +314,16 @@ def write_tests(job: dict, job_path: Path, out: Path, design: bool, cases: list[
                                    allowed_models=job.get("allowed_models"), role=ModelRole.BUILDER,
                                    protected_paths=[ROOT])
     result = json.loads(extract_json_block(output))
-    if result.get("clarification_needed"):
+    from common import classify_clarification
+    clar_kind, clar_text = classify_clarification(result.get("clarification_needed"))
+    if clar_kind == "blocking":
+        raise RuntimeError(f"Builder blocked: {clar_text}")
+    if clar_kind == "question":
         if cases:  # the tests are already there: these extra cases just can't be written without a production change
-            job["skipped_cases"] = clean_skipped([{"case": c["id"], "reason": str(result["clarification_needed"])} for c in cases], job.get("skipped_cases"))
+            job["skipped_cases"] = clean_skipped([{"case": c["id"], "reason": clar_text} for c in cases], job.get("skipped_cases"))
             return
-        job["human_clarification_question"] = result["clarification_needed"]
-        raise ValueError(result["clarification_needed"])
+        job["human_clarification_question"] = clar_text
+        raise ValueError(clar_text)
     if not design:
         job["skipped_cases"] = clean_skipped(result.get("skipped"), job.get("skipped_cases"))
     proposals = result.get("files")
