@@ -14503,18 +14503,22 @@ pages.run = async ([id]) => {
     ...runHeader(run),
     html: `
       <div id="next-step">${runStatus(run, vc)}</div>
-      <div class="run-tabs" id="run-tabs" role="tablist" aria-label="How to show the run">
-        <button type="button" class="on" role="tab" aria-selected="true" data-run-tab="timeline"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-checklist"/></svg>Timeline</button>
-        <button type="button" role="tab" aria-selected="false" data-run-tab="terminal"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-terminal"/></svg>Terminal</button>
-      </div>
-      <section class="run-timeline" id="run-timeline" aria-label="Steps" aria-live="polite"></section>
-      <div class="term-wrap" id="term-wrap" hidden>
-        <div class="term" id="term"></div>
-        <div class="keybar" id="keybar" aria-label="Terminal keys" ${run.running ? "" : "hidden"}>${KEYS.map(([label], i) => `<button class="btn small" data-key="${i}">${esc(label)}</button>`).join("")}</div>
-        <form class="term-input" id="term-input" ${run.running ? "" : "hidden"}>
-          <input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Type into the terminal" placeholder="Type, then Send">
-          <button class="btn">Send</button>
-        </form>
+      <div class="run-stream">
+        <div class="run-stream-head">
+          <div class="run-tabs" id="run-tabs" role="tablist" aria-label="How to show the run">
+            <button type="button" class="on" role="tab" aria-selected="true" data-run-tab="timeline"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-checklist"/></svg>Timeline</button>
+            <button type="button" role="tab" aria-selected="false" data-run-tab="terminal"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-terminal"/></svg>Terminal</button>
+          </div>
+        </div>
+        <section class="run-timeline" id="run-timeline" aria-label="Steps" aria-live="polite"></section>
+        <div class="term-wrap" id="term-wrap" hidden>
+          <div class="term" id="term"></div>
+          <div class="keybar" id="keybar" aria-label="Terminal keys" ${run.running ? "" : "hidden"}>${KEYS.map(([label], i) => `<button class="btn small" data-key="${i}">${esc(label)}</button>`).join("")}</div>
+          <form class="term-input" id="term-input" ${run.running ? "" : "hidden"}>
+            <input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Type into the terminal" placeholder="Type, then Send">
+            <button class="btn">Send</button>
+          </form>
+        </div>
       </div>`,
     after: () => {
       wireRunTabs(id);

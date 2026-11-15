@@ -940,3 +940,11 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn("data-cancel-connect", app)
         self.assertIn("if (cancelled) return;", app)
         self.assertIn("if (failover.length)", app)
+
+    def test_run_tabs_inside_stream_header_subcontainer(self):
+        app = APP.read_text(encoding="utf-8")
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        self.assertIn('<div class="run-stream">', app)
+        self.assertIn('<div class="run-stream-head">', app)
+        self.assertIn('.run-stream {', css)
+        self.assertIn('.run-stream-head {', css)
