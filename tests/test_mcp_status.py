@@ -948,3 +948,12 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn('<div class="run-stream-head">', app)
         self.assertIn('.run-stream {', css)
         self.assertIn('.run-stream-head {', css)
+
+    def test_run_action_shows_busy_state_and_navigates_immediately(self):
+        app = APP.read_text(encoding="utf-8")
+        start = app.index("async function runAction(")
+        block = app[start:start + 1300]
+        self.assertIn('button.setAttribute("aria-busy", "true")', block)
+        self.assertIn("Starting…", block)
+        self.assertIn("state.runs.unshift(run)", block)
+        self.assertLess(block.index("location.hash = `#/runs/${run.id}`;"), block.index("refreshState()"))

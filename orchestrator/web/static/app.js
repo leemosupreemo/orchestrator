@@ -459,20 +459,34 @@ async function projectHasTests() {
   }
 }
 
-async function runAction(action, params = {},{ skipConfirm = false } = {}) {
+async function runAction(action, params = {}, { skipConfirm = false, button = null } = {}) {
   const meta = state.actions[action] || {};
   if (action === "test" && !(await projectHasTests())) {
     if (await formDialog("No tests to run", `<p>This project has no tests yet. Add them now: a job writes tests for your code and measures coverage.</p>`, "Add tests", { compact: true })) await dialogs.add_tests();
     return;
   }
   if (meta.confirm && !skipConfirm && !(await formDialog(meta.title, `<p>${esc(meta.confirm)}</p>`, "Continue", { compact: true }))) return;
+  const origHtml = button ? button.innerHTML : "";
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Starting…`;
+  }
   try {
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
     trackWebEvent("web_action_triggered", { action });
-    await refreshState(); // so the run page finds the new run straight away
+    if (run && Array.isArray(state.runs) && !state.runs.some((r) => r.id === run.id)) {
+      state.runs.unshift(run);
+    }
     location.hash = `#/runs/${run.id}`;
+    void refreshState();
   } catch (e) {
-    toast(e.message, true);
+    toast(e?.message || `Could not start ${action}`, true);
+    if (button && button.isConnected) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.innerHTML = origHtml;
+    }
   }
 }
 
@@ -1208,7 +1222,7 @@ document.addEventListener("click", (e) => {
   const action = el.dataset.action;
   const params = el.dataset.params ? JSON.parse(el.dataset.params) : {};
   if (dialogs[action]) return dialogs[action](params);
-  runAction(action, params);
+  runAction(action, params, { button: el });
 });
 
 document.addEventListener("keydown", (e) => {
