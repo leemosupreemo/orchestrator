@@ -165,6 +165,7 @@ def record_check(model: str, ok: bool, reason: str = "", now: float | None = Non
 
 
 KEY_REJECTED = "its API key is rejected (check AI tools)"
+MODEL_UNAVAILABLE = "it isn't available from this provider"
 SHARED_KEY_EXEMPT = ("opencode", "ollama")  # these providers have models that need no key of their own
 
 
@@ -195,6 +196,35 @@ def rejected_providers(checks: dict[str, dict[str, Any]], now: float | None = No
             if provider not in found or at > float(found[provider].get("at") or 0):
                 found[provider] = {**check, "model": model}
     return found
+
+
+def record_model_failure(model_id: str, reason: str = "", *, key_rejected: bool = False, now: float | None = None) -> None:
+    """Record a persistent model/provider failure so broken OpenCode/CLI models are weeded out automatically."""
+    msg = KEY_REJECTED if key_rejected else (f"{MODEL_UNAVAILABLE}: {reason}" if reason else MODEL_UNAVAILABLE)
+    record_check(model_id, False, msg, now=now)
+
+
+def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> bool:
+    """True when `model_id` or its provider recently failed with a persistent auth/unavailable error."""
+    if not model_id:
+        return False
+    checks = load_checks() if checks is None else checks
+    now = now or time.time()
+    provider = provider_of(model_id)
+    if provider and provider in rejected_providers(checks, now):
+        return True
+    entry = checks.get(model_id)
+    if not isinstance(entry, dict) or entry.get("ok"):
+        return False
+    reason = str(entry.get("reason") or "")
+    if reason != KEY_REJECTED and not reason.startswith(MODEL_UNAVAILABLE):
+        return False
+    at = float(entry.get("at") or 0)
+    try:
+        changed = credentials_file().stat().st_mtime
+    except OSError:
+        changed = 0.0
+    return (now - at) < KEY_HOLD and changed <= at
 
 
 def provider_label(provider: str) -> str:

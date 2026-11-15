@@ -151,6 +151,22 @@ def is_quota_error(error_msg: str) -> bool:
     return any(x in error_msg.lower() for x in keywords)
 
 
+def is_unusable_model_error(error_msg: str) -> tuple[bool, bool]:
+    """Return `(is_unusable, is_key_rejected)` for persistent auth/provider/missing-model failures (not transient rate limits)."""
+    low = error_msg.lower()
+    key_markers = (
+        "invalid api key", "fix external api key", "api key", "unauthorized", "forbidden",
+        "bad credentials", "auth error", "authentication", "not logged in", "please run /login",
+        "auth source is set", "invalid_api_key", "401", "403",
+    )
+    if any(m in low for m in key_markers):
+        return True, True
+    unavailable_markers = ("model not found", "may not exist", "not have access", "access to it", "providermodelnotfounderror")
+    if any(m in low for m in unavailable_markers):
+        return True, False
+    return False, False
+
+
 JSON_REMINDER = (
     "\n\n### FORMAT CORRECTION ###\n"
     "Your previous reply was not a single JSON object. Reply again with ONLY the JSON object, as plain text in your message. "
@@ -236,6 +252,13 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 on_chunk(None)
             err_str = str(exc)
             summary = summarize_cli_error(err_str)
+            unusable, key_rejected = is_unusable_model_error(err_str)
+            if unusable:
+                try:
+                    from orchestrator.project_chat import record_model_failure
+                    record_model_failure(current_model, summary, key_rejected=key_rejected)
+                except Exception:
+                    pass
             print(f"⚠️  {current_model} failed ({summary}). {fallback_note}")
             last_error = exc
             continue

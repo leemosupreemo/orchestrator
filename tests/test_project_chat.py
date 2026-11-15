@@ -376,6 +376,36 @@ class PageTests(unittest.TestCase):
         self.assertIn("if (backend)", stream_code)
         self.assertIn("pollInterval: 250", stream_code)
 
+    def test_failed_provider_or_model_is_weeded_out_from_model_usable(self):
+        import tempfile
+        from unittest.mock import patch
+        from orchestrator import project_chat
+        from orchestrator.scripts import llm, model_registry
+
+        self.assertEqual(llm.is_unusable_model_error("401 Invalid API key"), (True, True))
+        self.assertEqual(llm.is_unusable_model_error("ProviderModelNotFoundError: model not found"), (True, False))
+        self.assertEqual(llm.is_unusable_model_error("429 Rate limit exceeded"), (False, False))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = Path(tmp) / "checks.json"
+            with patch.object(project_chat, "checks_path", return_value=checks), \
+                 patch.object(project_chat, "credentials_file", return_value=Path(tmp) / "missing-auth.json"):
+                project_chat.record_model_failure("alibaba-token-plan/qwen3.7-max", "401 Unauthorized", key_rejected=True)
+                self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/qwen3.7-max"))
+                # Sibling model from the same rejected provider is also weeded out
+                self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/deepseek-v4-pro"))
+                meta = model_registry.ModelMetadata(
+                    id="alibaba-token-plan/deepseek-v4-pro",
+                    tier=model_registry.ModelTier.HIGH,
+                    family="opencode",
+                    required_clis=["opencode"],
+                )
+                with patch.object(model_registry, "read_provider_cache", return_value={}):
+                    self.assertFalse(model_registry.model_usable(meta))
+                # Forgetting the provider re-enables it
+                project_chat.forget_provider("alibaba-token-plan")
+                self.assertFalse(project_chat.is_model_blocked("alibaba-token-plan/deepseek-v4-pro"))
+
 
 if __name__ == "__main__":
     unittest.main()

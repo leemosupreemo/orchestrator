@@ -733,6 +733,12 @@ def gh_copilot_installed() -> bool:
 
 def model_usable(m: ModelMetadata) -> bool:
     """False for a model its provider says it can't run now, which would only fail and fall back. Unknown means usable."""
+    try:
+        from orchestrator.project_chat import is_model_blocked
+        if is_model_blocked(m.id):
+            return False
+    except Exception:
+        pass
     if is_codex_model(m):
         return codex_usable(m)
     if m.id == "copilot":
