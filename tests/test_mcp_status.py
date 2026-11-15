@@ -351,8 +351,9 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
 
     def test_recommend_fix_button_shows_with_error(self):
         app = APP.read_text(encoding="utf-8")
-        self.assertIn('data-recommend-fix="${esc(err)}">Recommend fix</button>', app)
-        self.assertIn('data-recommend-fix="${esc(job.last_error)}">Recommend fix</button>', app)
+        self.assertIn('data-attempt-fix="${esc(err)}" data-attempt-job="${esc(targetJob)}">Attempt fix</button>', app)
+        self.assertIn('data-attempt-fix="${esc(job.last_error)}" data-attempt-job="${esc(job.job_id)}">Attempt fix</button>', app)
+        self.assertIn('next?.action !== "answer"', app)
 
     def test_swipe_left_on_job_reveals_archive_button(self):
         app = APP.read_text(encoding="utf-8")

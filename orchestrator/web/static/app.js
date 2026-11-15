@@ -3637,6 +3637,17 @@ async function openAskAi(opts = {}) {
 
 document.addEventListener("click", (e) => {
   if (e.target.closest?.("[data-ask-ai]")) openAskAi();
+  const attemptFix = e.target.closest?.("[data-attempt-fix]");
+  if (attemptFix) {
+    const jobId = attemptFix.dataset.attemptJob || "";
+    const errText = attemptFix.dataset.attemptFix || "";
+    if (jobId) {
+      runAction("debug", { job: jobId, feedback: errText }, { button: attemptFix });
+    } else {
+      openAskAi({ prompt: `This run failed with the following error. Explain why it happened and recommend how to fix it:\n\n${errText}` });
+    }
+    return;
+  }
   const recFix = e.target.closest?.("[data-recommend-fix]");
   if (recFix) openAskAi({ prompt: `This job failed with the following error. Explain why it happened and recommend how to fix it:\n\n${recFix.dataset.recommendFix || ""}` });
 });
@@ -5392,8 +5403,8 @@ pages.job = async ([id]) => {
 
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
-  const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug"
-    ? `<button class="btn" data-recommend-fix="${esc(job.last_error)}">Recommend fix</button>`
+  const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug" && next?.action !== "answer"
+    ? `<button class="btn" data-attempt-fix="${esc(job.last_error)}" data-attempt-job="${esc(job.job_id)}">Attempt fix</button>`
     : "";
   const heroAction = activeRun
     ? (isStoppingActive
@@ -13536,7 +13547,9 @@ function runFailureGuidance(r) {
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
-    const recommendBtn = `<button type="button" class="btn small" data-recommend-fix="${esc(err)}">Recommend fix</button>`;
+    const recommendBtn = targetJob
+      ? `<button type="button" class="btn small" data-attempt-fix="${esc(err)}" data-attempt-job="${esc(targetJob)}">Attempt fix</button>`
+      : `<button type="button" class="btn small" data-recommend-fix="${esc(err)}">Explain error</button>`;
     return {
       title: "Execution error",
       detail: err,
