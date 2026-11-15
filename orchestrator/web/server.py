@@ -4795,13 +4795,13 @@ def ai_providers_state(root: Path) -> dict[str, Any]:
     from orchestrator import setup_checklist as checklist
     search = tool_search_path()
     ready = set(checklist.ready_llm_providers({}))  # cached briefly: signing-in checks run the tools
-    from orchestrator.scripts.model_registry import models_last_synced
+    from orchestrator.scripts.model_registry import get_all_models, models_last_synced
     settings = read_settings(root)
     state = ai_providers.with_status(lambda cli: shutil.which(cli, path=search) is not None, lambda cli: cli in ready,
                                      checklist.saved_api_keys(settings), settings)
     # Providers whose API key was refused: left out of Ask AI, and shown here where they can be fixed.
     return {**state, "models": provider_models(), "models_synced": models_last_synced(),
-            "problems": project_chat.provider_problems(project_chat.ready_models(root))}
+            "problems": project_chat.provider_problems(get_all_models())}
 
 
 def ai_machine_statuses(root: Path) -> dict[str, Any]:

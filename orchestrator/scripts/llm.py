@@ -153,16 +153,21 @@ def is_quota_error(error_msg: str) -> bool:
 
 def is_unusable_model_error(error_msg: str) -> tuple[bool, bool]:
     """Return `(is_unusable, is_key_rejected)` for persistent auth/provider/missing-model failures (not transient rate limits)."""
-    low = error_msg.lower()
+    target = summarize_cli_error(error_msg) if "\n" in error_msg else error_msg
+    low = target.lower()
+    norm = low.replace("-", " ").replace("_", " ")
     key_markers = (
-        "invalid api key", "fix external api key", "api key", "unauthorized", "forbidden",
-        "bad credentials", "auth error", "authentication", "not logged in", "please run /login",
-        "auth source is set", "invalid_api_key", "401", "403",
+        "invalid api key", "fix external api key", "api key rejected", "missing api key", "unauthorized", "forbidden",
+        "bad credentials", "auth error", "authentication failed", "not logged in", "please run /login",
+        "auth source is set", "not signed in",
     )
-    if any(m in low for m in key_markers):
+    if any(m in norm for m in key_markers) or re.search(r"\b(?:401|403)\b", low):
         return True, True
-    unavailable_markers = ("model not found", "may not exist", "not have access", "access to it", "providermodelnotfounderror")
-    if any(m in low for m in unavailable_markers):
+    unavailable_markers = (
+        "model not found", "unknown model", "may not exist", "does not exist",
+        "not have access", "access to it", "not supported", "not available", "providermodelnotfounderror",
+    )
+    if any(m in norm for m in unavailable_markers) or "model_not_found" in low:
         return True, False
     return False, False
 
@@ -187,7 +192,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     substituted = False
     if resolved_model and not model_usable(resolved_model):
         stand_in = model_substitute(resolved_model)
-        if stand_in:
+        if stand_in and (not allowed_models or stand_in.id in allowed_models):
             print(f"ℹ️  {primary_id} isn't available to the {resolved_model.family} login on this computer. Using {stand_in.id} instead.")
             primary_id, resolved_model, substituted = stand_in.id, stand_in, True
 
@@ -239,6 +244,14 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                             on_chunk(None)
                         continue
             
+            # Clear any prior recorded failure for this model now that it answered cleanly.
+            try:
+                from orchestrator.project_chat import load_checks, record_check
+                if load_checks().get(current_model, {}).get("ok") is False:
+                    record_check(current_model, True)
+            except Exception:
+                pass
+
             # Return the full raw output so callers can see research/thoughts
             return raw_output, current_model, actual_session_id
         except LLMTimeoutError as exc:

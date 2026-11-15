@@ -139,29 +139,50 @@ def checks_path() -> Path:
     return user_state_dir() / "model_checks.json"  # the models are this computer's, whichever project asks
 
 
-def load_checks() -> dict[str, dict[str, Any]]:
+_CHECKS_LOCK = threading.Lock()  # the three tiers are checked at once: one read-change-write at a time
+_CHECKS_MEMO: tuple[Path, float, dict[str, dict[str, Any]]] | None = None
+
+
+def _read_checks_unlocked(path: Path) -> dict[str, dict[str, Any]]:
     try:
-        data = json.loads(checks_path().read_text())
+        data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
     return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
-_CHECKS_LOCK = threading.Lock()  # the three tiers are checked at once: one read-change-write at a time
+def load_checks() -> dict[str, dict[str, Any]]:
+    global _CHECKS_MEMO
+    path = checks_path()
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = -1.0
+    with _CHECKS_LOCK:
+        if _CHECKS_MEMO is not None and _CHECKS_MEMO[0] == path and _CHECKS_MEMO[1] == mtime:
+            return dict(_CHECKS_MEMO[2])
+        parsed = _read_checks_unlocked(path) if mtime >= 0 else {}
+        _CHECKS_MEMO = (path, mtime, parsed)
+        return dict(parsed)
 
 
 def record_check(model: str, ok: bool, reason: str = "", now: float | None = None) -> None:
+    global _CHECKS_MEMO
     if not model:
         return
     with _CHECKS_LOCK:
-        data = load_checks()
-        data[model] = {"ok": bool(ok), "reason": "" if ok else (reason or "didn't answer")[:200], "at": now or time.time()}
         path = checks_path()
+        data = _read_checks_unlocked(path)
+        data[model] = {"ok": bool(ok), "reason": "" if ok else (reason or "didn't answer")[:200], "at": now or time.time()}
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".checks-")
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=1)
         os.replace(tmp, path)
+        try:
+            _CHECKS_MEMO = (path, path.stat().st_mtime, data)
+        except OSError:
+            _CHECKS_MEMO = None
 
 
 KEY_REJECTED = "its API key is rejected (check AI tools)"
@@ -180,9 +201,17 @@ def credentials_file() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "opencode" / "auth.json"
 
 
+_TRANSIENT_FAILURE = ("timed out", "didn't answer in time", "rate limit", "overloaded", "out of quota")
+
+
+def _is_transient_reason(reason: str) -> bool:
+    low = reason.lower()
+    return any(t in low for t in _TRANSIENT_FAILURE)
+
+
 def rejected_providers(checks: dict[str, dict[str, Any]], now: float | None = None) -> dict[str, dict[str, Any]]:
-    """Providers whose API key was refused or where multiple models failed with none working. Forgotten after KEY_HOLD,
-    or as soon as the sign-in file is newer than the refusal (the key may have been replaced)."""
+    """Providers whose API key was refused or where multiple models failed persistently with none working. Forgotten after
+    KEY_HOLD, or as soon as the sign-in file is newer than the refusal (the key may have been replaced)."""
     now = now or time.time()
     try:
         changed = credentials_file().stat().st_mtime
@@ -201,8 +230,11 @@ def rejected_providers(checks: dict[str, dict[str, Any]], now: float | None = No
         if check.get("ok"):
             ok_providers.add(provider)
             continue
+        reason = str(check.get("reason") or "")
+        if _is_transient_reason(reason):
+            continue
         recent_fails.setdefault(provider, []).append((model, check))
-        if check.get("reason") == KEY_REJECTED:
+        if reason == KEY_REJECTED:
             if provider not in found or at > float(found[provider].get("at") or 0):
                 found[provider] = {**check, "model": model}
     for provider, fails in recent_fails.items():
@@ -218,9 +250,6 @@ def record_model_failure(model_id: str, reason: str = "", *, key_rejected: bool 
     record_check(model_id, False, msg, now=now)
 
 
-_TRANSIENT_FAILURE = ("timed out", "rate limit", "overloaded")
-
-
 def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> bool:
     """True when `model_id` or its provider recently failed with a non-transient error."""
     if not model_id:
@@ -233,15 +262,16 @@ def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = N
     entry = checks.get(model_id)
     if not isinstance(entry, dict) or entry.get("ok"):
         return False
-    reason = str(entry.get("reason") or "").lower()
-    if any(t in reason for t in _TRANSIENT_FAILURE):
+    reason = str(entry.get("reason") or "")
+    if _is_transient_reason(reason):
         return False
+    hold = KEY_HOLD if reason == KEY_REJECTED else FAIL_HOLD
     at = float(entry.get("at") or 0)
     try:
         changed = credentials_file().stat().st_mtime
     except OSError:
         changed = 0.0
-    return (now - at) < KEY_HOLD and changed <= at
+    return (now - at) < hold and changed <= at
 
 
 def provider_label(provider: str) -> str:
@@ -249,32 +279,38 @@ def provider_label(provider: str) -> str:
 
 
 def provider_problems(models: Iterable[Any] | None = None, checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> list[dict[str, Any]]:
-    """What to fix so an AI provider works again: [{provider, name, reason, models, since, fix}], one per provider whose key was refused."""
+    """What to fix so an AI provider works again: [{provider, name, reason, models, since, fix}], one per rejected provider."""
     checks = load_checks() if checks is None else checks
     ids = [m.id for m in (models or [])]
     out = []
     for provider, check in sorted(rejected_providers(checks, now).items()):
         covered = sorted({m for m in [*ids, *checks] if provider_of(m) == provider})
-        out.append({"provider": provider, "name": provider_label(provider), "reason": KEY_REJECTED, "models": len(covered),
+        reason = str(check.get("reason") or "") or KEY_REJECTED
+        out.append({"provider": provider, "name": provider_label(provider), "reason": reason, "models": len(covered),
                     "since": check.get("at"), "fix": f"Run `opencode auth login` on this computer, choose {provider_label(provider)} and enter a valid key."})
     return out
 
 
 def forget_provider(provider: str) -> int:
     """Drop every recorded failure for a provider (after its key was replaced), so its models are asked again. Returns how many."""
+    global _CHECKS_MEMO
     if not provider:
         return 0
     with _CHECKS_LOCK:
-        data = load_checks()
+        path = checks_path()
+        data = _read_checks_unlocked(path)
         gone = [m for m in data if provider_of(m) == provider]
         for m in gone:
             del data[m]
         if gone:
-            path = checks_path()
             fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".checks-")
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=1)
             os.replace(tmp, path)
+            try:
+                _CHECKS_MEMO = (path, path.stat().st_mtime, data)
+            except OSError:
+                _CHECKS_MEMO = None
     return len(gone)
 
 

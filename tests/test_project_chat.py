@@ -385,15 +385,17 @@ class PageTests(unittest.TestCase):
         self.assertEqual(llm.is_unusable_model_error("401 Invalid API key"), (True, True))
         self.assertEqual(llm.is_unusable_model_error("ProviderModelNotFoundError: model not found"), (True, False))
         self.assertEqual(llm.is_unusable_model_error("429 Rate limit exceeded"), (False, False))
+        self.assertEqual(llm.is_unusable_model_error("Error: Build failed\nTest returned 401 on mock endpoint"), (False, False))
 
         with tempfile.TemporaryDirectory() as tmp:
             checks = Path(tmp) / "checks.json"
+            t_now = time.time()
             with patch.object(project_chat, "checks_path", return_value=checks), \
                  patch.object(project_chat, "credentials_file", return_value=Path(tmp) / "missing-auth.json"):
-                project_chat.record_model_failure("alibaba-token-plan/qwen3.7-max", "401 Unauthorized", key_rejected=True)
-                self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/qwen3.7-max"))
+                project_chat.record_model_failure("alibaba-token-plan/qwen3.7-max", "401 Unauthorized", key_rejected=True, now=t_now)
+                self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/qwen3.7-max", now=t_now + 1.0))
                 # Sibling model from the same rejected provider is also weeded out
-                self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/deepseek-v4-pro"))
+                self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/deepseek-v4-pro", now=t_now + 1.0))
                 meta = model_registry.ModelMetadata(
                     id="alibaba-token-plan/deepseek-v4-pro",
                     tier=model_registry.ModelTier.HIGH,
@@ -402,9 +404,18 @@ class PageTests(unittest.TestCase):
                 )
                 with patch.object(model_registry, "read_provider_cache", return_value={}):
                     self.assertFalse(model_registry.model_usable(meta))
+                # Transient errors do not block models or providers
+                project_chat.record_check("other/m1", False, "didn't answer in time", now=t_now)
+                project_chat.record_check("other/m2", False, "out of quota for now", now=t_now)
+                self.assertFalse(project_chat.is_model_blocked("other/m1", now=t_now + 1.0))
+                self.assertNotIn("other", project_chat.rejected_providers(project_chat.load_checks(), now=t_now + 1.0))
+                # Non-key-rejected model failure expires after FAIL_HOLD (30m), not 24h
+                project_chat.record_model_failure("single/bad-model", "model not found", key_rejected=False, now=t_now)
+                self.assertTrue(project_chat.is_model_blocked("single/bad-model", now=t_now + 60))
+                self.assertFalse(project_chat.is_model_blocked("single/bad-model", now=t_now + project_chat.FAIL_HOLD + 1))
                 # Forgetting the provider re-enables it
                 project_chat.forget_provider("alibaba-token-plan")
-                self.assertFalse(project_chat.is_model_blocked("alibaba-token-plan/deepseek-v4-pro"))
+                self.assertFalse(project_chat.is_model_blocked("alibaba-token-plan/deepseek-v4-pro", now=t_now + 1.0))
 
 
 if __name__ == "__main__":
