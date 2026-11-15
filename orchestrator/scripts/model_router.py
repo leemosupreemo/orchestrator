@@ -106,6 +106,21 @@ def get_prioritized_models(role: str | None = None, allowed_models: list[str] | 
     
     return [m[0].id for m in scored_models]
 
+def resolve_builder_model(job: dict[str, Any]) -> str:
+    """Return the job's configured builder model, or fall back to planner/reviewer/prioritized builder."""
+    configured = str(job.get("builder") or "").strip()
+    if configured:
+        return configured
+    for key in ("planner", "reviewer"):
+        candidate = str(job.get(key) or "").strip()
+        if candidate:
+            return candidate
+    prioritized = get_prioritized_models(role=ModelRole.BUILDER, allowed_models=job.get("allowed_models"))
+    if prioritized:
+        return prioritized[0]
+    raise RuntimeError("No builder model configured on job and no usable builder model is available.")
+
+
 def builder_for_task(task: dict[str, Any], job: dict[str, Any]) -> str | None:
     """Use a cheaper coding model for a planner-marked small task, within the job allowed-model set."""
     configured_builder = job.get("builder")

@@ -309,7 +309,8 @@ def write_tests(job: dict, job_path: Path, out: Path, design: bool, cases: list[
         prompt += cases_block(job, cases)
     from orchestrator import prd
     prompt += prd.context_block(ROOT, "builder")
-    output, model, session = run_llm(job["builder"], prompt, cwd=ROOT, timeout=1200,
+    from model_router import resolve_builder_model
+    output, model, session = run_llm(resolve_builder_model(job), prompt, cwd=ROOT, timeout=1200,
                                    allowed_models=job.get("allowed_models"), role=ModelRole.BUILDER,
                                    protected_paths=[ROOT])
     result = json.loads(extract_json_block(output))

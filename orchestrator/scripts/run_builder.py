@@ -5,7 +5,7 @@ from pathlib import Path
 
 from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_text, print_phase, StatusBar, format_clarification_history, format_investigation_history
 from llm import run_llm, extract_json_block
-from model_router import ModelRole
+from model_router import ModelRole, resolve_builder_model
 from run_build_and_tests import run_build_and_tests
 from reference_artifacts import reference_context
 from orchestrator import reuse_brief
@@ -290,7 +290,7 @@ Brief:
         print_phase("agent_thinking")
         status_bar.render()
         output, actual_builder, session_id = run_llm(
-            job["builder"], 
+            resolve_builder_model(job), 
             full_prompt, 
             cwd=ROOT, 
             timeout=1200, 

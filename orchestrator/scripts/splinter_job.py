@@ -88,6 +88,8 @@ def splinter_job(job_path: Path) -> list[str]:
         sub_job_id = f"{timestamp()}-task-{sub_ref}"
         paths = make_job_paths(sub_job_id)
         
+        from model_router import resolve_builder_model
+        fallback_model = resolve_builder_model(job)
         sub_job = {
             "job_id": sub_job_id,
             "parent_job_id": parent_id,
@@ -98,9 +100,9 @@ def splinter_job(job_path: Path) -> list[str]:
             "code_host": "github" if sub_issue_number else "git",
             "title": sub_title,
             "status": "planned",
-            "planner": job["planner"],
-            "builder": job["builder"],
-            "reviewer": job["reviewer"],
+            "planner": job.get("planner") or fallback_model,
+            "builder": fallback_model,
+            "reviewer": job.get("reviewer") or fallback_model,
             "branch": None,
             "pr_number": None,
             "created_at": now_iso(),

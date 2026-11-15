@@ -706,3 +706,12 @@ class WorkerRunTests(unittest.TestCase):
             self.assertIn('index.lock', str(ctx.exception))
             self.assertTrue(lock.exists())
             lock.unlink(missing_ok=True)
+
+
+class ResolveBuilderModelTests(unittest.TestCase):
+    def test_falls_back_when_builder_missing(self):
+        import model_router
+        self.assertEqual(model_router.resolve_builder_model({'builder': 'codex'}), 'codex')
+        self.assertEqual(model_router.resolve_builder_model({'planner': 'claude-sonnet-4-6'}), 'claude-sonnet-4-6')
+        with patch.object(model_router, 'get_prioritized_models', return_value=['gpt-5.4']):
+            self.assertEqual(model_router.resolve_builder_model({}), 'gpt-5.4')
