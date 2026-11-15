@@ -2174,6 +2174,7 @@ def update_project_json(root: Path, changes: dict[str, Any]) -> None:
         else:
             project[key] = value
     write_json_file(path, project)
+    _publish_master_async(root)
 
 
 def save_test_command(root: Path, body: dict[str, Any]) -> dict[str, Any]:
@@ -3323,23 +3324,129 @@ SETUP_PUBLISH_SECONDS = 600
 _setup_published: dict[str, tuple[float, str]] = {}
 
 
-def publish_setup_async(root: Path, setup: dict[str, Any]) -> None:
+def _master_sync_state(root: Path) -> dict[str, Any]:
+    raw = read_settings(root).get("master_config_synced")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _should_pull_master(root: Path, master: dict[str, Any]) -> bool:
+    """True when the cloud master config is newer than this machine's last applied/pushed master and differs locally."""
+    master_hash = str(master.get("hash") or "")
+    if not master_hash:
+        return False
+    rt = runtime_dir(root)
+    local_hash = setup_copy.profile_hash(setup_copy.export_profile(rt))
+    if local_hash == master_hash:
+        return False
+    if not (rt / "project.json").is_file():
+        return True
+    synced = _master_sync_state(root)
+    last_at = float(synced.get("updated_at") or 0)
+    master_at = float(master.get("updated_at") or 0)
+    return master_at > last_at and str(synced.get("hash") or "") != master_hash
+
+
+def _record_master_sync(root: Path, master: dict[str, Any]) -> None:
+    if not isinstance(master, dict) or not master.get("hash"):
+        return
+    rt = runtime_dir(root)
+    settings_path = rt / "config" / "settings.json"
+    settings = setup_copy._read_json(settings_path)
+    settings["master_config_synced"] = {
+        "hash": str(master.get("hash") or ""),
+        "updated_at": master.get("updated_at") or time.time(),
+        "machine_id": str(master.get("machine_id") or ""),
+        "machine_name": str(master.get("machine_name") or ""),
+    }
+    setup_copy._write_json(settings_path, settings)
+
+
+_master_sync_errors: dict[str, str] = {}
+
+
+def sync_master_config(root: Path, push: bool = False, raise_on_error: bool = False) -> dict[str, Any]:
+    """Pull the account's master config for this project, or push this machine's config as the new master."""
+    key = project_key(root)
+    machine = account.load_machine()
+    if machine is None:
+        if raise_on_error:
+            raise UIError("This computer isn't signed in to an account, so master config sync is unavailable.")
+        return {"enabled": False, "synced": False}
+    rt = runtime_dir(root)
+    if push:
+        setup = setup_checklist(root, rt)
+        profile = setup_copy.export_profile(rt)
+        if not setup_copy.has_config(profile):
+            raise UIError("Configure this project first before pushing it as the master config.")
+        payload = {"project": key, "progress": setup_copy.progress(setup), "profile": profile, "push_master": True}
+        try:
+            reply = account.call("machine/setup", payload, machine, timeout=8)
+        except account.AccountError as exc:
+            _master_sync_errors[key] = str(exc)
+            raise UIError(str(exc), HTTPStatus.BAD_GATEWAY) from exc
+        master = reply.get("master") if isinstance(reply.get("master"), dict) else None
+        if master:
+            _record_master_sync(root, master)
+        _master_sync_errors.pop(key, None)
+        _setup_published.pop(key, None)
+        return {"enabled": True, "pushed": True, "master": master}
+    try:
+        reply = account.call("machine/setup/master", {"project": key}, machine, timeout=6)
+    except account.AccountError as exc:
+        _master_sync_errors[key] = str(exc)
+        if raise_on_error:
+            raise UIError(str(exc), HTTPStatus.BAD_GATEWAY) from exc
+        return {"enabled": True, "synced": False, "error": str(exc)}
+    _master_sync_errors.pop(key, None)
+    master = reply.get("master") if isinstance(reply, dict) else None
+    if not isinstance(master, dict) or not setup_copy.has_config(master.get("profile") or {}):
+        return {"enabled": True, "synced": False, "master": None}
+    if not _should_pull_master(root, master):
+        return {"enabled": True, "synced": False, "already_current": True, "master": {
+            k: master.get(k) for k in ("machine_id", "machine_name", "updated_at", "hash")}}
+    applied = setup_copy.apply_master_profile(rt, master)
+    _setup_published.pop(key, None)
+    return {"enabled": True, "synced": True, "from": master.get("machine_name"), "applied": applied,
+            "master": {k: master.get(k) for k in ("machine_id", "machine_name", "updated_at", "hash")}}
+
+
+def _publish_master_async(root: Path) -> None:
+    if account.load_machine() is None:
+        return
+
+    def _run() -> None:
+        try:
+            publish_setup_async(root, setup_checklist(root, runtime_dir(root)), push_master=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def publish_setup_async(root: Path, setup: dict[str, Any], push_master: bool = False) -> None:
     """Share this computer's setup progress and copyable settings (orchestrator/setup_copy.py: never keys) with the
-    account's other computers, when it changed or every few minutes, so a newer computer can copy it. No account, no sharing."""
+    account's other computers, and auto-pull a newer master config when one exists."""
     machine = account.load_machine()
     if machine is None:
         return
     key = project_key(root)
-    payload = {"project": key, "progress": setup_copy.progress(setup), "profile": setup_copy.export_profile(runtime_dir(root))}
+    payload = {"project": key, "progress": setup_copy.progress(setup),
+               "profile": setup_copy.export_profile(runtime_dir(root)), "push_master": bool(push_master)}
     fingerprint = json.dumps(payload, sort_keys=True)
     last = _setup_published.get(key)
-    if last and last[1] == fingerprint and time.time() - last[0] < SETUP_PUBLISH_SECONDS:
+    if not push_master and last and last[1] == fingerprint and time.time() - last[0] < SETUP_PUBLISH_SECONDS:
         return
     _setup_published[key] = (time.time(), fingerprint)
 
     def _run() -> None:
         try:
-            account.call("machine/setup", payload, machine, timeout=8)
+            reply = account.call("machine/setup", payload, machine, timeout=8)
+            master = reply.get("master") if isinstance(reply, dict) else None
+            if isinstance(master, dict) and master.get("hash"):
+                if push_master:
+                    _record_master_sync(root, master)
+                elif _should_pull_master(root, master):
+                    sync_master_config(root)
         except Exception:
             _setup_published.pop(key, None)  # try again on the next check
 
@@ -4732,6 +4839,7 @@ def write_settings(root: Path, settings: dict[str, Any]) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(settings, fh, indent=2)
     os.replace(tmp, path)
+    _publish_master_async(root)
 
 
 def base_branch(root: Path, settings: dict[str, Any]) -> str:
@@ -8038,10 +8146,21 @@ class UIHandler(BaseHTTPRequestHandler):
                     "status": "todo" if errors else "ok", "detail": " ".join(errors) if errors else "Signing configuration is present. Certificates and account access are checked when distributing.",
                     "route": "#/delivery", "label": "Review app delivery"})
             publish_setup_async(root, setup)  # before annotate: what other computers see is what is set up here
-            setup_copy.annotate(setup, read_settings(root))
+            local_settings = read_settings(root)
+            setup_copy.annotate(setup, local_settings)
+            if isinstance(local_settings.get("master_config_synced"), dict):
+                setup["master_sync"] = local_settings["master_config_synced"]
+            if _master_sync_errors.get(project_key(root)):
+                setup["master_sync_error"] = _master_sync_errors[project_key(root)]
             self._json(setup)
         elif method == "GET" and parts == ["setup", "sources"]:
             self._json(setup_sources(root))
+        elif method == "POST" and parts == ["setup", "sync-master"]:
+            self._require_owner("sync master config")
+            body = self._body()
+            result = sync_master_config(root, push=bool(body.get("push")), raise_on_error=True)
+            self._audit("master_config_synced", root=str(root), push=bool(body.get("push")))
+            self._json(result)
         elif method == "POST" and parts == ["setup", "copy"]:
             self._require_owner("copy setup from another computer")
             machine_id = _text(self._body(), "machine_id", required=True, limit=80)
@@ -8071,12 +8190,18 @@ class UIHandler(BaseHTTPRequestHandler):
                 if isinstance(settings, dict) and settings:
                     self._json({"ok": True, "already": True})  # nothing to write: it is configured, and saying "configured" would hide that
                     return
+            synced = sync_master_config(root)
+            if synced.get("synced") and path.is_file():
+                self._audit("project_configured", root=str(root), synced_from=str(synced.get("from") or ""))
+                self._json({"ok": True, "already": False, "synced_from": synced.get("from")})
+                return
             try:
                 if path.exists():
                     path.unlink()  # it holds nothing ("" or {}): init skips a file that exists, so clear just this one (never --force: that rewrites machines and settings)
                 new_project.configure(root, project_display_name(root))
             except Exception as exc:
                 raise UIError(f"Couldn't configure the project: {exc}")
+            _publish_master_async(root)
             self._audit("project_configured", root=str(root))
             self._json({"ok": True, "already": False})
         elif method == "POST" and parts == ["setup", "github-create"]:

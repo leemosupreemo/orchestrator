@@ -132,6 +132,7 @@ This document catalogs the complete test matrix for Swift Orchestrator and its W
 | **TC-TOOL-05** | Unconfigured Device Logs Guidance | EC | Project without remote logs enabled | Open `#/devlogs` | Renders clean explanatory card detailing setup steps rather than throwing errors. | Automated (`test_devlogs_reports_unconfigured`) |
 | **TC-TOOL-06** | Configuration Submenus Navigation | BFT | Active project | Click configuration submenus trigger | Context menu opens with all configuration areas (API keys, fleet, Firebase, audit, update). | Manual / E2E |
 | **TC-TOOL-07** | Onboarding Setup Wizard Checklist | BFT | New project without full configuration | Open Home view | Setup banner / wizard appears with actionable steps (Machines, AI Keys, Project Settings). | Automated (`test_config_settings_roundtrip_and_validation`) |
+| **TC-TOOL-08** | Master Config Sync Across Machines | BFT | Account signed in on multiple machines | Click **Sync master config** or **Set as master** in Setup panel | Shows syncing/pushing progress, updates portable project settings from master or promotes current machine, and surfaces errors inline and via toast. | Automated (`test_master_config_pull_and_push`, `test_master_config_error_raises_on_manual_sync_and_records_status`, `test_setup_panel_master_sync_loading_and_error_ui`, `test_master_setup_sync_and_get`) |
 
 ---
 

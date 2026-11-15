@@ -124,6 +124,78 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual((settings["setup_copied_from"]["name"], settings["setup_copied_from"]["ready"]), ("Studio", ["github_cli"]))
         self.assertEqual(self.calls[0][1]["machine_id"], "studio-id")
 
+    def test_master_config_pull_and_push(self):
+        from unittest.mock import patch
+        profile = {"project": {"build_command": "unity -batchmode"}, "settings": {"default_models": {"planner": "sonnet"}}}
+        h = self.ui.setup_copy.profile_hash(profile)
+        master_reply = {"master": {"machine_id": "studio-id", "machine_name": "Studio", "updated_at": 1000.0, "hash": h, "profile": profile, "progress": {}}}
+        with patch.object(self.ui.account, "load_machine", return_value={"machine_id": "me"}), \
+                patch.object(self.ui.account, "call", self.fake_call({"machine/setup/master": master_reply})):
+            pulled = self.ui.sync_master_config(self.root)
+            self.assertTrue(pulled["synced"])
+            self.assertEqual(pulled["from"], "Studio")
+            # Second pull with same hash is a no-op
+            again = self.ui.sync_master_config(self.root)
+            self.assertFalse(again["synced"])
+            self.assertTrue(again["already_current"])
+
+        runtime = self.root / ".orchestrator"
+        self.assertEqual(json.loads((runtime / "project.json").read_text())["build_command"], "unity -batchmode")
+        settings = json.loads((runtime / "config" / "settings.json").read_text())
+        self.assertEqual(settings["master_config_synced"]["hash"], h)
+
+        push_reply = {"ok": True, "master": {"machine_id": "me", "machine_name": "Mac", "updated_at": 2000.0, "hash": h}}
+        with patch.object(self.ui.account, "load_machine", return_value={"machine_id": "me"}), \
+                patch.object(self.ui.account, "call", self.fake_call({"machine/setup": push_reply})):
+            pushed = self.ui.sync_master_config(self.root, push=True)
+        self.assertTrue(pushed["pushed"])
+        self.assertEqual(self.calls[-1][0], "machine/setup")
+        self.assertTrue(self.calls[-1][1]["push_master"])
+
+    def test_master_config_error_raises_on_manual_sync_and_records_status(self):
+        from unittest.mock import patch
+
+        def fail_call(path, body, machine, timeout=8):
+            raise self.ui.account.AccountError("Cloud offline", status=503)
+
+        with patch.object(self.ui.account, "load_machine", return_value={"machine_id": "me"}), \
+                patch.object(self.ui.account, "call", side_effect=fail_call):
+            res = self.ui.sync_master_config(self.root)
+            self.assertEqual(res.get("error"), "Cloud offline")
+            self.assertEqual(self.ui._master_sync_errors.get(self.ui.project_key(self.root)), "Cloud offline")
+            with self.assertRaises(self.ui.UIError):
+                self.ui.sync_master_config(self.root, raise_on_error=True)
+        self.ui._master_sync_errors.pop(self.ui.project_key(self.root), None)
+
+    def test_setup_panel_master_sync_loading_and_error_ui(self):
+        import subprocess
+        app_path = Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js"
+        src = app_path.read_text(encoding="utf-8")
+        self.assertIn("data-master-sync-status", src)
+        self.assertIn("Pushing…", src)
+        self.assertIn("Syncing…", src)
+        self.assertIn("Master config sync failed:", src)
+        script = r"""
+const fs = require('fs');
+const assert = require('assert');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+const start = code.indexOf('function renderSetupPanel()');
+const end = code.indexOf('async function openSetupPanel()');
+const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const Account = { active: () => true };
+const setupListHtml = () => '';
+const panel = { innerHTML: '' };
+const $ = (sel) => (sel === '#setup-panel' ? panel : null);
+let setupState = { required_done: 7, required_total: 7, master_sync_error: 'Cloud offline' };
+eval(code.slice(start, end));
+renderSetupPanel();
+assert(panel.innerHTML.includes('Master config sync failed: Cloud offline'), panel.innerHTML);
+assert(panel.innerHTML.includes('data-master-sync="pull"'), panel.innerHTML);
+assert(panel.innerHTML.includes('data-master-sync="push"'), panel.innerHTML);
+"""
+        res = subprocess.run(["node", "-e", script, str(app_path)], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
 
 if __name__ == "__main__":  # noqa: E305
     unittest.main()

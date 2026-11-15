@@ -545,17 +545,63 @@ class ControlPlane:
         return {"required_done": count("required_done"), "required_total": count("required_total"),
                 "complete": value.get("complete") is True, "items": items}
 
+    @staticmethod
+    def _master_meta(master: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(master, dict) or not master.get("hash"):
+            return None
+        return {
+            "machine_id": master.get("machine_id", ""),
+            "machine_name": master.get("machine_name", ""),
+            "updated_at": master.get("updated_at", 0),
+            "hash": master.get("hash", ""),
+        }
+
     def sync_setup(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
         machine_id, machine = self._machine_from_header(auth_header)
-        project = self._setup_project(machine, body)
+        master_doc_id, project = self._primary_doc(machine["owner_uid"], body)
         profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
         if len(json.dumps(profile)) > SETUP_PROFILE_LIMIT:
             raise ControlError("That setup is too large to share.", 413)
         now = self.now()
+        progress = self._setup_progress(body.get("progress"))
         self.store.set("machine_setups", self._setup_doc(machine_id, project), {
             "machine_id": machine_id, "owner_uid": machine["owner_uid"], "project": project, "synced_at": now,
-            "progress": self._setup_progress(body.get("progress")), "profile": profile})
-        return {"ok": True, "synced_at": now}
+            "progress": progress, "profile": profile})
+        master = self.store.get("master_configs", master_doc_id)
+        profile_hash = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()[:16] if any(profile.values()) else ""
+        if profile_hash and (
+            body.get("push_master") is True
+            or master is None
+            or (master.get("machine_id") == machine_id and master.get("hash") != profile_hash)
+        ):
+            master = {
+                "owner_uid": machine["owner_uid"],
+                "project": project,
+                "machine_id": machine_id,
+                "machine_name": machine["name"],
+                "updated_at": now,
+                "hash": profile_hash,
+                "progress": progress,
+                "profile": profile,
+            }
+            self.store.set("master_configs", master_doc_id, master)
+        return {"ok": True, "synced_at": now, "master": self._master_meta(master)}
+
+    def get_master_setup(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Return the account's shared master config for this project, if one has been published."""
+        _machine_id, machine = self._machine_from_header(auth_header)
+        master_doc_id, _project = self._primary_doc(machine["owner_uid"], body)
+        master = self.store.get("master_configs", master_doc_id)
+        if master is None or master.get("owner_uid") != machine["owner_uid"]:
+            return {"master": None}
+        return {"master": {
+            "machine_id": master.get("machine_id", ""),
+            "machine_name": master.get("machine_name", ""),
+            "updated_at": master.get("updated_at", 0),
+            "hash": master.get("hash", ""),
+            "progress": master.get("progress") or {},
+            "profile": master.get("profile") or {},
+        }}
 
     def list_setups(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
         """The account's other computers that have shared a setup for this project, without the settings themselves."""
@@ -831,6 +877,7 @@ class ControlPlane:
                 ("POST", "/machine/setup"): lambda: self.sync_setup(headers.get("authorization", ""), body),
                 ("POST", "/machine/setups"): lambda: self.list_setups(headers.get("authorization", ""), body),
                 ("POST", "/machine/setup/get"): lambda: self.get_setup(headers.get("authorization", ""), body),
+                ("POST", "/machine/setup/master"): lambda: self.get_master_setup(headers.get("authorization", ""), body),
                 ("POST", "/machine/primary"): lambda: self.primary(headers.get("authorization", ""), body),
                 ("POST", "/machine/primary/claim"): lambda: self.claim_primary(headers.get("authorization", ""), body),
                 ("POST", "/enroll/redeem"): lambda: self.redeem_enrollment(body),

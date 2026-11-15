@@ -3779,8 +3779,16 @@ function renderSetupFab() {
 function renderSetupPanel() {
   const s = setupState, panel = $("#setup-panel");
   if (!s) return;
+  const masterLine = s.master_sync_error
+    ? `<p class="text-bad t-secondary mt-8" data-master-sync-status>Master config sync failed: ${esc(s.master_sync_error)}</p>`
+    : s.master_sync?.machine_name
+    ? `<p class="muted t-secondary mt-8" data-master-sync-status>Master config: ${esc(s.master_sync.machine_name)}</p>`
+    : `<p class="muted t-secondary mt-8" data-master-sync-status hidden></p>`;
+  const masterActions = typeof Account !== "undefined" && Account.active?.()
+    ? `<div class="row gap-8 mt-8"><button type="button" class="btn small ghost" data-master-sync="pull">Sync master config</button><button type="button" class="btn small ghost" data-master-sync="push">Set as master</button></div>`
+    : "";
   panel.innerHTML = `<div class="setup-panel-h"><strong>Setup</strong><span class="muted">${s.required_done}/${s.required_total} required</span>
-    <button class="btn small ghost" data-setup-close aria-label="Close">✕</button></div><div class="setup-panel-b">${setupListHtml(s)}
+    <button class="btn small ghost" data-setup-close aria-label="Close">✕</button></div><div class="setup-panel-b">${setupListHtml(s)}${masterLine}${masterActions}
     <a class="btn small ghost setup-panel-more" href="#/checkup" data-setup-close>Open onboarding checklist</a></div>`;
 }
 
@@ -3802,6 +3810,46 @@ const closeSetupPanel = () => { const p = $("#setup-panel"); if (p) p.hidden = t
 document.addEventListener("click", async (e) => {
   if (e.target.closest("#setup-fab, [data-setup-open]")) { $("#setup-panel").hidden ? openSetupPanel() : closeSetupPanel(); return; }
   if (e.target.closest("[data-setup-close]")) { closeSetupPanel(); return; }
+  const masterSync = e.target.closest("[data-master-sync]");
+  if (masterSync) {
+    const push = masterSync.dataset.masterSync === "push";
+    const panel = masterSync.closest("#setup-panel") || document;
+    const allSyncBtns = [...panel.querySelectorAll("[data-master-sync]")];
+    const origText = masterSync.textContent;
+    const statusEl = panel.querySelector("[data-master-sync-status]");
+    allSyncBtns.forEach((b) => { b.disabled = true; });
+    masterSync.textContent = push ? "Pushing…" : "Syncing…";
+    if (statusEl) {
+      statusEl.hidden = false;
+      statusEl.className = "muted t-secondary mt-8";
+      statusEl.textContent = push ? "Pushing master config…" : "Syncing master config…";
+    }
+    toast(push ? "Pushing master config…" : "Syncing master config…", "info");
+    try {
+      const res = await api("setup/sync-master", { method: "POST", body: { push } });
+      if (res?.error) throw new Error(res.error);
+      if (push) toast("Set this Mac's config as the master config");
+      else if (res?.synced) toast(`Synced master config from ${res.from || "master"}`);
+      else if (res?.already_current) toast("Already up to date with master config", "info");
+      else toast("No master config published for this project yet", "info");
+      await refreshState();
+      await loadSetup(true);
+      if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
+      route();
+    } catch (err) {
+      const msg = err?.message || "Master config sync failed.";
+      if (statusEl) {
+        statusEl.hidden = false;
+        statusEl.className = "text-bad t-secondary mt-8";
+        statusEl.textContent = `Master config sync failed: ${msg}`;
+      }
+      toast(msg, true);
+    } finally {
+      allSyncBtns.forEach((b) => { b.disabled = false; });
+      masterSync.textContent = origText;
+    }
+    return;
+  }
   const copy = e.target.closest("[data-setup-copy]");
   if (copy) { navigator.clipboard?.writeText(copy.dataset.setupCopy).then(() => toast("Copied")).catch(() => {}); return; }
   const copyGo = e.target.closest("[data-copy-setup-go]");
@@ -5076,9 +5124,8 @@ pages["remote-job"] = async ([machineId, jobId]) => {
     sub: `${jobId} · remote machine (${machineLabel}${reachTag})${rj.branch ? ` · ${rj.branch}` : ""}`,
     back: { href: "#/", label: "Jobs" },
     html: `<section class="card mb-16">
-      <div class="card-h"><h2>Remote job on ${esc(machineLabel)}</h2><span class="pill">${esc(rj.status || "planned")}</span></div>
+      <div class="card-h"><h2>Remote job on ${esc(machineLabel)}</h2></div>
       <div class="card-b stack gap-12">
-        ${rj.summary ? `<p class="m-0">${esc(rj.summary)}</p>` : ""}
         ${rj.last_error ? `<div class="notice warn"><strong>Last error:</strong> ${esc(rj.last_error)}</div>` : ""}
         <div class="row gap-8 wrap">
           ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open remote</button>` : ""}

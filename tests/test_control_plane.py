@@ -845,3 +845,34 @@ class SetupCopyTests(PlaneCase):
         self.call("POST", "/cp/machines/remove", {"machine_id": studio}, user="alice-token")
         _, listed = self.call("POST", "/cp/machine/setups", {"project": self.PROJECT}, machine_auth=self.auth(laptop, s2))
         self.assertEqual(listed["setups"], [])
+
+    def test_master_setup_sync_and_get(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        st, empty = self.call("POST", "/cp/machine/setup/master", {"project": self.PROJECT}, machine_auth=self.auth(laptop, s2))
+        self.assertEqual(st, 200)
+        self.assertIsNone(empty["master"])
+
+        st, first = self.share(studio, s1, profile={"project": {"build_command": "make test"}})
+        self.assertEqual(st, 200)
+        self.assertEqual(first["master"]["machine_name"], "Studio")
+
+        # Passive share from Laptop does not overwrite Studio's master
+        st, passive = self.share(laptop, s2, profile={"project": {"build_command": "npm test"}})
+        self.assertEqual(st, 200)
+        self.assertEqual(passive["master"]["machine_name"], "Studio")
+
+        # Explicit push_master from Laptop promotes Laptop to master
+        st, pushed = self.call("POST", "/cp/machine/setup", {
+            "project": self.PROJECT,
+            "progress": {"required_done": 5, "required_total": 5, "complete": True, "items": []},
+            "profile": {"project": {"build_command": "npm test"}},
+            "push_master": True,
+        }, machine_auth=self.auth(laptop, s2))
+        self.assertEqual(st, 200)
+        self.assertEqual(pushed["master"]["machine_name"], "Laptop")
+
+        st, fetched = self.call("POST", "/cp/machine/setup/master", {"project": self.PROJECT}, machine_auth=self.auth(studio, s1))
+        self.assertEqual(st, 200)
+        self.assertEqual(fetched["master"]["machine_name"], "Laptop")
+        self.assertEqual(fetched["master"]["profile"]["project"]["build_command"], "npm test")

@@ -10,6 +10,7 @@ checklist still shows them as to do, labelled with where they are already done (
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -162,6 +163,36 @@ def apply_profile(runtime: Path, profile: Any, source_name: str, source_progress
 
     ready = [i["id"] for i in (source_progress or {}).get("items", []) if isinstance(i, dict) and i.get("done") and isinstance(i.get("id"), str)]
     settings["setup_copied_from"] = {"name": str(source_name)[:80], "at": now if now is not None else time.time(), "ready": ready[:40]}
+    _write_json(settings_path, settings)
+    return applied
+
+
+def profile_hash(profile: Any) -> str:
+    """Deterministic fingerprint of a portable setup profile."""
+    if not isinstance(profile, dict) or not has_config(profile):
+        return ""
+    return hashlib.sha256(json.dumps(profile, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def apply_master_profile(runtime: Path, master: Any, now: float | None = None) -> dict[str, list[str]]:
+    """Apply a shared master config from the control plane and record its sync metadata."""
+    if not isinstance(master, dict):
+        raise ValueError("Missing master config.")
+    applied = apply_profile(
+        runtime,
+        master.get("profile"),
+        str(master.get("machine_name") or "master"),
+        master.get("progress") if isinstance(master.get("progress"), dict) else None,
+        now=now,
+    )
+    settings_path = runtime / "config" / "settings.json"
+    settings = _read_json(settings_path)
+    settings["master_config_synced"] = {
+        "hash": str(master.get("hash") or profile_hash(master.get("profile"))),
+        "updated_at": master.get("updated_at") or (now if now is not None else time.time()),
+        "machine_id": str(master.get("machine_id") or ""),
+        "machine_name": str(master.get("machine_name") or "master"),
+    }
     _write_json(settings_path, settings)
     return applied
 
