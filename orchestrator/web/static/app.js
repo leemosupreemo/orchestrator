@@ -1257,10 +1257,45 @@ let lastRuns = null; // previous poll, to spot runs that finished or started wai
 // The page is deployed on its own; the computer it opens has whatever version was installed. Say so when it's behind,
 // since the page may call things it doesn't have. (Only for a computer reached from elsewhere: a local page is served by it.)
 let runnerWarned = false;
+let runnerAutoUpdating = false;
 function checkRunnerVersion(runner) {
-  if (runnerWarned || !getBackendUrl() || !Account.outdated(runner?.api_version)) return;
+  const backend = getBackendUrl();
+  if (!backend || !Account.outdated(runner?.api_version)) return;
+  const verLabel = runner?.version ? ` (${runner.version})` : "";
+  const canAutoUpdate = Boolean(state.actions?.update_local) && state.you?.role !== "member";
+  const updateKey = `orchestrator_autoupdated:${backend}:${runner?.version || runner?.api_version || ""}`;
+  let alreadyTried = false;
+  try { alreadyTried = sessionStorage.getItem(updateKey) === "1"; } catch {}
+  if (canAutoUpdate && !runnerAutoUpdating && !alreadyTried) {
+    const busy = (state.runs || []).some((r) => r.running);
+    if (busy) {
+      if (!runnerWarned) {
+        runnerWarned = true;
+        notify("info", `This computer runs an older Orchestrator${verLabel}. It will update automatically once active jobs finish.`, { id: "runner-old", sticky: true });
+      }
+      return;
+    }
+    runnerAutoUpdating = true;
+    runnerWarned = true;
+    try { sessionStorage.setItem(updateKey, "1"); } catch {}
+    notify("info", `This computer runs an older Orchestrator${verLabel}. Updating Orchestrator automatically…`, { id: "runner-old", sticky: true });
+    api("runs", { method: "POST", body: { action: "update_local", params: {}, ...terminalSize() } })
+      .then(({ run }) => {
+        notify("info", "Updating Orchestrator in the background… The UI will restart automatically when ready.", {
+          id: "runner-old",
+          sticky: true,
+          actions: run?.id ? [{ label: "View progress", onClick: () => { location.hash = `#/runs/${run.id}`; } }] : [],
+        });
+        void refreshState();
+      })
+      .catch(() => {
+        notify("warning", `This computer runs an older Orchestrator${verLabel}, so some things may not work. ${Account.UPDATE_HINT.replace(/`/g, "")}`, { id: "runner-old", sticky: true });
+      });
+    return;
+  }
+  if (runnerWarned) return;
   runnerWarned = true;
-  notify("warning", `This computer runs an older Orchestrator${runner?.version ? ` (${runner.version})` : ""}, so some things may not work. ${Account.UPDATE_HINT.replace(/`/g, "")}`, { id: "runner-old", sticky: true });
+  notify("warning", `This computer runs an older Orchestrator${verLabel}, so some things may not work. ${Account.UPDATE_HINT.replace(/`/g, "")}`, { id: "runner-old", sticky: true });
 }
 
 async function refreshState({ opening = false, isCurrent = () => true, switching = false } = {}) {

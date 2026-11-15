@@ -957,3 +957,12 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn("Starting…", block)
         self.assertIn("state.runs.unshift(run)", block)
         self.assertLess(block.index("location.hash = `#/runs/${run.id}`;"), block.index("refreshState()"))
+
+    def test_outdated_runner_auto_updates_with_notice(self):
+        app = APP.read_text(encoding="utf-8")
+        start = app.index("function checkRunnerVersion(")
+        block = app[start:start + 1800]
+        self.assertIn('action: "update_local"', block)
+        self.assertIn("Updating Orchestrator automatically…", block)
+        self.assertIn("Updating Orchestrator in the background…", block)
+        self.assertIn("once active jobs finish", block)
