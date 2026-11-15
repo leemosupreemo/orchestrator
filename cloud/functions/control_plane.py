@@ -40,10 +40,12 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import secrets
 import time
 import threading
+import urllib.request
 
 import update_recovery
 from typing import Any, Callable, Protocol
@@ -64,10 +66,35 @@ CONNECTION_ACTIONS = {"repair", "setup_funnel"}
 ONLINE_WINDOW = 180       # a computer is online if it reported within this many seconds
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
 CODE_LENGTH = 8
+SETUP_PROFILE_LIMIT = 200_000  # characters of settings and prompts one computer may share per project
 MAX_MACHINES_PER_USER = 20
 MAX_DEVICES_PER_USER = 20
 MAX_EVENTS_PER_CALL = 10
 PAIR_START_LIMIT = (10, 3600)  # at most this many pairing codes (count, seconds) from one address
+TELEMETRY_LIMIT = (120, 60)    # at most this many central telemetry events per minute from one address
+EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+ANON_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+
+
+def send_mixpanel_event(event: str, distinct_id: str, properties: dict[str, Any] | None = None) -> bool:
+    """Send one event to Mixpanel when MIXPANEL_TOKEN is configured in the environment. Never raises."""
+    token = os.environ.get("MIXPANEL_TOKEN", "").strip()
+    if not token:
+        return False
+    host = (os.environ.get("MIXPANEL_HOST") or "https://api.mixpanel.com").strip().rstrip("/")
+    props = {"token": token, "distinct_id": distinct_id, "time": int(time.time()), **(properties or {})}
+    payload = json.dumps([{"event": event, "properties": props}]).encode("utf-8")
+    req = urllib.request.Request(
+        f"{host}/track?verbose=1",
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return bool(resp and getattr(resp, "status", 200) < 400)
+    except Exception:
+        return False
 HOSTED_APP_URL = "https://swift-orch-web-20260923.web.app"
 
 
@@ -185,10 +212,20 @@ def _connection_status(value: Any, now: float) -> dict[str, Any] | None:
 
 
 class ControlPlane:
-    def __init__(self, store: Store, now: Callable[[], float] = time.time, pusher: Pusher | None = None):
+    def __init__(self, store: Store, now: Callable[[], float] = time.time, pusher: Pusher | None = None,
+                 telemetry: Callable[[str, str, dict[str, Any]], Any] | None = None):
         self.store = store
         self.now = now
         self.pusher = pusher
+        self.telemetry = telemetry
+
+    def _emit(self, event: str, distinct_id: str, properties: dict[str, Any] | None = None) -> None:
+        if not self.telemetry:
+            return
+        try:
+            self.telemetry(event, distinct_id, dict(properties or {}))
+        except Exception:
+            pass
 
     def _rate_limit(self, scope: str, client: str, limit: tuple[int, int]) -> None:
         """Count calls per address in fixed windows; best effort (no transaction), enough to stop a flood of writes.
@@ -256,6 +293,7 @@ class ControlPlane:
         code, pairing = self._waiting_pairing(body.get("code"))
         machine_id, machine, secret = self._create_machine(user["uid"], email, pairing, pairing["machine_id"])
         self.store.update("pairings", code, {"status": "claimed", "owner_email": email, "machine_secret": secret})
+        self._emit("cp_machine_paired", user["uid"], {"os": pairing.get("os", "")})
         return {"machine": self._view(machine_id, machine)}
 
     def _create_machine(self, uid: str, email: str, details: dict[str, Any], machine_id: str,
@@ -482,6 +520,69 @@ class ControlPlane:
         self.store.update("machines", machine_id, {"has_snapshot": True, "snapshot_synced_at": now})
         return {"ok": True, "synced_at": now}
 
+    # -- setup profiles: what a computer has set up for a project, so a computer that is further behind can copy it
+    # (orchestrator/setup_copy.py decides what is shared: settings only, never keys). Only the same account's computers see them.
+
+    def _setup_project(self, machine: dict[str, Any], body: dict[str, Any]) -> str:
+        return self._primary_doc(machine["owner_uid"], body)[1]
+
+    @staticmethod
+    def _setup_doc(machine_id: str, project: str) -> str:
+        return f"{machine_id}_{hashlib.sha256(project.encode()).hexdigest()[:24]}"
+
+    @staticmethod
+    def _setup_progress(value: Any) -> dict[str, Any]:
+        value = value if isinstance(value, dict) else {}
+
+        def count(key: str) -> int:
+            try:
+                return max(0, min(int(value.get(key) or 0), 99))
+            except (TypeError, ValueError):
+                return 0
+        items = [{"id": _clean(i.get("id"), 40), "title": _clean(i.get("title"), 80), "required": i.get("required") is True,
+                  "done": i.get("done") is True}
+                 for i in (value.get("items") if isinstance(value.get("items"), list) else [])[:40] if isinstance(i, dict) and i.get("id")]
+        return {"required_done": count("required_done"), "required_total": count("required_total"),
+                "complete": value.get("complete") is True, "items": items}
+
+    def sync_setup(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        project = self._setup_project(machine, body)
+        profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+        if len(json.dumps(profile)) > SETUP_PROFILE_LIMIT:
+            raise ControlError("That setup is too large to share.", 413)
+        now = self.now()
+        self.store.set("machine_setups", self._setup_doc(machine_id, project), {
+            "machine_id": machine_id, "owner_uid": machine["owner_uid"], "project": project, "synced_at": now,
+            "progress": self._setup_progress(body.get("progress")), "profile": profile})
+        return {"ok": True, "synced_at": now}
+
+    def list_setups(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The account's other computers that have shared a setup for this project, without the settings themselves."""
+        machine_id, machine = self._machine_from_header(auth_header)
+        project = self._setup_project(machine, body)
+        found = []
+        for _doc, record in self.store.where("machine_setups", "owner_uid", machine["owner_uid"]):
+            other = self.store.get("machines", record["machine_id"])
+            if record.get("project") != project or record["machine_id"] == machine_id or other is None:
+                continue
+            found.append({"machine_id": record["machine_id"], "name": other["name"], "synced_at": record.get("synced_at", 0),
+                          "online": self.now() - (other.get("last_seen") or 0) < ONLINE_WINDOW,
+                          "progress": record.get("progress") or {}, "has_config": any((record.get("profile") or {}).values())})
+        found.sort(key=lambda s: (-s["progress"].get("required_done", 0), -s["synced_at"]))
+        return {"setups": found}
+
+    def get_setup(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        project = self._setup_project(machine, body)
+        source_id = str(body.get("machine_id") or "")
+        record = self.store.get("machine_setups", self._setup_doc(source_id, project)) if source_id and source_id != machine_id else None
+        source = self.store.get("machines", source_id) if record else None
+        if record is None or source is None or record.get("owner_uid") != machine["owner_uid"]:
+            raise ControlError("That computer hasn't shared its setup for this project.", 404)
+        return {"machine_id": source_id, "name": source["name"], "progress": record.get("progress") or {},
+                "profile": record.get("profile") or {}}
+
     # -- the person, once paired
 
     # -- the primary computer for each project: the one that starts its jobs and hands work to supporting computers.
@@ -568,6 +669,8 @@ class ControlPlane:
         self.store.delete("machines", machine_id)
         self.store.delete("machine_snapshots", machine_id)
         self.store.delete("machine_updates", machine_id)
+        for doc_id, _record in self.store.where("machine_setups", "machine_id", machine_id):
+            self.store.delete("machine_setups", doc_id)
 
     def get_snapshot(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         machine_id, machine = self._owned(user, body.get("machine_id"))
@@ -587,6 +690,7 @@ class ControlPlane:
             raise ControlError("That computer isn't on your account.", 404)
         claims = {"v": 1, "mid": machine_id, "uid": user["uid"], "email": email,
                   "exp": int(self.now()) + TICKET_TTL, "nonce": secrets.token_urlsafe(12)}
+        self._emit("key_action", user["uid"], {"category": "multi_machine", "action": "open_remote_computer"})
         return {"ticket": sign_ticket(stored["secret"], claims), "endpoint": view["endpoint"]}
 
     # -- notifications
@@ -658,6 +762,46 @@ class ControlPlane:
             alerted += 1
         return alerted
 
+    def record_telemetry(self, user: dict[str, Any] | None, body: dict[str, Any]) -> dict[str, Any]:
+        event = str(body.get("event") or "").strip()
+        if not EVENT_NAME_RE.fullmatch(event):
+            raise ControlError("Invalid event name.", 400)
+        raw_anon = str(body.get("anon_id") or "").strip()
+        anon_id = raw_anon if ANON_ID_RE.fullmatch(raw_anon) else ""
+        if user and user.get("uid"):
+            distinct_id = str(user["uid"])
+        elif anon_id:
+            distinct_id = f"anon:{anon_id}"
+        else:
+            raise ControlError("Missing user or anon_id.", 400)
+        props: dict[str, Any] = {"signed_in": bool(user and user.get("uid"))}
+        if user and user.get("uid"):
+            uid = str(user["uid"])
+            seen = self.store.get("telemetry_users", uid)
+            if seen is None:
+                first_seen = self.now()
+                self.store.set("telemetry_users", uid, {"first_seen_at": first_seen})
+                props["is_first_use"] = True
+                if event != "first_use":
+                    self._emit("first_use", uid, {"first_seen_at": first_seen, "signed_in": True})
+            else:
+                props["is_first_use"] = False
+                if seen.get("first_seen_at") is not None:
+                    props["first_seen_at"] = seen["first_seen_at"]
+        if user and user.get("uid") and anon_id:
+            props["anon_id"] = anon_id
+        raw_props = body.get("properties")
+        if isinstance(raw_props, dict):
+            for k, v in list(raw_props.items())[:20]:
+                if not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9_.$ -]{1,40}", k) or k in ("token", "distinct_id"):
+                    continue
+                if isinstance(v, (bool, int, float)):
+                    props[k] = v
+                elif isinstance(v, str):
+                    props[k] = _clean(v, 200)
+        self._emit(event, distinct_id, props)
+        return {"ok": True}
+
     # -- routing
 
     def handle(self, method: str, path: str, headers: dict[str, str], body: dict[str, Any],
@@ -665,6 +809,16 @@ class ControlPlane:
         """Route one request. `verify_user` turns a Firebase ID token into {uid, email, email_verified} or raises."""
         route = "/" + "/".join(p for p in path.split("/") if p and p != "cp")
         try:
+            if (method, route) == ("POST", "/telemetry"):
+                self._rate_limit("telemetry", _client_address(headers), TELEMETRY_LIMIT)
+                auth = headers.get("authorization", "")
+                user = None
+                if auth.startswith("Bearer "):
+                    try:
+                        user = verify_user(auth[7:])
+                    except Exception:
+                        user = None
+                return 200, self.record_telemetry(user, body)
             computer = {
                 ("POST", "/pair/start"): lambda: (self._rate_limit("pair-start", _client_address(headers), PAIR_START_LIMIT),
                                                   self.start_pairing(body))[1],
@@ -674,6 +828,9 @@ class ControlPlane:
                 ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
                 ("POST", "/machine/events"): lambda: self.machine_events(headers.get("authorization", ""), body),
                 ("POST", "/machine/sync"): lambda: self.sync_snapshot(headers.get("authorization", ""), body),
+                ("POST", "/machine/setup"): lambda: self.sync_setup(headers.get("authorization", ""), body),
+                ("POST", "/machine/setups"): lambda: self.list_setups(headers.get("authorization", ""), body),
+                ("POST", "/machine/setup/get"): lambda: self.get_setup(headers.get("authorization", ""), body),
                 ("POST", "/machine/primary"): lambda: self.primary(headers.get("authorization", ""), body),
                 ("POST", "/machine/primary/claim"): lambda: self.claim_primary(headers.get("authorization", ""), body),
                 ("POST", "/enroll/redeem"): lambda: self.redeem_enrollment(body),

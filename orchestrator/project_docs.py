@@ -224,3 +224,33 @@ def export_all(project_name: str, prd_text: str | None, features: list[tuple[dic
 def _demote(text: str, by: int = 1) -> str:
     """Push headings down so the pieces nest under the document's own title."""
     return re.sub(r"^(#{1,5})(\s)", lambda m: "#" * min(6, len(m.group(1)) + by) + m.group(2), text, flags=re.M)
+
+
+def context_block(root: Path, *, max_files: int = 12, per_file_chars: int = 2000, max_total_chars: int = 12000) -> str:
+    """Bounded project documentation context (README, agent notes, docs/**/*.md) for planning larger jobs."""
+    from orchestrator import prd
+    parts: list[str] = []
+    used = 0
+    for entry in project_files(root):
+        rel = entry["path"]
+        if rel == prd.PATH:
+            continue
+        try:
+            raw = read_project_file(root, rel).strip()
+        except DocsError:
+            continue
+        if not raw:
+            continue
+        snippet = raw[:per_file_chars].rstrip()
+        if len(raw) > per_file_chars:
+            snippet += "\n…(truncated)"
+        section = f"### {rel}\n{snippet}"
+        if parts and used + len(section) > max_total_chars:
+            break
+        parts.append(section)
+        used += len(section)
+        if len(parts) >= max_files:
+            break
+    if not parts:
+        return ""
+    return "## Project documentation\n\nUse the existing project documentation below as context when planning:\n\n" + "\n\n".join(parts) + "\n"

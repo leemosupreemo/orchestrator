@@ -216,7 +216,9 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                         json.loads(extract_json_block(raw_output), strict=False)
                     except json.JSONDecodeError as exc2:
                         print(f"⚠️  {current_model} still produced invalid JSON. {fallback_note}")
-                        last_error = RuntimeError(f"{current_model} produced invalid JSON:\n{raw_output}\nError: {exc2}")
+                        # The headline comes first and starts with "Error:", which is the line summarize_cli_error picks. Otherwise
+                        # the person is told only "Expecting value: line 1 column 1", with no model and no hint it was the answer's format.
+                        last_error = RuntimeError(f"Error: {current_model} produced invalid JSON ({exc2.msg}).\n{raw_output}")
                         if on_chunk:
                             on_chunk(None)
                         continue

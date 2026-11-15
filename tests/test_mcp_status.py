@@ -184,7 +184,14 @@ class DialogCloseSizeTests(unittest.TestCase):
     def test_the_dialog_close_button_is_15_percent_larger(self):
         css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
         rule = css[css.index(".dialog-close-btn {"):][:700]
-        self.assertIn("scale: 1.15;", rule)
+        self.assertIn("scale: 1.38;", rule)
+
+    def test_close_buttons_enlarged_by_20_percent(self):
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        for selector in (".nav-close", ".email-panel-close", ".msg-close", ".feedback-close-btn", ".preview-close"):
+            idx = css.rindex(f"{selector} {{")
+            block = css[idx:css.index("}", idx) + 1]
+            self.assertIn("scale: 1.2;", block, f"{selector} should have scale: 1.2;")
 
 
 class YoloAllStaysOnTests(unittest.TestCase):
@@ -362,9 +369,81 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
 
     def test_diverged_branch_error_shows_sync_guidance(self):
         app = APP.read_text(encoding="utf-8")
+        srv = (APP.parents[3] / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
         self.assertIn('fullText.includes("local and remote commits have diverged")', app)
         self.assertIn('title: "Branch out of sync with remote"', app)
+        self.assertIn('data-recover="git-sync-branch"', app)
+        self.assertIn('elif action == "git-sync-branch":', srv)
         self.assertIn('guidance.title.includes("sync")', app)
+
+    def test_git_sync_branch_recovery_behavior(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from orchestrator.web import server
+
+        def make_handler():
+            h = server.UIHandler.__new__(server.UIHandler)
+            h.server = SimpleNamespace(child_env=lambda: {})
+            h.sent = []
+            h.audited = []
+            h._json = lambda payload, status=200: h.sent.append((status, payload))
+            h._audit = lambda event, **kw: h.audited.append((event, kw))
+            return h
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git" / "rebase-merge").mkdir(parents=True)
+            calls = []
+
+            def fake_run(cmd, **kw):
+                calls.append(cmd)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            h = make_handler()
+            with mock.patch.object(server.shutil, "which", return_value="/usr/bin/git"), \
+                 mock.patch.object(server.subprocess, "run", side_effect=fake_run):
+                h._git_sync_branch(root, {"branch": "codex/two-faction-foundation"})
+
+            self.assertEqual(h.sent, [(200, {
+                "ok": True,
+                "branch": "codex/two-faction-foundation",
+                "message": "Synced codex/two-faction-foundation to match origin/codex/two-faction-foundation.",
+            })])
+            self.assertEqual(h.audited, [("git_sync_branch", {"branch": "codex/two-faction-foundation"})])
+            self.assertEqual(calls, [
+                ["git", "-C", str(root), "rebase", "--abort"],
+                ["git", "-C", str(root), "status", "--porcelain"],
+                ["git", "-C", str(root), "fetch", "origin", "--", "codex/two-faction-foundation"],
+                ["git", "-C", str(root), "checkout", "codex/two-faction-foundation"],
+                ["git", "-C", str(root), "reset", "--hard", "origin/codex/two-faction-foundation"],
+            ])
+
+            # Refuses option-like branch names
+            with mock.patch.object(server.shutil, "which", return_value="/usr/bin/git"):
+                with self.assertRaises(server.UIError):
+                    h._git_sync_branch(root, {"branch": "--delete"})
+
+            # Refuses when uncommitted local changes exist
+            with mock.patch.object(server.shutil, "which", return_value="/usr/bin/git"), \
+                 mock.patch.object(server.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=" M dirty.swift\n", stderr="")):
+                with self.assertRaises(server.UIError) as ctx:
+                    h._git_sync_branch(root, {"branch": "main"})
+                self.assertEqual(ctx.exception.status, server.HTTPStatus.CONFLICT)
+
+            # Falls back to current branch when branch is omitted
+            h2 = make_handler()
+            calls2 = []
+
+            def fake_run_fallback(cmd, **kw):
+                calls2.append(cmd)
+                if cmd[-1] == "--show-current":
+                    return SimpleNamespace(returncode=0, stdout="feature/x\n", stderr="")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(server.shutil, "which", return_value="/usr/bin/git"), \
+                 mock.patch.object(server.subprocess, "run", side_effect=fake_run_fallback):
+                h2._git_sync_branch(root, {})
+            self.assertEqual(h2.sent[0][1]["branch"], "feature/x")
 
     def test_git_index_lock_offers_modal_confirmed_recovery(self):
         app = APP.read_text(encoding="utf-8")
@@ -375,6 +454,56 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
         self.assertIn('elif action == "git-unlock-index":', srv)
         self.assertIn('["lsof", str(lock)]', srv)
         self.assertIn('["git", "-C", str(root), "status", "--porcelain"]', srv)
+        self.assertIn('"Update Orchestrator"', app)
+        self.assertIn('cpApi("machines/update"', app)
+
+    def test_untracked_overwrite_offers_scoped_git_stash_recovery(self):
+        from orchestrator.web import server
+
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('untracked working tree files would be overwritten', app)
+        self.assertIn('data-recover="git-stash"', app)
+        self.assertIn('data-recover-body=', app)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir(parents=True, exist_ok=True)
+            (root / "docs" / "a.md").write_text("a")
+            (root / "docs" / "b.md").write_text("b")
+            calls = []
+
+            class FakeHandler:
+                def __init__(self):
+                    self.server = SimpleNamespace(child_env=lambda: {})
+                    self.audits = []
+                    self.sent = []
+
+                def _audit(self, action, detail=None):
+                    self.audits.append((action, detail))
+
+                def _json(self, data):
+                    self.sent.append(data)
+
+            FakeHandler._git_stash = server.UIHandler._git_stash
+
+            def fake_run(cmd, **kw):
+                calls.append(cmd)
+                return SimpleNamespace(returncode=0, stdout="Saved working directory and index state", stderr="")
+
+            h = FakeHandler()
+            with patch.object(server.shutil, "which", return_value="/usr/bin/git"), \
+                 patch.object(server.subprocess, "run", side_effect=fake_run):
+                h._git_stash(root, {"paths": ["docs/a.md", "docs/b.md"]})
+
+            self.assertEqual(calls[0][:4], ["git", "stash", "push", "-u"])
+            self.assertEqual(calls[0][-3:], ["--", "docs/a.md", "docs/b.md"])
+            self.assertEqual(h.sent[0]["paths"], ["docs/a.md", "docs/b.md"])
+
+            with patch.object(server.shutil, "which", return_value="/usr/bin/git"):
+                with self.assertRaises(server.UIError):
+                    h._git_stash(root, {"paths": ["../escape.txt"]})
+                with self.assertRaises(server.UIError):
+                    h._git_stash(root, {"paths": ["--all"]})
 
 
 class CrossMachineJobsTests(unittest.TestCase):
@@ -408,7 +537,6 @@ class CrossMachineJobsTests(unittest.TestCase):
             self.assertEqual(saved["branch"], "codex/two-faction-foundation")
 
     def test_import_carries_the_full_plan_and_every_state_field(self):
-        import tempfile
         from unittest import mock
         from orchestrator.web import server
 
@@ -431,7 +559,6 @@ class CrossMachineJobsTests(unittest.TestCase):
             self.assertTrue(saved["yolo"] and saved["is_yolo"])  # the worker reads is_yolo
 
     def test_import_refuses_a_partial_plan(self):
-        import tempfile
         from orchestrator.web import server
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -445,7 +572,6 @@ class CrossMachineJobsTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / ".orchestrator" / "jobs" / "job-done.json").exists())
 
     def test_import_refuses_a_job_archived_here(self):
-        import tempfile
         from orchestrator.web import server
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -460,7 +586,6 @@ class CrossMachineJobsTests(unittest.TestCase):
             self.assertEqual(json.loads((archive / "job-a.json").read_text()), original)
 
     def test_import_never_hands_git_an_option_as_the_branch(self):
-        import tempfile
         from unittest import mock
         from orchestrator.web import server
 
@@ -471,9 +596,32 @@ class CrossMachineJobsTests(unittest.TestCase):
             server.import_remote_job(Path(tmp), {"job": {"job_id": "job-y", "branch": "ai/job-y"}})
             self.assertEqual(run.call_args.args[0], ["git", "fetch", "origin", "--", "ai/job-y"])
 
+    def test_the_origin_lookup_runs_git_once_until_the_repo_config_changes(self):
+        import subprocess
+        from unittest import mock
+        from orchestrator import account
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "remote", "add", "origin", "https://gitlab.com/Team-B/API.git"], cwd=root, check=True)
+            real_run = subprocess.run
+            with mock.patch.object(account.subprocess, "run", side_effect=real_run) as run:
+                self.assertEqual(account.project_repo(root), "team-b/api")
+                self.assertEqual(account.project_repo(root), "team-b/api")
+                self.assertEqual(run.call_count, 1)  # the second call came from the cache
+                self.assertEqual(account.project_repo(root, "Owner/Repo"), "owner/repo")  # a known GitHub repo never asks git
+                self.assertEqual(run.call_count, 1)
+                # a changed config is asked again, and the cache cannot grow without bound
+                account._origin_repo_cache.update({("elsewhere", i): "x/y" for i in range(256)})
+                with (root / ".git" / "config").open("a") as fh:
+                    fh.write("[core]\n\tbare = false\n")
+                self.assertEqual(account.project_repo(root), "team-b/api")
+                self.assertEqual(run.call_count, 2)
+                self.assertLess(len(account._origin_repo_cache), 256)
+
     def test_snapshot_sends_progress_state_fields_and_the_whole_plan(self):
         import subprocess
-        import tempfile
         from orchestrator import account
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -504,14 +652,227 @@ class CrossMachineJobsTests(unittest.TestCase):
 
     def test_ui_remote_rows_follow_the_review_fixes(self):
         app = APP.read_text(encoding="utf-8")
-        # "Open on <computer>" keeps the new sign-in and reloads state before navigating
-        opener = app[app.index("const res = await signInToMachine(machine); // it moved"):]
-        self.assertLess(opener.index('localStorage.setItem("orchestrator_token", res.token)'), opener.index("await refreshState()"))
-        self.assertLess(opener.index("await refreshState()"), opener.index("location.hash"))
+        # "Open on <computer>": repairs a moved connection, signs in properly, only then navigates, and on failure puts the
+        # browser back on the computer it came from (signing in drops the token and switches the backend)
+        opener = app[app.index("// Signing in moves the browser to that computer and drops the token"):]
+        opener = opener[:opener.index('btn.textContent = "Open remote"')]
+        order = [opener.index(bit) for bit in ("res = await signInToMachine(machine)", "res = await repairMachineConnection(machine, error)",
+                                               "await unlockWith(res.token", "location.hash", "before.forEach(")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn('"orchestrator_token"', opener.split("const before")[0])  # the token is among what is restored
         # archived jobs count as present, the control plane can't stall Home, matching is by repo, yolo is local only
         for bit in ("jobs.concat(archivedJobs)", 'cpApi("machines", { signal: AbortSignal.timeout(3000) })',
-                    "signal: AbortSignal.timeout(3000) })", "p.repo || p.github_repo || p.git_remote",
+                    "Date.now() - homeRemoteSnaps.at > 30000", "p.repo || p.github_repo || p.git_remote",
                     'const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);',
                     "!j.remote_machine && HOME_FILTERS.working[1](j)", "rj.tasks_done", 'st === "failed"', 'st === "scheduled"'):
             self.assertIn(bit, app)
         self.assertNotIn('t.status === "completed"', app[app.index("const remoteJobs"):app.index("const mergedJobs")])
+
+    def test_remote_job_page_wording_switches_project_and_handles_404(self):
+        import subprocess
+        script = """
+const fs = require('fs');
+const assert = require('assert');
+const code = fs.readFileSync(process.argv[1], 'utf8');
+const start = code.indexOf('pages["remote-job"] = async');
+const end = code.indexOf('pages.job = async');
+const pages = {};
+const listeners = {};
+const buttons = {};
+const makeBtn = (id) => ({
+  id, disabled: false, textContent: '',
+  addEventListener: (ev, fn) => { listeners[id + ':' + ev] = fn; }
+});
+const $ = (sel) => {
+  if (!sel.startsWith('#')) return null;
+  const id = sel.slice(1);
+  if (!buttons[id]) buttons[id] = makeBtn(id);
+  return buttons[id];
+};
+const esc = (s) => String(s ?? '');
+const toasts = [];
+const toast = (msg, err) => toasts.push({ msg, err: !!err });
+let currentMachine = { id: 'm1', name: 'Pro', reachable: false };
+const remoteJob = { job_id: 'job-7', title: 'Make vegetation more realistic', status: 'human-needed', branch: 'codex/two-faction', project: 'DAoC-Mobile', repo: 'me/daoc-mobile' };
+const updateCalls = [];
+let cpUpdateError = null;
+const cpApi = async (path, opts) => {
+  if (path === 'machines/update') {
+    if (cpUpdateError) throw new Error(cpUpdateError);
+    updateCalls.push(opts.body);
+    return { ok: true };
+  }
+  return path === 'machines' ? { machines: [currentMachine] } : { snapshot: { recent_jobs: [remoteJob] } };
+};
+const Account = { active: () => true, MACHINE_KEY: 'mkey' };
+const ACCOUNT_BACKEND_KEY = 'abk';
+const localStorage = { getItem: (k) => k === 'mkey' ? 'local-m' : null, setItem: () => {}, removeItem: () => {} };
+const location = { hash: '' };
+const state = {
+  runner: { version: '0.4.2' },
+  project: { computer: { name: 'Studio' }, root: '/Users/me/other', recent: [{ name: 'other', root: '/Users/me/other', repo: 'me/other' }, { name: 'DAoC-Mobile', root: '/Users/me/DAoC-Mobile', repo: 'me/daoc-mobile' }] }
+};
+const switched = [];
+const cleanup = [];
+const dialogs = [];
+const localActions = [];
+const formDialog = async (title, body, okLabel) => { dialogs.push({ title, body, okLabel }); return true; };
+const runAction = async (name, params) => { localActions.push({ name, params }); };
+const signInToMachine = async () => ({ token: 'tok-1' });
+const unlockWith = async () => {};
+const switchProject = async (root, then) => { switched.push({ root, then }); };
+let importShouldSucceed = false;
+const api = async (path, opts) => {
+  if (path === 'jobs/import-remote' && importShouldSucceed) return { ok: true, id: 'job-7', fetched_branch: true };
+  throw new Error('Not found');
+};
+const sessionStore = {};
+const sessionStorage = {
+  getItem: (k) => (k in sessionStore ? sessionStore[k] : null),
+  setItem: (k, v) => { sessionStore[k] = String(v); },
+  removeItem: (k) => { delete sessionStore[k]; }
+};
+const refreshState = async () => {};
+
+const resumeStart = code.indexOf('const UPDATE_RESUME_KEY =');
+const resumeEnd = code.indexOf('function wireAutoRecovery');
+eval(code.slice(resumeStart, resumeEnd));
+const promptStart = code.indexOf('async function promptOrchestratorUpdate');
+const promptEnd = code.indexOf('function wireApiKeyForm');
+eval(code.slice(promptStart, promptEnd));
+eval(code.slice(start, end));
+
+(async () => {
+  // 1. Offline remote machine: concise wording, no Back button, update modal on 404
+  const off = await pages['remote-job'](['m1', 'job-7']);
+  assert(off.sub.includes('remote machine (Pro, offline)'), off.sub);
+  assert(off.html.includes('Remote job on Pro'), off.html);
+  assert(off.html.includes('Continue here'), off.html);
+  assert(!off.html.includes('Open remote'), off.html);
+  assert(!off.html.includes('href="#/">Back</a>'), off.html);
+  assert(!off.html.includes('Lives on'), off.html);
+  off.after();
+  await listeners['continue-remote-job-here:click']({ currentTarget: buttons['continue-remote-job-here'] });
+  assert.equal(dialogs.length, 1);
+  assert.equal(dialogs[0].title, 'Update Orchestrator');
+  assert(dialogs[0].body.includes('from <code>0.4.2</code> to the latest version'), dialogs[0].body);
+  assert.deepEqual(updateCalls, [{ machine_id: 'local-m' }]);
+  assert.equal(buttons['continue-remote-job-here'].textContent, 'Continue here');
+
+  // 1c. CLI-installed machine falls back to runAction("update_local") and saves pending resume, then tryResumeAfterUpdate imports job
+  cpUpdateError = "Mac wasn't set up with the Orchestrator app; update it there with `orchestrator update`.";
+  await listeners['continue-remote-job-here:click']({ currentTarget: buttons['continue-remote-job-here'] });
+  assert.deepEqual(localActions, [{ name: 'update_local', params: {} }]);
+  assert(readPendingUpdateResume()?.type === 'import-remote', 'pending resume saved');
+  importShouldSucceed = true;
+  const resumed = await tryResumeAfterUpdate({ quiet: true });
+  assert.equal(resumed, true);
+  assert.equal(location.hash, '#/jobs/job-7');
+  assert.equal(readPendingUpdateResume(), null);
+  importShouldSucceed = false;
+  cpUpdateError = null;
+
+  // 1d. runStatus for update_local shows Restart needed and suppresses pip upgrade noise
+  const stoppingRuns = new Set();
+  const nonAiActions = new Set(['update_local']);
+  const runDuration = () => '1s';
+  const runStatusStart = code.indexOf('function runStatus(r, vc = null)');
+  const runStatusEnd = code.indexOf('function wireKeychainUnlock');
+  eval(code.slice(runStatusStart, runStatusEnd));
+  savePendingUpdateResume({ type: 'import-remote', job: remoteJob });
+  const rsHtml = runStatus({ action: 'update_local', running: false, exit_code: 0, progress: { notice: 'To update, run: pip install --upgrade pip' } });
+  assert(rsHtml.includes('Restarting UI'), rsHtml);
+  assert(rsHtml.includes('Orchestrator updated — restarting UI to continue your job…'), rsHtml);
+  assert(!rsHtml.includes('Completed with notes'), rsHtml);
+  assert(!rsHtml.includes('pip install --upgrade pip'), rsHtml);
+  clearPendingUpdateResume();
+
+  // 1b. Online-but-connecting remote machine surfaces connection detail in sub
+  currentMachine = { id: 'm1', name: 'Pro', online: true, reachable: false, connection: { state: 'checking', detail: 'Testing Tailscale Funnel' } };
+  const connecting = await pages['remote-job'](['m1', 'job-7']);
+  assert(connecting.sub.includes('Testing Tailscale Funnel'), connecting.sub);
+
+  // 2. Reachable remote machine: Open remote auto-switches to matching project on remote machine
+  currentMachine = { id: 'm1', name: 'Pro', reachable: true };
+  const on = await pages['remote-job'](['m1', 'job-7']);
+  assert(on.html.includes('Open remote'), on.html);
+  on.after();
+  await listeners['open-remote-machine-job:click']({ currentTarget: buttons['open-remote-machine-job'] });
+  assert.deepEqual(switched, [{ root: '/Users/me/DAoC-Mobile', then: '#/jobs/job-7' }]);
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+        res = subprocess.run(["node", "-e", script, str(APP)], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+    def test_trigger_ui_restart_prefers_launchd_else_shutdown(self):
+        from unittest.mock import MagicMock, patch
+        from orchestrator.web import server as srv
+
+        fake_server = MagicMock()
+        fake_server._restart_requested = False
+
+        # When launchctl reports the agent isn't loaded (or non-darwin), fall back to server.shutdown() + _restart_requested.
+        with patch.object(srv.subprocess, "run", return_value=MagicMock(returncode=1)), \
+             patch.object(srv.threading, "Thread", side_effect=lambda target, **kw: MagicMock(start=target)):
+            srv._trigger_ui_restart(fake_server)
+        self.assertTrue(fake_server._restart_requested)
+        fake_server.shutdown.assert_called_once()
+
+        # When launchd agent is loaded on macOS, kickstart it without calling shutdown() directly.
+        fake_server2 = MagicMock()
+        fake_server2._restart_requested = False
+        with patch.object(srv.sys, "platform", "darwin"), \
+             patch.object(srv.subprocess, "run", return_value=MagicMock(returncode=0)), \
+             patch.object(srv.subprocess, "Popen") as popen:
+            srv._trigger_ui_restart(fake_server2)
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args[0][0][:3], ["launchctl", "kickstart", "-k"])
+        self.assertFalse(fake_server2._restart_requested)
+
+
+class ProjectDocumentationSectionTests(unittest.TestCase):
+    def test_review_sidebar_and_page_cover_project_docs_and_ai_gap_fill(self):
+        repo = APP.parents[3]
+        index_html = (repo / "orchestrator" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+        review_block = index_html[index_html.index('<span class="label">Review</span>'):index_html.index('<span class="label">Settings</span>')]
+        self.assertIn('<a href="#/project-docs" data-route="project-docs"><span>Documentation</span></a>', review_block)
+
+        app = APP.read_text(encoding="utf-8")
+        for snippet in (
+            'pages["project-docs"] = async',
+            'api("docs")',
+            'api("docs/export")',
+            'id="proj-docs-fill"',
+            'Fill gaps with AI',
+            'runAction("new_job", fillParams)',
+            '["Documentation", "#/project-docs"',
+            'title: "Document"',
+            'title: "Finalize"',
+            'const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];',
+            'phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")',
+        ):
+            self.assertIn(snippet, app)
+
+    def test_job_prompts_include_documentation_updates_and_review(self):
+        prompts = APP.parents[3] / "orchestrator" / "prompts"
+        for name in ("builder_feature_task.md", "builder_bug.md", "builder_infra.md", "reviewer.md"):
+            text = (prompts / name).read_text(encoding="utf-8").lower()
+            self.assertIn("documentation", text, f"{name} should instruct about documentation")
+
+    def test_larger_jobs_ingest_project_documentation_as_context(self):
+        from orchestrator import project_docs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("# My App\n\nSetup instructions here.", encoding="utf-8")
+            (root / "docs").mkdir()
+            (root / "docs" / "architecture.md").write_text("# Architecture\n\nCore modules.", encoding="utf-8")
+            block = project_docs.context_block(root)
+            self.assertIn("## Project documentation", block)
+            self.assertIn("### README.md", block)
+            self.assertIn("Setup instructions here.", block)
+            self.assertIn("### docs/architecture.md", block)
+            self.assertIn("Core modules.", block)
+
+        new_job_src = (APP.parents[3] / "orchestrator" / "scripts" / "new_job.py").read_text(encoding="utf-8")
+        self.assertIn("project_docs.context_block(ROOT)", new_job_src)

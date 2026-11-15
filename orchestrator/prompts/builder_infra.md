@@ -22,3 +22,4 @@ Be careful with:
 
 Use the provided 'Available Tests' list to choose the most relevant tests to run. 
 ALWAYS include relevant tests to prevent regressions.
+Update relevant repository documentation (such as `README.md` or `docs/` files) when infrastructure, build/test commands, configuration, or workflows change.

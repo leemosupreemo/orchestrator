@@ -25,7 +25,7 @@ const view = {innerHTML: '', onclick: null, onsubmit: null, querySelector: () =>
 const context = {
   Map, Date: {now: () => now}, URL, AbortSignal, console, navigator: {onLine: true},
   document: {body, querySelector: selector => selector === '.app' ? app : selector === '.account-card' && view.innerHTML.includes('account-card') ? {} : null},
-  view, state: {project: {name: 'Cached'}, runs: [], inbox_count: 0}, signingIn: false,
+  view, state: {project: {name: 'Cached'}, runs: [], inbox_count: 0}, signingIn: false, projectSwitch: null, landOnHome() {},
   window: {firebase: {auth: () => ({currentUser: {email: 'owner@example.test'}})}},
   localStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key)},
   setInterval: callback => {interval = callback; return 1;}, clearInterval: () => {interval = null;},

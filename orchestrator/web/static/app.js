@@ -272,6 +272,41 @@ async function api(path, { method = "GET", body, signal } = {}) {
     err.data = data;
     throw err;
   }
+  if (method === "POST") {
+    if (path === "runs") {
+      const action = body?.action || "";
+      const activeCount = Array.isArray(state.jobs) ? state.jobs.filter((j) => j.active_run || j.state?.group === "working").length : 0;
+      trackWebEvent("job_run_started", { action, job_type: body?.params?.type || "", feature: "job_run" });
+      if (action === "new_job") {
+        if (body?.params?.free) trackKeyAction("free_llm_mode", "start_free_job", { job_type: body?.params?.type || "" });
+        if (activeCount >= 1) trackKeyAction("parallel_jobs", "start_concurrent_job", { active_jobs_count: activeCount + 1 });
+      } else if (action === "deliver") {
+        trackKeyAction("testing_and_delivery", "send_to_testers");
+      } else if (action === "test" || action === "coverage" || action === "visual_check") {
+        trackKeyAction("testing_and_delivery", action);
+      } else if (action === "approve") {
+        trackKeyAction("prd_and_agile", "approve_plan");
+      } else if (action === "merge") {
+        trackKeyAction("local_execution", "merge_job");
+      }
+    } else if (path === "projects/switch" || path === "projects") {
+      trackWebEvent("project_used", { op: path === "projects/switch" ? "switch" : "add", feature: "projects" });
+    } else if (path === "jobs/import-remote") {
+      trackKeyAction("multi_machine", "handoff_remote_job");
+    } else if (path === "product" || path === "epics/breakdown" || path.startsWith("epics/")) {
+      trackKeyAction("prd_and_agile", path);
+    } else if (path.includes("/scope") || path.includes("/cruft")) {
+      trackKeyAction("anti_cruft_guards", path.includes("cruft") ? "cruft_action" : "scope_action");
+    } else if (path === "config/models" || (path === "config" && (body?.default_models || body?.role))) {
+      trackKeyAction("roles", "update_role_models");
+    } else if (path.startsWith("ai-providers/free") || path === "ai-free/setup") {
+      trackKeyAction("free_llm_mode", "setup_free_ai");
+    } else if (path.endsWith("/chat")) {
+      trackKeyAction("vibe_depth", "ask_ai_chat");
+    } else if (path.startsWith("test-cases")) {
+      trackKeyAction("testing_and_delivery", "manage_test_cases");
+    }
+  }
   return data;
 }
 
@@ -433,6 +468,7 @@ async function runAction(action, params = {},{ skipConfirm = false } = {}) {
   if (meta.confirm && !skipConfirm && !(await formDialog(meta.title, `<p>${esc(meta.confirm)}</p>`, "Continue", { compact: true }))) return;
   try {
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
+    trackWebEvent("web_action_triggered", { action });
     await refreshState(); // so the run page finds the new run straight away
     location.hash = `#/runs/${run.id}`;
   } catch (e) {
@@ -1248,6 +1284,10 @@ async function refreshState({ opening = false, isCurrent = () => true, switching
     const newState = await api("state", opening ? { signal: AbortSignal.timeout(8000) } : undefined);
     if (!isCurrent() || (projectSwitch && !switching)) return;
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
+    for (const r of newState.runs || []) {
+      const prev = (lastRuns || []).find((x) => x.id === r.id);
+      if (prev?.running && !r.running && !r.stopped && r.exit_code !== 0) reportRunError(r);
+    }
     lastRuns = newState.runs;
     lastInbox = newState.inbox || [];
     showPrdUpdate(newState.product_notice);
@@ -1620,6 +1660,125 @@ async function cpApi(path, { method = "GET", body, signal } = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || `${res.status} ${res.statusText}`), { status: res.status });
   return data;
+}
+
+function telemetryAnonId() {
+  try {
+    let id = localStorage.getItem("orchestrator_anon_id") || "";
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
+      localStorage.setItem("orchestrator_anon_id", id);
+    }
+    return id;
+  } catch {
+    return "";
+  }
+}
+
+function telemetryContext() {
+  const ctx = {};
+  const os = state.project?.computer?.os || navigator.userAgentData?.platform || navigator.platform || "";
+  if (os) ctx.platform = String(os).slice(0, 60);
+  if (state.project?.kind) ctx.project_kind = String(state.project.kind).slice(0, 40);
+  if (typeof state.project?.mobile_app === "boolean") ctx.mobile_app = state.project.mobile_app;
+  if (Array.isArray(state.project?.languages) && state.project.languages.length) {
+    const names = state.project.languages.map((l) => l?.name).filter(Boolean).slice(0, 5);
+    if (names.length) {
+      ctx.primary_language = String(names[0]).slice(0, 40);
+      ctx.languages = names.join(", ").slice(0, 200);
+    }
+  }
+  if (Array.isArray(state.project?.recent)) ctx.projects_count = state.project.recent.length;
+  if (Array.isArray(state.jobs)) {
+    ctx.jobs_count = state.jobs.length;
+    const activeCount = state.jobs.filter((j) => j.active_run || j.state?.group === "working").length;
+    ctx.active_jobs_count = activeCount;
+    ctx.parallel_jobs = activeCount > 1;
+  }
+  if (state.project) ctx.execution_location = "local_machine";
+  const prd = state.project?.prd;
+  if (prd && typeof prd === "object") {
+    ctx.prd_status = String(prd.status || "empty");
+    ctx.prd_sections_written = Number(prd.written || 0);
+    ctx.prd_sections_total = Number(prd.total || 0);
+    ctx.has_prd = Boolean(prd.has_prd ?? prd.written > 0);
+  }
+  return ctx;
+}
+
+let telemetryAuthHeader = "";
+const reportedRunErrors = new Set();
+
+function reportRunError(run) {
+  if (!run?.id || reportedRunErrors.has(run.id)) return;
+  reportedRunErrors.add(run.id);
+  const rawErr = String(run.error_summary || run.last_line || "").replace(/(https?:\/\/)[^/@\s]+@/g, "$1");
+  trackWebEvent("job_run_error", {
+    run_id: String(run.id).slice(0, 80),
+    action: String(run.action || "").slice(0, 40),
+    job_id: String(run.job || run.result_job || "").slice(0, 80),
+    exit_code: Number(run.exit_code ?? 1),
+    error_summary: rawErr.slice(0, 200),
+  });
+}
+
+function trackKeyAction(category, action, extra = {}) {
+  trackWebEvent("key_action", { category, action, ...extra });
+}
+
+function trackWebEvent(event, properties = {}) {
+  try {
+    if (!Account.active()) return;
+    if (navigator.doNotTrack === "1" || localStorage.getItem("orchestrator_telemetry_opt_out") === "1") return;
+    const anon_id = telemetryAnonId();
+    const user = window.firebase?.auth?.().currentUser;
+    const merged = { ...telemetryContext(), ...properties, source: "web", host: location.host };
+    const post = (auth) => fetch("/cp/telemetry", {
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json", ...(auth ? { Authorization: auth } : {}) },
+      body: JSON.stringify({ event, anon_id, properties: merged }),
+    }).catch(() => {});
+    if (user && !telemetryAuthHeader) {
+      user.getIdToken().then((t) => {
+        telemetryAuthHeader = `Bearer ${t}`;
+        return post(telemetryAuthHeader);
+      }).catch(() => post(""));
+      return;
+    }
+    if (user) {
+      user.getIdToken().then((t) => { telemetryAuthHeader = `Bearer ${t}`; }).catch(() => {});
+    }
+    post(user ? telemetryAuthHeader : "");
+  } catch { /* telemetry must never affect app flow */ }
+}
+
+function trackFirstUseAndSession() {
+  let isFirstUse = false;
+  try {
+    if (!localStorage.getItem("orchestrator_first_seen_at")) {
+      const nowIso = new Date().toISOString();
+      localStorage.setItem("orchestrator_first_seen_at", nowIso);
+      isFirstUse = true;
+      trackWebEvent("first_use", { first_seen_at: nowIso });
+    }
+  } catch { /* storage unavailable */ }
+  trackWebEvent("web_session_started", { path: location.hash || "#/", is_first_use: isFirstUse });
+
+  let activeSince = document.hidden ? 0 : Date.now();
+  const flushDuration = (reason, minSeconds = 1) => {
+    if (!activeSince) return;
+    const elapsedS = Math.round((Date.now() - activeSince) / 1000);
+    activeSince = document.hidden ? 0 : Date.now();
+    if (elapsedS >= minSeconds) {
+      trackWebEvent("web_session_duration", { duration_s: elapsedS, reason });
+    }
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) flushDuration("hidden", 5);
+    else if (!activeSince) activeSince = Date.now();
+  });
+  window.addEventListener("pagehide", () => flushDuration("pagehide", 1));
 }
 
 function previewRecoveryContext() {
@@ -3095,14 +3254,17 @@ function liveRunCard(r) {
     `${elapsed(r.started)} elapsed`,
     r.waiting ? "Waiting for you" : r.idle > 30 ? `Quiet for ${elapsed(Date.now() / 1000 - r.idle)}` : "",
   ].filter(Boolean);
-  const doing = p.task || p.label || "";
+  const rawDoing = p.task || p.label || "";
+  const isUpdatingIssue = (text) => /^(?:\[\d+\/\d+\]\s*)?updating (?:github )?issue\b/i.test(String(text || "").trim());
+  const doing = isUpdatingIssue(rawDoing) ? "" : rawDoing;
+  const lastLine = isUpdatingIssue(r.last_line) ? "" : (r.last_line || "");
   return `<div class="live-run ${r.waiting ? "waiting" : ""} ${isStopping ? "stopping" : ""}" data-run-id="${esc(r.id)}" ${isStopping ? 'aria-busy="true"' : ""}>
     ${overlayHtml}
     <a class="main-col" href="#/runs/${encodeURIComponent(r.id)}">
       <div class="live-run-head"><span class="title">${esc(r.title)}</span>${runPill(r)}</div>
       <div class="meta">${facts.map(esc).join(" · ")}</div>
       ${numbered ? `<progress class="live-run-progress" value="${p.step - 1}" max="${p.total}" aria-label="Completed steps: ${p.step - 1} of ${p.total}"></progress>` : ""}
-      ${doing ? `<div class="live-run-doing">${esc(doing)}</div>` : r.last_line ? `<div class="last-line mono">${esc(r.last_line)}</div>` : ""}
+      ${doing ? `<div class="live-run-doing">${esc(doing)}</div>` : lastLine ? `<div class="last-line mono">${esc(lastLine)}</div>` : ""}
     </a>
     <div class="row">
       <a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Details</a>
@@ -3376,7 +3538,8 @@ function statusLine(p, hasPreview = false) {
     p.machine_count === 0 ? `<a class="warn-link" href="#/config/fleet">No machine set up: jobs can't run yet</a>`
       : p.machine_count && p.model_count === 0 ? `<a class="warn-link" href="#/config/models">No model selected: jobs can't run yet</a>` : "",
   ].filter(Boolean);
-  return `<div class="status-line status-stack home-status-line"><div class="status-main-row"><span class="status-branch"><span class="label">Branch</span>${branchPicker}</span>
+  const latestPill = p.branch && p.last_branch === p.branch ? `<span class="kind-pill kind-latest" title="The branch you last used">latest</span>` : "";
+  return `<div class="status-line status-stack home-status-line"><div class="status-main-row"><span class="status-branch"><span class="label">Branch</span>${branchPicker}${latestPill}</span>
     <div class="row gap-8 align-center">${hasPreview ? `<a class="btn" href="#/preview">Preview</a>` : ""}<button type="button" class="ask-ai-btn" data-ask-ai aria-label="Ask AI about this project" title="Ask AI about this project"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></button></div></div>
     ${stats.length ? `<span class="status-stats">${stats.join(`<span class="sep">·</span>`)}</span>` : ""}</div>`;
 }
@@ -3393,7 +3556,7 @@ function branchOptions(branches, current, elsewhere = {}, downloads = [], recent
 // A branch checked out in another worktree folder is labelled: git won't switch to it here. So is the one last chosen here.
 function branchOption(b, current, elsewhere = {}, last = state.project?.last_branch, recent = state.project?.recent_branch) {
   const isRecent = recent === b;
-  return `<option value="${esc(b)}" ${b === current ? "selected" : ""}${isRecent ? ' class="branch-recent"' : ""}>${esc(b)}${isRecent ? " (most recent commit)" : ""}${last === b ? " (last used)" : ""}${elsewhere?.[b] ? " (in another folder)" : ""}</option>`;
+  return `<option value="${esc(b)}" ${b === current ? "selected" : ""}${isRecent ? ' class="branch-recent"' : ""}>${esc(b)}${isRecent ? " (most recent commit)" : ""}${last === b ? " (latest)" : ""}${elsewhere?.[b] ? " (in another folder)" : ""}</option>`;
 }
 
 // The branch you last chose for a project goes back on when you open the app, sign in, or come back after a while (a job
@@ -3510,11 +3673,37 @@ async function loadSetup(force = false) {
   setupState = fetched;
   if (setupState && setupDismissedRoots.has(projectRoot)) setupState.seen = true;
   renderSetupFab();
+  if (setupState && !setupState.complete) loadSetupSources(force);
   if (setupState?.complete && !setupState.seen) {
     setupState.seen = true;
     api("config/setup-seen", { method: "POST", body: {} }).catch(() => {});
   }
   return setupState;
+}
+
+// Other computers on the account that are further along in setup for this project, to copy its settings from.
+let setupSources = [];
+let setupSourcesAt = 0;
+async function loadSetupSources(force = false) {
+  if (!force && Date.now() - setupSourcesAt < 60000) return;
+  setupSourcesAt = Date.now();
+  const projectRoot = state.project?.root;
+  let found = [];
+  try { found = (await api("setup/sources"))?.sources || []; } catch { found = []; } // older servers have no /api/setup/sources
+  if (projectRoot !== state.project?.root) return;
+  setupSources = found;
+  if (typeof document !== "undefined") document.querySelectorAll?.("[data-copy-slot]")?.forEach((slot) => { slot.innerHTML = setupCopyCardHtml(); });
+}
+
+function setupCopyCardHtml() {
+  if (!setupSources.some((s) => s.ahead)) return "";
+  const best = setupSources.find((s) => s.ahead);
+  const label = (s) => `${s.name} · ${s.progress?.required_done ?? 0}/${s.progress?.required_total ?? 0} ready${s.ahead ? "" : " · not further along"}${s.online ? "" : " · offline"}`;
+  return `<div class="setup-copy">
+    <div class="title">Copy setup from another computer</div>
+    <div class="meta">${esc(best.name)} is further along. Copying replaces this project's build and test commands, delivery, notification and model choices, and custom prompts with theirs. Sign-ins and API keys aren't copied: each computer signs in on its own.</div>
+    <div class="row mt-8"><select aria-label="Computer to copy setup from">${setupSources.map((s) => `<option value="${esc(s.machine_id)}"${s === best ? " selected" : ""}>${esc(label(s))}</option>`).join("")}</select>
+    <button class="btn small primary" data-copy-setup-go>Copy setup</button></div></div>`;
 }
 
 function setupItem(i) {
@@ -3532,7 +3721,9 @@ function setupListHtml(s) {
   const req = s.items.filter((i) => i.required);
   const opt = s.items.filter((i) => !i.required);
   const group = (title, items, count) => `<div class="setup-group"><div class="setup-group-h"><h3>${esc(title)}</h3>${count ? `<span class="count">${count}</span>` : ""}</div>${items.map(setupItem).join("")}</div>`;
-  return group("Required", req, `${s.required_done}/${s.required_total}`) +
+  const copied = s.copied_from ? `<p class="muted setup-copied">Copied from ${esc(s.copied_from.name)}. Steps done there but not here say so below.</p>` : "";
+  return `<div data-copy-slot>${setupCopyCardHtml()}</div>${copied}` +
+    group("Required", req, `${s.required_done}/${s.required_total}`) +
     group("Optional", opt, `${opt.filter((i) => i.done).length}/${opt.length}`);
 }
 
@@ -3613,6 +3804,28 @@ document.addEventListener("click", async (e) => {
   if (e.target.closest("[data-setup-close]")) { closeSetupPanel(); return; }
   const copy = e.target.closest("[data-setup-copy]");
   if (copy) { navigator.clipboard?.writeText(copy.dataset.setupCopy).then(() => toast("Copied")).catch(() => {}); return; }
+  const copyGo = e.target.closest("[data-copy-setup-go]");
+  if (copyGo) {
+    const card = copyGo.closest(".setup-copy");
+    const machineId = card?.querySelector("select")?.value;
+    if (!machineId) return;
+    const name = setupSources.find((s) => s.machine_id === machineId)?.name || "that computer";
+    copyGo.disabled = true;
+    try {
+      await api("setup/copy", { method: "POST", body: { machine_id: machineId } });
+      toast(`Copied setup from ${name}`);
+      setupSourcesAt = 0;
+      await refreshState();
+      await loadSetup(true);
+      if ($("#setup-panel") && !$("#setup-panel").hidden) renderSetupPanel();
+      route();
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      copyGo.disabled = false;
+    }
+    return;
+  }
   const go = e.target.closest("[data-setup-go]");
   if (go) {
     const item = setupState?.items.find((i) => i.id === go.dataset.setupGo);
@@ -3710,6 +3923,7 @@ function homeHealthIndicator(s) {
   return `<details class="home-health-inline home-health-${tone}">
     <summary class="home-health-trigger" title="System health: ${esc(status)}${optionalMissing.length ? `; ${optionalMissing.length} optional items available` : ""}. Tap for details." aria-label="System health: ${esc(status)}">${icon(!missing.length, !missing.length && optionalMissing.length > 0)}</summary>
     <div class="home-health-popover"><div class="home-health-popover-head"><strong>System health</strong><span>${esc(summary)}</span></div>
+      <div data-copy-slot>${setupCopyCardHtml()}</div>
       <div class="home-health-section"><h3>Required · ${required.length - missing.length}/${required.length} ready</h3>${required.length ? required.map(setupItem).join("") : `<p class="home-health-ready">No required setup items.</p>`}</div>
       ${optional.length ? `<div class="home-health-section home-health-optional"><h3>Optional · ${optional.length - optionalMissing.length}/${optional.length} ready</h3>${optional.map(setupItem).join("")}</div>` : ""}
     </div>
@@ -3913,6 +4127,7 @@ function homeProjectTitle(p) {
     <select class="home-project-select" aria-label="Switch project"></select></span>`;
 }
 
+let homeRemoteSnaps = { key: null, at: 0, snaps: [] }; // other computers' snapshots as Home last fetched them
 pages.home = async (_, query) => {
   const download = projectDownloads.pending();
   if (download && (download.phase !== "loading" || state.project?.root !== download.project?.root)) return projectDownloadPage(download);
@@ -3965,11 +4180,18 @@ pages.home = async (_, query) => {
     const myName = String(p.name || "").toLowerCase();
     let currentMachineId = "";
     try { currentMachineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
-    // The control plane is a bonus here: a slow one must not hold up the local list.
-    const { machines = [] } = await cpApi("machines", { signal: AbortSignal.timeout(3000) }).catch(() => ({ machines: [] }));
-    const others = machines.filter((m) => m.id !== currentMachineId && m.has_snapshot);
+    // The control plane is a bonus here: a slow one must not hold up the local list, and Home redraws every few seconds
+    // while a computer's snapshot changes about every five minutes, so the answer is kept for 30 seconds.
+    if (homeRemoteSnaps.key !== currentMachineId || Date.now() - homeRemoteSnaps.at > 30000) {
+      const { machines = [] } = await cpApi("machines", { signal: AbortSignal.timeout(3000) }).catch(() => ({ machines: [] }));
+      const others = machines.filter((m) => m.id !== currentMachineId && m.has_snapshot);
+      homeRemoteSnaps = {
+        key: currentMachineId, at: Date.now(),
+        snaps: await Promise.all(others.map((m) => cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id }, signal: AbortSignal.timeout(3000) }).then((d) => ({ m, snap: d?.snapshot })).catch(() => null))),
+      };
+    }
+    const snaps = homeRemoteSnaps.snaps;
     const seen = new Set(jobs.concat(archivedJobs).map((j) => j.id)); // an archived job is still here: never offer it again as "on another computer"
-    const snaps = await Promise.all(others.map((m) => cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id }, signal: AbortSignal.timeout(3000) }).then((d) => ({ m, snap: d?.snapshot })).catch(() => null)));
     const out = [];
     for (const item of snaps) {
       if (!item?.snap?.recent_jobs) continue;
@@ -4833,7 +5055,7 @@ async function setUpFreeAi() {
 }
 
 pages["remote-job"] = async ([machineId, jobId]) => {
-  if (typeof Account === "undefined" || !Account.active?.()) return { title: "Job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on another computer.</div></section>` };
+  if (typeof Account === "undefined" || !Account.active?.()) return { title: "Remote job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on a remote machine.</div></section>` };
   const [{ machines = [] }, snapRes] = await Promise.all([
     cpApi("machines").catch(() => ({ machines: [] })),
     cpApi("machine/snapshot", { method: "POST", body: { machine_id: machineId } }).catch(() => null),
@@ -4841,23 +5063,26 @@ pages["remote-job"] = async ([machineId, jobId]) => {
   const machine = machines.find((m) => m.id === machineId);
   const rj = (snapRes?.snapshot?.recent_jobs || []).find((j) => (j.job_id || j.id) === jobId);
   if (!rj) {
-    return { title: "Job not found", sub: "", html: `<section class="card"><div class="empty">Could not find ${esc(jobId)} on ${esc(machine?.name || "that computer")}. <a href="#/">Back to jobs</a></div></section>` };
+    return { title: "Remote job not found", sub: "", html: `<section class="card"><div class="empty">Could not find ${esc(jobId)} on ${esc(machine?.name || "that machine")}. <a href="#/">Back to jobs</a></div></section>` };
   }
-  const machineLabel = machine?.name || "another computer";
+  const machineLabel = machine?.name || "remote machine";
+  const reachTag = machine?.reachable
+    ? ""
+    : machine?.online
+      ? `, ${machine.connection?.detail || (machine.connection?.state === "repairing" ? "repairing connection" : machine.connection?.state === "checking" ? "connecting" : "not reachable yet")}`
+      : ", offline";
   return {
     title: rj.title || jobId,
-    sub: `${jobId} · on ${machineLabel}`,
+    sub: `${jobId} · remote machine (${machineLabel}${reachTag})${rj.branch ? ` · ${rj.branch}` : ""}`,
     back: { href: "#/", label: "Jobs" },
     html: `<section class="card mb-16">
-      <div class="card-h"><h2>Job on ${esc(machineLabel)}</h2><span class="pill">${esc(rj.status || "planned")}</span></div>
+      <div class="card-h"><h2>Remote job on ${esc(machineLabel)}</h2><span class="pill">${esc(rj.status || "planned")}</span></div>
       <div class="card-b stack gap-12">
-        <p class="muted m-0">This job's files and run logs live on <strong>${esc(machineLabel)}</strong>${rj.branch ? ` on branch <code>${esc(rj.branch)}</code>` : ""}.</p>
         ${rj.summary ? `<p class="m-0">${esc(rj.summary)}</p>` : ""}
         ${rj.last_error ? `<div class="notice warn"><strong>Last error:</strong> ${esc(rj.last_error)}</div>` : ""}
         <div class="row gap-8 wrap">
-          ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open on ${esc(machineLabel)}</button>` : ""}
-          <button type="button" class="btn ${machine?.reachable ? "" : "primary"}" id="continue-remote-job-here">Continue on this computer</button>
-          <a class="btn" href="#/">Back</a>
+          ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open remote</button>` : ""}
+          <button type="button" class="btn ${machine?.reachable ? "" : "primary"}" id="continue-remote-job-here">Continue here</button>
         </div>
       </div>
     </section>`,
@@ -4866,15 +5091,32 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         const btn = e.currentTarget;
         btn.disabled = true;
         btn.textContent = `Opening ${machineLabel}…`;
+        // Signing in moves the browser to that computer and drops the token, so a failure has to put it back.
+        const keys = ["orchestrator_backend", ACCOUNT_BACKEND_KEY, Account.MACHINE_KEY, "orchestrator_token"];
+        const before = keys.map((k) => { try { return [k, localStorage.getItem(k)]; } catch { return [k, null]; } });
         try {
-          const res = await signInToMachine(machine); // it moved the browser to that computer and dropped the token: keep the new one
-          localStorage.setItem("orchestrator_token", res.token);
-          await refreshState();
-          location.hash = `#/jobs/${encodeURIComponent(jobId)}`;
+          let res;
+          try { res = await signInToMachine(machine); }
+          catch (error) { res = await repairMachineConnection(machine, error); } // its address may have changed since the list loaded
+          await unlockWith(res.token, `Opened ${machine.name}`);
+          const targetHash = `#/jobs/${encodeURIComponent(jobId)}`;
+          const rRepo = String(rj.repo || "").toLowerCase();
+          const rProj = String(rj.project || "").toLowerCase();
+          const targetProj = (state.project?.recent || []).find((p) => {
+            const pRepo = String(p.repo || p.github_repo || p.git_remote || "").toLowerCase();
+            if (rRepo && pRepo) return pRepo === rRepo;
+            return rProj && String(p.name || "").toLowerCase() === rProj;
+          });
+          if (targetProj && targetProj.root && targetProj.root !== state.project?.root) {
+            await switchProject(targetProj.root, targetHash);
+          } else {
+            location.hash = targetHash;
+          }
         } catch (err) {
+          try { before.forEach(([k, v]) => (v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v))); } catch { /* storage blocked */ }
           toast(err.message, true);
           btn.disabled = false;
-          btn.textContent = `Open on ${machineLabel}`;
+          btn.textContent = "Open remote";
         }
       });
       $("#continue-remote-job-here")?.addEventListener("click", async (e) => {
@@ -4883,14 +5125,33 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         btn.textContent = "Importing…";
         try {
           const res = await api("jobs/import-remote", { method: "POST", body: { job: rj, source_machine_name: machineLabel } });
-          toast(res.fetched_branch ? `Imported job and fetched ${rj.branch}` : "Imported job onto this computer");
+          toast(res.fetched_branch ? `Imported job and fetched ${rj.branch}` : "Imported job onto this machine");
           location.hash = `#/jobs/${encodeURIComponent(res.id || jobId)}`;
         } catch (err) {
-          toast(err.message, true);
+          if (/^not found$/i.test(err.message || "")) {
+            savePendingUpdateResume({ type: "import-remote", job: rj, source_machine_name: machineLabel, returnHash: location.hash });
+            const started = await promptOrchestratorUpdate("This machine's Orchestrator server doesn't support importing remote jobs yet.");
+            if (!started) clearPendingUpdateResume();
+          } else {
+            toast(err.message, true);
+          }
           btn.disabled = false;
-          btn.textContent = "Continue on this computer";
+          btn.textContent = "Continue here";
         }
       });
+      if (machine?.online && !machine?.reachable) {
+        let checks = 0;
+        let stopped = false;
+        const timer = setInterval(async () => {
+          if (stopped || ++checks > 8) { clearInterval(timer); return; }
+          try {
+            const fresh = await cpApi("machines");
+            const hit = (fresh?.machines || []).find((m) => m.id === machineId);
+            if (hit?.reachable && !stopped) { clearInterval(timer); route(); }
+          } catch { /* retry next tick */ }
+        }, 4000);
+        cleanup.push(() => { stopped = true; clearInterval(timer); });
+      }
     },
   };
 };
@@ -4920,6 +5181,7 @@ pages.job = async ([id]) => {
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
   const scope = data.scope || null;
+  const cruft = data.cruft || null;
   const actionableFindings = (scope?.findings || []).filter((f) => f.id !== "no_plan_files");
   const hasNoPlanFiles = (scope?.findings || []).some((f) => f.id === "no_plan_files");
   const phone = matchMedia("(max-width: 760px)").matches;
@@ -4979,8 +5241,9 @@ pages.job = async ([id]) => {
     : `${next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
-  // 4-Phase Lifecycle determination
+  // 5-Phase Lifecycle determination (Plan -> Build -> Verify -> Document -> Review)
   const status = s.status || "";
+  const docFilesChanged = allFiles.filter((f) => /(?:^|\/)(?:readme|contributing|changelog|architecture|agents|claude)\.md$/i.test(f) || /^docs\/.*\.md$/i.test(f));
   let currentPhase = "plan";
   if (status === "completed" || status === "archived") {
     currentPhase = "review";
@@ -4994,7 +5257,7 @@ pages.job = async ([id]) => {
     currentPhase = "plan";
   }
 
-  const phaseOrder = ["plan", "build", "verify", "review"];
+  const phaseOrder = ["plan", "build", "verify", "document", "review"];
   const currentPhaseIndex = phaseOrder.indexOf(currentPhase);
   const isJobComplete = status === "completed" || status === "archived";
 
@@ -5009,30 +5272,40 @@ pages.job = async ([id]) => {
   };
 
   const planStep = {
-    title: "1. Plan",
+    title: "Plan",
     subtitle: isJobComplete || currentPhaseIndex > 0 ? "Approved" : s.state.next?.action === "approve" ? "Needs approval" : status === "human-needed" ? "Clarification" : "Planning",
     ...getStepState(0),
   };
 
   const buildStep = {
-    title: "2. Build",
+    title: "Build",
     subtitle: !tasksTotal && (isJobComplete || currentPhaseIndex > 1) ? (job.output_scope === "tests-only" ? (Object.keys(job.output_digests || {}).length ? `${plural(Object.keys(job.output_digests).length, "test file")} written` : "No test files") : "No tasks needed") : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
     ...getStepState(1),
   };
 
   const verifyStep = {
-    title: "3. Verify",
+    title: "Verify",
     subtitle: isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : status === "debugging" || s.state.tone === "failed" ? "Tests failing" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
     ...getStepState(2),
   };
 
-  const reviewStep = {
-    title: "4. Review",
-    subtitle: isJobComplete ? "Merged" : status === "review-needed" ? "Ready to merge" : "PR & merge",
+  const docStep = {
+    title: "Document",
+    subtitle: docFilesChanged.length
+      ? `${plural(docFilesChanged.length, "doc")} updated`
+      : isJobComplete || currentPhaseIndex > 3
+        ? "Checked"
+        : "Project docs",
     ...getStepState(3),
   };
 
-  const phasesInfo = [planStep, buildStep, verifyStep, reviewStep];
+  const reviewStep = {
+    title: "Finalize",
+    subtitle: isJobComplete ? "Merged" : status === "review-needed" ? "Ready to merge" : "PR & merge",
+    ...getStepState(4),
+  };
+
+  const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
 
 
   // Test files a Tests job wrote are on disk even when checking them stopped, so say so and name them.
@@ -5074,20 +5347,21 @@ pages.job = async ([id]) => {
 
   // Contextual consequence preview for hero
   let nextExecutionPreview = "";
+  const tasksLeft = Math.max(0, tasksTotal - tasksDone);
   if (activeRun) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> working on <strong>${esc(nextTask || "the tasks")}</strong>`;
-  } else if (s.state.next?.action === "approve") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
-  } else if (s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI starts on <strong>${esc(nextTask || "Task 1")}</strong>`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> <strong>${esc(nextTask || "working")}</strong>`;
+  } else if (s.state.next?.action === "approve" || s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
+    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> start <strong>${esc(nextTask || "Task 1")}</strong>`;
   } else if (s.state.next?.action === "resume" && ["environment", "pending", "unregistered"].includes(job.test_validation?.kind)) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the saved tests are checked again. Nothing is rewritten.`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> re-run saved tests`;
   } else if (s.state.next?.action === "resume") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> it picks up at <strong>${esc(nextTask || "the next task")}</strong> (${plural(tasksTotal - tasksDone, "task")} left)`;
+    nextExecutionPreview = tasksTotal > 0
+      ? `<span class="job-hero-next-label">Next:</span> <strong>${esc(nextTask || "next task")}</strong> (${plural(tasksLeft, "task")} left)`
+      : `<span class="job-hero-next-label">Next:</span> continue setup`;
   } else if (s.state.next?.action === "merge") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the changes go into ${esc(job.base_branch || "main")} and the job is done`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> merge into ${esc(job.base_branch || "main")}`;
   } else if (s.state.next?.action === "debug") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Then:</span> the AI looks into the failing tests and tries a fix`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> debug failing tests`;
   }
 
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
@@ -5141,11 +5415,25 @@ pages.job = async ([id]) => {
       ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
         <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
     </section>`;
-  const architectConcerns = s.question && /architect/i.test(s.question) && /architect/i.test(s.state.reason || "");
+  const rawHeroReason = String(s.state.reason || "").trim();
+  const conciseReasonText = (raw) => {
+    let text = raw.replace(/^It stopped with an error:\s*/i, "").replace(/^Paused:\s*/i, "").trim();
+    const firstLine = (text.split(/\r?\n/)[0] || "").trim();
+    const dotIdx = firstLine.indexOf(". ");
+    const sentence = dotIdx >= 20 ? firstLine.slice(0, dotIdx + 1) : firstLine;
+    return sentence.length > 110 ? `${sentence.slice(0, 107).trimEnd()}…` : sentence;
+  };
+  const architectConcerns = s.question && /architect/i.test(s.question) && /architect/i.test(rawHeroReason);
+  const shortReason = conciseReasonText(rawHeroReason);
+  const hasMoreReason = !architectConcerns && !reviewingPlan && !(s.status === "designing" && nextAction === "approve")
+    && rawHeroReason && (rawHeroReason.includes("\n") || rawHeroReason.length > 110);
   const heroReason = architectConcerns ? "The architect raised concerns (below). Answer them, or accept its suggestions and re-plan."
-    : reviewingPlan ? `Read <button type="button" class="linklike" data-scroll-to="#plan-section">the plan below</button>: ${plural(tasks.length, "task")}, each with what "done" means and the files it touches. ${nextAction === "approve" ? "Approve it, or revise it if something's off." : "Start when you're happy with it."}`
-    : s.status === "designing" && nextAction === "approve" ? `Read <button type="button" class="linklike" data-scroll-to="#brief-section">the design below</button>, then approve it or ask for changes.`
-    : clamped(s.state.reason || "", 320);
+    : reviewingPlan ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the plan below</button> (${plural(tasks.length, "task")}) and ${nextAction === "approve" ? "approve or revise." : "start when ready."}`
+    : s.status === "designing" && nextAction === "approve" ? `Review <button type="button" class="linklike" data-scroll-to="#brief-section">the design</button>, then approve or request changes.`
+    : esc(shortReason);
+  const heroReasonDetails = hasMoreReason
+    ? `<details class="hero-error-details"><summary class="linklike muted">Error details</summary><pre class="hero-error-pre">${esc(rawHeroReason)}</pre></details>`
+    : "";
 
   const isAutoImprove = Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator" || job.is_orchestrator_improvement || job.tag === "improve_orchestrator");
 
@@ -5194,6 +5482,7 @@ pages.job = async ([id]) => {
         <div class="job-hero-main">
           <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
+          ${heroReasonDetails}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
           ${scopeWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#scope-section">Scope check: ${scopeWarning} beyond the plan. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
@@ -5247,11 +5536,15 @@ pages.job = async ([id]) => {
                 : tasksDone === tasksTotal
                   ? `<span class="pill done">All tasks built</span><span class="muted">Ready for verification &amp; review</span>`
                   : ""}
-          </div>` : `<div class="empty-state"><strong>No tasks yet</strong><span class="muted">Once this job has a plan, its tasks and your progress through them show up here.</span></div>`}
+          </div>` : `<div class="empty-state"><strong>No tasks yet</strong><span class="muted">Tasks appear once planned.</span></div>`}
           <div class="progress-foot muted">
-            ${esc(testsDisplay)}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner)} → ${esc(pipeline.builder)} → ${esc(pipeline.reviewer)}` : ""}
+            ${esc(testsDisplay)}${docFilesChanged.length ? ` · Docs updated: ${docFilesChanged.slice(0, 3).map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}${docFilesChanged.length > 3 ? ` +${docFilesChanged.length - 3} more` : ""}` : ` · <a href="#/project-docs">Docs</a>`}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `${pipeline.planner} → ${pipeline.builder} → ${pipeline.reviewer}`)}` : ""}
           </div>
-          ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto for a ${esc(job.auto_assignment.complexity || "standard")} job: ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
+          <details class="hero-error-details">
+            <summary class="linklike muted">Stage &amp; model details</summary>
+            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
+            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
+          </details>
         </div>
       </section>
 
@@ -5313,6 +5606,22 @@ pages.job = async ([id]) => {
           ${actionableFindings.some((f) => f.files.length) || scope.accepted ? `<div class="row gap-12">
             ${actionableFindings.some((f) => f.files.length) ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(scope.trim.summary)}&spec=${encodeURIComponent(scope.trim.spec)}">Create a job to trim it</a>` : ""}
             ${scope.accepted ? `<button class="btn small ghost" data-scope-reset>Reset accepted</button>` : ""}</div>` : ""}
+        </div></section>` : ""}
+
+      ${cruft ? `<section class="card mb-16" id="cruft-section">
+        <div class="card-h">
+          <h2>Unneeded code</h2>
+          <span class="count">${cruft.findings.length ? `${cruft.findings.length} to review` : "None found"}</span>
+        </div>
+        <div class="card-b stack">
+          <div class="muted">Looked at the lines this job added in ${cruft.files} source file${cruft.files === 1 ? "" : "s"}: code the project already has, code nothing uses, repeated blocks, and leftovers.${cruft.accepted ? ` ${cruft.accepted} accepted.` : ""}${cruft.reuse ? ` The builder was pointed at ${plural(cruft.reuse.suggested, "existing definition")}; the change uses ${cruft.reuse.used.length}${cruft.reuse.used.length ? ` (${cruft.reuse.used.map(esc).join(", ")})` : ""}.` : ""}</div>
+          ${cruft.findings.map((f) => `<div class="scope-finding"><div class="row gap-12"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
+            <div class="muted">${esc(f.detail)}</div>
+            <ul class="scope-files mono"><li>${esc(f.files[0])}:${f.line}</li></ul>
+            <div><button class="btn small" data-cruft-accept="${esc(f.id)}">Keep it</button></div></div>`).join("")}
+          ${cruft.findings.length || cruft.accepted ? `<div class="row gap-12">
+            ${cruft.findings.length ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(cruft.fix.summary)}&spec=${encodeURIComponent(cruft.fix.spec)}">Create a job to remove it</a>` : ""}
+            ${cruft.accepted ? `<button class="btn small ghost" data-cruft-reset>Reset kept</button>` : ""}</div>` : ""}
         </div></section>` : ""}
 
 
@@ -5532,6 +5841,12 @@ pages.job = async ([id]) => {
           btn.disabled = false;
         }
       }));
+      view.querySelectorAll("[data-cruft-accept]").forEach((btn) => btn.addEventListener("click", async () => {
+        try { await api(`jobs/${encodeURIComponent(id)}/cruft`, { method: "POST", body: { op: "accept", ids: [btn.dataset.cruftAccept] } }); toast("Kept"); route(); } catch (e) { toast(e.message, true); }
+      }));
+      $("[data-cruft-reset]")?.addEventListener("click", async () => {
+        try { await api(`jobs/${encodeURIComponent(id)}/cruft`, { method: "POST", body: { op: "reset" } }); route(); } catch (e) { toast(e.message, true); }
+      });
       $("[data-scope-reset]")?.addEventListener("click", async () => {
         try { await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "reset" } }); route(); } catch (e) { toast(e.message, true); }
       });
@@ -6042,6 +6357,7 @@ document.addEventListener("click", (e) => {
   }
   const logAction = e.target.closest("[data-run-log]");
   if (logAction) {
+    logAction.closest("details")?.removeAttribute("open");
     const { runLog: action, path, name } = logAction.dataset;
     logAction.disabled = true;
     const fetched = api(`file?path=${encodeURIComponent(path)}`).then(({ text }) => plainLog(text));
@@ -7957,6 +8273,176 @@ pages.docs = async (args, query) => {
   // There is no index any more: the guides are on Help, and each job, feature and file page is reached from where it is used.
   location.replace("#/help");
   return { title: "Help", sub: "", actions: "", html: "" };
+};
+
+pages["project-docs"] = async () => {
+  const data = await api("docs");
+  const product = data.product || { exists: false, written: 0, total: 0, path: "docs/product/prd.md", pitch: "" };
+  const files = Array.isArray(data.files) ? data.files : [];
+  const features = Array.isArray(data.features) ? data.features : [];
+  const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+  const formatBytes = (n) => n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n || 0} B`;
+
+  const gaps = [];
+  if (!files.some((f) => /^readme\.md$/i.test(f.path || ""))) gaps.push("Missing README.md");
+  if (!product.exists || (product.total > 0 && product.written < product.total)) {
+    gaps.push(`Product requirements ${product.written || 0}/${product.total || 0} sections written`);
+  }
+  if (!files.some((f) => (f.path || "").startsWith("docs/"))) gaps.push("No markdown files under docs/");
+
+  const filesHtml = files.length
+    ? `<div class="list">${files.map((f) => `
+        <div class="item">
+          <div class="item-main">
+            <div class="item-title"><a href="#/docs/file?path=${encodeURIComponent(f.path)}">${esc(f.title || f.path)}</a></div>
+            <div class="item-meta"><span class="mono">${esc(f.path)}</span> · ${esc(f.group || "Project")} · ${esc(formatBytes(f.size))}</div>
+          </div>
+          <div class="item-actions">
+            <button type="button" class="btn small" data-doc-preview="file" data-doc-id="${esc(f.path)}">Preview</button>
+          </div>
+        </div>`).join("")}</div>`
+    : `<div class="empty">No repository markdown files found yet. Use <strong>Fill gaps with AI</strong> to generate project documentation.</div>`;
+
+  const featuresHtml = features.length
+    ? `<div class="list">${features.map((f) => `
+        <div class="item">
+          <div class="item-main">
+            <div class="item-title"><a href="#/docs/feature/${encodeURIComponent(f.id)}">${esc(f.name || f.id)}</a></div>
+            <div class="item-meta">${esc(f.status || "planned")} · ${f.jobs_done || 0}/${f.jobs || 0} jobs done${f.summary ? ` · ${esc(f.summary)}` : ""}</div>
+          </div>
+          <div class="item-actions">
+            <button type="button" class="btn small" data-doc-preview="feature" data-doc-id="${esc(f.id)}">Preview</button>
+          </div>
+        </div>`).join("")}</div>`
+    : `<div class="empty">No features defined yet.</div>`;
+
+  const recentJobs = jobs.slice(0, 25);
+  const jobsHtml = recentJobs.length
+    ? `<div class="list">${recentJobs.map((j) => `
+        <div class="item">
+          <div class="item-main">
+            <div class="item-title"><a href="#/docs/job/${encodeURIComponent(j.id)}">${esc(j.title || j.id)}</a></div>
+            <div class="item-meta">${esc(j.label || j.status || "")}${j.feature_name ? ` · ${esc(j.feature_name)}` : ""}${j.blurb ? ` · ${esc(j.blurb)}` : ""}</div>
+          </div>
+          <div class="item-actions">
+            <button type="button" class="btn small" data-doc-preview="job" data-doc-id="${esc(j.id)}">Preview</button>
+          </div>
+        </div>`).join("")}</div>`
+    : `<div class="empty">No job records yet.</div>`;
+
+  return {
+    title: "Documentation",
+    sub: "All current documentation for this project, with AI gap-filling.",
+    actions: `<button type="button" class="btn primary" id="proj-docs-fill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fill gaps with AI</button><button type="button" class="btn" id="proj-docs-export">Export all .md</button>`,
+    html: `
+      ${gaps.length ? `<div class="notice"><strong>Documentation gaps noticed:</strong> ${esc(gaps.join(" · "))}. Use <strong>Fill gaps with AI</strong> to audit the codebase and update or create missing docs.</div>` : ""}
+      <section class="card">
+        <div class="card-h">
+          <h2>Product requirements</h2>
+          <div class="card-actions">
+            <a class="btn small" href="#/product">Edit product doc</a>
+            <a class="btn small" href="#/docs/product">View markdown</a>
+          </div>
+        </div>
+        <div class="card-b">
+          <p class="item-meta">${product.exists ? `${product.written} of ${product.total} sections written` : "Not created yet"} · <span class="mono">${esc(product.path || "docs/product/prd.md")}</span></p>
+          ${product.pitch ? `<p>${esc(product.pitch)}</p>` : ""}
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2>Repository docs (${files.length})</h2></div>
+        <div class="card-b">${filesHtml}</div>
+      </section>
+      <section class="card" id="proj-docs-preview-card" hidden>
+        <div class="card-h">
+          <h2 id="proj-docs-preview-title">Preview</h2>
+          <div class="card-actions">
+            <button type="button" class="btn small" id="proj-docs-preview-download">Download .md</button>
+            <button type="button" class="btn small" id="proj-docs-preview-close">Close</button>
+          </div>
+        </div>
+        <div class="card-b"><div class="md" id="proj-docs-preview-body"></div></div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2>Feature docs (${features.length})</h2></div>
+        <div class="card-b">${featuresHtml}</div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2>Job docs (${jobs.length}${jobs.length > recentJobs.length ? `, showing ${recentJobs.length}` : ""})</h2></div>
+        <div class="card-b">${jobsHtml}</div>
+      </section>`,
+    after: () => {
+      let currentPreview = null;
+      const previewCard = $("#proj-docs-preview-card");
+      const previewTitle = $("#proj-docs-preview-title");
+      const previewBody = $("#proj-docs-preview-body");
+
+      $("#proj-docs-fill")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const fileList = files.length ? files.map((f) => f.path).join(", ") : "none";
+        const fillParams = {
+          type: "infra",
+          summary: "Fill documentation gaps and update stale project docs",
+          spec: `Audit all documentation for this project and fill any gaps or update stale sections.\n\nCurrent snapshot:\n- Repository docs found: ${fileList}\n- Product requirements: ${product.written || 0}/${product.total || 0} sections written (${product.path || "docs/product/prd.md"})\n- Features tracked: ${features.length}\n\nInstructions:\n1. Inspect the codebase, entry points, configuration, APIs, CLI commands, and existing docs (README.md, docs/**/*.md).\n2. Create missing documentation (such as README.md or docs/ architecture/setup/usage guides) and update any outdated sections so they match the current implementation.\n3. Do not commit secrets or generated runtime logs, and run relevant tests/checks before finishing.`,
+        };
+        btn.disabled = true;
+        try {
+          await runAction("new_job", fillParams);
+        } catch (err) {
+          toast(err.message, true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      $("#proj-docs-export")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const text = await api("docs/export");
+          downloadText("project-documentation.md", typeof text === "string" ? text : (text?.markdown || ""));
+        } catch (err) {
+          toast(err.message, true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      $("#proj-docs-preview-close")?.addEventListener("click", () => {
+        if (previewCard) previewCard.hidden = true;
+        currentPreview = null;
+      });
+
+      $("#proj-docs-preview-download")?.addEventListener("click", () => {
+        if (!currentPreview) return;
+        const name = `${(currentPreview.title || "document").replace(/[^A-Za-z0-9._-]+/g, "-")}.md`;
+        downloadText(name, currentPreview.markdown || "");
+      });
+
+      $$("[data-doc-preview]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const kind = btn.dataset.docPreview;
+          const id = btn.dataset.docId || "";
+          const endpoint = kind === "file" ? `docs/file?path=${encodeURIComponent(id)}` : `docs/${kind}/${encodeURIComponent(id)}`;
+          btn.disabled = true;
+          try {
+            const doc = await api(endpoint);
+            currentPreview = doc;
+            if (previewTitle) previewTitle.textContent = doc.title || id;
+            if (previewBody) previewBody.innerHTML = Markdown.render(doc.markdown || "");
+            if (previewCard) {
+              previewCard.hidden = false;
+              previewCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            }
+          } catch (err) {
+            toast(err.message, true);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+    },
+  };
 };
 
 // ---------------------------------------------------------------- product requirements
@@ -12264,10 +12750,12 @@ function runHeader(r) {
     title: r.title,
     sub: "",
     actions: ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
-      : `<button class="btn" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
-        + `<button class="btn" data-run-log="export" data-path="${esc(log)}" data-name="${esc(r.title)}">Export</button>`)
+      : `<details class="more"><summary class="btn icon" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-arrow-up"/></svg></summary><div class="more-menu">`
+        + `<button class="btn small" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
+        + `<button class="btn small" data-run-log="export" data-path="${esc(log)}" data-name="${esc(r.title)}">Export log</button>`
+        + `</div></details>`)
       + (r.running
-        ? `<button class="btn danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…' : "Stop"}</button>`
+        ? `<button class="btn icon danger" data-stop="${esc(r.id)}" aria-label="${isStopping ? "Stopping" : "Stop"}" title="${isStopping ? "Stopping…" : "Stop"}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>' : '<svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>'}</button>`
         : ""),
   };
 }
@@ -12434,15 +12922,19 @@ function runFailureGuidance(r) {
   if (isDivergedBranch) {
     const branchMatch = (err + " " + (r.error_summary || "") + " " + (r.saved_log_text || "")).match(/Could not update branch '([^']+)'/);
     const branchName = branchMatch ? branchMatch[1] : "this branch";
+    const opAction = r.action || (targetJob ? "execute" : "");
+    const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
+    const bodyAttr = branchMatch ? `data-recover-body='${attrJSON({ branch: branchMatch[1] })}'` : "";
     const rerunBtn = targetJob
-      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
+      ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : "";
     const backBtn = targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "";
     return {
+      recoveryAction: "git-sync-branch",
       title: "Branch out of sync with remote",
-      detail: `Local and remote commits on ${branchName} have diverged and could not auto-rebase cleanly. Run git pull --rebase origin ${branchName} (or git reset --hard origin/${branchName}) in the project folder, or switch the job's branch mode, then rerun.`,
-      action: rerunBtn,
-      secondary: backBtn,
+      detail: `${branchName} diverged from origin/${branchName}.`,
+      action: `<button type="button" class="btn small primary" data-recover="git-sync-branch" data-recover-confirm="Sync ${esc(branchName)} to origin?" data-recover-detail="Resets local ${esc(branchName)} to match origin/${esc(branchName)}. Risk: discards unpushed local commits on ${esc(branchName)}." ${bodyAttr} ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Sync with remote &amp; Rerun</button>`,
+      secondary: `${rerunBtn}${backBtn}`,
     };
   }
 
@@ -12514,6 +13006,41 @@ function runFailureGuidance(r) {
     };
   }
 
+  const isGitUntrackedConflict = fullText.includes("untracked working tree files would be overwritten");
+
+  if (isGitUntrackedConflict) {
+    const rawLog = `${err}\n${r.error_summary || ""}\n${r.saved_log_text || ""}`;
+    const untrackedPaths = [];
+    let collecting = false;
+    for (const rawLine of rawLog.split(/\r?\n/)) {
+      const lower = rawLine.toLowerCase();
+      if (lower.includes("untracked working tree files would be overwritten")) {
+        collecting = true;
+        continue;
+      }
+      if (!collecting) continue;
+      if (lower.includes("please move or remove them") || (rawLine && !/^\s/.test(rawLine))) break;
+      const trimmed = rawLine.trim();
+      if (trimmed) untrackedPaths.push(trimmed.replace(/^"(.*)"$/, "$1"));
+    }
+    const opAction = r.action || (targetJob ? "execute" : "");
+    const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
+    const bodyAttr = untrackedPaths.length ? `data-recover-body='${attrJSON({ paths: untrackedPaths })}'` : "";
+    const scopeLabel = untrackedPaths.length
+      ? `${untrackedPaths.length} conflicting local ${untrackedPaths.length === 1 ? "file" : "files"}`
+      : "conflicting local files";
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : "";
+    return {
+      recoveryAction: "git-stash",
+      title: "Local files block pull",
+      detail: `${scopeLabel} (new files not yet saved to Git) have the same names as incoming remote files.`,
+      action: `<button type="button" class="btn small primary" data-recover="git-stash" data-recover-confirm="Stash ${esc(scopeLabel)}?" data-recover-detail="Moves only these new local files (not yet saved to Git) onto Git's stash shelf so the pull can finish. Risk: those local copies leave your folder for now (restore with git stash pop); other work stays untouched." ${bodyAttr} ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Stash and rerun</button>`,
+      secondary: backBtn,
+    };
+  }
+
   const isGitDirtyConflict = fullText.includes("your local changes to the following files would be overwritten by checkout")
     || fullText.includes("your local changes to the following files would be overwritten by merge")
     || fullText.includes("cannot be applied because you have unstaged changes")
@@ -12546,8 +13073,8 @@ function runFailureGuidance(r) {
     return {
       recoveryAction: "git-unlock-index",
       title: "Stale Git index lock",
-      detail: "A leftover .git/index.lock file is blocking Git commands. Confirm to verify no git process is using it, remove the stale lock, and rerun.",
-      action: `<button type="button" class="btn small primary" data-recover="git-unlock-index" data-recover-confirm="Remove stale .git/index.lock?" data-recover-detail="This checks with lsof that no git process is using .git/index.lock, deletes the stale lock, and runs git status to verify the index before rerunning." ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Remove lock &amp; Rerun</button>`,
+      detail: "Leftover .git/index.lock is blocking Git.",
+      action: `<button type="button" class="btn small primary" data-recover="git-unlock-index" data-recover-confirm="Remove stale .git/index.lock?" data-recover-detail="Deletes .git/index.lock after checking no Git process is running. Risk: unsafe only if another Git command is actively writing (checked first)." ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Remove lock &amp; Rerun</button>`,
       secondary: backBtn,
     };
   }
@@ -12565,9 +13092,9 @@ function runFailureGuidance(r) {
       : "";
     return {
       recoveryAction: "git-prune-worktrees",
-      title: "Git branch is locked by an orphaned worktree",
-      detail: "A previous worker or splinter job left an active git worktree registration. Pruning orphaned worktrees clears the locks so the branch can be checked out.",
-      action: `<button type="button" class="btn small primary" data-recover="git-prune-worktrees" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Prune worktrees &amp; Rerun</button>`,
+      title: "Branch locked by leftover worktree",
+      detail: "A leftover worktree registration is locking this branch.",
+      action: `<button type="button" class="btn small primary" data-recover="git-prune-worktrees" data-recover-confirm="Prune leftover worktrees?" data-recover-detail="Clears stale worktree entries for missing folders. Risk: none for committed or active work." ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Prune worktrees &amp; Rerun</button>`,
       secondary: backBtn,
     };
   }
@@ -12798,14 +13325,11 @@ function runFailureGuidance(r) {
       ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
     const recommendBtn = `<button type="button" class="btn small" data-recommend-fix="${esc(err)}">Recommend fix</button>`;
-    const backBtn = targetJob
-      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
-      : "";
     return {
       title: "Execution error",
       detail: err,
       action: rerunBtn || `<a class="btn small primary" href="#/new">Create new job</a>`,
-      secondary: `${recommendBtn}${backBtn}`,
+      secondary: recommendBtn,
     };
   }
 
@@ -12931,16 +13455,19 @@ function runStatus(r, vc = null) {
     </section>`;
   }
 
-  const caveat = done ? p.notice || "" : ""; // a run that finished but only partly did its job
+  const pendingUpdate = done && r.action === "update_local" ? readPendingUpdateResume() : null;
+  const caveat = done && r.action !== "update_local" ? p.notice || "" : ""; // a run that finished but only partly did its job
   const partial = Boolean(done && r.result?.partial); // the work is saved but the job stopped short of finishing it
   const flagged = Boolean(done && r.result?.tone && r.result.tone !== "ok"); // the process exited cleanly, but what it did needs a look
-  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : partial ? "Partially complete" : caveat || flagged ? "Completed with notes" : "Completed";
-  const tone = stopping || r.waiting || caveat || flagged ? "attention" : r.running ? "working" : failed ? "failed" : "done";
+  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : done && r.action === "update_local" ? "Restarting UI" : partial ? "Partially complete" : caveat || flagged ? "Completed with notes" : "Completed";
+  const tone = stopping || r.waiting || caveat || flagged ? "attention" : r.running || (done && r.action === "update_local") ? "working" : failed ? "failed" : "done";
   const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
   const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
   const totalSteps = numbered ? (p.total || 5) : 1;
   const stepPrefix = numbered ? `Step ${currentStep} of ${totalSteps}: ` : "";
-  const completionLabel = r.action === "coverage" ? "Coverage measurement complete"
+  const completionLabel = r.action === "update_local"
+    ? (pendingUpdate ? "Orchestrator updated — restarting UI to continue your job…" : "Orchestrator updated — restarting UI…")
+    : r.action === "coverage" ? "Coverage measurement complete"
     : r.action === "logs_pull" ? "Logs pulled"
     : r.action === "plan_epic" ? "Plan ready to review"
     : r.result_job && !r.job ? "Job created"
@@ -12951,7 +13478,7 @@ function runStatus(r, vc = null) {
     : r.action === "build" ? "Build"
     : r.action === "test" ? "Run all tests"
     : r.title || (r.action ? r.action.replace(/_/g, " ") : "Run");
-  const transientLabel = /^(Scheduling worker|Waiting for |Reading the model|Starting execution|Updating job status|Preparing git branch)/.test(p.label || ""); // where it was, not what it did
+  const transientLabel = /^(Scheduling worker|Waiting for |Reading the model|Starting execution|Updating job status|Preparing git branch|(?:\[\d+\/\d+\]\s*)?Updating (?:GitHub )?issue)/i.test(p.label || ""); // where it was, not what it did
   const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : partial ? "Paused: the work is saved, but the job isn't finished" : flagged ? "Finished, needs your attention" : (p.label && !transientLabel ? p.label : completionLabel))
     : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
     : (p.label || r.title || "Starting run");
@@ -13010,19 +13537,18 @@ function runStatus(r, vc = null) {
     : Number.isFinite(p.percent) ? Math.min(100, Math.max(0, Math.round(p.percent)))
     : progressMax > 0 ? Math.min(100, Math.max(0, Math.round((progressVal / progressMax) * 100))) : 0;
   const duration = runDuration(r.started, r.ended);
-  const actionBtn = done ? (r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
+  const actionBtn = done ? (r.action === "update_local"
+    ? `<button type="button" class="btn small primary" data-update-reconnect>${pendingUpdate ? "Reconnect & continue" : "Reconnect"}</button>`
+    : r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
     : r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>` // the epic's waiting job is gone: planning replaced it
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
     : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "")
     : "";
-
   const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;
   const jobItem = targetJob
     ? `<div><dt>Job</dt><dd><a href="#/jobs/${encodeURIComponent(targetJob)}">${esc((targetJob === r.job && r.job_title) || targetJob)}</a></dd></div>` // its title, not an ID like "job-1"
     : "";
-  const showAction = Boolean(actionName && (!headlineLabel || actionName.toLowerCase() !== headlineLabel.toLowerCase()) && (!p.label || actionName.toLowerCase() !== p.label.toLowerCase()));
-  const actionItem = showAction ? `<div><dt>Action</dt><dd>${esc(actionName)}</dd></div>` : "";
   const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
   const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
   const foundBlock = showFound ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
@@ -13057,7 +13583,6 @@ function runStatus(r, vc = null) {
     ${foundBlock}
     <dl class="run-status-details">
       ${jobItem}
-      ${actionItem}
       ${summaryItem}
       ${suiteItem}
       ${machineItem}
@@ -13068,6 +13593,7 @@ function runStatus(r, vc = null) {
       ${resultItem}
     </dl>
     ${slowHint ? `<p class="run-status-hint muted" data-run-slow-hint>${esc(slowHint)}</p>` : ""}
+    ${done && r.action === "update_local" ? `<p class="run-status-hint" data-update-next-hint hidden></p>` : ""}
     ${caveat ? `<p class="run-status-caveat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> ${esc(caveat)}</p>` : ""}
     ${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}
     ${guidance ? `
@@ -13151,8 +13677,108 @@ function wireKeychainUnlock(container) {
   });
 }
 
+const UPDATE_RESUME_KEY = "orchestrator_pending_update_resume";
+function savePendingUpdateResume(payload) {
+  try { sessionStorage.setItem(UPDATE_RESUME_KEY, JSON.stringify({ ...payload, at: Date.now() })); } catch { /* unavailable */ }
+}
+function readPendingUpdateResume() {
+  try {
+    const raw = sessionStorage.getItem(UPDATE_RESUME_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || Date.now() - (data.at || 0) > 30 * 60 * 1000) { sessionStorage.removeItem(UPDATE_RESUME_KEY); return null; }
+    return data;
+  } catch { return null; }
+}
+function clearPendingUpdateResume() {
+  try { sessionStorage.removeItem(UPDATE_RESUME_KEY); } catch { /* unavailable */ }
+}
+
+async function tryResumeAfterUpdate({ quiet = false, onFatalError = null } = {}) {
+  const pending = readPendingUpdateResume();
+  if (pending?.type === "import-remote" && pending.job) {
+    try {
+      const res = await api("jobs/import-remote", { method: "POST", body: { job: pending.job, source_machine_name: pending.source_machine_name || "remote machine" } });
+      clearPendingUpdateResume();
+      toast(res.fetched_branch ? `Imported job and fetched ${pending.job.branch}` : "Imported job onto this machine");
+      location.hash = `#/jobs/${encodeURIComponent(res.id || pending.job.job_id || pending.job.id)}`;
+      return true;
+    } catch (err) {
+      const msg = err?.message || "";
+      const waitingRestart = /^not found$/i.test(msg) || /failed to fetch|network|load failed|err_connection|timeout/i.test(msg);
+      if (!waitingRestart) {
+        clearPendingUpdateResume();
+        const detail = msg || "Could not resume job.";
+        toast(detail, true);
+        onFatalError?.(detail);
+      } else if (!quiet) {
+        toast(/^not found$/i.test(msg)
+          ? "Orchestrator UI hasn't restarted yet. Restart it on that machine first."
+          : (msg || "Could not resume job yet."), "warning");
+      }
+      return false;
+    }
+  }
+  try {
+    await refreshState();
+    clearPendingUpdateResume();
+    location.hash = pending?.returnHash || "#/";
+    return true;
+  } catch (err) {
+    if (!quiet) toast(err?.message || "Could not reconnect yet.", "warning");
+    return false;
+  }
+}
+
 function wireAutoRecovery(container) {
   if (!container) return;
+  const reconnectBtn = container.querySelector("[data-update-reconnect]");
+  if (reconnectBtn && reconnectBtn.dataset.wired !== "true") {
+    reconnectBtn.dataset.wired = "true";
+    reconnectBtn.addEventListener("click", async () => {
+      const orig = reconnectBtn.textContent;
+      reconnectBtn.disabled = true;
+      reconnectBtn.textContent = "Reconnecting…";
+      const ok = await tryResumeAfterUpdate({ quiet: false });
+      if (!ok) {
+        reconnectBtn.disabled = false;
+        reconnectBtn.textContent = orig;
+      }
+    });
+    if (readPendingUpdateResume() && reconnectBtn.dataset.autoPolling !== "true") {
+      reconnectBtn.dataset.autoPolling = "true";
+      let attempts = 0;
+      let stopped = false;
+      const pollTimer = setInterval(() => { void runAutoCheck(); }, 4000);
+      const runAutoCheck = async () => {
+        if (stopped || !document.body.contains(reconnectBtn) || ++attempts > 75) {
+          stopped = true;
+          clearInterval(pollTimer);
+          return;
+        }
+        const ok = await tryResumeAfterUpdate({
+          quiet: true,
+          onFatalError: (msg) => {
+            stopped = true;
+            clearInterval(pollTimer);
+            const hint = container.querySelector("[data-update-next-hint]");
+            if (hint) {
+              hint.textContent = msg;
+              hint.hidden = false;
+              hint.classList.remove("muted");
+            }
+            reconnectBtn.textContent = "Reconnect";
+          },
+        });
+        if (ok) {
+          stopped = true;
+          clearInterval(pollTimer);
+        }
+      };
+      setTimeout(() => { void runAutoCheck(); }, 0);
+      cleanup.push(() => { stopped = true; clearInterval(pollTimer); });
+    }
+  }
   container.querySelectorAll("[data-recover]").forEach((btn) => {
     if (btn.dataset.wired === "true") return;
     btn.dataset.wired = "true";
@@ -13168,7 +13794,8 @@ function wireAutoRecovery(container) {
       btn.disabled = true;
       btn.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Recovering…`;
       try {
-        const res = await api(`recovery/${encodeURIComponent(op)}`, { method: "POST", body: {} });
+        const recoverBody = btn.dataset.recoverBody ? JSON.parse(btn.dataset.recoverBody) : {};
+        const res = await api(`recovery/${encodeURIComponent(op)}`, { method: "POST", body: recoverBody });
         toast(res?.message || "Recovery completed");
         const rerunAction = btn.dataset.rerunAction;
         const rerunParams = btn.dataset.rerunParams ? JSON.parse(btn.dataset.rerunParams) : {};
@@ -13179,12 +13806,67 @@ function wireAutoRecovery(container) {
           btn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> Done`;
         }
       } catch (err) {
-        toast(err?.message || "Recovery failed", true);
+        if (/Unknown recovery action/i.test(err?.message || "")) {
+          const machineName = state.project?.computer?.name || "this computer";
+          let machineId = "";
+          try { if (typeof Account !== "undefined") machineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
+          const ok = await formDialog(
+            "Update Orchestrator",
+            `<p><strong>${esc(machineName)}</strong> is running an older Orchestrator backend that doesn't support this recovery action yet. Update Orchestrator on it now?</p>`,
+            "Update Orchestrator",
+          );
+          if (ok) {
+            try {
+              if (typeof Account !== "undefined" && Account.active?.() && typeof cpApi === "function" && machineId) {
+                await cpApi("machines/update", { method: "POST", body: { machine_id: machineId } });
+                toast(`${machineName} will update once no work is running on it.`);
+              } else {
+                await runAction("update_local", {});
+              }
+            } catch (upErr) {
+              toast(upErr?.message || "Could not start update.", true);
+            }
+          }
+        } else {
+          toast(err?.message || "Recovery failed", true);
+        }
         btn.disabled = false;
         btn.innerHTML = origHtml;
       }
     });
   });
+}
+
+async function promptOrchestratorUpdate(reason) {
+  const machineName = state.project?.computer?.name || "this machine";
+  const currentVersion = state.runner?.version || "";
+  let machineId = "";
+  try { if (typeof Account !== "undefined") machineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
+  const versionText = currentVersion
+    ? `Update Orchestrator on <strong>${esc(machineName)}</strong> from <code>${esc(currentVersion)}</code> to the latest version and restart it?`
+    : `Update Orchestrator on <strong>${esc(machineName)}</strong> to the latest version and restart it?`;
+  const ok = await formDialog(
+    "Update Orchestrator",
+    `<p>${esc(reason)}</p><p>${versionText}</p>`,
+    "Update & restart",
+  );
+  if (!ok) return false;
+  try {
+    if (typeof Account !== "undefined" && Account.active?.() && typeof cpApi === "function" && machineId) {
+      try {
+        await cpApi("machines/update", { method: "POST", body: { machine_id: machineId } });
+        toast(`${machineName} will update and restart once no work is running on it.`);
+        return true;
+      } catch (cpErr) {
+        if (!/Orchestrator app/i.test(cpErr?.message || "")) throw cpErr;
+      }
+    }
+    await runAction("update_local", {});
+    return true;
+  } catch (upErr) {
+    toast(upErr?.message || "Could not start update.", true);
+    return false;
+  }
 }
 
 function wireApiKeyForm(container) {
@@ -13440,6 +14122,7 @@ async function finishRunStatus(run) {
   wireImagePreviews(container);
   wireRunGuidance(container);
   if (run.exit_code !== 0) {
+    if (!run.stopped) reportRunError(run);
     $("#term-wrap")?.classList?.add("run-failed");
     if (typeof document !== "undefined") document.body?.classList?.add("run-failed");
   }
@@ -14123,7 +14806,7 @@ function loadingSkeleton(page = "") {
   const head = `<div class="skeleton-card-head">${bone(30)}<span class="skeleton skeleton-pill"></span></div>`;
   const listCard = (n = 5) => `<div class="skeleton-card skeleton-flush">${head}${rows(n)}</div>`;
   const textCard = `<div class="skeleton-card">${bone(30)}${bone(90)}${bone(70)}</div>`;
-  const kind = SKELETON_KINDS[page] || (["activity", "projects", "packages", "devlogs", "delivery", "features", "checkup", "connections", "test-cases", "git", "measure", "ux-review", "docs", "help", "product"].includes(page) ? "list" : "generic");
+  const kind = SKELETON_KINDS[page] || (["activity", "projects", "packages", "devlogs", "delivery", "features", "checkup", "connections", "test-cases", "git", "measure", "ux-review", "project-docs", "docs", "help", "product"].includes(page) ? "list" : "generic");
   const body = {
     home: `<div class="skeleton-card skeleton-flush"><div class="skeleton-card-head">${bone(30)}<span class="skeleton-chips"><span class="skeleton skeleton-pill"></span><span class="skeleton skeleton-pill"></span><span class="skeleton skeleton-pill"></span></span></div>${rows(6)}</div>`,
     job: `<div class="skeleton-stepper">${"<span class=\"skeleton skeleton-step\"></span>".repeat(4)}</div>
@@ -14193,6 +14876,12 @@ async function route() {
     if (result?.stale) return;
     if (token === routeToken && current.page === r.page && current.args.join() === r.args.join()) {
       apply(result);
+      trackWebEvent("page_viewed", { page: r.page, nav: r.nav || "" });
+      if (!["home", "help"].includes(r.page)) trackWebEvent("feature_used", { feature: r.page });
+      if (r.page === "file") trackKeyAction("vibe_depth", "inspect_code_or_log_file");
+      else if (r.page === "devlogs") trackKeyAction("vibe_depth", "inspect_device_logs");
+      else if (r.page === "run") trackKeyAction("vibe_depth", "inspect_run_terminal");
+      else if (r.page === "project-docs") trackKeyAction("prd_and_agile", "view_project_docs");
       if (r.page !== "run") $("#page-title")?.focus({ preventScroll: true }); // so screen readers announce the new page
     }
   } catch (e) {
@@ -14251,6 +14940,7 @@ async function tick() {
 }
 
 window.addEventListener("hashchange", route);
+trackFirstUseAndSession();
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   setupFetched = 0;
@@ -14269,7 +14959,7 @@ const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Packages", "#/packages", "Libraries and plugins this project uses, and ones worth adding"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
-  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Analytics", "#/measure", "Project KPIs, analytics platform, and learning log"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
+  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Analytics", "#/measure", "Project KPIs, analytics platform, and learning log"], ["Documentation", "#/project-docs", "Project docs, feature specs, job records, and AI gap-filling"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
 const palette = { open: false, entries: [], shown: [], active: 0, opener: null };

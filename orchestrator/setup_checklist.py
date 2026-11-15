@@ -113,6 +113,55 @@ def _item(id: str, title: str, required: bool, done: bool, detail: str, *, actio
             "action": action, "hint": hint, "group": group}
 
 
+def _documented_command(content: str, heading: str) -> str | None:
+    pattern = rf"^## (?:iOS app )?{heading}\s*$((?:(?!^## ).)*?)^```bash\s*\n(.*?)^```"
+    match = re.search(pattern, content, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    return match.group(2).strip() if match else None
+
+
+def has_build_and_test_commands(root: Path, project: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Return (ok, detail) matching common.extract_commands requirements."""
+    proj = project if project is not None else _read_json(root / ".orchestrator" / "project.json")
+    has_xcode = (
+        bool(proj.get("xcode_project") or proj.get("xcode_workspace") or proj.get("scheme"))
+        or any(root.glob("*.xcodeproj"))
+        or any(root.glob("*.xcworkspace"))
+        or (root / "Package.swift").is_file()
+    )
+    doc_build = None
+    doc_test = None
+    doc_path = root / "docs" / "build-test-commands.md"
+    if doc_path.is_file():
+        try:
+            content = doc_path.read_text(encoding="utf-8", errors="replace")
+            doc_build = _documented_command(content, "build")
+            doc_test = _documented_command(content, "tests?")
+        except OSError:
+            pass
+    build = str(proj.get("build_command") or "").strip() or doc_build or ("xcode" if has_xcode else "")
+    test = str(proj.get("test_command") or "").strip() or doc_test or ("xcode" if has_xcode else "")
+    stack = None
+    if not build or not test:
+        from orchestrator.stack_detection import detect_project_stack
+
+        stack = detect_project_stack(root)
+        build = build or (stack.build_command or "")
+        test = test or (stack.test_command or "")
+    if build and test:
+        if str(proj.get("build_command") or "").strip() and str(proj.get("test_command") or "").strip():
+            return True, "Configured in .orchestrator/project.json"
+        if doc_build and doc_test:
+            return True, "Documented in docs/build-test-commands.md"
+        if has_xcode:
+            return True, "Auto-detected Xcode / Swift project"
+        return True, f"Auto-detected {stack.display_name if stack else 'project'} commands"
+    if not build and not test:
+        return False, "Set build_command and test_command in .orchestrator/project.json or docs/build-test-commands.md"
+    if not build:
+        return False, "Set build_command in .orchestrator/project.json or ## Build in docs/build-test-commands.md"
+    return False, "Set test_command in .orchestrator/project.json or ## Tests in docs/build-test-commands.md"
+
+
 def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str, Any]:
     if fresh:
         _cache.pop("gh", None)
@@ -133,9 +182,13 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
     ssh_machines = sum(1 for m in enabled_machines if m.get("execution_mode") == "ssh")
     models = list(dict.fromkeys(m for mach in enabled_machines for m in mach.get("models", [])))
 
+    cmds_ok, cmds_detail = has_build_and_test_commands(root, project)
     items = [
         _item("project", "Project configured", True, bool(project), "Name, build and test settings" if project else "No .orchestrator/project.json yet",
               action=None if project else {"type": "configure_project", "label": "Configure"}, group="Project"),
+        _item("build_test_commands", "Build & test commands", True, cmds_ok, cmds_detail,
+              action=None if cmds_ok else ({"type": "configure_project", "label": "Configure"} if not project else {"type": "route", "to": "#/checkup", "label": "Configure"}),
+              group="Project"),
         _item("git", "Git repository", True, is_git, "Initialized" if is_git else "This folder isn't a git repository",
               action=None if is_git else {"type": "git_init", "label": "Initialize"},
               hint=None if is_git else "git init", group="GitHub" if github else "Git"),

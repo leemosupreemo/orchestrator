@@ -593,3 +593,116 @@ class WorkerRunTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, r"have diverged[\s\S]*How to fix:"):
                     worker.prepare_git_branch({'title': 'Quick', 'job_id': 'id-5', 'branch': 'codex/two-faction-foundation', 'branch_mode': 'current'}, None)
             self.assertIn(['git', 'rebase', '--abort'], seen_cmds)
+
+            # Untracked working tree files blocking --ff-only should report untracked files without claiming branch divergence or rebasing
+            untracked_cmds = []
+            def fail_ff_untracked(cmd, cwd=None, **kwargs):
+                if cmd[:3] == ['git', 'pull', '--ff-only']:
+                    raise worker.subprocess.CalledProcessError(
+                        1,
+                        cmd,
+                        output='',
+                        stderr='error: The following untracked working tree files would be overwritten by merge:\n\tdocs/plan.md',
+                    )
+                return SimpleNamespace(returncode=0)
+
+            def track_subproc(cmd, cwd=None, **kwargs):
+                untracked_cmds.append(cmd)
+                return SimpleNamespace(returncode=0, stderr='', stdout='')
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'run', side_effect=fail_ff_untracked), \
+                 patch.object(worker.subprocess, 'run', side_effect=track_subproc):
+                with self.assertRaises(RuntimeError) as ctx:
+                    worker._pull_branch_with_recovery('codex/two-faction-foundation', allow_missing_remote=True)
+            self.assertIn('untracked local files would be overwritten', str(ctx.exception))
+            self.assertNotIn('have diverged', str(ctx.exception))
+            self.assertFalse(any(cmd[:3] == ['git', 'pull', '--rebase'] for cmd in untracked_cmds))
+
+            # index.lock blocking rebase should report index.lock instead of claiming branch divergence
+            def lock_subproc(cmd, cwd=None, **kwargs):
+                if cmd[:3] == ['git', 'pull', '--rebase']:
+                    return SimpleNamespace(returncode=128, stderr="error: Unable to create '/repo/.git/index.lock': File exists.", stdout='')
+                return SimpleNamespace(returncode=0, stderr='', stdout='')
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'run', side_effect=fail_ff_pull), \
+                 patch.object(worker.subprocess, 'run', side_effect=lock_subproc):
+                with self.assertRaises(RuntimeError) as ctx:
+                    worker._pull_branch_with_recovery('codex/two-faction-foundation', allow_missing_remote=True)
+            self.assertIn('index.lock', str(ctx.exception))
+            self.assertNotIn('have diverged', str(ctx.exception))
+
+            # Identical colliding untracked file is removed automatically and pull retries
+            identical_doc = root / 'docs' / 'identical.md'
+            identical_doc.parent.mkdir(parents=True, exist_ok=True)
+            identical_doc.write_text('same content')
+            ff_calls = 0
+
+            def fail_once_identical_untracked(cmd, cwd=None, **kwargs):
+                nonlocal ff_calls
+                if cmd[:3] == ['git', 'pull', '--ff-only']:
+                    ff_calls += 1
+                    if ff_calls == 1:
+                        raise worker.subprocess.CalledProcessError(
+                            1,
+                            cmd,
+                            output='',
+                            stderr='error: The following untracked working tree files would be overwritten by merge:\n\tdocs/identical.md\nPlease move or remove them before you merge.',
+                        )
+                return SimpleNamespace(returncode=0)
+
+            def identical_hash_subproc(cmd, cwd=None, **kwargs):
+                if cmd[:2] == ['git', 'hash-object'] or cmd[:2] == ['git', 'rev-parse']:
+                    return SimpleNamespace(returncode=0, stdout='abc123def456\n', stderr='')
+                return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker, 'run', side_effect=fail_once_identical_untracked), \
+                 patch.object(worker.subprocess, 'run', side_effect=identical_hash_subproc):
+                worker._pull_branch_with_recovery('codex/two-faction-foundation', allow_missing_remote=True)
+            self.assertFalse(identical_doc.exists())
+            self.assertEqual(ff_calls, 2)
+
+            # Stale index.lock (>10s old, lsof reports unused) is auto-cleared and pull retries; fresh lock is preserved
+            lock.write_text('stale-lock')
+            old_ts = worker.time.time() - 30
+            worker.os.utime(lock, (old_ts, old_ts))
+            lock_ff_calls = 0
+
+            def fail_once_lock(cmd, cwd=None, **kwargs):
+                nonlocal lock_ff_calls
+                if cmd[:3] == ['git', 'pull', '--ff-only']:
+                    lock_ff_calls += 1
+                    if lock_ff_calls == 1 or lock.exists():
+                        raise worker.subprocess.CalledProcessError(
+                            128,
+                            cmd,
+                            output='',
+                            stderr="error: Unable to create '/repo/.git/index.lock': File exists.",
+                        )
+                return SimpleNamespace(returncode=0)
+
+            def lsof_unused_subproc(cmd, cwd=None, **kwargs):
+                if Path(cmd[0]).name == 'lsof':
+                    return SimpleNamespace(returncode=1, stdout='', stderr='')
+                return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker.shutil, 'which', return_value='/usr/sbin/lsof'), \
+                 patch.object(worker, 'run', side_effect=fail_once_lock), \
+                 patch.object(worker.subprocess, 'run', side_effect=lsof_unused_subproc):
+                worker._pull_branch_with_recovery('codex/two-faction-foundation', allow_missing_remote=True)
+            self.assertFalse(lock.exists())
+            self.assertEqual(lock_ff_calls, 2)
+
+            lock.write_text('fresh-lock')
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch.object(worker.shutil, 'which', return_value='/usr/sbin/lsof'), \
+                 patch.object(worker, 'run', side_effect=fail_once_lock), \
+                 patch.object(worker.subprocess, 'run', side_effect=lsof_unused_subproc):
+                with self.assertRaises(RuntimeError) as ctx:
+                    worker._pull_branch_with_recovery('codex/two-faction-foundation', allow_missing_remote=True)
+            self.assertIn('index.lock', str(ctx.exception))
+            self.assertTrue(lock.exists())
+            lock.unlink(missing_ok=True)

@@ -52,7 +52,7 @@ from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
-from orchestrator import scope_check, task_growth
+from orchestrator import reuse_brief, scope_check, task_growth
 from model_router import builder_for_task
 
 
@@ -231,10 +231,159 @@ def _checkout_branch_with_recovery(
         raise _format_git_checkout_error(branch, base_branch, exc, getattr(retry, "stderr", "") or getattr(retry, "stdout", "")) from exc
 
 
-def _pull_branch_with_recovery(branch: str, *, allow_missing_remote: bool = False) -> None:
-    """Fast-forward `branch` from origin; if diverged, try rebasing cleanly, else raise an actionable error."""
+def _resolve_git_dir(root: Path) -> Path:
+    """Resolve the real .git directory, following gitdir: files for worktrees."""
+    git_dir = root / ".git"
+    if git_dir.is_file():
+        try:
+            content = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+            if content.startswith("gitdir:"):
+                resolved = Path(content.split(":", 1)[1].strip())
+                if not resolved.is_absolute():
+                    resolved = (root / resolved).resolve()
+                return resolved
+        except OSError:
+            pass
+    return git_dir
+
+
+def _try_clear_stale_index_lock(root: Path, min_age_seconds: float = 10.0) -> bool:
+    """Remove .git/index.lock only when older than min_age_seconds and lsof confirms no process holds it."""
+    lock = _resolve_git_dir(root) / "index.lock"
+    if not lock.exists():
+        return False
     try:
-        run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT)
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        return False
+    if age < min_age_seconds:
+        return False
+    lsof_bin = shutil.which("lsof") or ("/usr/sbin/lsof" if Path("/usr/sbin/lsof").exists() else None)
+    if not lsof_bin:
+        return False
+    try:
+        probe = subprocess.run([lsof_bin, str(lock)], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # lsof exits 1 with empty stdout when no process has the file open; fail closed on 0 or >1.
+    if probe.returncode != 1 or probe.stdout.strip():
+        return False
+    try:
+        lock.unlink(missing_ok=True)
+        print(f"      - Removed stale {lock.name} (no active process, age {int(age)}s).")
+        return True
+    except OSError:
+        return False
+
+
+def _parse_untracked_overwrite_paths(detail: str) -> list[str]:
+    """Extract relative file paths from git's 'untracked working tree files would be overwritten' error."""
+    paths: list[str] = []
+    collecting = False
+    for raw_line in detail.splitlines():
+        lower = raw_line.lower()
+        if "untracked working tree files would be overwritten" in lower:
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        if "please move or remove them" in lower or (raw_line and not raw_line[0].isspace()):
+            break
+        item = raw_line.strip()
+        if not item:
+            continue
+        if len(item) >= 2 and item[0] == '"' and item[-1] == '"':
+            try:
+                item = item[1:-1].encode("utf-8").decode("unicode_escape")
+            except UnicodeDecodeError:
+                item = item[1:-1]
+        paths.append(item)
+    return paths
+
+
+def _remove_identical_untracked_files(root: Path, branch: str, paths: list[str]) -> tuple[list[str], list[str]]:
+    """Unlink colliding untracked files whose git blob hash matches origin/<branch>:<path>."""
+    removed: list[str] = []
+    remaining: list[str] = []
+    root_resolved = root.resolve()
+    env = {**os.environ, "LC_ALL": "C"}
+    for rel in paths:
+        if not rel or rel.startswith("-") or Path(rel).is_absolute():
+            remaining.append(rel)
+            continue
+        candidate = root / rel
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            remaining.append(rel)
+            continue
+        if not resolved.is_relative_to(root_resolved) or not candidate.exists() or candidate.is_dir() or candidate.is_symlink():
+            remaining.append(rel)
+            continue
+        local_hash = subprocess.run(
+            ["git", "hash-object", "--", rel],
+            cwd=str(root), env=env, capture_output=True, text=True, check=False,
+        )
+        remote_hash = subprocess.run(
+            ["git", "rev-parse", f"origin/{branch}:{rel}"],
+            cwd=str(root), env=env, capture_output=True, text=True, check=False,
+        )
+        local_sha = local_hash.stdout.strip()
+        remote_sha = remote_hash.stdout.strip()
+        if local_hash.returncode == 0 and remote_hash.returncode == 0 and local_sha and local_sha == remote_sha:
+            try:
+                candidate.unlink()
+                removed.append(rel)
+                continue
+            except OSError:
+                pass
+        remaining.append(rel)
+    if removed:
+        print(f"      - Removed {len(removed)} untracked file(s) identical to origin/{branch}.")
+    return removed, remaining
+
+
+def _is_index_lock_error(detail: str) -> bool:
+    return "index.lock" in detail or "Another git process seems to be running" in detail
+
+
+def _pull_branch_with_recovery(branch: str, *, allow_missing_remote: bool = False) -> None:
+    """Fast-forward `branch` from origin; recover stale locks/identical untracked files or rebase, else raise."""
+    git_env = {"LC_ALL": "C"}
+
+    def _detail_from_exc(exc: subprocess.CalledProcessError) -> str:
+        return "\n".join(
+            part.strip()
+            for part in (getattr(exc, "stderr", "") or "", getattr(exc, "stdout", "") or "")
+            if part and part.strip()
+        )
+
+    def _raise_lock_error(detail: str, cause: Exception | None = None) -> None:
+        raise RuntimeError(
+            f"Could not update branch '{branch}' from 'origin/{branch}' because a Git index lock file (.git/index.lock) is present.\n\n"
+            f"{detail}\n\n"
+            "How to fix:\n"
+            "- Remove the stale `.git/index.lock` file (or use the UI 'Remove lock & Rerun' recovery button) if no git process is running, then rerun the job."
+        ) from cause
+
+    def _raise_untracked_error(detail: str, cause: Exception | None = None, *, remaining: list[str] | None = None, removed: list[str] | None = None) -> None:
+        shown_detail = detail
+        if removed and remaining:
+            shown_detail = (
+                "The following untracked working tree files would be overwritten:\n"
+                + "\n".join(f"\t{p}" for p in remaining)
+                + "\nPlease move or remove them before you merge."
+            )
+        raise RuntimeError(
+            f"Could not update branch '{branch}' from 'origin/{branch}' because untracked local files would be overwritten by incoming commits.\n\n"
+            f"{shown_detail}\n\n"
+            "How to fix:\n"
+            "- Move, commit, stash, or remove the listed untracked files in the project folder, then rerun the job.\n"
+            "- Or change the job's branch mode to 'Create a new branch' (or 'Don't create or switch branches')."
+        ) from cause
+
+    try:
+        run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT, env=git_env)
         return
     except subprocess.CalledProcessError as exc:
         has_remote = subprocess.run(
@@ -245,17 +394,72 @@ def _pull_branch_with_recovery(branch: str, *, allow_missing_remote: bool = Fals
             print(f"      - Remote branch origin/{branch} does not exist yet; continuing with local branch.")
             return
 
+        ff_detail = _detail_from_exc(exc)
+        if _is_index_lock_error(ff_detail):
+            if _try_clear_stale_index_lock(ROOT):
+                try:
+                    run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT, env=git_env)
+                    return
+                except subprocess.CalledProcessError as retry_exc:
+                    ff_detail = _detail_from_exc(retry_exc)
+                    if _is_index_lock_error(ff_detail):
+                        _raise_lock_error(ff_detail, retry_exc)
+            else:
+                _raise_lock_error(ff_detail, exc)
+
+        if "untracked working tree files would be overwritten" in ff_detail:
+            paths = _parse_untracked_overwrite_paths(ff_detail)
+            removed, remaining = _remove_identical_untracked_files(ROOT, branch, paths) if paths else ([], [])
+            if paths and not remaining:
+                try:
+                    run(["git", "pull", "--ff-only", "origin", branch], cwd=ROOT, env=git_env)
+                    return
+                except subprocess.CalledProcessError as retry_exc:
+                    ff_detail = _detail_from_exc(retry_exc)
+                    if "untracked working tree files would be overwritten" in ff_detail:
+                        _raise_untracked_error(ff_detail, retry_exc)
+            else:
+                _raise_untracked_error(ff_detail, exc, removed=removed, remaining=remaining)
+
         print(f"      - Fast-forward pull failed for '{branch}'; attempting rebase onto origin/{branch}...")
+        rebase_env = {**os.environ, **git_env}
         rebase = subprocess.run(
             ["git", "pull", "--rebase", "origin", branch],
-            cwd=str(ROOT), capture_output=True, text=True, check=False,
+            cwd=str(ROOT), env=rebase_env, capture_output=True, text=True, check=False,
         )
         if rebase.returncode == 0:
             print(f"      - Rebased '{branch}' onto origin/{branch}.")
             return
 
+        detail = (rebase.stderr or rebase.stdout or ff_detail or "").strip()
+        if _is_index_lock_error(detail) and _try_clear_stale_index_lock(ROOT):
+            rebase = subprocess.run(
+                ["git", "pull", "--rebase", "origin", branch],
+                cwd=str(ROOT), env=rebase_env, capture_output=True, text=True, check=False,
+            )
+            if rebase.returncode == 0:
+                print(f"      - Rebased '{branch}' onto origin/{branch}.")
+                return
+            detail = (rebase.stderr or rebase.stdout or ff_detail or "").strip()
+
+        if "untracked working tree files would be overwritten" in detail:
+            paths = _parse_untracked_overwrite_paths(detail)
+            _, remaining = _remove_identical_untracked_files(ROOT, branch, paths) if paths else ([], [])
+            if paths and not remaining:
+                rebase = subprocess.run(
+                    ["git", "pull", "--rebase", "origin", branch],
+                    cwd=str(ROOT), env=rebase_env, capture_output=True, text=True, check=False,
+                )
+                if rebase.returncode == 0:
+                    print(f"      - Rebased '{branch}' onto origin/{branch}.")
+                    return
+                detail = (rebase.stderr or rebase.stdout or ff_detail or "").strip()
+
         subprocess.run(["git", "rebase", "--abort"], cwd=str(ROOT), capture_output=True, check=False)
-        detail = (rebase.stderr or rebase.stdout or getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or "").strip()
+        if _is_index_lock_error(detail):
+            _raise_lock_error(detail, exc)
+        if "untracked working tree files would be overwritten" in detail:
+            _raise_untracked_error(detail, exc)
         raise RuntimeError(
             f"Could not update branch '{branch}' from 'origin/{branch}' because local and remote commits have diverged"
             f" and automatic rebase could not complete cleanly.\n\n"
@@ -732,6 +936,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     built = read_json(temp_job_path)
                     if built.get("actual_builder_used"):
                         job["actual_builder_used"] = built["actual_builder_used"]
+                    job["reuse_suggested"] = reuse_brief.merge(job.get("reuse_suggested"), built.get("reuse_suggested"))
                     new_sessions = (built.get("llm_sessions") or [])[len(job.get("llm_sessions") or []):]
                     if new_sessions:
                         job["llm_sessions"] = (job.get("llm_sessions") or []) + new_sessions

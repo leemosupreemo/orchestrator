@@ -16,6 +16,7 @@ import os
 import platform
 import socket
 import ssl
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -236,12 +237,53 @@ def _normalize_repo(value: str | None) -> str:
     return "/".join(parts[-2:]).lower() if len(parts) >= 2 else text.lower()
 
 
+def _project_json_remote(root: Path) -> str:
+    try:
+        return str(json.loads((root / ".orchestrator" / "project.json").read_text(encoding="utf-8")).get("git_remote") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _origin_url(root: Path) -> str:
+    try:
+        res = subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, capture_output=True, text=True, timeout=2)
+        return res.stdout if res.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+_origin_repo_cache: dict[tuple[str, int], str] = {}
+
+
+def project_repo(root: Path, github_repo: str | None = None) -> str:
+    """The normalized `owner/name` for a project on any git host, so computers can tell whether they hold the same repo.
+    Order: the GitHub repo already detected, project.json's git_remote, then the origin URL. The origin lookup runs
+    git, and this is called on every state poll, so its answer is kept until project.json or .git/config changes."""
+    repo = _normalize_repo(github_repo) or _normalize_repo(_project_json_remote(root))
+    if repo:
+        return repo
+    try:
+        stamp = (str(root), (root / ".git" / "config").stat().st_mtime_ns)
+    except OSError:  # a linked worktree or no repo: nothing cheap to key on, so ask git each time
+        return _normalize_repo(_origin_url(root))
+    if stamp not in _origin_repo_cache:
+        if len(_origin_repo_cache) >= 256:  # every .git/config edit makes a new key; old ones are never asked for again
+            _origin_repo_cache.clear()
+        _origin_repo_cache[stamp] = _normalize_repo(_origin_url(root))
+    return _origin_repo_cache[stamp]
+
+
+def _snapshot_job_progress(jdata: dict[str, Any]) -> list[int]:
+    done = jdata.get("completed_task_indices") or jdata.get("completed_tasks") or []
+    return sorted({i for i in done if isinstance(i, int)}) if isinstance(done, list) else []
+
+
 def build_snapshot(root: Path | None = None) -> dict[str, Any]:
     """Assemble lightweight offline view of recent projects and jobs for the hosted app."""
     from orchestrator.project_config import find_project_root, load_recent_projects
 
     recent_data = load_recent_projects(prune_missing=False)
-    repo_by_root: dict[str, str] = {}
+    repo_by_root: dict[str, str | None] = {}
     projects_list = []
     jobs_list = []
     roots_to_check = []
@@ -251,8 +293,7 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
         r_str = p.get("root")
         if r_str:
             r_path = Path(r_str).expanduser()
-            if p.get("github_repo"):
-                repo_by_root[str(r_path)] = _normalize_repo(p.get("github_repo"))
+            repo_by_root[str(r_path)] = p.get("github_repo")
             if r_path not in roots_to_check and r_path.is_dir():
                 roots_to_check.append(r_path)
 
@@ -265,13 +306,7 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
             pass
 
     for proj_root in roots_to_check[:10]:
-        repo = repo_by_root.get(str(proj_root), "")
-        if not repo:
-            try:
-                cfg = json.loads((proj_root / ".orchestrator" / "project.json").read_text(encoding="utf-8"))
-                repo = _normalize_repo(cfg.get("git_remote"))
-            except Exception:
-                repo = ""
+        repo = project_repo(proj_root, repo_by_root.get(str(proj_root)))
         jobs_dir = proj_root / ".orchestrator" / "jobs"
         proj_jobs = []
         if jobs_dir.is_dir():
@@ -281,6 +316,10 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
                     if isinstance(jdata, dict) and jdata.get("job_id"):
                         plan_obj = jdata.get("plan") or {}
                         tasks_raw = plan_obj.get("tasks") or []
+                        done_indices = _snapshot_job_progress(jdata)
+                        verification = jdata.get("verification")
+                        if not isinstance(verification, dict):
+                            verification = {}
                         proj_jobs.append({
                             "job_id": jdata.get("job_id"),
                             "project": proj_root.name,
@@ -299,9 +338,20 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
                             "issue_number": jdata.get("issue_number"),
                             "pr_number": jdata.get("pr_number"),
                             "summary": plan_obj.get("summary") or "",
+                            "code_host": jdata.get("code_host"),
+                            "approved": bool(jdata.get("approved")),
+                            "human_clarification_question": jdata.get("human_clarification_question"),
+                            "test_status": jdata.get("test_status"),
+                            "verification": {"status": verification.get("status"),
+                                             "comments": str(verification.get("comments") or "")[:2000]} if verification else None,
                             "tasks_count": len(tasks_raw),
-                            "tasks": [{"title": t.get("title"), "status": t.get("status")}
-                                      for t in tasks_raw if isinstance(t, dict)][:10],
+                            "tasks_done": len(done_indices),
+                            "completed_task_indices": done_indices,
+                            # The whole plan travels for work still to do, so "Continue on this computer" resumes with
+                            # every task; a finished job only needs its counts.
+                            "tasks": [] if jdata.get("status") == "completed" else [
+                                {k: v[:4000] if isinstance(v, str) else v for k, v in t.items()}  # very long text trimmed
+                                for t in tasks_raw if isinstance(t, dict)],
                         })
                 except Exception:
                     continue

@@ -61,6 +61,10 @@ def main(argv: list[str]) -> int:
         emit({"url": REPO_URL, "name": "dummy"}, args)
         save(state)
         return 0
+    if args[:1] == ["api"] and any(a.startswith("user/repos") for a in args):  # the repository picker's list of this account's repositories
+        print("[]")
+        save(state)
+        return 0
     group, action = (args + ["", ""])[:2]
     rest = args[2:]
     number = rest[0] if rest and rest[0].isdigit() else None

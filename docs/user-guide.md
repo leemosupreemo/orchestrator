@@ -268,7 +268,7 @@ Edit `.orchestrator/project.json` after initialization. Common fields:
 }
 ```
 
-Use `build_command` and `test_command` when a project needs custom build/test commands instead of the generated `xcodebuild` defaults.
+Use `build_command` and `test_command` when a project needs custom build/test commands instead of the generated `xcodebuild` defaults or auto-detected stack commands (`detect_project_stack`: SwiftPM, npm/Node, Python, Go, Rust, Gradle, Unity, .NET). If neither `.orchestrator/project.json`, `docs/build-test-commands.md`, nor stack auto-detection provides both commands, the setup checklist and job preflight checks direct you to Onboarding checklist (`#/checkup`).
 
 Swift Package example:
 
@@ -486,6 +486,78 @@ Visual checks require an app bundle and bundle identifier. Configure:
 
 If `visual_app_path` is omitted, the visual check flow searches the configured derived data path for a built `.app`.
 
+## Unneeded Code Check
+
+AI coding agents tend to add more than a change needs: a second copy of a helper the project already has, a function
+nothing calls, the same block pasted twice, debug leftovers. Each one is small; together they are how a codebase gets
+harder to change. The job page's **Unneeded code** card looks for them in what the job changed. It sits after the Scope
+check, which asks a different question: whether the job stayed inside its plan.
+
+The card appears once the job has a branch to compare with its base branch, and it reads only the lines the job
+**added**, so debt that was already in the project is never counted against the job. It flags:
+
+| Finding | Severity | What it means |
+|---|---|---|
+| **`name` already exists** | medium | A new top-level function, class or constant has the same name as one the project already defines elsewhere (the file is named). Call the existing one instead. Only definitions that start at the beginning of a line in source files outside test folders count, so a method of the same name, or code quoted inside a test, is not a duplicate. |
+| **The same code was added twice** | medium | A run of five or more lines was added in two places, in one file or across files. Move it into one function. |
+| **`name` is never used** | low | Nothing else in the project mentions a new top-level definition. Remove it, or wire it in if it was meant to be called. Functions with a decorator are skipped, since the decorator registers them. |
+| **Debug leftovers** | low | `console.log`, `debugger`, `breakpoint()`, `pdb.set_trace()`, or a `FIXME`, `XXX` or `HACK` marker was added. |
+| **Commented-out code** | low | Two or more added lines are code in comments. Git keeps the history, so delete them. |
+
+Each finding gives the file and line. **Keep it** accepts a finding as intended; it is remembered on the job
+(`cruft_accepted` in the job file) and counted in the card. **Create a job to remove it** opens a pre-filled quick job
+that lists every open finding and asks for them to be fixed by deleting, reusing or merging, without adding anything.
+**Reset kept** brings accepted findings back. The reviewer's instructions (`reviewer.md`) also ask it to search the
+project for each new helper or dependency before accepting it, so the model review and this check back each other up.
+
+### Telling the builder what already exists
+
+The cheapest unneeded code to remove is the code never written. Before the builder starts a task, Orchestrator lists
+the project's own top-level definitions (functions, classes, constants) whose names share words with the task's title,
+description and acceptance criteria, and adds the closest eight to the builder's prompt under **EXISTING CODE TO
+REUSE**. It also names any file the plan expects to change that already exists, so the builder extends it instead of
+adding a parallel one. The prompt says the list is a guess to ignore where it doesn't apply, asks the builder to read
+the closest entry and call or extend it before writing a new helper, class or dependency, and asks it to say why in its
+summary if it adds one anyway.
+
+It is plain name matching over a single `git grep`, so there is nothing to set up or keep up to date and no extra model
+call (about 0.2 s on a project with two thousand definitions). It sees files from earlier tasks in the same job, even
+before they are committed. Tests, lockfiles and non-source files are left out, as are bug fixes and investigations,
+which edit existing code by nature. If the search fails the build carries on without the section.
+
+The job records what it suggested (`reuse_suggested` in the job file), and the Unneeded code card reports it: "The
+builder was pointed at 8 existing definitions; the change uses 3 (write_json_file, ...)". A name counts as used when the
+added lines mention it other than by defining it, so a builder that writes its own second copy is not credited. Compare
+the "uses" count across jobs to see whether the brief is helping.
+
+How well it works, measured once: run over 40 recent commits of this project (stand-ins for jobs, 20 to 800 added
+source lines each) with every finding checked by hand, the first version reported 11 findings, 8 of them wrong (it
+matched JavaScript quoted inside Python tests, and methods with the same name). After the fixes above it reports 3: a
+pasted block, an identical `read_cache` and a similar `write_cache`, which are the ones worth acting on. That is
+high precision on a small sample from one project, and quiet by design: it examined 169 definitions across those
+commits and found no unused ones and no leftovers. It has not yet been measured on your jobs or on a project with
+more cruft. For the reuse list, the names it suggested for a commit's title were mentioned in that commit's changes
+51% of the time, against 10% for names suggested for a different commit. That shows the suggestions are relevant, not
+yet that they prevent duplicates.
+
+What it deliberately does not do:
+
+- **It is a prompt to look, never a gate.** Nothing blocks a merge, and unlike the Scope check the hero does not yet warn
+  about it. Every check is a heuristic that errs toward staying quiet.
+- **It judges a narrow slice.** Python, JavaScript and TypeScript, Swift, Go, Rust and Kotlin source files only; tests,
+  lockfiles and Orchestrator's own files are skipped. Only top-level definitions with specific names (eight or more
+  characters, with an underscore or inner capital, like `format_date` or `ScoreService`) are looked up, so ordinary
+  method names that every class has are never flagged.
+- **It matches names and text, not meaning.** A new function that does the same job under a different name is not
+  found, and a repeated block inside a string (such as prompt text) can be flagged. On a very large change it reports
+  more pasted blocks than a normal job would.
+- **It does not remove or refactor anything itself.** Fixing a finding is a normal job you choose to create.
+
+Lookups cost a Git call each (at most 40 per job), so the answer is kept until the job's branch moves. The code is
+`orchestrator/cruft_check.py` (pure over the diff, with tests in `tests/test_cruft_check.py`), `job_cruft` in
+`orchestrator/web/server.py`, and `orchestrator/reuse_brief.py` for the builder prompt (tests in
+`tests/test_reuse_brief.py`).
+
 ## UX And Design Review
 
 A checklist review of your product's screens, in two parts: **UX** (how it works: status, wording, one primary action,
@@ -616,7 +688,9 @@ For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://s
 
 The Web UI is how most people use Orchestrator. The work runs on your own computer; you reach it from a browser at **https://swift-orch-web-20260923.web.app**, which never changes. Your code, files and assets stay on your computer, never on our servers: the hosted site only knows your account, which computers are on it, and where to reach them (see [Control plane](control-plane.md)). Home starts with a short setup checklist until the basics are done, then shows what needs you next.
 
-> **Setup checklist.** Four things make a computer ready: a project, Git, an AI model (a provider you can use, with a model selected), and an enabled machine. Each row has one button that opens the right place, and the rest, such as role instructions and screens to review, is optional.
+> **Setup checklist.** Five things make a computer ready: a project, build & test commands (configured, documented, or auto-detected), Git, an AI model (a provider you can use, with a model selected), and an enabled machine. Each row has one button that opens the right place, and the rest, such as role instructions and screens to review, is optional.
+
+> **Copy setup from another computer.** When another computer on your account has already set this project up further, the checklist offers **Copy setup** with a list of those computers (the furthest along first). It copies build and test commands, the code host, delivery and Firebase choices, notification emails, model choices and custom role prompts. It never copies API keys, passwords, signing keys or folder paths, and sign-ins (GitHub CLI, an AI tool, Xcode's licence) are per computer. After a copy those steps stay to do on this computer, marked "Done on <computer>", so the shield only turns green when this computer can really run a job. Computers share this through your account (see [Control plane](control-plane.md)); a computer that isn't signed in to an account shares nothing.
 
 > **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have (it is summarised into the sections, and the full file stays attached for jobs to read), or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. Every section is optional. Once there is something in it, **Break down** splits it into epics to approve or decline. See [Epics](#epics) and [Product requirements](product-requirements.md).
 
@@ -835,6 +909,10 @@ Common issues:
 - GitHub actions fail: install `gh` and run `gh auth login`, or set `"code_host": "git"` to work without GitHub ([Code hosts](code-hosts.md)).
 - `orchestrator logs` reports `Sentry refused the token (403)`: the token lacks `org:read`, `project:read` or `event:read`. Create a new one and rerun `orchestrator logs setup`.
 - `No app sessions found`: the build predates remote logging, the app was never opened, or it is an App Store build (errors only). Open the app, wait a few seconds, and retry.
+- `Stale Git index lock` (`.git/index.lock`): job pull recovery automatically removes lock files older than 10s when `lsof` confirms no process holds them. If a lock is newer or blocked, use **Remove lock & Rerun** in the web UI (or delete `.git/index.lock` manually once no Git process is running).
+- `Untracked local files would be overwritten`: pull recovery automatically cleans up colliding untracked files whose contents already match `origin/<branch>`. Files with different local contents are preserved and can be stashed cleanly via **Stash colliding files & Rerun** in the web UI without disturbing unrelated work.
+- `Branch out of sync with remote`: use **Sync with remote & Rerun** in the web UI (after confirming) to abort any stuck rebase and reset the local branch to `origin/<branch>`.
+- `<machine> wasn't set up with the Orchestrator app`: remote UI updates apply only to packaged Orchestrator `.app` installs. On CLI or LaunchAgent Macs, run `orchestrator update` locally (or `launchctl kickstart -k gui/$(id -u)/com.orchestrator.ui` to reload local edits).
 
 ## Generated Ignore Rules
 

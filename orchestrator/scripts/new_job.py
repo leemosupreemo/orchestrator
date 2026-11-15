@@ -37,7 +37,7 @@ from orchestrator.run_check import models_machines_can_run
 from manual_run import capture_logs
 import test_cases as tc
 from orchestrator.project_config import PROJECT_CONFIG
-from orchestrator import prd
+from orchestrator import prd, project_docs
 from orchestrator import new_job_form
 from orchestrator import plan_size, slice_check
 
@@ -840,6 +840,9 @@ def main(args_override: list[str] | None = None) -> None:
             product_context = prd.context_block(ROOT)
             if product_context:
                 prompt_template = f"{prompt_template}\n{product_context}"
+            docs_context = project_docs.context_block(ROOT)
+            if docs_context:
+                prompt_template = f"{prompt_template}\n{docs_context}"
             # Every question asked and answered so far, so a re-plan (and a follow-up question) builds on all of them.
             asked_so_far = (existing_job or {}).get("clarification_history") or []
             if asked_so_far:

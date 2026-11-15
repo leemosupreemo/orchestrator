@@ -87,7 +87,7 @@ from orchestrator import project_docs
 from orchestrator import project_health
 from orchestrator import repository_health
 from orchestrator import plan_size
-from orchestrator import scope_check
+from orchestrator import cruft_check, scope_check
 from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
@@ -97,6 +97,7 @@ from orchestrator.web.run_progress import RunProgress
 from orchestrator.web import run_timeline
 from orchestrator.web.run_timeline import RunTimeline
 from orchestrator.setup_checklist import setup_checklist
+from orchestrator import setup_copy
 from orchestrator.project_config import (
     DEFAULT_RUNTIME_DIRNAME,
     find_project_root,
@@ -532,6 +533,10 @@ class PtySession:
                             pass
             if assigned:
                 progress["assigned_models"] = assigned
+        if not progress.get("machines"):
+            local_host = (socket.gethostname() or "").split(".")[0].strip()
+            if local_host:
+                progress["machines"] = [local_host]
         summary_text = ""
         if "--summary" in (self.argv or []):  # a new job's own words, shown in the run status instead of the raw command
             at = self.argv.index("--summary") + 1
@@ -554,7 +559,12 @@ class PtySession:
             tail = bytes(self._buffer[-2000:])
         text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").replace("\r", "\n")
         text = re.sub("[⠀-⣿]", "", text)  # braille spinner frames draw as empty boxes in the run card
-        lines = [l.strip() for l in text.splitlines() if l.strip() and not re.match(r"^\[exited(?: with code \d+)?\]$", l.strip())]
+        lines = [
+            l.strip() for l in text.splitlines()
+            if l.strip()
+            and not re.match(r"^\[exited(?: with code \d+)?\]$", l.strip())
+            and not re.match(r"^(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b", l.strip(), re.IGNORECASE)
+        ]
         return lines[-1][:200] if lines else ""
 
     def _error_summary(self) -> str:
@@ -566,7 +576,12 @@ class PtySession:
         with self._cond:
             tail = bytes(self._buffer[-8000:])
         text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").replace("\r", "\n")
-        lines = [l.strip() for l in text.splitlines() if l.strip() and not re.match(r"^\[exited(?: with code \d+)?\]$", l.strip())]
+        lines = [
+            l.strip() for l in text.splitlines()
+            if l.strip()
+            and not re.match(r"^\[exited(?: with code \d+)?\]$", l.strip())
+            and not re.match(r"^(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b", l.strip(), re.IGNORECASE)
+        ]
         for line in reversed(lines):
             clean = re.sub(r"^(?:❌|⚠️|!+|Error:|error:)\s*", "", line).strip()
             if any(k in clean.lower() for k in ("coverage measurement failed", "failed to calculate", "couldn't tell which language", "this project language is configured", "no source files", "tests failed", "build failed", "cannot create a build", "delivery job targets branch")):
@@ -1638,32 +1653,47 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         raise UIError("Invalid remote job id.")
     folder = jobs_dir(root)
     folder.mkdir(parents=True, exist_ok=True)
+    if (folder / "archive" / f"{job_id}.json").exists():
+        raise UIError("This job is archived on this computer. Restore it from Archived on Home instead.")
     target = folder / f"{job_id}.json"
     existed = target.exists()
     if not existed:
+        tasks = raw.get("tasks") if isinstance(raw.get("tasks"), list) else []
+        tasks_count = raw.get("tasks_count")
+        status = str(raw.get("status") or "planned")
+        if isinstance(tasks_count, int) and tasks_count > len(tasks) and status not in ("completed", "archived"):
+            raise UIError("Only part of this job's plan was synced. Open it on the original computer.")
+        yolo = bool(raw.get("yolo") or raw.get("is_yolo"))
         doc: dict[str, Any] = {
             "job_id": job_id,
             "title": str(raw.get("title") or job_id),
             "type": str(raw.get("type") or "generic"),
-            "status": str(raw.get("status") or "planned"),
+            "status": status,
             "created_at": raw.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "updated_at": raw.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "yolo": bool(raw.get("yolo")),
+            "yolo": yolo,
+            "is_yolo": yolo,
         }
-        for key in ("branch", "base_branch", "branch_mode", "last_error", "requirements", "issue_number", "pr_number"):
+        for key in ("branch", "base_branch", "branch_mode", "last_error", "requirements", "issue_number", "pr_number",
+                    "code_host", "approved", "test_status", "human_clarification_question"):
             if raw.get(key) is not None:
                 doc[key] = raw[key]
-        if raw.get("summary") or raw.get("tasks"):
-            doc["plan"] = {"summary": raw.get("summary") or "", "tasks": raw.get("tasks") or []}
+        if isinstance(raw.get("completed_task_indices"), list):
+            doc["completed_task_indices"] = [
+                i for i in raw["completed_task_indices"]
+                if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(tasks)
+            ]
+        if raw.get("summary") or tasks:
+            doc["plan"] = {"summary": raw.get("summary") or "", "tasks": tasks}
         if body.get("source_machine_name"):
             doc["imported_from_machine"] = str(body["source_machine_name"])
         write_json_file(target, doc)
 
     branch = str(raw.get("branch") or "").strip()
     fetched = False
-    if branch and shutil.which("git") and re.fullmatch(r"[A-Za-z0-9._/-]{1,160}", branch):
+    if branch and not branch.startswith("-") and shutil.which("git") and re.fullmatch(r"[A-Za-z0-9._/-]{1,160}", branch):
         try:
-            res = subprocess.run(["git", "fetch", "origin", branch], cwd=root, capture_output=True, text=True, timeout=15)
+            res = subprocess.run(["git", "fetch", "origin", "--", branch], cwd=root, capture_output=True, text=True, timeout=15)
             fetched = res.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             fetched = False
@@ -1797,6 +1827,45 @@ def job_scope(root: Path, job: dict[str, Any]) -> dict[str, Any] | None:
     return result
 
 
+_CRUFT_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+
+def job_cruft(root: Path, job: dict[str, Any]) -> dict[str, Any] | None:
+    """Did the job's change add code the project doesn't need? None when there's no branch to compare. Looking names up
+    costs a git call each, and the job page is read often, so the answer is kept until the branch moves."""
+    branch, base = job.get("branch"), job.get("base_branch") or "main"
+    tip = git(root, "rev-parse", "--verify", "--quiet", branch) if branch else ""
+    if not tip:
+        return None
+    accepted = tuple(sorted(job.get("cruft_accepted") or []))
+    suggested = [s for s in job.get("reuse_suggested") or [] if isinstance(s, dict) and s.get("name")]
+    key = (str(root), tip, git(root, "rev-parse", "--verify", "--quiet", base), accepted, len(suggested))
+    if key not in _CRUFT_CACHE:
+        added = cruft_check.parse_added(git(root, "diff", "-U0", "--no-renames", f"{base}...{branch}", timeout=15.0))
+
+        def defined_elsewhere(name: str) -> list[str]:  # in the project's source as it was before the change, tests not counted
+            out = git(root, "grep", "-l", "-w", "-E", cruft_check.definition_pattern(name), base, "--", *cruft_check.SOURCE_GLOBS)
+            paths = [line.split(":", 1)[1] for line in out.splitlines() if ":" in line]
+            return [p for p in paths if cruft_check.existing_source(p)]
+
+        def mentions(name: str) -> int:  # in the project with the change
+            out = git(root, "grep", "-c", "-w", "-F", name, tip, "--")
+            return sum(int(line.rsplit(":", 1)[1]) for line in out.splitlines() if line.rsplit(":", 1)[-1].isdigit())
+
+        result = cruft_check.evaluate(added, defined_elsewhere, mentions, list(accepted))
+        if suggested:  # the builder was told what already exists: did the change use any of it?
+            lines = [t for rows in added.values() for _, t in rows]  # a second definition of the name is not using the first
+            result["reuse"] = {"suggested": len(suggested), "used": [
+                s["name"] for s in suggested
+                if any(re.search(rf"\b{re.escape(s['name'])}\b", t) and cruft_check.definition_name(t) != s["name"] for t in lines)]}
+        result["fix"] = {"summary": f"Remove the unneeded code from “{job.get('title') or 'this job'}”",
+                         "spec": cruft_check.fix_request(result["findings"], job.get("title") or "this job")}
+        if len(_CRUFT_CACHE) > 50:
+            _CRUFT_CACHE.clear()
+        _CRUFT_CACHE[key] = result
+    return _CRUFT_CACHE[key]
+
+
 _PREFLIGHT_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 PREFLIGHT_TTL = 60.0
 
@@ -1861,7 +1930,12 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     if job.get("status") in run_check.CHECKED_STATUSES and run_check.switches_branches(job) and run_check.runs_from(root):
         found.insert(0, {"id": "self_checkout", "text": run_check.SELF_CHECKOUT_TEXT, "fix": "", "route": ""})
     if job.get("status") in run_check.CHECKED_STATUSES:
+        from orchestrator.setup_checklist import has_build_and_test_commands
         have = {b["id"] for b in found}
+        config = read_json_file(runtime_dir(root) / "project.json")
+        cmds_ok, cmds_detail = has_build_and_test_commands(root, config)
+        if not cmds_ok and "build_test_commands" not in have:
+            found.append({"id": "build_test_commands", "text": f"Build & test commands are not configured. {cmds_detail}.", "fix": "Setup check", "route": "#/checkup"})
         for item in preflight.failures(preflight_overview(root)):
             if item["id"] != "disk" and item["id"] not in have:  # disk is already said, with this job's numbers
                 hint = "" if item["route"] or not item["fix"] else f" {item['fix']}."
@@ -2236,6 +2310,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "links": github_links(root, job),
         "test_summary": test_summary,
         "scope": job_scope(root, job),
+        "cruft": job_cruft(root, job),
         "plan_size": plan_size.measure(job.get("plan")),
         "ux_review": job_ux_review(root, job_id, job),
         "context": job_context(root, job),
@@ -3244,6 +3319,64 @@ def claim_primary(root: Path) -> dict[str, Any]:
     return status
 
 
+SETUP_PUBLISH_SECONDS = 600
+_setup_published: dict[str, tuple[float, str]] = {}
+
+
+def publish_setup_async(root: Path, setup: dict[str, Any]) -> None:
+    """Share this computer's setup progress and copyable settings (orchestrator/setup_copy.py: never keys) with the
+    account's other computers, when it changed or every few minutes, so a newer computer can copy it. No account, no sharing."""
+    machine = account.load_machine()
+    if machine is None:
+        return
+    key = project_key(root)
+    payload = {"project": key, "progress": setup_copy.progress(setup), "profile": setup_copy.export_profile(runtime_dir(root))}
+    fingerprint = json.dumps(payload, sort_keys=True)
+    last = _setup_published.get(key)
+    if last and last[1] == fingerprint and time.time() - last[0] < SETUP_PUBLISH_SECONDS:
+        return
+    _setup_published[key] = (time.time(), fingerprint)
+
+    def _run() -> None:
+        try:
+            account.call("machine/setup", payload, machine, timeout=8)
+        except Exception:
+            _setup_published.pop(key, None)  # try again on the next check
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def setup_sources(root: Path) -> dict[str, Any]:
+    """The account's other computers this one could copy its setup from, those further along first."""
+    machine = account.load_machine()
+    if machine is None:
+        return {"enabled": False, "sources": []}
+    mine = setup_copy.progress(setup_checklist(root, runtime_dir(root)))
+    try:
+        reply = account.call("machine/setups", {"project": project_key(root)}, machine, timeout=4)
+    except account.AccountError as exc:
+        return {"enabled": True, "sources": [], "unknown": str(exc)}
+    return {"enabled": True, "sources": setup_copy.with_ahead(reply.get("setups") or [], mine)}
+
+
+def copy_setup_from(root: Path, machine_id: str) -> dict[str, Any]:
+    machine = account.load_machine()
+    if machine is None:
+        raise UIError("This computer isn't signed in to an account, so there's nothing to copy from.")
+    key = project_key(root)
+    try:
+        reply = account.call("machine/setup/get", {"project": key, "machine_id": machine_id}, machine, timeout=8)
+    except account.AccountError as exc:
+        raise UIError(str(exc), HTTPStatus.NOT_FOUND if exc.status == 404 else HTTPStatus.BAD_GATEWAY) from exc
+    try:
+        applied = setup_copy.apply_profile(runtime_dir(root), reply.get("profile"), str(reply.get("name") or "another computer"),
+                                           reply.get("progress"))
+    except ValueError as exc:
+        raise UIError(str(exc), HTTPStatus.CONFLICT) from exc
+    _setup_published.pop(key, None)  # share what this computer has now
+    return {"ok": True, "from": reply.get("name"), "applied": applied}
+
+
 def session_computer(machines: list[dict[str, Any]], root: Path | None = None) -> dict[str, Any]:
     """The computer this session runs on: the currently selected machine is always the project's primary, and hands some
     jobs to the supporting computers listed in its machines.json."""
@@ -3334,6 +3467,12 @@ def project_state(root: Path) -> dict[str, Any]:
                 "kind": project_kind(p_r, _safe_read_json_file(runtime_dir(p_r) / "project.json", timeout=0.2)) if p_r and p_r.is_dir() else "",
             })
 
+    prd_text = prd_doc.Prd(root, runtime_dir(root)).read() or ""
+    prd_sections = prd_doc.sections_view(prd_text) if prd_text else []
+    prd_written = sum(1 for s in prd_sections if s["filled"])
+    prd_total = len(prd_sections) or len(prd_doc.SECTIONS)
+    prd_status = "full" if prd_total and prd_written >= prd_total else ("partial" if prd_written > 0 else "empty")
+
     return {
         "computer": session_computer(machines, root),
         "machine_count": len(machines),
@@ -3355,7 +3494,9 @@ def project_state(root: Path) -> dict[str, Any]:
         "source_type": root_source_type,
         "source_label": root_source_label,
         "github_repo": root_github_repo,
+        "repo": account.project_repo(root, root_github_repo),  # owner/name on any git host: how other computers' jobs are matched
         "languages": root_languages,
+        "prd": {"status": prd_status, "written": prd_written, "total": prd_total, "has_prd": prd_written > 0},
         "recent": recent_entries,
         "github_repos": [r["repo"] for r in github_repos(use_cache=True).get("repos", [])] if (shutil.which("gh") or shutil.which("gh", path="/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", ""))) else [],
     }
@@ -7405,6 +7546,19 @@ class UIHandler(BaseHTTPRequestHandler):
                 job.pop("scope_accepted", None)
             write_json_file(job_path, job)
             self._json({"ok": True, "scope": job_scope(root, job)})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cruft":
+            job_path = resolve_job_path(root, parts[1])
+            job = read_json_file(job_path)
+            body = self._body()
+            if _choice(body, "op", ["accept", "reset"]) == "accept":
+                raw = body.get("ids")
+                if not isinstance(raw, list) or not raw or len(raw) > 200:
+                    raise UIError("Choose the findings to accept")
+                job["cruft_accepted"] = sorted(set(job.get("cruft_accepted") or []) | {str(i)[:400] for i in raw})
+            else:
+                job.pop("cruft_accepted", None)
+            write_json_file(job_path, job)
+            self._json({"ok": True, "cruft": job_cruft(root, job)})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "plan-tasks":
             job_path = resolve_job_path(root, parts[1])
             if parts[1] in self.server.sessions.running_job_ids():
@@ -7883,7 +8037,17 @@ class UIHandler(BaseHTTPRequestHandler):
                     "selected": bool(config.get("firebase_distribution") or config.get("delivery_provider") or config.get("delivery_method")),
                     "status": "todo" if errors else "ok", "detail": " ".join(errors) if errors else "Signing configuration is present. Certificates and account access are checked when distributing.",
                     "route": "#/delivery", "label": "Review app delivery"})
+            publish_setup_async(root, setup)  # before annotate: what other computers see is what is set up here
+            setup_copy.annotate(setup, read_settings(root))
             self._json(setup)
+        elif method == "GET" and parts == ["setup", "sources"]:
+            self._json(setup_sources(root))
+        elif method == "POST" and parts == ["setup", "copy"]:
+            self._require_owner("copy setup from another computer")
+            machine_id = _text(self._body(), "machine_id", required=True, limit=80)
+            result = copy_setup_from(root, machine_id)
+            self._audit("setup_copied", root=str(root), source=str(result.get("from") or ""))
+            self._json(result)
         elif method == "POST" and parts == ["setup", "git-init"]:
             self._require_owner("initialize git repository")
             self._body()
@@ -8388,7 +8552,28 @@ class UIHandler(BaseHTTPRequestHandler):
             self._preview_when_ready(session, root, job_id)
         if key in ("test_suite", "test"):
             self._record_test_run(session, root, str(params.get("name") or "") if key == "test_suite" else None)
+        if key == "update_local":
+            self._restart_ui_after_update(session)
         return session
+
+    def _restart_ui_after_update(self, session: PtySession) -> None:
+        """Restart Orchestrator UI after `update_local` succeeds and no other runs are active."""
+        def watch() -> None:
+            while session.running:
+                time.sleep(0.5)
+            if session.exit_code != 0:
+                return
+            for _ in range(60):
+                if not any(s.get("running") for s in self.server.sessions.list()):
+                    break
+                time.sleep(0.5)
+            else:
+                self._audit("update_restart_deferred", reason="other_runs_active")
+                return
+            time.sleep(1.5)
+            _trigger_ui_restart(self.server)
+
+        threading.Thread(target=watch, daemon=True, name="ui-self-restart").start()
 
     def _record_test_run(self, session: PtySession, root: Path, suite: str | None) -> None:
         """Note a suite run (or Run all tests) as it starts, then whether it passed once it ends: the Tests page shows both."""
@@ -8657,11 +8842,13 @@ class UIHandler(BaseHTTPRequestHandler):
         elif action == "reset-simulator":
             self._reset_simulators(root)
         elif action == "git-stash":
-            self._git_stash(root)
+            self._git_stash(root, body)
         elif action == "git-prune-worktrees":
             self._git_prune_worktrees(root)
         elif action == "git-unlock-index":
             self._git_unlock_index(root)
+        elif action == "git-sync-branch":
+            self._git_sync_branch(root, body)
         elif action == "reclaim-space":
             self._reclaim_space(root)
         else:
@@ -8753,14 +8940,41 @@ class UIHandler(BaseHTTPRequestHandler):
         self._audit("reset_simulators")
         self._json({"ok": True, "message": "iOS Simulator daemons terminated and all devices shut down cleanly."})
 
-    def _git_stash(self, root: Path) -> None:
+    def _git_stash(self, root: Path, body: dict[str, Any] | None = None) -> None:
         if not shutil.which("git"):
             raise UIError("git is not installed.")
 
+        raw_paths = (body or {}).get("paths")
+        scoped_paths: list[str] = []
+        if raw_paths is not None:
+            if not isinstance(raw_paths, list):
+                raise UIError("Invalid paths list for git stash.")
+            root_resolved = root.resolve()
+            for item in raw_paths:
+                rel = str(item or "").strip()
+                if not rel or rel.startswith("-") or Path(rel).is_absolute():
+                    raise UIError(f"Invalid path for git stash: {rel!r}")
+                try:
+                    resolved = (root / rel).resolve()
+                except OSError as exc:
+                    raise UIError(f"Invalid path for git stash: {rel!r}") from exc
+                if not resolved.is_relative_to(root_resolved):
+                    raise UIError(f"Path escapes project root: {rel!r}")
+                if (root / rel).exists():
+                    scoped_paths.append(rel)
+
+        if raw_paths and not scoped_paths:
+            self._audit("git_stash", {"tag": "already-clean", "paths": []})
+            self._json({"ok": True, "message": "Colliding files are already gone; working directory is ready.", "paths": []})
+            return
+
         ts = int(time.time())
         tag = f"orchestrator-auto-recovery-{ts}"
+        cmd = ["git", "stash", "push", "-u", "-m", tag]
+        if scoped_paths:
+            cmd.extend(["--", *scoped_paths])
         res = subprocess.run(
-            ["git", "stash", "push", "-u", "-m", tag],
+            cmd,
             cwd=root, env=self.server.child_env(),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30
         )
@@ -8769,12 +8983,15 @@ class UIHandler(BaseHTTPRequestHandler):
             raise UIError(f"Git stash failed: {err}")
 
         out = res.stdout.strip()
-        msg = f"Local changes stashed successfully ({tag}). You can restore them anytime with `git stash pop`."
+        if scoped_paths:
+            msg = f"Stashed {len(scoped_paths)} colliding file(s) ({tag}). You can restore them anytime with `git stash pop`."
+        else:
+            msg = f"Local changes stashed successfully ({tag}). You can restore them anytime with `git stash pop`."
         if "No local changes to save" in out:
             msg = "Working directory is already clean; no local changes were pending."
 
-        self._audit("git_stash", {"tag": tag})
-        self._json({"ok": True, "message": msg})
+        self._audit("git_stash", {"tag": tag, "paths": scoped_paths} if scoped_paths else {"tag": tag})
+        self._json({"ok": True, "message": msg, "paths": scoped_paths})
 
     def _git_unlock_index(self, root: Path) -> None:
         git_dir = root / ".git"
@@ -8809,6 +9026,34 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError(f"Removed .git/index.lock, but git status failed: {detail}")
         self._audit("git_unlock_index")
         self._json({"ok": True, "removed": True, "message": "Removed stale .git/index.lock and verified the Git index."})
+
+    def _git_sync_branch(self, root: Path, body: dict[str, Any]) -> None:
+        if not shutil.which("git"):
+            raise UIError("git is not installed.")
+        env = self.server.child_env()
+        branch = str(body.get("branch") or "").strip()
+        if not branch:
+            cur = subprocess.run(["git", "-C", str(root), "branch", "--show-current"], capture_output=True, text=True, env=env, timeout=10)
+            branch = cur.stdout.strip()
+        if not branch or branch.startswith("-") or not re.fullmatch(r"[A-Za-z0-9._/-]{1,160}", branch):
+            raise UIError("Could not determine a valid branch name to sync.")
+        git_dir = root / ".git"
+        if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
+            subprocess.run(["git", "-C", str(root), "rebase", "--abort"], capture_output=True, text=True, env=env, timeout=15)
+        status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True, env=env, timeout=15)
+        if status.returncode == 0 and status.stdout.strip():
+            raise UIError("You have uncommitted local changes. Stash or commit them before syncing this branch.", HTTPStatus.CONFLICT)
+        fetch = subprocess.run(["git", "-C", str(root), "fetch", "origin", "--", branch], capture_output=True, text=True, env=env, timeout=30)
+        if fetch.returncode != 0:
+            raise UIError(f"Could not fetch origin/{branch}: {(fetch.stderr or fetch.stdout).strip()}")
+        checkout = subprocess.run(["git", "-C", str(root), "checkout", branch], capture_output=True, text=True, env=env, timeout=15)
+        if checkout.returncode != 0:
+            raise UIError(f"Could not switch to {branch}: {(checkout.stderr or checkout.stdout).strip()}")
+        reset = subprocess.run(["git", "-C", str(root), "reset", "--hard", f"origin/{branch}"], capture_output=True, text=True, env=env, timeout=15)
+        if reset.returncode != 0:
+            raise UIError(f"Could not reset {branch} to origin/{branch}: {(reset.stderr or reset.stdout).strip()}")
+        self._audit("git_sync_branch", branch=branch)
+        self._json({"ok": True, "branch": branch, "message": f"Synced {branch} to match origin/{branch}."})
 
     def _git_prune_worktrees(self, root: Path) -> None:
         if not shutil.which("git"):
@@ -9250,6 +9495,21 @@ def start_managed_connection(server: UIServer, public_url: str = "", tunnel_toke
     return manager
 
 
+def _trigger_ui_restart(server: Any) -> None:
+    """Restart the running UI server via launchd when managed, or in-place execv otherwise."""
+    if sys.platform == "darwin":
+        target = f"gui/{os.getuid()}/com.orchestrator.ui"
+        try:
+            loaded = subprocess.run(["launchctl", "print", target], capture_output=True, timeout=5)
+            if loaded.returncode == 0:
+                subprocess.Popen(["launchctl", "kickstart", "-k", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    server._restart_requested = True
+    threading.Thread(target=server.shutdown, daemon=True, name="ui-shutdown").start()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orchestrator ui", description="Local web interface for the orchestrator.")
     parser.add_argument("--host", default="127.0.0.1",
@@ -9404,6 +9664,9 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
             keeper.stop()
         server.sessions.stop_all()
         server.server_close()
+    if getattr(server, "_restart_requested", False):
+        exec_argv = [sys.executable, "-m", "orchestrator", *sys.argv[1:]] if sys.argv[0].endswith("__main__.py") else [sys.executable, *sys.argv]
+        os.execv(sys.executable, exec_argv)
     return 0
 
 

@@ -8,6 +8,7 @@ from llm import run_llm, extract_json_block
 from model_router import ModelRole
 from run_build_and_tests import run_build_and_tests
 from reference_artifacts import reference_context
+from orchestrator import reuse_brief
 from orchestrator.project_config import PROJECT_CONFIG
 
 
@@ -247,6 +248,18 @@ If you are unsure between two valid approaches, pick the safest, most convention
         from orchestrator import prd
         product_context = prd.context_block(ROOT, "builder")
 
+        # What the project already has that matches this task, so the builder reuses it instead of writing a second copy.
+        # Bug fixes edit existing code by nature. A failed search just means no suggestions, never a failed build.
+        reuse_found: list[dict] = []
+        reuse_context = ""
+        if job["type"] not in {"bug-fix", "bug-investigate"}:
+            try:
+                reuse_found = reuse_brief.candidates(ROOT, job)
+            except Exception:
+                reuse_found = []
+            reuse_context = reuse_brief.prompt_block(reuse_found, ROOT, likely_files)
+        job["reuse_suggested"] = reuse_found  # the job page reports how many of these the finished change used
+
         full_prompt = f"""{prompt_template}
 
 Grounding docs to inspect first:
@@ -261,7 +274,7 @@ Available Tests (use for selecting test_command):
 {yolo_context}
 
 {product_context}
-### UI screenshot evidence
+{reuse_context}### UI screenshot evidence
 For every new screen or visible UI alteration, update `{OUTPUT_DIR / job['job_id'] / 'ux-screens.json'}` before finishing.
 List every changed page and interactive state, preserving entries from earlier tasks in this job. Use this JSON shape:
 {{"routes": ["/changed-page"], "screens": [{{"name": "Dialog open", "route": "/changed-page", "actions": [{{"click": "button.open-dialog"}}]}}], "notes": []}}

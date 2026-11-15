@@ -34,7 +34,11 @@ class SetupChecklistTests(unittest.TestCase):
 
     def make_project(self, root: Path, origin: str | None = "git@github.com:me/app.git") -> None:
         (root / ".orchestrator" / "config").mkdir(parents=True)
-        (root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "App"}))
+        (root / ".orchestrator" / "project.json").write_text(json.dumps({
+            "project_name": "App",
+            "build_command": "make build",
+            "test_command": "make test",
+        }))
         (root / ".orchestrator" / "config" / "machines.json").write_text(
             json.dumps({"machines": [{"name": "local", "execution_mode": "local", "models": ["claude-x"]}]}))
         subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -153,6 +157,58 @@ class SetupChecklistTests(unittest.TestCase):
             self.assertIn("coverage_py", items)
             self.assertFalse(items["coverage_py"]["required"])
             self.assertEqual(items["coverage_py"]["action"]["action"], "coverage")
+
+    def test_build_and_test_commands_checked_in_setup_and_job_blockers(self):
+        from orchestrator.web import server
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root)
+            (root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "App"}))
+
+            result = _checklist(root)
+            items = _by_id(result)
+            self.assertIn("build_test_commands", items)
+            self.assertTrue(items["build_test_commands"]["required"])
+            self.assertFalse(items["build_test_commands"]["done"])
+            self.assertFalse(result["complete"])
+
+            blockers = server.job_blockers(root, {"status": "planned", "type": "feature"})
+            build_blockers = [b for b in blockers if b.get("id") == "build_test_commands"]
+            self.assertEqual(len(build_blockers), 1)
+            self.assertEqual(build_blockers[0]["route"], "#/checkup")
+
+            # Option 1: explicit build_command and test_command in project.json
+            (root / ".orchestrator" / "project.json").write_text(json.dumps({
+                "project_name": "App",
+                "build_command": "make build",
+                "test_command": "make test",
+            }))
+            self.assertTrue(_by_id(_checklist(root))["build_test_commands"]["done"])
+            self.assertFalse(any(
+                b.get("id") == "build_test_commands"
+                for b in server.job_blockers(root, {"status": "planned", "type": "feature"})
+            ))
+
+            # Option 2: documented in docs/build-test-commands.md
+            (root / ".orchestrator" / "project.json").write_text(json.dumps({"project_name": "App"}))
+            (root / "docs").mkdir(parents=True, exist_ok=True)
+            (root / "docs" / "build-test-commands.md").write_text(
+                "## Build\n```bash\nmake build\n```\n\n## Tests\n```bash\nmake test\n```\n"
+            )
+            self.assertTrue(_by_id(_checklist(root))["build_test_commands"]["done"])
+
+            # Option 3: Apple project auto-detection (Package.swift or .xcodeproj)
+            (root / "docs" / "build-test-commands.md").unlink()
+            self.assertFalse(_by_id(_checklist(root))["build_test_commands"]["done"])
+            (root / "Package.swift").write_text("// swift-tools-version: 5.9\n")
+            self.assertTrue(_by_id(_checklist(root))["build_test_commands"]["done"])
+
+            # Option 4: non-Apple stack auto-detection (e.g. Cargo.toml)
+            (root / "Package.swift").unlink()
+            self.assertFalse(_by_id(_checklist(root))["build_test_commands"]["done"])
+            (root / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+            self.assertTrue(_by_id(_checklist(root))["build_test_commands"]["done"])
 
 
 if __name__ == "__main__":

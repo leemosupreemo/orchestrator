@@ -34,3 +34,4 @@ Use the provided 'Available Tests' list and inspect the repository's tests to ch
 ALWAYS include relevant tests to prevent regressions.
 Use the configured test executable and its native filtering syntax (for example, cargo test parser or npm test -- --runInBand).
 For Xcode projects only, you may provide multiple -only-testing flags; the runner supplies the project, scheme, and destination.
+Update relevant repository documentation (such as `README.md` or `docs/` files) when your change alters user-facing behavior, APIs, CLI commands, configuration, or setup.

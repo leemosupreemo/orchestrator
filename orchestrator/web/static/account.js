@@ -161,11 +161,16 @@
   function machineStatus(m, now) {
     if (m.reachable && outdated(m.api_version)) return {tone: "warn", text: `Online, but running an older Orchestrator${m.version ? ` (${m.version})` : ""}. ${m.updatable ? APP_UPDATE_HINT : UPDATE_HINT}`};
     if (m.reachable) return {tone: "good", text: "Online"};
+    const conn = m.connection || {};
+    const connDetail = typeof conn.detail === "string" && conn.detail.trim() ? conn.detail.trim() : "";
+    if (m.online && (conn.state === "checking" || conn.state === "repairing")) {
+      return {tone: "warn", text: connDetail || (conn.state === "repairing" ? "Repairing web connection…" : "Checking web connection…")};
+    }
     if (m.updatable) {
-      if (m.online) return {tone: "warn", text: "Connecting for remote access. Check that Remote access is on in the Orchestrator menu on this Mac."};
+      if (m.online) return {tone: "warn", text: connDetail || "Connecting for remote access. Check that Remote access is on in the Orchestrator menu on this Mac."};
       return {tone: "muted", text: "Offline. Wake this Mac and open Orchestrator from Applications. Keep it running to use it from here."};
     }
-    if (m.online) return {tone: "warn", text: "Online, but not reachable from the web yet. Restart it with `orchestrator ui --tunnel`."};
+    if (m.online) return {tone: "warn", text: connDetail ? `Online, but not reachable from the web yet (${connDetail}).` : "Online, but not reachable from the web yet. Restart it with `orchestrator ui --tunnel`."};
     if (m.last_seen) return {tone: "muted", text: `Offline · last seen ${ago(m.last_seen, now)}. Start \`orchestrator ui --tunnel\` on it.`};
     return {tone: "muted", text: "Waiting for it to start. Run `orchestrator ui --tunnel` on it."};
   }

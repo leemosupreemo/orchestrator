@@ -29,7 +29,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
 
-from orchestrator import platforms as platform_view, test_commands, test_groups
+from orchestrator import coverage as coverage_tools, platforms as platform_view, test_commands, test_groups
 
 CACHE = Path("output") / "line-coverage.json"
 TIMEOUT = 1800
@@ -203,7 +203,9 @@ def measure_group(group: dict[str, Any], root: Path, run: Run = test_commands.ex
         if probe[0] != 0:
             return {"status": "needs-setup", "reason": "coverage isn't installed (pip install coverage)"}
         data = out / "group.cov"
-        base = f"python3 -m coverage run --data-file={shlex.quote(str(data))} --source=."
+        # The project's own coverage scope wins: a command-line --source would override `source` in its .coveragerc.
+        scope = " ".join(shlex.quote(option) for option in coverage_tools.python_scope_options(root))
+        base = f"python3 -m coverage run --data-file={shlex.quote(str(data))} {scope}"
         if group.get("isolate") and group.get("files"):
             script = out / "isolated.py"
             script.write_text(test_groups.UNITTEST_ISOLATED + "\n", encoding="utf-8")  # the same runner the group's own command uses

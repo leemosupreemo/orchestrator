@@ -7,7 +7,7 @@ from typing import Any
 from firebase_admin import auth, exceptions, firestore, initialize_app, messaging
 from firebase_functions import https_fn, options, scheduler_fn
 
-from control_plane import ControlError, ControlPlane
+from control_plane import ControlError, ControlPlane, send_mixpanel_event
 from firestore_store import FirestoreStore
 
 initialize_app()
@@ -40,7 +40,7 @@ _plane: ControlPlane | None = None
 def _get_plane() -> ControlPlane:
     global _plane
     if _plane is None:
-        _plane = ControlPlane(FirestoreStore(firestore.client()), pusher=FcmPusher())
+        _plane = ControlPlane(FirestoreStore(firestore.client()), pusher=FcmPusher(), telemetry=send_mixpanel_event)
     return _plane
 
 
@@ -52,7 +52,7 @@ def sweep(event: scheduler_fn.ScheduledEvent) -> None:
 
 @https_fn.on_request(region="us-central1", max_instances=10, memory=options.MemoryOption.MB_256)
 def cp(req: https_fn.Request) -> https_fn.Response:
-    max_body = 524_288 if "/machine/sync" in req.path else 16_384
+    max_body = 524_288 if "/machine/sync" in req.path or req.path.rstrip("/").endswith("/machine/setup") else 16_384
     if req.method == "POST" and req.content_length and req.content_length > max_body:
         return _json(413, {"error": "Request too large"})
     try:

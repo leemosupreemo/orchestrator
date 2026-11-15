@@ -1665,7 +1665,10 @@ process.stdout.write(JSON.stringify({html: page.html}));
 
     def test_job_page_says_why_auto_picked_its_models(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn("job.auto_assignment ? `<div class=\"progress-foot muted\">Picked by Auto for a ${esc(job.auto_assignment.complexity", js)
+        self.assertIn("job.auto_assignment ? `<div class=\"progress-foot muted\">Picked by Auto (${esc(job.auto_assignment.complexity", js)
+        self.assertIn("conciseReasonText", js)
+        self.assertIn('<details class="hero-error-details"><summary class="linklike muted">Error details</summary>', js)
+        self.assertIn("Stage &amp; model details", js)
 
     def test_team_roles_default_to_auto_and_keep_a_chosen_model(self):
         result = self.run_configuration_script("""
@@ -2296,7 +2299,7 @@ process.stdout.write(JSON.stringify({gmail, resend, empty}));
 
     def test_there_is_no_docs_index_and_settings_have_no_terminal_handoff(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        docs = app[app.index("pages.docs = async"):app.index("pages.product = async")]
+        docs = app[app.index("pages.docs = async"):app.index('pages["project-docs"] = async')]  # the Documentation page after it is a page of its own
         self.assertIn('location.replace("#/help")', docs)  # the old index lands on Help
         self.assertNotIn('api("docs")', docs)
         self.assertIn('kind === "job" || kind === "feature" || kind === "file"', docs)  # job, feature and file pages are still reached from where they're used
@@ -3107,7 +3110,8 @@ class WorktreeBranchTests(unittest.TestCase):
 
     def test_the_page_puts_the_last_used_branch_back(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('last === b ? " (last used)" : ""', js)
+        self.assertIn('last === b ? " (latest)" : ""', js)
+        self.assertIn('class="kind-pill kind-latest"', js)
         restore = js[js.index("async function restoreLastBranch"):][:2500]
         for guard in ("p.dirty_files", "p.elsewhere", "r.running", "(p.branches || []).includes(last)", "RESTORED_BRANCH.has(p.root)"):
             self.assertIn(guard, restore)
@@ -5780,6 +5784,70 @@ class ScopeEndpointTests(ServerTestCase):
         self.assertIn(res.status, (400, 403))
 
 
+class CruftEndpointTests(ServerTestCase):
+    """The Unneeded code card's data and its Keep it / Reset kept buttons, over the real API with a real branch."""
+    JOB = "20260922-bug-1"
+
+    def sh(self, *args):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True, env=env)
+
+    def setUp(self):
+        super().setUp()
+        self.sh("init", "-q", "-b", "main")
+        (self.root / "src").mkdir()
+        (self.root / "src" / "util.py").write_text("def format_date(d):\n    return str(d)\n")
+        self.sh("add", "src")
+        self.sh("commit", "-qm", "base")
+        self.sh("checkout", "-qb", "ai/issue-1")
+        (self.root / "src" / "board.py").write_text("def format_date(d):\n    return d.isoformat()\n\n\ndef rank_everyone(scores):\n    return sorted(scores)\n")
+        self.sh("add", "src")
+        self.sh("commit", "-qm", "work")
+        self.sh("checkout", "-q", "main")
+
+    def cruft(self):
+        _, data = self.request("GET", f"/api/jobs/{self.JOB}")
+        return data["cruft"]
+
+    def test_the_job_detail_reports_the_duplicate_and_the_unused_helper(self):
+        cruft = self.cruft()
+        self.assertEqual(sorted((f["kind"], f["files"][0], f["line"]) for f in cruft["findings"]),
+                         [("duplicate", "src/board.py", 1), ("unused", "src/board.py", 5)])
+        self.assertIn("src/util.py", next(f for f in cruft["findings"] if f["kind"] == "duplicate")["detail"])
+        self.assertIn("src/board.py:1", cruft["fix"]["spec"])
+
+    def test_keeping_a_finding_hides_it_and_reset_brings_it_back(self):
+        first = self.cruft()["findings"][0]["id"]
+        res, data = self.request("POST", f"/api/jobs/{self.JOB}/cruft", body={"op": "accept", "ids": [first]}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertNotIn(first, [f["id"] for f in data["cruft"]["findings"]])
+        self.assertEqual(self.cruft()["accepted"], 1)
+        job = json.loads((self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json").read_text())
+        self.assertEqual(job["cruft_accepted"], [first])  # remembered on the job
+        _, data = self.request("POST", f"/api/jobs/{self.JOB}/cruft", body={"op": "reset"}, headers=UI_HEADERS)
+        self.assertEqual(len(data["cruft"]["findings"]), 2)
+        self.assertNotIn("cruft_accepted", json.loads((self.root / ".orchestrator" / "jobs" / f"{self.JOB}.json").read_text()))
+
+    def test_keeping_needs_findings_and_a_known_op_and_the_ui_header(self):
+        for body in ({"op": "accept", "ids": []}, {"op": "accept"}, {"op": "bogus"}):
+            res, _ = self.request("POST", f"/api/jobs/{self.JOB}/cruft", body=body, headers=UI_HEADERS)
+            self.assertEqual(res.status, 400, body)
+        res, _ = self.request("POST", f"/api/jobs/{self.JOB}/cruft", body={"op": "reset"}, headers={"Content-Type": "application/json"})
+        self.assertIn(res.status, (400, 403))
+
+    def test_no_branch_means_no_card(self):
+        path = self.root / ".orchestrator" / "jobs" / "20260923-feature-2.json"
+        path.write_text(json.dumps({"title": "Local only", "type": "feature", "status": "planned"}))
+        _, data = self.request("GET", "/api/jobs/20260923-feature-2")
+        self.assertIsNone(data["cruft"])
+
+    def test_the_job_page_renders_the_card_with_its_buttons(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        for bit in ('id="cruft-section"', "data-cruft-accept", "data-cruft-reset", "Create a job to remove it", "cruft.reuse",
+                    "`jobs/${encodeURIComponent(id)}/cruft`"):
+            self.assertIn(bit, app)
+
+
 class UndoEndpointTests(ServerTestCase):
     JOB = "20260922-bug-1"
 
@@ -6340,7 +6408,8 @@ class YoloAllTests(ServerTestCase):
         self.assertIn('role="switch"', home)  # a switch: on continues every in-progress job, off stops them for review again
         self.assertIn("inProgress.every((j) => j.yolo)", home)
         self.assertIn("inProgress.length", home)  # only when there is something to continue
-        self.assertIn("const inProgress = sortedJobs.filter(HOME_FILTERS.working[1])", home)  # the button counts exactly what the In progress filter shows
+        # the button counts what the In progress filter shows, minus jobs on other computers (the endpoint can't change those)
+        self.assertIn("const inProgress = sortedJobs.filter((j) => !j.remote_machine && HOME_FILTERS.working[1](j))", home)
         self.assertIn('j.state.label === "Paused"', home)
         yolo = app[app.index("async function yoloAll("):app.index("pages.home = async")]
         self.assertIn("formDialog(", yolo)  # asks first: it removes the review stops
@@ -8688,7 +8757,7 @@ const res2 = runFailureGuidance({
 assert.equal(res2.title, "Execution error");
 assert(res2.action.includes("job-456"), "Execution error rerun preserves job");
 assert(res2.action.includes("Rerun job"), "Execution error rerun label specifies job");
-assert(res2.secondary.includes("#/jobs/job-456"), "Execution error back link preserves job");
+assert(!res2.secondary.includes("#/jobs/job-456"), "Execution error omits back to job link");
 """
         result = subprocess.run(
             ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],

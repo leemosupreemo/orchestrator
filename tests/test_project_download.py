@@ -135,7 +135,7 @@ const old=new Promise((resolve,reject)=>{rejectOld=reject;});
 const node={open:false,dataset:{},classList:{add(){},remove(){}},focus(){},setAttribute(){},removeAttribute(){}};
 const context={URLSearchParams,signingIn:false,projectSwitch:null,RouteAliases:{redirect:()=>null},history:{replaceState(){}},location:{hash:'#/'},
  navigationDrawer:{close(){}},cleanup:[],$:()=>node,document:{body:{dataset:{},classList:{add(){},remove(){}}},querySelectorAll:()=>[]},
- view:node,state:{project:{root:'/old'}},parseHash:()=>({parts:[]}),trackNavigation(){},renderSetupFab(){},routeToken:0,
+ view:node,state:{project:{root:'/old'}},parseHash:()=>({parts:[]}),trackNavigation(){},trackWebEvent(){},renderSetupFab(){},routeToken:0,
  resolveRoute:()=>({page:'home',args:[],query:new URLSearchParams(),nav:'home'}),routeParent:()=>null,
  current:{},setTimeout:()=>1,clearTimeout(){},apply:r=>{rendered=r.title;},setHeader(){},loadingSkeleton:()=>'',
  projectDownloads:{pending:()=>active,fail:async()=>{failed++;return true;}},

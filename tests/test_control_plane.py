@@ -696,3 +696,152 @@ class PrimaryComputerTests(PlaneCase):
     def test_the_project_must_be_named(self):
         studio, s1 = self.pair()
         self.assertEqual(self.primary(studio, s1, project="")[0], 400)
+
+
+class CentralWebTelemetryTests(PlaneCase):
+    def setUp(self):
+        super().setUp()
+        self.events = []
+        self.plane.telemetry = lambda event, distinct_id, props: self.events.append((event, distinct_id, props))
+
+    def test_anonymous_and_signed_in_web_telemetry(self):
+        status, data = self.call("POST", "/cp/telemetry", {
+            "event": "page_viewed",
+            "anon_id": "anon_12345678",
+            "properties": {"page": "home", "token": "should-strip", "distinct_id": "spoof"},
+        })
+        self.assertEqual((status, data), (200, {"ok": True}))
+        event, distinct_id, props = self.events[-1]
+        self.assertEqual(event, "page_viewed")
+        self.assertEqual(distinct_id, "anon:anon_12345678")
+        self.assertEqual(props["page"], "home")
+        self.assertFalse(props["signed_in"])
+        self.assertNotIn("token", props)
+        self.assertNotIn("distinct_id", props)
+
+        status, data = self.call("POST", "/cp/telemetry", {
+            "event": "web_action_triggered",
+            "anon_id": "anon_12345678",
+            "properties": {"action": "new_job", "platform": "macOS", "languages": "Swift, Python", "projects_count": 3, "jobs_count": 12},
+        }, user="alice-token")
+        self.assertEqual((status, data), (200, {"ok": True}))
+        first_use = next(e for e in self.events if e[0] == "first_use")
+        self.assertEqual(first_use[1], "u-alice")
+        event, distinct_id, props = self.events[-1]
+        self.assertEqual(event, "web_action_triggered")
+        self.assertEqual(distinct_id, "u-alice")
+        self.assertTrue(props["signed_in"])
+        self.assertTrue(props["is_first_use"])
+        self.assertEqual(props["anon_id"], "anon_12345678")
+        self.assertEqual((props["platform"], props["languages"], props["projects_count"], props["jobs_count"]),
+                         ("macOS", "Swift, Python", 3, 12))
+
+        self.call("POST", "/cp/telemetry", {"event": "page_viewed", "properties": {"page": "tests"}}, user="alice-token")
+        self.assertFalse(self.events[-1][2]["is_first_use"])
+
+    def test_invalid_telemetry_is_rejected(self):
+        self.assertEqual(self.call("POST", "/cp/telemetry", {"event": "Bad Event!", "anon_id": "anon_12345678"})[0], 400)
+        self.assertEqual(self.call("POST", "/cp/telemetry", {"event": "page_viewed"})[0], 400)
+
+    def test_pairing_emits_control_plane_event_and_web_ui_wires_telemetry(self):
+        self.pair(user="alice-token", name="Alice Mac")
+        self.assertTrue(any(e[0] == "cp_machine_paired" and e[1] == "u-alice" for e in self.events))
+
+        app_js = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        for snippet in (
+            "function telemetryContext(",
+            "function trackWebEvent(",
+            "function trackFirstUseAndSession(",
+            'fetch("/cp/telemetry"',
+            'trackWebEvent("web_session_started"',
+            'trackWebEvent("first_use"',
+            'trackWebEvent("page_viewed"',
+            'trackWebEvent("feature_used"',
+            'trackWebEvent("job_run_started"',
+            'trackWebEvent("project_used"',
+            'trackWebEvent("web_action_triggered"',
+            'trackWebEvent("web_session_duration"',
+            'trackWebEvent("job_run_error"',
+            'function reportRunError(',
+            'function trackKeyAction(',
+            '"free_llm_mode"',
+            '"parallel_jobs"',
+            '"anti_cruft_guards"',
+            '"prd_and_agile"',
+            '"testing_and_delivery"',
+            '"multi_machine"',
+            '"vibe_depth"',
+            '"local_machine"',
+            'window.addEventListener("pagehide"',
+            "ctx.primary_language",
+            "ctx.projects_count",
+            "ctx.jobs_count",
+            "ctx.prd_status",
+            "ctx.has_prd",
+        ):
+            self.assertIn(snippet, app_js)
+
+
+class SetupCopyTests(PlaneCase):
+    """A computer shares its setup for a project; the account's other computers list it and copy it, nobody else."""
+
+    PROJECT = "github.com/alice/shop"
+
+    def auth(self, machine, secret):
+        return f"Machine {machine}:{secret}"
+
+    def share(self, machine, secret, done=3, total=4, profile=None, project=PROJECT):
+        progress = {"required_done": done, "required_total": total, "complete": done == total,
+                    "items": [{"id": "project", "title": "Project configured", "required": True, "done": True}]}
+        return self.call("POST", "/cp/machine/setup", {"project": project, "progress": progress,
+                                                       "profile": {"project": {"build_command": "make"}} if profile is None else profile},
+                         machine_auth=self.auth(machine, secret))
+
+    def test_a_newer_computer_lists_and_copies_what_another_shared(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        self.assertEqual(self.share(studio, s1)[0], 200)
+        status, listed = self.call("POST", "/cp/machine/setups", {"project": self.PROJECT}, machine_auth=self.auth(laptop, s2))
+        self.assertEqual(status, 200)
+        self.assertEqual([(s["name"], s["progress"]["required_done"], s["has_config"]) for s in listed["setups"]], [("Studio", 3, True)])
+        self.assertNotIn("profile", listed["setups"][0])  # the list never carries the settings themselves
+        status, got = self.call("POST", "/cp/machine/setup/get", {"project": self.PROJECT, "machine_id": studio}, machine_auth=self.auth(laptop, s2))
+        self.assertEqual((status, got["profile"]["project"]["build_command"], got["name"]), (200, "make", "Studio"))
+
+    def test_a_computer_is_not_offered_its_own_setup(self):
+        studio, s1 = self.pair(name="Studio")
+        self.share(studio, s1)
+        _, listed = self.call("POST", "/cp/machine/setups", {"project": self.PROJECT}, machine_auth=self.auth(studio, s1))
+        self.assertEqual(listed["setups"], [])
+        self.assertEqual(self.call("POST", "/cp/machine/setup/get", {"project": self.PROJECT, "machine_id": studio},
+                                   machine_auth=self.auth(studio, s1))[0], 404)
+
+    def test_setups_are_per_project_and_per_account(self):
+        alice, s1 = self.pair(user="alice-token", name="Alice Mac")
+        alice2, s2 = self.pair(user="alice-token", name="Alice Laptop")
+        bob, s3 = self.pair(user="bob-token", name="Bob Mac")
+        self.share(alice, s1)
+        _, other_project = self.call("POST", "/cp/machine/setups", {"project": "github.com/alice/blog"}, machine_auth=self.auth(alice2, s2))
+        self.assertEqual(other_project["setups"], [])
+        _, bobs = self.call("POST", "/cp/machine/setups", {"project": self.PROJECT}, machine_auth=self.auth(bob, s3))
+        self.assertEqual(bobs["setups"], [])
+        self.assertEqual(self.call("POST", "/cp/machine/setup/get", {"project": self.PROJECT, "machine_id": alice},
+                                   machine_auth=self.auth(bob, s3))[0], 404)
+
+    def test_progress_is_cleaned_and_oversize_profiles_refused(self):
+        studio, s1 = self.pair()
+        self.call("POST", "/cp/machine/setup", {"project": self.PROJECT, "progress": {"required_done": "x", "required_total": 500, "items": ["no", {"id": "a", "done": "yes"}]},
+                                                "profile": {"project": {"build_command": "make"}}}, machine_auth=self.auth(studio, s1))
+        record = next(iter(self.store.data["machine_setups"].values()))
+        self.assertEqual((record["progress"]["required_done"], record["progress"]["required_total"]), (0, 99))
+        self.assertEqual(record["progress"]["items"], [{"id": "a", "title": "", "required": False, "done": False}])
+        big = {"prompts": {"reviewer.md": "x" * (cp.SETUP_PROFILE_LIMIT + 1)}}
+        self.assertEqual(self.share(studio, s1, profile=big)[0], 413)
+
+    def test_removing_a_computer_removes_what_it_shared(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        self.share(studio, s1)
+        self.call("POST", "/cp/machines/remove", {"machine_id": studio}, user="alice-token")
+        _, listed = self.call("POST", "/cp/machine/setups", {"project": self.PROJECT}, machine_auth=self.auth(laptop, s2))
+        self.assertEqual(listed["setups"], [])

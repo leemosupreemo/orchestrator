@@ -2020,6 +2020,12 @@ def extract_commands() -> tuple[str, str]:
 
     default_build = PROJECT_CONFIG.build_command or default_xcode_command("build")
     default_test = PROJECT_CONFIG.test_command or default_xcode_command("test")
+    if not default_build or not default_test:
+        from orchestrator.stack_detection import detect_project_stack
+
+        stack = detect_project_stack(ROOT)
+        default_build = default_build or stack.build_command
+        default_test = default_test or stack.test_command
 
     build = default_build
     test = default_test

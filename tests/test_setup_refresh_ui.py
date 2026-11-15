@@ -61,7 +61,8 @@ const context = vm.createContext({
   apply: result => { rendered = result.html; },
 });
 vm.runInContext(source.slice(source.indexOf('let setupState ='), source.indexOf('function setupItem(')), context);
-vm.runInContext(source.slice(source.indexOf('async function tick()'), source.indexOf('const connBtn =')), context);
+// Analytics calls (trackWebEvent, trackFirstUseAndSession, ...) sit at the top level of this stretch; they are not under test.
+vm.runInContext(source.slice(source.indexOf('async function tick()'), source.indexOf('const connBtn =')).replace(/^track\w*\(.*\);?$/gm, ''), context);
 (async () => {
   if (process.argv[2] === 'pending') {
     const pending = vm.runInContext('tick()', context);
@@ -124,7 +125,8 @@ const clicks = [];
 const context = vm.createContext({
   $: () => panel,
   setupState: { required_done: 1 },
-  document: { addEventListener: (name, handler) => { clicks.push(handler); } },
+  document: { addEventListener: (name, handler) => { clicks.push(handler); }, querySelectorAll: () => [] },
+  trackWebEvent: () => {},
   loadSetup: () => new Promise(resolve => { finishRefresh = () => {
     context.setupState = { required_done: 2 }; resolve();
   }; }),

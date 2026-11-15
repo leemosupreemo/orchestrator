@@ -185,7 +185,7 @@ process.stdout.write(context.branchOptions(input.branches, input.current, input.
         self.assertEqual([attrs['value'] for _, attrs in parsed.options],
                          ['main', 'local&branch', 'remote:origin/feature<new>', 'remote:fork/feature<new>'])
         self.assertIn('selected', parsed.options[0][1])
-        self.assertIn('local&branch (last used) (in another folder)', parsed.text)
+        self.assertIn('local&branch (latest) (in another folder)', parsed.text)
         self.assertNotIn('<new>', rendered)
 
     def test_branch_with_most_recent_commit_has_subtle_highlight_and_subtext(self):

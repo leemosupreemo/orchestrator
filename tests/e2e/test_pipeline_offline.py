@@ -96,6 +96,14 @@ class OfflinePipelineTests(unittest.TestCase):
             self.assertIn("No network play", calls[0]["prompt"], f"{role} was not told the non-goals")
         self.assertLess(len(self.calls("builder")[0]["prompt"].split("Product context")[1].split("Brief:")[0]), 6000)
 
+    # ---- reuse
+    def test_the_builder_is_told_what_the_project_already_has_and_the_job_records_it(self):
+        prompt = self.calls("builder")[0]["prompt"]
+        self.assertIn("### EXISTING CODE TO REUSE", prompt, self.explain())
+        self.assertIn("wordgame/scoring.py", prompt)
+        self.assertLess(prompt.index("### EXISTING CODE TO REUSE"), prompt.index("Brief:"))
+        self.assertIn("score", {s["name"] for s in self.after_run["reuse_suggested"]})
+
     # ---- build, test, review
     def test_the_job_is_built_tested_and_reviewed_onto_a_branch(self):
         self.assertEqual(self.steps["approve"].returncode, 0, self.explain())

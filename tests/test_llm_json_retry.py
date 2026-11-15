@@ -33,7 +33,7 @@ class JsonRetryTests(unittest.TestCase):
     def run_llm(self, replies, role=ModelRole.PLANNER, allowed=None):
         prompts = []
 
-        def fake(model, prompt, cwd, timeout, role=None, session_id=None, images=None):
+        def fake(model, prompt, cwd, timeout, role=None, session_id=None, images=None, **_options):  # on_chunk, protected_paths, web, raw
             prompts.append(prompt)
             return replies.pop(0)
 

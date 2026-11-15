@@ -31,6 +31,7 @@ class CoverageExecutionTests(unittest.TestCase):
     def configure(self, xcode):
         config = SimpleNamespace(uses_xcode=xcode, scheme='Example', project_name='Example',
                                  test_target='ExampleTests', test_command='python3 -m unittest discover -s tests',
+                                 test_commands=[], root=self.root, runtime_dir=self.root / '.orchestrator',
                                  xcode_workspace=None, xcode_project=None)
         self.stack.enter_context(patch.object(dev_console, 'PROJECT_CONFIG', config))
 
@@ -151,13 +152,16 @@ class CoverageExecutionTests(unittest.TestCase):
                 raise OSError('Xcode must not run for a Python project')
             return real_popen(argv, *args, **kwargs)
         self.stack.enter_context(patch.object(dev_console.subprocess, 'Popen', side_effect=launch))
+        measured = self.root / '.orchestrator' / 'output' / 'line-coverage.json'
         self.assertEqual(job_actions.coverage(), 0)
-        record = dev_console.get_coverage_data()
-        self.assertEqual(record.get('tool'), 'coverage.py')
-        self.assertEqual(record['overall_coverage_pct'], 50.0)
-        self.assertNotIn('estimated', record)
+        # Python tests are measured per platform by the real runner; that run is the project's figure, so the overall
+        # step is not repeated (and nothing is estimated).
+        files = json.loads(measured.read_text())['files']
+        self.assertEqual(files, {'example.py': [2, 2], 'untested.py': [0, 2]})  # [covered, coverable]; tests are not project code
+        self.assertIn('comes from the per-platform run', self.output.getvalue())
+        self.assertIsNone(dev_console.get_coverage_data())
         self.pause.assert_not_called()
         # An explicit project scope takes precedence over our defaults.
         (self.root / '.coveragerc').write_text('[run]\nsource = example\nomit = tests/*\n')
         self.assertEqual(job_actions.coverage(), 0)
-        self.assertEqual(dev_console.get_coverage_data()['overall_coverage_pct'], 100.0)
+        self.assertEqual(json.loads(measured.read_text())['files'], {'example.py': [2, 2]})

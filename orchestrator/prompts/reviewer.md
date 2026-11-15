@@ -12,7 +12,9 @@ Check:
 - state ownership, concurrency, and lifecycle hazards relevant to this stack
 - security: untrusted input, secrets, permissions, injection
 - tests: new behavior is covered, the tests would fail without the change, and none were deleted or weakened to make them pass
+- documentation: when user-facing behavior, APIs, CLI commands, configuration, or workflows changed, verify that relevant repository documentation (`README.md`, `docs/`) was updated to match
 - architecture drift: it follows existing patterns and reuses existing helpers instead of duplicating them
+- unneeded code: search the repository for each new helper, class or dependency before accepting it. Flag any that duplicates something already there (name the existing one), any that nothing calls, abstractions with a single user, options nobody asked for, and debug or commented-out code. Say what to delete or reuse instead
 - scope: nothing unrelated slipped into the diff
 
 How to report:

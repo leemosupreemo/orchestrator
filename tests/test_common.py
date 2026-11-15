@@ -20,6 +20,15 @@ import common  # noqa: E402
 
 
 class CommonTests(unittest.TestCase):
+    def setUp(self):
+        # Importing worker_run marks the whole process silent (AI_REQUEST_SOURCE), and the terminal-rendering tests here are about
+        # what a person at a terminal sees, so they must not depend on which modules happened to be imported first.
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ("AI_REQUEST_SOURCE", "AI_PROGRESS_SILENT"):
+            os.environ.pop(name, None)
+
     def test_generic_commands_override_legacy_docs_without_simulator_probe(self):
         config = SimpleNamespace(build_command="cargo build", test_command="cargo test",
                                  xcode_project=None, xcode_workspace=None, scheme=None)
@@ -39,7 +48,7 @@ class CommonTests(unittest.TestCase):
                                  derived_data_path="/tmp/test-generic-dd")
         with tempfile.TemporaryDirectory() as tmp:
             docs = Path(tmp)
-            with patch.object(common, "DOCS_DIR", docs), patch.object(common, "PROJECT_CONFIG", config):
+            with patch.object(common, "ROOT", docs), patch.object(common, "DOCS_DIR", docs), patch.object(common, "PROJECT_CONFIG", config):
                 with self.assertRaisesRegex(ValueError, "build_command"):
                     common.extract_commands()
                 (docs / "build-test-commands.md").write_text(
@@ -54,9 +63,18 @@ class CommonTests(unittest.TestCase):
             docs = Path(tmp)
             (docs / "build-test-commands.md").write_text(
                 "## Build\nNot configured yet.\n## Tests\n```bash\nnpm test\n```\n")
-            with patch.object(common, "DOCS_DIR", docs), patch.object(common, "PROJECT_CONFIG", config):
+            with patch.object(common, "ROOT", docs), patch.object(common, "DOCS_DIR", docs), patch.object(common, "PROJECT_CONFIG", config):
                 with self.assertRaisesRegex(ValueError, "build_command"):
                     common.extract_commands()
+
+    def test_extract_commands_falls_back_to_detected_stack(self):
+        config = SimpleNamespace(build_command=None, test_command=None,
+                                 xcode_project=None, xcode_workspace=None, scheme=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+            with patch.object(common, "ROOT", root), patch.object(common, "DOCS_DIR", root / "docs"), patch.object(common, "PROJECT_CONFIG", config):
+                self.assertEqual(common.extract_commands(), ("cargo build", "cargo test"))
 
     @patch("common.get_best_simulator_destination", return_value="platform=iOS Simulator,id=TEST_SIM")
     def test_extract_commands_reads_ios_app_tests_section(self, _mock_destination) -> None:
