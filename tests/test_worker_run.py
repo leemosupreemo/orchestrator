@@ -723,3 +723,29 @@ class ResolveBuilderModelTests(unittest.TestCase):
         self.assertIn('--full-auto', cmd)
         cmd_plan = llm.get_llm_command('codex', '/tmp/prompt.txt', role=ModelRole.PLANNER)
         self.assertNotIn('--full-auto', cmd_plan)
+
+    def test_run_builder_blocks_on_write_error_and_ignores_non_question_clarification(self):
+        import run_builder
+        with tempfile.TemporaryDirectory() as tmp:
+            job_path = Path(tmp) / 'job.json'
+            base_job = {'job_id': 'j1', 'title': 'T', 'builder': 'codex', 'plan': {'summary': 's', 'tasks': []}}
+            job_path.write_text(json.dumps(base_job))
+
+            blocking_out = json.dumps({'clarification_needed': 'Rerun this task with workspace write access.'})
+            with patch.object(run_builder, 'make_brief', return_value='brief'), \
+                 patch.object(run_builder, 'run_llm', return_value=(blocking_out, 'codex', 's1')), \
+                 patch.object(run_builder, 'run_build_and_tests', return_value=(True, True)):
+                with self.assertRaises(RuntimeError) as ctx:
+                    run_builder.run_builder(job_path)
+            self.assertNotIsInstance(ctx.exception, run_builder.BuilderClarificationNeeded)
+            self.assertIn('Builder blocked', str(ctx.exception))
+
+            advisory_out = json.dumps({'clarification_needed': 'Proceeding with existing layout.', 'summary': 'done'})
+            job_path.write_text(json.dumps(base_job))
+            with patch.object(run_builder, 'make_brief', return_value='brief'), \
+                 patch.object(run_builder, 'run_llm', return_value=(advisory_out, 'codex', 's2')), \
+                 patch.object(run_builder, 'run_build_and_tests', return_value=(True, True)):
+                build_ok, test_ok, _, _ = run_builder.run_builder(job_path)
+            self.assertTrue(build_ok and test_ok)
+            saved = json.loads(job_path.read_text())
+            self.assertNotIn('human_clarification_question', saved)
