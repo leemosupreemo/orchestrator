@@ -2251,6 +2251,8 @@ async function showSnapshotScreen(machineId, machine) {
   document.title = Notifications.tabTitle("Saved snapshot · Orchestrator", state.inbox_count || 0);
   document.body.classList.add("signin-gate");
   document.body.removeAttribute("data-page");
+  const mobileTitle = $("#mobile-title");
+  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card account-card"><p class="muted">Loading snapshot…</p></div></div>`;
   try {
@@ -2265,27 +2267,54 @@ async function showSnapshotScreen(machineId, machine) {
     stopSnapshotPoll();
     const generation = snapshotScreenGeneration;
     const isCurrent = () => generation === snapshotScreenGeneration;
-    let reconnecting = false, nextRetryAt = 0, retryDelay = 10000;
-    const reconnect = async (manual = false) => {
-      if (reconnecting || !isCurrent() || (!manual && Date.now() < nextRetryAt)) return;
-      reconnecting = true;
-      try {
-        const { machines: fresh } = await cpApi("machines", { signal: AbortSignal.timeout(8000) });
-        const current = (fresh || []).find((m) => m.id === machineId);
-        if (!isCurrent() || !current || (!manual && !current.reachable)) return;
-        let res;
-        try { res = await signInToMachine(current, undefined, { isCurrent }); }
-        catch (error) { res = await repairMachineConnection(current, error, { quiet: true, isCurrent }); }
-        if (!isCurrent()) return;
-        await unlockWith(res.token, `Opened ${current.name}`, { isCurrent });
-      } catch (error) {
-        // A fresh heartbeat says the Mac is running; it cannot prove the browser can reach its tunnel.
-        if (manual && isCurrent()) toast("Browser connection unavailable. Showing saved snapshot.", "info");
-      } finally {
-        nextRetryAt = Date.now() + retryDelay;
-        retryDelay = Math.min(retryDelay * 2, 60000);
-        reconnecting = false;
+    let reconnecting = null, nextRetryAt = 0, retryDelay = 10000;
+    const setOpenBusy = (busy) => {
+      const openBtn = view.querySelector('[data-account-action="open"]');
+      if (!openBtn) return;
+      openBtn.disabled = busy;
+      if (busy) {
+        openBtn.setAttribute("aria-busy", "true");
+        openBtn.textContent = "Connecting…";
+      } else {
+        openBtn.removeAttribute("aria-busy");
+        openBtn.textContent = "Try live connection";
       }
+    };
+    const reconnect = async (manual = false) => {
+      if (!isCurrent()) return;
+      if (reconnecting) {
+        if (!manual) return;
+        setOpenBusy(true);
+        try { await reconnecting; } finally { if (isCurrent()) setOpenBusy(false); }
+        return;
+      }
+      if (!manual && Date.now() < nextRetryAt) return;
+      if (manual) setOpenBusy(true);
+      const task = (async () => {
+        try {
+          const { machines: fresh } = await cpApi("machines", { signal: AbortSignal.timeout(8000) });
+          const current = (fresh || []).find((m) => m.id === machineId);
+          if (!isCurrent() || !current || (!manual && !current.reachable)) {
+            if (manual && isCurrent()) toast("Computer is still unreachable. Showing saved snapshot.", "info");
+            return;
+          }
+          let res;
+          try { res = await signInToMachine(current, undefined, { isCurrent }); }
+          catch (error) { res = await repairMachineConnection(current, error, { quiet: true, isCurrent }); }
+          if (!isCurrent()) return;
+          await unlockWith(res.token, `Opened ${current.name}`, { isCurrent });
+        } catch (error) {
+          // A fresh heartbeat says the Mac is running; it cannot prove the browser can reach its tunnel.
+          if (manual && isCurrent()) toast("Browser connection unavailable. Showing saved snapshot.", "info");
+        } finally {
+          nextRetryAt = Date.now() + retryDelay;
+          retryDelay = Math.min(retryDelay * 2, 60000);
+          reconnecting = null;
+          if (manual && isCurrent()) setOpenBusy(false);
+        }
+      })();
+      reconnecting = task;
+      await task;
     };
     snapshotPoll = setInterval(() => {
       if (!document.querySelector(".account-card") || !signingIn) return stopSnapshotPoll();
