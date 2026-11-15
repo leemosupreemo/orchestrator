@@ -181,20 +181,34 @@ def credentials_file() -> Path:
 
 
 def rejected_providers(checks: dict[str, dict[str, Any]], now: float | None = None) -> dict[str, dict[str, Any]]:
-    """Providers whose API key was refused, with the check that showed it. Forgotten after KEY_HOLD, or as soon as the sign-in
-    file is newer than the refusal (the key may have been replaced), so the provider gets another chance."""
+    """Providers whose API key was refused or where multiple models failed with none working. Forgotten after KEY_HOLD,
+    or as soon as the sign-in file is newer than the refusal (the key may have been replaced)."""
     now = now or time.time()
     try:
         changed = credentials_file().stat().st_mtime
     except OSError:
         changed = 0.0
     found: dict[str, dict[str, Any]] = {}
+    ok_providers: set[str] = set()
+    recent_fails: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for model, check in checks.items():
         provider = provider_of(model)
+        if not provider:
+            continue
         at = float(check.get("at") or 0)
-        if provider and not check.get("ok") and check.get("reason") == KEY_REJECTED and now - at < KEY_HOLD and changed <= at:
+        if now - at >= KEY_HOLD or changed > at:
+            continue
+        if check.get("ok"):
+            ok_providers.add(provider)
+            continue
+        recent_fails.setdefault(provider, []).append((model, check))
+        if check.get("reason") == KEY_REJECTED:
             if provider not in found or at > float(found[provider].get("at") or 0):
                 found[provider] = {**check, "model": model}
+    for provider, fails in recent_fails.items():
+        if provider not in found and provider not in ok_providers and len(fails) >= 2:
+            best_model, best_check = max(fails, key=lambda item: float(item[1].get("at") or 0))
+            found[provider] = {**best_check, "model": best_model}
     return found
 
 
@@ -204,8 +218,11 @@ def record_model_failure(model_id: str, reason: str = "", *, key_rejected: bool 
     record_check(model_id, False, msg, now=now)
 
 
+_TRANSIENT_FAILURE = ("timed out", "rate limit", "overloaded")
+
+
 def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> bool:
-    """True when `model_id` or its provider recently failed with a persistent auth/unavailable error."""
+    """True when `model_id` or its provider recently failed with a non-transient error."""
     if not model_id:
         return False
     checks = load_checks() if checks is None else checks
@@ -216,8 +233,8 @@ def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = N
     entry = checks.get(model_id)
     if not isinstance(entry, dict) or entry.get("ok"):
         return False
-    reason = str(entry.get("reason") or "")
-    if reason != KEY_REJECTED and not reason.startswith(MODEL_UNAVAILABLE):
+    reason = str(entry.get("reason") or "").lower()
+    if any(t in reason for t in _TRANSIENT_FAILURE):
         return False
     at = float(entry.get("at") or 0)
     try:
