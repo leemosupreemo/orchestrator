@@ -5199,6 +5199,9 @@ def start_github_login(server: Any) -> dict[str, Any]:
 def github_login_status(server: Any) -> dict[str, Any]:
     proc = getattr(server, "gh_login", None)
     user = github_user()
+    if user:
+        from orchestrator.setup_checklist import ensure_gh_git_credentials
+        ensure_gh_git_credentials()
     return {"signed_in": bool(user), "user": user, "waiting": bool(proc and proc.poll() is None)}
 
 
@@ -8974,6 +8977,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._git_unlock_index(root)
         elif action == "git-sync-branch":
             self._git_sync_branch(root, body)
+        elif action == "git-auth":
+            self._git_auth(root, body)
         elif action == "reclaim-space":
             self._reclaim_space(root)
         else:
@@ -9268,6 +9273,97 @@ class UIHandler(BaseHTTPRequestHandler):
         self._audit("reclaim_space")
         msg = f"Reclaimed disk space by clearing {', '.join(freed_items)}." if freed_items else "Reclaimed disk space from build caches and simulator runtimes."
         self._json({"ok": True, "message": msg})
+
+    def _git_auth(self, root: Path, body: dict[str, Any]) -> None:
+        token = str(body.get("token") or "").strip()
+        username = str(body.get("username") or "").strip() or "x-access-token"
+        if not token:
+            if not shutil.which("gh"):
+                self._error(HTTPStatus.BAD_REQUEST, "GitHub CLI (gh) is not installed. Enter a GitHub personal access token instead.")
+                return
+            try:
+                res = subprocess.run(
+                    ["gh", "auth", "setup-git", "--hostname", "github.com"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self._error(HTTPStatus.BAD_GATEWAY, f"Could not configure gh git credentials: {exc}")
+                return
+            if res.returncode != 0:
+                detail = (res.stderr or res.stdout or "").strip() or "Sign in with GitHub first, then try again."
+                self._error(HTTPStatus.BAD_REQUEST, detail)
+                return
+            self._audit("git_auth", {"mode": "gh"})
+            self._json({"ok": True, "message": "Configured git to use your GitHub CLI credentials."})
+            return
+
+        if "\n" in token or "\r" in token or "\n" in username or "\r" in username:
+            self._error(HTTPStatus.BAD_REQUEST, "Invalid characters in GitHub credentials.")
+            return
+
+        payload = f"protocol=https\nhost=github.com\nusername={username}\npassword={token}\n"
+        if sys.platform == "darwin":
+            try:
+                res = subprocess.run(
+                    ["git", "credential-osxkeychain", "store"],
+                    input=payload,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                res = None
+            if res is not None and res.returncode == 0:
+                helper = subprocess.run(
+                    ["git", "config", "--get", "credential.helper"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if not (helper.stdout or "").strip():
+                    subprocess.run(
+                        ["git", "config", "--global", "credential.helper", "osxkeychain"],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                self._audit("git_auth", {"mode": "osxkeychain"})
+                self._json({"ok": True, "message": "Saved GitHub HTTPS credentials to the macOS Keychain."})
+                return
+
+        cred_path = Path.home() / ".git-credentials"
+        existing_lines: list[str] = []
+        if cred_path.exists():
+            try:
+                existing_lines = [
+                    line for line in cred_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if line.strip() and "@github.com" not in line
+                ]
+            except OSError:
+                existing_lines = []
+        encoded_user = quote(username, safe="")
+        encoded_token = quote(token, safe="")
+        existing_lines.append(f"https://{encoded_user}:{encoded_token}@github.com")
+        cred_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+        os.chmod(cred_path, 0o600)
+        helper = subprocess.run(
+            ["git", "config", "--get", "credential.helper"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if not (helper.stdout or "").strip():
+            subprocess.run(
+                ["git", "config", "--global", "credential.helper", "store"],
+                capture_output=True,
+                timeout=5,
+            )
+        self._audit("git_auth", {"mode": "store"})
+        self._json({"ok": True, "message": "Saved GitHub HTTPS credentials."})
 
     def _sessions_view(self, job_id: str | None = None) -> list[dict[str, Any]]:
         sessions = self.server.sessions.list(job_id=job_id)

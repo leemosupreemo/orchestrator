@@ -488,6 +488,11 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
         print(f"      - Pulling latest for current branch {branch}...")
         if PROJECT_CONFIG.git_remote:
             run(["git", "remote", "set-url", "origin", PROJECT_CONFIG.git_remote], cwd=ROOT)
+        try:
+            from orchestrator.setup_checklist import ensure_gh_git_credentials
+            ensure_gh_git_credentials()
+        except Exception:
+            pass
         run(["git", "fetch", "origin"], cwd=ROOT)
         branch = _checkout_branch_with_recovery(branch, base_branch, job, allow_current_fallback=True)
         _pull_branch_with_recovery(branch, allow_missing_remote=True)

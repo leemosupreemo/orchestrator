@@ -876,3 +876,40 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
 
         new_job_src = (APP.parents[3] / "orchestrator" / "scripts" / "new_job.py").read_text(encoding="utf-8")
         self.assertIn("project_docs.context_block(ROOT)", new_job_src)
+
+    def test_git_auth_recovery_ui_and_handler(self):
+        app = APP.read_text(encoding="utf-8")
+        for snippet in (
+            "isGitAuthError",
+            'recoveryAction: "git-auth"',
+            'title: "GitHub credentials needed"',
+            'id="inline-git-auth-form"',
+            'data-gh-signin="1"',
+            "wireGitAuthForm(container);",
+            'api("recovery/git-auth"',
+        ):
+            self.assertIn(snippet, app)
+
+        server_src = (APP.parents[3] / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
+        self.assertIn('elif action == "git-auth":', server_src)
+        self.assertIn("def _git_auth(", server_src)
+
+        from orchestrator.web import server as web_server
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            root = home / "repo"
+            root.mkdir()
+            sent = []
+            handler = web_server.UIHandler.__new__(web_server.UIHandler)
+            handler._audit = lambda *a, **kw: None
+            handler._json = lambda data, **kw: sent.append(data)
+            handler._error = lambda code, msg: sent.append({"error": msg, "code": code})
+            with patch.object(web_server.sys, "platform", "linux"), \
+                 patch.object(web_server.Path, "home", return_value=home), \
+                 patch.object(web_server.subprocess, "run", return_value=unittest.mock.MagicMock(returncode=0, stdout="store", stderr="")):
+                handler._git_auth(root, {"username": "octo", "token": "ghp_secret123"})
+            self.assertTrue(sent and sent[0].get("ok"))
+            cred_file = home / ".git-credentials"
+            self.assertTrue(cred_file.exists())
+            self.assertIn("https://octo:ghp_secret123@github.com", cred_file.read_text(encoding="utf-8"))
+            self.assertEqual(cred_file.stat().st_mode & 0o777, 0o600)

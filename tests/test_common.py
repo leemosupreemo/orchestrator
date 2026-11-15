@@ -1402,3 +1402,25 @@ class SecretsFileTests(unittest.TestCase):
                 common.load_secrets()
                 self.assertNotIn("ANTHROPIC_API_KEY", os.environ)
                 self.assertEqual(os.environ.get("REAL_TOKEN_FOR_TEST"), "abc123")
+
+
+class GitNonInteractiveEnvTests(unittest.TestCase):
+    def test_run_sets_noninteractive_git_env_defaults(self):
+        import types
+        import common
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("common.subprocess.run", side_effect=fake_run), \
+             patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GIT_TERMINAL_PROMPT", None)
+            os.environ.pop("GCM_INTERACTIVE", None)
+            common.run(["git", "fetch", "origin"])
+            self.assertEqual(captured["env"]["GIT_TERMINAL_PROMPT"], "0")
+            self.assertEqual(captured["env"]["GCM_INTERACTIVE"], "never")
+
+            common.run(["echo", "hello"])
+            self.assertNotIn("GIT_TERMINAL_PROMPT", captured["env"])

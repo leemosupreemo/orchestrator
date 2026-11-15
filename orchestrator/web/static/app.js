@@ -13008,6 +13008,39 @@ function runFailureGuidance(r) {
     };
   }
 
+  const isGitAuthError = fullText.includes("could not read username for 'https://github.com'")
+    || fullText.includes("username for 'https://github.com'")
+    || (fullText.includes("terminal prompts disabled") && fullText.includes("github.com"))
+    || (fullText.includes("could not read password for") && fullText.includes("github.com"))
+    || fullText.includes("authentication failed for 'https://github.com")
+    || ((fullText.includes("invalid username or token") || fullText.includes("password authentication was removed")) && fullText.includes("github"));
+
+  if (isGitAuthError) {
+    const opAction = r.action || (targetJob ? "execute" : "sync");
+    const opAttr = `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}`;
+    const backBtn = targetJob
+      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
+      : `<button type="button" class="btn small" ${act(opAction)}>Rerun</button>`;
+    return {
+      isGitAuth: true,
+      recoveryAction: "git-auth",
+      title: "GitHub credentials needed",
+      detail: "Git could not authenticate with your HTTPS GitHub remote non-interactively. Sign in with GitHub CLI or save a personal access token (repo scope) on this Mac.",
+      action: `<div class="git-auth-inline">
+        <div class="row wrap">
+          <button type="button" class="btn small" data-gh-signin="1">Sign in with GitHub</button>
+          <span class="muted">or paste a GitHub personal access token:</span>
+        </div>
+        <form id="inline-git-auth-form" class="row wrap" ${opAttr}>
+          <input type="text" id="git-auth-username" placeholder="GitHub username (optional)" autocomplete="username" />
+          <input type="password" id="git-auth-token" placeholder="ghp_... personal access token" autocomplete="off" required />
+          <button type="submit" class="btn small primary" id="git-auth-save-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg> Save &amp; Rerun</button>
+        </form>
+      </div>`,
+      secondary: backBtn,
+    };
+  }
+
   const isPackageResolution = fullText.includes("resolvepackagedependencies")
     || fullText.includes("package.resolved file is corrupted")
     || (fullText.includes("package.resolved") && fullText.includes("out of date"))
@@ -13967,6 +14000,63 @@ function wireApiKeyForm(container) {
   }
 }
 
+function wireGitAuthForm(container) {
+  if (!container) return;
+  const ghBtn = container.querySelector("[data-gh-signin]");
+  if (ghBtn && ghBtn.dataset.wired !== "true") {
+    ghBtn.dataset.wired = "true";
+    ghBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (typeof signInToGitHub === "function") {
+        signInToGitHub();
+      }
+    });
+  }
+  const form = container.querySelector("#inline-git-auth-form");
+  if (form && form.dataset.wired !== "true") {
+    form.dataset.wired = "true";
+    const userInput = form.querySelector("#git-auth-username");
+    const tokenInput = form.querySelector("#git-auth-token");
+    const saveBtn = form.querySelector("#git-auth-save-btn");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = userInput ? userInput.value.trim() : "";
+      const token = tokenInput ? tokenInput.value.trim() : "";
+      if (!token) return;
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Saving…`;
+      }
+      if (userInput) userInput.disabled = true;
+      if (tokenInput) tokenInput.disabled = true;
+      try {
+        await api("recovery/git-auth", { method: "POST", body: { username, token } });
+        if (tokenInput) tokenInput.value = "";
+        toast("GitHub credentials saved. Starting rerun…");
+        const rerunAction = form.dataset.rerunAction;
+        const rerunParams = form.dataset.rerunParams ? JSON.parse(form.dataset.rerunParams) : {};
+        if (rerunAction) {
+          runAction(rerunAction, rerunParams);
+        } else if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-check"/></svg> Saved`;
+        }
+      } catch (err) {
+        toast(err?.message || "Failed to save GitHub credentials", true);
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg> Save &amp; Rerun`;
+        }
+        if (userInput) userInput.disabled = false;
+        if (tokenInput) {
+          tokenInput.disabled = false;
+          tokenInput.focus();
+        }
+      }
+    });
+  }
+}
+
 function wireInterruptedAutoRecovery(container) {
   if (!container) return;
   const btn = container.querySelector("[data-auto-recover]");
@@ -14013,6 +14103,7 @@ function wireRunGuidance(container) {
   wireKeychainUnlock(container);
   wireAutoRecovery(container);
   wireApiKeyForm(container);
+  wireGitAuthForm(container);
   wireInterruptedAutoRecovery(container);
 }
 

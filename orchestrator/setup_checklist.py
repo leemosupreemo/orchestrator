@@ -44,6 +44,20 @@ def _run(argv: list[str], cwd: Path | None = None, timeout: int = 6) -> subproce
         return None
 
 
+_gh_git_wired = False
+
+
+def ensure_gh_git_credentials() -> bool:
+    """Wire `gh` as git's HTTPS credential helper when `gh` is signed in."""
+    global _gh_git_wired
+    if _gh_git_wired or not shutil.which("gh"):
+        return _gh_git_wired
+    res = _run(["gh", "auth", "setup-git", "--hostname", "github.com"], timeout=5)
+    if res and res.returncode == 0:
+        _gh_git_wired = True
+    return _gh_git_wired
+
+
 def github_cli_state(fresh: bool = False) -> dict[str, Any]:
     """{'installed': bool, 'user': str | None}. `fresh` skips the short-lived cache."""
     if fresh:
@@ -55,7 +69,10 @@ def github_cli_state(fresh: bool = False) -> dict[str, Any]:
         res = _run(["gh", "auth", "status", "--hostname", "github.com"])
         text = (res.stdout + res.stderr) if res else ""
         match = re.search(r"Logged in to github\.com (?:as|account) (\S+)", text)
-        return {"installed": True, "user": match.group(1) if match and res.returncode == 0 else None}
+        user = match.group(1) if match and res.returncode == 0 else None
+        if user:
+            ensure_gh_git_credentials()
+        return {"installed": True, "user": user}
     return _cached("gh", 20, probe)
 
 

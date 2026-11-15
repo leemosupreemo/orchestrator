@@ -210,6 +210,19 @@ class SetupChecklistTests(unittest.TestCase):
             (root / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
             self.assertTrue(_by_id(_checklist(root))["build_test_commands"]["done"])
 
+    def test_ensure_gh_git_credentials_runs_setup_git_once(self):
+        from orchestrator import setup_checklist
+        with patch.object(setup_checklist, "_gh_git_wired", False), \
+             patch("orchestrator.setup_checklist.shutil.which", return_value="/usr/local/bin/gh"), \
+             patch("orchestrator.setup_checklist._run") as mock_run:
+            mock_run.return_value = unittest.mock.MagicMock(returncode=0)
+            self.assertTrue(setup_checklist.ensure_gh_git_credentials())
+            self.assertTrue(setup_checklist.ensure_gh_git_credentials())
+            mock_run.assert_called_once_with(
+                ["gh", "auth", "setup-git", "--hostname", "github.com"],
+                timeout=5,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

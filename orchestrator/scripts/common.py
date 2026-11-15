@@ -1142,6 +1142,9 @@ def _print_completed_process(result: subprocess.CompletedProcess) -> None:
 
 def run(cmd: list[str], cwd: Path | None = None, check: bool = True, capture: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     full_env = os.environ.copy()
+    if cmd and Path(cmd[0]).name == "git":
+        full_env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        full_env.setdefault("GCM_INTERACTIVE", "never")
     if env: full_env.update(env)
     res = subprocess.run(cmd, cwd=str(cwd or ROOT), capture_output=capture, text=True, check=False, env=full_env)
     if capture: _print_completed_process(res)
