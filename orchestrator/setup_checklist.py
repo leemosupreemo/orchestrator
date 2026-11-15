@@ -123,6 +123,45 @@ def ready_llm_providers(settings: dict[str, Any]) -> list[str]:
     return found
 
 
+def has_runnable_machine_model(providers: list[str], models: list[str]) -> bool:
+    """True when at least one model switched on in `machines.json` can run with `providers`."""
+    if not providers or not models:
+        return False
+    tags: set[str] = set()
+    for p in providers:
+        low = str(p).lower()
+        if "claude" in low or "anthropic" in low:
+            tags.update({"claude", "anthropic"})
+        elif "codex" in low or "openai" in low:
+            tags.update({"codex", "openai"})
+        elif "gemini" in low or "agy" in low:
+            tags.update({"gemini", "agy"})
+        elif "opencode" in low:
+            tags.add("opencode")
+        elif "ollama" in low:
+            tags.update({"ollama", "deepseek", "qwen"})
+        elif "pool" in low:
+            tags.add("pool")
+        else:
+            tags.add(low.split()[0])
+    try:
+        from orchestrator.scripts.model_registry import get_model
+    except Exception:
+        get_model = None
+    for have in models:
+        h_low = str(have).lower()
+        if any(h_low == t or h_low.startswith(t) for t in tags):
+            return True
+        if get_model:
+            m = get_model(have)
+            if m and (
+                m.family.lower() in tags
+                or any(c.lower() in tags for c in (m.required_clis or ()))
+            ):
+                return True
+    return False
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -292,12 +331,18 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
             hint=None if git_auth_ok else "gh auth setup-git",
             group="GitHub" if github else "Git",
         ))
+    llm_overlap = has_runnable_machine_model(providers, models)
+    llm_ok = bool(providers) and bool(models) and llm_overlap
     items += [
-        _item("llm", "An AI model is ready", True, bool(providers) and bool(models),
+        _item("llm", "An AI model is ready", True, llm_ok,
               "No AI is set up yet. Set up a free one in one click, or connect your own." if not providers
-              else "No model is assigned to a machine" if not models else "Ready to run jobs",
+              else "No model is assigned to a machine" if not models
+              else "Ready AI tools aren't switched on for your enabled computers. Enable matching models under Computers." if not llm_overlap
+              else "Ready to run jobs",
               # No AI at all: set up the free one right here (ai_setup.py), no terminal and no account
-              action={"type": "free_ai", "label": "Set up free AI"} if not providers else {"type": "route", "to": "#/config/models"},
+              action={"type": "free_ai", "label": "Set up free AI"} if not providers
+              else page("#/config/fleet") if not llm_overlap
+              else {"type": "route", "to": "#/config/models"},
               group="AI"),
         _item("machines", "A machine to run jobs on", True, bool(enabled_machines),
               (f"{len(enabled_machines)} enabled, {ssh_machines} remote over SSH" if ssh_machines else f"{len(enabled_machines)} enabled. Add other Macs to run jobs side by side.")

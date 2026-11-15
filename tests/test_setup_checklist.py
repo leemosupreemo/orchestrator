@@ -250,6 +250,20 @@ class SetupChecklistTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("non-interactively", detail)
 
+    def test_llm_item_fails_when_ready_provider_not_enabled_on_machines(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_project(root)
+            # Machine has only ['codex'] enabled, while ready provider is ['opencode']
+            (root / ".orchestrator" / "config" / "machines.json").write_text(json.dumps({
+                "machines": [{"name": "local", "enabled": True, "models": ["codex"]}]
+            }))
+            result = _checklist(root, providers=["opencode"])
+            items = _by_id(result)
+            self.assertFalse(items["llm"]["done"])
+            self.assertIn("Computers", items["llm"]["detail"])
+            self.assertFalse(result["complete"])
+
 
 if __name__ == "__main__":
     unittest.main()
