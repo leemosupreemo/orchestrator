@@ -130,7 +130,6 @@ def main() -> None:
         build_cmd = command_with_destination(build_cmd, destination)
         build_ok = stream_command(build_cmd, out_dir / "build.log")
         if not build_ok:
-            print("\n❌ Build failed; skipping simulator launch.")
             sys.exit(1)
 
     app_path = Path(args.app_path)

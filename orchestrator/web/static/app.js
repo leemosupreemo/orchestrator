@@ -15091,7 +15091,7 @@ pages.run = async ([id]) => {
       const exitCode = exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1;
       const wasStopped = exitCode === -15 || exitCode === -9 || exitCode === 143 || exitCode === 130;
       const cleanLog = plainLog(logText);
-      const nonExitedLines = cleanLog.split(/\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[exited"));
+      const nonExitedLines = cleanLog.split(/\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[exited") && !/build failed; skipping simulator launch/i.test(l));
       const recentLines = nonExitedLines.slice(-40);
       const errorCandidates = recentLines.filter((l) => /error|failed|fatal|exception|cannot|command not found|denied|locked|timed? ?out/i.test(l) && !/cleaned up|notification/i.test(l));
       const extractedError = errorCandidates.length ? errorCandidates.slice(-3).join("\n") : recentLines.slice(-4).join("\n");

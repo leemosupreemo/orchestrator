@@ -575,8 +575,9 @@ class PtySession:
         lines = [
             l.strip() for l in text.splitlines()
             if l.strip()
-            and not re.match(r"^\[exited(?: with code \d+)?\]$", l.strip())
+            and not re.match(r"^\[exited(?: with code -?\d+)?\]$", l.strip())
             and not re.match(r"^(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b", l.strip(), re.IGNORECASE)
+            and "build failed; skipping simulator launch" not in l.lower()
         ]
         return lines[-1][:200] if lines else ""
 
@@ -592,8 +593,9 @@ class PtySession:
         lines = [
             l.strip() for l in text.splitlines()
             if l.strip()
-            and not re.match(r"^\[exited(?: with code \d+)?\]$", l.strip())
+            and not re.match(r"^\[exited(?: with code -?\d+)?\]$", l.strip())
             and not re.match(r"^(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b", l.strip(), re.IGNORECASE)
+            and "build failed; skipping simulator launch" not in l.lower()
         ]
         for line in reversed(lines):
             clean = re.sub(r"^(?:❌|⚠️|!+|Error:|error:)\s*", "", line).strip()
