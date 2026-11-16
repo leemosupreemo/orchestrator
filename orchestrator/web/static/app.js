@@ -5656,11 +5656,18 @@ pages.job = async ([id]) => {
 
   const isAutoImprove = Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator" || job.is_orchestrator_improvement || job.tag === "improve_orchestrator");
 
+  const subParts = [
+    data.parent ? `<span>Found by <a href="#/jobs/${encodeURIComponent(data.parent.id)}">${esc(data.parent.title)}</a></span>` : "",
+    ...(data.context?.ticket || []).map((t) => t.url
+      ? `<a class="ticket-chip" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(`${t.source}: ${t.title}`)}">${esc(t.ref || t.title)} ↗</a>`
+      : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`),
+    isAutoImprove ? `<span class="prize-pill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Orchestrator Improvement</span>` : "",
+    s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="accent">✓ Submitted for inclusion</span>` : "",
+  ].filter(Boolean);
+
   return {
     title: s.title,
-    sub: `<span class="status-line"><span>${esc(jobKind(s))}</span>${s.issue_number ? `<span class="sep">·</span><span>#${esc(s.issue_number)}</span>` : ""}${s.feature ? `<span class="sep">·</span><span>${esc(featureName || s.feature)}</span>` : ""}${data.parent ? `<span class="sep">·</span><span>Found by <a href="#/jobs/${encodeURIComponent(data.parent.id)}">${esc(data.parent.title)}</a></span>` : ""}${s.branch ? `<span class="sep">·</span><span class="mono">${esc(s.branch)}</span>` : ""}${(data.context?.ticket || []).map((t) => `<span class="sep">·</span>${t.url
-      ? `<a class="ticket-chip" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(`${t.source}: ${t.title}`)}">${esc(t.ref || t.title)} ↗</a>`
-      : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`}`).join("")}${isAutoImprove ? `<span class="sep">·</span><span class="prize-pill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg> Orchestrator Improvement</span>` : ""}${s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="sep">·</span><span class="accent">✓ Submitted for inclusion</span>` : ""}</span>`,
+    sub: subParts.length ? `<span class="status-line">${subParts.join('<span class="sep">·</span>')}</span>` : "",
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
     html: `<div class="job-layout"><div class="job-top">
       ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
