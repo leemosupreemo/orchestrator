@@ -47,8 +47,9 @@
     const code = step === "sign_in" ? [...output.slice(signInOffset).matchAll(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/g)].at(-1)?.[0] || "" : "";
     const needsCode = step === "sign_in" && !code && urls.length > 0
       && (Boolean(providers[provider]?.paste) || codePrompt.test(output.slice(signInOffset)));
+    const details = output.replace(/^@@ORCHESTRATOR_CONNECT@@.*$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
     return {step, detail, urls, code, needsCode, needsAgreement: /\[(?:Y\/n|y\/N|yes\/no)\]\s*$/i.test(tail.trim()),
-      needsContinue: /press.{0,15}enter|Use Poolside Platform|select.{0,25}(?:option|platform)/i.test(tail), output};
+      needsContinue: /press.{0,15}enter|Use Poolside Platform|select.{0,25}(?:option|platform)/i.test(tail), output, details};
   }
 
   async function open(provider, name, {api, formDialog, onClose = () => {}}) {
@@ -59,7 +60,7 @@
       <div id="connect-status" role="status" aria-live="polite"></div><div id="connect-browser" class="stack"></div>
       <div id="connect-code-row" class="stack" hidden><label class="field"><span>After approving in your browser, paste the code it shows here</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit code</button></div></div>
       <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button><button type="button" class="btn danger" id="connect-stop">Stop sign-in</button></div>
-      <details id="connect-details"><summary>Sign-in details and advanced input</summary><pre id="connect-output" class="doc" style="max-height:240px;overflow:auto;white-space:pre-wrap"></pre><label class="field"><span>If the sign-in asks for an answer or code</span><input id="connect-input" autocomplete="off"></label><button type="button" class="btn small" id="connect-send">Send answer</button></details>
+      <details id="connect-details"><summary>Sign-in details and advanced input</summary><pre id="connect-output" class="doc" style="max-height:240px;max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre><label class="field"><span>If the sign-in asks for an answer or code</span><input id="connect-input" autocomplete="off"></label><button type="button" class="btn small" id="connect-send">Send answer</button></details>
       <p class="muted">Closing this dialog keeps sign-in running. You can find it under Running now.</p>`, "Done", {cancelLabel: "Close"});
     promise.then(() => {closed = true; onClose();});
     const el = id => doc.getElementById(id);
@@ -122,7 +123,8 @@
           row.className=`ai-step ${i<reached?"is-done":i===reached?(state.step==="error"?"is-failed":"is-active"):""}`;
           row.querySelector("[data-step-detail]").textContent=i===reached?state.detail:"";
         }
-        el("connect-output").textContent=state.output;
+        const outEl = el("connect-output");
+        if (outEl) { outEl.textContent = state.details; outEl.scrollTop = outEl.scrollHeight; }
         el("connect-status").textContent=stopRequested?"Stopping sign-in…":checkingCode?"Checking the code…":state.detail;
         const links=JSON.stringify([state.code,state.urls]);
         if(links!==shownLinks){ // only when it changes: the page is redrawn twice a second and would drop a half-pasted link
