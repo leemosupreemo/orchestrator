@@ -7438,7 +7438,7 @@ function providerMcpTree(providerId, providerName, list) {
     { id: "ollama", org: "Ollama (Local models)", installed: false, cmd: `npx -y ${pkg}` }
   ];
   const count = items.filter((m) => m.installed).length;
-  return `<details class="fold model-tree mt-12" ${count > 0 ? "open" : ""}>
+  return `<details class="fold model-tree mt-12">
     <summary class="model-tree-summary">
       <strong>${esc(providerName)} MCP by LLM organization</strong>
       <span class="count">${count} / ${items.length} installed</span>

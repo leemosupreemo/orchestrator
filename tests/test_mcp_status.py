@@ -1014,6 +1014,7 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         app = APP.read_text(encoding="utf-8")
         self.assertIn("Token auth (no OAuth)", app)
         self.assertIn("mcp.mixpanel.com/mcp", app)
+        self.assertNotIn('<details class="fold model-tree mt-12" ${count > 0 ? "open" : ""}>', app)
 
     def test_analytics_success_measures_edits_in_modal_and_updates_prd(self):
         app = APP.read_text(encoding="utf-8")
