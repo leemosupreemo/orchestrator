@@ -28,10 +28,10 @@ class ToolConnectUiTests(unittest.TestCase):
 
     # What each signable tool prints when it starts its sign-in: its link, and whether it then waits for a pasted code.
     SIGN_INS={
-        'claude':('https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz','Paste code here if prompted > ',True),
+        'claude':('https://claude.com/cai/oauth/authorize?code=true&client_id=abc&state=xyz','Paste code here if prompted > ',True),
         'codex':('https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_1','Waiting for the browser to finish sign-in...',False),
-        'agy':('https://accounts.google.com/o/oauth2/v2/auth?client_id=1&scope=x','',False),
-        'pool':('https://platform.poolside.ai/login?cli=1','',False),
+        'agy':('https://accounts.google.com/o/oauth2/auth?client_id=1&scope=x','After authenticating, copy the code displayed in the browser and paste it below:',True),
+        'pool':('https://platform.poolside.ai/?referrer=pool','Enter API key\n> paste API key here',True),
     }
 
     def test_every_tool_with_a_sign_in_is_known_to_the_dialog(self):
@@ -53,9 +53,33 @@ class ToolConnectUiTests(unittest.TestCase):
         self.assertFalse(self.state('@@ORCHESTRATOR_CONNECT@@{"step":"sign_in","detail":"Signing in"}\nEnter the authorization code: ')['needsCode'])  # no link yet
 
     def test_a_device_code_is_shown_not_pasted(self):
-        result=self.state('@@ORCHESTRATOR_CONNECT@@{"step":"sign_in","detail":"Signing in"}\nGo to https://auth.openai.com/codex/device and enter ABCD-1234\n','codex')
-        self.assertEqual(result['code'],'ABCD-1234')
-        self.assertFalse(result['needsCode'])
+        for code in ('ABCD-1234', 'LZD9-WM5SU'):
+            with self.subTest(code=code):
+                result=self.state(f'@@ORCHESTRATOR_CONNECT@@{{"step":"sign_in","detail":"Signing in"}}\nGo to https://auth.openai.com/codex/device and enter {code}\n','codex')
+                self.assertEqual(result['code'],code)
+                self.assertFalse(result['needsCode'])
+
+    def test_agy_and_pool_menus_osc8_links_and_prompts_work(self):
+        # Detail banner alone must not show Continue before the CLI menu renders.
+        banner = '@@ORCHESTRATOR_CONNECT@@{"step":"sign_in","detail":"Signing in to Poolside. \\"Use Poolside Platform for free\\" is already chosen, so press Enter."}\nSigning in to Poolside. "Use Poolside Platform for free" is already chosen, so press Enter.\n'
+        self.assertFalse(self.state(banner, 'pool')['needsContinue'])
+        pool_menu = banner + 'Log in to Poolside\n> Use Poolside Platform for free (recommended)\nenter submit\n'
+        self.assertTrue(self.state(pool_menu, 'pool')['needsContinue'])
+        pool_key = pool_menu + 'Opening https://platform.poolside.ai/?referrer=pool\nEnter API key\n> paste API key here\n'
+        pool_state = self.state(pool_key, 'pool')
+        self.assertEqual(pool_state['urls'], ['https://platform.poolside.ai/?referrer=pool'])
+        self.assertTrue(pool_state['needsCode'])
+        self.assertFalse(pool_state['needsContinue'])
+
+        agy_menu = '@@ORCHESTRATOR_CONNECT@@{"step":"sign_in","detail":"Signing in"}\nSelect login method:\n> 1. Google OAuth\nenter Select\n'
+        self.assertTrue(self.state(agy_menu, 'agy')['needsContinue'])
+        full_google_url = 'https://accounts.google.com/o/oauth2/auth?client_id=1&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&state=F35hz'
+        wrapped_prefix = 'https://accounts.google.com/o/oauth2/auth?client_id=1&redirect_uri=https%3A%2F%2Fantigravity'
+        agy_auth = agy_menu + f'{wrapped_prefix}\n.google%2Foauth-callback&state=F35hz\n\x1b]8;id=abc;{full_google_url}\x07→ Click here to authenticate\x1b]8;;\x07\nAfter authenticating, copy the code displayed in the browser and paste it below:\n'
+        agy_state = self.state(agy_auth, 'agy')
+        self.assertEqual(agy_state['urls'], [full_google_url])
+        self.assertTrue(agy_state['needsCode'])
+        self.assertFalse(agy_state['needsContinue'])
 
     def test_failed_job_text_finds_the_tool_to_sign_in_to(self):
         cases={'Failed to authenticate: 401 OAuth access token has expired (claude)':'claude','codex: session expired, refresh failed':'codex',

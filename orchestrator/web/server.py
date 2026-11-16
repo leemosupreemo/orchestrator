@@ -280,8 +280,10 @@ class PtySession:
 
     def __init__(self, sid: str, action: str, title: str, argv: list[str], cwd: Path,
                  env: dict[str, str], transcript: Path | None = None, cols: int = 110, rows: int = 32,
-                 on_exit: Callable[[], None] | None = None):
+                 on_exit: Callable[[], None] | None = None, answer_queries: bool | None = None):
         self._on_exit = on_exit
+        self._answer_queries = (action == "ai_connect") if answer_queries is None else answer_queries
+        self._query_tail = b""
         self.id = sid
         self.action = action
         self.title = title
@@ -346,6 +348,8 @@ class PtySession:
                 chunk = b""
             if not chunk:
                 break
+            if self._answer_queries:
+                self._reply_terminal_queries(chunk)
             self._append(chunk)
         code = self._proc.wait()
         try:
@@ -387,6 +391,24 @@ class PtySession:
                 job_runs.record(runtime_dir(self.cwd), self.summary())
             except Exception:
                 pass
+
+    def _reply_terminal_queries(self, chunk: bytes) -> None:
+        """Answer terminal capability/cursor queries for headless TUI sign-ins (e.g. BubbleTea, agy) without a terminal emulator."""
+        buf = self._query_tail + chunk
+        queries = (
+            (b"\x1b[6n", b"\x1b[1;1R"),
+            (b"\x1b[>0c", b"\x1b[>0;0;0c"),
+            (b"\x1b[>c", b"\x1b[>0;0;0c"),
+            (b"\x1b[0c", b"\x1b[?1;2c"),
+            (b"\x1b[c", b"\x1b[?1;2c"),
+            (b"\x1b]11;?\x07", b"\x1b]11;rgb:0000/0000/0000\x07"),
+            (b"\x1b]11;?\x1b\\", b"\x1b]11;rgb:0000/0000/0000\x1b\\"),
+        )
+        for seq, reply in queries:
+            if seq in buf:
+                self.write(reply)
+                buf = buf.replace(seq, b"")
+        self._query_tail = buf[-16:]
 
     def now(self) -> str:
         """The step this run is on, for the job page while it works."""

@@ -79,7 +79,7 @@ class IsolatedHomeTests(unittest.TestCase):
 class RealConnectProcessTests(unittest.TestCase):
     def test_each_provider_runs_its_sign_in_and_refreshes_only_after_readiness(self):
         # A real executable records argv and creates the sign-in marker: skipping sign-in cannot satisfy readiness.
-        for provider, cli, args in [('claude', 'claude', ['auth', 'login']), ('codex', 'codex', ['login']),
+        for provider, cli, args in [('claude', 'claude', ['auth', 'login']), ('codex', 'codex', ['login', '--device-auth']),
                                     ('pool', 'pool', ['login']), ('agy', 'agy', [])]:
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as d:
                 folder = Path(d)

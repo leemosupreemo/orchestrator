@@ -7,8 +7,8 @@
   const providers = {
     claude: {label: "Claude", match: /claude|anthropic/, paste: true},
     codex: {label: "Codex", match: /codex|openai/},
-    agy: {label: "Antigravity", match: /antigravity|\bagy\b/},
-    pool: {label: "Pool", match: /\bpool\b|poolside/},
+    agy: {label: "Antigravity", match: /antigravity|\bagy\b/, paste: true},
+    pool: {label: "Pool", match: /\bpool\b|poolside/, paste: true},
   };
   const providerFromText = text => {
     const lower = String(text || "").toLowerCase();
@@ -16,11 +16,11 @@
     return id ? {id, label: providers[id].label} : null;
   };
   // The tool's own prompt for a code, so any tool that asks gets the paste box, not only the ones listed above.
-  const codePrompt = /paste.{0,40}code|enter.{0,30}(?:authori[sz]ation |verification )?code|code from (?:the|your) browser/i;
+  const codePrompt = /paste.{0,40}(?:code|key)|copy the code.{0,40}paste|enter.{0,30}(?:authori[sz]ation |verification )?code|enter api key|code from (?:the|your) browser/i;
   const clean = s => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "\n");
   function progressState(text, previous = {step: "check", detail: "Starting…", urls: []}, provider = "") {
     const output = clean(text);
-    let step = previous.step, detail = previous.detail, signInOffset = 0, position = 0;
+    let step = previous.step, detail = previous.detail, signInOffset = 0, rawSignInOffset = 0, position = 0;
     for (const line of output.split("\n")) {
       const lineStart = position; position += line.length + 1;
       const at = line.indexOf("@@ORCHESTRATOR_CONNECT@@");
@@ -33,23 +33,36 @@
         }
       } catch { /* an output chunk can end in the middle of a marker */ }
     }
+    const rawSignInAt = String(text || "").lastIndexOf('"step": "sign_in"');
+    const rawSignInAtCompact = String(text || "").lastIndexOf('"step":"sign_in"');
+    rawSignInOffset = Math.max(0, rawSignInAt, rawSignInAtCompact);
     const urls = [];
+    const addUrl = rawUrl => {
+      try {
+        const url = new URL(rawUrl.replace(/[),.;]+$/, ""));
+        if (url.username || url.password || !hosts.some(h => url.hostname === h || url.hostname.endsWith("." + h))) return;
+        const prefixIdx = urls.findIndex(u => url.href.startsWith(u));
+        if (prefixIdx >= 0) { urls[prefixIdx] = url.href; return; }
+        if (!urls.some(u => u === url.href || u.startsWith(url.href))) urls.push(url.href);
+      } catch { /* only complete HTTPS URLs are usable */ }
+    };
     if (step === "sign_in") {
-      for (const match of output.slice(signInOffset).matchAll(/https:\/\/[^\s<>"'`]+/g)) {
-        try {
-          const url = new URL(match[0].replace(/[),.;]+$/, ""));
-          if (!url.username && !url.password && hosts.some(h => url.hostname === h || url.hostname.endsWith("." + h)) && !urls.includes(url.href)) urls.push(url.href);
-        } catch { /* only complete HTTPS URLs are usable */ }
-      }
+      for (const match of String(text || "").slice(rawSignInOffset).matchAll(/\x1b\]8;[^;\x07\x1b]*;(https:\/\/[^\x07\x1b]+)(?:\x07|\x1b\\)/g)) addUrl(match[1]);
+      for (const match of output.slice(signInOffset).matchAll(/https:\/\/[^\s<>"'`]+/g)) addUrl(match[0]);
     }
     if (step === "sign_in" && !urls.length && previous.step === step) urls.push(...(previous.urls || []));
     const tail = output.slice(-2000);
-    const code = step === "sign_in" ? [...output.slice(signInOffset).matchAll(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/g)].at(-1)?.[0] || "" : "";
+    const signInText = output.slice(signInOffset);
+    const cliTail = signInText.replace(/^@@ORCHESTRATOR_CONNECT@@.*$/gm, "").replace(/^Signing in to .*$/gm, "").slice(-2000);
+    const codeText = signInText.replace(/https:\/\/[^\s<>"'`]+/g, "");
+    const code = step === "sign_in" ? [...codeText.matchAll(/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,5}\b/g)].at(-1)?.[0] || "" : "";
     const needsCode = step === "sign_in" && !code && urls.length > 0
-      && (Boolean(providers[provider]?.paste) || codePrompt.test(output.slice(signInOffset)));
+      && (Boolean(providers[provider]?.paste) || codePrompt.test(signInText));
     const details = output.replace(/^@@ORCHESTRATOR_CONNECT@@.*$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
     return {step, detail, urls, code, needsCode, needsAgreement: /\[(?:Y\/n|y\/N|yes\/no)\]\s*$/i.test(tail.trim()),
-      needsContinue: /press.{0,15}enter|Use Poolside Platform|select.{0,25}(?:option|platform)/i.test(tail), output, details};
+      needsContinue: step === "sign_in" && !urls.length && !needsCode
+        && /press.{0,15}enter|Log in to Poolside|Select login method|enter\s+(?:select|submit)|select.{0,25}(?:option|platform|login method)/i.test(cliTail),
+      output, details};
   }
 
   async function open(provider, name, {api, formDialog, onClose = () => {}}) {
@@ -58,7 +71,7 @@
     const promise = formDialog(`Connect ${name}`, `<p>Orchestrator prepares this computer and guides you through sign-in. Approve access in your browser when asked.</p>
       <ol class="ai-steps" id="connect-steps">${steps.map(([id,label]) => `<li class="ai-step" data-connect-step="${id}"><span class="ai-step-icon" aria-hidden="true"></span><span class="ai-step-text"><strong>${esc(label)}</strong><small class="muted" data-step-detail></small></span></li>`).join("")}</ol>
       <div id="connect-status" role="status" aria-live="polite"></div><div id="connect-browser" class="stack"></div>
-      <div id="connect-code-row" class="stack" hidden><label class="field"><span>After approving in your browser, paste the code it shows here</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit code</button></div></div>
+      <div id="connect-code-row" class="stack" hidden><label class="field"><span>After approving in your browser, paste the code or key it shows here</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code or key"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit</button></div></div>
       <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button><button type="button" class="btn danger" id="connect-stop">Stop sign-in</button></div>
       <details id="connect-details"><summary>Sign-in details and advanced input</summary><pre id="connect-output" class="doc" style="max-height:240px;max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre><label class="field"><span>If the sign-in asks for an answer or code</span><input id="connect-input" autocomplete="off"></label><button type="button" class="btn small" id="connect-send">Send answer</button></details>
       <p class="muted">Closing this dialog keeps sign-in running. You can find it under Running now.</p>`, "Done", {cancelLabel: "Close"});

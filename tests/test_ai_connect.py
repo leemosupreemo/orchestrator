@@ -54,7 +54,7 @@ class FakeComputer:
 
 class ConnectTests(unittest.TestCase):
     def test_every_sign_in_tool_has_its_command(self):
-        self.assertEqual(ai_providers.SIGN_IN_COMMANDS, {"claude": ["auth", "login"], "codex": ["login"], "pool": ["login"], "agy": []})
+        self.assertEqual(ai_providers.SIGN_IN_COMMANDS, {"claude": ["auth", "login"], "codex": ["login", "--device-auth"], "pool": ["login"], "agy": []})
         for provider_id in ai_providers.SIGN_IN_COMMANDS:
             self.assertIn(provider_id, {p["id"] for p in ai_providers.PROVIDERS})
 
@@ -73,14 +73,14 @@ class ConnectTests(unittest.TestCase):
         self.assertEqual(fake.commands[-1], ["/bin/pool", "login"])
         self.assertTrue(any("Installing Poolside" in line for line in fake.out))
         self.assertTrue(any("type y and press Enter" in line for line in fake.out))  # its installer asks to accept its terms
-        self.assertTrue(any("already chosen, so press Enter" in line for line in fake.out))  # and its sign-in asks how first
+        self.assertTrue(any("already chosen, so press Continue" in line for line in fake.out))  # and its sign-in asks how first
 
     def test_codex_uses_user_local_npm_even_when_homebrew_is_available(self):
         # Preparing npm avoids a system-wide Homebrew install.
         fake = FakeComputer(installed=set(), tools={"bash", "curl", "brew"})
         self.assertEqual(fake.connect("codex"), 0)
         self.assertEqual(fake.commands[0][-1], "npm install -g @openai/codex@latest")
-        self.assertEqual(fake.commands[-1], ["/bin/codex", "login"])
+        self.assertEqual(fake.commands[-1], ["/bin/codex", "login", "--device-auth"])
 
     def test_missing_node_is_installed_automatically(self):
         fake = FakeComputer(installed=set(), tools={"bash", "curl"})
@@ -172,7 +172,7 @@ class MainTests(unittest.TestCase):
                       for line in output.getvalue().splitlines() if line.startswith("@@ORCHESTRATOR_CONNECT@@")]
             self.assertEqual([event["step"] for event in events],
                              ["check", "prerequisites", "install", "sign_in", "ready"])
-            self.assertEqual(commands[-1], [str(local_bin / "codex"), "login"])
+            self.assertEqual(commands[-1], [str(local_bin / "codex"), "login", "--device-auth"])
 
 
 class InteractiveSignInTests(unittest.TestCase):
@@ -207,6 +207,34 @@ class WiringTests(unittest.TestCase):
         self.assertIn('if (event.target.closest("[data-free-ai]")) { setUpFreeAi(); return; }', (root / "app.js").read_text())
         self.assertIn('data-ai-connect="${escapeHtml(p.id)}"', (root / "configuration.js").read_text())
         self.assertIn('ToolConnect.open(button.dataset.aiConnect, button.dataset.aiName', (root / "app.js").read_text())
+
+
+    def test_pty_answers_terminal_queries_for_ai_connect(self):
+        from orchestrator.web import server
+        with tempfile.TemporaryDirectory() as directory:
+            script = (
+                "import sys, termios, tty; fd = sys.stdin.fileno(); old = termios.tcgetattr(fd); tty.setraw(fd)\n"
+                "try:\n"
+                "  sys.stdout.write('\\x1b[>c\\x1b]11;?\\x07\\x1b[6n'); sys.stdout.flush()\n"
+                "  buf = ''\n"
+                "  while not ('R' in buf and 'c' in buf and '\\x07' in buf): buf += sys.stdin.read(1)\n"
+                "  sys.stdout.write('GOT:' + repr(buf)); sys.stdout.flush()\n"
+                "finally:\n"
+                "  termios.tcsetattr(fd, termios.TCSADRAIN, old)\n"
+            )
+            sess = server.PtySession("q1", "ai_connect", "Test", [sys.executable, "-c", script],
+                                     Path(directory), dict(os.environ))
+            import time
+            deadline = time.time() + 5
+            while sess.running and time.time() < deadline:
+                time.sleep(0.05)
+            _, data, _ = sess.read(0, 0.1)
+            self.assertFalse(sess.running)
+            self.assertEqual(sess.exit_code, 0)
+            text = data.decode("utf-8", "replace")
+            self.assertIn("GOT:", text)
+            self.assertIn("\\x1b[>0;0;0c", text)
+            self.assertIn("\\x1b[1;1R", text)
 
 
 if __name__ == "__main__":

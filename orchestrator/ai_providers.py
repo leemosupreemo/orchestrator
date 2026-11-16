@@ -65,9 +65,13 @@ CLIS = [p["cli"] for p in PROVIDERS]
 
 # Each tool's own sign-in, run in Orchestrator's terminal by Connect (scripts/ai_connect.py): it opens the browser to approve.
 # OpenCode needs none (free models, see ai_setup.py); Ollama runs local models; Gemini CLI takes only an API key.
-SIGN_IN_COMMANDS: dict[str, list[str]] = {"claude": ["auth", "login"], "codex": ["login"], "pool": ["login"], "agy": []}
+SIGN_IN_COMMANDS: dict[str, list[str]] = {"claude": ["auth", "login"], "codex": ["login", "--device-auth"], "pool": ["login"], "agy": []}
 # What to do in a tool's sign-in, when it asks something before the browser opens.
-SIGN_IN_HINTS = {"pool": "It asks how to use Poolside: \"Use Poolside Platform for free\" is already chosen, so press Enter, then approve in your browser."}
+SIGN_IN_HINTS = {
+    "codex": "Open the sign-in link in your browser and enter the approval code shown below.",
+    "pool": "It asks how to use Poolside: \"Use Poolside Platform for free\" is already chosen, so press Continue (or Enter), then sign in in your browser and paste the API key.",
+    "agy": "It asks how to sign in: \"Google OAuth\" is already chosen, so press Continue, then open the link and paste the code.",
+}
 # What an install command needs on the computer, by its first word, and how to say it when it's missing.
 INSTALLER_NEEDS = {"curl": ["curl", "bash"], "npm": ["npm"], "brew": ["brew"]}
 MISSING_NEEDS = {"npm": "Node.js (download the LTS version from nodejs.org)", "brew": "Homebrew (brew.sh)",
