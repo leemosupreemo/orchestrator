@@ -1659,12 +1659,12 @@ def _suite_runs_path(root: Path) -> Path:
     return runtime_dir(root) / "state" / "suite-runs.json"
 
 
-def record_test_run(root: Path, suite: str | None, *, at: float, ok: bool | None = None) -> None:
-    """When a suite (or, with suite None, every test) last ran, and whether it passed: None while it runs."""
+def record_test_run(root: Path, suite: str | None, *, at: float, ok: bool | None = None, kind: str = "suites") -> None:
+    """When a suite or test plan (or, with suite None, every test) last ran, and whether it passed: None while it runs."""
     data = read_json_file(_suite_runs_path(root))
     entry = {"at": at, "ok": ok}
     if suite:
-        data.setdefault("suites", {})[suite] = entry
+        data.setdefault(kind, {})[suite] = entry
     else:
         data["all"] = entry
     write_json_file(_suite_runs_path(root), data)
@@ -1679,6 +1679,18 @@ def with_last_runs(root: Path, suites: list[dict[str, Any]]) -> list[dict[str, A
         own = (data.get("suites") or {}).get(suite.get("name"))
         latest = max((r for r in (own, every) if r), key=lambda r: r.get("at") or 0, default=None)
         out.append({**suite, "last_run": {"at": latest["at"], "ok": latest.get("ok"), "all": latest is every} if latest else None})
+    return out
+
+
+def with_plan_last_runs(root: Path, plans: list[Any]) -> list[dict[str, Any]]:
+    """The test plans, each with `last_run`: its own latest run (None if not run yet)."""
+    data = read_json_file(_suite_runs_path(root))
+    out = []
+    for plan in plans:
+        name = plan if isinstance(plan, str) else plan.get("name", "")
+        base = {"name": name} if isinstance(plan, str) else dict(plan)
+        own = (data.get("plans") or {}).get(name)
+        out.append({**base, "last_run": {"at": own["at"], "ok": own.get("ok"), "all": False} if own else None})
     return out
 
 
@@ -8643,6 +8655,7 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["tests"]:
             data = dict(self._tests(root, refresh=bool(query.get("refresh"))))
             data["suites"] = with_last_runs(root, data.get("suites") or [])  # outside the cache: these change with every run
+            data["plans"] = with_plan_last_runs(root, data.get("plans") or [])
             if data.get("commands") or data.get("groups"):
                 from orchestrator import test_commands
                 latest = test_commands.latest_results(runtime_dir(root))
@@ -8936,8 +8949,10 @@ class UIHandler(BaseHTTPRequestHandler):
         self._audit("run_started", action=key, job=job_id)
         if job_id and key in AUTO_PREVIEW_AFTER:
             self._preview_when_ready(session, root, job_id)
-        if key in ("test_suite", "test"):
-            self._record_test_run(session, root, str(params.get("name") or "") if key == "test_suite" else None)
+        if key in ("test_suite", "test_plan", "test"):
+            kind = "plans" if key == "test_plan" else "suites"
+            name = str(params.get("name") or "") if key in ("test_suite", "test_plan") else None
+            self._record_test_run(session, root, name, kind=kind)
         if key == "update_local":
             self._restart_ui_after_update(session)
         return session
@@ -8961,16 +8976,16 @@ class UIHandler(BaseHTTPRequestHandler):
 
         threading.Thread(target=watch, daemon=True, name="ui-self-restart").start()
 
-    def _record_test_run(self, session: PtySession, root: Path, suite: str | None) -> None:
-        """Note a suite run (or Run all tests) as it starts, then whether it passed once it ends: the Tests page shows both."""
+    def _record_test_run(self, session: PtySession, root: Path, suite: str | None, *, kind: str = "suites") -> None:
+        """Note a suite or plan run (or Run all tests) as it starts, then whether it passed once it ends: the Tests page shows both."""
         started = time.time()
-        record_test_run(root, suite, at=started)
+        record_test_run(root, suite, at=started, kind=kind)
 
         def watch() -> None:
             while session.running:
                 time.sleep(2)
             try:
-                record_test_run(root, suite, at=started, ok=session.exit_code == 0)
+                record_test_run(root, suite, at=started, ok=session.exit_code == 0, kind=kind)
             except OSError:
                 pass
 

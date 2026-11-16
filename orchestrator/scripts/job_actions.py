@@ -335,6 +335,32 @@ def _extra_test_commands(config: Any) -> list[dict[str, Any]]:
     return test_commands.view(config, test_commands.latest_results(config.runtime_dir))
 
 
+def _plan_test_count(plan_path: Path, suites: list[dict[str, Any]]) -> int | None:
+    """Count individual tests targeted by an .xctestplan using discovered suites."""
+    try:
+        data = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    targets = data.get("testTargets") or []
+    if not targets:
+        return None
+    suite_counts = {s["name"]: int(s.get("test_count", 0)) for s in suites if s.get("name")}
+    total_all = sum(suite_counts.values())
+    total = 0
+    for target in targets:
+        selected = target.get("selectedTests") or []
+        skipped = target.get("skippedTests") or []
+        if selected:
+            for item in selected:
+                total += 1 if "/" in str(item) else suite_counts.get(str(item), 1)
+        elif skipped:
+            sub = sum(1 if "/" in str(item) else suite_counts.get(str(item), 0) for item in skipped)
+            total += max(0, total_all - sub)
+        else:
+            total += total_all
+    return total
+
+
 def test_inventory() -> dict[str, Any]:
     from dev_console import ROOT, PROJECT_CONFIG, discover_test_suites, get_coverage_data
     from orchestrator.coverage import count_source_lines
@@ -373,7 +399,7 @@ def test_inventory() -> dict[str, Any]:
                    for s in suites],
         "groups": groups,
         "platforms": platform_data,
-        "plans": [p.stem for p in plans],
+        "plans": [{"name": p.stem, "tests": _plan_test_count(p, suites)} for p in plans],
         "coverage": cov,
         "frameworks": frameworks_inventory(),
         "commands": _extra_test_commands(PROJECT_CONFIG),
@@ -519,7 +545,8 @@ def main(argv: list[str] | None = None) -> int:
             for s in inventory["suites"]:
                 print(f"{s['name']:40} {s['tests']:4} tests  {s['path']}")
             for p in inventory["plans"]:
-                print(f"plan: {p}")
+                name = p if isinstance(p, str) else p.get("name", "")
+                print(f"plan: {name}")
         return 0
     if args.action == "measure-coverage":
         return measure_coverage()

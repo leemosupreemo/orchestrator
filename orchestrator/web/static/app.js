@@ -10069,7 +10069,8 @@ function measuredLine(p, measuredAt) {
     return `<div class="row gap-8 align-center wrap"><strong class="plat-pct ${m.percent >= 70 ? "ok" : m.percent >= 30 ? "warn" : "bad"}">${m.percent}%</strong>
       <span class="muted">of lines run when the tests run <span class="t-secondary">(measured: ${m.covered.toLocaleString()} of ${m.lines.toLocaleString()} lines in the ${plural(m.files, "file")} the tests load, out of ${p.files} in this platform${measuredAt ? `, ${esc(ago(measuredAt))}` : ""})</span></span></div>`;
   }
-  return `<p class="muted t-secondary m-0">Line coverage: ${measuredAt ? "none of this platform's files were loaded by the tests that could be measured (.NET and Python tests are measured; other languages aren't yet)." : "not measured yet. Choose Calculate in the Coverage card above."}</p>`;
+  if (!measuredAt) return ""; // not measured yet: the Coverage card above already offers Calculate
+  return `<p class="muted t-secondary m-0">Line coverage: none of this platform's files were loaded by the tests that could be measured (.NET and Python tests are measured; other languages aren't yet).</p>`;
 }
 
 function gapList(p) {
@@ -10384,8 +10385,13 @@ pages.tests = async (_, query) => {
         <div class="card-b stack">${measured ? `<div class="row"><span class="big-number">${esc(effectiveCov.overall_coverage_pct)}%</span>
           <span class="muted">${effectiveCov.total_lines ? `of ${effectiveCov.total_lines.toLocaleString()} ` : ""}${esc(effectiveCov.metric || "lines")} covered${effectiveCov.tool ? `, measured with ${esc(effectiveCov.tool)}` : ""} · ${esc(effectiveCov.total_tests)} tests in ${esc(effectiveCov.total_suites)} suites</span></div>`
           : `<p class="muted">Not measured yet. ${matchMedia("(pointer: coarse)").matches ? "Tap" : "Click"} Calculate to populate.</p>`}</div></section>
-      ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => `
-        <div class="item"><div class="main-col"><div class="title">${esc(p)}</div></div><div class="side"><button class="btn small" ${act("test_plan", { name: p })}>Run</button></div></div>`).join("")}</div></section>` : ""}
+      ${data.plans.length ? `<section class="card"><div class="card-h"><h2>Test plans</h2></div><div class="list">${data.plans.map((p) => {
+        const name = typeof p === "string" ? p : p.name;
+        const count = typeof p === "object" && p && typeof p.tests === "number" ? `<div class="meta">${plural(p.tests, "test")}</div>` : "";
+        const last = typeof p === "object" && p ? `<div class="meta suite-last-run">${suiteLastRun(p.last_run)}</div>` : "";
+        return `<div class="item"><div class="main-col"><div class="title">${esc(name)}</div>${count}${last}</div>
+          <div class="side"><button type="button" class="btn small ghost" ${act("test_plan", { name })} aria-label="Run ${esc(name)}" title="Run ${esc(name)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg></button></div></div>`;
+      }).join("")}</div></section>` : ""}
       ${platformCoverageHtml(data)}
       ${testSetupHtml(testSetup)}
       ${extraCommandsHtml(data.commands || [])}
