@@ -60,6 +60,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator import account
+from orchestrator import architecture
 from orchestrator import audit
 from orchestrator import connection_log
 from orchestrator import integrations
@@ -876,6 +877,8 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
         if job.get("human_clarification_question"):
             return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
         error = str(job.get("last_error") or "").strip()
+        if job.get("build_no_changes"):  # the builder changed no files (worker_run.no_change_stop): the build isn't done
+            return state("needs_you", "failed", "Nothing was built", error or "The build finished without changing any files.", "resume", "Run the build again")
         check = job.get("test_validation") or {}
         added = len(job.get("output_digests") or {})
         files = f"{added} test file{'' if added == 1 else 's'}"
@@ -1455,6 +1458,48 @@ def delivery_overview(root: Path, branch: str | None = None) -> dict[str, Any]:
     return data
 
 
+def performance_metrics(root: Path) -> dict[str, Any]:
+    """Summarize job completion rates and recent UI API latency from local project and request logs."""
+    jobs = list_jobs(root) + archived_feature_jobs(root)
+    completed = sum(1 for j in jobs if str(j.get("status") or "") in ("completed", "archived"))
+    failed = sum(1 for j in jobs if str(j.get("status") or "") in ("failed", "blocked", "debugging"))
+    finished = completed + failed
+    pass_rate = round((completed / finished) * 100) if finished else None
+    debug_counts = [len(j.get("debug_history") or []) for j in jobs if isinstance(j.get("debug_history"), list) and j.get("debug_history")]
+    avg_debug = round(sum(debug_counts) / len(debug_counts), 1) if debug_counts else 0.0
+
+    latencies: list[int] = []
+    req_log = user_state_dir() / "logs" / "requests.jsonl"
+    if req_log.is_file():
+        try:
+            for line in req_log.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("event") == "request" and str(entry.get("path") or "").startswith("/api/"):
+                    try:
+                        latencies.append(int(entry.get("ms") or 0))
+                    except (TypeError, ValueError):
+                        pass
+        except OSError:
+            pass
+    latencies.sort()
+    p50 = latencies[len(latencies) // 2] if latencies else None
+    p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else None
+    return {
+        "jobs_total": len(jobs),
+        "jobs_completed": completed,
+        "jobs_failed": failed,
+        "jobs_finished": finished,
+        "pass_rate": pass_rate,
+        "avg_debug_attempts": avg_debug,
+        "api_p50_ms": p50,
+        "api_p95_ms": p95,
+        "api_samples": len(latencies),
+    }
+
+
 def analytics_overview(root: Path) -> dict[str, Any]:
     state = analytics_state(read_settings(root))
     provider = analytics.PROVIDERS.get(state["provider"], {})
@@ -1465,6 +1510,7 @@ def analytics_overview(root: Path) -> dict[str, Any]:
     return {**state, "provider_name": provider.get("name"), "key_label": provider.get("key_label"),
             "dashboard_url": dashboard_url,
             "success_measures": success_measures,
+            "performance": performance_metrics(root),
             "features": feature_store.rollup(feature_store.load(runtime_dir(root)), []),
             "mixpanel_mcp": analytics.probe_mixpanel_mcp(),
             "provider_mcp": {p: analytics.probe_provider_mcp(p) for p in analytics.PROVIDERS}}
@@ -2273,6 +2319,14 @@ def job_stub(root: Path, job_id: Any) -> dict[str, Any] | None:
     return {"id": job_id, "title": job_summary(path, read_json_file(path))["title"]}
 
 
+def job_problem_for(job: dict[str, Any], out_dir: Path) -> dict[str, Any] | None:
+    from orchestrator import job_problem
+    try:
+        return job_problem.describe(job, out_dir)
+    except Exception:  # a nicety: never let it stop the job page opening
+        return None
+
+
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
@@ -2328,6 +2382,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)},
                                      test_case_lib.satisfied_cases(job), test_case_lib.skipped_cases(job)),
         "delivery": run_result.delivery_report(job, root),
+        "problem": job_problem_for(job, out_dir),  # what needs fixing, in words, for a job waiting on a fix
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
@@ -3002,6 +3057,126 @@ def package_review_job(server: Any, root: Path, research: Callable[[Path, str], 
         return view
 
     return work, commit
+
+
+def architecture_view(root: Path) -> dict[str, Any]:
+    """What the Architecture page shows: the approved decision, a proposal waiting for approval, and whether one is needed."""
+    rt = runtime_dir(root)
+    decision = architecture.load_decision(root)
+    proposal = architecture.load_proposal(rt)
+    prd_text = prd_doc.Prd(root, rt).read() or ""
+    if proposal:  # how big the change would be, judged from its content against what is approved now
+        proposal = {**proposal, "kind": architecture.change_kind(decision, proposal), "changes": architecture.what_changed(decision, proposal)}
+    return {"decision": decision, "proposal": proposal, "needs_decision": architecture.needs_decision(root),
+            "approved": architecture.is_approved(decision), "stale": architecture.inferred_is_stale(root, decision),
+            "codeless": architecture.is_codeless(root), "default_mode": architecture.default_mode(root),
+            "doc_path": architecture.DOC_PATH, "languages": list(architecture.LANGUAGES),
+            "categories": architecture.CATEGORIES, "styles": architecture.STYLES,
+            "prd_filled": prd_doc.is_filled_doc(prd_text), "prd_changed": architecture.prd_changed(decision, prd_text),
+            "revisit": architecture.revisit_reasons(decision, prd_text) if decision else []}
+
+
+def architecture_review_job(root: Path, research: Callable[..., tuple[str, bool]], feedback: str = "", mode: str = "") -> tuple[Callable[..., dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
+    """The two halves of an architecture proposal for BackgroundTasks.start(work, commit): a model proposes (a new project),
+    describes (an imported one, from a digest of its repository), or changes (a tweak or an overhaul of the approved decision)
+    the architecture, tied to the product requirements; the answer is saved as a proposal for the person to approve.
+    Feedback on a waiting proposal revises it in the same mode."""
+    rt = runtime_dir(root)
+    raw_prd = prd_doc.Prd(root, rt).read() or ""
+    decision = architecture.load_decision(root)
+    waiting = architecture.load_proposal(rt)
+    mode = mode or (waiting or {}).get("mode") or ("tweak" if decision else architecture.default_mode(root))
+    if mode not in architecture.MODES:
+        raise UIError("Unknown kind of architecture change.")
+    if mode in ("tweak", "overhaul") and not decision:
+        raise UIError("There's no approved architecture to change yet. Propose or describe one first.")
+    if mode in ("tweak", "overhaul") and not feedback.strip() and not waiting:
+        raise UIError("Say what should change first.")
+    if mode == "initial" and not prd_doc.is_filled_doc(raw_prd):
+        raise UIError("Describe the product first (above), so there is something to choose an architecture for.")
+    platforms, preferences = architecture.platforms_from_prd(raw_prd, [p for p in new_project.PLATFORMS if p != new_project.RECOMMEND])
+    tools = architecture.available_tools()
+    # Revising a waiting proposal builds on it; a tweak or overhaul builds on the approved decision.
+    previous = waiting if (waiting and feedback.strip()) else (decision if mode in ("tweak", "overhaul") else None)
+    repo_evidence = architecture.evidence_text(architecture.evidence(root)) if mode in ("describe", "overhaul", "tweak") and not architecture.is_codeless(root) else ""
+
+    def work(progress: TaskProgress | None = None) -> dict[str, Any]:
+        deadline = time.monotonic() + architecture.REVIEW_BUDGET_SECONDS
+
+        def ask(extra: str = "") -> tuple[dict[str, Any], bool]:
+            remaining = int(deadline - time.monotonic())
+            if remaining < 30:
+                raise UIError("The proposal ran out of time before the model gave a usable answer. Try again.", HTTPStatus.GATEWAY_TIMEOUT)
+            prompt = architecture.proposal_prompt(raw_prd, platforms, preferences, tools, new_project.PLATFORM_NEEDS, web=True, mode=mode,
+                                                  previous=previous, feedback=feedback, repo_evidence=repo_evidence) + extra
+            reply, searched = research(root, prompt, timeout=remaining, progress=progress) if progress else research(root, prompt, timeout=remaining)
+            if progress:
+                progress.update("Checking the proposal", "Making sure the chosen stack is one Orchestrator can build and test")
+            return architecture.parse_proposal(reply, mode), searched
+
+        if progress:
+            progress.update("Reading the code" if repo_evidence else "Reading your requirements",
+                            f"{', '.join(platforms) or ('Platforms to recommend' if mode == 'initial' else 'Existing project')} · {len(tools)} build tools on this Mac")
+        try:
+            try:
+                found, searched = ask()
+            except architecture.ArchitectureError:
+                if progress:
+                    progress.update("Asking again", "The first answer couldn't be read as an architecture")
+                found, searched = ask(architecture.REMINDER)
+        except architecture.ArchitectureError as exc:
+            raise UIError(f"{exc} Try again.", HTTPStatus.BAD_GATEWAY)
+        found["searched"] = searched
+        return found
+
+    def commit(found: dict[str, Any]) -> dict[str, Any]:
+        history = list((previous or {}).get("feedback_history") or [])
+        if feedback.strip():
+            history.append(feedback.strip()[:architecture.MAX_FEEDBACK_CHARS])
+        note = (waiting or {}).get("note") if waiting and feedback.strip() else ""
+        architecture.save_proposal(rt, {**found, "status": "proposed", "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                                        "feedback_history": history[-6:], "note": note or feedback.strip()[:300]})
+        return architecture_view(root)
+
+    return work, commit
+
+
+def _commit_architecture(root: Path, message: str) -> bool:
+    """Commit just docs/architecture.json and .md, so every job's worktree builds on them. Other changes are left alone."""
+    if not (root / ".git").exists():
+        return False
+    paths = [architecture.RECORD_PATH, architecture.DOC_PATH]
+    git(root, "add", "--", *paths, timeout=30)
+    git(root, "commit", "-q", "-m", message, "--", *paths, timeout=60)
+    return not git(root, "status", "--porcelain", "--", *paths)
+
+
+def approve_architecture(root: Path) -> dict[str, Any]:
+    """Approve the waiting proposal, or the working assumption as it stands when nothing is waiting, and commit the decision."""
+    rt = runtime_dir(root)
+    prd_text = prd_doc.Prd(root, rt).read() or ""
+    try:
+        proposal = architecture.load_proposal(rt)
+        if proposal:
+            architecture.approve(root, rt, proposal, prd_text=prd_text)
+        else:
+            architecture.approve_current(root, rt, prd_text=prd_text)
+    except architecture.ArchitectureError as exc:
+        raise UIError(str(exc))
+    view = architecture_view(root)
+    view["committed"] = _commit_architecture(root, "Record the approved architecture")
+    return view
+
+
+def skip_architecture(root: Path) -> dict[str, Any]:
+    """Decide later: keep the recommended option (or an inference from the code) as the working assumption, and commit it so jobs
+    stay consistent. An approved decision is never replaced; skipping a change to it just discards the proposal."""
+    rt = runtime_dir(root)
+    approved_before = architecture.is_approved(architecture.load_decision(root))
+    record = architecture.skip(root, rt, prd_text=prd_doc.Prd(root, rt).read() or "")
+    view = architecture_view(root)
+    view["committed"] = False if approved_before else _commit_architecture(root, f"Record the working architecture ({record.get('chosen') or 'not decided'})")
+    return view
 
 
 def start_repository_check(server: Any, root: Path, state: dict[str, Any]) -> str | None:
@@ -7796,6 +7971,48 @@ class UIHandler(BaseHTTPRequestHandler):
                 return {"option": key, "text": text[:4000]}
 
             self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
+        elif method == "GET" and parts == ["architecture"]:
+            self._json(architecture_view(root))
+        elif method == "GET" and parts == ["architecture", "summary"]:
+            # The short version for Home: style mix, version, and whether the requirements have moved on since approval.
+            self._json({**architecture.summary(root, prd_doc.Prd(root, runtime_dir(root)).read() or ""),
+                        "proposal_waiting": architecture.load_proposal(runtime_dir(root)) is not None})
+        elif method == "POST" and parts == ["architecture", "propose"]:
+            self._require_owner("decide the architecture")
+            # A model proposes candidate stacks for this product and picks one, in the background; feedback revises the last proposal.
+            body = self._body()
+            feedback = str(body.get("feedback") or "")[:architecture.MAX_FEEDBACK_CHARS]
+            mode = str(body.get("mode") or "")
+            if mode and mode not in architecture.MODES:
+                raise UIError("Unknown kind of architecture change.")
+            work, commit = architecture_review_job(root, lambda r, prompt, **kw: self._research_call(r, prompt, **kw), feedback, mode)
+            self._json({"task": self.server.tasks.start(work, commit, progress=True)}, HTTPStatus.ACCEPTED)
+        elif method == "POST" and parts == ["architecture", "edit"]:
+            self._require_owner("decide the architecture")
+            body = self._body()
+            rt = runtime_dir(root)
+            proposal = architecture.load_proposal(rt)
+            if not proposal:
+                raise UIError("There's no proposal to change. Ask for one first.", HTTPStatus.NOT_FOUND)
+            try:
+                architecture.save_proposal(rt, architecture.edit_proposal(proposal, {k: v for k, v in body.items()
+                                                                                    if k in ("chosen", "language", "framework", "build_command", "test_command", "summary")}))
+            except architecture.ArchitectureError as exc:
+                raise UIError(str(exc))
+            self._json(architecture_view(root))
+        elif method == "POST" and parts == ["architecture", "approve"]:
+            self._require_owner("decide the architecture")
+            self._body()
+            self._json(approve_architecture(root))
+        elif method == "POST" and parts == ["architecture", "skip"]:
+            self._require_owner("decide the architecture")
+            self._body()
+            self._json(skip_architecture(root))
+        elif method == "POST" and parts == ["architecture", "discard"]:
+            self._require_owner("decide the architecture")
+            self._body()
+            architecture.clear_proposal(runtime_dir(root))
+            self._json(architecture_view(root))
         elif method == "GET" and parts == ["packages"]:
             self._json(self._packages_view(root))
         elif method == "GET" and parts == ["packages", "lookup"]:

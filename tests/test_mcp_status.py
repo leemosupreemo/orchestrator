@@ -992,3 +992,12 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         app = APP.read_text(encoding="utf-8")
         self.assertIn("Details (${problem.lines.length})", app)
         self.assertIn('const nextBtnClass = signInAction ? "btn small" : "btn small primary";', app)
+
+    def test_analytics_page_includes_performance_metrics_subsection(self):
+        app = APP.read_text(encoding="utf-8")
+        srv = (APP.parents[3] / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
+        self.assertIn('id="analytics-performance"', app)
+        self.assertIn("<h2>Performance metrics</h2>", app)
+        self.assertIn("API latency (p50 / p95)", app)
+        self.assertIn("def performance_metrics(", srv)
+        self.assertIn('"performance": performance_metrics(root)', srv)

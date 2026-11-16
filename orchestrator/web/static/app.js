@@ -7665,6 +7665,8 @@ pages.measure = async (_, query) => {
   const connected = data.provider && data.key_set;
   const allKpis = features.flatMap((f) => f.kpis || []);
   const measuredKpis = allKpis.filter((k) => k.measurements?.length);
+  const perf = data.performance || {};
+  const perfLatency = perf.api_p50_ms != null ? `${perf.api_p50_ms} ms / ${perf.api_p95_ms} ms` : "—";
   const kpiRow = (f, k) => {
     const st = k.status, [label, tone] = KPI_STATE[st.state];
     const trend = st.trend === "better" ? "▲ better" : st.trend === "worse" ? "▼ worse" : st.trend === "flat" ? "▬ flat" : "";
@@ -7691,6 +7693,16 @@ pages.measure = async (_, query) => {
           <div class="stat"><div class="k">Analytics platform</div><div class="v">${data.provider ? esc(data.provider_name || data.provider) : "None connected"}</div></div>
         </div>
         <div class="card-b row gap-12 wrap align-center analytics-provider-row">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}</div>
+      </section>
+      <section class="card mb-16" id="analytics-performance">
+        <div class="card-h"><h2>Performance metrics</h2></div>
+        <div class="stats">
+          <div class="stat"><div class="k">Completion rate</div><div class="v">${perf.pass_rate != null ? `${perf.pass_rate}%` : "—"}</div></div>
+          <div class="stat"><div class="k">Finished jobs</div><div class="v">${perf.jobs_completed ?? 0} / ${perf.jobs_finished ?? 0}</div></div>
+          <div class="stat"><div class="k">API latency (p50 / p95)</div><div class="v">${esc(perfLatency)}</div></div>
+          <div class="stat"><div class="k">Avg fix attempts</div><div class="v">${perf.avg_debug_attempts ?? 0}</div></div>
+        </div>
+        <div class="card-caption muted">Computed from local job history (${perf.jobs_total ?? 0} total jobs) and ${perf.api_samples ?? 0} recent UI API requests.</div>
       </section>
       <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><a class="btn small" href="#/product?section=success">Edit in Product ↗</a></div>
         <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="muted">Optional project-wide outcomes and targets live in the Product requirements. Add them when you know what success should look like.</p>`}</div>
