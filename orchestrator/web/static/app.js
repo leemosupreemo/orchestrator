@@ -870,7 +870,8 @@ function addProjectsDialog(trackedProjects) {
 const dialogs = {
   // Sign in to an AI tool on the spot (from a failed job's card): the same modal as the AI tools page, not a new run.
   ai_connect(params) {
-    ToolConnect.open(params.provider, params.name || params.provider, {api, formDialog, onClose: () => { refreshState(); }});
+    // Closing it redraws the page under it, so a job that asked for this sign-in stops asking once it is done.
+    ToolConnect.open(params.provider, params.name || params.provider, {api, formDialog, onClose: () => { refreshState().then(() => route()).catch(() => {}); }});
   },
 
   async fix(params) {
@@ -9013,6 +9014,15 @@ pages.product = async (_, query) => {
   const open = { history: query?.get("history") || "", imp: query?.get("import") === "1", draft: query?.get("draft") === "1",
     reverse: query?.get("reverse") === "1",
     section: query?.get("section") || (start ? "epics" : "") };
+  const figmaConnected = () => connectedApps.some((a) => a.id === "figma");
+  const renderLookHint = (hint) => {
+    const text = esc(hint || "");
+    if (!text.includes("Figma items")) return text;
+    const control = figmaConnected()
+      ? `<button type="button" class="linklike" data-prd-figma>Figma items</button>`
+      : `<a href="#/connections">Figma items</a>`;
+    return text.replace("Figma items", control);
+  };
   const sectionCard = (s) => {
     const designs = s.id === "look" ? [...s.body.matchAll(/\]\((designs\/[^)\s]+)\)/g)].map((m) => m[1]).filter((d) => DESIGN_IMAGE.test(d)) : [];
     // Filled sections are blue, ones still to write are yellow (with the words too, not only the colour).
@@ -9020,7 +9030,7 @@ pages.product = async (_, query) => {
         <span class="prd-sec-state">${s.filled ? "Filled in" : "To fill in"}</span>
         <button type="button" class="btn small" data-prd-edit="${s.id}">Edit</button></div>
       <div class="card-b stack" data-prd-body="${s.id}">
-        ${s.filled ? `<div class="md" data-expandable="280">${Markdown.render(s.body)}</div>` : `<p class="field-placeholder">${esc(s.hint)}</p>`}
+        ${s.filled ? `<div class="md" data-expandable="280">${Markdown.render(s.body)}</div>` : s.id === "look" ? `<p class="field-placeholder">${renderLookHint(s.hint)}</p>` : `<p class="field-placeholder">${esc(s.hint)}</p>`}
         ${designs.length ? `<div class="prd-designs">${designs.map((d) => `<figure class="prd-design"><img alt="${esc(d.replace("designs/", ""))}" data-auth-src="product/design/${esc(d.replace("designs/", ""))}"></figure>`).join("")}</div>` : ""}
       </div>
       ${s.id === "look" ? `<div class="reference-imports"><div class="label">Import references</div><div class="import-options">
@@ -9200,13 +9210,30 @@ pages.product = async (_, query) => {
           return;
         }
 
-        box.innerHTML = `<div class="muted">${esc(hint)}</div><label class="field"><span class="sr-only">${esc(title)}</span><textarea rows="${id === "pitch" ? 5 : 8}" id="prd-text-${id}" spellcheck="true" aria-label="Edit ${esc(title)}">${esc(currentBody)}</textarea></label>
+        box.innerHTML = `<div class="muted">${id === "look" ? renderLookHint(hint) : esc(hint)}</div><label class="field"><span class="sr-only">${esc(title)}</span><textarea rows="${id === "pitch" ? 5 : 8}" id="prd-text-${id}" spellcheck="true" aria-label="Edit ${esc(title)}">${esc(currentBody)}</textarea></label>
           <div class="row gap-12"><button type="button" class="btn primary" id="prd-save-${id}">Save</button><button type="button" class="btn ghost" id="prd-cancel-${id}">Cancel</button></div>`;
+        if (id === "look") box.querySelector("[data-prd-figma]")?.addEventListener("click", openAppReferencePicker);
         $(`#prd-text-${id}`).focus();
         $(`#prd-cancel-${id}`).addEventListener("click", onCancel);
         $(`#prd-save-${id}`).addEventListener("click", async () => {
           await onSave($(`#prd-text-${id}`).value);
         });
+      };
+
+      const openAppReferencePicker = async () => {
+        if ($("#dialog")?.open) return;
+        try {
+          const picker = await linkPickerHtml({ prefer: ["figma"], label: "Choose a reference" });
+          const dlg = formDialog("Connected apps", picker.html + (picker.connected ? `<small class="hint-text">Choose search results or paste a link, then submit to add references to Look and feel.</small>` : ""), picker.connected ? "Submit" : "Close");
+          picker.wire();
+          if (picker.connected) wireReferenceSubmit();
+          $("#dialog-body a[href='#/connections']")?.addEventListener("click", () => $("#dialog").close("cancel"));
+          const v = await dlg;
+          const links = v ? JSON.parse(v.links || "[]") : [];
+          if (!links.length) return;
+          await api("product/reference", { method: "POST", body: { links } });
+          toast("References added"); await reload();
+        } catch (e) { toast(e.message, true); }
       };
 
       const wire = () => {
@@ -9330,21 +9357,8 @@ pages.product = async (_, query) => {
             if (submitBtn) submitBtn.disabled = false;
           }
         });
-        $("#prd-add-app")?.addEventListener("click", async () => {
-          if ($("#dialog")?.open) return;
-          try {
-            const picker = await linkPickerHtml({ prefer: ["figma"], label: "Choose a reference" });
-            const dlg = formDialog("Connected apps", picker.html + (picker.connected ? `<small class="hint-text">Choose search results or paste a link, then submit to add references to Look and feel.</small>` : ""), picker.connected ? "Submit" : "Close");
-            picker.wire();
-            if (picker.connected) wireReferenceSubmit();
-            $("#dialog-body a[href='#/connections']")?.addEventListener("click", () => $("#dialog").close("cancel"));
-            const v = await dlg;
-            const links = v ? JSON.parse(v.links || "[]") : [];
-            if (!links.length) return;
-            await api("product/reference", { method: "POST", body: { links } });
-            toast("References added"); await reload();
-          } catch (e) { toast(e.message, true); }
-        });
+        $("#prd-add-app")?.addEventListener("click", openAppReferencePicker);
+        view.querySelectorAll("[data-prd-figma]").forEach((btn) => btn.addEventListener("click", openAppReferencePicker));
         mountArchitecture($("#arch-section"));
         if (open.section) { view.querySelector(`#sec-${CSS.escape(open.section)}`)?.scrollIntoView({ block: "start" }); open.section = ""; }
         if (open.history) {

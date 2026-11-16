@@ -5307,6 +5307,8 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('href="#/connections"', page)
         self.assertIn('Connect more', page)
         self.assertIn('${connectedApps.length ? `<button type="button" class="btn small primary" id="prd-add-app">Choose reference</button>` : ""}', page)
+        self.assertIn('data-prd-figma>Figma items</button>', page)
+        self.assertIn('<a href="#/connections">Figma items</a>', page)
         self.assertNotIn('disabled title="Connect an app first"', page)
         self.assertIn('.brand-icon', self.css)
         picker = self.js[self.js.index("async function linkPickerHtml"):self.js.index("async function attachToJob")]
