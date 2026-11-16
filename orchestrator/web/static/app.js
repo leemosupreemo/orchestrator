@@ -12135,7 +12135,6 @@ pages.connections = async (_, query) => {
             ${jiraOptionA}
             ${genericTokenLink}
             ${hasLogin ? `<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : `Advanced: enter ${p.id === "figma" ? "a personal access token" : "a key and token"} by hand`}</summary><div class="stack">` : ""}
-            ${Object.keys(p.suggest || {}).length ? `<p class="muted">Filled in from the Sentry setup found in this project. Check it, then add a token.</p>` : ""}
             ${p.fields.map((f) => `
             <label class="field"><span>${esc(f.label)}</span>
               <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"
