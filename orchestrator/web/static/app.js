@@ -7632,7 +7632,7 @@ pages.packages = async () => {
           <p class="muted" id="pkg-detail"></p>
           <p class="muted" id="pkg-slow" hidden>This is taking longer than usual. The model may be slow or searching widely. You can keep waiting, or cancel and try again. It stops on its own after ${Math.round(PACKAGE_REVIEW_BUDGET_SECONDS / 60)} minutes.</p>
         </div>${reviewNote}
-        ${owner ? `<label class="check"><input type="checkbox" id="pkg-auto" ${auto ? "checked" : ""}><span>Review automatically when the requirements change meaningfully</span></label>` : ""}</div></section>
+        ${owner ? `<label class="check"><input type="checkbox" id="pkg-auto" ${auto ? "checked" : ""}><span>Recommend automatically when PRD changes</span></label>` : ""}</div></section>
       ${suggested.length ? `<section class="card mb-16" id="pkg-suggested"><div class="card-h"><h2>Suggested</h2><span class="count">${suggested.length}</span></div><div class="list">${suggested.map(suggestedRow).join("")}</div></section>` : ""}
       ${planned.length ? `<section class="card mb-16" id="pkg-planned"><div class="card-h"><h2>Accepted</h2><span class="count">${planned.length}</span></div><div class="list">${planned.map(plannedRow).join("")}</div></section>` : ""}
       <section class="card mb-16" id="pkg-installed"><div class="card-h"><h2>In this project</h2><span class="count">${installed.length}</span>
@@ -7648,7 +7648,7 @@ pages.packages = async () => {
         const ok = await formDialog(`Update ${item.name}?`, `<p>Use this project's package manager to update <strong>${esc(item.name)}</strong> within its declared version constraints, then run the configured checks.</p><p class="muted">No AI is called for the update. If the update or checks fail, you can ask AI to repair it.</p>`, "Update package");
         if (ok) runAction("package_update", {ecosystem: item.ecosystem, name: item.name, manifest: item.manifest, title: `Update ${item.name}`}, {skipConfirm: true});
       }));
-      $("#pkg-auto")?.addEventListener("change", (e) => call({ op: "auto", enabled: e.target.checked }, e.target.checked ? "Packages will be reviewed when the requirements change." : "Automatic reviews are off."));
+      $("#pkg-auto")?.addEventListener("change", (e) => call({ op: "auto", enabled: e.target.checked }, e.target.checked ? "Packages will be recommended when your PRD changes." : "Automatic recommendations are off."));
       if (running) { // an automatic review is going: check back until it's done
         const timer = setInterval(() => { if (current.page === "packages") route(); else clearInterval(timer); }, 8000);
         cleanup.push(() => clearInterval(timer));
