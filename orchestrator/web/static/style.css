@@ -4891,9 +4891,16 @@ body[data-page="checkup"] .item :is(.title, .meta) { white-space: normal; overfl
 .package-row .package-meta { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .package-row .title { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .package-row .side { flex-wrap: wrap; justify-content: flex-end; }
+.package-installed-row { align-items: flex-start; }
+.package-installed-row .more-icon-btn { min-width: var(--control-sm); padding-inline: var(--space-2); font-size: var(--type-section); line-height: 1; }
 input.package-find { width: 12rem; max-width: 100%; min-height: var(--control-sm); margin-left: auto; }
 .package-sources { margin: var(--space-2) 0 0; padding-left: var(--space-5); font-size: var(--type-secondary); overflow-wrap: anywhere; }
-@media (max-width: 760px) { .package-row .side { justify-content: flex-start; flex: 1 1 100%; } }
+@media (max-width: 760px) {
+  .package-row .side { justify-content: flex-start; flex: 1 1 100%; }
+  .package-installed-row:has(.side .btn) { flex-wrap: nowrap; }
+  .package-installed-row:has(.side .btn) .main-col { flex-basis: auto; }
+  .package-installed-row:has(.side .btn) .side { width: auto; flex: 0 0 auto; justify-content: flex-end; }
+}
 
 /* Source control chooser on Git setup */
 .sc-blurb { margin: 0; line-height: 1.5; }

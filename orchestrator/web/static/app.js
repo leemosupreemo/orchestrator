@@ -441,7 +441,7 @@ function renderLanguagesBar(languages, { className = "", maxLabels = 3 } = {}) {
 // A <details> dropdown: `items` are [label, attrs, hint?] or "---" or ["header", title].
 // items: [label, attributes, description?, "danger"?], "---", or ["header", text]. `compact` (long menus) keeps each
 // item to one line and moves its description into the tooltip, so the whole menu fits without scrolling.
-function moreMenu(items, { label = "More", left = false, compact = false } = {}) {
+function moreMenu(items, { label = "More", left = false, compact = false, icon = false, ariaLabel = "" } = {}) {
   const body = items.map((it) => {
     if (it === "---") return "<hr>";
     if (Array.isArray(it) && it[0] === "header") {
@@ -450,7 +450,10 @@ function moreMenu(items, { label = "More", left = false, compact = false } = {})
     const tip = compact && it[2] ? ` title="${esc(it[2])}"` : "";
     return `<button class="btn${it[3] === "danger" ? " danger" : ""}" ${it[1]}${tip}>${esc(it[0])}</button>${!compact && it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
   }).join("");
-  return `<details class="more${left ? " left" : ""}"><summary class="btn">${esc(label)} ▾</summary><div class="more-menu">${body}</div></details>`;
+  const summary = icon
+    ? `<summary class="btn small ghost more-icon-btn" aria-label="${esc(ariaLabel || label)}">⋯</summary>`
+    : `<summary class="btn">${esc(label)} ▾</summary>`;
+  return `<details class="more${left ? " left" : ""}">${summary}<div class="more-menu">${body}</div></details>`;
 }
 // A design token's current value, for code that can't use CSS (the terminal).
 const cssToken = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -7608,11 +7611,11 @@ pages.packages = async () => {
   const suggestedRow = (p) => row(p, `<button type="button" class="btn small primary" data-pkg="plan" data-id="${esc(p.id)}">Accept</button><button type="button" class="btn small" data-pkg="dismiss" data-id="${esc(p.id)}">Reject</button>`);
   const plannedRow = (p) => row(p, `${addBtn(p)}${menu(p, [["Reject", `data-pkg="dismiss" data-id="${esc(p.id)}"`]])}`);
   const dismissedRow = (p) => row(p, `<button type="button" class="btn small" data-pkg="restore" data-id="${esc(p.id)}">Restore</button>${menu(p)}`);
-  const installedRow = (i, n) => `<div class="item package-row" ${n >= SHOWN ? "hidden" : ""} data-find="${esc(`${i.name} ${i.ecosystem} ${i.manifest}`.toLowerCase())}"><div class="main-col">
+  const installedRow = (i, n) => `<div class="item package-row package-installed-row" ${n >= SHOWN ? "hidden" : ""} data-find="${esc(`${i.name} ${i.ecosystem} ${i.manifest}`.toLowerCase())}"><div class="main-col">
       <div class="title">${esc(i.name)} ${eco(i)}${i.version ? ` <span class="muted mono">${esc(i.version)}</span>` : ""}${i.kind === "dev" ? ` <span class="pill idle">dev</span>` : ""}</div>
       <div class="meta mono">${esc(i.manifest)}</div>${i.update?.supported === false ? `<div class="meta">${esc(i.update.reason)}</div>` : ""}</div>
       <div class="side">${owner ? moreMenu([packageUpdateAction(i, data),
-        ["Remove…", `data-href="${packageJobHref("remove", i, data)}"`, "Starts a job that removes it and the code that uses it", "danger"]], { compact: true }) : ""}</div></div>`;
+        ["Remove…", `data-href="${packageJobHref("remove", i, data)}"`, "Starts a job that removes it and the code that uses it", "danger"]], { compact: true, icon: true, ariaLabel: `Package actions: ${i.name}` }) : ""}</div></div>`;
   const reviewNote = review?.at && review.suggested !== undefined ? `<p class="muted">Last reviewed ${esc(ago(Date.parse(review.at) / 1000))} · ${review.searched ? "searched the web" : "couldn't search the web, so versions may be out of date"} · ${plural(review.suggested || 0, "suggestion")}.${review.notes ? ` ${esc(review.notes)}` : ""}</p>
       ${review.sources?.length ? `<details class="fold"><summary class="np-section-legend">Pages it used (${review.sources.length})</summary><ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul></details>` : ""}` : "";
   return {
