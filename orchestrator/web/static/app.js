@@ -5470,11 +5470,20 @@ pages.job = async ([id]) => {
     currentPhase = "plan";
   }
 
+  // The build step only counts as done when files changed. A job whose builder changed nothing (the worker stops it with
+  // build_no_changes; older jobs went on to "verify" untouched code) stays on Build, marked as failed.
+  const codeJob = job.type !== "bug-investigate" && job.output_scope !== "tests-only" && !["design", "feature-design", "coverage", "test-audit"].includes(job.type);
+  const filesChanged = new Set([...(job.ai_modified_files || []), ...(job.ai_untracked_files || [])]).size || allFiles.length;
+  const nothingBuilt = codeJob && status !== "completed" && status !== "archived" && !filesChanged
+    && !activeRun && (Boolean(job.build_no_changes) || ["verify", "review"].includes(currentPhase));
+  if (nothingBuilt) currentPhase = "build";
+
   const phaseOrder = ["plan", "build", "verify", "document", "review"];
   const currentPhaseIndex = phaseOrder.indexOf(currentPhase);
   const isJobComplete = status === "completed" || status === "archived";
 
   const getStepState = (idx) => {
+    if (nothingBuilt && idx === 1) return { state: "active failed", icon: "!" };
     if (isJobComplete || idx < currentPhaseIndex) return { state: "done", icon: "✓" };
     if (idx === currentPhaseIndex) {
       const tone = s.state.tone === "failed" ? "failed" : s.state.group === "needs_you" ? "attention" : "active";
@@ -5492,13 +5501,13 @@ pages.job = async ([id]) => {
 
   const buildStep = {
     title: "Build",
-    subtitle: !tasksTotal && (isJobComplete || currentPhaseIndex > 1) ? (job.output_scope === "tests-only" ? (Object.keys(job.output_digests || {}).length ? `${plural(Object.keys(job.output_digests).length, "test file")} written` : "No test files") : "No tasks needed") : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
+    subtitle: nothingBuilt ? "No files changed" : !tasksTotal && (isJobComplete || currentPhaseIndex > 1) ? (job.output_scope === "tests-only" ? (Object.keys(job.output_digests || {}).length ? `${plural(Object.keys(job.output_digests).length, "test file")} written` : "No test files") : filesChanged ? `${plural(filesChanged, "file")} changed` : "No tasks needed") : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
     ...getStepState(1),
   };
 
   const verifyStep = {
     title: "Verify",
-    subtitle: isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : status === "debugging" || s.state.tone === "failed" ? "Tests failing" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
+    subtitle: nothingBuilt ? "Waits for the build" : isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : status === "debugging" || s.state.tone === "failed" ? "Tests failing" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
     ...getStepState(2),
   };
 
@@ -5858,13 +5867,6 @@ pages.job = async ([id]) => {
             </div>
           </div>
         </section>
-      ` : ""}
-
-      <!-- Additional Docs (Builder summary / Investigations) -->
-      ${otherDocs.length ? `
-        <div id="docs-section">
-          ${otherDocs.map((d) => `<section class="card mb-16"><div class="card-h"><h2>${esc(d.title)}</h2></div><pre class="doc" data-expandable="320">${esc(d.text)}</pre></section>`).join("")}
-        </div>
       ` : ""}
 
       <!-- Tasks, runs, logs and output: folded on phones so the page isn't one long scroll -->
