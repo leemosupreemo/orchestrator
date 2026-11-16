@@ -13002,13 +13002,10 @@ function archSectionHtml(data) {
       ? `<div class="stack"><strong>Choose how this project is built</strong>
         <span class="muted">A model reads your product requirements above, the platforms you picked and the build tools on this Mac. It suggests two or three options in plain words, each with a simple diagram, a fit score for your product, what's good and what to watch out for, and recommends one. You approve it or ask for changes.</span>
         ${data.prd_filled ? "" : `<span class="muted">Fill in the product requirements first, so the options fit what you're building.</span>`}
-        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="initial" data-why="Fill in the product requirements first." ${data.prd_filled ? "" : "disabled"}>Suggest options</button>
-          <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>
-        <small class="hint-text">Skipping keeps a working assumption from what Orchestrator can see, so jobs stay consistent. You can choose any time.</small>` : ""}</div>`
+        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="initial" data-why="Fill in the product requirements first." ${data.prd_filled ? "" : "disabled"}>Suggest options</button></div>` : ""}</div>`
       : `<div class="stack"><strong>Describe this project's architecture</strong>
         <span class="muted">AI sketches how your code is built today. Once you confirm it, every job follows it. Your code isn't changed.</span>
-        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button>
-          <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>` : ""}</div>`;
+        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button></div>` : ""}</div>`;
     html += archProgressHtml();
   }
   return html;

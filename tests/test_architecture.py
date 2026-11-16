@@ -580,7 +580,7 @@ class SkipServerTests(ServerTests):
 
 class SkipPageTests(PageTests):
     def test_every_entry_point_can_be_skipped(self):
-        self.assertEqual(self.app.count('id="arch-skip"'), 3)  # first options, describing, and a waiting proposal ("Decide later")
+        self.assertEqual(self.app.count('id="arch-skip"'), 1)  # waiting proposal ("Decide later"); the Product card doesn't need Skip for now
         self.assertIn('id="np-arch-skip"', self.app)
         self.assertIn('api("architecture/skip"', self.app)
         self.assertIn('post("architecture/skip"', self.app)
