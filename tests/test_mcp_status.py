@@ -920,8 +920,10 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         for snippet in (
             'fullText.includes("oauth access token has expired")',
             'fullText.includes("re-authenticate to continue")',
-            'act("ai_connect", { provider: oauthProvider, title: `Connect ${oauthLabel}` })',
+            'act("ai_connect", { provider: oauthProvider, name: oauthLabel })',
             'Sign in to ${oauthLabel}',
+            'ToolConnect.providerFromText(fullText)',  # one list of tools for the card and the dialog
+            'ai_connect(params) {\n    ToolConnect.open(params.provider',  # the card opens the sign-in modal, not a new run
             'detail: "Your login session expired. Sign in again, then rerun."',
         ):
             self.assertIn(snippet, app)
@@ -968,3 +970,12 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn("Updating Orchestrator automatically…", block)
         self.assertIn("Updating Orchestrator in the background…", block)
         self.assertIn("once active jobs finish", block)
+
+    def test_timeline_animates_new_steps_and_line_extension(self):
+        app = APP.read_text(encoding="utf-8")
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        self.assertIn("seenSteps", app)
+        self.assertIn("is-entering", app)
+        self.assertIn("is-extending", app)
+        self.assertIn("@keyframes run-line-extend", css)
+        self.assertIn("@keyframes run-step-pop", css)

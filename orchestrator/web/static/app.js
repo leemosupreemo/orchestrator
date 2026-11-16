@@ -13662,7 +13662,8 @@ function runStatus(r, vc = null) {
   const caveat = done && r.action !== "update_local" ? p.notice || "" : ""; // a run that finished but only partly did its job
   const partial = Boolean(done && r.result?.partial); // the work is saved but the job stopped short of finishing it
   const flagged = Boolean(done && r.result?.tone && r.result.tone !== "ok"); // the process exited cleanly, but what it did needs a look
-  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : done && r.action === "update_local" ? "Restarting UI" : partial ? "Partially complete" : caveat || flagged ? "Completed with notes" : "Completed";
+  const doneNext = done && r.result?.next?.action && r.result.next.label ? r.result.next : null; // the one thing to press next (a fix attempt that ended with the tests still failing)
+  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : done && r.action === "update_local" ? "Restarting UI" : partial ? "Partially complete" : doneNext ? "Needs your next step" : caveat || flagged ? "Completed with notes" : "Completed";
   const tone = stopping || r.waiting || caveat || flagged ? "attention" : r.running || (done && r.action === "update_local") ? "working" : failed ? "failed" : "done";
   const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
   const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
@@ -13682,7 +13683,7 @@ function runStatus(r, vc = null) {
     : r.action === "test" ? "Run all tests"
     : r.title || (r.action ? r.action.replace(/_/g, " ") : "Run");
   const transientLabel = /^(Scheduling worker|Waiting for |Reading the model|Starting execution|Updating job status|Preparing git branch|(?:\[\d+\/\d+\]\s*)?Updating (?:GitHub )?issue)/i.test(p.label || ""); // where it was, not what it did
-  const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : partial ? "Paused: the work is saved, but the job isn't finished" : flagged ? "Finished, needs your attention" : (p.label && !transientLabel ? p.label : completionLabel))
+  const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : partial ? "Paused: the work is saved, but the job isn't finished" : doneNext ? "Not finished: the job needs another fix attempt" : flagged ? "Finished, needs your attention" : (p.label && !transientLabel ? p.label : completionLabel))
     : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
     : (p.label || r.title || "Starting run");
   const headline = `${stepPrefix}${headlineLabel}`;
@@ -13746,6 +13747,7 @@ function runStatus(r, vc = null) {
     : r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>` // the epic's waiting job is gone: planning replaced it
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
+    : doneNext ? `<button type="button" class="btn small primary" ${act(doneNext.action, doneNext.params || {})}>${esc(doneNext.label)}</button>`
     : "")
     : "";
   const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;
@@ -14402,10 +14404,10 @@ function runStepEvent(e) {
   return `<div class="run-step-event">${e.status === "running" ? `Asking ${esc(e.model)}` : `Asked ${esc(e.model)}`}${e.seconds != null ? ` · ${secondsText(e.seconds)}` : ""}</div>`;
 }
 
-function runStepHtml(step, open, lines) {
+function runStepHtml(step, open, lines, { entering = false, extending = false } = {}) {
   const running = step.status === "running";
   const icon = RUN_STEP_ICONS[step.kind] || "i-terminal";
-  return `<li class="run-step is-${esc(step.status)}${open ? " is-open" : ""}" data-step="${step.id}">
+  return `<li class="run-step is-${esc(step.status)}${open ? " is-open" : ""}${entering ? " is-entering" : ""}${extending ? " is-extending" : ""}" data-step="${step.id}">
     <span class="run-step-icon" aria-hidden="true">${step.status === "failed" ? `<svg class="icon"><use href="#i-alert"/></svg>` : `<svg class="icon"><use href="#${icon}"/></svg>`}</span>
     <div class="run-step-main">
       <button type="button" class="run-step-head" data-step-toggle="${step.id}" aria-expanded="${open}"${step.lines ? "" : " disabled"}>
@@ -14425,15 +14427,24 @@ function wireRunTimeline(id, { saved = false } = {}) {
   if (!box) return;
   const open = new Set();
   const outputs = new Map();
-  let data = null, stopped = false, timer = null, autoOpened = false;
+  const seenSteps = new Set();
+  let data = null, stopped = false, timer = null, autoOpened = false, initialized = false;
   const draw = () => {
     if (!data) return;
     const steps = data.steps || [];
     const total = steps.reduce((sum, s) => sum + (s.seconds || 0), 0);
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const enteringIds = initialized ? new Set(steps.filter((s) => !seenSteps.has(s.id)).map((s) => s.id)) : new Set();
     box.innerHTML = steps.length ? `<div class="run-timeline-meta">${data.running ? `${runningMark}Running` : "Ran"}${total ? ` for ${secondsText(total)}` : ""} · ${plural(steps.length, "step")}</div>
-      <ol class="run-steps">${steps.map((s) => runStepHtml(s, open.has(s.id), outputs.get(s.id))).join("")}</ol>`
+      <ol class="run-steps">${steps.map((s, idx) => {
+        const next = steps[idx + 1];
+        const entering = enteringIds.has(s.id);
+        const extending = Boolean(next && enteringIds.has(next.id) && !entering);
+        return runStepHtml(s, open.has(s.id), outputs.get(s.id), { entering, extending });
+      }).join("")}</ol>`
       : `<div class="empty">${data.running ? "Starting…" : "This run printed nothing."}</div>`;
+    for (const s of steps) seenSteps.add(s.id);
+    initialized = true;
     if (data.running && nearBottom) box.scrollTop = box.scrollHeight;
   };
   const loadLines = async (stepId) => {
