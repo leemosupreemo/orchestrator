@@ -7934,6 +7934,31 @@ class JobDetailPrinciplesTests(unittest.TestCase):
         start = cls.source.index("pages.job = async")
         cls.job_page = cls.source[start:cls.source.index("const JOB_TYPE_INFO", start)]
 
+    def test_sign_in_action_initializes_problem_before_reading_it(self):
+        # Execute the real declarations in page order, including the no-problem case.
+        declarations = re.findall(
+            r"  const (?:problem =[^\n]+|signInAction =.*?;)",
+            self.job_page, re.S,
+        )
+        self.assertEqual(len(declarations), 2)
+        script = """
+const assert = require('assert');
+const activeRun = null;
+const s = {state: {next: {action: 'debug'}}};
+const esc = String;
+const act = () => '';
+for (const issue of [null, {sign_in: {provider: 'claude', name: 'Claude'}}]) {
+  const data = {problem: issue};
+  const action = (() => {
+""" + "\n".join(declarations) + """
+    return signInAction;
+  })();
+  assert.equal(action.includes('Sign in to Claude'), Boolean(issue));
+}
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_no_hotkey_labels_or_terminal_hints(self):
         self.assertNotIn("data-key=", self.job_page)
         self.assertNotIn("Press '", self.job_page)

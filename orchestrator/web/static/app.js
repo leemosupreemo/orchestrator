@@ -111,6 +111,7 @@ if (typeof window !== "undefined" && window.firebase?.auth) {
 // ---------------------------------------------------------------- helpers
 
 const $ = (sel, el = document) => el.querySelector(sel);
+const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const view = $("#view");
 const esc = Html.escape;  // html.js
 const attrJSON = (o) => esc(JSON.stringify(o));
@@ -8798,7 +8799,7 @@ pages["project-docs"] = async () => {
         downloadText(name, currentPreview.markdown || "");
       });
 
-      $$("[data-doc-preview]").forEach((btn) => {
+      view.querySelectorAll("[data-doc-preview]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const kind = btn.dataset.docPreview;
           const id = btn.dataset.docId || "";
