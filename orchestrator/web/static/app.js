@@ -10182,7 +10182,7 @@ function extraCommandsHtml(commands) {
       <div class="row gap-8"><button type="button" class="btn small ghost" id="commands-recheck" title="Look again at Docker, files and tools these need">Check again</button>
       ${owner ? `<button type="button" class="btn small" id="command-add">Add command</button>` : ""}</div></div>
     ${commands.length ? `<div class="list">${rows}</div>`
-      : `<div class="card-b stack"><p class="muted">Other checks to run besides the main test command, such as a server test that needs Docker, with a time limit and what each needs. Commands that run every job start after the main tests pass; the rest you run by hand.</p></div>`}</section>`;
+      : `<div class="card-b stack"><p class="muted">Optional extra checks to run after main tests or on demand.</p></div>`}</section>`;
 }
 
 async function editTestCommand(existing) {
