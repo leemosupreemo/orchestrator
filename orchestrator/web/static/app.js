@@ -871,8 +871,8 @@ function addProjectsDialog(trackedProjects) {
 
 const dialogs = {
   // Sign in to an AI tool on the spot (from a failed job's card): the same modal as the AI tools page, not a new run.
+  // Closing it redraws the page under it, so a job that asked for this sign-in stops asking once it is done.
   ai_connect(params) {
-    // Closing it redraws the page under it, so a job that asked for this sign-in stops asking once it is done.
     ToolConnect.open(params.provider, params.name || params.provider, {api, formDialog, onClose: () => { refreshState().then(() => route()).catch(() => {}); }});
   },
 
@@ -903,8 +903,10 @@ const dialogs = {
   },
   async answer(params) {
     const job = await api(`jobs/${encodeURIComponent(params.job)}`);
-    const values = await formDialog("Answer the planner", `
-      <p class="question">${esc(job.summary.question || "")}</p>
+    const question = job.summary?.question || job.job?.human_clarification_question || "";
+    const asker = String(job.job?.last_error || "").startsWith("Builder clarification needed") ? "builder" : "planner";
+    const values = await formDialog(`Answer the ${asker}`, `
+      <p class="question">${esc(question)}</p>
       <label class="field"><span>Your answer</span><textarea name="answer" required></textarea>
         <small>The job is re-planned with your answer; you'll approve the new plan before anything is built.</small></label>`, "Send answer");
     if (values?.answer.trim()) runAction("answer", { job: params.job, answer: values.answer });
@@ -1259,7 +1261,8 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   const action = el.dataset.action;
   const params = el.dataset.params ? JSON.parse(el.dataset.params) : {};
-  if (dialogs[action]) return dialogs[action](params);
+  // A dialog that fails to open (its data didn't load) says so, instead of the button seeming to do nothing.
+  if (dialogs[action]) return Promise.resolve().then(() => dialogs[action](params)).catch((err) => toast(err?.message || "That didn't open. Try again.", true));
   runAction(action, params, { button: el });
 });
 
@@ -5465,6 +5468,96 @@ function jobRunsCard(runs, rel) {
       ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : ""}</section>`;
 }
 
+// Compact table of contents for project documentation, shown inside a job's Documentation card.
+function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex }) {
+  const product = docsIndex?.product || null;
+  const prdPath = product?.path || "docs/product/prd.md";
+  const allFiles = Array.isArray(docsIndex?.files) ? docsIndex.files : [];
+  const repoFiles = allFiles.filter((f) => f?.path && f.path !== prdPath);
+  const features = Array.isArray(docsIndex?.features) ? docsIndex.features : [];
+  const jobs = Array.isArray(docsIndex?.jobs) ? docsIndex.jobs : [];
+  const items = [];
+
+  items.push({
+    href: product ? (product.exists ? "#/docs/product" : "#/product") : "#/docs/product",
+    title: "Product requirements",
+    meta: product
+      ? `${product.exists ? `${product.written || 0}/${product.total || 0} sections written` : "Not created yet"} · ${prdPath}`
+      : `Pitch, users, features, and architecture · ${prdPath}`,
+    side: product ? (product.exists ? `${product.written || 0}/${product.total || 0}` : "Empty") : "",
+  });
+
+  if (repoFiles.length) {
+    const shown = repoFiles.slice(0, 6);
+    for (const f of shown) {
+      items.push({
+        href: `#/docs/file?path=${encodeURIComponent(f.path)}`,
+        title: f.title || f.path,
+        meta: `${f.group || "Project"} · ${f.path}`,
+      });
+    }
+    if (repoFiles.length > shown.length) {
+      items.push({
+        href: "#/project-docs",
+        title: "More repository docs",
+        meta: `${repoFiles.length - shown.length} more markdown ${repoFiles.length - shown.length === 1 ? "file" : "files"} in Project docs`,
+        side: String(repoFiles.length),
+      });
+    }
+  } else if (!docsIndex) {
+    items.push({
+      href: "#/project-docs",
+      title: "Repository docs",
+      meta: "README, architecture, and markdown guides",
+    });
+  }
+
+  if (s.feature) {
+    items.push({
+      href: `#/docs/feature/${encodeURIComponent(s.feature)}`,
+      title: featureName ? `Feature spec · ${featureName}` : "Feature spec",
+      meta: "Feature overview, scope, and linked jobs",
+    });
+  }
+
+  items.push({
+    href: `#/docs/job/${encodeURIComponent(s.id)}`,
+    title: "This job record",
+    meta: otherDocs.length ? otherDocs.map((d) => d.title || d.name).join(" · ") : "Brief, changes, and verification summary",
+  });
+
+  if (docsIndex) {
+    items.push({
+      href: "#/project-docs",
+      title: "Feature & job doc index",
+      meta: `${plural(features.length, "feature")} · ${plural(jobs.length, "job record")}`,
+    });
+  }
+
+  const changedCaption = docFilesChanged.length
+    ? `<div class="card-caption t-secondary"><strong>Updated by this job:</strong> ${docFilesChanged.map((f) => `<a class="mono" href="#/docs/file?path=${encodeURIComponent(f)}">${esc(f)}</a>`).join(", ")}</div>`
+    : "";
+
+  const rows = items.map((item) => `
+    <a class="item" href="${item.href}">
+      <div class="main-col">
+        <div class="title">${esc(item.title)}</div>
+        <div class="meta">${esc(item.meta)}</div>
+      </div>
+      ${item.side ? `<div class="side"><span class="count">${esc(item.side)}</span></div>` : ""}
+    </a>`).join("");
+
+  return `
+    <section class="card mb-16" id="document-section" tabindex="-1">
+      <div class="card-h">
+        <h2>Documentation</h2>
+        <div class="card-actions"><a class="btn small" href="#/project-docs">Open project docs</a></div>
+      </div>
+      ${changedCaption}
+      <div class="list" aria-label="Documentation table of contents">${rows}</div>
+    </section>`;
+}
+
 // The run working on the job right now, labelled as a run of this job, with its latest steps.
 function activeRunCard(r, labelled, timeline) {
   const steps = (timeline?.steps || []).slice(-5);
@@ -5524,8 +5617,9 @@ pages.job = async ([id]) => {
   };
   const otherDocs = (docs || []).filter((d) => d !== briefDoc && d.name !== "brief.md" && (d.title || "").toLowerCase() !== "brief");
 
-  let visualChecks = [];
-  try { visualChecks = ((await api("visual-checks")).checks || []).filter((c) => c.job === id); } catch {}
+  const [vcRes, docsRes] = await Promise.allSettled([api("visual-checks"), api("docs")]);
+  const visualChecks = vcRes.status === "fulfilled" ? (vcRes.value?.checks || []).filter((c) => c.job === id) : [];
+  const docsIndex = docsRes.status === "fulfilled" ? docsRes.value : null;
   const canSplinter = (kindUpper === "FEATURE" || kindUpper === "PLAN" || s.type === "feature-plan" || job.type === "feature-plan") && tasksTotal > 0 && s.status !== "decomposed";
 
   // Delta calculations
@@ -5942,11 +6036,7 @@ pages.job = async ([id]) => {
         ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View full diffstat (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
 
-      <section class="card mb-16" id="document-section" tabindex="-1">
-        <div class="card-h"><h2>Documentation</h2></div>
-        <div class="card-b stack"><p class="muted">${docFilesChanged.length ? docFilesChanged.map((f) => esc(f)).join(", ") : esc(docStep.subtitle)}</p>
-          <a class="btn small" href="#/project-docs">Open project docs</a></div>
-      </section>
+      ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex })}
       <section class="card mb-16" id="finalize-section" tabindex="-1">
         <div class="card-h"><h2>Finalize</h2></div>
         <div class="card-b stack"><p class="muted">${isJobComplete ? "Merged" : currentPhase === "review" ? "Ready for review and merge." : "Review and merge follow verification and documentation."}</p>
@@ -8628,25 +8718,32 @@ pages["project-docs"] = async () => {
   const jobs = Array.isArray(data.jobs) ? data.jobs : [];
   const formatBytes = (n) => n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n || 0} B`;
 
-  const gaps = [];
-  if (!files.some((f) => /^readme\.md$/i.test(f.path || ""))) gaps.push("Missing README.md");
-  if (!product.exists || (product.total > 0 && product.written < product.total)) {
-    gaps.push(`Product requirements ${product.written || 0}/${product.total || 0} sections written`);
-  }
-  if (!files.some((f) => (f.path || "").startsWith("docs/"))) gaps.push("No markdown files under docs/");
+  // What's missing, each with its own fix (the server decides: docs_gaps). An older server sends none: say nothing rather than guess.
+  const gaps = Array.isArray(data.gaps) ? data.gaps : [];
+  const gapsHtml = gaps.length ? `<section class="card docs-gaps"><div class="card-h"><h2>Gaps <span class="count">${gaps.length}</span></h2></div>
+      <div class="list">${gaps.map((g, i) => `<div class="item"><div class="item-main"><div class="item-title">${esc(g.text)}</div></div>
+        <div class="item-actions">${g.fix?.route ? `<a class="btn small" href="${esc(g.fix.route)}">${esc(g.fix.label)}</a>`
+          : `<button type="button" class="btn small" data-doc-gap="${i}">${esc(g.fix?.label || "Fix with AI")}</button>`}</div></div>`).join("")}</div></section>` : "";
 
-  const filesHtml = files.length
-    ? `<div class="list">${files.map((f) => `
+  // One fold per kind of document, the core ones open: 160 files in one list hides the five that matter.
+  const fileRow = (f) => `
         <div class="item">
           <div class="item-main">
             <div class="item-title"><a href="#/docs/file?path=${encodeURIComponent(f.path)}">${esc(f.title || f.path)}</a></div>
-            <div class="item-meta"><span class="mono">${esc(f.path)}</span> · ${esc(f.group || "Project")} · ${esc(formatBytes(f.size))}</div>
+            <div class="item-meta"><span class="mono">${esc(f.path)}</span> · ${esc(formatBytes(f.size))}</div>
           </div>
           <div class="item-actions">
             <button type="button" class="btn small" data-doc-preview="file" data-doc-id="${esc(f.path)}">Preview</button>
           </div>
-        </div>`).join("")}</div>`
-    : `<div class="empty">No repository markdown files found yet. Use <strong>Fill gaps with AI</strong> to generate project documentation.</div>`;
+        </div>`;
+  const categories = Array.isArray(data.categories) && data.categories.length ? data.categories : [{ id: "other", label: "Repository docs" }];
+  const known = new Set(categories.map((c) => c.id));
+  const filesIn = (id) => files.filter((f) => (known.has(f.category) ? f.category : "other") === id);
+  const filesHtml = files.length
+    ? categories.filter((c) => filesIn(c.id).length).map((c) => `<details class="fold docs-group"${c.id === "core" ? " open" : ""}>
+        <summary class="card-h"><h2>${esc(c.label)} <span class="count">${filesIn(c.id).length}</span></h2></summary>
+        <div class="list">${filesIn(c.id).map(fileRow).join("")}</div></details>`).join("")
+    : `<div class="card-b"><div class="empty">No repository markdown files found yet. Use <strong>Fill gaps with AI</strong> to generate project documentation.</div></div>`;
 
   const featuresHtml = features.length
     ? `<div class="list">${features.map((f) => `
@@ -8680,7 +8777,7 @@ pages["project-docs"] = async () => {
     sub: "All current documentation for this project, with AI gap-filling.",
     actions: `<button type="button" class="btn primary" id="proj-docs-fill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fill gaps with AI</button><button type="button" class="btn" id="proj-docs-export">Export all .md</button>`,
     html: `
-      ${gaps.length ? `<div class="notice"><strong>Documentation gaps noticed:</strong> ${esc(gaps.join(" · "))}. Use <strong>Fill gaps with AI</strong> to audit the codebase and update or create missing docs.</div>` : ""}
+      ${gapsHtml}
       <section class="card">
         <div class="card-h">
           <h2>Product requirements</h2>
@@ -8694,9 +8791,9 @@ pages["project-docs"] = async () => {
           ${product.pitch ? `<p>${esc(product.pitch)}</p>` : ""}
         </div>
       </section>
-      <section class="card">
-        <div class="card-h"><h2>Repository docs (${files.length})</h2></div>
-        <div class="card-b">${filesHtml}</div>
+      <section class="card docs-files">
+        <div class="card-h"><h2>Repository docs <span class="count">${files.length}</span></h2></div>
+        ${filesHtml}
       </section>
       <section class="card" id="proj-docs-preview-card" hidden>
         <div class="card-h">
@@ -8722,23 +8819,23 @@ pages["project-docs"] = async () => {
       const previewTitle = $("#proj-docs-preview-title");
       const previewBody = $("#proj-docs-preview-body");
 
-      $("#proj-docs-fill")?.addEventListener("click", async (e) => {
-        const btn = e.currentTarget;
-        const fileList = files.length ? files.map((f) => f.path).join(", ") : "none";
-        const fillParams = {
-          type: "infra",
-          summary: "Fill documentation gaps and update stale project docs",
-          spec: `Audit all documentation for this project and fill any gaps or update stale sections.\n\nCurrent snapshot:\n- Repository docs found: ${fileList}\n- Product requirements: ${product.written || 0}/${product.total || 0} sections written (${product.path || "docs/product/prd.md"})\n- Features tracked: ${features.length}\n\nInstructions:\n1. Inspect the codebase, entry points, configuration, APIs, CLI commands, and existing docs (README.md, docs/**/*.md).\n2. Create missing documentation (such as README.md or docs/ architecture/setup/usage guides) and update any outdated sections so they match the current implementation.\n3. Do not commit secrets or generated runtime logs, and run relevant tests/checks before finishing.`,
-        };
+      // A docs job: the whole audit (Fill gaps with AI), or one gap from the list. The product requirements and the architecture
+      // have their own pages, so a job never rewrites them.
+      const docsJob = async (btn, summary, focus) => {
+        const core = files.filter((f) => f.category === "core").map((f) => f.path).join(", ") || "none";
+        const spec = `${focus}\n\nCurrent snapshot:\n- Core docs: ${core}\n- ${files.length} repository docs in all\n- Features tracked: ${features.length}\n\nInstructions:\n1. Inspect the codebase, entry points, configuration, build and test commands, and the existing docs (README.md, docs/**/*.md).\n2. Create what is missing and update what is out of date so it matches the current implementation. Keep existing documents' structure; link new documents from README.md.\n3. Don't edit the product requirements or docs/architecture.md: they are kept on Orchestrator's Product page.\n4. Do not commit secrets or generated runtime logs, and run relevant tests/checks before finishing.`;
         btn.disabled = true;
-        try {
-          await runAction("new_job", fillParams);
-        } catch (err) {
-          toast(err.message, true);
-        } finally {
-          btn.disabled = false;
-        }
-      });
+        try { await runAction("new_job", { type: "infra", summary, spec }); }
+        catch (err) { toast(err.message, true); }
+        finally { btn.disabled = false; }
+      };
+      const jobGaps = gaps.filter((g) => !g.fix?.route);
+      $("#proj-docs-fill")?.addEventListener("click", (e) => docsJob(e.currentTarget, "Fill documentation gaps and update stale project docs",
+        `Audit all documentation for this project and fill any gaps or update stale sections.${jobGaps.length ? `\n\nGaps found:\n${jobGaps.map((g) => `- ${g.text}`).join("\n")}` : ""}`));
+      view.querySelectorAll("[data-doc-gap]").forEach((btn) => btn.addEventListener("click", () => {
+        const g = gaps[Number(btn.dataset.docGap)];
+        if (g) docsJob(btn, `Docs: ${g.text}`, `Fix this documentation gap: ${g.text}.`);
+      }));
 
       $("#proj-docs-export")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;

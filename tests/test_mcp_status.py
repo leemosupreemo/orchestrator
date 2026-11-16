@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -845,14 +846,83 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
             'api("docs/export")',
             'id="proj-docs-fill"',
             'Fill gaps with AI',
-            'runAction("new_job", fillParams)',
+            'await runAction("new_job", { type: "infra", summary, spec })',
+            'data-doc-gap="${i}"',  # each gap has its own fix
+            '<details class="fold docs-group"${c.id === "core" ? " open" : ""}>',  # grouped by kind, the core docs open
             '["Documentation", "#/project-docs"',
             'title: "Document"',
             'title: "Finalize"',
             'const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];',
             'phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")',
+            'jobDocsOutlineHtml(',
         ):
             self.assertIn(snippet, app)
+
+    @unittest.skipUnless(shutil.which("node"), "node is required")
+    def test_job_documentation_card_renders_table_of_contents_outline(self):
+        app = APP.read_text(encoding="utf-8")
+        start = app.index("function jobDocsOutlineHtml(")
+        end = app.index("\n// The run working on the job", start)
+        fn_source = app[start:end]
+        script = f"""
+const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const plural = (n, word) => `${{n}} ${{word}}${{n === 1 ? '' : 's'}}`;
+{fn_source}
+const withIndex = jobDocsOutlineHtml({{
+  s: {{ id: 'job-1', feature: 'feat-auth' }},
+  featureName: 'Auth',
+  docFilesChanged: ['README.md'],
+  otherDocs: [{{ title: 'Builder summary' }}],
+  docsIndex: {{
+    product: {{ exists: true, written: 4, total: 6, path: 'docs/product/prd.md' }},
+    files: [
+      {{ path: 'docs/product/prd.md', title: 'PRD', group: 'Product' }},
+      {{ path: 'README.md', title: 'Project overview', group: 'Project docs' }},
+      {{ path: 'docs/architecture.md', title: 'Architecture', group: 'Project docs' }},
+      {{ path: 'docs/api.md', title: 'API reference', group: 'Project docs' }},
+      {{ path: 'docs/setup.md', title: 'Setup guide', group: 'Project docs' }},
+      {{ path: 'docs/testing.md', title: 'Testing', group: 'Project docs' }},
+      {{ path: 'docs/deploy.md', title: 'Deployment', group: 'Project docs' }},
+      {{ path: 'AGENTS.md', title: 'Agent notes', group: 'Project docs' }},
+    ],
+    features: [{{ id: 'feat-auth', name: 'Auth' }}],
+    jobs: [{{ id: 'job-1' }}, {{ id: 'job-2' }}],
+  }},
+}});
+const fallback = jobDocsOutlineHtml({{
+  s: {{ id: 'job-2', feature: '' }},
+  featureName: '',
+  docFilesChanged: [],
+  otherDocs: [],
+  docsIndex: null,
+}});
+console.log(JSON.stringify({{ withIndex, fallback }}));
+"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        with_index = out["withIndex"]
+        for expected in (
+            'id="document-section"',
+            'href="#/project-docs">Open project docs</a>',
+            'Updated by this job:',
+            'href="#/docs/file?path=README.md"',
+            'href="#/docs/product"',
+            '4/6 sections written',
+            'Architecture',
+            'More repository docs',
+            '1 more markdown file in Project docs',
+            'Feature spec · Auth',
+            'href="#/docs/feature/feat-auth"',
+            'href="#/docs/job/job-1"',
+            'Builder summary',
+            '1 feature · 2 job records',
+        ):
+            self.assertIn(expected, with_index)
+        fallback = out["fallback"]
+        self.assertIn('aria-label="Documentation table of contents"', fallback)
+        self.assertIn('Product requirements', fallback)
+        self.assertIn('Repository docs', fallback)
+        self.assertIn('href="#/docs/job/job-2"', fallback)
+        self.assertNotIn('>Project docs</p>', fallback)
 
     def test_job_prompts_include_documentation_updates_and_review(self):
         prompts = APP.parents[3] / "orchestrator" / "prompts"
