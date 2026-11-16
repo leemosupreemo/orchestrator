@@ -1,5 +1,8 @@
 :root {
   --bg: #f6f7f9;
+  --bg-glow-1: rgba(255, 0, 127, 0.04);
+  --bg-glow-2: rgba(0, 180, 220, 0.04);
+  --bg-glow-3: rgba(59, 82, 208, 0.03);
   --panel: #ffffff;
   --panel-2: #f0f2f5;
   --border: #e2e5ea;
@@ -103,6 +106,9 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f1115;
+    --bg-glow-1: rgba(255, 0, 127, 0.06);
+    --bg-glow-2: rgba(0, 240, 255, 0.05);
+    --bg-glow-3: rgba(30, 16, 62, 0.35);
     --panel: #171a20;
     --panel-2: #1e222a;
     --border: #2a2f39;
@@ -148,7 +154,12 @@
 }
 html, body { margin: 0; height: 100%; }
 body {
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(at 10% 20%, var(--bg-glow-1) 0px, transparent 55%),
+    radial-gradient(at 90% 80%, var(--bg-glow-2) 0px, transparent 55%),
+    radial-gradient(at 50% 50%, var(--bg-glow-3) 0px, transparent 100%);
+  background-attachment: fixed;
   color: var(--text);
   font: var(--type-body)/var(--leading-body) -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   -webkit-text-size-adjust: 100%;
@@ -5160,3 +5171,50 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .setup-copy .row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
 .setup-copy select { flex: 1; min-width: 0; }
 .setup-copied { margin: 0 0 var(--space-3); font-size: var(--type-secondary); }
+
+/* What needs fixing, on a job waiting for a fix attempt (its page and the Run fix dialog). */
+.hero-problem, .debug-problem ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); display: grid; gap: var(--space-1); font-size: var(--type-secondary); }
+.debug-problem p { margin: var(--space-1) 0 0; }
+
+/* Architecture (Product page): options side by side, a simple diagram per option, and the weighted style mix. */
+.arch-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.arch-options.single { grid-template-columns: 1fr; }
+.arch-option { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); cursor: pointer; min-width: 0; }
+.arch-options.single .arch-option { cursor: default; }
+.arch-option.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.arch-option input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
+.arch-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.arch-option-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.arch-best-for { margin: 0; color: var(--muted); font-size: var(--type-secondary); }
+.arch-fit { display: flex; align-items: center; gap: 8px; font-size: var(--type-secondary); }
+.arch-fit-bar { flex: 1; height: 6px; border-radius: var(--r-pill); background: var(--border); overflow: hidden; }
+.arch-fit-bar > span { display: block; height: 100%; background: var(--ok); }
+.arch-proscons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: var(--type-secondary); }
+.arch-proscons ul { margin: 4px 0 0; padding-left: 18px; }
+.arch-good { color: var(--ok); }
+.arch-watch { color: var(--warn); }
+.arch-gap { color: var(--warn); }
+.arch-diagram { margin: 0; overflow-x: auto; }
+.arch-diagram svg { width: 100%; height: auto; display: block; }
+.arch-diagram figcaption { font-size: var(--type-tag); margin-top: 2px; }
+.arch-node rect { fill: var(--panel); stroke: var(--muted); stroke-width: 1.2; }
+.arch-node text { fill: var(--text); font-size: var(--type-tag); }
+.arch-node-user rect { fill: var(--accent-soft); stroke: var(--accent); }
+.arch-node-app rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+.arch-node-data rect { fill: var(--ok-soft); stroke: var(--ok); }
+.arch-node-external rect { fill: var(--warn-soft); stroke: var(--warn); stroke-dasharray: 4 3; }
+.arch-edge { stroke: var(--muted); stroke-width: 1.2; }
+.arch-arrowhead { fill: var(--muted); }
+.arch-edge-label { fill: var(--muted); font-size: var(--type-tag); }
+.arch-profile { display: flex; flex-direction: column; gap: 8px; }
+.arch-profile-label { font-size: var(--type-secondary); }
+.arch-bar { display: flex; height: 8px; border-radius: var(--r-pill); overflow: hidden; background: var(--border); margin: 4px 0; }
+.arch-seg { display: block; height: 100%; }
+.arch-seg-0 { background: var(--accent); }
+.arch-seg-1 { background: var(--ok); }
+.arch-seg-2 { background: var(--warn); }
+.arch-seg-3 { background: var(--muted); }
+.arch-profile-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--type-secondary); color: var(--muted); }
+.arch-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.arch-change { border-top: 1px solid var(--border); padding-top: 12px; }
+@media (max-width: 560px) { .arch-proscons { grid-template-columns: 1fr; } }
