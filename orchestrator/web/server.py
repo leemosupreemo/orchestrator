@@ -996,7 +996,11 @@ def write_json_file(path: Path, data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
+def _feature_names(root: Path) -> dict[str, str]:
+    return {f["id"]: f.get("name") or f["id"] for f in feature_store.load(runtime_dir(root))}
+
+
+def job_summary(path: Path, job: dict[str, Any], feature_names: dict[str, str] | None = None) -> dict[str, Any]:
     tasks = job_task_list(job)
     completed = job.get("completed_tasks") or job.get("completed_task_indices") or []
     kind = job.get("type") or job.get("job_type")
@@ -1018,6 +1022,7 @@ def job_summary(path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "approach": approach,
         "state": job_state(job),
         "feature": job.get("feature") or None,
+        "feature_name": (feature_names or {}).get(job.get("feature") or "") if job.get("feature") else None,
         "epic": job.get("epic") or None,
         "jira": next(({"key": l.get("ref"), "url": l.get("url") or ""} for l in job.get("external_links") or []
                       if isinstance(l, dict) and l.get("provider") == "jira" and l.get("ref")), None),
@@ -1657,13 +1662,14 @@ def list_jobs(root: Path) -> list[dict[str, Any]]:
     directory = jobs_dir(root)
     if not directory.exists():
         return []
+    names = _feature_names(root)
     jobs = []
     for path in directory.glob("*.json"):
         if re.search(r"_task_\d+$", path.stem):  # scratch copy the worker makes per task; not a job
             continue
         job = read_json_file(path)
         if job:
-            jobs.append(job_summary(path, job))
+            jobs.append(job_summary(path, job, names))
     return sorted(jobs, key=lambda j: j["updated"], reverse=True)
 
 
@@ -2427,7 +2433,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         next_task = (next_t.get("name") or next_t.get("title") or next_t.get("description")) if isinstance(next_t, dict) else str(next_t)
 
     return {
-        "summary": job_summary(path, job),
+        "summary": job_summary(path, job, _feature_names(root)),
         "job": job,
         "outputs": outputs,
         "logs": [resolve_linked_log(root, ref) for ref in linked_logs(job)],
@@ -8216,12 +8222,14 @@ class UIHandler(BaseHTTPRequestHandler):
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
             body = self._body()
-            planner = str(body.get("planner") or "").strip()
-            builder = str(body.get("builder") or "").strip()
-            reviewer = str(body.get("reviewer") or "").strip()
-            if planner: job["planner"] = planner
-            if builder: job["builder"] = builder
-            if reviewer: job["reviewer"] = reviewer
+            for role in ("planner", "builder", "reviewer"):
+                if role not in body:
+                    continue  # not sent: left as it is
+                choice = str(body.get(role) or "").strip()
+                if choice:
+                    job[role] = choice
+                else:
+                    job.pop(role, None)  # sent empty: back to the project's choice
             write_json_file(job_path, job)
             self._json({"ok": True, "planner": job.get("planner"), "builder": job.get("builder"), "reviewer": job.get("reviewer")})
         elif method == "GET" and parts == ["chat"]:

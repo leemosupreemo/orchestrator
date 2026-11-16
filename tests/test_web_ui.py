@@ -127,7 +127,8 @@ class SuiteLastRunTests(unittest.TestCase):
         for part in ("Not run yet", "passed", "failed", "running", "(all tests)", "ago("):
             self.assertIn(part, helper, part)
         server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
-        self.assertIn('if key in ("test_suite", "test"):', server)  # recorded when one starts, and again when it ends
+        self.assertIn('if key in ("test_suite", "test_plan", "test"):', server)  # recorded when one starts, and again when it ends
+        self.assertIn("self._record_test_run(session, root, name, kind=kind)", server)
 
 
 class FreeAiSetupTests(ServerTestCase):
@@ -1493,7 +1494,7 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("View offline snapshot", mac_html)
         self.assertEqual(mac_html.count('data-account-action="open"'), 3)
         self.assertIn("Snapshot cached", mac_html)
-        self.assertIn("if (!machine.reachable && machine.has_snapshot)", js := (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text())
+        self.assertIn("if (!machine.reachable && machine.has_snapshot", js :=(PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text())
 
         # App.js wiring checks
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -2248,7 +2249,8 @@ process.stdout.write(JSON.stringify({
         git = git[:git.index("\npages.")]
         self.assertIn('id="git-changes"', git)
         self.assertIn('query?.get("show") === "changes"', git)
-        self.assertIn("tools.open = true", git)  # the changes live inside the collapsed Advanced Git tools
+        self.assertIn("${branchCard}${changesCard}", git)  # the changes card is on the page itself, not inside a collapsed section
+        self.assertIn("if (files.length === 1) files[0].open = true;", git)  # a single changed file opens on its own
         self.assertIn('$("#git-changes")?.scrollIntoView', git)
 
     def test_home_lists_every_job_however_long_it_has_waited(self):
@@ -4823,7 +4825,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertNotIn("#fff", css[:css.index("prefers-reduced-motion")])  # ink comes from tokens
 
     def test_validation_prompts_are_warnings_not_errors(self):
-        for text in ("Wait for the upload to finish.", "Create a feature first.", "Pick at least one platform"):
+        for text in ("Wait for the upload to finish.", "Pick at least one platform"):
             line = next(l for l in self.js.splitlines() if text in l and "toast(" in l)
             self.assertIn('"warning")', line, text)
 
@@ -6184,7 +6186,7 @@ class PackagesApiTests(ServerTestCase):
             self.assertTrue(kind in jobs, kind)
         self.assertTrue('href="#/packages" data-route="packages"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())
         self.assertTrue('["Packages", "#/packages"' in app)  # the command palette
-        for needle in ("Review automatically when the requirements change meaningfully", "change in a big way", 'id="pkg-auto"', "Reviewing your requirements for packages…", "p.link ?"):
+        for needle in ("Recommend automatically when PRD changes", 'id="pkg-auto"', "Reviewing your requirements for packages…", "p.link ?"):
             self.assertTrue(needle in page, needle)  # it runs on its own, says so while it works, and every line has a link
         self.assertTrue('id="packages-badge"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())  # the sidebar count
         self.assertTrue("renderPackagesBadge();" in app and "state.packages_suggested" in app)
@@ -7686,6 +7688,13 @@ class FeatureEndpointTests(ServerTestCase):
         self.assertEqual(data["unassigned"], [])
         res, jobs = self.request("GET", "/api/jobs")
         self.assertEqual(jobs["jobs"][0]["feature"], "lobby")
+        self.assertEqual(jobs["jobs"][0]["feature_name"], "Lobby")
+        _, detail = self.request("GET", f"/api/jobs/{self.JOB}")
+        self.assertEqual(detail["summary"]["feature"], "lobby")
+        self.assertEqual(detail["summary"]["feature_name"], "Lobby")
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn("featureChip(j)", app)
+        self.assertIn("featureChip(s, featureName)", app)
 
     def test_assigning_to_an_unknown_feature_fails_and_unassign_works(self):
         res, _ = self.post(f"/api/jobs/{self.JOB}/feature", {"feature": "nope"})
@@ -8080,24 +8089,42 @@ after();
         self.assertIn('["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"]', header_actions_fn)
         self.assertLess(header_actions_fn.index('["Archive"'), header_actions_fn.index('["Delete…"'))
         self.assertNotIn(">Delete</button>", header_actions_fn)
-        self.assertIn('items.push("---", ...ending)', header_actions_fn)  # ending the job: last and apart
+        self.assertIn('items.push(...(items.length ? ["---"] : []), ...shown)', header_actions_fn)  # each group apart; ending the job comes last
         self.assertIn("return moreMenu(items, { compact: true });", header_actions_fn)
 
-    def test_job_menu_is_grouped_one_line_each_with_one_fix_item(self):
+    def test_job_menu_is_one_plain_list_that_never_repeats_a_button_on_the_page(self):
         fn = self.source[self.source.index("function jobHeaderActions"):self.source.index('document.addEventListener("click", async (e)', self.source.index("function jobHeaderActions"))]
-        for title in ('["This job", [', '["Share", [', '["Open", [', '["Settings", [', 'items.push(["header", title]'):
-            self.assertIn(title, fn)
+        self.assertNotIn('"header"', fn)  # dividers, not headings over one or two items
         self.assertNotIn("Still broken?", fn)  # one way to ask for a fix
-        self.assertIn('["Run a fix…", act("debug", j)', fn)
+        self.assertIn('idle && !ctx.fixShown && next !== "debug"', fn)  # not when the page already offers Run a fix…
+        self.assertIn('idle && !reviewed && !ctx.planShown && ctx.canSplinter', fn)  # the plan card has its own Split
+        self.assertIn("idle && simulator && ctx.hasChanges", fn)  # only once there is something to look at
+        self.assertIn('idle && s.status !== "completed" && ["Choose models…"', fn)
+        self.assertIn('idle && s.issue_number && [`Close issue #${s.issue_number} and finish job`', fn)  # says it finishes the job; not mid-run
+        self.assertIn('["Download ZIP", `data-open="/api/jobs/', fn)
+        page = self.source[self.source.index("const recommendFixBtn"):][:400]
+        self.assertIn('act("debug", { job: s.id, feedback:', page)  # the page's fix button opens the same dialog, error filled in
+        self.assertIn("fixShown: Boolean(recommendFixBtn), hasChanges: allFiles.length > 0", self.source)
+
+    def test_choosing_models_uses_the_model_team_list_and_can_go_back_to_the_projects_choice(self):
+        dialog = self.source[self.source.index("async select_models(params)"):self.source.index("async export_context(params)")]
+        self.assertIn('api("config")', dialog)
+        self.assertIn("Project's choice (Model team)", dialog)
+        self.assertNotIn("<input", dialog)  # no free-text model names
+        server =(PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        route = server[server.index('parts[2] == "models"'):][:700]
+        self.assertIn("job.pop(role, None)", route)
+        self.assertIn("if role not in body:", route)
 
     def test_delete_job_dialog_flow_defined(self):
         start = self.source.index("async delete_job(params)")
         end = self.source.index("async splinter_job(params)", start)
         dialog_code = self.source[start:end]
-        self.assertIn("Delete Job", dialog_code)
-        self.assertIn("Revert changes", dialog_code)
-        self.assertIn("Delete and keep changes", dialog_code)
-        self.assertIn("Confirm Deletion", dialog_code)
+        self.assertIn("Delete this job?", dialog_code)
+        self.assertIn('<input type="radio" name="mode" value="keep" checked>', dialog_code)  # keeping the code is the default
+        self.assertIn("Undo its code changes too", dialog_code)
+        self.assertIn('"Delete job", { danger: true })', dialog_code)
+        self.assertEqual(dialog_code.count("formDialog("), 1)  # one dialog; its button is the confirmation
         self.assertIn("api(`jobs/${encodeURIComponent(params.job)}/delete`", dialog_code)
 
     def test_test_cases_page_is_routed_and_in_nav_and_palette(self):

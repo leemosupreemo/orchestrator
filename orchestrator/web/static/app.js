@@ -894,7 +894,7 @@ const dialogs = {
         <span>Include newest device logs<small>Pulled fresh from the last app launch on a tester's phone.</small></span></label>` :
         `<p class="hint-text">Tip: set up Device logs to include what the app logged on your phone.</p>`}
       <label class="field"><span>What did you see? <span class="muted">(optional)</span></span>
-        <textarea name="feedback" placeholder="e.g. Still shows the empty seat after 40s in the background"></textarea>
+        <textarea name="feedback" placeholder="e.g. Still shows the empty seat after 40s in the background">${esc(params.feedback || "")}</textarea>
       </label>`, "Run fix");
     if (values) runAction("debug", { job: params.job, logs: values.device_logs ? "cloud:latest" : "", feedback: values.feedback });
   },
@@ -933,19 +933,22 @@ const dialogs = {
     if (values) runAction("distribute", { notes: values.notes }, { skipConfirm: true });
   },
   async select_models(params) {
-    const jobData = await api(`jobs/${encodeURIComponent(params.job)}`);
-    const p = jobData.pipeline || {};
-    const values = await formDialog("Select LLM Models (Override)", `
-      <p class="muted mb-8">Override the model pipeline used for planning, building, and reviewing this job.</p>
-      <label class="field"><span>Planner Model</span>
-        <input type="text" name="planner" value="${esc(p.planner || '')}" placeholder="gemini-3.1-pro-preview">
-      </label>
-      <label class="field"><span>Builder Model</span>
-        <input type="text" name="builder" value="${esc(p.builder || '')}" placeholder="gpt-5.4">
-      </label>
-      <label class="field"><span>Reviewer Model</span>
-        <input type="text" name="reviewer" value="${esc(p.reviewer || '')}" placeholder="gemini-3.1-pro-preview">
-      </label>`, "Save Models");
+    // The same choices as Configuration > Model team, for this job only; "Project's choice" removes the job's own pick.
+    const [jobData, config] = await Promise.all([api(`jobs/${encodeURIComponent(params.job)}`), api("config").catch(() => ({}))]);
+    const job = jobData.job || {};
+    const available = config.models?.available || [];
+    const roles = [["planner", "Planner", "Turns the request into tasks"], ["builder", "Builder", "Writes the code and the tests"], ["reviewer", "Reviewer", "Reads the changes and looks for what could break"]];
+    const select = ([role, label, hint]) => {
+      const current = String(job[role] || "");
+      const listed = !current || available.some((m) => m.id === current);
+      return `<label class="field"><span>${label} <span class="muted">· ${hint}</span></span><select name="${role}">
+        <option value=""${current ? "" : " selected"}>Project's choice (Model team)</option>
+        ${listed ? "" : `<option value="${esc(current)}" selected>${esc(current)} (not available here)</option>`}
+        ${available.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${esc(m.label || m.name || m.id)}${m.provider ? ` (${esc(m.provider)})` : ""}</option>`).join("")}
+      </select></label>`;
+    };
+    const values = await formDialog("Models for this job", `<p class="muted mb-8">Used from the next run of this job. Other jobs keep the project's choice.</p>
+      ${roles.map(select).join("")}`, "Save");
     if (values) {
       api(`jobs/${encodeURIComponent(params.job)}/models`, {
         method: "POST",
@@ -1009,38 +1012,28 @@ const dialogs = {
   },
   discard_job(params) { return runAction("discard", { job: params.job }); },
   async delete_job(params) {
-    const values = await formDialog("Delete Job", `
-      <p class="muted">Do you want to revert changes or just delete and keep changes?</p>
+    // One dialog: what happens to the code is chosen here, and the button is the confirmation. Keeping the code is the default,
+    // so a quick click never undoes work.
+    const values = await formDialog("Delete this job?", `
+      <p class="muted">The job and its history are removed. This can't be undone.</p>
       <div class="stack gap-8">
         <label class="radio-card">
-          <input type="radio" name="mode" value="revert" checked>
+          <input type="radio" name="mode" value="keep" checked>
           <div>
-            <strong class="block">Revert changes</strong>
-            <span class="muted t-secondary">Reverts files modified by this job and deletes its branch.</span>
+            <strong class="block">Keep its code changes</strong>
+            <span class="muted t-secondary">Files and branch stay as they are.</span>
           </div>
         </label>
         <label class="radio-card">
-          <input type="radio" name="mode" value="keep">
+          <input type="radio" name="mode" value="revert">
           <div>
-            <strong class="block">Delete and keep changes</strong>
-            <span class="muted t-secondary">Deletes the job, but preserves all code changes and branches.</span>
+            <strong class="block">Undo its code changes too</strong>
+            <span class="muted t-secondary">Reverts the files this job changed and deletes its branch.</span>
           </div>
         </label>
-      </div>`, "Continue");
+      </div>`, "Delete job", { danger: true });
     if (!values) return;
-
-    await new Promise((r) => setTimeout(r, 20));
-
     const revert = values.mode === "revert";
-    const confirmBody = revert
-      ? `<p>Are you sure you want to delete this job and <strong>revert all changes</strong>?</p>
-         <p class="muted">All uncommitted code changes made for this job will be undone and its branch deleted. This action cannot be undone.</p>`
-      : `<p>Are you sure you want to delete this job and <strong>keep all changes</strong>?</p>
-         <p class="muted">The job record will be deleted, but your code changes and branch will remain intact.</p>`;
-    const confirmOkLabel = revert ? "Delete and revert" : "Delete job";
-
-    const confirmed = await formDialog("Confirm Deletion", confirmBody, confirmOkLabel, { danger: true });
-    if (!confirmed) return;
 
     try {
       await api(`jobs/${encodeURIComponent(params.job)}/delete`, {
@@ -1061,15 +1054,15 @@ const dialogs = {
     }
   },
   async export_job_bundle(params) {
-    const values = await formDialog("Export Job Bundle", `
-      <p class="muted">Select how you want to export all context, brief, git diffs, and execution logs for this job.</p>
-      <label class="field"><span>Export Destination</span>
+    // Saving straight to this browser is the menu's Download ZIP; this is for the places the computer saves to.
+    const values = await formDialog("Export job", `
+      <p class="muted">The brief, plan, changes and logs, as one ZIP file.</p>
+      <label class="field"><span>Save to</span>
         <select name="destination">
-          <option value="direct">Direct Download (.ZIP archive in browser)</option>
-          <option value="icloud">iCloud Drive (Sync across Apple devices)</option>
-          <option value="gdrive">Google Drive (Sync to Drive)</option>
-          <option value="downloads">macOS Downloads folder (~/Downloads)</option>
-          <option value="local">Project Workspace (./exports/)</option>
+          <option value="icloud">iCloud Drive</option>
+          <option value="gdrive">Google Drive</option>
+          <option value="downloads">Downloads folder on the computer</option>
+          <option value="local">The project's exports folder</option>
         </select>
       </label>`, "Export");
     if (values) {
@@ -3340,6 +3333,10 @@ function testsClass(j) {
   return jobKind(j) === "Tests" ? " job-tests" : "";
 }
 const jiraChip = (j) => (j.jira?.key ? `<span class="jira-chip" title="Linked to Jira epic ${esc(j.jira.key)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-jira"/></svg>${esc(j.jira.key)}</span>` : "");
+const featureChip = (j, label = "") => {
+  const name = label || j?.feature_name || j?.feature || "";
+  return j?.feature && name ? `<span class="feature-chip" title="Feature: ${esc(name)}">${esc(name)}</span>` : "";
+};
 
 function jobItem(j, { withAction = false } = {}) {
   const bits = [jobKind(j), j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "", ago(j.updated)].filter(Boolean);
@@ -3408,7 +3405,10 @@ function jobTableRow(j, { hidden = false } = {}) {
   return `
     <a class="job-table-row${testsClass(j)}"${hidden ? " hidden" : ""} href="${rowHref}">
       <div class="col-job">
-        <div class="job-title">${esc(j.title)} ${jiraChip(j)}</div>
+        <div class="job-title-row">
+          <div class="job-title">${esc(j.title)} ${jiraChip(j)}</div>
+          ${featureChip(j)}
+        </div>
         <div class="job-mobile-info">
           ${typeTag}
           ${jobPill(j)}
@@ -4615,53 +4615,52 @@ function archStripHtml(s) {
 }
 
 function jobHeaderActions(s, links = [], ctx = {}) {
-  // Grouped by what the person wants (change the job, share it, open something, adjust settings), only what fits the
-  // job's stage, one line each; ending the job comes last and apart. The hero's primary action is never repeated here.
+  // One plain list, split by dividers instead of headings: work on the job, share or open it, its settings, then ending it.
+  // Only what fits the job's stage, and never something the page already shows as a button (the hero's next step, the
+  // plan card's Revise and Split, the hero's Run a fix).
   const j = { job: s.id };
   const next = s.state.next?.action;
   const idle = !s.active_run;
   const reviewed = ["review-needed", "completed"].includes(s.status);
+  const simulator = state.project?.mobile_app !== false && (!state.project?.languages?.length || state.project.languages.some((l) => l.name === "Swift"));
   const groups = [
-    ["This job", [
-      idle && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
+    [
+      idle && !ctx.fixShown && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
         && ["Run a fix…", act("debug", j), "Describe what you saw, or leave it blank for another automatic attempt"],
       idle && !reviewed && s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume" && ["Resume", act("resume", j), "Continue from the next task"],
       idle && s.status === "scheduled" && next !== "execute" && ["Run now", act("execute", j)],
       idle && !ctx.planShown && ["planned", "designing", "human-needed", "debugging"].includes(s.status)
         && ["Revise plan…", act("revise", j), "Ask the AI to re-plan with what should change"],
-      idle && !reviewed && ctx.canSplinter && ["Split into jobs…", act("splinter_job", j), "Each task becomes its own job, with a GitHub sub-issue"],
-      idle && state.project?.mobile_app !== false && ["Check on simulator", act("run_visual_check", j), "Boot the simulator and capture screenshots"],
-    ]],
-    ["Share", [
+      idle && !reviewed && !ctx.planShown && ctx.canSplinter && ["Split into jobs…", act("splinter_job", j), "Each task becomes its own job, with a GitHub sub-issue"],
+      idle && simulator && ctx.hasChanges && ["Check on simulator", act("run_visual_check", j), "Boot the simulator and capture screenshots"],
+    ],
+    [
       idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)
         && (state.project?.web_app
           ? ["Publish preview link…", act("web_preview", { branch: s.branch }), `Publishes ${s.branch} on a shareable link for 7 days`]
           : ["Send to testers…", act("deliver", j), `Builds ${s.branch} and sends it to your testers`]),
-      ["Export…", act("export_job_bundle", j), "ZIP, iCloud or Google Drive"],
+      ["Download ZIP", `data-open="/api/jobs/${encodeURIComponent(s.id)}/export-zip"`, "The brief, plan, changes and logs in one file"],
+      ["Export to…", act("export_job_bundle", j), "iCloud Drive, Google Drive or a folder on this computer"],
       Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator") && !s.submitted_for_inclusion
         && ["Submit for Prize 🏆", `data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title || '')}"`, "Submit this improvement to the core team for permanent inclusion"],
-    ]],
-    ["Open", [
       ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page, written from the live project"],
       ...links.map((link) => [`${link.where ? `Open a ${link.label}` : link.label} ↗`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]),
-    ]],
-    ["Settings", [
+    ],
+    [
       ["Move to feature…", `data-job-feature="${esc(s.id)}"`, "Group this job under a feature"],
-      ["Choose models…", act("select_models", j), "Planner, builder and reviewer"],
-    ]],
+      idle && s.status !== "completed" && ["Choose models…", act("select_models", j), "Which AI plans, builds and reviews this job"],
+    ],
+    [ // ending the job: last, and only when nothing is running
+      idle && s.issue_number && [`Close issue #${s.issue_number} and finish job`, act("close_issue", { job: s.id, issue: s.issue_number }), "Closes it on GitHub and marks this job complete"],
+      idle && ["Archive", `data-archive-jobs='${attrJSON([s.id])}'`, "Hide it from Home; branch and files stay. Restore from Configuration."],
+      idle && ["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"],
+    ],
   ];
   const items = [];
-  for (const [title, entries] of groups) {
+  for (const entries of groups) {
     const shown = entries.filter(Boolean);
-    if (shown.length) items.push(["header", title], ...shown);
+    if (shown.length) items.push(...(items.length ? ["---"] : []), ...shown);
   }
-  // Ending the job: last, apart, and only when nothing is running.
-  const ending = [
-    s.issue_number && ["Close issue #" + s.issue_number, `data-action="close_issue" data-params="${esc(JSON.stringify({ job: s.id, issue: s.issue_number }))}"`, "Close it on GitHub and mark this job complete"],
-    idle && ["Archive", `data-archive-jobs='${attrJSON([s.id])}'`, "Hide it from Home; branch and files stay. Restore from Configuration."],
-    idle && ["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"],
-  ].filter(Boolean);
-  if (ending.length) items.push("---", ...ending);
   return moreMenu(items, { compact: true });
 }
 
@@ -4671,7 +4670,10 @@ document.addEventListener("click", async (e) => {
   const jobId = mv.dataset.jobFeature;
   try {
     const [{ features }, { job }] = [await api("features"), await api(`jobs/${encodeURIComponent(jobId)}`)];
-    if (!features.length) { toast("Create a feature first.", "warning"); return; }
+    if (!features.length) {
+      toast("This project has no features yet.", "info", { label: "Create one", run: () => { location.hash = "#/features"; } });
+      return;
+    }
     const v = await formDialog("Move to feature", `<label class="field"><span>Feature</span><select name="feature">
       <option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${f.id === job.feature ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>`, "Move");
     if (!v) return;
@@ -4721,7 +4723,7 @@ function waitingEpicPage({ id, s, job, runs, docs, links }) {
   const brief = (docs || []).find((d) => d.name === "brief.md");
   return {
     title: s.title,
-    sub: `<span class="status-line"><span>Epic</span><span class="sep">·</span><span>${planning ? "Planning" : "No plan yet"}</span></span>`,
+    sub: `<span class="status-line"><span>Epic</span><span class="sep">·</span><span>${planning ? "Planning" : "No plan yet"}</span>${s.feature ? `<span class="sep">·</span>${featureChip(s)}` : ""}</span>`,
     actions: jobHeaderActions({ ...s, active_run: Boolean(planning) }, links, {}),
     html: `<div class="job-layout"><div class="job-top">
       ${planning ? `<section class="card mb-16"><div class="list">${liveRunCard(planning)}</div></section>` : ""}
@@ -5526,8 +5528,8 @@ pages.job = async ([id]) => {
   const testCases = data.test_cases || { cases: [], summary: { by_type: {} } };
   const missingTests = testCases.cases.filter((c) => c.due && !c.skipped && (c.status === "unassigned" || c.status === "planned")).length;
   const unwrittenCases = testCases.cases.filter((c) => c.due && c.skipped).length;
-  let featureName = "";
-  if (s.feature) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
+  let featureName = s.feature_name || "";
+  if (s.feature && !featureName) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
   const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
   const briefDoc = (docs || []).find((d) => d.name === "brief.md" || (d.title && d.title.toLowerCase() === "brief")) || {
     title: "Brief",
@@ -5565,8 +5567,9 @@ pages.job = async ([id]) => {
   const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
+  // The one way to start a fix from here: the same dialog as the More menu's, with the error already in it.
   const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug" && next?.action !== "answer"
-    ? `<button class="btn small" data-attempt-fix="${esc(job.last_error)}" data-attempt-job="${esc(job.job_id)}">Attempt fix</button>`
+    ? `<button class="btn small" ${act("debug", { job: s.id, feedback: String(job.last_error).slice(0, 2000) })}>Run a fix…</button>`
     : "";
   const signInAction = !activeRun && problem?.sign_in
     ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: problem.sign_in.provider, name: problem.sign_in.name })}>Sign in to ${esc(problem.sign_in.name)}</button>`
@@ -5797,6 +5800,7 @@ pages.job = async ([id]) => {
 
   const subParts = [
     data.parent ? `<span>Found by <a href="#/jobs/${encodeURIComponent(data.parent.id)}">${esc(data.parent.title)}</a></span>` : "",
+    featureChip(s, featureName),
     ...(data.context?.ticket || []).map((t) => t.url
       ? `<a class="ticket-chip" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(`${t.source}: ${t.title}`)}">${esc(t.ref || t.title)} ↗</a>`
       : `<span class="ticket-chip" title="${esc(t.source)}">${esc(t.ref || t.title)}</span>`),
@@ -5807,7 +5811,7 @@ pages.job = async ([id]) => {
   return {
     title: s.title,
     sub: subParts.length ? `<span class="status-line">${subParts.join('<span class="sep">·</span>')}</span>` : "",
-    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
+    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, fixShown: Boolean(recommendFixBtn), hasChanges: allFiles.length > 0 }),
     html: `<div class="job-layout"><div class="job-top">
       ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id), r.id === activeRun?.id ? activeTimeline : null)).join("")}
 
