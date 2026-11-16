@@ -878,7 +878,8 @@ option.branch-recent {
   font-weight: var(--weight-medium);
 }
 textarea { min-height: 110px; resize: vertical; }
-input:focus, textarea:focus, select:focus, .btn:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus, select:focus { outline: none; border-color: var(--muted); }
+.btn:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button:focus:not(:focus-visible), .btn:focus:not(:focus-visible), .import-option:focus:not(:focus-visible), summary:focus:not(:focus-visible) { outline: none; }
 .segmented { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: var(--space-2); }
 .segmented label {
@@ -1598,8 +1599,8 @@ dialog h2 {
   box-sizing: border-box;
 }
 .email-signin-panel input:focus {
-  outline: 2px solid var(--accent);
-  border-color: var(--accent);
+  outline: none;
+  border-color: var(--muted);
 }
 .email-auth-form {
   display: flex;
