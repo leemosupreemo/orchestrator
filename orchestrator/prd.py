@@ -63,7 +63,7 @@ SECTIONS: list[dict[str, Any]] = [
     {"id": "not", "title": "What to exclude", "optional": True,
      "hint": "Features to avoid, non-goals, or competitor patterns you don't want to copy."},
     {"id": "success", "title": "Success measures", "optional": True,
-     "hint": "How will you know the product is working? Add outcomes or targets if you know them; event names and analytics setup are optional."},
+     "hint": "How will you know the product is working? Add outcomes or targets if you know them."},
 ]
 BY_ID = {s["id"]: s for s in SECTIONS}
 HEADING = {s["id"]: f"## {s['title']}" for s in SECTIONS}
