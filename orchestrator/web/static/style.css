@@ -1286,6 +1286,7 @@ dialog h2 {
   }
   .app.drawer-open .sidebar { transform: translateX(0); visibility: visible; transition-delay: 0s; }
   .sidebar .brand { padding: 0 var(--space-3); }
+  .sidebar > .brand { display: none; }
   .sidebar .nav a, .sidebar .nav-secondary a, .sidebar .btn, .sidebar select, .configuration-menu-trigger { min-height: var(--control-lg); }
   .main { padding: calc(80px + env(safe-area-inset-top)) var(--space-4) calc(96px + env(safe-area-inset-bottom)); }
   .topbar { flex-direction: column; gap: var(--space-3); }
