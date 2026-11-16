@@ -48,6 +48,27 @@ class SetupChecklistTests(unittest.TestCase):
         if origin:
             subprocess.run(["git", "remote", "add", "origin", origin], cwd=root, check=True)
 
+    def test_architecture_is_a_recommended_step_that_opens_the_product_page(self):
+        from orchestrator import architecture
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            item = _by_id(_checklist(root))["architecture"]
+            self.assertEqual((item["required"], item["done"], item["group"]), (False, False, "Recommended"))
+            self.assertEqual(item["action"], {"type": "route", "to": "#/product?section=architecture"})
+            self.assertIn("Choose how this project is built", item["detail"])  # no code yet
+            (root / "src").mkdir()
+            (root / "src" / "main.py").write_text("print('hi')\n")
+            self.assertIn("Describe how the code is built", _by_id(_checklist(root))["architecture"]["detail"])
+            architecture.skip(root, root / ".orchestrator")  # a working assumption counts: it never blocks
+            item = _by_id(_checklist(root))["architecture"]
+            self.assertTrue(item["done"])
+            self.assertIn("Working assumption", item["detail"])
+            docs = _by_id(_checklist(root))["docs"]
+            self.assertEqual(docs["title"], "Project rules for the AI (AGENTS.md)")  # architecture.md is the item above now
+            self.assertFalse(docs["done"])
+            (root / "AGENTS.md").write_text("rules")
+            self.assertTrue(_by_id(_checklist(root))["docs"]["done"])
+
     def test_fresh_folder_is_missing_every_requirement(self):
         with tempfile.TemporaryDirectory() as d:
             result = _checklist(Path(d), gh={"installed": False, "user": None}, providers=[])

@@ -1229,6 +1229,8 @@ dialog h2 {
 /* The code shown while signing in to Sentry: big enough to compare with the one on Sentry's page */
 .sentry-code { align-self: flex-start; padding: var(--space-2) var(--space-4); border: 1px dashed var(--border); border-radius: var(--r-md); background: var(--panel); font-size: var(--type-section); font-weight: var(--weight-bold); letter-spacing: .12em; }
 /* Set up free AI: a checklist that ticks off as each step finishes */
+.connect-question { max-height: 9em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: var(--type-secondary); padding: 0; }
+.connect-approval-code { font-size: var(--type-section); letter-spacing: 0.04em; user-select: all; }
 .ai-steps { list-style: none; margin: var(--space-3) 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
 .ai-step { display: flex; align-items: flex-start; gap: var(--space-3); color: var(--muted); }
 .ai-step-text { display: flex; flex-direction: column; gap: 2px; }

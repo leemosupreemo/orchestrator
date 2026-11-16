@@ -129,6 +129,11 @@ def main(argv: list[str] | None = None) -> int:
         return setup_checklist._cli_ready(cli)
 
     def after() -> None:
+        from orchestrator import job_problem
+        try:
+            job_problem.record_sign_in(args.provider)  # jobs that stopped on an expired sign-in stop asking for one
+        except OSError:
+            pass
         from orchestrator.project_setup import refresh_ready_models
         refresh_ready_models(Path(os.environ.get("ORCHESTRATOR_PROJECT_ROOT") or os.getcwd()))
 

@@ -10,7 +10,10 @@ Nothing here calls a model or changes anything.
 """
 from __future__ import annotations
 
+import json
 import re
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,40 @@ MAX_LINE = 240
 _AUTH = re.compile(r"oauth|\b401\b|authenticate|unauthori[sz]ed|sign[- ]?in|session expired|token (?:has )?expired|api key|credentials", re.I)
 _TOOLS = (("claude", "Claude", re.compile(r"claude|anthropic", re.I)), ("codex", "Codex", re.compile(r"codex|openai", re.I)),
           ("agy", "Antigravity", re.compile(r"antigravity|\bagy\b", re.I)), ("pool", "Pool", re.compile(r"\bpool\b|poolside", re.I)))
+
+
+def _signins_file() -> Path:
+    from orchestrator.project_config import user_state_dir
+    return user_state_dir() / "ai_signins.json"  # sign-ins belong to the computer, not to one project
+
+
+def record_sign_in(provider: str, at: float | None = None) -> None:
+    """Connect finished signing in to `provider`: a sign-in error from before now is no longer the problem."""
+    path = _signins_file()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    data[provider] = time.time() if at is None else at
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def signed_in_at(provider: str) -> float:
+    try:
+        value = json.loads(_signins_file().read_text(encoding="utf-8")).get(provider)
+    except (OSError, ValueError, AttributeError):
+        return 0.0
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _job_time(job: dict[str, Any]) -> float:
+    """When the job last changed, which is when its last error was recorded."""
+    try:
+        return datetime.fromisoformat(str(job.get("updated_at") or "")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _tool(text: str) -> tuple[str, str] | None:
@@ -84,6 +121,8 @@ def describe(job: dict[str, Any], out_dir: Path) -> dict[str, Any] | None:
             lines.append(text)
 
     error = str(job.get("last_error") or "").strip()
+    if error and _AUTH.search(error) and (tool := _tool(error)) and 0 < _job_time(job) < signed_in_at(tool[0]):
+        error = ""  # signed in again since: the sign-in is fixed; what's left is the rest of the problem
     if error and _AUTH.search(error):
         tool = _tool(error)
         name = f"{tool[1]} " if tool else "AI "

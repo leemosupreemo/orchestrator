@@ -97,8 +97,8 @@ const [, modulePath, provider, outputB64] = process.argv;
 const els = {};
 const make = id => els[id] = els[id] || {id, hidden: false, textContent: "", innerHTML: "", value: "", className: "", open: false, dataset: {},
   querySelectorAll: () => [], querySelector: () => ({className: "", querySelector: () => ({textContent: ""})})};
-["dialog-ok","connect-agree","connect-continue","connect-stop","connect-input","connect-send","connect-code","connect-code-send","connect-code-row",
- "connect-status","connect-browser","connect-output","connect-details"].forEach(make);
+["dialog-ok","connect-agree","connect-continue","connect-stop","connect-code","connect-code-send","connect-code-row",
+ "connect-status","connect-browser","connect-steps","connect-intro","connect-question","connect-log"].forEach(make);
 const calls = [];
 let polls = 0;
 global.document = {getElementById: make, querySelector: () => ({className: "", querySelector: () => ({textContent: ""})}), querySelectorAll: () => []};
@@ -122,7 +122,7 @@ ToolConnect.open(provider, provider, {api, formDialog: () => dialog});
   }
   await new Promise(r => setTimeout(r, 50));
   close();
-  console.log(JSON.stringify({shown, browser: els["connect-browser"].innerHTML, link: els["connect-browser"].innerHTML.includes("readonly"), input: calls.filter(c => c[0].endsWith("/input")).map(c => c[1].data), field: els["connect-code"].value, started: calls[0]}));
+  console.log(JSON.stringify({shown, browser: els["connect-browser"].innerHTML, link: els["connect-browser"].innerHTML.includes("data-connect-copy"), input: calls.filter(c => c[0].endsWith("/input")).map(c => c[1].data), field: els["connect-code"].value, started: calls[0], stepsHidden: els["connect-steps"].hidden, question: els["connect-question"].hidden ? "" : els["connect-question"].textContent, agree: !els["connect-agree"].hidden}));
   process.exit(0);
 })();
 '''
@@ -137,7 +137,8 @@ ToolConnect.open(provider, provider, {api, formDialog: () => dialog});
             with self.subTest(provider=provider):
                 seen=self.drive_dialog(provider,'@@ORCHESTRATOR_CONNECT@@{"step":"sign_in","detail":"Signing in"}\n'+url+'\n'+prompt)
                 self.assertEqual(seen['started'],['runs',{'action':'ai_connect','params':{'provider':provider,'title':f'Connect {provider}'}}])
-                self.assertTrue(seen['link'])  # the whole link, copyable, besides the button
+                self.assertTrue(seen['link'])  # Copy link beside the button, to sign in on another device
+                self.assertTrue(seen['stepsHidden'])  # signing in shows only what to do, so Submit stays on screen
                 self.assertEqual(seen['shown'],paste)
                 self.assertEqual(seen['input'],['CODE-123\r'] if paste else [])  # trimmed, and Enter appended
                 self.assertEqual(seen['field'],'')  # the box empties once sent
@@ -172,8 +173,8 @@ const [, modulePath] = process.argv;
 const els = {};
 const make = id => els[id] = els[id] || {id, hidden: false, disabled: false, textContent: "", innerHTML: "", value: "", className: "", open: false, dataset: {},
   querySelectorAll: () => [], querySelector: () => ({className: "", querySelector: () => ({textContent: ""})})};
-["dialog-ok","connect-agree","connect-continue","connect-stop","connect-input","connect-send","connect-code","connect-code-send","connect-code-row",
- "connect-status","connect-browser","connect-output","connect-details"].forEach(make);
+["dialog-ok","connect-agree","connect-continue","connect-stop","connect-code","connect-code-send","connect-code-row",
+ "connect-status","connect-browser","connect-steps","connect-intro","connect-question","connect-log"].forEach(make);
 const stepRows = ["check","prerequisites","install","sign_in","ready"].map(() => ({className: "ai-step", querySelector: () => ({textContent: ""})}));
 const stepMap = Object.fromEntries(["check","prerequisites","install","sign_in","ready"].map((k, i) => [`[data-connect-step="${k}"]`, stepRows[i]]));
 global.document = {getElementById: make, querySelector: sel => stepMap[sel] || stepRows[0], querySelectorAll: () => stepRows};
@@ -218,3 +219,13 @@ const done = ToolConnect.open("claude", "Claude", {api, formDialog: () => dialog
         result=self.state('@@ORCHESTRATOR_CONNECT@@bad json\n@@ORCHESTRATOR_CONNECT@@{"step":"shell","detail":"run me"}\n')
         self.assertEqual(result['step'],'check')
         self.assertEqual(result['urls'],[])
+
+    def test_the_dialog_has_no_advanced_section_and_shows_what_it_asks_before_agree(self):
+        source=MODULE.read_text(encoding='utf-8')
+        for gone in ('Sign-in details and advanced input','connect-details','connect-input','readonly value'):
+            self.assertNotIn(gone,source)
+        self.assertIn('its terminal</a> answers anything else it asks',source)  # the way out for an unexpected question
+        seen=self.drive_dialog('claude','@@ORCHESTRATOR_CONNECT@@{"step":"install","detail":"Installing"}\nLicense: MIT\nAgree to terms? [Y/n]')
+        self.assertTrue(seen['agree'])
+        self.assertIn('Agree to terms? [Y/n]',seen['question'])
+        self.assertFalse(seen['stepsHidden'])  # still getting ready: the checklist stays

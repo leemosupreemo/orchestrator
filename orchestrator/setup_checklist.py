@@ -267,6 +267,26 @@ def git_remote_auth_state(root: Path, origin: str, gh_user: str | None = None, f
     return _cached(cache_key, 60, probe)
 
 
+def _architecture_item(root: Path, page: Any) -> dict[str, Any]:
+    """Recommended, never required: done once there is an approved architecture or a working assumption (Skip records one)."""
+    from orchestrator import architecture
+    try:
+        record = architecture.load_decision(root)
+        codeless = record is None and architecture.is_codeless(root)
+    except OSError:
+        record, codeless = None, False
+    if record and architecture.is_approved(record):
+        detail = f"Approved: {record.get('chosen') or 'recorded'} (v{record.get('version', '1.0')}). Every job follows it."
+    elif record:
+        detail = f"Working assumption: {record.get('chosen') or 'from the code'}. Approve it so jobs treat it as a rule."
+    elif codeless:
+        detail = "Not chosen yet. Choose how this project is built before planning the first feature."
+    else:
+        detail = "Not described yet. Describe how the code is built, so every job follows it."
+    return _item("architecture", "Choose or describe the architecture", False, record is not None, detail,
+                 action=page("#/product?section=architecture"), group="Recommended")
+
+
 def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str, Any]:
     if fresh:
         _cache.pop("gh", None)
@@ -349,9 +369,9 @@ def setup_checklist(root: Path, runtime: Path, fresh: bool = False) -> dict[str,
               (f"{len(enabled_machines)} enabled, {ssh_machines} remote over SSH" if ssh_machines else f"{len(enabled_machines)} enabled. Add other Macs to run jobs side by side.")
               if enabled_machines else "No enabled machines. Add or enable a machine.",
               action=page("#/config/fleet"), group="AI"),
-        _item("docs", "Grounding docs (AGENTS.md, docs/)", False,
-              (root / "AGENTS.md").exists() and (root / "docs" / "architecture.md").exists(),
-              "Give the AI the project's rules and architecture", action=page("#/config/ai-instructions"), group="Recommended"),
+        _architecture_item(root, page),
+        _item("docs", "Project rules for the AI (AGENTS.md)", False, (root / "AGENTS.md").exists(),
+              "Give the AI the project's rules and conventions", action=page("#/config/ai-instructions"), group="Recommended"),
         _item("connections", "Connect Jira, Trello, Sentry or Figma", False, bool(settings.get("integrations")),
               "Tie jobs to tickets, pull in error logs and designs", action={"type": "route", "to": "#/connections"}, group="Optional"),
         _item("firebase", "Firebase delivery to testers", False, bool(project.get("firebase_distribution")),

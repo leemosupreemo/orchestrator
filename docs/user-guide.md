@@ -291,9 +291,9 @@ orchestrator check-config
 
 ## Configure AI Providers
 
-On **Manage AI tools**, **Connect** shows a guided checklist for Claude, Codex, Poolside and Antigravity. It installs the tool if needed, prepares user-local Node.js/npm for Codex when missing, and shows the browser approval link and any code. Installer terms require your explicit agreement. When a tool's sign-in ends by asking for a code (Claude's does), the dialog also shows the **full sign-in link** to open or copy, and a **Paste code** box with a **Submit code** button: sign in on any device, paste the code back, and no terminal is involved. **Sign-in details and advanced input** is still there for anything else a provider asks. Closing the dialog keeps the sign-in running under Running now.
+On **Manage AI tools**, **Connect** shows a guided checklist for Claude, Codex, Poolside and Antigravity. It installs the tool if needed, prepares user-local Node.js/npm for Codex when missing, and shows the browser approval link and any code. Installer terms require your explicit agreement. When it is time to sign in, the checklist steps aside and the dialog shows only what to do: **Open sign-in** (or **Copy link** to sign in on another device), then either enter the approval code it shows, or, when the tool gives you a code back (Claude's does), paste it into the box and press **Submit code**. No terminal is involved. When the installer asks you to agree to terms, the question is shown above **Agree and continue**. Closing the dialog keeps the sign-in running under Running now; its terminal there answers anything else a tool asks.
 
-**When a job stops because an AI tool's sign-in expired**, its failure card (titled *AI sign-in expired*) has a **Sign in to Claude** button, or Codex, Antigravity or Pool, whichever tool the job was using. It opens this same dialog over the job, without starting a new job, and works the same way for every tool that has a sign-in: the full link, the approval code or **Paste code** box, and the sign-in details. When it says the tool is connected, close the dialog and press **Rerun job**.
+**When a job stops because an AI tool's sign-in expired**, its failure card (titled *AI sign-in expired*) has a **Sign in to Claude** button, or Codex, Antigravity or Pool, whichever tool the job was using. It opens this same dialog over the job, without starting a new job, and works the same way for every tool that has a sign-in: **Open sign-in**, **Copy link**, and the approval code or the box to paste a code. When it says the tool is connected, close the dialog and press **Rerun job**.
 
 The orchestrator can use model provider CLIs or API keys. The setup check looks for common CLIs and environment keys:
 
@@ -991,6 +991,8 @@ docs/architecture.md
 docs/coding-standards.md
 docs/build-test-commands.md
 ```
+
+You don't write `docs/architecture.md` by hand: the Architecture section of the Product page writes it when you approve or skip. The setup checklist's recommended **Choose or describe the architecture** item takes you there, and counts as done once the project has an approved architecture or a working assumption.
 
 Minimal `AGENTS.md` snippet:
 

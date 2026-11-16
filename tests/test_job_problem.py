@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import glob
+import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from orchestrator import job_problem
 
@@ -19,6 +22,9 @@ class DescribeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.out = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
+        state = patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(self.out / "user")})  # never this computer's real sign-ins
+        state.start()
+        self.addCleanup(state.stop)
         self.job = {"job_id": "j", "status": "debugging", "test_status": "tests-failed"}
 
     def test_only_a_job_in_debugging_has_a_problem(self):
@@ -36,6 +42,28 @@ class DescribeTests(unittest.TestCase):
         self.assertIn("edits were blocked", text)
         self.assertIn("No tests ran", text)
         self.assertIn("diagnosis: All five file writes", text)
+
+    def test_signing_in_again_clears_the_expired_sign_in_but_keeps_the_rest(self):
+        (self.out / "test.log").write_text("Ran 0 tests in 0.000s\n\nNO TESTS RAN\n")
+        self.job.update(last_error="Failed to authenticate (claude). API Error: 401 OAuth access token has expired.",
+                        updated_at="2026-11-16T10:00:00")
+        self.assertEqual(job_problem.describe(self.job, self.out)["sign_in"], {"provider": "claude", "name": "Claude"})
+        job_problem.record_sign_in("codex", at=datetime(2026, 11, 16, 11).timestamp())  # another tool: still expired
+        self.assertIsNotNone(job_problem.describe(self.job, self.out)["sign_in"])
+        job_problem.record_sign_in("claude", at=datetime(2026, 11, 16, 9).timestamp())  # before the error: still expired
+        self.assertIsNotNone(job_problem.describe(self.job, self.out)["sign_in"])
+        job_problem.record_sign_in("claude", at=datetime(2026, 11, 16, 11).timestamp())
+        out = job_problem.describe(self.job, self.out)
+        self.assertIsNone(out["sign_in"])
+        self.assertNotIn("sign-in", out["summary"])
+        self.assertIn("No tests ran", out["summary"])
+        self.assertNotIn("stopped with an error", " ".join(out["lines"]))  # the old sign-in error isn't repeated as "an error"
+
+    def test_closing_the_sign_in_dialog_redraws_the_page(self):
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        self.assertIn("onClose: () => { refreshState().then(() => route()).catch(() => {}); }", app)
+        connect = (ROOT / "orchestrator" / "scripts" / "ai_connect.py").read_text(encoding="utf-8")
+        self.assertIn("job_problem.record_sign_in(args.provider)", connect)
 
     def test_no_tests_ran_is_a_test_setup_problem(self):
         (self.out / "test.log").write_text("Ran 0 tests in 0.000s\n\nNO TESTS RAN\n")

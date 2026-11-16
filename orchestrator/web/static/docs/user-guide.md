@@ -883,6 +883,8 @@ docs/coding-standards.md
 docs/build-test-commands.md
 ```
 
+You don't write `docs/architecture.md` by hand: the Architecture section of the Product page writes it when you approve or skip. The setup checklist's recommended **Choose or describe the architecture** item takes you there, and counts as done once the project has an approved architecture or a working assumption.
+
 Minimal `AGENTS.md` snippet:
 
 ```md
